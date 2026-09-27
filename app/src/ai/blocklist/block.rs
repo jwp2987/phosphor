@@ -4222,7 +4222,13 @@ impl AIBlock {
                     if action_statuses.iter().any(AIActionStatus::is_blocked) && !me.is_hidden(ctx)
                     {
                         // TODO (suraj): figure out focus behaviour for multi-action responses.
-                        me.try_steal_focus(ctx);
+                        //
+                        // Focus is stolen by `TerminalView`'s `AIBlockEvent::ActionFinished`
+                        // handler rather than by calling `try_steal_focus` directly here: that
+                        // handler goes through `focus_ai_block_if_self_focused`, the same guard
+                        // `ActionBlockedOnUserConfirmation` uses, which (unlike this call site)
+                        // won't steal focus and keystrokes from a follow-up the user is
+                        // actively typing into the agent input. See issue #690.
                         ctx.emit(AIBlockEvent::ActionFinished);
                     } else if action_statuses
                         .iter()

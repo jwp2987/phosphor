@@ -7991,8 +7991,11 @@ impl TerminalView {
         let active_ai_block = self.active_ai_block(app);
         if active_ai_block.is_some_and(|ai_block| {
             let ai_block = ai_block.as_ref(app);
-            ai_block.is_blocked_on_user_confirmation(app)
-                || ai_block.has_expanded_running_commands(app)
+            should_hide_input_for_blocked_ai_block(
+                ai_block.is_blocked_on_user_confirmation(app),
+                self.is_agent_input_focused_with_text(app),
+                ai_block.has_expanded_running_commands(app),
+            )
         }) {
             return false;
         }
@@ -8370,6 +8373,14 @@ impl TerminalView {
         if self.is_queued_prompt_inline_editor_focused(ctx) {
             return;
         }
+        // Nor from the agent's own input box while the user has unsent text in it -- a
+        // command that just became blocked on approval (e.g. the next one in a
+        // long-running-command queue) would otherwise steal both focus and keystrokes from
+        // a follow-up the user is mid-sentence composing, with Enter then approving the
+        // command instead of doing anything with the typed text. See issue #690.
+        if self.is_agent_input_focused_with_text(ctx) {
+            return;
+        }
         let target_needs_attention = block.as_ref(ctx).is_blocked_on_user_confirmation(ctx);
         if target_needs_attention || !self.is_any_ai_block_focused(ctx) {
             block.update(ctx, |block, ctx| block.try_steal_focus(ctx));
@@ -8392,6 +8403,14 @@ impl TerminalView {
         self.input
             .as_ref(ctx)
             .is_queued_prompt_inline_editor_focused(ctx)
+    }
+
+    /// Whether the agent's own input box (the main composer, not the queued-prompt inline
+    /// editor above) currently has focus and holds unsent text. See
+    /// `focus_ai_block_if_self_focused` and issue #690.
+    fn is_agent_input_focused_with_text(&self, ctx: &AppContext) -> bool {
+        self.input.as_ref(ctx).editor().as_ref(ctx).is_focused()
+            && !self.input.as_ref(ctx).buffer_text(ctx).trim().is_empty()
     }
 
     #[cfg(not(windows))]
@@ -20315,6 +20334,13 @@ impl TerminalView {
                 if is_restored {
                     return;
                 }
+                // Whichever action in this block became blocked next (e.g. the following
+                // command in a long-running-command queue) may need to steal focus to show
+                // its approval card -- routed through the same guard as
+                // `ActionBlockedOnUserConfirmation` rather than calling
+                // `AIBlock::try_steal_focus` directly, so it doesn't steal focus (and
+                // keystrokes) from a follow-up the user is actively typing. See issue #690.
+                self.focus_ai_block_if_self_focused(&block, ctx);
             }
 
             // -- Shared events ---------------------------------------------------------
@@ -28622,6 +28648,24 @@ fn project_rules_path_for_dir(dir: &Path) -> PathBuf {
         .map(|name| dir.join(name))
         .find(|path| path.is_file())
         .unwrap_or_else(|| dir.join(RULES_FILE_PATTERN[0]))
+}
+
+/// Whether `TerminalView::is_input_box_visible` should hide the input box for the active AI
+/// block.
+///
+/// A command awaiting approval normally takes over the input box entirely -- but not while the
+/// user is actively composing a follow-up in it (`is_agent_input_focused_with_text`). Losing
+/// that text (and having Enter approve the command instead of doing anything with it) is the
+/// bug tracked by issue #690; the input stays up so there's somewhere for the keystrokes to
+/// visibly go. An expanded running command always hides the input regardless, unchanged from
+/// before.
+fn should_hide_input_for_blocked_ai_block(
+    is_blocked_on_user_confirmation: bool,
+    is_agent_input_focused_with_text: bool,
+    has_expanded_running_commands: bool,
+) -> bool {
+    (is_blocked_on_user_confirmation && !is_agent_input_focused_with_text)
+        || has_expanded_running_commands
 }
 
 #[cfg(test)]
