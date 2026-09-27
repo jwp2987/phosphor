@@ -254,6 +254,11 @@ impl WarpifyPageView {
 
                 send_telemetry_from_ctx!(TelemetryEvent::AddAddedSubshellCommand, ctx);
             }
+            // This editor validates on edit (an invalid regex), so unlike the two below,
+            // `InvalidSubmit` can fire here -- but this widget's own error border was already
+            // this editor's only feedback before jwp2987/phosphor#699 follow-up added the
+            // variant, so a no-op here is unchanged behavior, not a new gap.
+            SubmittableTextInputEvent::InvalidSubmit(_) => {}
             SubmittableTextInputEvent::Escape => ctx.emit(SettingsPageEvent::FocusModal),
         }
     }
@@ -272,6 +277,9 @@ impl WarpifyPageView {
 
                 send_telemetry_from_ctx!(TelemetryEvent::AddDenylistedSubshellCommand, ctx);
             }
+            // No validator on this editor, so `InvalidSubmit` never fires -- present only for
+            // exhaustiveness (jwp2987/phosphor#699 follow-up added the variant).
+            SubmittableTextInputEvent::InvalidSubmit(_) => {}
             SubmittableTextInputEvent::Escape => ctx.emit(SettingsPageEvent::FocusModal),
         }
     }
@@ -290,6 +298,9 @@ impl WarpifyPageView {
 
                 send_telemetry_from_ctx!(TelemetryEvent::AddDenylistedSshTmuxWrapperHost, ctx);
             }
+            // No validator on this editor, so `InvalidSubmit` never fires -- present only for
+            // exhaustiveness (jwp2987/phosphor#699 follow-up added the variant).
+            SubmittableTextInputEvent::InvalidSubmit(_) => {}
             SubmittableTextInputEvent::Escape => ctx.emit(SettingsPageEvent::FocusModal),
         }
     }

@@ -886,6 +886,11 @@ impl AISettingsPageView {
                         settings.add_cli_agent_footer_enabled_command(command, ctx);
                     });
                 }
+                // This editor validates on edit (an invalid regex), so `InvalidSubmit` can
+                // fire here -- but this widget's own error border was already this editor's
+                // only feedback before jwp2987/phosphor#699 follow-up added the variant, so a
+                // no-op here is unchanged behavior, not a new gap.
+                SubmittableTextInputEvent::InvalidSubmit(_) => {}
                 SubmittableTextInputEvent::Escape => ctx.emit(AISettingsPageEvent::FocusModal),
             },
         );
