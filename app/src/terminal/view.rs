@@ -24875,14 +24875,72 @@ impl TerminalView {
 
         self.rewind_reverts
             .add_rewind(cards, backup_conversation_id);
-        let abandoned = self.rewind_reverts.sequence.start(|revert| {
-            revert.view.update(ctx, |view, ctx| {
-                view.dispatch_file_revert(revert.file_idx, ctx)
-            })
-        });
+        let abandoned = self
+            .rewind_reverts
+            .sequence
+            .start(|revert| Self::dispatch_file_revert_with_deadline(revert, ctx));
         Self::abandon_rewind_reverts(abandoned, ctx);
         self.finish_settled_rewinds(ctx);
         num_blocks_reverted
+    }
+
+    /// How long a rewind waits for a dispatched revert write's outcome before treating it
+    /// as failed.
+    ///
+    /// Without this, a write that never resolves -- most plausibly a remote host that has
+    /// gone unreachable mid-write -- left the card stuck `Reverting` forever, per
+    /// [`RevertSequence`]'s design: a lane only advances to its next-older revert once the
+    /// in-flight one settles, and nothing but that settle ever clears it. Every later
+    /// rewind of the same file then queues behind it, permanently.
+    ///
+    /// [`RevertSequence`]: crate::ai::blocklist::rewind_revert::RevertSequence
+    const REWIND_REVERT_WRITE_TIMEOUT: Duration = Duration::from_secs(20);
+
+    /// Dispatches `revert`'s guarded write and, if it goes in flight, arms
+    /// [`Self::REWIND_REVERT_WRITE_TIMEOUT`] so an outcome that never arrives cannot wedge
+    /// this file's lane (and every rewind of it queued behind that lane) forever.
+    fn dispatch_file_revert_with_deadline(
+        revert: &crate::ai::blocklist::rewind_revert::FileRevert,
+        ctx: &mut ViewContext<Self>,
+    ) -> crate::ai::blocklist::rewind_revert::RevertStart {
+        let start = revert.view.update(ctx, |view, ctx| {
+            view.dispatch_file_revert(revert.file_idx, ctx)
+        });
+        if start == crate::ai::blocklist::rewind_revert::RevertStart::InFlight {
+            let view = revert.view.clone();
+            let file_idx = revert.file_idx;
+            ctx.spawn(
+                async move {
+                    Timer::after(Self::REWIND_REVERT_WRITE_TIMEOUT).await;
+                },
+                move |me, _, ctx| {
+                    me.rewind_revert_write_timed_out(view, file_idx, ctx);
+                },
+            );
+        }
+        start
+    }
+
+    /// A dispatched revert write's deadline elapsed with no outcome. Marks it failed
+    /// (`CodeDiffView::timeout_file_revert`) and, through the same settle path a real
+    /// outcome takes, abandons the rest of its lane and reports it honestly -- a distinct
+    /// "timed out" toast, not the file-changed refusal message a real write failure shows.
+    ///
+    /// A no-op if the real outcome already arrived before the deadline fired:
+    /// `timeout_file_revert` returns `false` in that case (the write is no longer
+    /// in-flight, via the same idempotence a duplicate real outcome relies on), and this
+    /// must not re-run the settle path for a job the real outcome already settled.
+    fn rewind_revert_write_timed_out(
+        &mut self,
+        view: ViewHandle<CodeDiffView>,
+        file_idx: usize,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let timed_out = view.update(ctx, |view, ctx| view.timeout_file_revert(file_idx, ctx));
+        if !timed_out {
+            return;
+        }
+        self.rewind_revert_write_settled(view.id(), file_idx, false, ctx);
     }
 
     /// A rewind's revert write for `file_idx` of card `view_id` has come back:
@@ -24898,11 +24956,7 @@ impl TerminalView {
         let abandoned = self.rewind_reverts.sequence.settled(
             |revert| revert.view.id() == view_id && revert.file_idx == file_idx,
             reverted,
-            |revert| {
-                revert.view.update(ctx, |view, ctx| {
-                    view.dispatch_file_revert(revert.file_idx, ctx)
-                })
-            },
+            |revert| Self::dispatch_file_revert_with_deadline(revert, ctx),
         );
         if let Some(abandoned) = abandoned {
             Self::abandon_rewind_reverts(abandoned, ctx);

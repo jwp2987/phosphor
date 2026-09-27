@@ -1475,6 +1475,48 @@ impl CodeDiffView {
         self.settle_revert(ctx);
     }
 
+    /// Marks the in-flight revert write for file `idx` failed because it never resolved
+    /// within the caller's deadline (`REWIND_REVERT_WRITE_TIMEOUT`, `terminal/view.rs`),
+    /// rather than leaving the card stuck `Reverting` forever and every later rewind of the
+    /// same file queued behind it (#686 follow-up).
+    ///
+    /// Returns `false`, changing nothing, if this write already resolved before the
+    /// deadline fired — via [`CodeDiffState::record_revert_write`]'s own idempotence, the
+    /// same guard that makes a duplicate real outcome a no-op. The caller must treat `false`
+    /// as "this timeout is stale, ignore it": the real settle already ran
+    /// `RevertSequence::settled` for this job, and running it a second time here would
+    /// advance a lane a write ahead of where it should be.
+    pub fn timeout_file_revert(&mut self, idx: usize, ctx: &mut ViewContext<Self>) -> bool {
+        let recorded = self.state.record_revert_write(idx, false);
+        if recorded {
+            let window_id = ctx.window_id();
+            let file_path = self
+                .pending_diffs
+                .get(idx)
+                .and_then(|diff| diff.diff_view.as_ref(ctx).file_path())
+                .map(ToString::to_string);
+            let message = match file_path {
+                Some(path) => {
+                    format!("Reverting {path} timed out; the file may still hold the agent's edit.")
+                }
+                None => {
+                    "Reverting a file timed out; it may still hold the agent's edit.".to_owned()
+                }
+            };
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(DismissibleToast::error(message), window_id, ctx);
+            });
+            self.settle_revert(ctx);
+            // After settling, so a listener sees the card in its final state for this
+            // outcome — same ordering `handle_save_completed` uses for a real outcome.
+            ctx.emit(CodeDiffViewEvent::RevertWriteSettled {
+                file_idx: idx,
+                reverted: false,
+            });
+        }
+        recorded
+    }
+
     /// Leaves `Reverting` once every dispatched write has come back, marking
     /// the action reverted only if every file was.
     fn settle_revert(&mut self, ctx: &mut ViewContext<Self>) {
