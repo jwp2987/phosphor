@@ -1,5 +1,5 @@
 use crate::ai::mcp::FileBasedMCPManager;
-use crate::ai::mcp::app_exit::{self, McpAppExitShutdown};
+use crate::ai::mcp::app_exit::{ChildKillHandle, ChildProcessSlot, McpAppExitShutdown};
 use crate::ai::mcp::file_based_manager::FileBasedMCPManagerEvent;
 use crate::ai::mcp::templatable_manager::oauth::{
     load_credentials_from_secure_storage, write_to_secure_storage, FILE_BASED_MCP_CREDENTIALS_KEY,
@@ -9,7 +9,6 @@ use core::fmt;
 use itertools::Itertools;
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::{collections::HashMap, future::Future};
 
 use crate::ai::mcp::http_client::build_client_with_headers;
@@ -870,7 +869,7 @@ impl TemplatableMCPServerManager {
         let is_reconnect = mode.is_reconnect();
 
         self.change_server_state(installation_uuid, MCPServerState::Starting, ctx);
-        let child_pid = Arc::new(AtomicU32::new(0));
+        let child = Arc::new(ChildProcessSlot::default());
         let task = ctx.spawn(
             spawn_server(
                 server_name,
@@ -879,7 +878,7 @@ impl TemplatableMCPServerManager {
                 server.transport_type.clone(),
                 logger.clone(),
                 auth_context,
-                child_pid.clone(),
+                child.clone(),
             )
             .compat(),
             move |me, server_info: Result<_, rmcp::RmcpError>, ctx| {
@@ -957,7 +956,7 @@ impl TemplatableMCPServerManager {
             SpawnedServerInfo {
                 abort_handle: task.abort_handle(),
                 oauth_result_tx,
-                child_pid,
+                child,
             },
         );
 
@@ -1014,18 +1013,17 @@ impl TemplatableMCPServerManager {
     ///   reports each close's completion; the main thread is about to block in `finish`,
     ///   so it cannot be a foreground task.
     /// - A server still starting has no session to close, so its child (if spawned yet)
-    ///   is killed now, before the spawn is aborted, so rmcp cannot reap it first and
-    ///   free its pid for reuse.
+    ///   is killed now through its kill handle, then the spawn is aborted.
+    /// - Kills go through the [`ChildKillHandle`] opened at spawn, never a bare pid, and
+    ///   a server whose service loop already ended (it crashed and rmcp reaped it) has
+    ///   released its handle, so a reused pid is never signalled.
     pub fn begin_shutdown_for_app_exit(
         &mut self,
         ctx: &mut ModelContext<'_, Self>,
     ) -> McpAppExitShutdown {
         for (installation_uuid, spawned) in self.spawned_servers.drain() {
-            let pid = spawned.child_pid.load(Ordering::Acquire);
-            if app_exit::kill_child_process(pid) {
-                log::info!(
-                    "Killed still-starting MCP server {installation_uuid} (pid {pid}) for app exit"
-                );
+            if spawned.child.kill() == Some(true) {
+                log::info!("Killed still-starting MCP server {installation_uuid} for app exit");
             }
             spawned.abort_handle.abort();
         }
@@ -1034,7 +1032,7 @@ impl TemplatableMCPServerManager {
         let mut pending = HashMap::new();
         let executor = ctx.background_executor();
         for (installation_uuid, server_info) in self.active_servers.drain() {
-            let child_pid = server_info.child_pid;
+            let child = server_info.child;
             let service = server_info.service;
             service.cancellation_token().cancel();
             let done = done_tx.clone();
@@ -1044,7 +1042,7 @@ impl TemplatableMCPServerManager {
                     let _ = done.send(installation_uuid);
                 })
                 .detach();
-            pending.insert(installation_uuid, child_pid);
+            pending.insert(installation_uuid, child);
         }
         if !pending.is_empty() {
             log::info!(
@@ -1818,12 +1816,11 @@ async fn spawn_server(
     transport_type: TransportType,
     logger: SimpleLogger,
     auth_context: AuthContext,
-    child_pid: Arc<AtomicU32>,
+    child: Arc<ChildProcessSlot>,
 ) -> Result<TemplatableMCPServerInfo, rmcp::RmcpError> {
     logger.log("[note] Attention! There may be sensitive information (such as API keys) in these logs. Make sure to redact any secrets before sharing with others.".to_string());
 
     let mut is_authenticated_transport = false;
-    let mut stdio_child_pid = None;
     let service = match transport_type {
         TransportType::CLIServer(cli_server) => {
             logger.log("[info] MCP: Using stdio transport".to_string());
@@ -1895,11 +1892,17 @@ async fn spawn_server(
                 rmcp::RmcpError::transport_creation::<rmcp::transport::TokioChildProcess>(err)
             })?;
 
-            // Record the pid before the handshake, so app exit can kill a server that
-            // is still starting (jwp2987/phosphor#687).
-            stdio_child_pid = transport.id();
-            if let Some(id) = stdio_child_pid {
-                child_pid.store(id, Ordering::Release);
+            // Open the kill handle now, while the child cannot have been reaped, and
+            // before the handshake, so app exit can kill a server that is still
+            // starting (jwp2987/phosphor#687).
+            if let Some(id) = transport.id() {
+                match ChildKillHandle::open(id) {
+                    Some(handle) => child.fill(handle),
+                    None => logger.log(format!(
+                        "[warn] MCP: no kill handle for pid {id}; if the server ignores stdin \
+                         EOF it will outlive Phosphor"
+                    )),
+                }
             }
             let pid = transport
                 .id()
@@ -1929,18 +1932,21 @@ async fn spawn_server(
                 });
             }
 
-            // Wrap the transport in a logging wrapper.
+            // Wrap the transport in a logging wrapper, and release the kill handle once
+            // the service loop has closed the transport (rmcp has reaped the child).
             let transport = TransportLoggingWrapper {
-                transport,
+                transport: ReleaseChildOnClose {
+                    transport,
+                    child: child.clone(),
+                },
                 logger: logger.clone(),
             };
 
             // Create the MCP client and connect to the server.
             let service = make_client_info().into_dyn().serve(transport).await;
             if service.is_err() {
-                // rmcp dropped (and is killing) the child; don't let app exit signal a
-                // pid that may since have been reused.
-                child_pid.store(0, Ordering::Release);
+                // rmcp dropped the transport, and is killing and reaping the child.
+                child.release();
             }
             Ok::<_, rmcp::RmcpError>(service?)
         }
@@ -2066,7 +2072,7 @@ async fn spawn_server(
         installation_id: uuid,
         description,
         is_authenticated_transport,
-        child_pid: stdio_child_pid,
+        child,
     })
 }
 
@@ -2326,6 +2332,44 @@ impl<T: rmcp::transport::Transport<R>, R: rmcp::service::ServiceRole> rmcp::tran
 
     fn close(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send {
         self.transport.close()
+    }
+}
+
+/// Releases a stdio server's [`ChildKillHandle`] once the service loop has closed the
+/// transport. For a `TokioChildProcess` the close waits for (reaps) the child, so from
+/// then on its pid may belong to another process; a server that crashed long before
+/// quit must not be "killed" at app exit (jwp2987/phosphor#687).
+struct ReleaseChildOnClose<T> {
+    transport: T,
+    child: Arc<ChildProcessSlot>,
+}
+
+impl<T: rmcp::transport::Transport<R>, R: rmcp::service::ServiceRole> rmcp::transport::Transport<R>
+    for ReleaseChildOnClose<T>
+{
+    type Error = T::Error;
+
+    fn send(
+        &mut self,
+        item: rmcp::service::TxJsonRpcMessage<R>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
+        self.transport.send(item)
+    }
+
+    fn receive(
+        &mut self,
+    ) -> impl Future<Output = Option<rmcp::service::RxJsonRpcMessage<R>>> + Send {
+        self.transport.receive()
+    }
+
+    fn close(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        let child = self.child.clone();
+        let close = self.transport.close();
+        async move {
+            let result = close.await;
+            child.release();
+            result
+        }
     }
 }
 

@@ -101,10 +101,10 @@ struct SpawnedServerInfo {
     abort_handle: AbortHandle,
     #[cfg(not(target_family = "wasm"))]
     oauth_result_tx: async_channel::Sender<oauth::CallbackResult>,
-    /// The stdio child's pid once `spawn_server` has started it, 0 until then (and for
-    /// HTTP/SSE servers). Lets app exit kill a server that is still starting.
+    /// The stdio child's kill handle, filled once `spawn_server` has started it (empty
+    /// for HTTP/SSE servers). Lets app exit kill a server that is still starting.
     #[cfg(not(target_family = "wasm"))]
-    child_pid: Arc<std::sync::atomic::AtomicU32>,
+    child: Arc<crate::ai::mcp::app_exit::ChildProcessSlot>,
 }
 
 /// Information about a single connected MCP server.
@@ -123,9 +123,10 @@ pub struct TemplatableMCPServerInfo {
     ///
     /// TODO(vorporeal): Use this to display a toast when server authentication and connection is complete.
     is_authenticated_transport: bool,
-    /// The pid of a stdio server's child process; `None` for HTTP/SSE servers.
+    /// A stdio server's child kill handle, released when the service loop closes the
+    /// transport; always empty for HTTP/SSE servers.
     #[cfg(not(target_family = "wasm"))]
-    child_pid: Option<u32>,
+    child: Arc<crate::ai::mcp::app_exit::ChildProcessSlot>,
 }
 
 impl TemplatableMCPServerInfo {

@@ -282,17 +282,17 @@ async fn query_resources_for_calls_list_function_exactly_once() {
 
 mod app_exit {
     use std::sync::Arc;
-    use std::sync::atomic::AtomicU32;
     use std::time::Duration;
 
     use futures_util::stream::AbortHandle;
     use instant::Instant;
     use rmcp::ServiceExt as _;
+    use rmcp::transport::async_rw::AsyncRwTransport;
     use uuid::Uuid;
     use warpui::App;
 
-    use super::super::make_client_info;
-    use crate::ai::mcp::app_exit::McpAppExitOutcome;
+    use super::super::{ReleaseChildOnClose, make_client_info};
+    use crate::ai::mcp::app_exit::{ChildProcessSlot, McpAppExitOutcome};
     use crate::ai::mcp::templatable_manager::{
         SpawnedServerInfo, TemplatableMCPServerInfo, TemplatableMCPServerManager,
     };
@@ -303,28 +303,45 @@ mod app_exit {
     impl rmcp::ServerHandler for IdleServer {}
 
     /// A real rmcp client session with an in-process server over an in-memory pipe,
-    /// handshaken on `executor` (a tokio runtime, as rmcp needs).
+    /// handshaken on `executor` (a tokio runtime, as rmcp needs). The client transport
+    /// releases `child` when its service loop closes it, as a stdio server's does.
+    /// Also returns a token that ends the server side, as a crash would.
     fn connect_in_memory(
         executor: &warpui::r#async::executor::Background,
         installation_id: Uuid,
-    ) -> TemplatableMCPServerInfo {
+        child: Arc<ChildProcessSlot>,
+    ) -> (
+        TemplatableMCPServerInfo,
+        tokio_util::sync::CancellationToken,
+    ) {
         let (tx, rx) = std::sync::mpsc::channel();
+        let transport_child = child.clone();
         executor
             .spawn(async move {
                 let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+                let crash = tokio_util::sync::CancellationToken::new();
+                let server_crash = crash.clone();
                 tokio::spawn(async move {
                     if let Ok(server) = IdleServer.serve(server_io).await {
-                        let _ = server.waiting().await;
+                        server_crash.cancelled().await;
+                        let _ = server.cancel().await;
                     }
                 });
-                let _ = tx.send(make_client_info().into_dyn().serve(client_io).await);
+                let (read, write) = tokio::io::split(client_io);
+                let rw = AsyncRwTransport::<rmcp::RoleClient, _, _>::new_client(read, write);
+                let transport = ReleaseChildOnClose {
+                    transport: rw,
+                    child: transport_child,
+                };
+                let service = make_client_info().into_dyn().serve(transport).await;
+                let _ = tx.send((service, crash));
             })
             .detach();
-        let service = rx
+        let (service, crash) = rx
             .recv_timeout(Duration::from_secs(10))
-            .expect("in-memory handshake finishes")
-            .expect("in-memory handshake succeeds");
-        TemplatableMCPServerInfo {
+            .expect("in-memory handshake finishes");
+        let service = service.expect("in-memory handshake succeeds");
+        let info = TemplatableMCPServerInfo {
             name: "idle".to_owned(),
             service,
             resources: Vec::new(),
@@ -332,8 +349,9 @@ mod app_exit {
             installation_id,
             description: None,
             is_authenticated_transport: false,
-            child_pid: None,
-        }
+            child,
+        };
+        (info, crash)
     }
 
     #[test]
@@ -343,8 +361,10 @@ mod app_exit {
             let executor = app.background_executor();
             let first = Uuid::new_v4();
             let second = Uuid::new_v4();
-            let first_info = connect_in_memory(&executor, first);
-            let second_info = connect_in_memory(&executor, second);
+            let (first_info, _first_crash) =
+                connect_in_memory(&executor, first, Arc::new(ChildProcessSlot::default()));
+            let (second_info, _second_crash) =
+                connect_in_memory(&executor, second, Arc::new(ChildProcessSlot::default()));
             manager.update(&mut app, |manager, _| {
                 manager.active_servers.insert(first, first_info);
                 manager.active_servers.insert(second, second_info);
@@ -398,30 +418,45 @@ mod app_exit {
         });
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn sleep_child() -> std::process::Child {
+        command::blocking::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("sleep starts")
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn slot_for(child: &std::process::Child) -> Arc<ChildProcessSlot> {
+        let slot = Arc::new(ChildProcessSlot::default());
+        slot.fill(
+            crate::ai::mcp::app_exit::ChildKillHandle::open(child.id()).expect("handle opens"),
+        );
+        slot
+    }
+
     /// A server still in its handshake has no session to close; its child is killed
     /// immediately and the spawn aborted. A `sleep` stands in for a stdio server that
     /// never answers `initialize` (the same short-lived-child pattern as
     /// `local_control`'s discovery tests).
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn app_exit_kills_a_server_that_is_still_starting() {
         use std::os::unix::process::ExitStatusExt as _;
 
         App::test((), |mut app| async move {
             let manager = app.add_singleton_model(|_| TemplatableMCPServerManager::default());
-            let mut child = command::blocking::Command::new("sleep")
-                .arg("30")
-                .spawn()
-                .expect("sleep starts");
+            let mut child = sleep_child();
             let (abort_handle, _registration) = AbortHandle::new_pair();
             let uuid = Uuid::new_v4();
+            let slot = slot_for(&child);
             manager.update(&mut app, |manager, _| {
                 manager.spawned_servers.insert(
                     uuid,
                     SpawnedServerInfo {
                         abort_handle: abort_handle.clone(),
                         oauth_result_tx: async_channel::unbounded().0,
-                        child_pid: Arc::new(AtomicU32::new(child.id())),
+                        child: slot,
                     },
                 );
             });
@@ -438,5 +473,71 @@ mod app_exit {
                 assert!(manager.spawned_servers.is_empty())
             });
         });
+    }
+
+    /// A stdio server that crashed long before quit: its service loop ended and closed
+    /// the transport, so rmcp reaped its child and the pid may belong to anything now.
+    /// App exit must not signal it. The `sleep` is the stand-in "process now holding
+    /// that pid": it must survive.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn app_exit_never_kills_the_child_of_a_server_whose_loop_ended() {
+        App::test((), |mut app| async move {
+            let manager = app.add_singleton_model(|_| TemplatableMCPServerManager::default());
+            let executor = app.background_executor();
+            let mut bystander = sleep_child();
+            let slot = slot_for(&bystander);
+            let uuid = Uuid::new_v4();
+            let (info, crash) = connect_in_memory(&executor, uuid, slot.clone());
+            manager.update(&mut app, |manager, _| {
+                manager.active_servers.insert(uuid, info);
+            });
+
+            crash.cancel();
+            let released_by = Instant::now() + Duration::from_secs(10);
+            while slot.is_filled() && Instant::now() < released_by {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                !slot.is_filled(),
+                "the ended service loop must release the kill handle"
+            );
+
+            let shutdown = manager.update(&mut app, |manager, ctx| {
+                manager.begin_shutdown_for_app_exit(ctx)
+            });
+            let outcome = shutdown.finish(Instant::now() + Duration::from_millis(200));
+
+            assert_eq!(outcome.killed, 0);
+            assert!(
+                bystander.try_wait().expect("try_wait").is_none(),
+                "a released child's pid must never be signalled"
+            );
+            bystander.kill().expect("cleanup");
+            bystander.wait().expect("cleanup");
+        });
+    }
+
+    /// The same session while its loop is still running is killed through the handle.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn app_exit_kills_a_live_child_whose_close_does_not_finish() {
+        use std::os::unix::process::ExitStatusExt as _;
+
+        let mut child = sleep_child();
+        let slot = slot_for(&child);
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<Uuid>();
+        let uuid = Uuid::new_v4();
+        let shutdown = crate::ai::mcp::app_exit::McpAppExitShutdown::new(
+            done_rx,
+            std::collections::HashMap::from([(uuid, slot)]),
+        );
+
+        let outcome = shutdown.finish(Instant::now() + Duration::from_millis(100));
+        drop(done_tx);
+
+        assert_eq!(outcome.killed, 1);
+        let status = child.wait().expect("sleep is reaped");
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
     }
 }
