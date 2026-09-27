@@ -2639,7 +2639,8 @@ separately rather than inflating the queue count.
       own release workflow already documents a `SKIP_SETTINGS_SCHEMA=1` escape hatch,
       i.e. it is already paying and working around this. Touches the three diverged
       `script/{linux,macos,windows}` bundle scripts — a real port, not a cherry-pick.
-- [ ] **`b1bcc3564`** — add `rust-analyzer` to `rust-toolchain.toml` components. One word.
+- [x] **`b1bcc3564`** — add `rust-analyzer` to `rust-toolchain.toml` components. One word.
+      **Closed via #714.**
 - [ ] **`1e4b86a81`** — `release-cli` `codegen-units` 1 -> 4; roughly halves that
       profile's build time for ~4% larger stripped binaries. The fork does use
       `release-cli` for the macOS and musl TUI builds.
