@@ -23,10 +23,12 @@ use warpui::r#async::executor;
 /// WarpUI app startup to [`super::run_daemon_app`] with the Unix-specific
 /// `ServerModel` constructor.
 pub fn run_daemon(identity_key: String) -> anyhow::Result<()> {
-    // socket_path: ~/.warp[-channel]/remote-server/{identity_key}/server.sock
+    // socket_path: ~/.warp[-channel]/remote-server/{identity_key}/server[-{version_hash}].sock
     //   The Unix domain socket the daemon binds on.  Proxy processes connect
-    //   to it and bridge their SSH stdio channel through it.
-    // pid_path:    ~/.warp[-channel]/remote-server/{identity_key}/server.pid
+    //   to it and bridge their SSH stdio channel through it.  The name is
+    //   version-partitioned (see `setup::daemon_socket_name`) so a proxy
+    //   built from a different version never attaches to this daemon.
+    // pid_path:    ~/.warp[-channel]/remote-server/{identity_key}/server[-{version_hash}].pid
     //   Contains the daemon's PID.  Proxy processes read it and use
     //   kill(pid, 0) to detect whether the daemon is still alive before
     //   deciding whether to start a new one.

@@ -7,8 +7,8 @@
 //! 2. Check whether the daemon is already running (`kill -0`).
 //! 3. If not: spawn the daemon subcommand in a new session and wait for its
 //!    socket to appear.
-//! 4. Connect to `server.sock` and bridge stdin/stdout to the socket using
-//!    the existing 4-byte length-prefixed frame format.
+//! 4. Connect to the daemon socket and bridge stdin/stdout to it using the
+//!    existing 4-byte length-prefixed frame format.
 
 use std::fs::Permissions;
 use std::os::unix::fs::PermissionsExt;
@@ -20,17 +20,27 @@ use std::time::Duration;
 use super::super::setup;
 
 /// Path to the daemon's Unix domain socket.
+///
+/// Named via [`setup::daemon_socket_name`], which bakes in a short hash of
+/// the app version when one is available (release builds), so an upgraded
+/// client can never attach to a daemon started by a different build — the
+/// wire protocol between proxy and daemon has no version negotiation of its
+/// own, so a mismatched pair would otherwise talk past each other silently.
+/// Both `run` (below, the client side) and `run_daemon` (`unix::run_daemon`,
+/// which binds the socket this path names) call this, so the two sides can
+/// never disagree.
 pub(super) fn socket_path(identity_key: &str) -> PathBuf {
     let dir = setup::remote_server_daemon_dir(identity_key);
     let expanded = shellexpand::tilde(&dir).into_owned();
-    PathBuf::from(expanded).join("server.sock")
+    PathBuf::from(expanded).join(setup::daemon_socket_name())
 }
 
-/// Path to the daemon's PID file (also used as the flock target).
+/// Path to the daemon's PID file (also used as the flock target). Versioned
+/// the same way as [`socket_path`], for the same reason.
 pub(super) fn pid_path(identity_key: &str) -> PathBuf {
     let dir = setup::remote_server_daemon_dir(identity_key);
     let expanded = shellexpand::tilde(&dir).into_owned();
-    PathBuf::from(expanded).join("server.pid")
+    PathBuf::from(expanded).join(setup::daemon_pid_name())
 }
 
 /// Ensures the daemon directory exists with owner-only permissions.
@@ -38,6 +48,46 @@ pub(super) fn ensure_private_daemon_dir(path: &std::path::Path) -> anyhow::Resul
     std::fs::create_dir_all(path)?;
     std::fs::set_permissions(path, Permissions::from_mode(0o700))?;
     Ok(())
+}
+
+/// The unversioned socket/PID filenames every build used before daemon files
+/// were version-partitioned (and what [`setup::daemon_socket_name`] /
+/// [`setup::daemon_pid_name`] still return for an unversioned build, e.g.
+/// plain `cargo run` with no `GIT_RELEASE_TAG`).
+const UNVERSIONED_SOCKET_NAME: &str = "server.sock";
+const UNVERSIONED_PID_NAME: &str = "server.pid";
+
+/// Best-effort cleanup of a daemon left behind by a build from before daemon
+/// files were version-partitioned.
+///
+/// Runs only when the *current* build is versioned (`setup::version_hash()`
+/// is `Some`), so it never touches another unversioned dev build's daemon,
+/// which legitimately still uses these names on purpose. A dead PID means the
+/// old daemon's process is gone, so its socket/PID files are litter that
+/// nothing else will ever clean up: the daemon that created them computed the
+/// same unversioned path it always did, has no code that would notice this
+/// build moved on, and — being dead — cannot remove them itself the way
+/// [`super::run_daemon`]'s own exit path does for its own files. A live PID
+/// is left alone rather than guessed at; it will exit on its own idle-grace
+/// timeout like any other daemon.
+fn cleanup_stale_unversioned_daemon(dir: &std::path::Path) {
+    if setup::version_hash().is_none() {
+        return;
+    }
+    let old_pid_path = dir.join(UNVERSIONED_PID_NAME);
+    let old_socket_path = dir.join(UNVERSIONED_SOCKET_NAME);
+    if !old_pid_path.exists() && !old_socket_path.exists() {
+        return;
+    }
+    if check_daemon_running(&old_pid_path) {
+        return;
+    }
+    log::info!(
+        "Proxy: removing stale unversioned daemon files in {}",
+        dir.display()
+    );
+    let _ = std::fs::remove_file(&old_pid_path);
+    let _ = std::fs::remove_file(&old_socket_path);
 }
 
 /// Entry point for `remote-server-proxy`.
@@ -51,6 +101,7 @@ pub fn run(identity_key: &str) -> anyhow::Result<()> {
     // Ensure the parent directory exists.
     if let Some(parent) = socket_path.parent() {
         ensure_private_daemon_dir(parent)?;
+        cleanup_stale_unversioned_daemon(parent);
     }
 
     // ---- Acquire exclusive flock on the PID file --------------------------------
@@ -296,3 +347,7 @@ fn bridge_stdio_to_socket(socket_path: &std::path::Path) -> anyhow::Result<()> {
     log::info!("Proxy: bridge closed, exiting");
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "proxy_tests.rs"]
+mod tests;

@@ -10164,20 +10164,40 @@ claim, which was wrong by four.
       and its justification is wrong. (Rewritten 2026-09-26: the two "real preprocess pipeline"
       comments in `tui_permission_prompt_tests.rs` and `tui_generic_tool_call_view_tests.rs` are gone.)
 
-- [ ] 🟠 **Daemon sockets are not version-partitioned in practice, despite the docs and**
+- [x] 🟠 **Daemon sockets are not version-partitioned in practice, despite the docs and**
       **three tests saying they are.** `daemon_socket_name()` / `daemon_pid_name()` — and so
       `version_hash` — are **production-dead**: their only non-test callers are
       `ssh_transport.rs::remote_daemon_{socket,pid}_path`, which have **zero callers**
       repo-wide. The live path is `remote_server/unix/proxy.rs:23-33`, which hardcodes
       `"server.sock"` / `"server.pid"`. Either wire the versioned names or delete them with
       their tests and correct the doc comments.
+      **Fixed 2026-09-27 (#735):** wired the versioned names. `proxy.rs`'s `socket_path`/
+      `pid_path` now build the filename via `setup::daemon_socket_name()`/`daemon_pid_name()`
+      instead of hardcoding `"server.sock"`/`"server.pid"`; both the client (`proxy::run`)
+      and the daemon (`unix::run_daemon`, which binds the socket) go through these two
+      functions, so they can never disagree. Also added `cleanup_stale_unversioned_daemon`:
+      once this build is versioned, a dead old-format daemon's leftover `server.sock`/
+      `server.pid` are removed (a *live* one — e.g. a genuine unversioned dev-build peer — is
+      left alone). `unix::mod.rs`'s doc comment corrected to describe the versioned name.
+      Tests in new `app/src/remote_server/unix/proxy_tests.rs`:
+      `socket_and_pid_paths_use_the_versioned_names`,
+      `cleanup_is_a_no_op_for_an_unversioned_build`,
+      `cleanup_removes_a_dead_unversioned_daemons_files_once_versioned` (via
+      `ChannelState::set_app_version` under `test-util`), and
+      `cleanup_leaves_a_live_unversioned_daemons_files_alone`. Not independently
+      verifiable here: an actual two-version upgrade against a real remote host.
 
-- [ ] **`setup_tests.rs:554-575` `version_hash_is_deterministic` is vacuous.** It never calls
+- [x] **`setup_tests.rs:554-575` `version_hash_is_deterministic` is vacuous.** It never calls
       `version_hash`; it re-implements `DefaultHasher` inline and asserts the copy against
       itself, so it stayed green through the 2026-08-21 switch to a stable hash and now
       actively misinforms. Replace with a **pinned literal** through
       `remote_server_identity_dir_name` — that is the only assertion that can catch a silent
       algorithm change.
+      **Fixed 2026-09-27 (#735):** replaced with `version_hash_algorithm_is_pinned`, which
+      calls the real `remote_server_identity_dir_name` (sharing `version_hash`'s
+      `stable_short_hash`) and asserts against literals computed offline from the documented
+      FNV-1a + MurmurHash3-fmix64 algorithm, plus a second input to guard against a
+      degenerate constant-output regression.
 
 - [ ] **`AIAgentActionType::FileGlobV2` has no slot for a result limit, so a model's**
       **`limit` cannot be honoured.** The parameter is accepted and the schema says plainly
