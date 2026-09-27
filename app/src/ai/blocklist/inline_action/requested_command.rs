@@ -21,7 +21,8 @@ use warpui::{
         Flex, MainAxisSize, MouseStateHandle, OffsetPositioning, ParentElement, Radius,
         SelectableArea, SelectionHandle, Stack, Text,
     },
-    keymap::{Context, EditableBinding, FixedBinding, Keystroke},
+    id,
+    keymap::{Context, ContextPredicate, EditableBinding, FixedBinding, Keystroke},
     AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, UpdateView, View,
     ViewContext, ViewHandle,
 };
@@ -119,23 +120,40 @@ const VIEWING_MCP_TOOL_DETAIL_MESSAGE: &str = "Viewing MCP tool call detail";
 const COMMAND_CANCELLED_FOR_RUNNING_COMMAND_MESSAGE: &str =
     "Cancelled -- another command was already running.";
 
-/// Shown when this row's own Reject button/keybinding was used. Distinct from
-/// [`COMMAND_CANCELLED_BY_USER_MESSAGE`], which covers a `ManuallyCancelled` reaching this
-/// row some other way (e.g. the conversation's Stop button firing while this action was
-/// still pending) -- see [`RequestedCommandView::rejected_by_user`] and issue #692.
-const COMMAND_REJECTED_BY_USER_MESSAGE: &str = "Rejected by you.";
-/// A `ManuallyCancelled` cancellation not attributable to this row's own Reject button --
-/// see [`COMMAND_REJECTED_BY_USER_MESSAGE`].
-const COMMAND_CANCELLED_BY_USER_MESSAGE: &str = "Cancelled by you.";
-const COMMAND_CANCELLED_FOR_FOLLOW_UP_MESSAGE: &str = "Cancelled -- you sent a follow-up.";
-const COMMAND_CANCELLED_FOR_USER_COMMAND_MESSAGE: &str =
-    "Cancelled -- you ran a command in the terminal.";
-const COMMAND_CANCELLED_FOR_SHELL_EXIT_MESSAGE: &str = "Cancelled -- the shell exited.";
-/// Shown for a command an autonomous profile refused to run because it matched the user's
-/// command denylist (`RequestCommandOutputResult::Denylisted`). Unlike the cancellation
-/// reasons above, this is read directly off the stored result at render time -- see
-/// `denylisted_command_message` -- so it survives a restart.
-const COMMAND_DENYLISTED_MESSAGE: &str = "Not run -- this command is on your denylist.";
+// These six are the only strings in this file routed through `t!()`/`t_static!()` so far --
+// `app/src/ai/**` ("ai core") is an entirely unclaimed i18n surface per
+// `app/i18n/PROGRESS.md` (every other label in this file, e.g. `COMMAND_WAITING_FOR_USER_MESSAGE`
+// above, is still a plain literal), so this is a scoped exception for newly-added copy rather
+// than a partial surface migration -- see issue #692. Per `PROGRESS.md`, `en` is the only
+// locale that must have the key; `ja`/`zh-CN` fall back to `en` automatically for a missing
+// key and can be backfilled in a real surface pass later. `lazy_static!` (not a plain `const`,
+// which can't call a function) plus `t_static!` (rather than `t!`, which returns an owned
+// `String`) keeps every use site below unchanged -- still a plain `&'static str` behind the
+// lazy-static proxy, dereferenced with `*` at each use.
+lazy_static! {
+    /// Shown when this row's own Reject button/keybinding was used. Distinct from
+    /// [`COMMAND_CANCELLED_BY_USER_MESSAGE`], which covers a `ManuallyCancelled` reaching this
+    /// row some other way (e.g. the conversation's Stop button firing while this action was
+    /// still pending) -- see [`RequestedCommandView::rejected_by_user`] and issue #692.
+    static ref COMMAND_REJECTED_BY_USER_MESSAGE: &'static str =
+        crate::t_static!("ai-requested-command-rejected-by-user");
+    /// A `ManuallyCancelled` cancellation not attributable to this row's own Reject button --
+    /// see [`COMMAND_REJECTED_BY_USER_MESSAGE`].
+    static ref COMMAND_CANCELLED_BY_USER_MESSAGE: &'static str =
+        crate::t_static!("ai-requested-command-cancelled-by-user");
+    static ref COMMAND_CANCELLED_FOR_FOLLOW_UP_MESSAGE: &'static str =
+        crate::t_static!("ai-requested-command-cancelled-follow-up");
+    static ref COMMAND_CANCELLED_FOR_USER_COMMAND_MESSAGE: &'static str =
+        crate::t_static!("ai-requested-command-cancelled-user-command");
+    static ref COMMAND_CANCELLED_FOR_SHELL_EXIT_MESSAGE: &'static str =
+        crate::t_static!("ai-requested-command-cancelled-shell-exit");
+    /// Shown for a command an autonomous profile refused to run because it matched the user's
+    /// command denylist (`RequestCommandOutputResult::Denylisted`). Unlike the cancellation
+    /// reasons above, this is read directly off the stored result at render time -- see
+    /// `denylisted_command_message` -- so it survives a restart.
+    static ref COMMAND_DENYLISTED_MESSAGE: &'static str =
+        crate::t_static!("ai-requested-command-denylisted");
+}
 
 /// The profile-autoexecution footer's sentence, shown only when the Accept/Edit/Cancel buttons
 /// are on the same row -- see [`RequestedCommandView::execution_decision_footer_message`].
@@ -173,6 +191,22 @@ lazy_static! {
     };
 }
 
+/// The context predicate gating the Enter/Numpad-Enter -> Accept keybinding below: true only
+/// when `RequestedCommandView` itself is on the responder chain (i.e. it, or a descendant of
+/// it, has focus) and its inline edit mode isn't open (`cmdorctrl-enter` handles Accept there
+/// instead). In particular, this is false whenever the agent's own input box has focus
+/// instead -- the input is a sibling of this view, not a descendant of it, so it never
+/// contributes `RequestedCommandView::ui_name()` to the context.
+///
+/// Extracted into its own function (rather than inlined at each `FixedBinding` site, as
+/// before) so that guarantee is unit-testable in isolation: see `enter_context_predicate_tests`
+/// in the test module. Issue #690 was, in part, about confirming Enter typed into the agent
+/// input can never reach this binding just because the card happens to be showing somewhere
+/// on screen.
+fn enter_accepts_requested_command_context() -> ContextPredicate {
+    id!(RequestedCommandView::ui_name()) & !id!(EDIT_MODE_OPEN_KEYMAP_CONTEXT)
+}
+
 pub fn init(app: &mut AppContext) {
     use warpui::keymap::macros::*;
 
@@ -185,12 +219,12 @@ pub fn init(app: &mut AppContext) {
         FixedBinding::new(
             "enter",
             RequestedCommandViewAction::Accept,
-            id!(RequestedCommandView::ui_name()) & !id!(EDIT_MODE_OPEN_KEYMAP_CONTEXT),
+            enter_accepts_requested_command_context(),
         ),
         FixedBinding::new(
             "numpadenter",
             RequestedCommandViewAction::Accept,
-            id!(RequestedCommandView::ui_name()) & !id!(EDIT_MODE_OPEN_KEYMAP_CONTEXT),
+            enter_accepts_requested_command_context(),
         ),
         FixedBinding::new(
             "cmdorctrl-enter",
@@ -749,8 +783,15 @@ impl RequestedCommandView {
             CodeEditorEvent::CopiedEmptyText => {
                 ctx.emit(RequestedCommandViewEvent::CopiedEmptyText);
             }
+            // Windows has no `ctrl-c`-as-reject `FixedBinding` (the code editor's own
+            // Ctrl+C-to-copy takes that chord there instead), so a Ctrl+C with nothing
+            // selected is routed here as the platform's equivalent of the Reject keybinding.
+            // Set `rejected_by_user` the same way `RequestedCommandViewAction::Reject` does
+            // just below, or this row falls back to the generic "Cancelled by you." label
+            // instead of "Rejected by you." -- see issue #692.
             #[cfg(windows)]
             CodeEditorEvent::WindowsCtrlC { copied_selection } if !copied_selection => {
+                self.rejected_by_user = true;
                 ctx.emit(RequestedCommandViewEvent::Rejected);
             }
             _ => {}
@@ -2143,17 +2184,17 @@ fn cancel_explanation_for_reason(
     match reason {
         None => Some(COMMAND_CANCELLED_FOR_RUNNING_COMMAND_MESSAGE),
         Some(CancellationReason::ManuallyCancelled) if rejected_by_user => {
-            Some(COMMAND_REJECTED_BY_USER_MESSAGE)
+            Some(*COMMAND_REJECTED_BY_USER_MESSAGE)
         }
-        Some(CancellationReason::ManuallyCancelled) => Some(COMMAND_CANCELLED_BY_USER_MESSAGE),
+        Some(CancellationReason::ManuallyCancelled) => Some(*COMMAND_CANCELLED_BY_USER_MESSAGE),
         Some(CancellationReason::FollowUpSubmitted { .. }) => {
-            Some(COMMAND_CANCELLED_FOR_FOLLOW_UP_MESSAGE)
+            Some(*COMMAND_CANCELLED_FOR_FOLLOW_UP_MESSAGE)
         }
         Some(CancellationReason::UserCommandExecuted) => {
-            Some(COMMAND_CANCELLED_FOR_USER_COMMAND_MESSAGE)
+            Some(*COMMAND_CANCELLED_FOR_USER_COMMAND_MESSAGE)
         }
         Some(CancellationReason::AgentExitedShell) => {
-            Some(COMMAND_CANCELLED_FOR_SHELL_EXIT_MESSAGE)
+            Some(*COMMAND_CANCELLED_FOR_SHELL_EXIT_MESSAGE)
         }
         // Torn down some other way -- a revert/delete removed the exchange entirely, or the
         // block finished by itself while the agent was still streaming. Nothing to explain
@@ -2170,7 +2211,7 @@ fn cancel_explanation_for_reason(
 /// `cancel_explanation_for_reason`) it survives a restart -- the result itself says why.
 fn denylisted_command_message(result: &RequestCommandOutputResult) -> Option<&'static str> {
     matches!(result, RequestCommandOutputResult::Denylisted { .. })
-        .then_some(COMMAND_DENYLISTED_MESSAGE)
+        .then_some(*COMMAND_DENYLISTED_MESSAGE)
 }
 
 #[cfg(test)]

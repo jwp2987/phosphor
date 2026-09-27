@@ -4,12 +4,15 @@ use super::{
     COMMAND_CANCELLED_BY_USER_MESSAGE, COMMAND_CANCELLED_FOR_FOLLOW_UP_MESSAGE,
     COMMAND_CANCELLED_FOR_RUNNING_COMMAND_MESSAGE, COMMAND_CANCELLED_FOR_SHELL_EXIT_MESSAGE,
     COMMAND_CANCELLED_FOR_USER_COMMAND_MESSAGE, COMMAND_DENYLISTED_MESSAGE,
-    COMMAND_REJECTED_BY_USER_MESSAGE, cancel_explanation_for_reason, denylisted_command_message,
-    format_command_text, header_message_for_user_take_over_reason, mcp_blocked_title_text,
+    COMMAND_REJECTED_BY_USER_MESSAGE, EDIT_MODE_OPEN_KEYMAP_CONTEXT, RequestedCommandView,
+    cancel_explanation_for_reason, denylisted_command_message,
+    enter_accepts_requested_command_context, format_command_text,
+    header_message_for_user_take_over_reason, mcp_blocked_title_text,
     mcp_viewing_detail_title_text,
 };
 use crate::ai::agent::{CancellationReason, RequestCommandOutputResult};
 use crate::ai::blocklist::block::cli_controller::UserTakeOverReason;
+use warpui::{View, keymap::Context};
 
 #[test]
 fn single_line_without_newline_is_unchanged_ascii() {
@@ -186,7 +189,7 @@ fn a_command_block_that_actually_started_is_never_explained_here() {
 fn reject_button_says_rejected_by_you() {
     assert_eq!(
         cancel_explanation_for_reason(Some(CancellationReason::ManuallyCancelled), false, true),
-        Some(COMMAND_REJECTED_BY_USER_MESSAGE)
+        Some(*COMMAND_REJECTED_BY_USER_MESSAGE)
     );
 }
 
@@ -196,7 +199,7 @@ fn manually_cancelled_without_the_reject_flag_says_cancelled_by_you() {
     // distinct from this row's own Reject button.
     assert_eq!(
         cancel_explanation_for_reason(Some(CancellationReason::ManuallyCancelled), false, false),
-        Some(COMMAND_CANCELLED_BY_USER_MESSAGE)
+        Some(*COMMAND_CANCELLED_BY_USER_MESSAGE)
     );
 }
 
@@ -210,7 +213,7 @@ fn follow_up_submitted_names_the_follow_up() {
             false,
             false
         ),
-        Some(COMMAND_CANCELLED_FOR_FOLLOW_UP_MESSAGE)
+        Some(*COMMAND_CANCELLED_FOR_FOLLOW_UP_MESSAGE)
     );
 }
 
@@ -218,7 +221,7 @@ fn follow_up_submitted_names_the_follow_up() {
 fn user_command_executed_names_the_terminal_command() {
     assert_eq!(
         cancel_explanation_for_reason(Some(CancellationReason::UserCommandExecuted), false, false),
-        Some(COMMAND_CANCELLED_FOR_USER_COMMAND_MESSAGE)
+        Some(*COMMAND_CANCELLED_FOR_USER_COMMAND_MESSAGE)
     );
 }
 
@@ -226,7 +229,7 @@ fn user_command_executed_names_the_terminal_command() {
 fn agent_exited_shell_names_the_shell_exit() {
     assert_eq!(
         cancel_explanation_for_reason(Some(CancellationReason::AgentExitedShell), false, false),
-        Some(COMMAND_CANCELLED_FOR_SHELL_EXIT_MESSAGE)
+        Some(*COMMAND_CANCELLED_FOR_SHELL_EXIT_MESSAGE)
     );
 }
 
@@ -250,7 +253,7 @@ fn denylisted_result_is_labelled() {
         denylisted_command_message(&RequestCommandOutputResult::Denylisted {
             command: "rm -rf /".to_owned()
         }),
-        Some(COMMAND_DENYLISTED_MESSAGE)
+        Some(*COMMAND_DENYLISTED_MESSAGE)
     );
 }
 
@@ -260,4 +263,47 @@ fn non_denylisted_result_is_not_labelled_here() {
         denylisted_command_message(&RequestCommandOutputResult::CancelledBeforeExecution),
         None
     );
+}
+
+// `enter_accepts_requested_command_context` -- issue #690. The bug was that Enter typed into
+// the agent's own input approved a pending command instead of doing anything with the typed
+// text. The fix keeps the input visible and focusable while a command awaits confirmation
+// (see `TerminalView::should_hide_input_for_blocked_ai_block`); these tests lock in the other
+// half of why that's safe: the Enter -> Accept keybinding's context predicate only matches
+// when `RequestedCommandView` itself is on the responder chain, so focus actually being on the
+// input (a sibling view, not a descendant of the card) is enough on its own to keep Enter from
+// reaching Accept.
+mod enter_context_predicate_tests {
+    use super::*;
+
+    #[test]
+    fn matches_when_the_card_itself_is_on_the_responder_chain() {
+        let mut context = Context::default();
+        context.set.insert(RequestedCommandView::ui_name());
+
+        assert!(enter_accepts_requested_command_context().eval(&context));
+    }
+
+    /// The agent input is a sibling of the card, not a descendant of it: its own responder
+    /// chain never contributes `RequestedCommandView::ui_name()`. An empty context stands in
+    /// for that -- whatever context the input's own ancestors contribute, none of it is this
+    /// one.
+    #[test]
+    fn does_not_match_a_context_without_the_card() {
+        let context = Context::default();
+
+        assert!(!enter_accepts_requested_command_context().eval(&context));
+    }
+
+    /// While the card's inline edit mode is open, Enter is not Accept (`cmdorctrl-enter` is,
+    /// via a separate binding) -- plain Enter should insert a newline in the edit textarea
+    /// instead.
+    #[test]
+    fn does_not_match_while_edit_mode_is_open_even_with_the_card_focused() {
+        let mut context = Context::default();
+        context.set.insert(RequestedCommandView::ui_name());
+        context.set.insert(EDIT_MODE_OPEN_KEYMAP_CONTEXT);
+
+        assert!(!enter_accepts_requested_command_context().eval(&context));
+    }
 }
