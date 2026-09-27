@@ -59,8 +59,9 @@ use crate::ai::agent_providers::embeddings::{
     resolve_configured_embedding_model, resolve_embedding_endpoints,
 };
 use crate::persistence::{
-    ModelEvent, codebase_index_children, codebase_index_node_summaries, codebase_index_vectors,
-    database_file_path, establish_ro_connection, known_codebase_index_hashes,
+    ModelEvent, codebase_index_children, codebase_index_has_embeddings,
+    codebase_index_node_summaries, codebase_index_vectors, database_file_path,
+    establish_ro_connection, known_codebase_index_hashes,
 };
 
 /// Encodes a vector as little-endian `f32` bytes.
@@ -150,6 +151,24 @@ impl SqliteVectorStore {
             .lock()
             .map_err(|_| anyhow!("codebase index read connection is poisoned"))?;
         f(&mut conn)
+    }
+
+    /// Whether this store already holds at least one embedded vector for
+    /// `space` (an `EmbeddingConfig::storage_key()`, e.g. `voyage:voyage-4:512`).
+    ///
+    /// Backs `EmbeddingEndpoints::preferred_model_favoring_existing`, so a
+    /// second provider being added or reordered doesn't silently re-key an
+    /// index that already has rows under a model that's still configured.
+    /// Degrades to `false` rather than erroring when persistence is
+    /// unavailable, the same as `VectorStore::known_hashes` above -- nothing
+    /// here can produce a worse outcome than plain provider-list order, only
+    /// occasionally a less precise one.
+    pub fn has_embeddings_for(&self, space: &str) -> bool {
+        self.read(|conn| {
+            codebase_index_has_embeddings(conn, space)
+                .context("failed to check for existing codebase index embeddings")
+        })
+        .unwrap_or(false)
     }
 }
 
@@ -445,7 +464,8 @@ impl RefreshingStoreClient {
     /// so the refresh can be tested without an `AppContext`.
     ///
     /// `endpoints` carries both halves of the answer: which model a *new* index
-    /// should use ([`EmbeddingEndpoints::preferred_model`]) and where a request
+    /// should use ([`EmbeddingEndpoints::preferred_model_favoring_existing`],
+    /// backed by [`SqliteVectorStore::has_embeddings_for`]) and where a request
     /// for any configured model goes. They travel together because a shared
     /// endpoint with a separately-cached model is exactly the pair that can
     /// disagree — see [`EmbeddingEndpoints`].
@@ -455,7 +475,9 @@ impl RefreshingStoreClient {
         resolved_reranker: Option<&'static str>,
         reranker: Option<Arc<dyn RerankProvider>>,
     ) {
-        let resolved_model = endpoints.preferred_model();
+        let resolved_model = endpoints.preferred_model_favoring_existing(|config| {
+            self.store.has_embeddings_for(config.storage_key())
+        });
         self.provider.set_endpoints(endpoints);
 
         let mut configuration = self
@@ -477,28 +499,32 @@ impl RefreshingStoreClient {
                 // repository from scratch — on the user's own provider quota,
                 // which they are billed for.
                 //
-                // # Why this is only a warning, and what is still owed
+                // # Why this is only a warning, and what it now actually means
                 //
-                // The switch is not something the user asked for: the model is
-                // whichever entry of `SUPPORTED_EMBEDDING_MODELS` resolves
-                // first, so *adding* a second provider can re-key an index that
-                // was working. That sits badly against the argument used to
-                // decline the pin's index consent banner (see `DECLINED.md`),
-                // which rests on `codebase_context_enabled` being opt-in
-                // precisely because indexing spends the user's money.
+                // `resolved_model` below no longer resolves to whichever entry
+                // of `SUPPORTED_EMBEDDING_MODELS` merely comes first: it's
+                // computed via `EmbeddingEndpoints::preferred_model_favoring_existing`,
+                // which prefers the model the codebase index already holds
+                // embedded vectors for (`SqliteVectorStore::has_embeddings_for`),
+                // so *adding* or reordering a second provider no longer re-keys
+                // a working index by itself. This warning now fires on a
+                // switch the user actually caused — removing/disabling the
+                // provider that served the previously-preferred model, or
+                // persistence being briefly unavailable when
+                // `has_embeddings_for` tried to check — not silently, as a
+                // side effect of unrelated provider-list edits.
                 //
-                // A log line is not consent, and this is deliberately recorded
-                // as a warning rather than left at `info`: it is the loudest
-                // signal available from here without reaching into UI files.
-                // The complete fix is *not* a prompt — it is to stop making the
-                // choice on the user's behalf, by preferring the model the
-                // vector store already holds rows for whenever that model is
-                // still configured, and only then falling back to preference
-                // order. That is a `SqliteVectorStore` query and a change to
-                // what `preferred_model` means; it is filed rather than done
-                // here because it changes indexing behaviour, not just its
-                // reporting. Until it lands, the message must say what it will
-                // cost and how to avoid it.
+                // A log line is still not consent, and this is deliberately
+                // recorded as a warning rather than left at `info`: it is the
+                // loudest signal available from here without reaching into UI
+                // files, and switching vector spaces still spends the user's
+                // money on a full re-embed even when the switch itself was
+                // intentional. That sits against the argument used to decline
+                // the pin's index consent banner (see `DECLINED.md`), which
+                // rests on `codebase_context_enabled` being opt-in precisely
+                // because indexing spends the user's money -- a warning here
+                // is the least this owes on top of that opt-in, not a
+                // replacement for it.
                 (Some(previous), Some(config)) => log::warn!(
                     "Codebase indexing is switching from {} to {}. These are different vector \
                      spaces, so the next full sync will re-embed every indexed repository from \
@@ -697,7 +723,7 @@ pub fn refresh_codebase_indexing_configuration(
     {
         use remote_server::manager::RemoteServerManager;
 
-        let preferences = remote_client_preferences(ctx);
+        let preferences = remote_client_preferences(ctx, &store_client.store);
         RemoteServerManager::handle(ctx).update(ctx, |manager, _| {
             manager.update_client_preferences(preferences);
         });
@@ -791,8 +817,17 @@ pub fn active_embedding_config(app: &AppContext) -> EmbeddingConfig {
 /// queries — and also whenever the user has not turned remote codebase
 /// indexing on, so the user's provider API key never leaves this machine for a
 /// daemon that will never be asked to index anything.
+///
+/// `store` decides which model is preferred the same way the local index does
+/// ([`EmbeddingEndpoints::preferred_model_favoring_existing`]) — so the daemon
+/// isn't handed a different model than the one the local vector store already
+/// has rows for, which would otherwise send the daemon on its own,
+/// independent full re-embed under a storage key the local side never uses.
 #[cfg(not(target_family = "wasm"))]
-pub fn remote_client_preferences(app: &AppContext) -> remote_server::client::ClientPreferences {
+pub fn remote_client_preferences(
+    app: &AppContext,
+    store: &SqliteVectorStore,
+) -> remote_server::client::ClientPreferences {
     use crate::ai::AIRequestUsageModel;
     use crate::ai::agent_providers::embeddings::resolve_embedding_endpoint;
     use crate::ai::codebase_auto_indexing::{
@@ -843,15 +878,25 @@ pub fn remote_client_preferences(app: &AppContext) -> remote_server::client::Cli
     let embedding_provider = remote_embedding_provider(
         should_use_codebase_indexing(CodebaseAutoIndexingSurface::Remote, app),
         || {
-            resolve_configured_embedding_model(app).and_then(|config| {
-                resolve_embedding_endpoint(app, config).map(|endpoint| {
-                    remote_server::proto::EmbeddingProviderConfig {
-                        base_url: endpoint.base_url,
-                        api_key: endpoint.api_key,
-                        embedding_storage_key: config.storage_key().to_string(),
-                    }
+            // Favors the model `store` already has rows for, same as the local
+            // index (`RefreshingStoreClient::reconfigure`) -- not the plain
+            // `resolve_configured_embedding_model`, which would let the daemon
+            // land on a different model than the local side purely because of
+            // provider-list order, sending it on its own independent full
+            // re-embed under a storage key nothing local ever queries.
+            resolve_embedding_endpoints(app)
+                .preferred_model_favoring_existing(|config| {
+                    store.has_embeddings_for(config.storage_key())
                 })
-            })
+                .and_then(|config| {
+                    resolve_embedding_endpoint(app, config).map(|endpoint| {
+                        remote_server::proto::EmbeddingProviderConfig {
+                            base_url: endpoint.base_url,
+                            api_key: endpoint.api_key,
+                            embedding_storage_key: config.storage_key().to_string(),
+                        }
+                    })
+                })
         },
     );
 

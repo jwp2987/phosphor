@@ -456,3 +456,100 @@ fn a_keyed_private_network_endpoint_is_still_refused_for_its_key() {
         );
     });
 }
+
+// ---------------------------------------------------------------------------
+// `EmbeddingEndpoints::preferred_model{,_favoring_existing}`: which configured
+// model a new (or re-resolved) index is built with.
+
+fn dummy_endpoint() -> EmbeddingEndpoint {
+    EmbeddingEndpoint {
+        base_url: "https://example.test".to_owned(),
+        api_key: String::new(),
+    }
+}
+
+/// Builds an `EmbeddingEndpoints` the way `resolve_embedding_endpoints` really
+/// does: in `SUPPORTED_EMBEDDING_MODELS` order, regardless of the order
+/// `configs` lists them in -- `EmbeddingEndpoints`'s own `FromIterator`
+/// preserves whatever order it's given, so getting this right here is what
+/// makes `preferred_model()` (plain "first entry") mean the same thing in
+/// these tests as it does in production.
+fn endpoints_for(configs: &[EmbeddingConfig]) -> EmbeddingEndpoints {
+    SUPPORTED_EMBEDDING_MODELS
+        .iter()
+        .filter(|config| configs.contains(config))
+        .map(|config| (*config, dummy_endpoint()))
+        .collect()
+}
+
+#[test]
+fn preferred_model_is_the_first_configured_entry_in_list_order() {
+    // `SUPPORTED_EMBEDDING_MODELS` order is Voyage3_5_512, VoyageCode3_512, ...,
+    // so with both configured the first must win -- regardless of the order
+    // they're passed to `endpoints_for` in.
+    let endpoints = endpoints_for(&[
+        EmbeddingConfig::VoyageCode3_512,
+        EmbeddingConfig::Voyage3_5_512,
+    ]);
+    assert_eq!(
+        endpoints.preferred_model(),
+        Some(EmbeddingConfig::Voyage3_5_512)
+    );
+}
+
+#[test]
+fn preferred_model_favoring_existing_prefers_a_later_entry_with_existing_rows() {
+    // The regression this exists for: adding VoyageCode3_512 (which sorts
+    // before Voyage4_512 in list order) must not move an index that already
+    // has rows under Voyage4_512.
+    let endpoints = endpoints_for(&[
+        EmbeddingConfig::VoyageCode3_512,
+        EmbeddingConfig::Voyage4_512,
+    ]);
+    let preferred = endpoints
+        .preferred_model_favoring_existing(|config| config == EmbeddingConfig::Voyage4_512);
+    assert_eq!(
+        preferred,
+        Some(EmbeddingConfig::Voyage4_512),
+        "the model with an existing index must win over one that merely sorts earlier"
+    );
+}
+
+#[test]
+fn preferred_model_favoring_existing_falls_back_to_list_order_when_nothing_has_rows() {
+    // The fresh-install / never-synced state: nothing has rows yet, so there
+    // is nothing to prefer over the pin's own default order.
+    let endpoints = endpoints_for(&[
+        EmbeddingConfig::VoyageCode3_512,
+        EmbeddingConfig::Voyage3_5_512,
+    ]);
+    let preferred = endpoints.preferred_model_favoring_existing(|_| false);
+    assert_eq!(
+        preferred,
+        endpoints.preferred_model(),
+        "with no existing rows anywhere, the two methods must agree"
+    );
+}
+
+#[test]
+fn preferred_model_favoring_existing_ignores_rows_under_an_unconfigured_model() {
+    // A model can have stale rows from a provider the user has since removed;
+    // that must not resurrect it as the preference over a model that IS
+    // actually configured, which is why the predicate is only ever asked
+    // about `endpoints`' own entries -- this test would fail if the closure
+    // were queried about a config outside `endpoints` and answered `true`.
+    let endpoints = endpoints_for(&[EmbeddingConfig::Voyage3_5_512]);
+    let preferred = endpoints
+        .preferred_model_favoring_existing(|config| config == EmbeddingConfig::Voyage4_512);
+    assert_eq!(
+        preferred,
+        Some(EmbeddingConfig::Voyage3_5_512),
+        "only a currently-configured model may be preferred"
+    );
+}
+
+#[test]
+fn preferred_model_favoring_existing_is_none_for_an_empty_table() {
+    let endpoints = endpoints_for(&[]);
+    assert_eq!(endpoints.preferred_model_favoring_existing(|_| true), None);
+}

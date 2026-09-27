@@ -70,12 +70,15 @@ use super::openai_compatible::normalize_base_url;
 use crate::settings::{AISettings, AgentProvider};
 
 /// Every embedding model the index knows how to build against, in the order
-/// [`resolve_configured_embedding_model`] prefers them.
+/// [`resolve_configured_embedding_model`] falls back to when no configured
+/// model already has an index built (see
+/// [`EmbeddingEndpoints::preferred_model`] for the full order of preference).
 ///
 /// Order is the pin's own default first (`EmbeddingConfig::default()`, Voyage
 /// 3.5), then the remaining Voyage models, then OpenAI — matching the pin's
-/// server-side default, so a user who configures more than one gets the model
-/// the index was tuned against.
+/// server-side default, so a user who configures more than one, with no
+/// existing index to prefer instead, gets the model the index was tuned
+/// against.
 pub const SUPPORTED_EMBEDDING_MODELS: &[EmbeddingConfig] = &[
     EmbeddingConfig::Voyage3_5_512,
     EmbeddingConfig::VoyageCode3_512,
@@ -161,12 +164,16 @@ pub fn resolve_embedding_endpoint(
 /// and queries in between pass that cached model down to
 /// `HttpEmbeddingProvider::embed`.
 ///
-/// With one shared endpoint slot those two caches can disagree. Adding a Voyage
-/// provider to a repo already indexed with OpenAI moves the slot to Voyage
-/// immediately — [`resolve_configured_embedding_model`] prefers the first entry
-/// of [`SUPPORTED_EMBEDDING_MODELS`] — while every incremental sync for the next
-/// twenty minutes still asks for `text-embedding-3-small`. Those requests would
-/// go to Voyage, which does not serve that model, and fail with nothing but
+/// With one shared endpoint slot those two caches can disagree even without a
+/// model *switch*: removing the provider that served the cached model between
+/// a full sync and an incremental one leaves the incremental sync asking for
+/// an endpoint that no longer resolves to anything. And a genuine switch is
+/// still possible — [`preferred_model`][Self::preferred_model] prefers the
+/// model the index already holds rows for (see its doc), but a fresh index
+/// with no rows yet, or a provider removed outright, still moves it — while
+/// every incremental sync for the next twenty minutes keeps asking for the
+/// old model. Those requests would go to whichever provider now resolves
+/// first, which does not serve that model, and fail with nothing but
 /// telemetry to show for it.
 ///
 /// Routing per model removes the window rather than merely reporting it: the
@@ -175,9 +182,6 @@ pub fn resolve_embedding_endpoint(
 /// whose provider the user has genuinely *removed* resolves to nothing, which
 /// surfaces as [`IndexError::NoEmbeddingProvider`] naming that model — one loud,
 /// accurate error instead of a silent stream of HTTP 400s.
-///
-/// Entries are in [`SUPPORTED_EMBEDDING_MODELS`] order, so
-/// [`preferred_model`][Self::preferred_model] is simply the first one.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EmbeddingEndpoints {
     entries: Vec<(EmbeddingConfig, EmbeddingEndpoint)>,
@@ -200,10 +204,47 @@ impl EmbeddingEndpoints {
             .map(|(_, endpoint)| endpoint)
     }
 
-    /// The model a new index should be built with: the first configured entry
-    /// in [`SUPPORTED_EMBEDDING_MODELS`] order.
+    /// The model a new index should be built with when nothing is known about
+    /// which model(s) already have rows: the first configured entry, in
+    /// [`SUPPORTED_EMBEDDING_MODELS`] order.
+    ///
+    /// This is a switch nobody asked for whenever more than one configured
+    /// model resolves to a provider: merely *adding*, or reordering, a
+    /// provider changes which entry resolves first, and since
+    /// `EmbeddingConfig::storage_key` differs per model, the next full sync
+    /// re-embeds every indexed repository from scratch against the user's own
+    /// paid quota. Prefer
+    /// [`preferred_model_favoring_existing`][Self::preferred_model_favoring_existing]
+    /// wherever a store handle is available; this plain version remains for
+    /// callers where a switch is genuinely no worse (a fresh install has
+    /// nothing to prefer either way) or where threading a store handle
+    /// through is not yet done (see its callers' docs).
     pub fn preferred_model(&self) -> Option<EmbeddingConfig> {
         self.entries.first().map(|(config, _)| *config)
+    }
+
+    /// The model a new index should be built with: the first configured
+    /// entry, in [`SUPPORTED_EMBEDDING_MODELS`] order, for which
+    /// `has_existing_rows` reports `true`; falls back to
+    /// [`preferred_model`][Self::preferred_model] (plain list order) when none
+    /// does — the state a fresh install, or an index that has never completed
+    /// a sync, is in, so there is nothing yet to prefer over the pin's own
+    /// default order.
+    ///
+    /// Takes the predicate rather than querying storage itself so this stays
+    /// pure and unit-testable without a database. The real predicate is
+    /// `SqliteVectorStore::has_embeddings_for` (`codebase_embeddings.rs`),
+    /// threaded in by callers that hold a store handle
+    /// (`RefreshingStoreClient::reconfigure`, `remote_client_preferences`).
+    pub fn preferred_model_favoring_existing(
+        &self,
+        mut has_existing_rows: impl FnMut(EmbeddingConfig) -> bool,
+    ) -> Option<EmbeddingConfig> {
+        self.entries
+            .iter()
+            .map(|(config, _)| *config)
+            .find(|config| has_existing_rows(*config))
+            .or_else(|| self.preferred_model())
     }
 }
 
@@ -251,8 +292,9 @@ pub fn resolve_embedding_endpoints(app: &AppContext) -> EmbeddingEndpoints {
 /// The embedding model the user has actually configured, if any.
 ///
 /// At the pin this came back from the server's `codebaseContextConfig` query.
-/// Here it is derived from what the user has set up: the first entry of
-/// [`SUPPORTED_EMBEDDING_MODELS`] that resolves to a provider.
+/// Here it is derived from what the user has set up: see
+/// [`EmbeddingEndpoints::preferred_model`] for exactly which configured entry
+/// wins when more than one resolves to a provider.
 pub fn resolve_configured_embedding_model(app: &AppContext) -> Option<EmbeddingConfig> {
     resolve_embedding_endpoints(app).preferred_model()
 }

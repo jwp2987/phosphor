@@ -10110,7 +10110,7 @@ claim, which was wrong by four.
       No zero-command spelling was found that also executes anything, so this is a latent hazard
       rather than a bypass — recorded so it is not rediscovered as one.
 
-- [ ] **The codebase-index embedding model switches on provider-list ORDER, spending the**
+- [x] **The codebase-index embedding model switches on provider-list ORDER, spending the**
       **user's quota.** `resolve_configured_embedding_model` returns the first entry of
       `SUPPORTED_EMBEDDING_MODELS` that resolves, so merely *adding* a provider can re-key an
       index that was working: `storage_key()` changes (`full_source_code_embedding/mod.rs:208-216`),
@@ -10123,6 +10123,25 @@ claim, which was wrong by four.
       cost. **A log line is not consent** — the honest fix is to stop making the choice on the
       user's behalf, not to add a prompt. Related: the index-consent-banner row in `DECLINED.md`.
       i18n keys drafted but not added: `settings-code-embedding-model-switched{,-desc}`.
+      **Fixed 2026-09-27 (#749):** new `EmbeddingEndpoints::preferred_model_favoring_existing`
+      takes an injectable `has_existing_rows` predicate (kept pure/unit-testable, no database
+      dependency in `embeddings.rs` itself); the real predicate is new
+      `SqliteVectorStore::has_embeddings_for` / `codebase_index_has_embeddings`, which checks
+      `codebase_index_embeddings` specifically (not the merkle-node table, which can have rows
+      for an unembedded subtree). Wired into both places that actually spend money on a
+      mismatch: `RefreshingStoreClient::reconfigure` (local index) and `remote_client_preferences`
+      (remote-daemon config, i.e. the client-side counterpart of
+      `remote_server/codebase_index_store.rs`) — the daemon can no longer land on a different
+      model than the local vector store purely from provider-list order. Plain `preferred_model`
+      (list order) is kept as the fallback for a fresh/never-synced index (nothing to prefer
+      yet) and for the one call site not threaded through a store handle: `code_page.rs`'s
+      settings-page display widget, which is read-only and not where the cost decision is made.
+      The i18n keys drafted for a consent-style notice were **not** added — a log line still
+      isn't consent, and eliminating the source of the silent switch is preferred over a prompt,
+      per this entry's own reasoning; the existing `log::warn!` is kept and its comment updated:
+      it now fires on a switch the user actually caused (removing the provider that served the
+      previous model, or persistence briefly unavailable) rather than silently as a side effect
+      of unrelated provider-list edits.
 
 - [ ] **`DaemonStoreClient` has the same two-cache desync the app path just fixed.**
       `remote_server/codebase_index_store.rs:354-386` holds one model in a `Mutex` while its own

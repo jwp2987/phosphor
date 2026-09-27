@@ -2318,6 +2318,30 @@ pub fn save_codebase_index_node_summaries(
     Ok(())
 }
 
+/// Whether the codebase index already holds at least one embedded vector under
+/// `space` (an `EmbeddingConfig::storage_key()`, e.g. `voyage:voyage-4:512`).
+///
+/// Used to prefer the model an index was already built with over provider-list
+/// order whenever more than one configured model could serve it — see
+/// `ai::agent_providers::embeddings::EmbeddingEndpoints::preferred_model`'s doc
+/// for why list order alone can silently re-embed a repository at the user's
+/// cost. Checks `codebase_index_embeddings` specifically, not
+/// `codebase_index_nodes`: a node can exist for an unembedded merkle subtree
+/// (the tree walk records structure before any leaf is embedded), so only the
+/// embeddings table reflects work actually done under that model.
+pub fn codebase_index_has_embeddings(
+    conn: &mut SqliteConnection,
+    space: &str,
+) -> Result<bool, diesel::result::Error> {
+    use diesel::dsl::exists;
+    use schema::codebase_index_embeddings::dsl::*;
+
+    diesel::select(exists(
+        codebase_index_embeddings.filter(embedding_space.eq(space)),
+    ))
+    .get_result(conn)
+}
+
 /// Which of `hashes` the codebase index already holds, as an intermediate node
 /// or as an embedded leaf.
 ///
