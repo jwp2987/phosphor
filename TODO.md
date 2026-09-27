@@ -10188,13 +10188,23 @@ claim, which was wrong by four.
       pin-inherited enum, which carries the upstream `TODO: Maybe implement client side depth
       and result limits`. Filed rather than diverging a shared crate.
 
-- [ ] **`script/precheck` does not run `-p integration`.** Its package list covers 40 crates
+- [x] **`script/precheck` does not run `-p integration`.** Its package list covers 40 crates
       and excludes the integration suite, which CI runs as a separate 3-shard job under
       `xvfb-run`. So a change to integration assertions — or, as on 2026-08-21, an over-broad
       security fix that breaks a feature only that suite covers — passes a fully green local
       `precheck` and fails in CI. That is precisely the round trip `precheck`'s own header
       says it exists to prevent. Either add it (it takes ~5.5 min locally) or say plainly in
       the header that integration is not covered.
+      **Fixed 2026-09-27 (#721, this commit):** new "integration suite" step runs
+      `xvfb-run -a -s "-screen 0 1280x1024x24" cargo nextest run -p integration --profile ci`
+      (mirrors `pr-check.yml`'s `integration-linux` job exactly, minus its 3-way `--partition`
+      — a single local run does the whole suite). Fails clearly (blocks the push) if `xvfb-run`
+      is missing. **Deliberately advisory on scenario failures, not blocking**, matching CI's
+      own stance: `integration-linux` is not a required status check because nobody has ever
+      triaged a `known_test_failures.txt` baseline for this suite (environment-dependent
+      scenarios), and gating precheck on an empty baseline would fail on the first environment
+      gap rather than an actual regression. Promote to `check_test_failures` once a baseline
+      exists. Header updated to describe this accurately instead of overclaiming.
 ### Reliability
 
 - [x] **Compaction can hide messages that were never summarised.** `commit.rs:71` and

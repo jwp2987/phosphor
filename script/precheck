@@ -29,7 +29,12 @@
 # WHAT STAYS IN CI
 # ----------------
 # Only what cannot run on this host: the macOS and Windows jobs. Everything
-# Linux is verified here first.
+# Linux-native compiles and its test suites run here first, `crates/integration`
+# included (previously only type-checked, never executed -- see the
+# "integration suite" step). That one step is exercised-but-advisory rather
+# than a blocking gate, matching CI's own `integration-linux` job, which is
+# deliberately not a required status check until a known-failures baseline
+# exists for it; everything else below is a real, blocking gate.
 #
 # USAGE
 #     script/precheck            # everything: gates + compile + full suite
@@ -344,6 +349,47 @@ else
     grep -E '^error' /tmp/precheck-unified.$$ | head -10 >&2
 fi
 
+# ------------------------------------------------------ integration suite
+# `crates/integration` (~300 GUI-driving scenarios, #208) used to be entirely
+# absent from this script -- the compile step above proves the crate COMPILES,
+# not that a single scenario inside it still passes. That gap was not
+# theoretical: an over-broad OSC-8 scheme fix (2026-08-21) broke
+# `crates/integration/src/test/osc8_hyperlinks.rs::test_osc8_file_scheme_opens_url`,
+# and a fully green precheck run said nothing, because precheck never ran it --
+# precisely the round trip this script's header exists to prevent.
+#
+# Mirrors pr-check.yml's `integration-linux` job invocation exactly, minus its
+# 3-way `--partition` (that only exists to split CI's per-runner load; a single
+# local run does the whole suite in one pass). `xvfb-run` supplies the X11
+# connection the real (non-headless-on-Linux) winit backend needs to open even
+# an invisible window -- there is no headless winit backend on Linux (#208), so
+# this cannot run without it. `--profile ci` is required, not cosmetic: it is
+# what makes `.config/nextest.toml`'s `[profile.ci]` overrides (retries = 2 for
+# this package) apply at all.
+#
+# NOT gated through check_test_failures, deliberately, matching CI's own
+# stance recorded at pr-check.yml's integration-linux job: nobody has ever run
+# this suite to completion long enough to hand-triage a known_test_failures.txt
+# baseline for it (many scenarios need a real shell, SSH, or display flag a
+# given host may not satisfy), and building a hard gate on an EMPTY baseline
+# would fail on the first environment gap rather than on an actual regression
+# -- exactly the "always red -> ignored" failure mode check_test_failures
+# itself exists to prevent (see its header). So: this step actually RUNS the
+# suite and prints failures loudly, but only fails the whole precheck run
+# (blocking a push) when the tool it depends on is missing, not when a
+# scenario fails. Promote it to check_test_failures once a baseline exists.
+step "integration suite (crates/integration, headless via Xvfb)"
+if ! command -v xvfb-run >/dev/null 2>&1; then
+    fail "xvfb-run is not installed -- crates/integration needs a real X connection on Linux (no headless winit backend, #208). Install it via ./script/linux/install_test_deps (the xvfb package) and re-run."
+elif xvfb-run -a -s "-screen 0 1280x1024x24" \
+        "${CARGO_RUN[@]}" nextest run -p integration --profile ci \
+        >/tmp/precheck-integration.$$ 2>&1; then
+    ok "no failures"
+else
+    warn "integration suite has failing/flaky scenarios (see below) -- not yet gated pending a triaged known_test_failures.txt baseline, same as pr-check.yml's integration-linux job (see step comment above)"
+    tail -40 /tmp/precheck-integration.$$ >&2
+fi
+
 # ---------------------------------------------------------------- full suite
 # The expensive gate, and the only one that catches a regression. Delegated to
 # check_test_failures, which fails on CHANGE against known_test_failures.txt
@@ -452,7 +498,7 @@ else
     fail "genai lib tests failed"
 fi
 
-rm -f /tmp/precheck-check.$$ /tmp/precheck-unified.$$
+rm -f /tmp/precheck-check.$$ /tmp/precheck-unified.$$ /tmp/precheck-integration.$$
 
 # Record the green run. `script/state` reads this to answer "is it verified?",
 # and without a marker it says "never" rather than "unknown" -- because
