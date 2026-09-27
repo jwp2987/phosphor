@@ -40,15 +40,23 @@ impl TerminalManagerTrait for TestTerminalManager {
 /// Pumps the foreground test executor so that work spawned via `ctx.spawn`
 /// runs to completion before the calling test makes assertions.
 ///
-/// `queue_tui_permission_action` (and the wider action pipeline) enqueue action
-/// preprocessing through `ctx.spawn`, which only runs when the single-threaded
-/// test executor is ticked. Synchronous test bodies never reach an `.await`
-/// point on their own, so without this the queued action never lands in the
-/// model's pending queue, leaving the permission prompt inactive (no focus, no
-/// pending action) or — worse — deadlocking a test that then `.await`s a result
-/// that can never arrive. A handful of yields covers multi-stage spawn chains
-/// (preprocess future -> relay callback -> effect flush); extra yields are a
-/// no-op once the executor is parked.
+/// `queue_tui_permission_action` installs its confirmation action through
+/// `BlocklistAIActionModel::queue_confirmation_action`, which -- deliberately,
+/// see its own doc comment -- has no preprocessing step and no `ctx.spawn`: it
+/// pushes the action and calls `ctx.emit` synchronously. What is NOT
+/// synchronous is delivery: `ctx.emit` only queues an `Effect::Event` (and
+/// `ModelContext::notify`/view focus go through the same `pending_effects`
+/// queue), and `AppContext::flush_effects` drains it. A test body that never
+/// awaits still needs this pumped so the flush -- and anything the flushed
+/// events themselves trigger, such as a view's focus delegation -- actually
+/// runs before assertions read its result; skipping it leaves the permission
+/// prompt looking inactive (no focus, no pending action) even though the
+/// action is already sitting in the model's queue. Callers that route through
+/// the real action pipeline (`queue_actions`/`queue_action_for_test`) additionally
+/// rely on this to run their `ctx.spawn`'d preprocessing -- without it, an
+/// `.await` on that result would deadlock. A handful of yields covers both
+/// cases (effect flush, or preprocess future -> relay callback -> effect
+/// flush); extra yields are a no-op once the executor is parked.
 pub(crate) async fn settle() {
     for _ in 0..8 {
         futures_lite::future::yield_now().await;
