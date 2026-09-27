@@ -6897,7 +6897,20 @@ impl TerminalView {
         // "Show N more" click handlers below) find `ConversationUsageView::handle_action`
         // at all. A plain `add_view` view has no entry in `typed_actions`, so a
         // dispatch would silently no-op with a `log::warn!("...no handlers...")`.
-        let usage_view = ctx.add_typed_action_view(|_| {
+        let usage_view = ctx.add_typed_action_view(|ctx| {
+            // Every stat this view renders is read live from `conversation_id` at render
+            // time rather than from the snapshot passed in above (see
+            // `ConversationUsageView::effective_usage_info`), so it must actually be told
+            // to re-render when that conversation changes -- otherwise the live read is
+            // inert and the footer stays visually frozen exactly as before. Unconditional
+            // rather than filtered by conversation id: not every `BlocklistAIHistoryEvent`
+            // variant carries one, and the cost of an occasional redundant redraw of an
+            // already-cheap, rarely-open view is far lower than the cost of the live read
+            // silently going stale again.
+            ctx.subscribe_to_model(&BlocklistAIHistoryModel::handle(ctx), |_, _, _, ctx| {
+                ctx.notify();
+            });
+
             ConversationUsageView::new_footer_with_rollup(
                 conversation_usage_info,
                 Some(timing_info),

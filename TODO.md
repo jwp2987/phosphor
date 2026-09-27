@@ -10205,7 +10205,7 @@ Ordered by severity, not by area.
       allow-list at all.
       **Closed 2026-09-26:** historical correction; the underlying defect was closed by `55bd7b4c4`.
 
-- [ ] **The usage footer is still frozen at open time for everything except credits.**
+- [x] **The usage footer is still frozen at open time for everything except credits.**
       `terminal/view.rs:6438-6448` builds a `ConversationUsageInfo` snapshot when the
       footer opens and passes it into `new_footer_with_rollup`. The credits headline was
       moved to a live read on 2026-08-21, but `credits_spent_for_last_block`, `tool_calls`,
@@ -10214,12 +10214,38 @@ Ordered by severity, not by area.
       **Clean fix:** stop passing a snapshot at all and let the view derive everything from
       `parent_conversation_id` at render, exactly as the credits now do. Same defect class,
       wider surface.
+      **Fixed 2026-09-27 (#755).** Added `ConversationUsageView::effective_usage_info`/
+      `effective_timing_info`, which derive a fresh `ConversationUsageInfo`/`TimingInfo`
+      from `parent_conversation_id` on every call (exactly what `handle_usage_footer_toggled`
+      used to compute once), falling back to the constructor snapshot only when there is no
+      live conversation (`DisplayMode::Settings`, or a since-removed conversation).
+      `render_unified_layout` now calls these instead of reading `self.usage_info`/
+      `self.timing_info` directly; `collect_models_by_category` takes the live value as a
+      parameter. Tests: `effective_usage_info_tracks_live_stats_while_the_footer_is_open`,
+      `effective_usage_info_and_timing_fall_back_to_the_snapshot_without_a_parent_conversation`
+      (`conversation_usage_view.rs`).
 
-- [ ] **Unverified assumption: is the usage-footer rich-content view re-rendered when its**
+- [x] **Unverified assumption: is the usage-footer rich-content view re-rendered when its**
       **conversation updates?** If it is not, the live credits read is inert. Note this
       would be **pre-existing and would affect the rollup limb equally** — `b18a81603`
       already depends on it — so it is not something the 2026-08-21 change introduced.
       Needs a run to settle; the build gate was closed when it was found.
+      **Settled 2026-09-27 (#755): it was NOT re-rendered.** This is a notify-driven view,
+      not an immediate-mode repaint, and nothing subscribed it to anything — confirmed by
+      inspection of `ctx.subscribe_to_model`/`ctx.notify()` usage elsewhere in the crate, not
+      a live run (still not possible in this sandbox). `handle_usage_footer_toggled`'s
+      `ctx.add_typed_action_view` closure now subscribes to `BlocklistAIHistoryModel` and
+      calls `ctx.notify()` on every event while the footer view is alive, so the live reads
+      above are no longer inert. **Known simplification vs. the pin:** the pin
+      (`4111d08f9:app/src/ai/blocklist/usage/conversation_usage_view.rs:172-223`) filters
+      this subscription to a dedicated `BlocklistAIHistoryEvent::ConversationUsageMetadataUpdated
+      { conversation_id }` event (plus removal/deletion), narrowing to the exact touched
+      conversation. This fork's `BlocklistAIHistoryEvent` has no such variant — nothing emits
+      it anywhere — so matching that would mean threading a new event through every site that
+      mutates `conversation_usage_metadata`, a materially larger change. This fix notifies
+      unconditionally on every history event while the footer is open instead: correct (never
+      stale) but redraws somewhat more than necessary for a rarely-open, cheap-to-render view.
+      Filed as a separate, smaller finding rather than blocking this fix on it.
 
 #### BYOP logging residuals — the exhaustive list (2026-08-21)
 
