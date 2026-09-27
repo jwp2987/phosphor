@@ -84,34 +84,32 @@ use crate::workspace::view::tests::{initialize_app as initialize_workspace_app, 
 use super::*;
 
 // `should_hide_input_for_blocked_ai_block` -- issue #690: while a command-approval card was
-// shown, the input box was hidden unconditionally, which is how keystrokes typed into it
-// "vanished" (there was nowhere for them to go) and Enter ended up going to the card's own
-// keybinding instead.
+// shown, the input box was hidden unconditionally (substituted with a zero-height `Empty`
+// element in `render_waterfall_gap_element`), so the user had no way to even click into it to
+// start a follow-up, and the only focusable thing left -- the card, which steals focus the
+// moment the action becomes blocked -- caught Enter as Accept.
+//
+// An earlier version of this fix only kept the input visible when it *already* had focus and
+// text, which does not cover this base case at all (nothing is typed yet on a freshly-shown
+// card). The real fix is to never hide the input for this reason, full stop: see the
+// function's doc comment for why that's safe against "Enter still approves" (the card's Enter
+// binding is scoped by keymap context to its own focus chain -- see
+// `inline_action::requested_command`'s `enter_accepts_requested_command_context` and its
+// `enter_context_predicate_tests`) and against "a follow-up silently cancels the pending
+// confirmation" (`submit_ai_query` in `input.rs` now refuses to send while blocked; no
+// existing test harness in this crate builds a live blocked-action scenario cheaply enough to
+// cover that refusal behaviorally, so it's verified by inspection of the call graph instead --
+// see the doc comment on `submit_ai_query`'s guard).
 
 #[test]
-fn blocked_on_confirmation_without_input_text_hides_the_input() {
-    assert!(should_hide_input_for_blocked_ai_block(true, false, false));
+fn blocked_on_confirmation_no_longer_hides_the_input() {
+    assert!(!should_hide_input_for_blocked_ai_block(false));
 }
 
 #[test]
-fn blocked_on_confirmation_with_focused_input_text_keeps_the_input_visible() {
-    // The fix: a follow-up the user is actively typing takes priority over the approval
-    // card's usual takeover of the input box.
-    assert!(!should_hide_input_for_blocked_ai_block(true, true, false));
-}
-
-#[test]
-fn not_blocked_on_confirmation_never_hides_for_that_reason() {
-    assert!(!should_hide_input_for_blocked_ai_block(false, false, false));
-    assert!(!should_hide_input_for_blocked_ai_block(false, true, false));
-}
-
-#[test]
-fn expanded_running_commands_hides_the_input_regardless_of_focused_text() {
-    // Unchanged pre-existing behavior: this reason for hiding the input doesn't get an
-    // exception for a follow-up in progress.
-    assert!(should_hide_input_for_blocked_ai_block(false, true, true));
-    assert!(should_hide_input_for_blocked_ai_block(false, false, true));
+fn expanded_running_commands_still_hides_the_input() {
+    // Unchanged pre-existing behavior.
+    assert!(should_hide_input_for_blocked_ai_block(true));
 }
 
 fn tool_call_message_with_tool_for_test(

@@ -7991,11 +7991,7 @@ impl TerminalView {
         let active_ai_block = self.active_ai_block(app);
         if active_ai_block.is_some_and(|ai_block| {
             let ai_block = ai_block.as_ref(app);
-            should_hide_input_for_blocked_ai_block(
-                ai_block.is_blocked_on_user_confirmation(app),
-                self.is_agent_input_focused_with_text(app),
-                ai_block.has_expanded_running_commands(app),
-            )
+            should_hide_input_for_blocked_ai_block(ai_block.has_expanded_running_commands(app))
         }) {
             return false;
         }
@@ -28653,19 +28649,31 @@ fn project_rules_path_for_dir(dir: &Path) -> PathBuf {
 /// Whether `TerminalView::is_input_box_visible` should hide the input box for the active AI
 /// block.
 ///
-/// A command awaiting approval normally takes over the input box entirely -- but not while the
-/// user is actively composing a follow-up in it (`is_agent_input_focused_with_text`). Losing
-/// that text (and having Enter approve the command instead of doing anything with it) is the
-/// bug tracked by issue #690; the input stays up so there's somewhere for the keystrokes to
-/// visibly go. An expanded running command always hides the input regardless, unchanged from
-/// before.
-fn should_hide_input_for_blocked_ai_block(
-    is_blocked_on_user_confirmation: bool,
-    is_agent_input_focused_with_text: bool,
-    has_expanded_running_commands: bool,
-) -> bool {
-    (is_blocked_on_user_confirmation && !is_agent_input_focused_with_text)
-        || has_expanded_running_commands
+/// A command awaiting approval must NOT hide the input. An earlier version of this fix hid it
+/// unless the input already had focus and text -- which never covers the actual issue #690
+/// repro (a freshly-shown card, nothing typed yet): with the input unmounted
+/// (`render_waterfall_gap_element` substitutes a zero-height `Empty` element whenever
+/// `is_input_box_visible` is false), the user had no way to even click into it, so the only
+/// focusable thing left was the approval card itself -- stolen by `try_steal_focus` the
+/// moment the action became blocked -- and Enter went to the card's Accept binding
+/// unconditionally.
+///
+/// The fix is to keep the input mounted and focusable at all times while blocked, full stop.
+/// That alone is safe against "Enter still approves": the card's Enter/Numpad-Enter -> Accept
+/// keybinding is scoped by keymap context to the card's own focus chain
+/// (`RequestedCommandView::ui_name()`, see `inline_action::requested_command`'s
+/// `enter_accepts_requested_command_context`), not to "the card is merely showing somewhere
+/// on screen" -- so once focus is actually on the input (because the user clicked it, or
+/// because `focus_ai_block_if_self_focused` declined to steal it away from text the user was
+/// already composing), Enter there routes to the input's own submit handler, never to Accept.
+/// `submit_ai_query` (`input.rs`) separately refuses to actually send while blocked, so a
+/// follow-up typed and submitted doesn't silently cancel the pending confirmation as a side
+/// effect either.
+///
+/// An expanded running command is the only remaining reason to hide the input, unchanged from
+/// before this issue.
+fn should_hide_input_for_blocked_ai_block(has_expanded_running_commands: bool) -> bool {
+    has_expanded_running_commands
 }
 
 #[cfg(test)]

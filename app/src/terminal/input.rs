@@ -12936,6 +12936,55 @@ impl Input {
         zero_state_prompt_suggestion_type: Option<ZeroStatePromptSuggestionType>,
         ctx: &mut ViewContext<Self>,
     ) {
+        // A command (or any other action) awaiting the user's approve/reject decision must be
+        // resolved via its own card first. Without this, submitting here would fall through to
+        // the ordinary "a follow-up interrupts whatever's in flight" behavior
+        // (`cancel_active_conversation_for_follow_up`, `CancellationReason::FollowUpSubmitted`)
+        // and silently cancel the pending confirmation as a side effect of the user just trying
+        // to send a message -- easy to trigger by accident now that issue #690's fix keeps the
+        // input visible and focusable while a card is showing.
+        //
+        // Reads `ConversationStatus::Blocked` off the selected conversation, the same way
+        // `maybe_queue_input_for_in_progress_conversation` right above reads `is_blocked()` --
+        // `Input` (this type) has no access to `TerminalView::active_ai_block` or the
+        // `AIBlock` view it returns (`rich_content_views` isn't a field here), so the
+        // conversation-level status, not the block-level `is_blocked_on_user_confirmation`, is
+        // what's reachable from this method.
+        //
+        // Left as a plain refusal with a hint rather than routed into `QueuedQueryModel`: that
+        // machinery's "should this queue instead of firing" decision
+        // (`maybe_queue_input_for_in_progress_conversation`) is keyed entirely off long-running-
+        // command state (`is_lrc_auto_queue_active`) and the user's general auto-queue setting,
+        // neither of which describes "an action is blocked on confirmation" -- and the locked-row
+        // pattern it uses for a similar forced-queue case (`PendingLrcAutoQueue`) unlocks on the
+        // command's snapshot firing, an event this state doesn't have an equivalent of. Bolting
+        // a new locked origin and unlock trigger onto that state machine without being able to
+        // compile or run it was judged riskier than this: no text is lost (the buffer is left
+        // untouched), and the user can still send the follow-up the moment they approve or
+        // reject.
+        let selected_conversation_is_blocked = self
+            .ai_context_model
+            .as_ref(ctx)
+            .selected_conversation_id(ctx)
+            .and_then(|conversation_id| {
+                BlocklistAIHistoryModel::as_ref(ctx).conversation(&conversation_id)
+            })
+            .is_some_and(|conversation| conversation.status().is_blocked());
+        if selected_conversation_is_blocked {
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(
+                    DismissibleToast::default(
+                        "Approve or reject the pending action before sending a follow-up."
+                            .to_owned(),
+                    ),
+                    window_id,
+                    ctx,
+                );
+            });
+            return;
+        }
+
         self.editor.update(ctx, |editor, ctx| {
             editor.abort_attached_images_future_handle(ctx);
         });
