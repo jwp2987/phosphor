@@ -6187,10 +6187,7 @@ impl AIInputWidget {
                 LazyLock::new(|| {
                     vec![
                         FormattedTextFragment::plain_text("Encountered an incorrect detection? "),
-                        FormattedTextFragment::hyperlink(
-                            "Let us know",
-                            "https://warpdotdev.typeform.com/to/offrTIpq",
-                        ),
+                        FormattedTextFragment::hyperlink("Let us know", links::new_issue_url()),
                     ]
                 });
 
@@ -6247,10 +6244,7 @@ impl AIInputWidget {
                     FormattedTextFragment::plain_text(
                         " Encountered an incorrect input detection? ",
                     ),
-                    FormattedTextFragment::hyperlink(
-                        "Let us know",
-                        "https://warpdotdev.typeform.com/to/offrTIpq",
-                    ),
+                    FormattedTextFragment::hyperlink("Let us know", links::new_issue_url()),
                 ]
             });
 

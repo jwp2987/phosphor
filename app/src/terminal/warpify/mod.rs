@@ -119,3 +119,7 @@ fn replace_template_chars_with_arguments(
     }
     templated_bytes
 }
+
+#[cfg(test)]
+#[path = "mod_test.rs"]
+mod tests;
