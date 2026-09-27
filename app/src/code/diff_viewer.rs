@@ -156,7 +156,9 @@ where
 
     fn reject_diff(&mut self, _ctx: &mut ViewContext<Self>) {}
 
-    fn restore_diff_base(&mut self, _ctx: &mut ViewContext<Self>) -> Result<(), String> {
-        Ok(())
-    }
+    // No `restore_diff_base` here: reverting an accept is
+    // `InlineDiffView::restore_diff_base`, and only that. A trait member with
+    // an `Ok(())` default reports a revert that never happened, and the one
+    // other implementation (`LocalCodeEditorView`) wrote with no conflict
+    // check; neither had a caller (#684).
 }

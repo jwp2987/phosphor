@@ -2636,6 +2636,12 @@ pub struct TerminalView {
     /// Cached view ids for usage footers keyed by the AI block view id that owns them.
     usage_footer_view_ids: HashMap<EntityId, EntityId>,
 
+    /// The file reverts of rewinds with writes still outstanding (#686). Owned
+    /// here rather than by the diff views, because a rewind removes the
+    /// reverted blocks at once, and shared by every rewind in this view so two
+    /// overlapping rewinds cannot race on one file; see `RewindReverts`.
+    rewind_reverts: crate::ai::blocklist::rewind_revert::RewindReverts,
+
     // Whether the block onboarding view is active or not.
     block_onboarding_active: bool,
 
@@ -4194,6 +4200,7 @@ impl TerminalView {
             active_filter_editor_block_index: None,
             rich_content_views: Vec::new(),
             usage_footer_view_ids: Default::default(),
+            rewind_reverts: Default::default(),
             block_onboarding_active: false,
             onboarding_agentic_suggestions_block: None,
             onboarding_prompt_block: None,
@@ -24549,39 +24556,39 @@ impl TerminalView {
             self.user_write_ctrl_c_to_pty(ctx);
         }
 
-        // Iterate from end backwards, reverting all diffs in each AIBlock from this conversation until the block the user clicked on (inclusive)
-        let mut num_blocks_reverted = 0;
-        for rich_content in self.rich_content_views.iter().rev() {
-            if let Some(ai_metadata) = rich_content.ai_block_metadata() {
-                // Only revert blocks from the same conversation
-                if ai_metadata.conversation_id == conversation_id {
-                    ai_metadata.ai_block_handle.update(ctx, |block, ctx| {
-                        block.revert_all_diffs(ctx);
-                    });
-                    num_blocks_reverted += 1;
-                    if ai_metadata.ai_block_handle.id() == ai_block_view_id {
-                        break;
-                    }
-                }
-            }
-        }
-
         // Save a backup of the conversation before truncating, so users can restore it later.
-        BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
-            match history_model.conversation(&conversation_id).cloned() { Some(conversation) => {
-                if let Err(e) = history_model.fork_conversation(
+        // Forked before the reverts run: they land asynchronously, and each one
+        // that does is recorded into the backup when the batch settles (#686).
+        let backup_conversation_id =
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
+                let Some(conversation) = history_model.conversation(&conversation_id).cloned()
+                else {
+                    log::warn!("Failed to save pre-rewind backup: conversation {conversation_id} not found in memory");
+                    return None;
+                };
+                match history_model.fork_conversation(
                     &conversation,
                     PRE_REWIND_PREFIX,
                     false, /* preserve_task_ids */
                     None,
                     ctx,
                 ) {
-                    log::warn!("Failed to save pre-rewind backup of conversation {conversation_id}: {e}");
+                    Ok(backup) => Some(backup.id()),
+                    Err(e) => {
+                        log::warn!("Failed to save pre-rewind backup of conversation {conversation_id}: {e}");
+                        None
+                    }
                 }
-            } _ => {
-                log::warn!("Failed to save pre-rewind backup: conversation {conversation_id} not found in memory");
-            }}
-        });
+            });
+
+        // Revert every diff in each AIBlock from this conversation, from the end
+        // back to the block the user clicked on (inclusive).
+        let num_blocks_reverted = self.start_rewind_reverts(
+            ai_block_view_id,
+            conversation_id,
+            backup_conversation_id,
+            ctx,
+        );
 
         // Truncate the conversation history
         let removed_exchange_ids =
@@ -24610,6 +24617,165 @@ impl TerminalView {
             },
             ctx
         );
+    }
+
+    /// Starts reverting every accepted diff card of `conversation_id`, from the
+    /// newest block back to `ai_block_view_id` (inclusive), through
+    /// [`RewindReverts`]: each file's reverts strictly newest to oldest, one
+    /// at a time — behind any earlier rewind's still-outstanding reverts of
+    /// the same file — and different files concurrently (#686). Returns the
+    /// number of blocks visited.
+    ///
+    /// [`RewindReverts`]: crate::ai::blocklist::rewind_revert::RewindReverts
+    fn start_rewind_reverts(
+        &mut self,
+        ai_block_view_id: EntityId,
+        conversation_id: AIConversationId,
+        backup_conversation_id: Option<AIConversationId>,
+        ctx: &mut ViewContext<Self>,
+    ) -> usize {
+        use crate::ai::blocklist::inline_action::code_diff_view::{
+            CodeDiffState, CodeDiffViewEvent,
+        };
+
+        // Newest first: blocks from the end backwards, each block's cards
+        // newest first. The order is what makes two edits to one file revert.
+        let mut num_blocks_reverted = 0;
+        let mut views = Vec::new();
+        for rich_content in self.rich_content_views.iter().rev() {
+            if let Some(ai_metadata) = rich_content.ai_block_metadata() {
+                // Only revert blocks from the same conversation
+                if ai_metadata.conversation_id == conversation_id {
+                    views.extend(
+                        ai_metadata
+                            .ai_block_handle
+                            .as_ref(ctx)
+                            .requested_edit_views_newest_first(),
+                    );
+                    num_blocks_reverted += 1;
+                    if ai_metadata.ai_block_handle.id() == ai_block_view_id {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let mut cards = Vec::new();
+        let mut restored_edits = 0;
+        for view in views {
+            // An accepted card that cannot write anything was restored from a
+            // previous session, whose accept left no record to guard a revert
+            // with. Every file would be refused, one toast each; it is
+            // reported once below instead, and left as it is.
+            let card = view.as_ref(ctx);
+            if matches!(card.state(), CodeDiffState::Accepted(None)) && !card.can_revert(ctx) {
+                restored_edits += 1;
+                continue;
+            }
+            // `None`: not an accepted card (rejected, already reverted, ...).
+            let Some(files) = view.update(ctx, |view, ctx| view.begin_revert(ctx)) else {
+                continue;
+            };
+            ctx.subscribe_to_view(&view, |me, view, event, ctx| {
+                if let CodeDiffViewEvent::RevertWriteSettled { file_idx, reverted } = event {
+                    me.rewind_revert_write_settled(view.id(), *file_idx, *reverted, ctx);
+                }
+            });
+            cards.push((view, files));
+        }
+
+        if restored_edits > 0 {
+            let edits = if restored_edits == 1 {
+                "1 agent edit wasn't".to_owned()
+            } else {
+                format!("{restored_edits} agent edits weren't")
+            };
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(
+                    DismissibleToast::error(format!(
+                        "{edits} reverted because this conversation was restored from an \
+                         earlier session, so there is no record of what they wrote. The files \
+                         were left unchanged."
+                    )),
+                    window_id,
+                    ctx,
+                );
+            });
+        }
+
+        self.rewind_reverts
+            .add_rewind(cards, backup_conversation_id);
+        let abandoned = self.rewind_reverts.sequence.start(|revert| {
+            revert.view.update(ctx, |view, ctx| {
+                view.dispatch_file_revert(revert.file_idx, ctx)
+            })
+        });
+        Self::abandon_rewind_reverts(abandoned, ctx);
+        self.finish_settled_rewinds(ctx);
+        num_blocks_reverted
+    }
+
+    /// A rewind's revert write for `file_idx` of card `view_id` has come back:
+    /// dispatch the next-older revert of that file, or give up on the rest of
+    /// the file's reverts if this one did not land.
+    fn rewind_revert_write_settled(
+        &mut self,
+        view_id: EntityId,
+        file_idx: usize,
+        reverted: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let abandoned = self.rewind_reverts.sequence.settled(
+            |revert| revert.view.id() == view_id && revert.file_idx == file_idx,
+            reverted,
+            |revert| {
+                revert.view.update(ctx, |view, ctx| {
+                    view.dispatch_file_revert(revert.file_idx, ctx)
+                })
+            },
+        );
+        if let Some(abandoned) = abandoned {
+            Self::abandon_rewind_reverts(abandoned, ctx);
+        }
+        self.finish_settled_rewinds(ctx);
+    }
+
+    /// Tells each card that a revert of one of its files will not run: a newer
+    /// revert of the same file did not land, and was reported when it failed.
+    fn abandon_rewind_reverts(
+        abandoned: Vec<crate::ai::blocklist::rewind_revert::FileRevert>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        for revert in abandoned {
+            revert.view.update(ctx, |view, ctx| {
+                view.abandon_file_revert(revert.file_idx, ctx)
+            });
+        }
+    }
+
+    /// Finishes every rewind whose reverts have all settled — releasing the
+    /// diff views it kept alive — and records the reverts that landed into its
+    /// pre-rewind backup.
+    fn finish_settled_rewinds(&mut self, ctx: &mut ViewContext<Self>) {
+        for rewind in self.rewind_reverts.take_settled() {
+            let Some(backup_id) = rewind.backup_conversation_id else {
+                continue;
+            };
+            let reverted = rewind.reverted_actions(ctx);
+            if reverted.is_empty() {
+                continue;
+            }
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
+                let Some(backup) = history_model.conversation_mut(&backup_id) else {
+                    log::warn!("Pre-rewind backup {backup_id} is no longer in memory; not recording its reverts");
+                    return;
+                };
+                for action_id in reverted {
+                    backup.mark_action_as_reverted(action_id, ctx);
+                }
+            });
+        }
     }
 
     fn handle_input_context_menu_action(

@@ -27,6 +27,7 @@ pub(crate) mod permissions;
 pub(crate) mod persistence;
 pub mod prompt;
 mod protected_paths;
+pub mod rewind_revert;
 // The persistent queued-prompts model (`QueuedQueryModel`). Ported from warp/master.
 // Consumers (slash commands, the warping indicator, the queued-prompts panel) are wired
 // in a follow-up increment; `allow(dead_code)` covers the not-yet-called API until then.
