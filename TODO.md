@@ -2640,9 +2640,14 @@ separately rather than inflating the queue count.
       i.e. it is already paying and working around this. Touches the three diverged
       `script/{linux,macos,windows}` bundle scripts — a real port, not a cherry-pick.
 - [ ] **`b1bcc3564`** — add `rust-analyzer` to `rust-toolchain.toml` components. One word.
-- [ ] **`1e4b86a81`** — `release-cli` `codegen-units` 1 -> 4; roughly halves that
+- [x] **`1e4b86a81`** — `release-cli` `codegen-units` 1 -> 4; roughly halves that
       profile's build time for ~4% larger stripped binaries. The fork does use
       `release-cli` for the macOS and musl TUI builds.
+      **Fixed 2026-09-27 (#720, this commit):** `Cargo.toml`'s `[profile.release-cli]` now sets
+      `codegen-units = 4`, comment carried over from upstream. `1e4b86a81` is an ancestor of the
+      current pin (`4111d08f9`), whose `Cargo.toml` already reads `codegen-units = 4` for this
+      profile — this closes a gap against the pin, not a divergence, so no `DECLINED.md` entry.
+      No other profile touched.
 
 ### Scope decisions — DECLINED 2026-08-29 (maintainer). Do not re-derive.
 
