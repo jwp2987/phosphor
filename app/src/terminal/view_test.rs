@@ -4342,6 +4342,157 @@ fn completed_user_controlled_lrc_skips_resume_when_suppressed() {
     })
 }
 
+/// jwp2987/phosphor#753: an agent-requested command on the warpify path (`ssh`, `docker run`,
+/// ...) is finished by `TerminalModel::blocks::reinit_shell` before it ever produces the
+/// `LongRunningCommandSnapshot` the BYOP LRC monitor fallback needs to install a control state
+/// -- so `long_running_control_state` stays `None` for the block's whole life, exactly the
+/// state `set_agent_interaction_mode_for_requested_command` leaves it in here (no
+/// `set_agent_interaction_mode_for_agent_monitored_command` call, unlike the sibling tests
+/// above). A `PendingLrcAutoQueue` row filed while that command looked "in flight" would
+/// otherwise never unlock: that unlock is normally driven exclusively by a CLI subagent
+/// finishing, and no subagent is ever created for a block that never got a control state.
+/// `on_user_block_completed` must release it directly instead.
+#[test]
+fn finished_agent_command_with_no_control_state_unlocks_pending_lrc_queue() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx)
+                .update(ctx, |history, ctx| {
+                    history.start_new_conversation(view.view_id, false, false, ctx)
+                });
+
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh build-box", "");
+            let block_id = {
+                let mut model = view.model.lock();
+                let active_block = model.block_list_mut().active_block_mut();
+                // No subagent task, and no `set_agent_interaction_mode_for_agent_monitored_command`
+                // call -- this block never gets upgraded, exactly the warpify fast path.
+                active_block.set_agent_interaction_mode_for_requested_command(
+                    AIAgentActionId::from("requested-command".to_owned()),
+                    None,
+                    conversation_id,
+                );
+                active_block.id().clone()
+            };
+
+            let query_id = QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+                model.append(
+                    conversation_id,
+                    QueuedQuery::new(
+                        "queued while ssh was starting".to_owned(),
+                        QueuedQueryOrigin::PendingLrcAutoQueue,
+                    ),
+                    ctx,
+                )
+            });
+
+            view.on_user_block_completed(&block_id, ctx);
+
+            let origin = QueuedQueryModel::as_ref(ctx)
+                .queue(conversation_id)
+                .iter()
+                .find(|row| row.id() == query_id)
+                .map(|row| row.origin());
+            assert_eq!(
+                origin,
+                Some(QueuedQueryOrigin::LrcAutoQueue),
+                "a PendingLrcAutoQueue row must unlock once its command's block completes, even \
+                 though no CLI subagent was ever created for it"
+            );
+
+            // Unlocking must not itself spin up a subagent -- this is a plain queue release, not
+            // a BYOP upgrade.
+            assert!(
+                !BlocklistAIHistoryModel::as_ref(ctx)
+                    .conversation(&conversation_id)
+                    .is_some_and(|conversation| conversation.has_active_subagent()),
+                "unlocking the queue must not create a CLI subagent as a side effect"
+            );
+        });
+    })
+}
+
+/// The counterpart to the test above: a block that *did* get upgraded to agent-monitored (a
+/// real subagent task, via `set_agent_interaction_mode_for_agent_monitored_command`, the same
+/// setup the pre-existing `completed_user_controlled_lrc_resumes_when_not_suppressed` test
+/// above uses) must be left to the existing `FinishedSubagent` / `deliver_queued_prompts_after_
+/// subagent_finished` unlock path. `on_user_block_completed`'s new check is gated on
+/// `long_running_control_state().is_none()` specifically so it never touches this case; a
+/// `PendingLrcAutoQueue` row would not normally still be present here (the real snapshot that
+/// triggered the upgrade already unlocks it), but this pins that the new check does not
+/// spuriously fire for a monitored block regardless.
+#[test]
+fn finished_agent_monitored_command_leaves_pending_lrc_queue_for_the_existing_path() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        // The agent-monitored path persists a subagent sidecar, which needs
+        // GlobalResourceHandlesProvider registered (same idiom as the sibling test above).
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
+        terminal.update(&mut app, |view, ctx| {
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx)
+                .update(ctx, |history, ctx| {
+                    history.start_new_conversation(view.view_id, false, false, ctx)
+                });
+
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 20", "running");
+            let task_id = TaskId::new("test-cli-subagent".to_owned());
+            let block_id = {
+                let mut model = view.model.lock();
+                let active_block = model.block_list_mut().active_block_mut();
+                active_block.set_agent_interaction_mode_for_requested_command(
+                    AIAgentActionId::from("requested-command".to_owned()),
+                    Some(task_id.clone()),
+                    conversation_id,
+                );
+                active_block
+                    .set_agent_interaction_mode_for_agent_monitored_command(
+                        &task_id,
+                        conversation_id,
+                    )
+                    .expect("command should become agent monitored");
+                active_block.id().clone()
+            };
+
+            let query_id = QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+                model.append(
+                    conversation_id,
+                    QueuedQuery::new(
+                        "queued while the monitored command ran".to_owned(),
+                        QueuedQueryOrigin::PendingLrcAutoQueue,
+                    ),
+                    ctx,
+                )
+            });
+
+            view.on_user_block_completed(&block_id, ctx);
+
+            let origin = QueuedQueryModel::as_ref(ctx)
+                .queue(conversation_id)
+                .iter()
+                .find(|row| row.id() == query_id)
+                .map(|row| row.origin());
+            assert_eq!(
+                origin,
+                Some(QueuedQueryOrigin::PendingLrcAutoQueue),
+                "a monitored block's completion must not be the thing that unlocks the queue -- \
+                 that stays the CLI subagent's own FinishedSubagent path"
+            );
+        });
+    })
+}
+
 #[test]
 fn exiting_lrc_user_takeover_does_not_insert_agent_view_entry_card() {
     App::test((), |mut app| async move {

@@ -10930,6 +10930,44 @@ impl TerminalView {
             }
         };
 
+        // An agent-requested command that ends having never been upgraded to agent-monitored
+        // (`long_running_control_state` still `None`, exactly `is_agent_driving_command`'s
+        // fallback-arm condition) leaves any `PendingLrcAutoQueue` row filed while it was
+        // pending permanently locked: that lock's only other release, `unlock_pending_lrc_rows`,
+        // is otherwise driven exclusively by a CLI subagent finishing
+        // (`CLISubagentEvent::FinishedSubagent` / `deliver_queued_prompts_after_subagent_finished`),
+        // and no subagent is ever created for a block that never got a control state. The
+        // fast-finishing warpify path (`ssh`, `docker run`, ...) is the reliable way to hit
+        // this -- `TerminalModel::blocks::reinit_shell` finishes the block itself the instant
+        // the shell-integration DCS confirms the subshell/warpified session started, almost
+        // always inside the 2s window an async `RequestCommandOutput` waits before it would
+        // otherwise notice the command is still running and produce the snapshot the CLI
+        // subagent upgrade needs (jwp2987/phosphor#753) -- but any agent command finishing
+        // before that snapshot arrives hits the same gap. This is safe to check unconditionally:
+        // it does not touch `active_subagents_by_block`, install a control state, or create a
+        // subagent, so a block that *was* upgraded (or a user's own command, which has no agent
+        // metadata at all) is untouched and takes the existing `FinishedSubagent` path as before.
+        // Unlock, never remove: a row still deserves its normal restore-or-auto-fire treatment,
+        // not silent deletion (see the `FinishReason::Error`/`Cancelled` arm of
+        // `drain_queued_prompts` for the identical reasoning).
+        let conversation_id_to_unlock_pending_lrc = {
+            let model = self.model.lock();
+            model
+                .block_list()
+                .block_with_id(block_id)
+                .and_then(|block| block.agent_interaction_metadata())
+                .filter(|ai_metadata| {
+                    ai_metadata.requested_command_action_id().is_some()
+                        && ai_metadata.long_running_control_state().is_none()
+                })
+                .map(|ai_metadata| *ai_metadata.conversation_id())
+        };
+        if let Some(conversation_id) = conversation_id_to_unlock_pending_lrc {
+            QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+                model.unlock_pending_lrc_rows(conversation_id, ctx)
+            });
+        }
+
         if let Some(conversation_id) = conversation_id_to_resume {
             // Include the context of the block that just completed in the resume context.
             // This is so that we correctly exit from LRC subagents attached to completed commands.
