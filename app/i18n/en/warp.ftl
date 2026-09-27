@@ -1158,6 +1158,7 @@ settings-features-use-wayland = Use Wayland for window management
 settings-features-use-wayland-tooltip = Enables the use of Wayland
 settings-features-ctrl-tab-behavior-label = Ctrl+Tab behavior:
 settings-features-right-click-behavior-label = Right-click behavior:
+settings-features-right-click-behavior-paste-hint = Shift+right-click to open the context menu.
 settings-features-extra-meta-key-left-mac = Left Option key is Meta
 settings-features-extra-meta-key-right-mac = Right Option key is Meta
 settings-features-extra-meta-key-left-other = Left Alt key is Meta

@@ -2584,8 +2584,13 @@ separately rather than inflating the queue count.
       `crates/integration/src/test/settings_navigation.rs` at all. Its position-id scheme
       is keyed on `SettingsSection` variants rather than display labels, which suits this
       fork better than upstream since the fork's `Display` is localized.
-- [ ] **`18179177a`** — the right-click behavior setting's follow-up copy. Its prerequisite
+- [x] **`18179177a`** — the right-click behavior setting's follow-up copy. Its prerequisite
       `c25ac4070` is ported (`182ee1449`); only this follow-up remains. (Rewritten 2026-09-26.)
+      **Fixed #738:** `RightClickBehaviorWidget::render` now passes
+      `settings-features-right-click-behavior-paste-hint` as `render_dropdown_item`'s
+      `secondary_text`, shown only when `right_click_pastes()` -- the same mechanism
+      `Osc52ClipboardAccessWidget`/`ZoomLevelWidget` already use. en/ja/zh-CN strings
+      added.
 - [x] **`def3fd0e3` — bump `warp_multi_agent_api`.** Real target is the pin's
       `f0028fa6d05db1ba63726eaf6f8d33ab17abe37b` (this commit is an intermediate).
       Compile-surface change; **sequence it BEFORE any port using new API types**, and
