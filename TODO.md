@@ -1947,11 +1947,18 @@ its other files ship here **at the pre-fix state**:
 
 #### Newly added to the port queue by refutation (9)
 
-- [ ] `6696954c` — **fully refuted as CLOUD.** `CtrlCCancelsThirdPartyHarness` is
+- [x] `6696954c` — **fully refuted as CLOUD.** `CtrlCCancelsThirdPartyHarness` is
       "purely client-side status synthesis; the harness process/sandbox are never
       signaled" (its own doc), and its consumer `CLIAgentSessionsModel` is live
       here. **Sequence with `9921300b7`** (already queued) — it is that commit's
       stable-promotion, not a standalone change.
+      **Fixed #727:** promoted the way `RELEASE_FLAGS`'s own doc comment
+      prescribes -- `ctrl_c_cancels_third_party_harness` declared in
+      `app/Cargo.toml` and added to `default`, bridged in `app/src/lib.rs`'s
+      `extra_flags`, and dropped from `DOGFOOD_FLAGS`
+      (`crates/warp_features/src/lib.rs`), which reached no binary this fork
+      ships. Regression test:
+      `ctrl_c_cancels_third_party_harness_has_a_default_enable_path`.
 - [x] `b1731dde0` + `8936686f2` — **refuted as N/A.** Both touch
       `crates/warpui_core/`, which the fork ships, at the pre-fix state:
       unthrottled per-frame `log::error!` at `runtime/mod.rs:667`, `:895` and

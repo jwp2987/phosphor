@@ -281,3 +281,20 @@ fn will_terminate_server_step_stops_lsp_and_mcp_within_the_shared_grace() {
         assert_eq!(mcp_shutdown.pending(), 0);
     });
 }
+
+/// `6696954c6`: stable-promotion of `CtrlCCancelsThirdPartyHarness`. The flag's
+/// only enable path used to be `DOGFOOD_FLAGS`
+/// (`crates/warp_features/src/lib.rs`), which reaches no binary this fork
+/// ships -- see the doc comment on that list. Promoted here the way upstream's
+/// own `RELEASE_FLAGS` doc comment prescribes: a `default` Cargo feature
+/// bridged in `extra_flags`, not a `RELEASE_FLAGS` entry.
+#[test]
+fn ctrl_c_cancels_third_party_harness_has_a_default_enable_path() {
+    assert!(
+        enabled_features().contains(&FeatureFlag::CtrlCCancelsThirdPartyHarness),
+        "the ctrl_c_cancels_third_party_harness Cargo feature (in app/Cargo.toml's \
+         default) must bridge to the flag in extra_flags -- this test runs with \
+         default features on, so an absent flag here means the bridge is missing \
+         or the Cargo feature fell out of `default`"
+    );
+}
