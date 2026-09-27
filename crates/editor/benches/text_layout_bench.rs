@@ -1,4 +1,5 @@
 use std::hint::black_box;
+use std::sync::Arc;
 use std::time::Duration;
 
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
@@ -124,17 +125,21 @@ fn benchmark_delta(texts: impl IntoIterator<Item = String>) -> (EditDelta, usize
     (
         EditDelta {
             old_offset: CharOffset::from(1)..CharOffset::from(1 + chars),
-            new_lines: blocks,
+            new_lines: Arc::new(blocks),
             ..Default::default()
         },
         chars,
     )
 }
 
-/// The fork's `EditDelta::layout_delta` consumes both the delta and the layout
-/// options (upstream borrows them), so callers hand in owned copies. Timed loops
-/// build those copies in `iter_batched` setup, keeping the clone of 4,096 blocks
-/// out of the measurement.
+/// `EditDelta::layout_delta` now borrows `self` (ported from upstream `d89e78385`:
+/// `new_lines` is `Arc<Vec<StyledBufferBlock>>`, so `EditDelta::clone()` is an O(1)
+/// refcount bump), but the fork's `layout_options` parameter is still taken by value
+/// here, so callers still hand in an owned copy of it. Timed loops build that copy
+/// (now the only per-iteration clone that matters) in `iter_batched` setup, out of
+/// the measurement. `delta` itself is still taken by value below only so this
+/// wrapper's own signature doesn't need to change; the method call underneath
+/// auto-borrows it.
 fn layout_delta(
     delta: EditDelta,
     text_layout: &TextLayout<'_>,

@@ -2370,8 +2370,12 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       loop permanently. `thiserror` and `libc` are already deps. **Port this instead
       of `b1731dde0`, which it rewrites.**
       **Closed 2026-09-26:** ported in `e287977f0`.
-- [ ] `d89e78385` **(land before `1c925e333`)** — `Arc` the layout delta; upstream
+- [x] `d89e78385` **(land before `1c925e333`)** — `Arc` the layout delta; upstream
       measured multi-GB transient allocation when two editors share one `Buffer`.
+      **Ported 2026-09-27 (#729):** `EditDelta.new_lines: Arc<Vec<StyledBufferBlock>>`;
+      `layout_delta` takes `&self` and `LayoutTask` borrows its source block instead of
+      owning it. `buffer.rs`/`core.rs`'s `styled_blocks_in_range` call sites wrap in
+      `Arc::new`.
 - [ ] `1c925e333` — layout chunking + line-length cap. **`730a4acc0`-shaped risk:
       `truncate_text_for_layout` silently drops text before shaping, and upstream's
       safety argument is an assertion about UPSTREAM's offset invariants.** Trace this
