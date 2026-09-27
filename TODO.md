@@ -11572,12 +11572,21 @@ open findings that had no pre-existing row.
       has no handle at all on pidfd-less Linux (<5.3) or FreeBSD, so those
       children get stdin EOF but are never force-killed.
 
-- [ ] **Headless/TUI exit status after a signal-initiated quit is always 0.**
-      Found reviewing #685's shutdown ordering fix (`0b0d8541a`): the winit and
-      macOS loops re-raise the signal after a graceful quit so the parent sees
-      "terminated by SIGTERM", but the headless/TUI loop does not — its caller
-      just restores the terminal after it returns, and exits 0 regardless of
-      which signal ended the process.
+- [x] **#717 — headless/TUI exit status after a signal-initiated quit was always
+      0.** Found reviewing #685's shutdown ordering fix (`0b0d8541a`): the winit
+      and macOS loops re-raise the signal after a graceful quit so the parent sees
+      "terminated by SIGTERM", but the headless/TUI loop did not — its caller just
+      restored the terminal after it returned, and exited 0 regardless of which
+      signal ended the process.
+      **Fixed (`3a6b1169a`):** `headless::app::App::run` now calls
+      `termination_signals::exit_after_signal_shutdown()` right after
+      `event_loop::run` returns, matching the winit/macOS call sites; it is a
+      no-op for a non-signal-initiated quit, so integration tests and
+      `agent run --output-format json` (which share this loop) are unaffected.
+      **Left to the coordinator:** a process-level check (spawn the TUI, `kill
+      -TERM` it, check `$?`) — the status-mapping logic itself is already fully
+      unit-tested in `termination_signals_tests.rs`, but this specific plumbing
+      isn't independently testable without ending the test process.
 
 ### Later lanes — #689 through #702
 

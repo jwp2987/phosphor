@@ -885,6 +885,14 @@ upstream's behavior is actually a defect rather than a preference.
   catches (not ignores) `SIGHUP`/`SIGTERM` and keeps running until the host's socket
   closes or the host dies — it used to die at the same moment the host began its
   graceful quit, closing every pty out from under it.
+  **Completed for headless/TUI (`3a6b1169a`, 2026-09-27, #717):** the re-raise above
+  landed only in the winit and macOS loops; the headless loop (shared by the TUI,
+  integration tests and `agent run --output-format json`) still exited 0 regardless
+  of which signal ended it, because its own doc comment already flagged that its
+  *caller* — not `event_loop::run` itself — has to make this call once the terminal
+  is restored. **We do:** `headless::app::App::run` now calls
+  `exit_after_signal_shutdown` right after `event_loop::run` returns. A no-op for a
+  non-signal-initiated quit, so every other headless caller is unaffected.
 
 - **`on_will_terminate` ordering** (`0b0d8541a`, 2026-09-26, #680/#687). **Upstream** runs
   the bounded LSP+MCP wait immediately after the unbounded persistence-writer join and
