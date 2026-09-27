@@ -10414,11 +10414,27 @@ claim, which was wrong by four.
       user's behalf, not to add a prompt. Related: the index-consent-banner row in `DECLINED.md`.
       i18n keys drafted but not added: `settings-code-embedding-model-switched{,-desc}`.
 
-- [ ] **`DaemonStoreClient` has the same two-cache desync the app path just fixed.**
+- [x] **`DaemonStoreClient` has the same two-cache desync the app path just fixed.**
       `remote_server/codebase_index_store.rs:354-386` holds one model in a `Mutex` while its own
       `CodebaseIndex` caches another, and `remote_client_preferences` only ever ships the
       *preferred* model's endpoint. The per-model endpoint table (`set_endpoints`) is available
       to it; wiring it needs that file.
+      **Fixed 2026-09-27 (#759).** `DaemonStoreClient::configure` now calls
+      `HttpEmbeddingProvider::set_endpoints` with a single-entry `EmbeddingEndpoints` table
+      instead of `set_endpoint`'s any-model blanket endpoint. `CodebaseIndex`
+      (`crates/ai/src/index/full_source_code_embedding/codebase_index.rs:155`) refreshes its
+      own cached `embedding_config` only as a side effect of a completed sync (`:877`), and
+      every `StoreClient` method that takes an explicit `embedding_config` is handed that
+      cached value by the caller — so a stale request for a model the daemon has since been
+      reconfigured away from now fails loudly (`IndexError::NoEmbeddingProvider`) instead of
+      silently reaching the new provider under the old model's name. Still only one entry in
+      the table at a time — `remote_client_preferences` ships only the preferred model, unlike
+      the app path's full table — so this makes the single entry self-checking rather than
+      adding true per-model routing. No pin equivalent (fork-original file). Tests in new
+      `codebase_index_store.rs::configure_tests`, mirroring
+      `codebase_embeddings.rs::endpoint_refresh_tests`'
+      `a_newly_preferred_model_does_not_hijack_the_one_an_index_is_already_using`/
+      `a_model_whose_provider_was_removed_reports_that_model_by_name`.
 
 - [x] **`crates/warp_features/src/lib.rs:888` still states the opposite of the code.**
       It says *"This fork does not ship autoupdate: … the release workflow publishes no
