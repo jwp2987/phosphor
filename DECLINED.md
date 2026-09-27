@@ -674,3 +674,24 @@ upstream's behavior is actually a defect rather than a preference.
   upstream's rule. The live-session half of the same fix
   (`finish_cli_subagent_task_for_completed_block`) is fork-only BYOP code and
   needs no entry.
+
+- **Closing the tab context menu hands focus back only if nothing else took it**
+  (`052ef5af3`, 2026-09-26, `app/src/workspace/view.rs`,
+  `restore_focus_after_tab_menu_close`). **Upstream:** the pin never refocuses on
+  Close, so keys typed after dismissing the menu with Escape go to the hidden menu
+  (upstream fixed that post-pin in `43eae5e08`, which this fork ported). That fix
+  calls `focus_active_tab` **unconditionally** in the menu's Close handler
+  (`warp/master` `view.rs:10234`). **The defect:** a menu item that opens an
+  editor or a dialog loses it. A mouse click dispatches the item's actions in
+  reverse, so Close is queued before the item runs, and the item's focus request
+  is still pending when Close is delivered; with Enter, "New group with tab"
+  starts its rename through a deferred action queued before Close. Either way the
+  refocus lands after the editor's focus and the blur cancels it: mouse "Rename"
+  on a group header opened nothing, and "Rename pane" committed the auto title as
+  a custom name while the typed name ran as a shell command. **Confirmed** in the
+  running app on Xvfb (2026-09-26) and by tracing the effect queue
+  (`crates/warpui_core/src/core/app.rs` ~3775, `app/src/menu.rs:1210-1220`,
+  `:2593-2601`). **We do:** defer the refocus and skip it while any tab, pane or
+  group rename is in progress or anything but the menu holds focus. A synchronous
+  "is the menu focused?" check is not enough — the fork's first version
+  (`0c697d7b4`) did that and still broke the mouse path.
