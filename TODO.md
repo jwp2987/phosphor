@@ -6764,6 +6764,30 @@ other way.
       visual claims needing the app running. Text-layout code exists across three
       platform backends, so #316 is not a missing-feature question.
 
+## UPSTREAM ZAP PRS — triaged 2026-09-27
+
+Triage of merged PRs on `zerx-lab/zap`, ported by content (no shared git
+history) after confirming the fix applies and nothing here depends on the
+behavior being changed.
+
+- [x] **Zap #341 (`8954864e3`) — foreground image layers swallow clicks.**
+      `render_grid_without_ligatures`/`render_grid_with_ligatures` in
+      `app/src/terminal/grid_renderer.rs` started a layer for foreground images
+      without marking it click-through, so an inline image sat on top of the
+      hit-test map and blocked clicks meant for the terminal grid or a link
+      rendered underneath it (`Scene::is_covered` in
+      `crates/warpui_core/src/scene.rs` treats any non-click-through layer with
+      hits as opaque to pointer events at lower z-indices). Ported the
+      click-through half only: added
+      `ctx.scene.set_active_layer_click_through();` right after `start_layer` at
+      both sites, matching the existing pattern in
+      `crates/warpui_core/src/elements/container.rs` and
+      `crates/editor/src/render/element/table.rs`. Confirmed no feature clicks or
+      hovers a foreground image itself in `grid_renderer.rs`. **Declined** the
+      other half of the same upstream commit — defaulting
+      `TERMINAL_BROWSER_DISPLAY_SCALE=1` in `local_tty/unix.rs` — because it
+      injects a third-party tool's env var into every spawned shell. Fixes #771.
+
 ## OPEN ISSUES FROM THE FIRST RE-PIN (2026-08-15) — `02b53fcd8` -> `42effe840`
 
 Filed during the re-pin round and its refutation pass. **Open only** — defects
