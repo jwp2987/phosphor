@@ -10,6 +10,7 @@ use crate::cloud_object::{Revision, StoredObjectMetadata, StoredObjectPermission
 use crate::editor::InteractionState;
 use crate::notebooks::editor::keys::NotebookKeybindings;
 use crate::notebooks::editor::model::DEBOUNCED_RESIZE_PERIOD;
+use crate::notebooks::editor::model::MAX_MERMAID_OFFSET_RESYNC_STREAK;
 use crate::notebooks::editor::notebook_command::NotebookCommand;
 use crate::notebooks::editor::view::{RichTextEditorConfig, RichTextEditorView};
 use crate::notebooks::file::MarkdownDisplayMode;
@@ -3088,6 +3089,95 @@ fn test_multiselect_delete() {
             let clipboard = ctx.clipboard().read();
             assert_eq!(&clipboard.plain_text, "Second\nFirst");
             assert_eq!(clipboard.html.as_deref(), Some("<p>Second</p><p>First</p>"));
+        });
+    });
+}
+
+/// Regression test for a hang when switching a file to the rendered Markdown view: a fenced
+/// code block near the top of the document, followed by enough paragraphs to push a Mermaid
+/// block off the bottom of the viewport, used to keep re-triggering `rebuild_layout` forever
+/// (100% CPU, `layout_complete()` never resolves) instead of converging. Mirrors the exact
+/// document shape from the reported repro.
+#[test]
+fn test_rendered_markdown_with_code_block_and_trailing_mermaid_converges() {
+    App::test((), |mut app| async move {
+        initialize_deps(&mut app);
+        let _enabled = FeatureFlag::MarkdownMermaid.override_enabled(true);
+
+        let mut markdown = String::from("# t\n\n```rust\nfn a() {}\n```\n\n");
+        for i in 1..=60 {
+            markdown.push_str(&format!(
+                "Paragraph {i} with some words to fill the line.\n\n"
+            ));
+        }
+        markdown.push_str("```mermaid\nflowchart LR\n  A --> B\n```\n");
+
+        let model_handle = model_from_markdown(&markdown, &mut app, true);
+        model_handle.update(&mut app, |model, ctx| {
+            model.set_default_mermaid_display_mode(MarkdownDisplayMode::Rendered, ctx);
+            model.set_interaction_state(InteractionState::Selectable, ctx);
+        });
+
+        // If layout doesn't converge, these awaits hang forever — that's the bug. A handful of
+        // awaits is enough headroom for the normal settle (mermaid offsets sync, then a resize
+        // once the viewport is first measured) without masking a real non-convergence.
+        for _ in 0..5 {
+            layout_model(&mut app, &model_handle).await;
+        }
+
+        // One command per fenced code block: the Rust fence and the Mermaid fence.
+        assert_eq!(command_models(&model_handle, &mut app).len(), 2);
+
+        let mermaid_offset_count = model_handle.read(&app, |model, ctx| {
+            model
+                .render_state
+                .as_ref(ctx)
+                .layout_options()
+                .mermaid_render_offsets
+                .len()
+        });
+        assert_eq!(mermaid_offset_count, 1);
+    });
+}
+
+/// Direct test of the `MAX_MERMAID_OFFSET_RESYNC_STREAK` circuit breaker: if
+/// `sync_mermaid_render_offsets` reports a change on every single `LayoutUpdated` (the
+/// condition the guard exists for), `handle_render_model_event` must stop calling
+/// `rebuild_layout` once the streak hits the cap, rather than retriggering indefinitely.
+#[test]
+fn test_mermaid_offset_resync_streak_is_capped() {
+    App::test((), |mut app| async move {
+        initialize_deps(&mut app);
+        let _enabled = FeatureFlag::MarkdownMermaid.override_enabled(true);
+
+        let model_handle =
+            model_from_markdown("```mermaid\ngraph TD\nA --> B\n```", &mut app, true);
+        layout_model(&mut app, &model_handle).await;
+
+        let command = command_models(&model_handle, &mut app)
+            .into_iter()
+            .exactly_one()
+            .expect("Mermaid command should exist");
+
+        model_handle.update(&mut app, |model, ctx| {
+            // Flip the block's display mode before every `LayoutUpdated` so
+            // `sync_mermaid_render_offsets`'s computed offset set alternates between empty and
+            // non-empty on each call, forcing it to report "changed" every time — the runaway
+            // condition the streak guard exists to bound.
+            for i in 0..(MAX_MERMAID_OFFSET_RESYNC_STREAK as usize * 3) {
+                let mode = if i % 2 == 0 {
+                    MarkdownDisplayMode::Raw
+                } else {
+                    MarkdownDisplayMode::Rendered
+                };
+                command.update(ctx, |cmd, _| cmd.mermaid_display_mode = mode);
+                model.handle_render_model_event(&RenderEvent::LayoutUpdated, ctx);
+            }
+
+            assert_eq!(
+                model.mermaid_offset_resync_streak, MAX_MERMAID_OFFSET_RESYNC_STREAK,
+                "the resync streak should saturate at the cap instead of growing unbounded"
+            );
         });
     });
 }

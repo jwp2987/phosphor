@@ -29,7 +29,7 @@ use warp_editor::{
 use warp_util::{path::LineAndColumnArg, user_input::UserInput};
 use warpui::{
     accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole},
-    assets::asset_cache::{AssetCache, AssetHandle, AssetState},
+    assets::asset_cache::{AssetCache, AssetHandle, AssetSource, AssetState},
     clipboard::ClipboardContent,
     elements::{
         AnchorPair, Axis, Border, ChildAnchor, Clipped, ConstrainedBox, Container, CornerRadius,
@@ -933,12 +933,17 @@ impl EditorViewAction {
 #[derive(Default)]
 struct LayoutAffectingAssetLoads {
     loading: HashSet<AssetHandle>,
-    loaded_needs_relayout: bool,
+    /// Mermaid asset sources whose diagram just finished loading and whose stored layout
+    /// `config` doesn't match the diagram's real aspect ratio yet. Keyed by `AssetSource`
+    /// (rather than a bare bool) so the caller can tell *which* sources still need a rebuild
+    /// and skip ones it already requested one for — see
+    /// `RichTextEditorView::relaidout_mermaid_asset_sources`.
+    loaded_needs_relayout: HashSet<AssetSource>,
 }
 
 enum LayoutAffectingAssetLoad {
     Loading(AssetHandle),
-    LoadedNeedsRelayout,
+    LoadedNeedsRelayout(AssetSource),
 }
 
 fn mermaid_diagram_needs_loaded_layout(
@@ -1072,6 +1077,9 @@ pub struct RichTextEditorView {
     link_editor_open: bool,
     pub(super) insertion_menu_state: BlockInsertionMenuState,
     pending_layout_affecting_asset_loads: HashSet<AssetHandle>,
+    /// Mermaid asset sources a rebuild has already been requested for after their diagram
+    /// finished loading. See `watch_layout_affecting_asset_loads` for why this dedup matters.
+    relaidout_mermaid_asset_sources: HashSet<AssetSource>,
 
     pub(super) find_bar: FindBarState,
     max_width: Option<Pixels>,
@@ -1191,6 +1199,7 @@ impl RichTextEditorView {
             requested_block_insertion_menu_open: Default::default(),
             insertion_menu_state,
             pending_layout_affecting_asset_loads: Default::default(),
+            relaidout_mermaid_asset_sources: Default::default(),
             hovered_file_path: None,
             open_file_path: None,
             file_path_mouse_states: Default::default(),
@@ -1359,8 +1368,8 @@ impl RichTextEditorView {
                 LayoutAffectingAssetLoad::Loading(handle) => {
                     loads.loading.insert(handle);
                 }
-                LayoutAffectingAssetLoad::LoadedNeedsRelayout => {
-                    loads.loaded_needs_relayout = true;
+                LayoutAffectingAssetLoad::LoadedNeedsRelayout(source) => {
+                    loads.loaded_needs_relayout.insert(source);
                 }
             });
         loads
@@ -1378,8 +1387,9 @@ impl RichTextEditorView {
             } => match asset_cache.load_asset::<ImageType>(asset_source.clone()) {
                 AssetState::Loading { handle } => Some(LayoutAffectingAssetLoad::Loading(handle)),
                 AssetState::Loaded { data } => {
-                    mermaid_diagram_needs_loaded_layout(config, data.as_ref())
-                        .then_some(LayoutAffectingAssetLoad::LoadedNeedsRelayout)
+                    mermaid_diagram_needs_loaded_layout(config, data.as_ref()).then_some(
+                        LayoutAffectingAssetLoad::LoadedNeedsRelayout(asset_source.clone()),
+                    )
                 }
                 AssetState::Evicted | AssetState::FailedToLoad(_) => None,
             },
@@ -1401,7 +1411,24 @@ impl RichTextEditorView {
 
     fn watch_layout_affecting_asset_loads(&mut self, ctx: &mut ViewContext<Self>) {
         let loads = self.layout_affecting_asset_loads(ctx);
-        if loads.loaded_needs_relayout {
+
+        // `rebuild_layout` only *queues* a relayout (`RenderState::add_pending_edit`); the
+        // model's stored block config isn't refreshed until that queued layout is actually
+        // processed, which happens asynchronously. This method re-runs on every `render_state`
+        // notification in the meantime (there can be several before the queued layout catches
+        // up), and would otherwise see the same stale, pre-load `config` on each one and
+        // request another full-document rebuild — a self-sustaining loop that starves the
+        // queued layout of a turn to ever land and fix the staleness. Only request a rebuild
+        // once per asset source that still needs one, so this can fire at most once per Mermaid
+        // diagram's load.
+        let newly_needs_relayout: Vec<_> = loads
+            .loaded_needs_relayout
+            .difference(&self.relaidout_mermaid_asset_sources)
+            .cloned()
+            .collect();
+        if !newly_needs_relayout.is_empty() {
+            self.relaidout_mermaid_asset_sources
+                .extend(newly_needs_relayout);
             self.model.update(ctx, |model, ctx| {
                 model.rebuild_layout(ctx);
             });

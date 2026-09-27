@@ -82,6 +82,21 @@ use super::{
 /// (async, and avoided entirely where possible); this is the cheap lever until then.
 const DEBOUNCED_RESIZE_PERIOD: Duration = Duration::from_millis(150);
 
+/// Circuit breaker for `handle_render_model_event`'s Mermaid-offset resync.
+///
+/// A `LayoutUpdated`/`PendingEditsFlushed` event recomputes `mermaid_render_offsets` and, if
+/// they changed, calls `rebuild_layout`, which invalidates the *entire* buffer and — once the
+/// resulting layout is processed — emits another `LayoutUpdated`/`PendingEditsFlushed`. That
+/// is meant to settle in one or two passes (offsets stop changing once every rendered Mermaid
+/// block's anchor and display mode are reflected in `RenderState`). If something instead keeps
+/// producing a "changed" result on every pass — e.g. a Mermaid block whose relayout is itself
+/// re-triggered from elsewhere (see `RichTextEditorView::watch_layout_affecting_asset_loads`)
+/// before this handler's own rebuild has had a chance to land — this becomes an unbounded loop
+/// that pins a core doing full-document `invalidate_layout` work for as long as the pane stays
+/// open. Capping the streak turns that hang into, at worst, a few wasted relayouts and a logged
+/// diagnostic instead of a livelock.
+const MAX_MERMAID_OFFSET_RESYNC_STREAK: u32 = 8;
+
 lazy_static! {
     // Specifically match ASCII digits using [[:digit:]], rather than \d, which is Unicode-aware.
     static ref NUMBERED_LIST_SHORTCUT_PREFIX: Regex = Regex::new(r"^([[:digit:]]+)\. $").expect("Markdown shortcut regex should be valid");
@@ -138,6 +153,11 @@ pub struct NotebooksEditorModel {
     /// `Rendered` by surfaces (like the file markdown viewer) that want Mermaid blocks to render
     /// immediately.
     default_mermaid_display_mode: MarkdownDisplayMode,
+    /// Count of consecutive `rebuild_layout` calls issued back-to-back from
+    /// `handle_render_model_event` because `sync_mermaid_render_offsets` reported a change.
+    /// Reset to 0 whenever a layout pass leaves the offsets unchanged. See
+    /// `MAX_MERMAID_OFFSET_RESYNC_STREAK` for why this exists.
+    mermaid_offset_resync_streak: u32,
 }
 
 #[derive(Clone)]
@@ -269,6 +289,7 @@ impl NotebooksEditorModel {
             resize_tx,
             file_link_resolution_context: None,
             default_mermaid_display_mode: MarkdownDisplayMode::Raw,
+            mermaid_offset_resync_streak: 0,
         }
     }
 
@@ -447,7 +468,19 @@ impl NotebooksEditorModel {
                     ctx,
                 );
                 if self.sync_mermaid_render_offsets(ctx) {
-                    self.rebuild_layout(ctx);
+                    if self.mermaid_offset_resync_streak < MAX_MERMAID_OFFSET_RESYNC_STREAK {
+                        self.mermaid_offset_resync_streak += 1;
+                        self.rebuild_layout(ctx);
+                    } else {
+                        log::error!(
+                            "Mermaid render-offset resync did not converge after {} consecutive \
+                             relayouts; skipping further rebuilds to avoid a layout livelock. \
+                             Rendered Mermaid diagrams in this document may be stale.",
+                            self.mermaid_offset_resync_streak
+                        );
+                    }
+                } else {
+                    self.mermaid_offset_resync_streak = 0;
                 }
             }
             RenderEvent::ViewportUpdated(_) => {}
