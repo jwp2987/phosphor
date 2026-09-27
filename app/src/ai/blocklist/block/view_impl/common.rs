@@ -216,17 +216,23 @@ pub struct ForceRefreshButtonProps<'a> {
 /// unreachable and left the generic label showing the whole time a command was actively
 /// executing. See issue #694.
 ///
-/// `has_action` -- whether there is a currently in-flight async action, e.g. the
-/// `ReadShellCommandOutput` poll that drives a long-running command's output -- is a signal
-/// that doesn't depend on `is_streaming` at all, so it can surface the accurate status even
-/// while `is_streaming` is stuck `true`. When there's no in-flight action, fall back to the
-/// original `!is_streaming` gate so a genuinely idle, non-command state isn't mislabelled.
+/// `is_polling_command_output` -- specifically whether the currently in-flight async action is
+/// `ReadShellCommandOutput`, the poll that drives a long-running command's output -- is a
+/// signal that doesn't depend on `is_streaming` at all, so it can surface the accurate status
+/// even while `is_streaming` is stuck `true`. Deliberately narrower than "any action is
+/// in-flight": the caller's `action` also matches unrelated action types (`ReadFiles`,
+/// `AskUserQuestion`, ...), and a non-BYOP conversation can legitimately still be
+/// `is_streaming` while running one of those alongside a long-running command it isn't
+/// currently polling -- passing "any action" here would show "Executing command..." for that
+/// unrelated action instead of falling through to the generic label. When the action isn't
+/// this specific poll, fall back to the original `!is_streaming` gate so a genuinely idle,
+/// non-command state isn't mislabelled.
 fn should_show_agent_command_status(
     is_agent_command_running: bool,
-    has_action: bool,
+    is_polling_command_output: bool,
     is_streaming: bool,
 ) -> bool {
-    is_agent_command_running && (has_action || !is_streaming)
+    is_agent_command_running && (is_polling_command_output || !is_streaming)
 }
 
 pub fn render_warping_indicator<V: View>(
@@ -396,9 +402,22 @@ pub fn render_warping_indicator<V: View>(
                 let active_block = props.terminal_model.block_list().active_block();
                 let is_agent_command_running = active_block.is_active_and_long_running()
                     && active_block.agent_interaction_metadata().is_some();
+                // Specifically the `ReadShellCommandOutput` poll -- not "any action at all" --
+                // is what should be allowed to bypass the `is_streaming` gate below: this
+                // catch-all `action` arm also matches plenty of other, unrelated action types
+                // (`ReadFiles`, `AskUserQuestion`, `RequestFileEdits`, ...), and a non-BYOP
+                // conversation can legitimately be mid-`is_streaming` while running one of
+                // those *alongside* an unrelated long-running command the agent isn't
+                // currently polling. Gating on the specific action keeps that case falling
+                // through to the generic label instead of being mislabelled "Executing
+                // command...". See issue #694's review follow-up.
+                let is_polling_command_output = matches!(
+                    action,
+                    Some(AIAgentActionType::ReadShellCommandOutput { .. })
+                );
                 if should_show_agent_command_status(
                     is_agent_command_running,
-                    action.is_some(),
+                    is_polling_command_output,
                     props.model.status(app).is_streaming(),
                 ) {
                     if action.is_none() {

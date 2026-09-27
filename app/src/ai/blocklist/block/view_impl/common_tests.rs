@@ -170,15 +170,25 @@ fn image_tooltip_handles_for_group_uses_available_handles_only() {
 // model-is-thinking label) was shown for the whole duration of a BYOP long-running command,
 // because the exchange's output status stays `Streaming` throughout, and the original
 // condition required `!is_streaming` to show the accurate "Executing command..." label.
+//
+// `is_polling_command_output` here stands in for "the caller determined the currently
+// in-flight action is specifically `ReadShellCommandOutput`" -- narrowing *which* action
+// qualifies (as opposed to "any action is in-flight") is done at the call site in
+// `render_warping_indicator` via a `matches!` guard, not exercisable as a pure boolean here;
+// see issue #694's review follow-up, which is what motivated the narrowing (a non-BYOP
+// conversation legitimately `is_streaming` while running an unrelated action -- `ReadFiles`,
+// `AskUserQuestion`, etc. -- alongside a long-running command it isn't currently polling must
+// not be mislabelled "Executing command...").
 
 #[test]
 fn no_command_running_never_shows_the_command_status() {
-    // Whatever `has_action`/`is_streaming` say, there's nothing command-related to report.
-    for has_action in [false, true] {
+    // Whatever `is_polling_command_output`/`is_streaming` say, there's nothing
+    // command-related to report.
+    for is_polling_command_output in [false, true] {
         for is_streaming in [false, true] {
             assert!(!should_show_agent_command_status(
                 false,
-                has_action,
+                is_polling_command_output,
                 is_streaming
             ));
         }
@@ -186,16 +196,18 @@ fn no_command_running_never_shows_the_command_status() {
 }
 
 #[test]
-fn command_running_with_an_in_flight_action_shows_status_even_while_streaming() {
+fn command_running_while_polling_its_output_shows_status_even_while_streaming() {
     // The BYOP long-running-command case this issue is about: `is_streaming` is stuck
-    // `true`, but the `ReadShellCommandOutput` poll (has_action) is a reliable signal on
-    // its own.
+    // `true`, but the `ReadShellCommandOutput` poll is a reliable signal on its own.
     assert!(should_show_agent_command_status(true, true, true));
     assert!(should_show_agent_command_status(true, true, false));
 }
 
 #[test]
-fn command_running_without_an_action_falls_back_to_the_streaming_gate() {
+fn command_running_without_polling_its_output_falls_back_to_the_streaming_gate() {
+    // Covers both "nothing is running" (action is `None`) and "something unrelated is
+    // running" (some other action type reached the caller's catch-all) -- from this
+    // function's point of view they're identical: only `!is_streaming` can show the status.
     assert!(should_show_agent_command_status(true, false, false));
     assert!(!should_show_agent_command_status(true, false, true));
 }
