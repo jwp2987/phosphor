@@ -2771,6 +2771,60 @@ fn test_slash_menu_saved_prompt_inserts_context_reference() {
     });
 }
 
+/// Deleting an `@ref` from the buffer must drop its attachment on that edit, not at the next
+/// accept-or-submit: a stale attachment keeps `has_locking_attachment` true, which turns
+/// autodetection off, so the next shell command typed was routed to the agent (#674).
+#[test]
+fn test_deleting_at_reference_prunes_its_context_on_edit() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.ai_context_model.update(ctx, |model, _ctx| {
+                model.register_at_context_attachment(
+                    "@proxy".to_string(),
+                    AIAgentAttachment::PlainText("export http_proxy=127.0.0.1".to_string()),
+                );
+            });
+
+            // While the reference is in the buffer, user edits keep it.
+            input.replace_buffer_content("@proxy explain this", ctx);
+            input.handle_editor_event(&EditorEvent::Edited(EditOrigin::UserTyped), ctx);
+            assert!(
+                input
+                    .ai_context_model
+                    .as_ref(ctx)
+                    .pending_at_context_attachments()
+                    .contains_key("@proxy")
+            );
+
+            // System edits are skipped: inserting a reference passes through a buffer that
+            // holds neither the `@filter` nor the `@ref`.
+            input.replace_buffer_content("", ctx);
+            input.handle_editor_event(&EditorEvent::Edited(EditOrigin::SystemEdit), ctx);
+            assert!(
+                input
+                    .ai_context_model
+                    .as_ref(ctx)
+                    .pending_at_context_attachments()
+                    .contains_key("@proxy")
+            );
+
+            // The user deletes the reference and types a shell command.
+            input.replace_buffer_content("ls -la", ctx);
+            input.handle_editor_event(&EditorEvent::Edited(EditOrigin::UserInitiated), ctx);
+            let context_model = input.ai_context_model.as_ref(ctx);
+            assert!(context_model.pending_at_context_attachments().is_empty());
+            assert!(
+                !context_model.has_locking_attachment(),
+                "a deleted @ref must not keep the input locked in AI mode"
+            );
+        });
+    });
+}
+
 #[test]
 fn test_open_slash_command_requires_path() {
     App::test((), |mut app| async move {

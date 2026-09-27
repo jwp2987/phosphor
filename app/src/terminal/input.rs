@@ -8798,6 +8798,24 @@ impl Input {
                     self.model.lock().set_is_input_dirty(true);
                 }
 
+                // `@`-context attachments are a cache of the `@ref` text in this buffer, and
+                // they lock the input in AI mode (`has_locking_attachment`). Reconcile them on
+                // every user edit, not only on menu-accept and submit: otherwise deleting the
+                // `@ref` leaves a stale lock, autodetection stays off, and the next shell
+                // command typed is routed to the agent. Done before the autodetection gate
+                // below so this same edit can already flip the input back. System edits are
+                // skipped -- inserting a reference is a delete of the `@filter` text followed
+                // by an insert of the `@ref`, and the intermediate buffer holds neither.
+                if edit_origin.is_user()
+                    && !self
+                        .ai_context_model
+                        .as_ref(ctx)
+                        .pending_at_context_attachments()
+                        .is_empty()
+                {
+                    self.prune_stale_at_context_attachments(ctx);
+                }
+
                 if *edit_origin == EditOrigin::UserTyped
                     && !ctx
                         .model(&self.input_render_state_model_handle)
