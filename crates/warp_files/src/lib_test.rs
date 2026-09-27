@@ -1241,3 +1241,97 @@ fn guarded_rename_moves_an_untouched_file() {
         assert!(!source.exists(), "the old path must be gone");
     });
 }
+
+/// The failure mode the non-lossy write order exists for: the destination
+/// write lands (so nothing is lost) but the final removal of the source fails
+/// for a reason no pre-image guard predicts — here, permissions. The old
+/// "write the new content over the old path, then rename" order would have
+/// stranded the new content at the *old* path with nothing at the
+/// destination if a failure landed between those two steps, and said only
+/// "IO error", nothing about the source having already been overwritten. The
+/// new order never reaches a state where the destination's write and the
+/// source's removal can partially clobber one shared path, so the only way
+/// this can fail now is exactly this — both files intact, source unremoved —
+/// and the error must say so.
+#[test]
+#[cfg(unix)]
+fn guarded_rename_reports_both_files_when_the_source_cannot_be_removed() {
+    use std::os::unix::fs::PermissionsExt;
+
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let files = app.add_singleton_model(FileModel::new);
+        let receiver = setup_event_channel(app, &files);
+
+        let root = tempfile::tempdir().expect("temp dir");
+        let source_dir = root.path().join("source");
+        let dest_dir = root.path().join("dest");
+        std::fs::create_dir(&source_dir).expect("mkdir");
+        std::fs::create_dir(&dest_dir).expect("mkdir");
+        let source = source_dir.join("old-name.rs");
+        let destination = dest_dir.join("new-name.rs");
+        std::fs::write(&source, GUARD_BASE).expect("write file");
+
+        // Removing a file needs write permission on its *parent* directory,
+        // not the file itself, so this leaves the source readable (the final
+        // pre-removal probe must still see `GUARD_BASE`) but not removable.
+        std::fs::set_permissions(&source_dir, std::fs::Permissions::from_mode(0o555))
+            .expect("chmod");
+
+        // Root (common in sandboxed CI) ignores this permission bit
+        // entirely; detect that rather than asserting on a guard this
+        // environment cannot enforce.
+        let probe = source_dir.join("root-check");
+        let running_as_root = std::fs::write(&probe, "x").is_ok();
+        let _ = std::fs::remove_file(&probe);
+        if running_as_root {
+            std::fs::set_permissions(&source_dir, std::fs::Permissions::from_mode(0o755)).ok();
+            eprintln!(
+                "skipping guarded_rename_reports_both_files_when_the_source_cannot_be_removed: \
+                 running as root, directory permissions are not enforced"
+            );
+            return;
+        }
+
+        let file_id = register_for_guarded_write(app, &files, &source);
+        files.update(app, |model, ctx| {
+            model
+                .rename_and_save_if_unchanged(
+                    file_id,
+                    destination.clone(),
+                    GUARD_ACCEPTED.to_owned(),
+                    ExpectedDiskState::Content(GUARD_BASE.to_owned()),
+                    ExpectedDiskState::Absent,
+                    ContentVersion::new(),
+                    ctx,
+                )
+                .expect("rename should dispatch");
+        });
+
+        let message = match receiver.recv().await.expect("Could not receive the result") {
+            TestFileModelEvent::FailedToSave(message) => message,
+            event => panic!("Expected the removal to be refused, got {event:?}"),
+        };
+
+        // Restore permissions before any assertion can early-return via
+        // `assert_eq!`'s panic, so the tempdir always cleans up.
+        std::fs::set_permissions(&source_dir, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod back");
+
+        assert!(
+            message.contains("both files now exist"),
+            "must say both files now exist, got: {message}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&destination).unwrap(),
+            GUARD_ACCEPTED,
+            "the destination must keep the new content even though the source could not be \
+             removed -- nothing may be lost just because the cleanup half failed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&source).unwrap(),
+            GUARD_BASE,
+            "the source must be untouched, not half-removed"
+        );
+    });
+}
