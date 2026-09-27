@@ -1068,7 +1068,7 @@ impl LocalRepoMetadataModel {
     pub(crate) fn repo_watch_filter_inputs(
         &self,
         watch_path: &Path,
-    ) -> (Vec<Gitignore>, Vec<PathBuf>) {
+    ) -> (Vec<Arc<Gitignore>>, Vec<PathBuf>) {
         (
             gitignores_for_directory(watch_path),
             self.force_included_paths.clone(),
@@ -1652,7 +1652,7 @@ impl LocalRepoMetadataModel {
     /// (and watched) on demand when the user expands it via `load_directory`.
     async fn compute_file_tree_mutations(
         update: &RepoUpdate,
-        gitignores: &[Gitignore],
+        gitignores: &[Arc<Gitignore>],
         force_included_paths: &[PathBuf],
         standing_query_definitions: &StandingQueryDefinitions,
         lazy_load: bool,
@@ -1988,7 +1988,7 @@ impl LocalRepoMetadataModel {
     }
 
     /// Checks if a path matches any of the gitignore patterns
-    fn path_is_ignored(path: &Path, gitignores: &[Gitignore]) -> bool {
+    fn path_is_ignored(path: &Path, gitignores: &[Arc<Gitignore>]) -> bool {
         // Check if any component of the path is .git
         if path
             .components()

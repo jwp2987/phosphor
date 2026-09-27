@@ -40,6 +40,7 @@ cfg_if::cfg_if! {
         // (including WASM) time origin, replacing `std::time::Instant`. Enforced via
         // `disallowed_types` in `clippy.toml`.
         use instant::Instant;
+        use std::sync::Arc;
         use std::time::{Duration, SystemTime};
 
         const MAX_SCAN_DEPTH: usize = 3;
@@ -1229,7 +1230,7 @@ impl ProjectContextModel {
 
         // Use build_tree to collect all files, then filter for rule files
         let mut files = Vec::<FileMetadata>::new();
-        let mut gitignores = Vec::<Gitignore>::new();
+        let mut gitignores = Vec::<Arc<Gitignore>>::new();
 
         // Collect patterns that should not be ignored
         let override_ignore_patterns: Vec<String> =

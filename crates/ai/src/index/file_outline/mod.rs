@@ -11,6 +11,7 @@ use crate::index::{Entry, FileId};
 use ignore::gitignore::Gitignore;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -31,7 +32,7 @@ pub struct Outline {
     file_id_to_outline: HashMap<FileId, FileOutline>,
 
     /// List of gitignore patterns.
-    gitignores: Vec<Gitignore>,
+    gitignores: Vec<Arc<Gitignore>>,
 }
 
 impl Outline {
@@ -126,7 +127,7 @@ impl Outline {
         self.file_id_to_outline.len()
     }
 
-    pub fn gitignores(&self) -> Vec<Gitignore> {
+    pub fn gitignores(&self) -> Vec<Arc<Gitignore>> {
         self.gitignores.clone()
     }
 }
