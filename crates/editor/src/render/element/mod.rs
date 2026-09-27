@@ -1057,7 +1057,14 @@ impl<V: EditorView> Element for RichTextElement<V> {
                 return;
             }
         };
-        if self.display_options.editable {
+        // Only run (and reschedule) the cursor-blink timer while the editor is both editable and
+        // focused. `cursors_visible()` in `paint.rs` already requires `focused` before it will
+        // draw a cursor at all, so scheduling a repaint here for an unfocused-but-editable pane
+        // bought nothing except an unconditional `ctx.repaint_after` every
+        // `CURSOR_BLINK_INTERVAL`, forever, for as long as the pane stayed open. That kept every
+        // open file-editor view scheduling frames (and repainting the whole window) at ~2Hz even
+        // while idle and unfocused.
+        if self.display_options.editable && self.display_options.focused {
             self.update_blink_state(ctx);
         }
 
