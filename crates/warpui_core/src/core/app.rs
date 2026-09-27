@@ -31,7 +31,7 @@ use pathfinder_geometry::{rect::RectF, vector::Vector2F};
 use rustc_hash::FxHashMap;
 use std::{
     any::{Any, TypeId},
-    cell::{RefCell, RefMut},
+    cell::{Cell, RefCell, RefMut},
     collections::{HashMap, HashSet, VecDeque},
     fmt::Debug,
     path::Path,
@@ -609,7 +609,15 @@ pub enum RepaintTrigger {
         instant: Instant,
         /// Whether this timer firing requires a full layout, or only a paint.
         /// See `WindowInvalidation::paint_only_redraw_requested` and issue #703.
-        layout_required: bool,
+        ///
+        /// Shared (not a plain `bool`) because a pending timer can be *upgraded*
+        /// after it's spawned: if a later, layout-required repaint request is
+        /// covered by this timer's earlier-or-equal deadline,
+        /// `AppContext::manage_delayed_repaint_timers` sets this cell instead of
+        /// dropping the request or spawning a redundant second timer. The
+        /// spawned task's closure reads this cell when it fires, not a value
+        /// captured at spawn time, so the upgrade is visible to it.
+        layout_required: Rc<Cell<bool>>,
     },
     AssetLoaded {
         asset_handle: AssetHandle,
@@ -3173,7 +3181,11 @@ impl AppContext {
 
             // Always build the scene at least once, even if there
             // are no updated views.
-            if invalidation.updated.is_empty() && !invalidation.redraw_requested && iter > 1 {
+            if invalidation.updated.is_empty()
+                && !invalidation.redraw_requested
+                && !invalidation.paint_only_redraw_requested
+                && iter > 1
+            {
                 break;
             }
 
@@ -4000,16 +4012,54 @@ impl AppContext {
         repaint_at: Instant,
         layout_required: bool,
     ) {
-        // Avoid creating new timers if a timer with a closer repaint time for
-        // the same window already exists.
-        if self.repaint_tasks.iter().any(|(_, task)| {
-            task.window_id == window_id &&
-            matches!(task.repaint_trigger, RepaintTrigger::Timer { instant, .. } if instant <= repaint_at)
-        }) {
+        // Reuse an existing timer with an earlier-or-equal deadline for the same
+        // window instead of spawning a new one — it'll fire in time regardless.
+        //
+        // But an existing timer may have been created as paint-only (e.g. by a
+        // blinking cursor, whose deadline is sticky: `update_blink_state`
+        // re-requests the same Instant every frame until it fires) and *this*
+        // request may need a full layout (e.g. a `LiveElement` counter, which
+        // recomputes its `repaint_after` target relative to "now" on every
+        // frame). If we just returned here, that layout requirement would be
+        // silently dropped: the existing timer would still fire believing
+        // layout isn't needed. So when a covering existing timer's
+        // `layout_required` is weaker than what's being requested now, upgrade
+        // it in place via the shared cell (the spawned closure reads the cell
+        // when it fires, not a value captured when it was spawned, so the
+        // upgrade reaches it even though the timer itself can't be
+        // rescheduled). This can't race the closure firing: everything here
+        // runs synchronously on the single foreground executor, so nothing else
+        // touches `repaint_tasks` between the scan and the `set` calls below.
+        //
+        // There can in principle be more than one covering timer for this
+        // window (each dedups only against timers that existed when *it* was
+        // created), so every one of them gets upgraded, not just the first
+        // found — otherwise an arbitrary one could be picked while an earlier,
+        // still-`false` one is what actually fires first.
+        let mut covered_by_existing = false;
+        for task in self.repaint_tasks.values() {
+            let RepaintTrigger::Timer {
+                instant,
+                layout_required: existing_layout_required,
+            } = &task.repaint_trigger
+            else {
+                continue;
+            };
+            if task.window_id != window_id || *instant > repaint_at {
+                continue;
+            }
+            covered_by_existing = true;
+            if layout_required && !existing_layout_required.get() {
+                existing_layout_required.set(true);
+            }
+        }
+        if covered_by_existing {
             return;
         }
 
         let weak_app = self.weak_self.clone();
+        let layout_required = Rc::new(Cell::new(layout_required));
+        let layout_required_for_task = layout_required.clone();
 
         let task_id = TaskId::new();
         let task = self.foreground.spawn(async move {
@@ -4020,7 +4070,7 @@ impl AppContext {
                 // If the timer is no longer in repaint_tasks, it was cancelled.
                 if app.repaint_tasks.remove(&task_id).is_some() {
                     let invalidation = app.window_invalidations.entry(window_id).or_default();
-                    if layout_required {
+                    if layout_required.get() {
                         invalidation.redraw_requested = true;
                     } else {
                         invalidation.paint_only_redraw_requested = true;
@@ -4037,7 +4087,7 @@ impl AppContext {
                 window_id,
                 repaint_trigger: RepaintTrigger::Timer {
                     instant: repaint_at,
-                    layout_required,
+                    layout_required: layout_required_for_task,
                 },
             },
         );

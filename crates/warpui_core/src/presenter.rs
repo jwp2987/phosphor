@@ -431,7 +431,17 @@ impl Presenter {
         ctx.manage_pending_assets(self.window_id, pending_assets);
         let scene = Rc::new(scene);
         self.scene = Some(scene.clone());
-        self.text_layout_cache.finish_frame();
+        if !skip_layout {
+            // `finish_frame` ages the 2-generation line/text-frame cache (see
+            // `text_layout.rs`): whatever wasn't re-fetched via `layout_line`/
+            // `layout_text` since the last call gets evicted. Layout is the only
+            // thing that calls those, so advancing the generation on a
+            // skip-layout frame wouldn't reflect anything actually going stale —
+            // it would just evict everything after ~2 idle blinks (~1s) for no
+            // reason, forcing a cold reshape of the whole visible tree on the
+            // next real layout. See issue #703 review follow-up.
+            self.text_layout_cache.finish_frame();
+        }
         self.frame_count += 1;
         ctx.load_requested_fallback_families(self.window_id);
         scene
