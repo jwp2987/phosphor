@@ -5349,28 +5349,132 @@ impl AppContext {
     }
 }
 
+impl AppContext {
+    /// Removes the model with the given ID so that an update closure can run against it.
+    ///
+    /// This bookkeeping is not generic, so it is compiled once instead of being duplicated into
+    /// every instantiation of [`UpdateModel::update_model`].
+    fn take_model_for_update(&mut self, model_id: EntityId) -> Box<dyn AnyModel> {
+        let Some(model) = self.models.remove(&model_id) else {
+            panic!("Circular model update");
+        };
+        self.pending_flushes += 1;
+        model
+    }
+
+    /// Restores a model removed by [`Self::take_model_for_update`] and flushes pending effects.
+    fn finish_model_update(&mut self, model_id: EntityId, model: Box<dyn AnyModel>) {
+        self.models.insert(model_id, model);
+        self.flush_effects();
+    }
+
+    /// Removes the view with the given ID so that an update closure can run against it.
+    ///
+    /// GUI views live in `window.views`; Zap keeps TUI views in a separate,
+    /// `tui`-feature-gated `window.tui_views` map (rather than upstream's `StoredView` enum), so
+    /// this checks out whichever map actually holds the view. Not generic, so it is compiled
+    /// once instead of being duplicated into every instantiation of
+    /// [`UpdateView::try_update_view`].
+    fn take_view_for_update(
+        &mut self,
+        window_id: WindowId,
+        view_id: EntityId,
+    ) -> Result<CheckedOutView, ViewUpdateError> {
+        let Some(window) = self.windows.get_mut(&window_id) else {
+            return Err(ViewUpdateError::WindowClosed);
+        };
+        if let Some(view) = window.views.remove(&view_id) {
+            self.pending_flushes += 1;
+            return Ok(CheckedOutView::Gui(view));
+        }
+        #[cfg(feature = "tui")]
+        if let Some(view) = window.tui_views.remove(&view_id) {
+            self.pending_flushes += 1;
+            return Ok(CheckedOutView::Tui(view));
+        }
+        Err(ViewUpdateError::CircularUpdate)
+    }
+
+    /// Restores a view removed by [`Self::take_view_for_update`], marks a TUI view dirty so the
+    /// driver re-renders it (mirrors `add_tui_view`; GUI invalidation flows through effects), and
+    /// flushes pending effects.
+    fn finish_view_update(&mut self, window_id: WindowId, view_id: EntityId, view: CheckedOutView) {
+        #[cfg(feature = "tui")]
+        let is_tui = view.is_tui();
+        if let Some(window) = self.windows.get_mut(&window_id) {
+            match view {
+                CheckedOutView::Gui(view) => {
+                    window.views.insert(view_id, view);
+                }
+                #[cfg(feature = "tui")]
+                CheckedOutView::Tui(view) => {
+                    window.tui_views.insert(view_id, view);
+                }
+            }
+        }
+        #[cfg(feature = "tui")]
+        if is_tui {
+            self.window_invalidations
+                .entry(window_id)
+                .or_default()
+                .updated
+                .insert(view_id);
+        }
+        self.flush_effects();
+    }
+}
+
+/// Downcasts a checked-out model to its concrete type.
+///
+/// This is generic over the entity type only, so the downcast and panic machinery is shared by
+/// all [`UpdateModel::update_model`] call sites for a given model type.
+fn downcast_model_mut<T: Entity>(model: &mut Box<dyn AnyModel>) -> &mut T {
+    model
+        .as_any_mut()
+        .downcast_mut()
+        .expect("Downcast is type safe")
+}
+
+/// A view checked out of a window by [`AppContext::take_view_for_update`], either the GUI
+/// storage or (with the `tui` feature) the separate TUI storage.
+enum CheckedOutView {
+    Gui(Box<dyn AnyView>),
+    #[cfg(feature = "tui")]
+    Tui(Box<dyn crate::core::view::AnyTuiView>),
+}
+
+#[cfg(feature = "tui")]
+impl CheckedOutView {
+    fn is_tui(&self) -> bool {
+        matches!(self, CheckedOutView::Tui(_))
+    }
+}
+
+/// Downcasts a checked-out view to its concrete type.
+///
+/// This is generic over the entity type only, so the downcast and panic machinery is shared by
+/// all [`UpdateView::update_view`] / [`UpdateView::try_update_view`] call sites for a given view
+/// type.
+fn downcast_view_mut<T: Entity>(view: &mut CheckedOutView) -> &mut T {
+    let any: &mut dyn std::any::Any = match view {
+        CheckedOutView::Gui(view) => view.as_any_mut(),
+        #[cfg(feature = "tui")]
+        CheckedOutView::Tui(view) => view.as_any_mut(),
+    };
+    any.downcast_mut().expect("Downcast is type safe")
+}
+
 impl UpdateModel for AppContext {
     fn update_model<T, F, S>(&mut self, handle: &ModelHandle<T>, update: F) -> S
     where
         T: Entity,
         F: FnOnce(&mut T, &mut ModelContext<T>) -> S,
     {
-        match self.models.remove(&handle.id()) { Some(mut model) => {
-            self.pending_flushes += 1;
-            let mut ctx = ModelContext::new(self, handle.id());
-            let result = update(
-                model
-                    .as_any_mut()
-                    .downcast_mut()
-                    .expect("Downcast is type safe"),
-                &mut ctx,
-            );
-            self.models.insert(handle.id(), model);
-            self.flush_effects();
-            result
-        } _ => {
-            panic!("Circular model update");
-        }}
+        let mut model = self.take_model_for_update(handle.id());
+        let mut ctx = ModelContext::new(self, handle.id());
+        let result = update(downcast_model_mut(&mut model), &mut ctx);
+        self.finish_model_update(handle.id(), model);
+        result
     }
 }
 
@@ -5398,71 +5502,10 @@ impl UpdateView for AppContext {
     {
         let window_id = handle.window_id(self);
         let view_id = handle.id();
-
-        // GUI views live in `window.views`; Zap keeps TUI views in a separate,
-        // `tui`-feature-gated `window.tui_views` map (rather than upstream's
-        // `StoredView` enum), so remove from whichever map actually holds this view.
-        // Declared without an initializer: the block below assigns it
-        // unconditionally, so an `= None` here is a dead store.
-        let mut gui_view: Option<Box<dyn AnyView>>;
-        #[cfg(feature = "tui")]
-        let mut tui_view: Option<Box<dyn crate::core::view::AnyTuiView>> = None;
-        {
-            let Some(window) = self.windows.get_mut(&window_id) else {
-                return Err(ViewUpdateError::WindowClosed);
-            };
-            gui_view = window.views.remove(&view_id);
-            #[cfg(feature = "tui")]
-            if gui_view.is_none() {
-                tui_view = window.tui_views.remove(&view_id);
-            }
-        }
-        #[cfg(feature = "tui")]
-        let is_tui = tui_view.is_some();
-        #[cfg(not(feature = "tui"))]
-        let is_tui = false;
-        if gui_view.is_none() && !is_tui {
-            return Err(ViewUpdateError::CircularUpdate);
-        }
-        // Counted only once the view is checked out: an early `Err` above must not leave a
-        // pending flush that nothing will ever balance.
-        self.pending_flushes += 1;
-
+        let mut view = self.take_view_for_update(window_id, view_id)?;
         let mut ctx = ViewContext::new(self, window_id, view_id);
-        let any: &mut dyn std::any::Any = if let Some(view) = gui_view.as_mut() {
-            view.as_any_mut()
-        } else {
-            #[cfg(feature = "tui")]
-            {
-                tui_view.as_mut().expect("view present").as_any_mut()
-            }
-            #[cfg(not(feature = "tui"))]
-            {
-                unreachable!("no view to update")
-            }
-        };
-        let result = update(any.downcast_mut().expect("Downcast is type safe"), &mut ctx);
-
-        if let Some(window) = self.windows.get_mut(&window_id) {
-            if let Some(view) = gui_view {
-                window.views.insert(view_id, view);
-            }
-            #[cfg(feature = "tui")]
-            if let Some(view) = tui_view {
-                window.tui_views.insert(view_id, view);
-            }
-        }
-        // A mutated TUI view must be re-rendered by the driver, so mark it dirty
-        // (mirrors `add_tui_view`). GUI invalidation flows through effects.
-        #[cfg(feature = "tui")]
-        if is_tui {
-            self.window_invalidations
-                .entry(window_id)
-                .or_default()
-                .updated
-                .insert(view_id);
-        }
-        self.flush_effects();
+        let result = update(downcast_view_mut(&mut view), &mut ctx);
+        self.finish_view_update(window_id, view_id, view);
         Ok(result)
     }
 }
