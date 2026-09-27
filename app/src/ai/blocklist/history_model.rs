@@ -36,7 +36,7 @@ use crate::ai::byop_readiness::{
 use crate::ai::document::ai_document_model::AIDocumentModel;
 use crate::input_suggestions::HistoryOrder;
 use crate::persistence::model::AgentConversationData;
-use crate::persistence::ModelEvent;
+use crate::persistence::{ModelEvent, PersistedTaskRetention};
 use crate::terminal::model::block::BlockId;
 use crate::terminal::view::blocklist_filter;
 use crate::GlobalResourceHandlesProvider;
@@ -1745,6 +1745,8 @@ impl BlocklistAIHistoryModel {
             conversation_id: forked_conversation_id.to_string(),
             updated_tasks: updated_tasks_with_new_ids.clone(),
             conversation_data: conversation_data.clone(),
+            // A fork is written under a fresh id, so there are no existing rows to prune.
+            task_retention: PersistedTaskRetention::DeleteMissing,
         }) {
             return Err(anyhow!("Failed to persist forked conversation: {e:?}."));
         }
@@ -1946,6 +1948,8 @@ impl BlocklistAIHistoryModel {
             conversation_id: forked_conversation_id.to_string(),
             updated_tasks: updated_tasks_with_new_ids.clone(),
             conversation_data: conversation_data.clone(),
+            // A fork is written under a fresh id, so there are no existing rows to prune.
+            task_retention: PersistedTaskRetention::DeleteMissing,
         }) {
             return Err(anyhow!(
                 "Failed to persist forked conversation at block: {e:?}."

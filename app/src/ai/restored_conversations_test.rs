@@ -75,7 +75,9 @@ fn failed_take_does_not_consume_the_restore_opportunity() {
 /// empty optimistic root instead of reading the persisted task.
 #[cfg(feature = "local_fs")]
 mod startup_restore {
-    use diesel::{Connection as _, SqliteConnection};
+    use diesel::{
+        Connection as _, ExpressionMethods as _, QueryDsl as _, RunQueryDsl as _, SqliteConnection,
+    };
     use diesel_migrations::MigrationHarness as _;
     use warp_multi_agent_api as api;
 
@@ -90,6 +92,7 @@ mod startup_restore {
 
     const INITIAL_QUERY: &str = "Tiny plan: create hello.txt containing hi, then cat it.";
     const DOCUMENT_ID: &str = "91ad819d-4214-44a3-9ded-bcfbecd0c069";
+    const ROOT_TASK_ID: &str = "54ad35d7-3c14-470e-b981-6bbe42a22bcb";
 
     /// `conversation_data` as a BYOP run writes it: an EMPTY (not null) server
     /// token, zeroed usage metadata, and a local PLAN artifact. Copied from a
@@ -213,7 +216,7 @@ mod startup_restore {
         conversation_id: AIConversationId,
     ) -> (SqliteConnection, Vec<AgentConversation>) {
         let mut conn = test_connection();
-        let task = byop_root_task("54ad35d7-3c14-470e-b981-6bbe42a22bcb");
+        let task = byop_root_task(ROOT_TASK_ID);
         let conversation_data: AgentConversationData = serde_json::from_str(BYOP_CONVERSATION_DATA)
             .expect("BYOP conversation data should deserialize");
         upsert_agent_conversation(
@@ -318,5 +321,220 @@ mod startup_restore {
             .find(|metadata| metadata.id == conversation_id)
             .expect("the BYOP conversation should be in the history list's data source");
         assert_eq!(listed.initial_query, INITIAL_QUERY);
+    }
+
+    /// The `agent_tasks` ids persisted for `conversation_id`, sorted.
+    fn persisted_task_ids(
+        conn: &mut SqliteConnection,
+        conversation_id: AIConversationId,
+    ) -> Vec<String> {
+        use crate::persistence::schema::agent_tasks::dsl;
+        let mut ids: Vec<String> = dsl::agent_tasks
+            .filter(dsl::conversation_id.eq(conversation_id.to_string()))
+            .select(dsl::task_id)
+            .load::<String>(conn)
+            .expect("agent_tasks should be readable");
+        ids.sort();
+        ids
+    }
+
+    /// The history list's view of the database: what startup would list for
+    /// `conversation_id`, if anything.
+    fn listed_initial_query(
+        conn: &mut SqliteConnection,
+        conversation_id: AIConversationId,
+    ) -> Option<String> {
+        let (startup_records, _backfills) =
+            read_agent_conversation_metadata(conn).expect("metadata read should succeed");
+        let history = BlocklistAIHistoryModel::new(vec![], vec![], &startup_records);
+        history
+            .get_local_conversations_metadata()
+            .find(|metadata| metadata.id == conversation_id)
+            .map(|metadata| metadata.initial_query.clone())
+    }
+
+    /// End to end at the model level: the reported data loss. A conversation comes back
+    /// hollow (here via the 0.1.0–0.1.7 path, converting the metadata-only startup record;
+    /// after 4b0d1300f the same shape comes from a conversation whose task rows cannot be
+    /// read), the user sends a follow-up in that pane, and the agent answers with a new
+    /// root task. Every persist that produces is replayed through the sqlite writer's
+    /// upsert, exactly as `handle_model_event` does. Before the fix the follow-up's first
+    /// persist (an empty snapshot) deleted every `agent_tasks` row and blanked the summary,
+    /// dropping the conversation from the history list; and even with only an empty-snapshot
+    /// guard, the persist after the new root arrived would have pruned the original root.
+    #[test]
+    fn follow_up_in_hollow_restored_conversation_keeps_persisted_history() {
+        use std::collections::HashMap;
+        use std::time::Duration;
+
+        use ai::skills::SkillPathOrigin;
+        use warpui::{App, EntityId};
+
+        use crate::ai::agent::UserQueryMode;
+        use crate::ai::blocklist::ResponseStreamId;
+        use crate::ai::blocklist::controller::RequestInput;
+        use crate::ai::llms::LLMId;
+        use crate::persistence::ModelEvent;
+        use crate::persistence::agent::upsert_agent_conversation_with_retention;
+        use crate::test_util::settings::initialize_settings_for_tests;
+        use crate::{GlobalResourceHandles, GlobalResourceHandlesProvider};
+
+        App::test((), |mut app| async move {
+            initialize_settings_for_tests(&mut app);
+            let (sender, receiver) = std::sync::mpsc::sync_channel(16);
+            let mut global_resource_handles = GlobalResourceHandles::mock(&mut app);
+            global_resource_handles.model_event_sender = Some(sender);
+            app.add_singleton_model(|_| {
+                GlobalResourceHandlesProvider::new(global_resource_handles)
+            });
+            let history_model =
+                app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+
+            let conversation_id = AIConversationId::new();
+            let (mut conn, startup_records) = persist_byop_conversation(conversation_id);
+            assert_eq!(
+                persisted_task_ids(&mut conn, conversation_id),
+                vec![ROOT_TASK_ID.to_string()],
+            );
+            let hollow = convert_persisted_conversation_to_ai_conversation_with_metadata(
+                startup_records[0].clone(),
+            )
+            .expect("lenient conversion synthesizes a root for an empty task list");
+            assert_eq!(hollow.exchange_count(), 0, "precondition: restored hollow");
+
+            let terminal_view_id = EntityId::new();
+            let stream_id = ResponseStreamId::new_for_test();
+            history_model.update(&mut app, |history_model, ctx| {
+                history_model.restore_conversations(terminal_view_id, vec![hollow], ctx);
+                let conversation = history_model
+                    .conversation_mut(&conversation_id)
+                    .expect("the restored conversation should be live");
+
+                // The follow-up prompt: `update_for_new_request_input` persists at turn
+                // start (the reported trigger).
+                let root_task_id = conversation.get_root_task_id().clone();
+                let request_input = RequestInput {
+                    conversation_id,
+                    input_messages: HashMap::from([(
+                        root_task_id,
+                        vec![AIAgentInput::UserQuery {
+                            query: "And now delete hello.txt.".to_string(),
+                            context: Default::default(),
+                            static_query_type: None,
+                            referenced_attachments: Default::default(),
+                            user_query_mode: UserQueryMode::default(),
+                            running_command: None,
+                            intended_agent: None,
+                        }],
+                    )]),
+                    working_directory: None,
+                    model_id: LLMId::from("test-model"),
+                    coding_model_id: LLMId::from("test-coding-model"),
+                    cli_agent_model_id: LLMId::from("test-cli-agent-model"),
+                    computer_use_model_id: LLMId::from("test-computer-use-model"),
+                    shared_session_response_initiator: None,
+                    request_start_ts: chrono::Local::now(),
+                    supported_tools_override: None,
+                };
+                conversation
+                    .update_for_new_request_input(
+                        request_input,
+                        stream_id.clone(),
+                        terminal_view_id,
+                        ctx,
+                    )
+                    .expect("the follow-up should be accepted");
+
+                // The response creates a new server root (the optimistic root is
+                // upgraded), and the transaction commit persists it.
+                conversation
+                    .apply_client_action(
+                        &stream_id,
+                        terminal_view_id,
+                        api::client_action::Action::CreateTask(api::client_action::CreateTask {
+                            task: Some(api::Task {
+                                id: "follow-up-root".to_string(),
+                                ..Default::default()
+                            }),
+                        }),
+                        &SkillPathOrigin::Unavailable,
+                        ctx,
+                    )
+                    .expect("upgrading the synthesized root should succeed");
+                conversation.write_updated_conversation_state(ctx);
+            });
+
+            let mut persists = 0;
+            while let Ok(event) = receiver.recv_timeout(Duration::from_millis(500)) {
+                let ModelEvent::UpdateMultiAgentConversation {
+                    conversation_id: persisted_id,
+                    updated_tasks,
+                    conversation_data,
+                    task_retention,
+                } = event
+                else {
+                    continue;
+                };
+                upsert_agent_conversation_with_retention(
+                    &mut conn,
+                    &persisted_id,
+                    &updated_tasks,
+                    conversation_data,
+                    task_retention,
+                )
+                .expect("replaying the persist should succeed");
+                persists += 1;
+            }
+            assert!(
+                persists >= 2,
+                "precondition: the follow-up and the new root should each persist, got {persists}",
+            );
+
+            let task_ids = persisted_task_ids(&mut conn, conversation_id);
+            assert!(
+                task_ids.contains(&ROOT_TASK_ID.to_string()),
+                "the original root task row must survive the follow-up, got {task_ids:?}",
+            );
+            assert_eq!(
+                listed_initial_query(&mut conn, conversation_id).as_deref(),
+                Some(INITIAL_QUERY),
+                "the conversation must stay in the history list under its original query",
+            );
+        });
+    }
+
+    /// The post-4b0d1300f trigger: every task row of a conversation fails to decode. The
+    /// store must not hand out an editable, hollow conversation for it (whose next save
+    /// would decide what to prune), and the unreadable rows must stay on disk.
+    #[test]
+    fn conversation_with_undecodable_tasks_is_not_restored_and_rows_survive() {
+        let conversation_id = AIConversationId::new();
+        let (mut conn, _startup_records) = persist_byop_conversation(conversation_id);
+        {
+            use crate::persistence::schema::agent_tasks::dsl;
+            diesel::update(
+                dsl::agent_tasks.filter(dsl::conversation_id.eq(conversation_id.to_string())),
+            )
+            .set(dsl::task.eq(vec![0xffu8, 0xff, 0xff]))
+            .execute(&mut conn)
+            .expect("corrupting the task row should succeed");
+        }
+        let mut store = RestoredAgentConversations::with_db_connection(conn);
+
+        assert!(
+            store.get_conversation(&conversation_id).is_none(),
+            "a conversation whose tasks cannot be read must not be restored as editable",
+        );
+        assert!(store.take_conversation(&conversation_id).is_none());
+
+        let conn = store
+            .db_connection
+            .clone()
+            .expect("the store keeps its connection");
+        let mut conn = conn.lock().expect("connection lock should not be poisoned");
+        assert_eq!(
+            persisted_task_ids(&mut conn, conversation_id),
+            vec![ROOT_TASK_ID.to_string()],
+        );
     }
 }

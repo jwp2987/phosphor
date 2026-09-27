@@ -29,7 +29,7 @@ use crate::{
             AgentConversation, AgentConversationData, AgentConversationRecord,
             AgentConversationSummary, PersistedAutoexecuteMode,
         },
-        ModelEvent,
+        ModelEvent, PersistedTaskRetention,
     },
     terminal::model::session::SessionId,
     test_util::settings::initialize_settings_for_tests,
@@ -3555,6 +3555,7 @@ fn persisted_agent_conversation_from_update_event(event: ModelEvent) -> AgentCon
         conversation_id,
         updated_tasks,
         conversation_data,
+        ..
     } = event
     else {
         panic!("expected UpdateMultiAgentConversation event");
@@ -4463,9 +4464,22 @@ fn test_truncate_from_exchange_to_empty_persist_event_has_empty_updated_tasks() 
         let event = receiver
             .recv_timeout(Duration::from_secs(1))
             .expect("truncate-to-empty must emit an UpdateMultiAgentConversation event");
-        let ModelEvent::UpdateMultiAgentConversation { updated_tasks, .. } = event else {
+        let ModelEvent::UpdateMultiAgentConversation {
+            updated_tasks,
+            task_retention,
+            ..
+        } = event
+        else {
             panic!("expected UpdateMultiAgentConversation event");
         };
+        // An ordinary empty snapshot deletes nothing (it usually means "tasks not loaded"),
+        // so the rewind has to say explicitly that its empty snapshot is authoritative, or
+        // the rewound exchanges would come back on the next restore.
+        assert_eq!(
+            task_retention,
+            PersistedTaskRetention::DeleteMissingEvenIfEmpty,
+            "a rewind past the first exchange must ask for the persisted rows to be cleared",
+        );
         assert!(
             updated_tasks.is_empty(),
             "truncate-to-empty resets the root to optimistic; the persist must emit zero task rows, got {} row(s) with ids {:?}",

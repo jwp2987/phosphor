@@ -695,3 +695,35 @@ upstream's behavior is actually a defect rather than a preference.
   group rename is in progress or anything but the menu holds focus. A synchronous
   "is the menu focused?" check is not enough — the fork's first version
   (`0c697d7b4`) did that and still broke the mouse path.
+
+- **A save can no longer shrink a conversation's persisted history by accident**
+  (2026-09-26, `app/src/persistence/{mod,agent}.rs`, `app/src/ai/agent/conversation.rs`).
+  **Upstream:** `upsert_agent_conversation` treats every task snapshot as the
+  conversation's complete task set and deletes the other `agent_tasks` rows with
+  `task_id.ne_all(kept_ids)` — which, for an empty snapshot, matches every row — and
+  rewrites `summary` from the same snapshot. `read_agent_conversation_by_id` logs and
+  skips a task blob that fails to decode, and the local-DB restore synthesizes a
+  sourceless optimistic root when no task survives. **The defect:** that synthesized
+  root contributes nothing to the snapshot, so the first follow-up in a pane restored
+  that way saved `updated_tasks = []`, deleted every task row, blanked the summary's
+  `initial_query`, and dropped the conversation from the history list; once the
+  response upgraded the root, the next save pruned the original root by id anyway.
+  A partial decode failure did the same to just the unreadable rows. On 0.1.0–0.1.7
+  every restored conversation was hollow (fixed separately by `4b0d1300f`), so this
+  destroyed any conversation continued after a restart. **Confirmed present at the
+  pin** (`4111d08f9:app/src/persistence/agent.rs`, same `ne_all` delete, same
+  skip-on-decode-error read). **We do:** every write carries a `PersistedTaskRetention`.
+  The default, `DeleteMissing`, keeps replace semantics for a non-empty snapshot (so
+  rewound or pruned subtasks are still deleted) but an empty snapshot deletes nothing
+  and never replaces a stored summary that names a real query. A rewind past the first
+  exchange — the one deliberate empty snapshot — asks for `DeleteMissingEvenIfEmpty`. A
+  conversation restored with a synthesized root saves with `KeepMissing` for its whole
+  in-memory life: it only adds rows and keeps the stored summary, because it does not
+  know what is on disk. And `read_agent_conversation_by_id` refuses a conversation with
+  any undecodable task row instead of handing out an editable copy that lacks it; the
+  rows stay on disk for a build that can read them. **Known residual:** a hollow
+  conversation whose rows *were* readable (only the pre-`4b0d1300f` eager restore produced
+  one) would persist its follow-up as a second parentless root beside the original; restore
+  prefers a root with messages but does not otherwise pick deterministically between
+  two — preferable to deletion, not a finished answer. See `TODO.md`.
+  <!-- markers: keep:PersistedTaskRetention keep:upsert_agent_conversation_with_retention keep:restored_with_synthesized_root -->

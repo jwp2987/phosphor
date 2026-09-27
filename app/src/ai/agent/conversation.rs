@@ -55,7 +55,7 @@ use crate::{
     },
     persistence::{
         model::{AgentConversationData, PersistedAutoexecuteMode},
-        ModelEvent,
+        ModelEvent, PersistedTaskRetention,
     },
     ui_components::icons::Icon,
     BlocklistAIHistoryModel, GlobalResourceHandlesProvider,
@@ -358,6 +358,14 @@ pub struct AIConversation {
     /// truncated/summarized output, so this is needed to restore SSH and other
     /// interactive terminal content after the tab is closed.
     cli_subagent_block_snapshots: HashMap<BlockId, CliSubagentBlockSnapshot>,
+
+    /// True when this conversation was restored with no tasks, so its root was synthesized
+    /// (`new_restored_synthesizing_on_empty`) rather than read. Such a conversation does not
+    /// know what is persisted for it: the task rows may be absent, or present and unread.
+    /// Its saves therefore use [`PersistedTaskRetention::KeepMissing`] for its whole
+    /// lifetime — a synthesized root must never decide which persisted rows get deleted.
+    /// Not persisted: it describes this in-memory copy, not the conversation.
+    restored_with_synthesized_root: bool,
 }
 
 fn parse_orchestration_harness_type(value: &str) -> Harness {
@@ -422,6 +430,8 @@ impl AIConversation {
             compaction_state: Default::default(),
             byop_repair_state: RepairStateStatus::default(),
             cli_subagent_block_snapshots: Default::default(),
+            // A new conversation has nothing persisted to protect.
+            restored_with_synthesized_root: false,
         }
     }
 
@@ -498,7 +508,8 @@ impl AIConversation {
         tasks: Vec<api::Task>,
         conversation_data: Option<AgentConversationData>,
     ) -> Result<Self, RestoreConversationError> {
-        let (task_store, todo_lists, status) = if tasks.is_empty() {
+        let restored_with_synthesized_root = tasks.is_empty();
+        let (task_store, todo_lists, status) = if restored_with_synthesized_root {
             // Bypass `derive_status_from_root_task`: it would return `Success`
             // for a root with no exchanges, silently misclassifying a restored
             // "child waiting on server response" as done.
@@ -756,6 +767,7 @@ impl AIConversation {
             compaction_state,
             byop_repair_state,
             cli_subagent_block_snapshots,
+            restored_with_synthesized_root,
         })
     }
 
@@ -3554,6 +3566,27 @@ impl AIConversation {
     }
 
     fn updated_conversation_state_event(&self) -> ModelEvent {
+        self.updated_conversation_state_event_with_retention(PersistedTaskRetention::DeleteMissing)
+    }
+
+    /// The retention this conversation's saves actually use: whatever the caller asked for,
+    /// unless the root was synthesized on restore, in which case nothing persisted may be
+    /// deleted or have its summary replaced (see `restored_with_synthesized_root`).
+    fn effective_task_retention(
+        &self,
+        requested: PersistedTaskRetention,
+    ) -> PersistedTaskRetention {
+        if self.restored_with_synthesized_root {
+            PersistedTaskRetention::KeepMissing
+        } else {
+            requested
+        }
+    }
+
+    fn updated_conversation_state_event_with_retention(
+        &self,
+        requested_retention: PersistedTaskRetention,
+    ) -> ModelEvent {
         let reverted_action_ids = if self.reverted_action_ids.is_empty() {
             None
         } else {
@@ -3633,6 +3666,7 @@ impl AIConversation {
                 byop_repair_state_json: self.byop_repair_state.to_sidecar_json(),
                 cli_subagent_block_snapshots_json: self.cli_subagent_block_snapshots_json(),
             },
+            task_retention: self.effective_task_retention(requested_retention),
         }
     }
 
@@ -3701,6 +3735,20 @@ impl AIConversation {
         &mut self,
         ctx: &mut ModelContext<BlocklistAIHistoryModel>,
     ) {
+        self.write_updated_conversation_state_with_retention(
+            PersistedTaskRetention::DeleteMissing,
+            ctx,
+        );
+    }
+
+    /// [`Self::write_updated_conversation_state`] with an explicit retention. Only a caller
+    /// that deliberately removed every persisted task (a rewind past the first exchange)
+    /// passes anything but the default.
+    fn write_updated_conversation_state_with_retention(
+        &mut self,
+        retention: PersistedTaskRetention,
+        ctx: &mut ModelContext<BlocklistAIHistoryModel>,
+    ) {
         // We should not persist non-local conversations (e.g. shared sessions).
         if self.is_viewing_shared_session {
             return;
@@ -3720,7 +3768,7 @@ impl AIConversation {
             return;
         };
 
-        let event = self.updated_conversation_state_event();
+        let event = self.updated_conversation_state_event_with_retention(retention);
         ctx.spawn(
             async move {
                 if let Err(e) = sqlite_sender.send(event) {
@@ -4545,7 +4593,17 @@ impl AIConversation {
             self.server_conversation_token = None;
         }
 
-        self.write_updated_conversation_state(ctx);
+        // A rewind past the first exchange leaves a sourceless optimistic root, so the
+        // snapshot is empty. That empty snapshot is deliberate here — the user removed every
+        // exchange — so ask for the persisted rows to be cleared; an ordinary empty save
+        // deletes nothing. (A conversation restored with a synthesized root still keeps its
+        // rows: `effective_task_retention` overrides this.)
+        let retention = if root_task_is_empty {
+            PersistedTaskRetention::DeleteMissingEvenIfEmpty
+        } else {
+            PersistedTaskRetention::DeleteMissing
+        };
+        self.write_updated_conversation_state_with_retention(retention, ctx);
 
         Ok(exchanges_to_remove)
     }

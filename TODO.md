@@ -11243,6 +11243,38 @@ claim, which was wrong by four.
       end). Known residual: a `CreateTask` that lands only after the block
       completed binds a fresh subtask to the finished block (pre-existing race).
 
+- [~] **A conversation whose tasks cannot be read is refused silently.** Refs #TBD.
+      **UNVERIFIED — nothing was compiled.** Guard landed 2026-09-26 on
+      `port/guard-conversation-history` (see `DECLINED.md` → `IMPROVED`, "A save can no
+      longer shrink a conversation's persisted history"): saves carry a
+      `PersistedTaskRetention`, an empty snapshot deletes nothing, a conversation restored
+      with a synthesized root only ever adds rows, and `read_agent_conversation_by_id`
+      now fails on any undecodable task row instead of returning a conversation that
+      lacks it. **Decision:** such a conversation is *not* restored as an editable pane.
+      An editable copy that is missing tasks is the one shape that destroys data (its
+      next save used to prune what it could not read), and a pane with nothing in it is
+      no use to the user either; refusing keeps every row on disk for a build that can
+      decode them. **What is still open, and why it is not done here:**
+      (1) **No visible signal.** Pane restore just omits the conversation and a click in
+      the history list does nothing; the only trace is a `log::error!`. The least
+      surprising behaviour is a read-only entry or a toast ("this conversation could not
+      be read; it was left untouched"), which needs a new error variant threaded from
+      `read_agent_conversation_by_id` through `RestoredAgentConversations::load_from_db`
+      and `load_conversation_from_db` to a UI surface — a UI change, not a guard.
+      (2) **Two roots after a 0.1.0–0.1.7 hollow follow-up.** A hollow conversation whose
+      rows *were* readable now saves its follow-up as a second parentless root beside the
+      original; restore prefers a root with messages but does not choose between two
+      such roots deterministically (`new_restored_synthesizing_on_empty`, parentless
+      candidates). Only converting a metadata-only record produces a hollow conversation
+      with readable rows, and `4b0d1300f` (which this guard sits on) removed the one path
+      that did — so this is defence against a future regression, not a live case. A merge
+      or "prefer the older root" rule would close it.
+      (3) **History already lost on 0.1.0–0.1.7 is not recoverable** from this database:
+      the rows were deleted. Say so in release notes.
+      (4) The pane filter (`pane_group/mod.rs`, `all_tasks().next().is_none()`) still
+      cannot reject a synthesized root; after this change that only admits conversations
+      with no task rows at all, which have nothing to lose.
+
 - [ ] **The shell lockup: an unanswered completions handshake wedges the pane
       permanently.** Root-caused 2026-09-20. This is the "shell just locked up"
       report that three earlier theories failed to explain -- the pane accepts

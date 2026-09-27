@@ -303,6 +303,34 @@ pub struct FinishedCommandMetadata {
     pub session_id: SessionId,
 }
 
+/// How an [`ModelEvent::UpdateMultiAgentConversation`] write treats `agent_tasks` rows
+/// that are not in its task snapshot, and whether it may replace the stored `summary`.
+///
+/// Before this existed, every write had replace semantics: the snapshot was taken as the
+/// conversation's complete task set and every other row was deleted — including when the
+/// snapshot was EMPTY, which `ne_all(&[])` turns into "delete every row". A conversation
+/// restored without its tasks (a synthesized optimistic root, which has no protobuf
+/// source and so contributes nothing to the snapshot) therefore wiped its own history on
+/// the first follow-up. The pin shares that weakness (`4111d08f9:app/src/persistence/agent.rs`);
+/// see `DECLINED.md` → `IMPROVED`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PersistedTaskRetention {
+    /// Replace semantics for a non-empty snapshot: rows absent from it are deleted (this is
+    /// what keeps rewound or pruned subtasks from being resurrected on restore). An EMPTY
+    /// snapshot deletes nothing and leaves a stored summary that names a real initial query
+    /// in place, because "no tasks" is far more often "tasks not loaded" than "tasks removed".
+    #[default]
+    DeleteMissing,
+    /// Replace semantics even for an empty snapshot. Only for a deliberate user action that
+    /// leaves the conversation with no persisted tasks: a rewind that removes every exchange
+    /// (`AIConversation::truncate_from_exchange` resetting the root to optimistic).
+    DeleteMissingEvenIfEmpty,
+    /// Delete nothing, and never replace a stored summary that names a real initial query.
+    /// For a conversation that knows it does not hold its persisted task set — one whose root
+    /// was synthesized on restore because no task could be read — so it can only add rows.
+    KeepMissing,
+}
+
 #[derive(Debug)]
 pub enum ModelEvent {
     SaveBlock(BlockCompleted),
@@ -382,6 +410,8 @@ pub enum ModelEvent {
         conversation_id: String,
         updated_tasks: Vec<api::Task>,
         conversation_data: AgentConversationData,
+        /// What the write may delete or replace; see [`PersistedTaskRetention`].
+        task_retention: PersistedTaskRetention,
     },
     DeleteMultiAgentConversations {
         conversation_ids: Vec<String>,
