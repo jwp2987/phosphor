@@ -2457,8 +2457,28 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       Upstream attributes an ~11.98 GB spike to it. **Upstream never built or ran
       this** (no macOS CI) — needs a real macOS build here, not a rubber stamp.
       **Closed as declined 2026-09-26:** macOS Core Text only; no macOS build target here. Out of scope.
-- [ ] `dc1077845` — monomorphization bloat in `warpui_core` spawn/update. Compile-time
+- [x] `dc1077845` — monomorphization bloat in `warpui_core` spawn/update. Compile-time
       only. Preserve the `pending_flushes` reorder if ported.
+      **Ported 2026-09-27:** `update_model`/`update_view` bookkeeping split into
+      `take_model_for_update`/`finish_model_update` and
+      `take_view_for_update`/`finish_view_update` (`core/app.rs`), each generic only
+      over the entity type via `downcast_model_mut`/`downcast_view_mut`. Fork's view
+      path already differs from upstream (a `Result`-returning `try_update_view` plus
+      a separate `tui`-feature-gated `window.tui_views` map, not upstream's
+      `StoredView` enum), so `take_view_for_update` returns a fork-only
+      `CheckedOutView` enum (`Gui`/`Tui`) instead of upstream's bare `StoredView`; the
+      `handle.window_id(self)` lookup already ran before the `pending_flushes`
+      increment here, so upstream's reorder was already in place — nothing to
+      preserve. `spawn`/`spawn_abortable` in both `model/context.rs` and
+      `view/context.rs` now delegate to a non-generic-over-`S`/`F`/`A`
+      `spawn_abortable_boxed<O>`, matching upstream; both files were already at
+      upstream's pre-refactor body (only `report_error!` vs `log::error!` differed,
+      pre-existing and untouched). **Not compiled** — no cargo build/check per round
+      rules; verified by reading `AnyModel`/`AnyView`/`AnyTuiView`/`ViewUpdateError`
+      definitions and `rustfmt --check --config-path .rustfmt.toml` on all three
+      files (clean at the touched lines; the rest of `core/app.rs` already has
+      unrelated pre-existing rustfmt drift from the edition-2018/2024 `.rustfmt.toml`
+      mismatch, see HANDOFF.md).
 
 **Search / workspace / system (10)**
 
