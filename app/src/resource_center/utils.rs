@@ -1,6 +1,7 @@
 // Hard coded constants to divide keybindings into their respective categories/sections.
 
 use warpui::keymap::Keystroke;
+use warpui::platform::OperatingSystem;
 
 use crate::util::bindings::CommandBinding;
 
@@ -107,13 +108,16 @@ pub const FUNDAMENTALS_KEYBINDINGS: &[&str] = &[
     "workspace:hide_warp",
     "workspace:hide_others",
     "workspace:quit_warp",
+    // The editable "Quit Phosphor" binding. Only carries a default shortcut off macOS (where
+    // `workspace:quit_warp` above is the menu's `cmd-q`), so it only lists there.
+    crate::util::bindings::QUIT_APP_BINDING_NAME,
     "workspace:minimize",
 ];
 
 /// Returns hard-coded keybindings that are shown in the mac menus but not saved/accessible
 /// anywhere else in the code.
 pub fn get_additional_keybindings() -> Vec<CommandBinding> {
-    vec![
+    let mut bindings = vec![
         CommandBinding::new(
             "workspace:new_window".into(),
             "Open New Window".into(),
@@ -130,14 +134,20 @@ pub fn get_additional_keybindings() -> Vec<CommandBinding> {
             Some(Keystroke::parse("alt-cmd-h").expect("Valid keystroke")),
         ),
         CommandBinding::new(
-            "workspace:quit_warp".into(),
-            "Quit Phosphor".into(),
-            Some(Keystroke::parse("cmd-q").expect("Valid keystroke")),
-        ),
-        CommandBinding::new(
             "workspace:minimize".into(),
             "Minimize".into(),
             Some(Keystroke::parse("cmd-m").expect("Valid keystroke")),
         ),
-    ]
+    ];
+    // The menu's `cmd-q` only exists on macOS. Elsewhere quitting is the editable
+    // `QUIT_APP_BINDING_NAME` binding, which the page already lists from the keymap with its real
+    // (possibly user-edited) shortcut — listing `cmd-q` too would advertise a key that does nothing.
+    if OperatingSystem::get().is_mac() {
+        bindings.push(CommandBinding::new(
+            "workspace:quit_warp".into(),
+            "Quit Phosphor".into(),
+            Some(Keystroke::parse("cmd-q").expect("Valid keystroke")),
+        ));
+    }
+    bindings
 }

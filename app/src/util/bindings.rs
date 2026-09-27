@@ -26,6 +26,26 @@ use warpui::{AppContext, SingletonEntity};
 
 pub const MAC_MENUS_CONTEXT: DescriptionContext = DescriptionContext::Custom("mac_menus");
 
+/// Name of the editable "Quit Phosphor" binding (command palette, keybinding settings).
+pub const QUIT_APP_BINDING_NAME: &str = "workspace:terminate_app";
+
+/// Default quit shortcut on Linux and Windows. macOS quits via the native menu's `cmd-q`
+/// ([`StandardAction::Quit`]), which has no counterpart off macOS.
+///
+/// Deliberately not `ctrl-q`: that is XON and readline's quoted-insert, and must reach the shell
+/// (see [`CONTROL_CHARACTER_KEY_REGEX`]). See `DECLINED.md` (IMPROVED).
+pub const LINUX_OR_WINDOWS_QUIT_KEYSTROKE: &str = "ctrl-shift-Q";
+
+/// The default quit shortcut for the current platform: `cmd-q` on macOS, otherwise
+/// [`LINUX_OR_WINDOWS_QUIT_KEYSTROKE`].
+pub fn default_quit_keystroke() -> Option<Keystroke> {
+    if OperatingSystem::get().is_mac() {
+        Keystroke::parse("cmd-q").ok()
+    } else {
+        Keystroke::parse(LINUX_OR_WINDOWS_QUIT_KEYSTROKE).ok()
+    }
+}
+
 // CustomActions are attached to menu items, and may be attached to Bindings.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Sequence)]
 #[repr(isize)]
@@ -246,8 +266,8 @@ pub fn trigger_to_keystroke(trigger: &Trigger) -> Option<Keystroke> {
         Trigger::Standard(standard) => match standard {
             StandardAction::Close => mac_only_keystroke("cmd-shift-W"),
             // "cmd-q" to quit and "cmd-h" to hide are the standard bindings for these actions on
-            // Mac.
-            StandardAction::Quit => mac_only_keystroke("cmd-q"),
+            // Mac. Quit also has a Linux/Windows default (see `default_quit_keystroke`).
+            StandardAction::Quit => default_quit_keystroke(),
             StandardAction::Hide => mac_only_keystroke("cmd-h"),
             StandardAction::HideOtherApps => Keystroke::parse("cmdorctrl-alt-h").ok(),
             StandardAction::ToggleFullScreen => mac_only_keystroke("cmd-ctrl-f"),

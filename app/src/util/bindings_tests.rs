@@ -1,12 +1,16 @@
 use warpui::platform::OperatingSystem;
 use warpui::{
+    actions::StandardAction,
     keymap::{EditableBinding, Keystroke, Trigger},
     App,
 };
 
 use crate::{
     terminal,
-    util::bindings::{keybinding_name_to_display_string, trigger_to_keystroke},
+    util::bindings::{
+        CONTROL_CHARACTER_KEY_REGEX, QUIT_APP_BINDING_NAME, default_quit_keystroke,
+        keybinding_name_to_display_string, trigger_to_keystroke,
+    },
     workspace::WorkspaceAction,
 };
 
@@ -169,4 +173,73 @@ fn test_windows_paste_custom_action_binds_to_plain_ctrl_v() {
         custom_tag_to_keystroke(CustomAction::WindowsPaste.into()),
         Some(expected)
     );
+}
+
+// Linux/Windows had no quit shortcut: the pin (and this fork until now) only quit via the macOS
+// menu's `cmd-q`, and `workspace:terminate_app` ("Quit Phosphor") shipped without a default key.
+// Off macOS the default is `ctrl-shift-Q`, never `ctrl-q` (XON / readline quoted-insert, which
+// must reach the shell). See DECLINED.md (IMPROVED).
+#[test]
+fn test_default_quit_keystroke_per_platform() {
+    let expected = if OperatingSystem::get().is_mac() {
+        Keystroke::parse("cmd-q").ok()
+    } else {
+        Keystroke::parse("ctrl-shift-Q").ok()
+    };
+    assert!(expected.is_some());
+    assert_eq!(default_quit_keystroke(), expected);
+    // The standard Quit action displays the same shortcut the keymap binds.
+    assert_eq!(
+        trigger_to_keystroke(&Trigger::Standard(StandardAction::Quit)),
+        expected
+    );
+}
+
+#[test]
+fn test_default_quit_keystroke_is_not_a_control_character() {
+    let keystroke = default_quit_keystroke().expect("quit keystroke should parse");
+    assert!(
+        !CONTROL_CHARACTER_KEY_REGEX.is_match(keystroke.normalized().as_str()),
+        "the quit shortcut must not swallow a control character the shell needs: {}",
+        keystroke.normalized()
+    );
+}
+
+#[test]
+fn test_quit_binding_default_and_no_collision() {
+    App::test((), |mut app| async move {
+        crate::workspace::view::tests::initialize_app(&mut app);
+
+        app.update(|ctx| {
+            let quit = ctx
+                .editable_bindings()
+                .find(|binding| binding.name == QUIT_APP_BINDING_NAME)
+                .expect("the Quit binding should be registered as an editable binding");
+            let quit_keystroke = trigger_to_keystroke(quit.trigger);
+
+            if OperatingSystem::get().is_mac() {
+                // macOS quits through the native menu's `cmd-q`; the keymap binding may only
+                // mirror it, never claim something else.
+                assert!(
+                    quit_keystroke.is_none() || quit_keystroke == default_quit_keystroke(),
+                    "unexpected mac Quit keystroke: {quit_keystroke:?}"
+                );
+            } else {
+                assert_eq!(quit_keystroke, default_quit_keystroke());
+            }
+
+            // Nothing else in the default keymap claims the quit shortcut.
+            let default_quit = default_quit_keystroke();
+            let claimants: Vec<&str> = ctx
+                .get_key_bindings()
+                .filter(|binding| binding.name != QUIT_APP_BINDING_NAME)
+                .filter(|binding| trigger_to_keystroke(binding.trigger) == default_quit)
+                .map(|binding| binding.name)
+                .collect();
+            assert!(
+                claimants.is_empty(),
+                "the default quit shortcut collides with: {claimants:?}"
+            );
+        });
+    });
 }
