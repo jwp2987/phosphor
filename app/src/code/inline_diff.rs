@@ -136,6 +136,15 @@ enum AcceptedAction {
     /// [`InlineDiffView::original_content`] at the registered path and
     /// removes `to` if it still holds `content`.
     Renamed { to: PathBuf, content: String },
+    /// A rename revert's first step landed — the registered path holds the
+    /// original text again — but its second step (removing whatever the
+    /// accept left at `to`) has not: it either has not been attempted yet, or
+    /// was refused because `to` no longer holds `content`. Recorded so a
+    /// retry does not attempt the first step again, whose `Absent` guard
+    /// would now refuse against the very state that step just established
+    /// (see [`InlineDiffView::finish_rename_revert`]); only `to` remains to
+    /// be dealt with.
+    PartiallyRevertedRename { to: PathBuf, content: String },
 }
 
 impl InlineDiffView {
@@ -810,6 +819,18 @@ impl InlineDiffView {
                 });
                 Ok(RevertDispatch::WriteInFlight)
             }
+            RevertPlan::FinishRename { at, remove_expected } => {
+                // A previous attempt's first step already landed -- the
+                // registered path (`file_id`) already holds the original
+                // text -- so nothing is dispatched against it here, and
+                // `suppress_next_backing_file_event` does not apply: no event
+                // for `file_id` is coming. Reuse `finish_rename_revert`'s own
+                // second-step dispatch by handing it the already-known-good
+                // outcome of a step it does not need to repeat.
+                self.revert_dispatched = true;
+                self.finish_rename_revert(Ok(()), at, remove_expected, ctx);
+                Ok(RevertDispatch::WriteInFlight)
+            }
         }
     }
 
@@ -821,6 +842,27 @@ impl InlineDiffView {
     /// the restore was refused or failed, nothing else is attempted: the file
     /// is left exactly where the accept put it, and the refusal is reported
     /// as-is.
+    ///
+    /// # The partial outcome (step 1 landed, step 2 does not)
+    ///
+    /// Once the restore above has landed there are, unconditionally, now two
+    /// copies of the file: the original at the registered path and whatever
+    /// the accept left at `at`. `accepted_action` is updated to
+    /// [`AcceptedAction::PartiallyRevertedRename`] *before* step 2 is even
+    /// dispatched, not just on its refusal, because that is the moment this
+    /// stops being a plain, still-intact `Renamed` accept: a retry from here
+    /// must never repeat step 1 (its `Absent` guard would refuse against the
+    /// state step 1 itself just established — the exact "retrying is dead"
+    /// failure mode this exists to avoid), only ever attempt step 2 again.
+    /// If step 2 then lands, this recorded state never matters again — the
+    /// card moves straight to `Reverted` and consults `accepted_action` no
+    /// further.
+    ///
+    /// If step 2 is refused or fails, the toast must say so honestly: not
+    /// step 2's guard message alone (which, read on its own, sounds like
+    /// *nothing* happened, when in fact the restore already did) but that the
+    /// original was restored *and* the destination could not be removed, so
+    /// both files now exist.
     #[cfg(not(target_family = "wasm"))]
     fn finish_rename_revert(
         &mut self,
@@ -835,6 +877,28 @@ impl InlineDiffView {
             });
             return;
         }
+
+        let content = match &remove_expected {
+            ExpectedDiskState::Content(content) => content.clone(),
+            // `revert_plan` never builds a rename revert whose `remove_expected`
+            // is anything else; kept total (rather than `unreachable!`) so a
+            // future change to `revert_plan` fails safe here -- no attempt to
+            // remove `at` at all -- instead of panicking mid-revert.
+            ExpectedDiskState::Absent => {
+                log::error!("a rename revert's destination guard was not a content guard");
+                String::new()
+            }
+        };
+        *self.accepted_action.borrow_mut() = Some(AcceptedAction::PartiallyRevertedRename {
+            to: at.clone(),
+            content,
+        });
+
+        let original_path = self
+            .file_path
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "the file".to_owned());
 
         let version = self.editor.as_ref(ctx).version(ctx);
         let dispatched = FileModel::handle(ctx).update(ctx, |file_model, ctx| {
@@ -858,16 +922,20 @@ impl InlineDiffView {
 
         match dispatched {
             Ok(completion) => {
-                ctx.spawn(completion, |_me, delete_result, ctx| match delete_result {
+                ctx.spawn(completion, move |_me, delete_result, ctx| match delete_result {
                     Ok(()) => ctx.emit(InlineDiffViewEvent::FileSaved),
                     Err(error) => ctx.emit(InlineDiffViewEvent::FailedToSave {
-                        error: Rc::new(revert_failure(&error)),
+                        error: Rc::new(partial_rename_revert_failure(
+                            &original_path,
+                            &at,
+                            &error,
+                        )),
                     }),
                 });
             }
             Err(error) => {
                 ctx.emit(InlineDiffViewEvent::FailedToSave {
-                    error: Rc::new(revert_failure(&error)),
+                    error: Rc::new(partial_rename_revert_failure(&original_path, &at, &error)),
                 });
             }
         }
@@ -903,6 +971,15 @@ enum RevertPlan {
         at: PathBuf,
         remove_expected: ExpectedDiskState,
     },
+    /// A retry of a rename revert whose first step already landed on a
+    /// previous attempt: the registered path already holds the original
+    /// text, so only `at` — not the registered path — needs a guarded write.
+    /// Unlike [`Self::Single`], this does not touch `file_id` at all; see
+    /// [`InlineDiffView::dispatch_guarded_revert`].
+    FinishRename {
+        at: PathBuf,
+        remove_expected: ExpectedDiskState,
+    },
 }
 
 /// Decides the write(s) that undo an accept, and the pre-image(s) they assert.
@@ -923,7 +1000,12 @@ enum RevertPlan {
 ///   path (requiring it to still be free) and then removing the file at the
 ///   destination (requiring it to still hold the accepted text) — two steps,
 ///   two different pre-images, applied in that order so that a refused restore
-///   never triggers the destination's removal (see `dispatch_guarded_revert`).
+///   never triggers the destination's removal (see `dispatch_guarded_revert`);
+/// * a **partially-reverted rename** — the first of those two steps landed on
+///   an earlier attempt, the second did not — is undone by *only* the second
+///   step: retrying the first would guard on the destination's absence, which
+///   the first step's own success has since falsified (see
+///   `AcceptedAction::PartiallyRevertedRename`).
 ///
 /// Unlike the TUI, the accepted text cannot be re-derived from the diff: this
 /// view is editable, and the user may have changed the agent's proposal before
@@ -984,6 +1066,17 @@ fn revert_plan(
                 remove_expected: ExpectedDiskState::Content(content),
             })
         }
+        // The registered path already holds the original text -- a previous
+        // attempt's first step landed, only its second (removing `to`) did
+        // not. Retrying the first step here would guard on `Absent`, which no
+        // longer holds now that the first step put the original text back;
+        // only `to` remains to be dealt with. Does not consult `original`: a
+        // retry from this state needs none, which is exactly why this must be
+        // its own `AcceptedAction` rather than reusing `Renamed`.
+        AcceptedAction::PartiallyRevertedRename { to, content } => Ok(RevertPlan::FinishRename {
+            at: to,
+            remove_expected: ExpectedDiskState::Content(content),
+        }),
         AcceptedAction::Deleted => {
             let original = original.ok_or_else(missing_original)?;
             Ok(RevertPlan::Single(RevertWrite::Restore {
@@ -1027,6 +1120,23 @@ fn dispatch_revert_write(
     }
 }
 
+/// The plain-English reason inside a write failure, with no wrapping sentence
+/// of its own: [`FileSaveError::Other`]'s message as-is (already a full
+/// sentence naming the file), `path: io_error` for an
+/// [`FileSaveError::IOError`] (whose own `Display` is a constant that drops
+/// both), or the error's own text otherwise. Shared by [`revert_failure`] and
+/// [`partial_rename_revert_failure`], which each wrap it in a different
+/// sentence.
+#[cfg(not(target_family = "wasm"))]
+fn failure_reason(error: &FileSaveError) -> String {
+    match error {
+        FileSaveError::Other(message) => message.clone(),
+        // `IOError`'s own `Display` is a constant; the `io::Error` is the reason.
+        FileSaveError::IOError { error, path } => format!("{}: {error}", path.display()),
+        other => other.to_string(),
+    }
+}
+
 /// Rewrites a write failure as a failed *revert*, so the toast does not read
 /// as a failed accept.
 ///
@@ -1035,13 +1145,32 @@ fn dispatch_revert_write(
 /// wrapped in a second path. Anything else keeps its reason.
 #[cfg(not(target_family = "wasm"))]
 fn revert_failure(error: &FileSaveError) -> FileSaveError {
-    let reason = match error {
-        FileSaveError::Other(message) => message.clone(),
-        // `IOError`'s own `Display` is a constant; the `io::Error` is the reason.
-        FileSaveError::IOError { error, path } => format!("{}: {error}", path.display()),
-        other => other.to_string(),
-    };
-    FileSaveError::Other(format!("Did not revert the agent's edit. {reason}"))
+    FileSaveError::Other(format!(
+        "Did not revert the agent's edit. {}",
+        failure_reason(error)
+    ))
+}
+
+/// The honest outcome of a rename revert whose first step (restoring the
+/// original at `original_path`) landed but whose second (removing whatever
+/// the accept left at `destination`) did not: unlike [`revert_failure`], this
+/// must not read as "nothing happened" -- something did, the file at
+/// `original_path` is back, and `destination` is a second copy left behind
+/// because it changed since the accept (or could not be removed for some
+/// other reason `error` names). A retry only has `destination` left to deal
+/// with; see [`AcceptedAction::PartiallyRevertedRename`].
+#[cfg(not(target_family = "wasm"))]
+fn partial_rename_revert_failure(
+    original_path: &str,
+    destination: &std::path::Path,
+    error: &FileSaveError,
+) -> FileSaveError {
+    FileSaveError::Other(format!(
+        "{original_path} was restored, but {dest} could not be removed and was left as-is: {}. \
+         Both files now exist; revert again to retry removing {dest}.",
+        failure_reason(error),
+        dest = destination.display(),
+    ))
 }
 
 impl Entity for InlineDiffView {
@@ -1853,6 +1982,171 @@ mod tests {
                 std::fs::read_to_string(&original_path).unwrap(),
                 "reused for something else\n",
                 "whatever now occupies the original path must be left alone"
+            );
+        });
+    }
+
+    // ── Partial rename revert: step 1 lands, step 2 does not (#688 review) ─
+    //
+    // `finish_rename_revert` records `AcceptedAction::PartiallyRevertedRename`
+    // the moment the restore at the registered path lands, before step 2 is
+    // even attempted. `revert_plan` is what a retry consults, so these tests
+    // drive it directly rather than the live view (see the module doc).
+
+    /// The plan for a retry: only the destination write remains. Passing
+    /// `original: None` and still getting a plan back is the point — a retry
+    /// from this state needs no original text at all, which is why this must
+    /// be its own `AcceptedAction` rather than reusing `Renamed`.
+    #[test]
+    fn a_partially_reverted_rename_retries_only_the_destination() {
+        let plan = revert_plan(
+            false,
+            Some(AcceptedAction::PartiallyRevertedRename {
+                to: PathBuf::from("/tmp/new.rs"),
+                content: ACCEPTED.to_owned(),
+            }),
+            None,
+            Some(&path()),
+        )
+        .expect("a retry needs no original text");
+
+        assert_eq!(
+            plan,
+            RevertPlan::FinishRename {
+                at: PathBuf::from("/tmp/new.rs"),
+                remove_expected: ExpectedDiskState::Content(ACCEPTED.to_owned()),
+            }
+        );
+    }
+
+    /// The honest message: naming both what landed (the restore) and what did
+    /// not (the removal), not just the removal's bare guard refusal, which
+    /// read alone sounds like nothing happened at all.
+    #[test]
+    fn partial_rename_revert_failure_names_both_files() {
+        let error = FileSaveError::Other("new.rs changed on disk.".to_owned());
+        let message =
+            partial_rename_revert_failure("old.rs", std::path::Path::new("new.rs"), &error)
+                .to_string();
+
+        assert!(message.contains("old.rs was restored"), "got: {message}");
+        assert!(
+            message.contains("both files now exist") || message.contains("Both files now exist"),
+            "got: {message}"
+        );
+        assert!(
+            message.contains("new.rs changed on disk"),
+            "must keep the underlying reason, got: {message}"
+        );
+    }
+
+    /// End to end on real files: step 1 already landed (the original is back
+    /// at its path, untouched by anything below), step 2 is retried and
+    /// refused because the destination changed since the first attempt. The
+    /// retry must touch only the destination — never re-attempt the restore,
+    /// whose `Absent` guard would now refuse it — and the original must
+    /// survive exactly as it already was.
+    #[test]
+    fn retrying_a_partially_reverted_rename_only_touches_the_destination() {
+        warpui::App::test((), |mut app| async move {
+            let directory = tempfile::tempdir().expect("temp dir");
+            let original_path = directory.path().join("old.rs");
+            let destination_path = directory.path().join("new.rs");
+            // Step 1 already landed on a previous attempt.
+            std::fs::write(&original_path, BASE).expect("write file");
+            // The user edited the destination before the retry.
+            std::fs::write(&destination_path, "edited after the first attempt\n")
+                .expect("write file");
+
+            let plan = revert_plan(
+                false,
+                Some(AcceptedAction::PartiallyRevertedRename {
+                    to: destination_path.clone(),
+                    content: ACCEPTED.to_owned(),
+                }),
+                None,
+                None,
+            )
+            .expect("plan");
+            let RevertPlan::FinishRename { at, remove_expected } = plan else {
+                panic!("expected a finish-rename plan, got {plan:?}");
+            };
+            assert_eq!(at, destination_path);
+
+            let files = app.add_singleton_model(FileModel::new);
+            let destination_id = files.update(&mut app, |files, ctx| {
+                files.register_file_path(&destination_path, false, ctx)
+            });
+            write_and_wait(
+                &mut app,
+                &files,
+                destination_id,
+                RevertWrite::Delete {
+                    expected: remove_expected,
+                },
+            )
+            .await
+            .expect_err("the retry must be refused: the destination changed again");
+
+            assert_eq!(
+                std::fs::read_to_string(&original_path).unwrap(),
+                BASE,
+                "the retry must never touch the registered path a second time"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&destination_path).unwrap(),
+                "edited after the first attempt\n",
+                "a refused retry must leave the destination exactly as it was"
+            );
+        });
+    }
+
+    /// ...and once the destination is back to what the first attempt left, a
+    /// retry lands and removes it, leaving only the (already-restored)
+    /// original.
+    #[test]
+    fn retrying_a_partially_reverted_rename_succeeds_once_the_destination_matches() {
+        warpui::App::test((), |mut app| async move {
+            let directory = tempfile::tempdir().expect("temp dir");
+            let original_path = directory.path().join("old.rs");
+            let destination_path = directory.path().join("new.rs");
+            std::fs::write(&original_path, BASE).expect("write file");
+            std::fs::write(&destination_path, ACCEPTED).expect("write file");
+
+            let plan = revert_plan(
+                false,
+                Some(AcceptedAction::PartiallyRevertedRename {
+                    to: destination_path.clone(),
+                    content: ACCEPTED.to_owned(),
+                }),
+                None,
+                None,
+            )
+            .expect("plan");
+            let RevertPlan::FinishRename { at: _, remove_expected } = plan else {
+                panic!("expected a finish-rename plan, got {plan:?}");
+            };
+
+            let files = app.add_singleton_model(FileModel::new);
+            let destination_id = files.update(&mut app, |files, ctx| {
+                files.register_file_path(&destination_path, false, ctx)
+            });
+            write_and_wait(
+                &mut app,
+                &files,
+                destination_id,
+                RevertWrite::Delete {
+                    expected: remove_expected,
+                },
+            )
+            .await
+            .expect("the retry should land");
+
+            assert!(!destination_path.exists(), "the destination must be gone");
+            assert_eq!(
+                std::fs::read_to_string(&original_path).unwrap(),
+                BASE,
+                "the original, already restored, must be left alone"
             );
         });
     }
