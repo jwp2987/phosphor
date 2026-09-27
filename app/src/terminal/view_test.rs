@@ -10108,7 +10108,7 @@ fn agent_command_stalled_on_confirmation_prompt_is_handed_to_user() {
                 .pending_interactive_prompt(ctx)
                 .expect("a wait_until_completion command on a [Y/n] prompt is stalled");
             assert!(
-                prompt.contains("[Y/n]"),
+                prompt.text.contains("[Y/n]"),
                 "unexpected prompt text: {prompt:?}"
             );
 
@@ -10126,6 +10126,23 @@ fn agent_command_stalled_on_confirmation_prompt_is_handed_to_user() {
                     reason: UserTakeOverReason::BlockedOnInput,
                 })
             );
+            assert!(
+                view.keeps_polling_after_prompt(),
+                "an agent command keeps polling so a later prompt is caught too"
+            );
+
+            // While the user holds the command no candidate is reported, which is what
+            // re-arms the manager's `PromptDetector`...
+            assert_eq!(view.pending_interactive_prompt(ctx), None);
+
+            // ...so once control comes back to the agent, a prompt is reported again.
+            view.model
+                .lock()
+                .block_list_mut()
+                .active_block_mut()
+                .handoff_control_to_agent()
+                .expect("hand-back from BlockedOnInput should succeed");
+            assert!(view.pending_interactive_prompt(ctx).is_some());
         });
     })
 }

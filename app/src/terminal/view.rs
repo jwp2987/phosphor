@@ -469,9 +469,7 @@ use crate::terminal::keys::TerminalKeybindings;
 use crate::terminal::model::block::{AgentInteractionMetadata, BlockMetadata};
 use crate::terminal::model::block::{Block, BlockId};
 #[cfg(unix)]
-use crate::terminal::model::block::{
-    looks_like_interactive_prompt, text_before_cursor_on_cursor_line,
-};
+use crate::terminal::model::block::{InteractivePromptCandidate, interactive_prompt_candidate};
 use crate::terminal::model::blocks::{BlockFilter, BlockList};
 use crate::terminal::model::blocks::{
     AgentTranscriptNavigableItem, BlockHeight, BlockHeightItem, BlockHeightSummary, Gap,
@@ -25721,36 +25719,47 @@ impl TerminalSurface for TerminalView {
     }
 
     #[cfg(unix)]
-    fn pending_interactive_prompt(&self, ctx: &AppContext) -> Option<String> {
-        let (action_id, prompt) = {
-            let model = self.model.lock();
-            if model.is_alt_screen_active() {
-                return None;
-            }
-            let active_block = model.block_list().active_block();
-            if !(active_block.is_agent_requested_command()
-                && active_block.is_agent_driving_command())
-            {
-                return None;
-            }
-            let action_id = active_block.requested_command_action_id()?.clone();
-            let prompt =
-                text_before_cursor_on_cursor_line(active_block.output_grid().grid_handler())?;
-            if !looks_like_interactive_prompt(&prompt) {
-                return None;
-            }
-            (action_id, prompt)
-        };
+    fn pending_interactive_prompt(&self, ctx: &AppContext) -> Option<InteractivePromptCandidate> {
         // Only a tool call that is blocked waiting for this command to *complete* can hang on
         // a prompt. Any other agent command gets a snapshot within seconds and can answer the
         // prompt itself with `write_to_long_running_shell_command`; taking the PTY away from
         // it there would be stealing, not unwedging.
-        self.ai_action_model
-            .as_ref(ctx)
-            .shell_command_executor(ctx)
-            .as_ref(ctx)
-            .is_awaiting_completion(&action_id)
-            .then_some(prompt)
+        //
+        // This runs once a second for every polled block, including the user's own commands,
+        // so the executor -- which needs no terminal-model lock -- is asked first, and the
+        // model is only locked while some agent tool call is actually waiting.
+        let executor = self.ai_action_model.as_ref(ctx).shell_command_executor(ctx);
+        let executor = executor.as_ref(ctx);
+        if !executor.has_any_awaiting_completion() {
+            return None;
+        }
+
+        let model = self.model.lock();
+        if model.is_alt_screen_active() {
+            return None;
+        }
+        let active_block = model.block_list().active_block();
+        // While the user holds the command this is `false`, so no candidate is reported and
+        // the manager's `PromptDetector` re-arms for when control comes back to the agent.
+        if !(active_block.is_agent_requested_command() && active_block.is_agent_driving_command()) {
+            return None;
+        }
+        let action_id = active_block.requested_command_action_id()?;
+        if !executor.is_awaiting_completion(action_id) {
+            return None;
+        }
+        interactive_prompt_candidate(active_block.output_grid().grid_handler())
+    }
+
+    #[cfg(unix)]
+    fn keeps_polling_after_prompt(&self) -> bool {
+        // An agent command can stop on another prompt after the user answers this one and
+        // hands control back; the user's own commands keep one notification per command.
+        self.model
+            .lock()
+            .block_list()
+            .active_block()
+            .is_agent_requested_command()
     }
 
     #[cfg(unix)]

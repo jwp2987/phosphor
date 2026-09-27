@@ -71,7 +71,7 @@ use super::{event_loop::EventLoop, shell::ShellStarterSource};
 use {
     super::terminal_attributes::TerminalAttributesPoller,
     crate::terminal::local_tty::terminal_attributes::Event as TerminalAttributesPollerEvent,
-    crate::terminal::model::block::InteractivePromptProbe,
+    crate::terminal::model::block::{PromptDetection, PromptDetector},
     crate::terminal::model::terminal_model::BlockIndex,
     crate::terminal::model_events::ModelEvent as TerminalModelEvent,
     nix::sys::termios::LocalFlags,
@@ -963,9 +963,10 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
     let block_index: Rc<RefCell<Option<BlockIndex>>> = Rc::new(RefCell::new(None));
     let block_index_for_termios = block_index.clone();
 
-    // Debounces the interactive-prompt heuristic across polls; reset per block.
-    let interactive_prompt_probe: Rc<RefCell<InteractivePromptProbe>> = Rc::default();
-    let interactive_prompt_probe_for_termios = interactive_prompt_probe.clone();
+    // Turns termios polls into prompt detections, debounced and once per episode; reset per
+    // block.
+    let prompt_detector: Rc<RefCell<PromptDetector>> = Rc::default();
+    let prompt_detector_for_termios = prompt_detector.clone();
 
     // On block start, record the active block index and ask the surface whether
     // password-prompt polling is useful before starting the poller. On block
@@ -986,7 +987,7 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
                         surface.should_start_password_prompt_polling(command, ctx)
                     })
                 });
-                interactive_prompt_probe.borrow_mut().reset();
+                prompt_detector.borrow_mut().reset();
                 if should_poll {
                     *block_index.borrow_mut() =
                         Some(model.lock().block_list().active_block_index());
@@ -995,6 +996,11 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
                     });
                 } else {
                     *block_index.borrow_mut() = None;
+                    // An agent command keeps the poller running after a detection, so make
+                    // sure it cannot outlive its block into one that was not meant to be polled.
+                    poller.update(ctx, |poller, _ctx| {
+                        poller.stop_polling();
+                    });
                 }
             }
             TerminalModelEvent::AfterBlockCompleted(completed) => {
@@ -1016,57 +1022,56 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
         }
     });
 
-    // When the poller detects termios consistent with a password prompt, route the
-    // result through the surface and stop after the first detection to preserve
-    // today's one-notification-per-command behavior.
+    // When the poller detects a prompt, route it through the surface. For the user's own
+    // commands, stop after the first detection to preserve the one-notification-per-command
+    // behavior. For agent commands keep polling: the command can stop on a second prompt after
+    // the user answers the first and hands control back (an agent-run `ssh` asking about the
+    // host key, then for the password), and `PromptDetector` only fires once per episode.
     ctx.subscribe_to_model(terminal_attributes_poller, move |_manager, event, ctx| {
         let TerminalAttributesPollerEvent::TermiosQueryFinished { termios } = event;
-
-        // A PTY likely has a password prompt if ECHO is disabled but ICANON is
-        // still enabled. Apps like neovim disable both in raw mode, so requiring
-        // ICANON avoids false positives.
-        let is_echo_on = termios.local_flags.contains(LocalFlags::ECHO);
-        let is_canonical = termios.local_flags.contains(LocalFlags::ICANON);
-        let might_be_password_prompt = !is_echo_on && is_canonical;
 
         let Some(surface) = surface_weak_handle_for_termios.upgrade(ctx) else {
             return;
         };
 
-        if !might_be_password_prompt {
-            // A `[y/N]` confirmation or a `read -p` prompt leaves termios cooked with echo
-            // on -- exactly what an ordinary running command looks like -- so termios alone
-            // cannot see it. Ask the surface what is printed before the cursor, and only act
-            // once the same prompt has sat unchanged across several polls. Raw-mode programs
-            // (editors, REPLs, a logged-in ssh session) clear ICANON and are never probed.
-            let prompt = (is_echo_on && is_canonical)
-                .then(|| surface.read(ctx, |surface, ctx| surface.pending_interactive_prompt(ctx)))
-                .flatten();
-            if !interactive_prompt_probe_for_termios
+        // A PTY likely has a password prompt if ECHO is disabled but ICANON is still enabled.
+        // Apps like neovim disable both in raw mode, so requiring ICANON avoids false
+        // positives. A `[y/N]` confirmation or a `read -p` prompt leaves termios cooked with
+        // echo on -- exactly what an ordinary running command looks like -- so for that shape
+        // the surface is asked what is printed before the cursor instead.
+        let is_echo_on = termios.local_flags.contains(LocalFlags::ECHO);
+        let is_canonical = termios.local_flags.contains(LocalFlags::ICANON);
+        let detection =
+            prompt_detector_for_termios
                 .borrow_mut()
-                .observe(prompt)
-            {
-                return;
+                .observe(is_echo_on, is_canonical, || {
+                    surface.read(ctx, |surface, ctx| surface.pending_interactive_prompt(ctx))
+                });
+        let Some(detection) = detection else {
+            return;
+        };
+
+        match detection {
+            PromptDetection::Password => {
+                let block_index = block_index_for_termios.borrow_mut().take();
+                surface.update(ctx, |surface, ctx| {
+                    surface.on_possible_password_prompt(block_index, ctx);
+                });
             }
-            surface.update(ctx, |surface, ctx| {
-                surface.on_stalled_interactive_prompt(ctx);
-            });
+            PromptDetection::Interactive => {
+                surface.update(ctx, |surface, ctx| {
+                    surface.on_stalled_interactive_prompt(ctx);
+                });
+            }
+        }
+
+        let keeps_polling = surface.read(ctx, |surface, _ctx| surface.keeps_polling_after_prompt());
+        if !keeps_polling {
             if let Some(poller) = poller_weak_handle_for_termios.upgrade(ctx) {
                 poller.update(ctx, |poller, _ctx| {
                     poller.stop_polling();
                 });
             }
-            return;
-        }
-        let block_index = block_index_for_termios.borrow_mut().take();
-        surface.update(ctx, |surface, ctx| {
-            surface.on_possible_password_prompt(block_index, ctx);
-        });
-
-        if let Some(poller) = poller_weak_handle_for_termios.upgrade(ctx) {
-            poller.update(ctx, |poller, _ctx| {
-                poller.stop_polling();
-            });
         }
     });
 }
