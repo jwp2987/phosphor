@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -107,6 +107,11 @@ pub struct ShellCommandExecutor {
     terminal_view_id: EntityId,
     /// Sender to notify when user hands control back to agent after TransferShellCommandControlToUser.
     control_handback_sender: Option<oneshot::Sender<()>>,
+    /// `RequestCommandOutput` actions issued with `wait_until_completion`, whose tool call is
+    /// blocked until the command finishes. These are the only agent commands that can wedge on
+    /// an interactive prompt -- every other path hands the agent a snapshot within seconds --
+    /// so the terminal view consults this before handing a stalled prompt to the user.
+    awaiting_completion_action_ids: HashSet<AIAgentActionId>,
 }
 
 impl ShellCommandExecutor {
@@ -144,7 +149,26 @@ impl ShellCommandExecutor {
             force_refresh_senders: HashMap::new(),
             terminal_view_id,
             control_handback_sender: None,
+            awaiting_completion_action_ids: HashSet::new(),
         }
+    }
+
+    /// Whether the agent's `RequestCommandOutput` action `action_id` is blocked waiting for
+    /// its command to complete (`wait_until_completion`), rather than polling it with snapshots.
+    pub fn is_awaiting_completion(&self, action_id: &AIAgentActionId) -> bool {
+        self.awaiting_completion_action_ids.contains(action_id)
+    }
+
+    /// Whether any `wait_until_completion` request is in flight. Cheap, and needs no
+    /// terminal-model lock, so per-poll callers can bail out on it first.
+    pub fn has_any_awaiting_completion(&self) -> bool {
+        !self.awaiting_completion_action_ids.is_empty()
+    }
+
+    /// Marks `action_id` as a `wait_until_completion` request without spawning a command.
+    #[cfg(test)]
+    pub fn mark_awaiting_completion_for_test(&mut self, action_id: AIAgentActionId) {
+        self.awaiting_completion_action_ids.insert(action_id);
     }
 
     fn handle_terminal_model_event(&mut self, event: &ModelEvent, _ctx: &mut ModelContext<Self>) {
@@ -380,6 +404,10 @@ impl ShellCommandExecutor {
                 let block_selector = BlockSelector::RequestedCommandId(action_id.clone());
                 let command = command.clone();
                 drop(model);
+                if *wait_until_completion {
+                    self.awaiting_completion_action_ids
+                        .insert(action_id.clone());
+                }
 
                 ActionExecution::new_async(
                     self.action_result_future(
@@ -392,6 +420,7 @@ impl ShellCommandExecutor {
                             handle.update(ctx, |me, _| {
                                 me.block_finished_senders.remove(&block_selector);
                                 me.force_refresh_senders.remove(&block_selector);
+                                me.awaiting_completion_action_ids.remove(&action_id);
                             });
                         }
 
@@ -784,6 +813,7 @@ impl ShellCommandExecutor {
         let requested_selector = BlockSelector::RequestedCommandId(id.clone());
         self.block_finished_senders.remove(&requested_selector);
         self.force_refresh_senders.remove(&requested_selector);
+        self.awaiting_completion_action_ids.remove(id);
 
         // No longer using `BlockSelector::Id(active_block.id())` as a fallback
         // cleanup. The sender key for WriteToLRC / ReadShellCommandOutput /

@@ -1972,3 +1972,199 @@ pub fn test_command_and_output_cursor_visibility_follow_block_state() {
     assert!(!block.is_command_cursor_visible());
     assert!(!block.is_output_cursor_visible());
 }
+
+// ── Interactive-prompt detection for stalled agent commands (#673) ──
+
+#[test]
+fn interactive_prompt_shape_distinguishes_explicit_from_trailing_punctuation() {
+    for prompt in [
+        "Do you want to continue? [Y/n] ",
+        "Overwrite config.toml (y/N)",
+        "Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
+        "Press any key to continue . . .",
+    ] {
+        assert_eq!(
+            interactive_prompt_shape(prompt),
+            Some(InteractivePromptShape::Explicit),
+            "{prompt:?}"
+        );
+    }
+    for prompt in ["Proceed? ", "Enter a name: ", "Waiting for DB:"] {
+        assert_eq!(
+            interactive_prompt_shape(prompt),
+            Some(InteractivePromptShape::TrailingPunctuation),
+            "{prompt:?}"
+        );
+    }
+    for output in [
+        "",
+        "   ",
+        "Compiling phosphor v0.1.7",
+        "[=====>      ] 42%",
+        "user@host ~ $ ",
+    ] {
+        assert_eq!(interactive_prompt_shape(output), None, "{output:?}");
+    }
+    let too_long = format!("{}?", "x".repeat(300));
+    assert_eq!(
+        interactive_prompt_shape(&too_long),
+        None,
+        "a long line that happens to end in `?` is output, not a prompt"
+    );
+    assert!(
+        InteractivePromptShape::TrailingPunctuation.required_consecutive_polls()
+            > InteractivePromptShape::Explicit.required_consecutive_polls(),
+        "a bare `?`/`:` is weaker evidence and must wait longer"
+    );
+}
+
+fn candidate(text: &str, col: usize) -> InteractivePromptCandidate {
+    InteractivePromptCandidate {
+        text: text.to_owned(),
+        cursor: Point { row: 4, col },
+        shape: interactive_prompt_shape(text).expect("test candidates are prompt-shaped"),
+    }
+}
+
+/// Termios for a cooked terminal with echo on, where interactive prompts live.
+const COOKED: (bool, bool) = (true, true);
+/// Echo off, canonical on: the password shape.
+const PASSWORD: (bool, bool) = (false, true);
+/// Raw mode, as a logged-in ssh session or an editor leaves it.
+const RAW: (bool, bool) = (false, false);
+
+fn poll(
+    detector: &mut PromptDetector,
+    (echo, canonical): (bool, bool),
+    prompt: Option<InteractivePromptCandidate>,
+) -> Option<PromptDetection> {
+    detector.observe(echo, canonical, || prompt)
+}
+
+#[test]
+fn prompt_detector_debounces_by_shape_and_fires_once_per_episode() {
+    let mut detector = PromptDetector::default();
+    let confirm = || Some(candidate("Continue? [y/N] ", 16));
+    let explicit_polls = InteractivePromptShape::Explicit.required_consecutive_polls();
+
+    // Further output moves the cursor, so it restarts the count.
+    assert_eq!(
+        poll(
+            &mut detector,
+            COOKED,
+            Some(candidate("Continue? [y/N] ", 3))
+        ),
+        None
+    );
+    for _ in 1..explicit_polls {
+        assert_eq!(poll(&mut detector, COOKED, confirm()), None);
+    }
+    assert_eq!(
+        poll(&mut detector, COOKED, confirm()),
+        Some(PromptDetection::Interactive)
+    );
+    assert_eq!(
+        poll(&mut detector, COOKED, confirm()),
+        None,
+        "once per episode"
+    );
+
+    // A bare trailing `:` must sit far longer: `printf "Waiting for DB:"; sleep 30`.
+    let waiting = || Some(candidate("Waiting for DB:", 15));
+    let mut detector = PromptDetector::default();
+    for _ in 1..InteractivePromptShape::TrailingPunctuation.required_consecutive_polls() {
+        assert_eq!(poll(&mut detector, COOKED, waiting()), None);
+    }
+    assert_eq!(
+        poll(&mut detector, COOKED, waiting()),
+        Some(PromptDetection::Interactive)
+    );
+}
+
+/// An agent-run `ssh` stops on the host-key question, the user answers and hands control
+/// back, and it then stops on the password prompt. Both must be detected.
+#[test]
+fn prompt_detector_rearms_for_a_second_prompt_after_hand_back() {
+    let mut detector = PromptDetector::default();
+    let host_key = || {
+        Some(candidate(
+            "Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
+            70,
+        ))
+    };
+    let explicit_polls = InteractivePromptShape::Explicit.required_consecutive_polls();
+
+    for _ in 1..explicit_polls {
+        assert_eq!(poll(&mut detector, COOKED, host_key()), None);
+    }
+    assert_eq!(
+        poll(&mut detector, COOKED, host_key()),
+        Some(PromptDetection::Interactive)
+    );
+
+    // The user holds the command: the surface reports no candidate.
+    assert_eq!(poll(&mut detector, COOKED, None), None);
+
+    // Handed back; ssh now asks for the password.
+    assert_eq!(
+        poll(&mut detector, PASSWORD, None),
+        Some(PromptDetection::Password)
+    );
+    assert_eq!(
+        poll(&mut detector, PASSWORD, None),
+        None,
+        "once per episode"
+    );
+
+    // Logged in (raw mode), then a second password prompt later in the same command.
+    assert_eq!(poll(&mut detector, RAW, None), None);
+    assert_eq!(
+        poll(&mut detector, PASSWORD, None),
+        Some(PromptDetection::Password)
+    );
+
+    // And the same interactive prompt appearing again after a hand-back fires again.
+    assert_eq!(poll(&mut detector, COOKED, None), None);
+    for _ in 1..explicit_polls {
+        assert_eq!(poll(&mut detector, COOKED, host_key()), None);
+    }
+    assert_eq!(
+        poll(&mut detector, COOKED, host_key()),
+        Some(PromptDetection::Interactive)
+    );
+
+    detector.reset();
+    assert_eq!(
+        poll(&mut detector, PASSWORD, None),
+        Some(PromptDetection::Password),
+        "a new block starts fresh"
+    );
+}
+
+#[test]
+fn text_before_cursor_reads_only_the_unterminated_cursor_line() {
+    let mut block = TestBlockBuilder::new().build();
+    block.prompt_only_precmd(PromptMetadata::default());
+    block.start();
+    for c in "apt remove foo".chars() {
+        block.input(c);
+    }
+    block.preexec(Default::default());
+    for c in "Reading package lists... Done".chars() {
+        block.input(c);
+    }
+    block.carriage_return();
+    block.linefeed();
+    assert_eq!(
+        text_before_cursor_on_cursor_line(block.output_grid().grid_handler()),
+        None,
+        "output that ends in a newline leaves the cursor at column 0"
+    );
+
+    for c in "Continue? [y/N] ".chars() {
+        block.input(c);
+    }
+    let line = text_before_cursor_on_cursor_line(block.output_grid().grid_handler())
+        .expect("the cursor sits after the prompt on its own line");
+    assert_eq!(line.trim_end(), "Continue? [y/N]");
+}

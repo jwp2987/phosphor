@@ -22,6 +22,8 @@ use warpui::{Entity, ModelHandle, ViewContext, ViewHandle};
 use crate::ai::agent::AIAgentPtyWriteMode;
 #[cfg(unix)]
 use crate::terminal::event::AfterBlockCompletedEvent;
+#[cfg(unix)]
+use crate::terminal::model::block::InteractivePromptCandidate;
 use crate::terminal::model::completions::ShellCompletion;
 use crate::terminal::model::session::Sessions;
 use crate::terminal::model::terminal_model::TerminalModel;
@@ -111,6 +113,30 @@ where
         _block_index: Option<BlockIndex>,
         _ctx: &mut ViewContext<Self>,
     ) {
+    }
+
+    /// The interactive (non-password) prompt the active block appears to be stalled on, if
+    /// the surface wants such prompts detected. Consulted on each poll whose termios is cooked
+    /// with echo on -- the shape a `[y/N]` or `read -p` prompt leaves, which the password
+    /// heuristic cannot see. The manager debounces the answer across polls (see
+    /// `PromptDetector`) before calling [`Self::on_stalled_interactive_prompt`]. Called once a
+    /// second for every polled block, so it should bail out cheaply when it has no interest.
+    #[cfg(unix)]
+    fn pending_interactive_prompt(&self, _ctx: &AppContext) -> Option<InteractivePromptCandidate> {
+        None
+    }
+
+    /// Called once the same [`Self::pending_interactive_prompt`] has been observed for its
+    /// shape's debounce.
+    #[cfg(unix)]
+    fn on_stalled_interactive_prompt(&mut self, _ctx: &mut ViewContext<Self>) {}
+
+    /// Whether the poller should keep running after a prompt is detected, so a later prompt in
+    /// the same command is detected too. `false` keeps the original one-detection-per-command
+    /// behavior (one "needs attention" notification per command).
+    #[cfg(unix)]
+    fn keeps_polling_after_prompt(&self) -> bool {
+        false
     }
 
     /// Called when the block the poller was tracking completes.

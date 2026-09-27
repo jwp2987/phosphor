@@ -468,6 +468,8 @@ use crate::terminal::input::{InputState, MenuPositioning, MenuPositioningProvide
 use crate::terminal::keys::TerminalKeybindings;
 use crate::terminal::model::block::{AgentInteractionMetadata, BlockMetadata};
 use crate::terminal::model::block::{Block, BlockId};
+#[cfg(unix)]
+use crate::terminal::model::block::{InteractivePromptCandidate, interactive_prompt_candidate};
 use crate::terminal::model::blocks::{BlockFilter, BlockList};
 use crate::terminal::model::blocks::{
     AgentTranscriptNavigableItem, BlockHeight, BlockHeightItem, BlockHeightSummary, Gap,
@@ -16176,7 +16178,7 @@ impl TerminalView {
                 Some(highlighted_link),
                 _,
             ) => {
-                match highlighted_link {
+                let mut items = match highlighted_link {
                     GridHighlightedLink::Url(url) => {
                         let url_content =
                             Some(model.link_at_range(url, RespectObfuscatedSecrets::Yes));
@@ -16254,7 +16256,14 @@ impl TerminalView {
                                 .into_item(),
                         ]
                     }
+                };
+
+                if !items.is_empty() {
+                    items.push(MenuItem::Separator);
                 }
+                items.push(self.paste_menu_item(ctx));
+
+                items
             }
             (
                 BlockListMenuSource::RegularTextRightClick { .. }
@@ -16475,6 +16484,22 @@ impl TerminalView {
                     items.append(&mut prompt_items);
                 }
 
+                // Right-click menus also offer the general clipboard "Paste", closing out the
+                // copy section. The overflow-button and keybinding menus are scoped to the
+                // selected block(s), so they don't.
+                let is_right_click_source = matches!(
+                    menu_source,
+                    BlockListMenuSource::RegularBlockRightClick { .. }
+                        | BlockListMenuSource::RichContentBlockRightClick { .. }
+                        | BlockListMenuSource::OutsideBlockRightClick { .. }
+                );
+                if is_right_click_source {
+                    if !is_single_selection {
+                        items.push(MenuItem::Separator);
+                    }
+                    items.push(self.paste_menu_item(ctx));
+                }
+
                 items.append(&mut vec![
                     MenuItem::Separator,
                     MenuItemFields::new(find_str)
@@ -16540,10 +16565,10 @@ impl TerminalView {
                 None,
                 true,
             ) => {
-                // If selection is empty, only show non-block related options
-                let items: Vec<MenuItem<TerminalAction>> = Vec::new();
+                // If selection is empty, only show non-block related options. "Paste" is one:
+                // right-clicking empty space is the most natural place to reach for it.
                 // Zap: removed session_sharing_context_menu_items (cloud shared session entry point)
-                items
+                vec![self.paste_menu_item(ctx)]
             }
             _ => vec![],
         };
@@ -16668,6 +16693,18 @@ impl TerminalView {
         }
 
         items
+    }
+
+    /// The "Paste" entry for block-list right-click menus. Dispatches the same
+    /// `TerminalAction::Paste` as the `terminal:paste` keybinding, so it has the same
+    /// clipboard and target semantics, and is disabled while the clipboard is empty.
+    fn paste_menu_item(&self, ctx: &mut ViewContext<Self>) -> MenuItem<TerminalAction> {
+        let is_clipboard_empty = ctx.clipboard().read().is_empty();
+        MenuItemFields::new(crate::t!("common-paste"))
+            .with_on_select_action(TerminalAction::Paste)
+            .with_key_shortcut_label(keybinding_name_to_display_string("terminal:paste", ctx))
+            .with_disabled(is_clipboard_empty)
+            .into_item()
     }
 
     /// Builds the "Clear Blocks" entry for the terminal right-click context menu.
@@ -25851,17 +25888,82 @@ impl TerminalSurface for TerminalView {
 
     #[cfg(unix)]
     fn should_start_password_prompt_polling(&self, command: &str, ctx: &AppContext) -> bool {
-        if !self.would_emit_block_started_for_password_prompt_polling(command, ctx) {
-            return false;
-        }
         // An agent-executed command that stops on a password prompt has nobody watching the
         // PTY -- in the reported case the session was inside tmux, so the prompt went to a pane
         // the user wasn't even looking at. The poller is the only way to find out, so arm it
         // regardless of the notification setting: that setting governs whether the *user* is
         // told about their own command, not whether the agent gets unwedged.
-        self.is_agent_driving_active_block()
-            || password_notifications_enabled(ctx)
+        //
+        // This is checked *before* the subshell filter, not after it. That filter exists to
+        // stop a spurious "needs attention" notification on the user's own warpify-compatible
+        // subshells (`ssh`, `docker run`, ...); it says nothing about the agent path, and
+        // running it first meant an agent-run `ssh` that stopped on its password prompt was
+        // never polled and hung for the full 30-minute backstop.
+        if self.is_agent_driving_active_block() {
+            return true;
+        }
+        if !self.would_emit_block_started_for_password_prompt_polling(command, ctx) {
+            return false;
+        }
+        password_notifications_enabled(ctx)
             || (self.is_ssh_uploader() && FeatureFlag::SshDragAndDrop.is_enabled())
+    }
+
+    #[cfg(unix)]
+    fn pending_interactive_prompt(&self, ctx: &AppContext) -> Option<InteractivePromptCandidate> {
+        // Only a tool call that is blocked waiting for this command to *complete* can hang on
+        // a prompt. Any other agent command gets a snapshot within seconds and can answer the
+        // prompt itself with `write_to_long_running_shell_command`; taking the PTY away from
+        // it there would be stealing, not unwedging.
+        //
+        // This runs once a second for every polled block, including the user's own commands,
+        // so the executor -- which needs no terminal-model lock -- is asked first, and the
+        // model is only locked while some agent tool call is actually waiting.
+        let executor = self.ai_action_model.as_ref(ctx).shell_command_executor(ctx);
+        let executor = executor.as_ref(ctx);
+        if !executor.has_any_awaiting_completion() {
+            return None;
+        }
+
+        let model = self.model.lock();
+        if model.is_alt_screen_active() {
+            return None;
+        }
+        let active_block = model.block_list().active_block();
+        // While the user holds the command this is `false`, so no candidate is reported and
+        // the manager's `PromptDetector` re-arms for when control comes back to the agent.
+        if !(active_block.is_agent_requested_command() && active_block.is_agent_driving_command()) {
+            return None;
+        }
+        let action_id = active_block.requested_command_action_id()?;
+        if !executor.is_awaiting_completion(action_id) {
+            return None;
+        }
+        interactive_prompt_candidate(active_block.output_grid().grid_handler())
+    }
+
+    #[cfg(unix)]
+    fn keeps_polling_after_prompt(&self) -> bool {
+        // An agent command can stop on another prompt after the user answers this one and
+        // hands control back; the user's own commands keep one notification per command.
+        self.model
+            .lock()
+            .block_list()
+            .active_block()
+            .is_agent_requested_command()
+    }
+
+    #[cfg(unix)]
+    fn on_stalled_interactive_prompt(&mut self, ctx: &mut ViewContext<Self>) {
+        // Same hand-over as a password prompt (see `on_possible_password_prompt`), minus the
+        // password notification and SSH-upload plumbing, which are about passwords
+        // specifically. The agent's tool call keeps waiting and gets the command's real result
+        // once the user answers and it completes.
+        if self.is_agent_driving_active_block() {
+            self.cli_subagent_controller.update(ctx, |controller, ctx| {
+                controller.switch_control_to_user(UserTakeOverReason::BlockedOnInput, ctx);
+            });
+        }
     }
 
     #[cfg(unix)]

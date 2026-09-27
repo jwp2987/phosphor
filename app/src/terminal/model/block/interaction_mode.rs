@@ -687,3 +687,196 @@ pub fn formatted_terminal_contents_for_input(
         )
     )
 }
+
+/// The text on the cursor's row up to (not including) the cursor, or `None` when the cursor sits
+/// at column 0 -- i.e. the last thing the command printed ended in a newline, which is not the
+/// shape of a prompt waiting for an answer on the same line.
+///
+/// Used to spot a command stalled on an interactive prompt (`[y/N]`, `read -p`, "Press any
+/// key"). Those prompts leave termios in cooked mode with echo on, so unlike a password prompt
+/// the termios poller cannot see them; the only signal is what is printed before the cursor.
+pub fn text_before_cursor_on_cursor_line(grid_handler: &GridHandler) -> Option<String> {
+    let cursor_point = grid_handler.cursor_point();
+    if cursor_point.col == 0 {
+        return None;
+    }
+    Some(grid_handler.bounds_to_string(
+        Point::new(cursor_point.row, 0),
+        Point::new(cursor_point.row, cursor_point.col.saturating_sub(1)),
+        false,
+        RespectObfuscatedSecrets::Yes,
+        true,
+        RespectDisplayedOutput::No,
+    ))
+}
+
+/// How strongly a line reads as a prompt waiting for an answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InteractivePromptShape {
+    /// An explicit confirmation marker: `[y/N]`, `(yes/no)`, "Press any key", ...
+    Explicit,
+    /// Only a trailing `?` or `:` -- what `read -p "Continue? "` and `read -p "Name: "` leave
+    /// the cursor after, but also what `printf "Waiting for DB:"; sleep 30` leaves.
+    TrailingPunctuation,
+}
+
+impl InteractivePromptShape {
+    /// Consecutive once-a-second polls the prompt must sit unchanged before it counts as
+    /// stalled. A bare `?` / `:` is far weaker evidence, so it waits long enough to outlast
+    /// a progress label and a short `read -t` timeout; a real `read -p` then waits ~15s for
+    /// the hand-over instead of the 30-minute backstop.
+    pub fn required_consecutive_polls(self) -> u8 {
+        match self {
+            Self::Explicit => 3,
+            Self::TrailingPunctuation => 15,
+        }
+    }
+}
+
+/// The shape of an interactive prompt in `line_before_cursor` -- the output on the cursor's
+/// row, up to the cursor -- or `None` if it doesn't read as one.
+///
+/// Deliberately loose: it is only consulted for an agent command whose tool call is blocked
+/// waiting for completion (so the agent could not answer anyway), and only after the same
+/// line, at the same cursor position, has been seen across several termios polls. A false
+/// positive hands the PTY to the user while the command keeps running; a false negative is
+/// the 30-minute hang.
+pub fn interactive_prompt_shape(line_before_cursor: &str) -> Option<InteractivePromptShape> {
+    /// Prompts are one short line. Anything longer is output that happens to lack a newline.
+    const MAX_PROMPT_CHARS: usize = 200;
+    const MARKERS: &[&str] = &[
+        "[y/n]",
+        "(y/n)",
+        "[yes/no]",
+        "(yes/no",
+        "[y/n/",
+        "y/n?",
+        "press any key",
+        "press enter",
+        "press return",
+        "hit enter",
+        "hit any key",
+    ];
+
+    let line = line_before_cursor.trim();
+    if line.is_empty() || line.chars().count() > MAX_PROMPT_CHARS {
+        return None;
+    }
+    let lower = line.to_lowercase();
+    if MARKERS.iter().any(|marker| lower.contains(marker)) {
+        Some(InteractivePromptShape::Explicit)
+    } else if line.ends_with('?') || line.ends_with(':') {
+        Some(InteractivePromptShape::TrailingPunctuation)
+    } else {
+        None
+    }
+}
+
+/// One poll's view of a possible interactive prompt: the text before the cursor, where the
+/// cursor is, and how prompt-like the text is. Two polls only count as "the same prompt" if
+/// all of it matches, so any further output -- which moves the cursor or changes the line --
+/// restarts the count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InteractivePromptCandidate {
+    pub text: String,
+    pub cursor: Point,
+    pub shape: InteractivePromptShape,
+}
+
+/// The prompt-shaped, newline-less line the command has left the cursor on in
+/// `grid_handler`, if any.
+pub fn interactive_prompt_candidate(
+    grid_handler: &GridHandler,
+) -> Option<InteractivePromptCandidate> {
+    let text = text_before_cursor_on_cursor_line(grid_handler)?;
+    let shape = interactive_prompt_shape(&text)?;
+    Some(InteractivePromptCandidate {
+        text,
+        cursor: grid_handler.cursor_point(),
+        shape,
+    })
+}
+
+/// What a termios poll detected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptDetection {
+    /// Echo off with canonical input on: the password-prompt shape.
+    Password,
+    /// A prompt-shaped line that has sat unchanged for its shape's debounce.
+    Interactive,
+}
+
+/// Turns the stream of termios polls for one block into prompt detections.
+///
+/// Each kind fires once per *episode* and re-arms when the episode ends, rather than once
+/// per block: a password prompt re-arms once termios leaves the password shape, and an
+/// interactive prompt re-arms once no candidate is seen (which includes whenever the user,
+/// not the agent, holds the command -- the surface reports no candidate then). That is what
+/// lets a second prompt in the same command be detected after the user hands control back,
+/// e.g. an agent-run `ssh` stopping first on the host-key `(yes/no/[fingerprint])?` and then
+/// on the password prompt.
+#[derive(Debug, Default)]
+pub struct PromptDetector {
+    password_latched: bool,
+    last_candidate: Option<InteractivePromptCandidate>,
+    consecutive_polls: u8,
+    interactive_latched: bool,
+}
+
+impl PromptDetector {
+    /// Forgets everything observed so far. Called when a new block starts.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Feeds one poll. `interactive_candidate` is only called when termios is cooked with
+    /// echo on, the one shape an interactive prompt can have; raw-mode programs (editors,
+    /// REPLs, a logged-in ssh session) are never probed.
+    pub fn observe(
+        &mut self,
+        is_echo_on: bool,
+        is_canonical: bool,
+        interactive_candidate: impl FnOnce() -> Option<InteractivePromptCandidate>,
+    ) -> Option<PromptDetection> {
+        if !is_echo_on && is_canonical {
+            self.clear_interactive();
+            if self.password_latched {
+                return None;
+            }
+            self.password_latched = true;
+            return Some(PromptDetection::Password);
+        }
+        self.password_latched = false;
+
+        let candidate = if is_echo_on && is_canonical {
+            interactive_candidate()
+        } else {
+            None
+        };
+        let Some(candidate) = candidate else {
+            self.clear_interactive();
+            return None;
+        };
+        if self.last_candidate.as_ref() == Some(&candidate) {
+            self.consecutive_polls = self.consecutive_polls.saturating_add(1);
+        } else {
+            self.consecutive_polls = 1;
+            self.interactive_latched = false;
+            self.last_candidate = Some(candidate);
+        }
+        let required = self.last_candidate.as_ref().map_or(u8::MAX, |candidate| {
+            candidate.shape.required_consecutive_polls()
+        });
+        if self.interactive_latched || self.consecutive_polls < required {
+            return None;
+        }
+        self.interactive_latched = true;
+        Some(PromptDetection::Interactive)
+    }
+
+    fn clear_interactive(&mut self) {
+        self.last_candidate = None;
+        self.consecutive_polls = 0;
+        self.interactive_latched = false;
+    }
+}

@@ -8685,6 +8685,24 @@ impl Input {
     }
 
     fn prune_stale_at_context_attachments(&mut self, ctx: &mut ViewContext<Self>) {
+        let query = self.at_context_query(ctx);
+        self.ai_context_model.update(ctx, |model, _ctx| {
+            model.retain_at_context_attachments_in_query(&query);
+        });
+    }
+
+    /// Recomputes which `@`-context attachments have their reference text in the buffer,
+    /// without removing any, so the AI-mode lock follows the buffer as it is edited.
+    fn sync_at_context_references_with_buffer(&mut self, ctx: &mut ViewContext<Self>) {
+        let query = self.at_context_query(ctx);
+        self.ai_context_model.update(ctx, |model, _ctx| {
+            model.sync_at_context_references_with_query(&query);
+        });
+    }
+
+    /// The buffer text as far as `@`-context references are concerned: with the in-progress
+    /// `@filter` of an open context menu removed, since that text is a search, not a reference.
+    fn at_context_query(&self, ctx: &mut ViewContext<Self>) -> String {
         let mut query = self.buffer_text(ctx);
         if let InputSuggestionsMode::AIContextMenu {
             at_symbol_position, ..
@@ -8699,10 +8717,7 @@ impl Input {
                 query.replace_range(at_symbol_position..cursor_position, "");
             }
         }
-
-        self.ai_context_model.update(ctx, |model, _ctx| {
-            model.retain_at_context_attachments_in_query(&query);
-        });
+        query
     }
 
     fn insert_ai_context_menu_attachment_reference(
@@ -8796,6 +8811,24 @@ impl Input {
                     EditOrigin::UserTyped | EditOrigin::UserInitiated
                 ) {
                     self.model.lock().set_is_input_dirty(true);
+                }
+
+                // `@`-context attachments are a cache of the `@ref` text in this buffer, and
+                // they lock the input in AI mode (`has_locking_attachment`). Make the lock follow
+                // the buffer on every edit, not only on menu-accept and submit: otherwise
+                // deleting the `@ref` leaves a stale lock, autodetection stays off, and the next
+                // shell command typed is routed to the agent (#674). This only *marks* absent
+                // references -- it removes nothing -- because the text can come back
+                // (Backspace-and-retype, undo, cut and paste) and its attachment must come back
+                // with it. Done before the autodetection gate below so this same edit can
+                // already flip the input back.
+                if !self
+                    .ai_context_model
+                    .as_ref(ctx)
+                    .pending_at_context_attachments()
+                    .is_empty()
+                {
+                    self.sync_at_context_references_with_buffer(ctx);
                 }
 
                 if *edit_origin == EditOrigin::UserTyped

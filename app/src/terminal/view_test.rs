@@ -7069,6 +7069,85 @@ fn test_context_menu_omits_clear_for_text_right_click() {
     })
 }
 
+// ── Context menu "Paste" entry (upstream 0a0fd3ae1, #683) ───────────────────────
+
+fn paste_item_state(
+    view: &TerminalView,
+    menu_source: &BlockListMenuSource,
+    ctx: &mut ViewContext<TerminalView>,
+) -> Option<bool> {
+    view.context_menu_items(menu_source, ctx)
+        .iter()
+        .filter_map(|item| item.fields())
+        .find(|fields| fields.label() == "Paste")
+        .map(|fields| fields.is_disabled())
+}
+
+#[test]
+fn test_block_right_click_menu_offers_paste() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let block_index = {
+                let mut model = view.model.lock();
+                model.simulate_block("ls", "foo");
+                model.block_list().active_block_index()
+            };
+            view.selected_blocks.reset_to_single(block_index);
+
+            let right_click = BlockListMenuSource::OutsideBlockRightClick {
+                position_in_terminal_view: Vector2F::zero(),
+            };
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text(String::new()));
+            assert_eq!(
+                paste_item_state(view, &right_click, ctx),
+                Some(true),
+                "Paste is offered but disabled while the clipboard is empty"
+            );
+
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text("echo hi".to_owned()));
+            assert_eq!(paste_item_state(view, &right_click, ctx), Some(false));
+
+            // Text-selection menus already offer "Insert into input"; a second paste there
+            // would be a duplicate.
+            let text_right_click = BlockListMenuSource::RegularTextRightClick {
+                position_in_terminal_view: Vector2F::zero(),
+            };
+            assert_eq!(paste_item_state(view, &text_right_click, ctx), None);
+        });
+    })
+}
+
+/// Right-clicking empty space (or a rich-content block) with no block selected used to
+/// produce a menu with no Paste at all.
+#[test]
+fn test_right_click_menu_offers_paste_with_no_block_selected() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_block("ls", "foo");
+            assert!(view.selected_blocks.is_empty());
+
+            let right_click = BlockListMenuSource::OutsideBlockRightClick {
+                position_in_terminal_view: Vector2F::zero(),
+            };
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text("echo hi".to_owned()));
+            assert_eq!(paste_item_state(view, &right_click, ctx), Some(false));
+
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text(String::new()));
+            assert_eq!(paste_item_state(view, &right_click, ctx), Some(true));
+        });
+    })
+}
+
 // ── ControlMaster banner dismissal, ported from the pinned oracle ──────────────────
 
 #[test]
@@ -9954,6 +10033,142 @@ fn password_prompt_polling_is_suppressed_for_warpify_compatible_subshells() {
                     "{command} is an ordinary command; the poller must still arm"
                 );
             }
+        });
+    })
+}
+
+// ── Agent commands must not wedge on interactive prompts (#673) ──
+//
+// The subshell filter above exists for the user's own warpify-compatible
+// commands. An agent-run `ssh` that stops on its password prompt has nobody
+// watching the PTY, so the agent check must win over the filter.
+#[cfg(unix)]
+#[test]
+fn agent_run_subshell_command_still_arms_password_prompt_polling() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let (_window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            let command = "ssh prod.example.com";
+            view.model
+                .lock()
+                .simulate_long_running_block(command, "prod.example.com's password: ");
+            assert!(
+                !view.should_start_password_prompt_polling(command, ctx),
+                "the user's own ssh must stay suppressed by the subshell filter"
+            );
+
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx)
+                .update(ctx, |history, ctx| {
+                    history.start_new_conversation(view.view_id, false, false, ctx)
+                });
+            view.model
+                .lock()
+                .block_list_mut()
+                .active_block_mut()
+                .set_agent_interaction_mode_for_requested_command(
+                    AIAgentActionId::from("agent-ssh".to_owned()),
+                    None,
+                    conversation_id,
+                );
+
+            assert!(
+                !view.would_emit_block_started_for_password_prompt_polling(command, ctx),
+                "the filter itself is unchanged"
+            );
+            assert!(
+                view.should_start_password_prompt_polling(command, ctx),
+                "an agent-run ssh must be polled, or its password prompt hangs for 30 minutes"
+            );
+        });
+    })
+}
+
+/// A `[y/N]` prompt leaves echo on, so termios cannot see it. For a
+/// `wait_until_completion` agent command it is handed to the user; for any other
+/// agent command the agent gets snapshots and can answer it itself, so it is left
+/// alone.
+#[cfg(unix)]
+#[test]
+fn agent_command_stalled_on_confirmation_prompt_is_handed_to_user() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let (_window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            let action_id = AIAgentActionId::from("agent-apt".to_owned());
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx)
+                .update(ctx, |history, ctx| {
+                    history.start_new_conversation(view.view_id, false, false, ctx)
+                });
+            {
+                let mut model = view.model.lock();
+                model.simulate_long_running_block(
+                    "sudo apt remove foo",
+                    "Removing foo\r\nDo you want to continue? [Y/n] ",
+                );
+                model
+                    .block_list_mut()
+                    .active_block_mut()
+                    .set_agent_interaction_mode_for_requested_command(
+                        action_id.clone(),
+                        None,
+                        conversation_id,
+                    );
+            }
+
+            assert_eq!(
+                view.pending_interactive_prompt(ctx),
+                None,
+                "an agent polling with snapshots can answer the prompt itself"
+            );
+
+            view.ai_action_model
+                .as_ref(ctx)
+                .shell_command_executor(ctx)
+                .update(ctx, |executor, _| {
+                    executor.mark_awaiting_completion_for_test(action_id.clone());
+                });
+            let prompt = view
+                .pending_interactive_prompt(ctx)
+                .expect("a wait_until_completion command on a [Y/n] prompt is stalled");
+            assert!(
+                prompt.text.contains("[Y/n]"),
+                "unexpected prompt text: {prompt:?}"
+            );
+
+            view.on_stalled_interactive_prompt(ctx);
+            let control_state = view
+                .model
+                .lock()
+                .block_list()
+                .active_block()
+                .long_running_control_state()
+                .cloned();
+            assert_eq!(
+                control_state,
+                Some(LongRunningCommandControlState::User {
+                    reason: UserTakeOverReason::BlockedOnInput,
+                })
+            );
+            assert!(
+                view.keeps_polling_after_prompt(),
+                "an agent command keeps polling so a later prompt is caught too"
+            );
+
+            // While the user holds the command no candidate is reported, which is what
+            // re-arms the manager's `PromptDetector`...
+            assert_eq!(view.pending_interactive_prompt(ctx), None);
+
+            // ...so once control comes back to the agent, a prompt is reported again.
+            view.model
+                .lock()
+                .block_list_mut()
+                .active_block_mut()
+                .handoff_control_to_agent()
+                .expect("hand-back from BlockedOnInput should succeed");
+            assert!(view.pending_interactive_prompt(ctx).is_some());
         });
     })
 }
