@@ -81,6 +81,18 @@ pub struct InlineDiffView {
     /// failed save of the accept.
     #[cfg(not(target_family = "wasm"))]
     revert_dispatched: bool,
+    /// The file's text exactly as the edit was proposed against — raw, with
+    /// its own line endings — which is what a revert puts back. Set with
+    /// [`Self::set_original_content`]; `None` refuses the revert.
+    ///
+    /// Not the editor's diff base: `CodeEditorModel::set_base` normalises
+    /// that to LF, so writing it back turned a CRLF file into an LF one, and
+    /// the guard (rightly) refused the write as converting the file's line
+    /// endings — every revert of a CRLF file was refused (#672). For a file
+    /// with mixed endings it would also have rewritten the minority lines.
+    /// The TUI's `revert_plan` restores `diff.base.content` the same way.
+    #[cfg(not(target_family = "wasm"))]
+    original_content: Option<String>,
 }
 
 impl InlineDiffView {
@@ -122,6 +134,8 @@ impl InlineDiffView {
             accepted_content: RefCell::new(None),
             #[cfg(not(target_family = "wasm"))]
             revert_dispatched: false,
+            #[cfg(not(target_family = "wasm"))]
+            original_content: None,
         };
 
         model.apply_diffs_if_any(ctx);
@@ -185,6 +199,26 @@ impl InlineDiffView {
         };
 
         self.finish_file_registration(file_id, ctx);
+    }
+
+    /// Whether [`Self::restore_diff_base`] could write anything: a file is
+    /// registered and the accept recorded what it wrote there.
+    pub fn can_revert(&self) -> bool {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            self.backing_file_id.is_some() && self.accepted_content.borrow().is_some()
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            false
+        }
+    }
+
+    /// Records the file's raw text as the edit was proposed against it (the
+    /// diff base before LF normalisation): what a revert restores.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn set_original_content(&mut self, content: String) {
+        self.original_content = Some(content);
     }
 
     /// Common registration logic: subscribes to events and sets the
@@ -499,17 +533,13 @@ impl InlineDiffView {
         // destroys every edit made to the file after the accept, and deletes
         // an agent-created file the user has since built on, with no check
         // and no message. A re-pin must not "restore parity" here.
+        //
+        // The base written back is the raw original text, not the editor's
+        // LF-normalised diff base; see `original_content`.
         let base = if self.is_new_file {
             None
         } else {
-            self.editor
-                .as_ref(ctx)
-                .model
-                .as_ref(ctx)
-                .diff()
-                .as_ref(ctx)
-                .base()
-                .map(|base| base.to_string())
+            self.original_content.clone()
         };
         let write = revert_plan(
             self.is_new_file,
@@ -566,8 +596,12 @@ enum RevertWrite {
 ///
 /// A formatter or anything else that touched the file after the accept
 /// therefore refuses the revert. That is the intended trade, and the TUI's:
-/// the common case (nothing touched the file) still passes, and the comparison
-/// in `FileModel` is line-ending-normalised, so a CRLF file is not a refusal.
+/// the common case (nothing touched the file) still passes. `base` must be the
+/// file's *raw* original text: `FileModel` compares the pre-image
+/// line-ending-normalised, but refuses a write whose line endings differ from
+/// the file's (`LineEndingsChanged`), so an LF-normalised base written over a
+/// CRLF file is refused — which is what reverting with the editor's diff base
+/// did to every CRLF file.
 ///
 /// `Err` is a refusal with a user-facing message; nothing is written.
 #[cfg(not(target_family = "wasm"))]
@@ -923,6 +957,88 @@ mod tests {
                 LATER_EDIT,
                 "the modified file must not be deleted"
             );
+        });
+    }
+
+    // ── Line endings (#672) ──────────────────────────────────────────────
+    //
+    // A revert must write back the file's *raw* original text. The editor's
+    // diff base is LF-normalised, and `FileModel` refuses a write whose line
+    // endings differ from the file's — so reverting with the diff base refused
+    // every revert of a CRLF file, with a toast blaming a line-ending
+    // conversion that never happened.
+
+    const CRLF_ORIGINAL: &str = "fn main() {\r\n    old();\r\n}\r\n";
+    /// What the accept wrote: the buffer keeps the file's (CRLF) endings.
+    const CRLF_ACCEPTED: &str = "fn main() {\r\n    new();\r\n}\r\n";
+
+    #[test]
+    fn reverting_a_crlf_file_restores_it_byte_for_byte() {
+        warpui::App::test((), |mut app| async move {
+            let directory = tempfile::tempdir().expect("temp dir");
+            let file = directory.path().join("crlf.rs");
+            std::fs::write(&file, CRLF_ACCEPTED).expect("write file");
+
+            let write = revert_plan(
+                false,
+                Some(CRLF_ACCEPTED.to_owned()),
+                Some(CRLF_ORIGINAL.to_owned()),
+                None,
+            )
+            .expect("plan");
+            revert_on_disk(&mut app, &file, write)
+                .await
+                .expect("reverting an untouched CRLF file must land");
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), CRLF_ORIGINAL);
+        });
+    }
+
+    /// The defect: the LF-normalised diff base, written over the CRLF file the
+    /// accept left, is refused as a line-ending conversion.
+    #[test]
+    fn reverting_a_crlf_file_with_the_lf_normalised_base_is_refused() {
+        warpui::App::test((), |mut app| async move {
+            let directory = tempfile::tempdir().expect("temp dir");
+            let file = directory.path().join("crlf.rs");
+            std::fs::write(&file, CRLF_ACCEPTED).expect("write file");
+
+            let write = revert_plan(
+                false,
+                Some(CRLF_ACCEPTED.to_owned()),
+                Some(CRLF_ORIGINAL.replace("\r\n", "\n")),
+                None,
+            )
+            .expect("plan");
+            revert_on_disk(&mut app, &file, write)
+                .await
+                .expect_err("an LF base over a CRLF file is a line-ending conversion");
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), CRLF_ACCEPTED);
+        });
+    }
+
+    /// A file with mixed endings: the buffer normalises to the majority, so
+    /// the accept wrote uniform LF. The revert restores the original exactly,
+    /// minority CRLF lines included, rather than leaving them converted.
+    #[test]
+    fn reverting_a_mixed_ending_file_restores_its_minority_line_endings() {
+        const MIXED_ORIGINAL: &str = "fn main() {\r\n    old();\n}\n";
+        const MIXED_ACCEPTED: &str = "fn main() {\n    new();\n}\n";
+        warpui::App::test((), |mut app| async move {
+            let directory = tempfile::tempdir().expect("temp dir");
+            let file = directory.path().join("mixed.rs");
+            std::fs::write(&file, MIXED_ACCEPTED).expect("write file");
+
+            let write = revert_plan(
+                false,
+                Some(MIXED_ACCEPTED.to_owned()),
+                Some(MIXED_ORIGINAL.to_owned()),
+                None,
+            )
+            .expect("plan");
+            revert_on_disk(&mut app, &file, write)
+                .await
+                .expect("reverting an untouched mixed-ending file must land");
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), MIXED_ORIGINAL);
         });
     }
 

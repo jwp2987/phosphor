@@ -63,7 +63,7 @@ impl Rewind {
     /// outcome back, as the `RevertWriteSettled` subscription does.
     fn complete(
         &mut self,
-        sequence: &mut RevertSequence<Revert>,
+        sequence: &mut RevertSequence<Revert, &'static str>,
         name: &'static str,
         reverts: &[Revert],
     ) {
@@ -377,4 +377,133 @@ fn the_sequence_keeps_every_revert_alive_until_it_settles() {
     drop(abandoned);
     assert!(weak_older.upgrade().is_none());
     assert!(sequence.is_settled());
+}
+
+// ── Across rewinds, and across spellings of one file ─────────────────────
+
+/// A second rewind while the first one's revert of a file is still in
+/// flight: its revert of that file queues behind, instead of racing it.
+/// Other files it touches start at once.
+#[test]
+fn a_second_rewind_waits_for_the_first_ones_write_to_the_same_file() {
+    let mut sequence = RevertSequence::new([(Some("a.rs"), "first-a")]);
+    assert!(sequence.start(|_| RevertStart::InFlight).is_empty());
+
+    sequence.add([(Some("a.rs"), "second-a"), (Some("b.rs"), "second-b")]);
+    let mut dispatched = Vec::new();
+    assert!(
+        sequence
+            .start(|name| {
+                dispatched.push(*name);
+                RevertStart::InFlight
+            })
+            .is_empty()
+    );
+    assert_eq!(
+        dispatched,
+        ["second-b"],
+        "a.rs is busy with the first rewind"
+    );
+    assert!(sequence.holds(|name| *name == "second-a"));
+
+    let abandoned = sequence
+        .settled(
+            |name| *name == "first-a",
+            true,
+            |name| {
+                dispatched.push(*name);
+                RevertStart::InFlight
+            },
+        )
+        .expect("in flight");
+    assert!(abandoned.is_empty());
+    assert_eq!(dispatched, ["second-b", "second-a"]);
+}
+
+/// `holds` answers "is any revert of this rewind still outstanding?", which
+/// is what decides that a rewind has settled.
+#[test]
+fn holds_sees_queued_and_in_flight_reverts_only() {
+    let mut sequence =
+        RevertSequence::new([(Some("a.rs"), (1, "newer")), (Some("a.rs"), (1, "older"))]);
+    assert!(sequence.holds(|(batch, _)| *batch == 1));
+    assert!(sequence.start(|_| RevertStart::InFlight).is_empty());
+    assert!(sequence.holds(|(_, name)| *name == "newer"), "in flight");
+    assert!(sequence.holds(|(_, name)| *name == "older"), "queued");
+    assert!(!sequence.holds(|(batch, _)| *batch == 2));
+
+    sequence
+        .settled(|(_, name)| *name == "newer", false, |_| unreachable!())
+        .expect("in flight");
+    assert!(
+        !sequence.holds(|(batch, _)| *batch == 1),
+        "settled and abandoned"
+    );
+}
+
+/// Two spellings of one local file must share a lane: through a symlinked
+/// directory, and through `..`.
+#[cfg(unix)]
+#[test]
+fn a_file_reached_two_ways_gets_one_lane_key() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let real = directory.path().join("real");
+    std::fs::create_dir(&real).unwrap();
+    std::fs::write(real.join("a.rs"), "x").unwrap();
+    std::os::unix::fs::symlink(&real, directory.path().join("link")).unwrap();
+
+    let key = |path: std::path::PathBuf| {
+        RevertLaneKey::new(
+            None,
+            &StandardizedPath::try_new(path.to_str().unwrap()).unwrap(),
+        )
+    };
+    let direct = key(real.join("a.rs"));
+    assert_eq!(key(directory.path().join("link").join("a.rs")), direct);
+    assert_eq!(key(real.join("..").join("real").join("a.rs")), direct);
+    assert_ne!(key(real.join("b.rs")), direct);
+
+    // A file that is not there (yet) resolves through its parent.
+    assert_eq!(
+        key(directory.path().join("link").join("gone.rs")),
+        key(real.join("gone.rs"))
+    );
+}
+
+/// On a platform whose usual filesystem ignores case, `Foo.rs` and `foo.rs`
+/// are one file and must share a lane.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[test]
+fn spellings_differing_in_case_get_one_lane_key_where_case_is_ignored() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    std::fs::write(directory.path().join("Foo.rs"), "x").unwrap();
+    let key = |name: &str| {
+        let path = directory.path().join(name);
+        RevertLaneKey::new(
+            None,
+            &StandardizedPath::try_new(path.to_str().unwrap()).unwrap(),
+        )
+    };
+    assert_eq!(key("Foo.rs"), key("foo.rs"));
+}
+
+/// A remote path is not resolved against the local filesystem, and the same
+/// path on two hosts is two files.
+#[test]
+fn remote_lane_keys_are_per_host() {
+    let path = StandardizedPath::try_new("/srv/app/main.rs").unwrap();
+    let a = HostId::new("host-a".to_owned());
+    let b = HostId::new("host-b".to_owned());
+    assert_eq!(
+        RevertLaneKey::new(Some(&a), &path),
+        RevertLaneKey::new(Some(&a), &path)
+    );
+    assert_ne!(
+        RevertLaneKey::new(Some(&a), &path),
+        RevertLaneKey::new(Some(&b), &path)
+    );
+    assert_ne!(
+        RevertLaneKey::new(Some(&a), &path),
+        RevertLaneKey::new(None, &path)
+    );
 }

@@ -2638,8 +2638,9 @@ pub struct TerminalView {
 
     /// The file reverts of rewinds with writes still outstanding (#686). Owned
     /// here rather than by the diff views, because a rewind removes the
-    /// reverted blocks at once; see `RewindRevertBatch`.
-    rewind_revert_batches: Vec<crate::ai::blocklist::rewind_revert::RewindRevertBatch>,
+    /// reverted blocks at once, and shared by every rewind in this view so two
+    /// overlapping rewinds cannot race on one file; see `RewindReverts`.
+    rewind_reverts: crate::ai::blocklist::rewind_revert::RewindReverts,
 
     // Whether the block onboarding view is active or not.
     block_onboarding_active: bool,
@@ -4199,7 +4200,7 @@ impl TerminalView {
             active_filter_editor_block_index: None,
             rich_content_views: Vec::new(),
             usage_footer_view_ids: Default::default(),
-            rewind_revert_batches: Vec::new(),
+            rewind_reverts: Default::default(),
             block_onboarding_active: false,
             onboarding_agentic_suggestions_block: None,
             onboarding_prompt_block: None,
@@ -24601,12 +24602,13 @@ impl TerminalView {
     }
 
     /// Starts reverting every accepted diff card of `conversation_id`, from the
-    /// newest block back to `ai_block_view_id` (inclusive), as one
-    /// [`RewindRevertBatch`]: each file's reverts strictly newest to oldest,
-    /// one at a time, different files concurrently (#686). Returns the number
-    /// of blocks visited.
+    /// newest block back to `ai_block_view_id` (inclusive), through
+    /// [`RewindReverts`]: each file's reverts strictly newest to oldest, one
+    /// at a time — behind any earlier rewind's still-outstanding reverts of
+    /// the same file — and different files concurrently (#686). Returns the
+    /// number of blocks visited.
     ///
-    /// [`RewindRevertBatch`]: crate::ai::blocklist::rewind_revert::RewindRevertBatch
+    /// [`RewindReverts`]: crate::ai::blocklist::rewind_revert::RewindReverts
     fn start_rewind_reverts(
         &mut self,
         ai_block_view_id: EntityId,
@@ -24614,8 +24616,9 @@ impl TerminalView {
         backup_conversation_id: Option<AIConversationId>,
         ctx: &mut ViewContext<Self>,
     ) -> usize {
-        use crate::ai::blocklist::inline_action::code_diff_view::CodeDiffViewEvent;
-        use crate::ai::blocklist::rewind_revert::RewindRevertBatch;
+        use crate::ai::blocklist::inline_action::code_diff_view::{
+            CodeDiffState, CodeDiffViewEvent,
+        };
 
         // Newest first: blocks from the end backwards, each block's cards
         // newest first. The order is what makes two edits to one file revert.
@@ -24640,7 +24643,17 @@ impl TerminalView {
         }
 
         let mut cards = Vec::new();
+        let mut restored_edits = 0;
         for view in views {
+            // An accepted card that cannot write anything was restored from a
+            // previous session, whose accept left no record to guard a revert
+            // with. Every file would be refused, one toast each; it is
+            // reported once below instead, and left as it is.
+            let card = view.as_ref(ctx);
+            if matches!(card.state(), CodeDiffState::Accepted(None)) && !card.can_revert(ctx) {
+                restored_edits += 1;
+                continue;
+            }
             // `None`: not an accepted card (rejected, already reverted, ...).
             let Some(files) = view.update(ctx, |view, ctx| view.begin_revert(ctx)) else {
                 continue;
@@ -24653,15 +24666,35 @@ impl TerminalView {
             cards.push((view, files));
         }
 
-        let mut batch = RewindRevertBatch::new(cards, backup_conversation_id);
-        let abandoned = batch.sequence.start(|revert| {
+        if restored_edits > 0 {
+            let edits = if restored_edits == 1 {
+                "1 agent edit wasn't".to_owned()
+            } else {
+                format!("{restored_edits} agent edits weren't")
+            };
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(
+                    DismissibleToast::error(format!(
+                        "{edits} reverted because this conversation was restored from an \
+                         earlier session, so there is no record of what they wrote. The files \
+                         were left unchanged."
+                    )),
+                    window_id,
+                    ctx,
+                );
+            });
+        }
+
+        self.rewind_reverts
+            .add_rewind(cards, backup_conversation_id);
+        let abandoned = self.rewind_reverts.sequence.start(|revert| {
             revert.view.update(ctx, |view, ctx| {
                 view.dispatch_file_revert(revert.file_idx, ctx)
             })
         });
         Self::abandon_rewind_reverts(abandoned, ctx);
-        self.rewind_revert_batches.push(batch);
-        self.finish_settled_rewind_reverts(ctx);
+        self.finish_settled_rewinds(ctx);
         num_blocks_reverted
     }
 
@@ -24675,22 +24708,19 @@ impl TerminalView {
         reverted: bool,
         ctx: &mut ViewContext<Self>,
     ) {
-        for batch in &mut self.rewind_revert_batches {
-            let Some(abandoned) = batch.sequence.settled(
-                |revert| revert.view.id() == view_id && revert.file_idx == file_idx,
-                reverted,
-                |revert| {
-                    revert.view.update(ctx, |view, ctx| {
-                        view.dispatch_file_revert(revert.file_idx, ctx)
-                    })
-                },
-            ) else {
-                continue;
-            };
+        let abandoned = self.rewind_reverts.sequence.settled(
+            |revert| revert.view.id() == view_id && revert.file_idx == file_idx,
+            reverted,
+            |revert| {
+                revert.view.update(ctx, |view, ctx| {
+                    view.dispatch_file_revert(revert.file_idx, ctx)
+                })
+            },
+        );
+        if let Some(abandoned) = abandoned {
             Self::abandon_rewind_reverts(abandoned, ctx);
-            break;
         }
-        self.finish_settled_rewind_reverts(ctx);
+        self.finish_settled_rewinds(ctx);
     }
 
     /// Tells each card that a revert of one of its files will not run: a newer
@@ -24706,21 +24736,15 @@ impl TerminalView {
         }
     }
 
-    /// Drops every rewind batch whose reverts have all settled — releasing the
+    /// Finishes every rewind whose reverts have all settled — releasing the
     /// diff views it kept alive — and records the reverts that landed into its
     /// pre-rewind backup.
-    fn finish_settled_rewind_reverts(&mut self, ctx: &mut ViewContext<Self>) {
-        let (settled, outstanding): (Vec<_>, Vec<_>) =
-            std::mem::take(&mut self.rewind_revert_batches)
-                .into_iter()
-                .partition(|batch| batch.is_settled());
-        self.rewind_revert_batches = outstanding;
-
-        for batch in settled {
-            let Some(backup_id) = batch.backup_conversation_id() else {
+    fn finish_settled_rewinds(&mut self, ctx: &mut ViewContext<Self>) {
+        for rewind in self.rewind_reverts.take_settled() {
+            let Some(backup_id) = rewind.backup_conversation_id else {
                 continue;
             };
-            let reverted = batch.reverted_actions(ctx);
+            let reverted = rewind.reverted_actions(ctx);
             if reverted.is_empty() {
                 continue;
             }

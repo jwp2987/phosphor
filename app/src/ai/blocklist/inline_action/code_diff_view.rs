@@ -1,4 +1,4 @@
-use crate::ai::blocklist::rewind_revert::RevertStart;
+use crate::ai::blocklist::rewind_revert::{RevertLaneKey, RevertStart};
 use crate::ai::blocklist::view_util::render_provider_icon_button;
 use crate::ai::skills::{SkillOpenOrigin, SkillTelemetryEvent};
 use anyhow::Result;
@@ -469,6 +469,18 @@ impl RevertingDiffs {
     }
 }
 
+/// The pending diffs (by index, of `file_count`) a revert has to write: all
+/// of them except those an earlier, partly refused attempt already reverted
+/// and those the accept never wrote — its write was refused or failed — so
+/// nothing of the card's is on disk there to undo (#686).
+fn files_to_revert<'a>(
+    file_count: usize,
+    already_reverted: &'a HashSet<usize>,
+    accept_failed: &'a HashSet<usize>,
+) -> impl Iterator<Item = usize> + 'a {
+    (0..file_count).filter(|idx| !already_reverted.contains(idx) && !accept_failed.contains(idx))
+}
+
 /// The diff application state for a single file.
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
@@ -656,6 +668,12 @@ pub struct CodeDiffView {
     /// file already holds its base, and asserting the accepted text against it
     /// again would be refused as a change made after the accept.
     reverted_diff_indices: HashSet<usize>,
+    /// Indices (into `pending_diffs`) of files whose accept write was refused
+    /// or failed. The accept never wrote them, so a revert has nothing to undo
+    /// there and must not touch them: its guard would refuse with a false
+    /// "changed on disk", and — for a refused creation whose text happens to
+    /// match — a guarded delete would remove a file the agent never created.
+    accept_failed_diff_indices: HashSet<usize>,
 }
 
 impl CodeDiffView {
@@ -1077,6 +1095,7 @@ impl CodeDiffView {
             state: initial_state,
             should_expand_when_complete: false,
             reverted_diff_indices: HashSet::new(),
+            accept_failed_diff_indices: HashSet::new(),
             selected_tab: 0,
             display_mode,
             title,
@@ -1162,7 +1181,11 @@ impl CodeDiffView {
                 #[cfg(not(target_family = "wasm"))]
                 {
                     let session_type = &self.diff_session_type;
-                    diff_viewer.update(ctx, |view, ctx| view.register_file(session_type, ctx));
+                    let original_content = diff.base.content.clone();
+                    diff_viewer.update(ctx, |view, ctx| {
+                        view.set_original_content(original_content);
+                        view.register_file(session_type, ctx)
+                    });
                 }
 
                 self.setup_diff_view_subscriptions(&diff_viewer, idx, file_path, ctx);
@@ -1278,7 +1301,7 @@ impl CodeDiffView {
     /// deleting a file the accept created — is driven from outside, one file
     /// at a time: the only trigger is a rewind, which reverts several cards
     /// and must order the writes to any one file across them, strictly newest
-    /// first (#686; `RewindRevertBatch`). Every write is guarded and resolves
+    /// first (#686; `RewindReverts`). Every write is guarded and resolves
     /// later, so the card enters [`CodeDiffState::Reverting`] and becomes
     /// `Reverted` — with the action marked reverted in the conversation — only
     /// once every file's write has landed (`handle_save_completed`). A refusal
@@ -1291,15 +1314,17 @@ impl CodeDiffView {
     /// settles only once each of them has been dispatched and come back, or
     /// been given up on.
     ///
-    /// Returns those files — index into the pending diffs, and path — or
+    /// Returns those files — index into the pending diffs, and the key that
+    /// orders writes to the file across cards — or
     /// `None`, changing nothing, if the card is not in a revertible state. Files
-    /// an earlier, partly refused attempt already reverted are skipped; if that
-    /// is all of them, the card settles as reverted at once and the list is
-    /// empty.
+    /// an earlier, partly refused attempt already reverted, and files the
+    /// accept never wrote (its write was refused or failed), are skipped; if
+    /// that is all of them, the card settles as reverted at once and the list
+    /// is empty.
     pub fn begin_revert(
         &mut self,
         ctx: &mut ViewContext<Self>,
-    ) -> Option<Vec<(usize, Option<StandardizedPath>)>> {
+    ) -> Option<Vec<(usize, Option<RevertLaneKey>)>> {
         if !matches!(self.state, CodeDiffState::Accepted(None)) {
             log::warn!(
                 "Attempted to revert changes when not in Accepted(None) state - actual state: {:?}",
@@ -1310,18 +1335,39 @@ impl CodeDiffView {
 
         let mut reverting = RevertingDiffs::default();
         let mut files = Vec::new();
-        for (idx, diff) in self.pending_diffs.iter().enumerate() {
-            if self.reverted_diff_indices.contains(&idx) {
-                continue;
-            }
+        for idx in files_to_revert(
+            self.pending_diffs.len(),
+            &self.reverted_diff_indices,
+            &self.accept_failed_diff_indices,
+        ) {
             reverting.write_queued(idx);
-            files.push((idx, diff.diff_view.as_ref(ctx).file_path().cloned()));
+            let host = match &self.diff_session_type {
+                DiffSessionType::Local => None,
+                DiffSessionType::Remote(host) => Some(host),
+            };
+            let lane = self.pending_diffs[idx]
+                .diff_view
+                .as_ref(ctx)
+                .file_path()
+                .map(|path| RevertLaneKey::new(host, path));
+            files.push((idx, lane));
         }
 
         self.state = CodeDiffState::Reverting(reverting);
         // Settles at once if nothing is queued.
         self.settle_revert(ctx);
         Some(files)
+    }
+
+    /// Whether a revert of this card could write anything: some file is
+    /// backed by the filesystem and has a record of what its accept wrote.
+    /// `false` for a card restored from a previous session — its accept
+    /// happened in another process, which kept no record — so a rewind reports
+    /// it once instead of attempting (and refusing) every file (#686).
+    pub fn can_revert(&self, app: &AppContext) -> bool {
+        self.pending_diffs
+            .iter()
+            .any(|diff| diff.diff_view.as_ref(app).can_revert())
     }
 
     /// Dispatches the guarded revert write for queued file `idx`.
@@ -2608,6 +2654,12 @@ impl CodeDiffView {
                         save_errors.push(FileSaveFailure { path, error });
                     }
                 }
+
+                self.accept_failed_diff_indices = save_failed
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, failed)| failed.then_some(idx))
+                    .collect();
 
                 let mut updated_files = Vec::new();
                 let mut deleted_files = Vec::new();

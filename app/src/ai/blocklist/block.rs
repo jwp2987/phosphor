@@ -3963,7 +3963,7 @@ impl AIBlock {
 
     /// This block's file diff cards (CodeDiffViews), newest first — the order
     /// a rewind must revert them in. The rewind dispatches the reverts itself
-    /// (`RewindRevertBatch`), because two edits to one file, in this block or
+    /// (`RewindReverts`), because two edits to one file, in this block or
     /// across blocks, must be undone strictly newest first (#686).
     pub fn requested_edit_views_newest_first(&self) -> Vec<ViewHandle<CodeDiffView>> {
         self.requested_edits

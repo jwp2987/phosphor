@@ -271,3 +271,35 @@ fn an_outcome_for_a_queued_file_not_yet_dispatched_is_ignored() {
     assert!(!state.settle_revert());
     assert!(matches!(state, CodeDiffState::Reverting(_)));
 }
+
+/// A file whose accept write was refused or failed was never written, so a
+/// revert must not touch it: its guard would report a false "changed on
+/// disk" and, in a rewind, abandon every older revert of that file — and for
+/// a refused creation whose text happens to match, the guarded delete would
+/// remove a file the agent never created. Files an earlier attempt already
+/// reverted are skipped the same way.
+#[test]
+fn a_revert_skips_files_the_accept_never_wrote() {
+    let none = HashSet::new();
+    assert_eq!(
+        files_to_revert(3, &none, &none).collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+
+    let accept_failed = HashSet::from([1]);
+    assert_eq!(
+        files_to_revert(3, &none, &accept_failed).collect::<Vec<_>>(),
+        [0, 2]
+    );
+
+    let reverted = HashSet::from([0]);
+    assert_eq!(
+        files_to_revert(3, &reverted, &accept_failed).collect::<Vec<_>>(),
+        [2]
+    );
+
+    // Nothing the accept wrote: nothing to write, so the card settles as
+    // reverted at once (see `a_retry_with_nothing_left_to_write_is_a_revert`).
+    let all_failed = HashSet::from([0, 1]);
+    assert!(files_to_revert(2, &none, &all_failed).next().is_none());
+}
