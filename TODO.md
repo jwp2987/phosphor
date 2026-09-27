@@ -2434,9 +2434,12 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       `CLIAgentSessionStatus` has no `Cancelled` variant. ~1000 lines incl. tests;
       fully local (PTY byte observation), the harness is never signaled.
       **Closed 2026-09-26:** ported in `182ee1449`, tests in `e9f49cf94`.
-- [ ] `bc0f17ce` — structured per-block diff-match failures for agent retry.
+- [x] `bc0f17ce` — structured per-block diff-match failures for agent retry.
       **Preserve** the `RemoteFileOperationsUnsupported` arm's deliberate-divergence
       comment; the commit does not touch it. Its message over-describes the diff.
+      **Ported 2026-09-27 (#711):** `DiffMatchFailure { block_number }` added to
+      `DiffMatchFailures.fuzzy_match_failure_details` (`#[serde(skip)]`); the
+      `RemoteFileOperationsUnsupported` arm and its comment are untouched.
 - [ ] `4cd1c77c4` — file-explorer chip in the native agent-view toolbelt; entirely local.
 - [ ] `ff16a0b2a` — `hashbrown` raw-entry + `FxHashMap` in hot paths. `rustc-hash`
       is already a workspace dep; `app/Cargo.toml` needs both added.
