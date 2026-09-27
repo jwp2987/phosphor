@@ -124,7 +124,7 @@ fn glob_parameters() -> Value {
             },
             "limit": {
                 "type": "integer",
-                "description": "Maximum matches to return. Results are always capped at 200; a smaller value is accepted but not currently applied, so ask for fewer patterns or a narrower search_dir if you need a shorter list.",
+                "description": "Maximum matches to return. Results are always capped at 200 regardless of this value; a smaller value is honoured.",
                 "default": 200
             }
         },
@@ -139,36 +139,32 @@ fn glob_parameters() -> Value {
 /// directory, and thousands of paths in one tool result blow past what a small-context
 /// local model (e.g. 32K) can hold, cutting the stream off instantly.
 ///
-/// **Enforced in [`glob_result_to_json`], not on the request.** The obvious place for it
-/// is the request — and `glob_from_args` used to write a `max_matches` into the proto and
-/// call it done — but that value is dropped one layer below:
-/// `crates/ai/src/agent/action/convert.rs`'s `From<FileGlobV2>` builds
-/// `AIAgentActionType::FileGlobV2 { patterns, search_dir }` from just two of the proto's
-/// five fields, because the internal enum has nowhere to put a limit (see its standing
-/// upstream `TODO: Maybe implement client side depth and result limits`). The executor
-/// therefore applies no count cap at all, and the only backstop was `chat_stream`'s
-/// 40,000-character truncation, which slices the serialized JSON mid-array and mid-path.
+/// **Two layers now enforce it, deliberately redundant.** [`glob_from_args`] clamps the
+/// model's `limit` to this constant and writes it into the proto's `max_matches`.
+/// `AIAgentActionType::FileGlobV2::result_limit` (`crates/ai/src/agent/action/mod.rs`)
+/// carries that already-clamped value, and the executor
+/// (`app/src/ai/blocklist/action_model/execute/file_glob.rs`) truncates the match list to
+/// it before the result is even built. [`glob_result_to_json`] then applies this same
+/// constant again as a second, independent backstop — so a bug in the executor's
+/// truncation (or a `result_limit` of `None`, the case for anything not built from a real
+/// tool call: a persisted pre-limit action, or a value built directly in a test) still
+/// cannot let an unbounded match list reach the model. Before the executor honoured it,
+/// this was the *only* enforcement point, and the only backstop above it was
+/// `chat_stream`'s 40,000-character truncation, which slices the serialized JSON mid-array
+/// and mid-path — hence keeping this layer even though it is now usually a no-op.
 ///
-/// Capping here — in fork-original BYOP code — keeps the enum at parity with the pin and
-/// puts the cut at the one layer that still knows both the full match count and the shape
-/// being serialized, so the model can be told what was left out.
+/// A smaller `limit` than this constant is honoured (via `result_limit`); a larger one is
+/// silently held to it, exactly as the schema's `limit` description says. That distinction
+/// — a documented ceiling versus a silently-dropped argument — is what keeps this from
+/// being the `grep.md` phantom-`include` defect, which advertised an argument as working
+/// and dropped it in silence.
 ///
-/// `limit` is therefore **accepted, documented as clamped, and not applied** when it is
-/// smaller than this constant. That is deliberate and is not the `grep.md` phantom-`include`
-/// defect, which was an argument advertised as working and dropped in silence: the schema
-/// description states outright that results are always capped at 200 and that a smaller
-/// value is not currently applied, so the model is not misled into believing it narrowed
-/// the search.
-///
-/// It was briefly deleted instead, on 2026-08-21, and that was wrong in a way worth
-/// recording: `recover_tool_by_arg_shape` (`chat_stream.rs`) requires every key a model
-/// sent to exist in the tool's schema, and its `file_glob` fixture is a verbatim call
-/// captured from `zap.log` carrying `"limit":10`. Removing the key made that real observed
-/// call unrecoverable — a round trip and a red row for arguments that were already correct.
-///
-/// Honouring a smaller value needs a slot on `AIAgentActionType::FileGlobV2`, which is
-/// pin-inherited and carries the upstream `TODO` quoted above; that is filed, not smuggled
-/// in here.
+/// `limit` was briefly deleted from the schema instead, on 2026-08-21, and that was wrong
+/// in a way worth recording: `recover_tool_by_arg_shape` (`chat_stream.rs`) requires every
+/// key a model sent to exist in the tool's schema, and its `file_glob` fixture is a
+/// verbatim call captured from `zap.log` carrying `"limit":10`. Removing the key made that
+/// real observed call unrecoverable — a round trip and a red row for arguments that were
+/// already correct.
 const GLOB_RESULT_LIMIT: usize = 200;
 
 fn glob_from_args(args: &str) -> Result<api::message::tool_call::Tool> {
@@ -181,10 +177,17 @@ fn glob_from_args(args: &str) -> Result<api::message::tool_call::Tool> {
             } else {
                 parsed.search_dir
             },
-            // Sent for the day the internal enum grows a slot for it (see
-            // `GLOB_RESULT_LIMIT`); currently discarded by `convert.rs`, so the cap that
-            // actually runs is the one in `glob_result_to_json`.
-            max_matches: GLOB_RESULT_LIMIT as i32,
+            // Clamped here, once, to `GLOB_RESULT_LIMIT`: `AIAgentActionType::FileGlobV2`'s
+            // `result_limit` (populated from this field by `convert.rs`) trusts it as
+            // already-clamped and applies it verbatim in the executor
+            // (`app/src/ai/blocklist/action_model/execute/file_glob.rs`). A model asking for
+            // fewer than the cap is honoured; asking for more is silently held to the cap,
+            // exactly as the schema's `limit` description promises. `glob_result_to_json`'s
+            // own cap stays as a second, independent backstop.
+            max_matches: parsed
+                .limit
+                .map_or(GLOB_RESULT_LIMIT, |limit| limit.min(GLOB_RESULT_LIMIT))
+                as i32,
             max_depth: 0, // unlimited depth
             min_depth: 0,
         },
@@ -295,5 +298,46 @@ mod glob_result_tests {
                 .contains(&total_matches.to_string()),
             "the note must state the true total: {value}"
         );
+    }
+
+    /// A `limit` smaller than [`GLOB_RESULT_LIMIT`] is forwarded verbatim into the proto's
+    /// `max_matches`, which `crates/ai/src/agent/action/convert.rs` carries into
+    /// `AIAgentActionType::FileGlobV2::result_limit` for the executor to honour.
+    #[test]
+    fn glob_from_args_forwards_a_smaller_limit_into_max_matches() {
+        let tool = glob_from_args(r#"{"patterns":["*.rs"],"limit":10}"#).expect("valid args");
+        let api::message::tool_call::Tool::FileGlobV2(glob) = tool else {
+            panic!("expected FileGlobV2");
+        };
+        assert_eq!(
+            glob.max_matches, 10,
+            "a limit smaller than the cap must be forwarded verbatim"
+        );
+    }
+
+    /// A `limit` larger than the cap is held to it, not forwarded verbatim -- the model
+    /// cannot use `limit` to request more than the tool ever hands back.
+    #[test]
+    fn glob_from_args_clamps_a_larger_limit_to_the_cap() {
+        let tool = glob_from_args(r#"{"patterns":["*.rs"],"limit":100000}"#).expect("valid args");
+        let api::message::tool_call::Tool::FileGlobV2(glob) = tool else {
+            panic!("expected FileGlobV2");
+        };
+        assert_eq!(
+            glob.max_matches, GLOB_RESULT_LIMIT as i32,
+            "a limit larger than the cap must be held to it, not forwarded verbatim"
+        );
+    }
+
+    /// No `limit` at all -- `#[serde(default)]` -- must produce the same `max_matches` as
+    /// before this field was honoured: the cap itself, not `0` or some other default that
+    /// would silently narrow every un-limited call.
+    #[test]
+    fn glob_from_args_defaults_max_matches_to_the_cap_when_no_limit_is_sent() {
+        let tool = glob_from_args(r#"{"patterns":["*.rs"]}"#).expect("valid args");
+        let api::message::tool_call::Tool::FileGlobV2(glob) = tool else {
+            panic!("expected FileGlobV2");
+        };
+        assert_eq!(glob.max_matches, GLOB_RESULT_LIMIT as i32);
     }
 }

@@ -94,7 +94,17 @@ pub enum AIAgentActionType {
     FileGlobV2 {
         patterns: Vec<String>,
         search_dir: Option<String>,
-        // TODO(matthew): Maybe implement client side depth and result limits.
+        /// The most matches the model asked for, already clamped to the tool's own
+        /// hard cap (`GLOB_RESULT_LIMIT` in `app/src/ai/agent_providers/tools/search.rs`)
+        /// by the caller that populates this field. `None` means no request-side
+        /// limit is known -- the case for anything that does not go through that
+        /// tool-call path (a persisted action from before this field existed, or one
+        /// built directly in a test) -- and the executor applies no truncation of
+        /// its own beyond that same hard cap. Was the upstream
+        /// `TODO(matthew): Maybe implement client side depth and result limits`, a
+        /// pin-inherited gap; `max_depth`/`min_depth` remain unimplemented, filed
+        /// separately rather than added speculatively here.
+        result_limit: Option<usize>,
     },
 
     ReadMCPResource {
@@ -415,6 +425,7 @@ impl Display for AIAgentActionType {
             AIAgentActionType::FileGlobV2 {
                 patterns,
                 search_dir,
+                ..
             } => {
                 let path_str = search_dir.as_deref().unwrap_or(".");
                 write!(f, "FileGlobV2: [{}] in {}", patterns.join(", "), path_str)

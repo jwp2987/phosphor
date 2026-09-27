@@ -590,6 +590,7 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                                 AIAgentActionType::FileGlobV2 {
                                     patterns,
                                     search_dir: path,
+                                    ..
                                 },
                             id,
                             ..

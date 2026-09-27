@@ -10532,12 +10532,35 @@ claim, which was wrong by four.
       FNV-1a + MurmurHash3-fmix64 algorithm, plus a second input to guard against a
       degenerate constant-output regression.
 
-- [ ] **`AIAgentActionType::FileGlobV2` has no slot for a result limit, so a model's**
+- [x] **`AIAgentActionType::FileGlobV2` has no slot for a result limit, so a model's**
       **`limit` cannot be honoured.** The parameter is accepted and the schema says plainly
       that results are always capped at 200 and a smaller value is not applied — so it is
       documented rather than silently dropped — but honouring it needs a field on that
       pin-inherited enum, which carries the upstream `TODO: Maybe implement client side depth
       and result limits`. Filed rather than diverging a shared crate.
+      **Fixed 2026-09-27 (#761).** Added `result_limit: Option<usize>` to
+      `AIAgentActionType::FileGlobV2`. `glob_from_args` now forwards the model's `limit`
+      (clamped to `GLOB_RESULT_LIMIT`) into the proto's `max_matches` instead of always
+      sending the hardcoded cap; `convert.rs` carries it into `result_limit`; the executor
+      (`action_model/execute/file_glob.rs`) truncates the match list to it via a new
+      `apply_result_limit` before the result is built. `glob_result_to_json`'s own cap
+      stays as an independent backstop. `PersistedAIAgentActionType::FileGlobV2` grew the
+      matching field with `#[serde(default)]` for backward compatibility with actions
+      persisted before this field existed (`result_limit: None`, meaning "no request-side
+      limit known" — same behavior as before). Every other pattern match on the struct
+      variant (11 sites) updated to `..`. **This does diverge from the pin** (byte-identical
+      enum, `4111d08f9:crates/ai/src/agent/action/mod.rs:95-99`), recorded in `DECLINED.md`'s
+      `IMPROVED` section. Tests: `glob_from_args_forwards_a_smaller_limit_into_max_matches`,
+      `glob_from_args_clamps_a_larger_limit_to_the_cap`,
+      `glob_from_args_defaults_max_matches_to_the_cap_when_no_limit_is_sent` (`search.rs`);
+      `max_matches_becomes_result_limit`,
+      `a_negative_max_matches_degrades_to_no_limit_rather_than_panicking` (`convert.rs`);
+      `apply_result_limit_truncates_a_success_result_to_the_limit`,
+      `apply_result_limit_is_a_no_op_when_the_limit_is_not_exceeded`,
+      `apply_result_limit_with_no_limit_leaves_the_result_unchanged`,
+      `apply_result_limit_passes_non_success_results_through_unchanged` (`file_glob_tests.rs`);
+      `persisted_file_glob_v2_accepts_legacy_actions_without_a_result_limit`,
+      `persisted_file_glob_v2_round_trips_result_limit` (`persistence_test.rs`).
 
 - [x] **`script/precheck` does not run `-p integration`.** Its package list covers 40 crates
       and excludes the integration suite, which CI runs as a separate 3-shard job under

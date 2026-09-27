@@ -201,6 +201,7 @@ fn blocked_action_presentation(action: &AIAgentActionType) -> BlockedActionPrese
         AIAgentActionType::FileGlobV2 {
             patterns,
             search_dir,
+            ..
         } => (
             "Agent wants to find files".to_owned(),
             Some(format!(

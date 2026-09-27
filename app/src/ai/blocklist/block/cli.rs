@@ -2762,6 +2762,7 @@ fn render_search_action_input(
         AIAgentActionType::FileGlobV2 {
             ref patterns,
             ref search_dir,
+            ..
         } => {
             let display_path = search_dir.as_deref().unwrap_or("the current directory");
 

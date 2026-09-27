@@ -168,6 +168,11 @@ impl From<api::message::tool_call::FileGlobV2> for AIAgentActionType {
             } else {
                 Some(value.search_dir)
             },
+            // `max_matches` is populated by `glob_from_args`
+            // (`app/src/ai/agent_providers/tools/search.rs`), already clamped to that
+            // tool's `GLOB_RESULT_LIMIT`; a negative value (never sent in practice)
+            // degrades to "no request-side limit known" rather than panicking.
+            result_limit: usize::try_from(value.max_matches).ok(),
         }
     }
 }
@@ -709,5 +714,52 @@ impl From<api::message::tool_call::insert_review_comments::Comment> for InsertRe
             comment_location: location,
             html_url: value.html_url.none_if_default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod file_glob_v2_conversion_tests {
+    use super::*;
+
+    fn a_glob(max_matches: i32) -> api::message::tool_call::FileGlobV2 {
+        api::message::tool_call::FileGlobV2 {
+            patterns: vec!["*.rs".to_owned()],
+            search_dir: String::new(),
+            max_matches,
+            max_depth: 0,
+            min_depth: 0,
+        }
+    }
+
+    /// `max_matches` -- already clamped to `GLOB_RESULT_LIMIT` by
+    /// `app/src/ai/agent_providers/tools/search.rs`'s `glob_from_args` before this ever
+    /// reaches the proto -- must survive into `result_limit` for the executor to honour.
+    /// This is the slot the upstream `TODO(matthew): Maybe implement client side depth and
+    /// result limits` on `FileGlobV2` used to have nowhere to go.
+    #[test]
+    fn max_matches_becomes_result_limit() {
+        let action: AIAgentActionType = a_glob(10).into();
+        assert!(matches!(
+            action,
+            AIAgentActionType::FileGlobV2 {
+                result_limit: Some(10),
+                ..
+            }
+        ));
+    }
+
+    /// A negative `max_matches` never happens in practice (`glob_from_args` always sends a
+    /// non-negative value), but must degrade to "no request-side limit known" rather than
+    /// panicking on the `usize` conversion.
+    #[test]
+    fn a_negative_max_matches_degrades_to_no_limit_rather_than_panicking() {
+        let action: AIAgentActionType = a_glob(-1).into();
+        assert!(matches!(
+            action,
+            AIAgentActionType::FileGlobV2 {
+                result_limit: None,
+                ..
+            }
+        ));
     }
 }

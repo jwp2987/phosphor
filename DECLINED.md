@@ -400,6 +400,26 @@ upstream's behavior is actually a defect rather than a preference.
   denylist configured, `Denied(AlwaysAskEnabled)`/`Denied(AgentDecided)` otherwise — and
   never a vacuous allowlist match.
 
+- **`AIAgentActionType::FileGlobV2` grows a `result_limit` slot** (`#761`, 2026-09-27,
+  `crates/ai/src/agent/action/mod.rs`). **Upstream:** the enum is byte-identical
+  (`4111d08f9:crates/ai/src/agent/action/mod.rs:95-99`), including its own
+  `// TODO(matthew): Maybe implement client side depth and result limits`, and has no field
+  for a limit at all. An earlier entry filed this rather than diverging a shared,
+  pin-inherited crate. **The defect:** with nowhere to put it, the model's `limit` argument
+  was accepted, clamped, and then silently discarded one layer below — `glob_from_args`
+  wrote a hardcoded `GLOB_RESULT_LIMIT` (200) into the proto regardless of what the model
+  asked for, and `convert.rs`'s `From<FileGlobV2>` built the internal action from only two
+  of the proto's five fields. So a model asking for `limit: 10` always got up to 200
+  matches back, silently — the tool schema said as much, but the fix a schema note asks
+  for is to stop the gap, not merely disclose it. **We do:** add `result_limit:
+  Option<usize>` to the enum, thread the model's already-clamped `limit` through it, and
+  honour it in the executor (`app/src/ai/blocklist/action_model/execute/file_glob.rs`) via
+  a new `apply_result_limit`, which truncates the match list before the result is built.
+  `None` (a plain `FileGlob` v1 request, or a `FileGlobV2` action persisted before this
+  field existed) applies no truncation, leaving `glob_result_to_json`'s independent
+  `GLOB_RESULT_LIMIT` cap as the sole backstop — identical to pre-fix behavior for anything
+  that isn't a real tool call carrying a smaller `limit`.
+
 - **A pinned block header is never drawn over a running command** (`ec2e2d227`,
   2026-09-05, `app/src/terminal/block_list_element.rs`). **Upstream:**
   `should_hide_snackbar_during_long_running_command` hides the pinned snackbar

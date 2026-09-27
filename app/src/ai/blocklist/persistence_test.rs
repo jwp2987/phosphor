@@ -145,3 +145,50 @@ fn persisted_use_computer_round_trips_window_target() {
         AIAgentActionType::try_from(restored).expect("persisted action must convert back");
     assert_eq!(restored_action, action);
 }
+
+/// A `FileGlobV2` action persisted before `result_limit` existed has no such key at all;
+/// `#[serde(default)]` must still let it deserialize, with `result_limit: None` meaning
+/// "no request-side limit known" rather than failing to load the conversation's history.
+#[test]
+fn persisted_file_glob_v2_accepts_legacy_actions_without_a_result_limit() {
+    let json = r#"{
+        "FileGlobV2": {
+            "patterns": ["*.rs"],
+            "search_dir": null
+        }
+    }"#;
+
+    let persisted: PersistedAIAgentActionType =
+        serde_json::from_str(json).expect("legacy FileGlobV2 shape must deserialize");
+
+    let PersistedAIAgentActionType::FileGlobV2 {
+        patterns,
+        result_limit,
+        ..
+    } = &persisted
+    else {
+        panic!("expected a FileGlobV2 action, got {persisted:?}");
+    };
+    assert_eq!(patterns, &vec!["*.rs".to_owned()]);
+    assert_eq!(*result_limit, None);
+}
+
+/// The current shape, with a `result_limit`, round-trips through persistence intact.
+#[test]
+fn persisted_file_glob_v2_round_trips_result_limit() {
+    let action = AIAgentActionType::FileGlobV2 {
+        patterns: vec!["*.rs".to_owned()],
+        search_dir: Some("src".to_owned()),
+        result_limit: Some(42),
+    };
+
+    let persisted = PersistedAIAgentActionType::from(&action);
+    let json = serde_json::to_string(&persisted).expect("persisted action must serialize");
+    let restored: PersistedAIAgentActionType =
+        serde_json::from_str(&json).expect("persisted action must deserialize");
+    assert_eq!(restored, persisted);
+
+    let restored_action =
+        AIAgentActionType::try_from(restored).expect("persisted action must convert back");
+    assert_eq!(restored_action, action);
+}
