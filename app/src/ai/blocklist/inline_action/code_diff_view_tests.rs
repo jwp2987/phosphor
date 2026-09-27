@@ -433,3 +433,118 @@ fn is_rename_without_changes_is_false_for_a_remote_fallback_even_with_no_deltas(
         Some(&no_deltas)
     ));
 }
+
+// ── Rewind revert deadline: `RevertWriteGenerations` (#686 follow-up) ────
+//
+// `TerminalView::dispatch_file_revert_with_deadline` arms a 20s timer every
+// time a revert write goes in flight, and `CodeDiffView::timeout_file_revert`
+// marks it failed if the timer fires with nothing having resolved it. Two
+// things below are only reachable through a full `TerminalView` + GUI event
+// loop and so are NOT covered here (recorded in the fixing commit instead):
+//
+//   - that a timed-out write settles exactly once (`RevertWriteSettled` is
+//     emitted by `timeout_file_revert` and consumed by exactly one
+//     subscriber -- `TerminalView::rewind_revert_write_timed_out` must not
+//     also call `rewind_revert_write_settled` itself);
+//   - that the 20s `Timer::after` really elapses and really calls back.
+//
+// What *is* testable without a view or an event loop is the generation guard
+// itself: whether a stale timer for a superseded write can be told apart
+// from the timer that actually belongs to whatever write is in flight now.
+// That is `RevertWriteGenerations`, exercised directly below.
+
+/// Each dispatch for the same index gets its own, distinct generation --
+/// this is what lets a later dispatch's timer be told apart from an earlier
+/// one's.
+#[test]
+fn each_dispatch_for_the_same_index_gets_a_fresh_generation() {
+    let mut generations = RevertWriteGenerations::default();
+    let first = generations.dispatched(0);
+    let second = generations.dispatched(0);
+    assert_ne!(first, second);
+    // Only the most recent dispatch's generation is current.
+    assert!(!generations.is_current(0, first));
+    assert!(generations.is_current(0, second));
+}
+
+/// Different indices' generations are independent: dispatching file 1 must
+/// not touch file 0's current generation.
+#[test]
+fn generations_are_independent_per_index() {
+    let mut generations = RevertWriteGenerations::default();
+    let file_0 = generations.dispatched(0);
+    let file_1 = generations.dispatched(1);
+    assert!(generations.is_current(0, file_0));
+    assert!(generations.is_current(1, file_1));
+}
+
+/// No write has ever been dispatched for this index: nothing is current, so
+/// no generation -- not even `0`, the first one `dispatched` would ever hand
+/// out -- can pass the check.
+#[test]
+fn an_index_with_no_dispatch_has_no_current_generation() {
+    let generations = RevertWriteGenerations::default();
+    assert_eq!(generations.current(0), None);
+    assert!(!generations.is_current(0, 0));
+}
+
+/// The regression this type exists to prevent (suspicion (b) in #686's
+/// follow-up): a timer armed for write N of file `idx` must not be mistaken
+/// for the timer belonging to write N+1 of the *same* `idx`, dispatched later
+/// (by a second rewind, after the first attempt failed or timed out and
+/// returned the card to `Accepted(None)`) while the first timer is still
+/// pending. Without the generation check, `record_revert_write`'s
+/// `in_flight` set alone cannot tell these apart: a fresh `RevertingDiffs` for
+/// the second attempt re-inserts `idx` into `in_flight`, so a stale timer for
+/// the first attempt would look, from that set alone, exactly like the timer
+/// for the second one -- and would time out the wrong write.
+#[test]
+fn a_stale_generation_from_an_earlier_attempt_is_not_current_once_a_new_write_is_dispatched() {
+    let mut generations = RevertWriteGenerations::default();
+
+    // Attempt 1 dispatches a write for file 0; its timer captures this
+    // generation.
+    let attempt_1_generation = generations.dispatched(0);
+    assert!(generations.is_current(0, attempt_1_generation));
+
+    // Attempt 1's write resolves (by any outcome) and, some time later, a
+    // second rewind dispatches a NEW write for the same file 0 -- attempt
+    // 1's timer is still pending when this happens.
+    let attempt_2_generation = generations.dispatched(0);
+    assert_ne!(attempt_1_generation, attempt_2_generation);
+
+    // Attempt 1's stale timer must not be mistaken for attempt 2's: only
+    // attempt 2's generation may time out the write currently in flight.
+    assert!(!generations.is_current(0, attempt_1_generation));
+    assert!(generations.is_current(0, attempt_2_generation));
+}
+
+/// Suspicion (c): a real outcome that arrives after `timeout_file_revert` has
+/// already recorded a timeout for the same write is a no-op, via the same
+/// `record_revert_write` idempotence `an_outcome_for_a_write_not_in_flight_is_ignored`
+/// pins for a duplicate real outcome. `timeout_file_revert` records its
+/// timeout through the exact same call
+/// (`CodeDiffState::record_revert_write(idx, false)`, see its source), so
+/// this is the same guard, driven in the other order: timeout first, real
+/// outcome late.
+#[test]
+fn a_late_real_outcome_after_a_recorded_timeout_is_ignored() {
+    let mut state = reverting(&[0]);
+    // The timeout's own call into `record_revert_write` -- this is exactly
+    // what `timeout_file_revert` does once its generation check passes.
+    assert!(state.record_revert_write(0, false));
+    assert!(
+        !state.settle_revert(),
+        "a timed-out revert is not a success"
+    );
+    assert!(is_accepted(&state), "got {state:?}");
+
+    // The real outcome arrives late. It must change nothing: not the
+    // recorded result, and not settle the card a second time.
+    assert!(
+        !state.record_revert_write(0, true),
+        "a write already resolved (by timeout) must not resolve again"
+    );
+    assert!(!state.settle_revert());
+    assert!(is_accepted(&state), "got {state:?}");
+}

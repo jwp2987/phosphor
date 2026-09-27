@@ -160,7 +160,6 @@ use crate::workspaces::user_workspaces::UserWorkspacesEvent;
 pub use self::link_detection::GridHighlightedLink;
 pub use self::link_detection::{RichContentLink, RichContentLinkTooltipInfo};
 use crate::ai::llms::{LLMId, LLMModelHost, LLMPreferences};
-use crate::settings::CodeSettings;
 
 pub use action::{AgentOnboardingVersion, OnboardingIntention, OnboardingVersion, TerminalAction};
 use ai::api_keys::{ApiKeyManager, AwsCredentialsState};
@@ -24875,14 +24874,84 @@ impl TerminalView {
 
         self.rewind_reverts
             .add_rewind(cards, backup_conversation_id);
-        let abandoned = self.rewind_reverts.sequence.start(|revert| {
-            revert.view.update(ctx, |view, ctx| {
-                view.dispatch_file_revert(revert.file_idx, ctx)
-            })
-        });
+        let abandoned = self
+            .rewind_reverts
+            .sequence
+            .start(|revert| Self::dispatch_file_revert_with_deadline(revert, ctx));
         Self::abandon_rewind_reverts(abandoned, ctx);
         self.finish_settled_rewinds(ctx);
         num_blocks_reverted
+    }
+
+    /// How long a rewind waits for a dispatched revert write's outcome before treating it
+    /// as failed.
+    ///
+    /// Without this, a write that never resolves -- most plausibly a remote host that has
+    /// gone unreachable mid-write -- left the card stuck `Reverting` forever, per
+    /// [`RevertSequence`]'s design: a lane only advances to its next-older revert once the
+    /// in-flight one settles, and nothing but that settle ever clears it. Every later
+    /// rewind of the same file then queues behind it, permanently.
+    ///
+    /// [`RevertSequence`]: crate::ai::blocklist::rewind_revert::RevertSequence
+    const REWIND_REVERT_WRITE_TIMEOUT: Duration = Duration::from_secs(20);
+
+    /// Dispatches `revert`'s guarded write and, if it goes in flight, arms
+    /// [`Self::REWIND_REVERT_WRITE_TIMEOUT`] so an outcome that never arrives cannot wedge
+    /// this file's lane (and every rewind of it queued behind that lane) forever.
+    fn dispatch_file_revert_with_deadline(
+        revert: &crate::ai::blocklist::rewind_revert::FileRevert,
+        ctx: &mut ViewContext<Self>,
+    ) -> crate::ai::blocklist::rewind_revert::RevertStart {
+        let (start, generation) = revert.view.update(ctx, |view, ctx| {
+            let start = view.dispatch_file_revert(revert.file_idx, ctx);
+            let generation = view.current_revert_generation(revert.file_idx);
+            (start, generation)
+        });
+        if start == crate::ai::blocklist::rewind_revert::RevertStart::InFlight {
+            // `generation` is `None` here only if `dispatch_file_revert` did not
+            // actually leave a write in flight for this index, which contradicts
+            // `start`; skip arming a timer rather than time out a write that does
+            // not exist, in that unreachable case.
+            if let Some(generation) = generation {
+                let view = revert.view.clone();
+                let file_idx = revert.file_idx;
+                ctx.spawn(
+                    async move {
+                        Timer::after(Self::REWIND_REVERT_WRITE_TIMEOUT).await;
+                    },
+                    move |me, _, ctx| {
+                        me.rewind_revert_write_timed_out(view, file_idx, generation, ctx);
+                    },
+                );
+            }
+        }
+        start
+    }
+
+    /// A dispatched revert write's deadline elapsed with no outcome. Marks it failed
+    /// (`CodeDiffView::timeout_file_revert`), which -- if this timer is still the one
+    /// current for `file_idx` (see `generation`) and no real outcome beat it here --
+    /// settles the card and emits [`CodeDiffViewEvent::RevertWriteSettled`] exactly the
+    /// way a real outcome does. This function must NOT also call
+    /// `rewind_revert_write_settled` itself: this view's `RevertWriteSettled` subscription
+    /// (registered where the rewind starts, above) is what advances the lane for a real
+    /// outcome, and doing both here would advance it twice for one write.
+    ///
+    /// A no-op if `generation` is stale -- a later dispatch for `file_idx` already
+    /// superseded the write this timer was armed for -- or if the real outcome already
+    /// arrived before the deadline fired: `timeout_file_revert` returns `false` in both
+    /// cases (the write is no longer the one in flight, or is no longer in flight at all),
+    /// and this must not re-run the settle path for a job it does not own.
+    fn rewind_revert_write_timed_out(
+        &mut self,
+        view: ViewHandle<CodeDiffView>,
+        file_idx: usize,
+        generation: u64,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        view.update(ctx, |view, ctx| {
+            view.timeout_file_revert(file_idx, generation, ctx)
+        });
     }
 
     /// A rewind's revert write for `file_idx` of card `view_id` has come back:
@@ -24898,11 +24967,7 @@ impl TerminalView {
         let abandoned = self.rewind_reverts.sequence.settled(
             |revert| revert.view.id() == view_id && revert.file_idx == file_idx,
             reverted,
-            |revert| {
-                revert.view.update(ctx, |view, ctx| {
-                    view.dispatch_file_revert(revert.file_idx, ctx)
-                })
-            },
+            |revert| Self::dispatch_file_revert_with_deadline(revert, ctx),
         );
         if let Some(abandoned) = abandoned {
             Self::abandon_rewind_reverts(abandoned, ctx);
@@ -26468,7 +26533,6 @@ impl TypedActionView for TerminalView {
             | OpenAddPromptPane
             | AddProjectAtCurrentDirectory
             | AgentModeSetupSpeedbumpBanner(_)
-            | DismissCodeToolbeltTooltip
             | SummarizeConversation
             | ToggleLongRunningCommandControl
             | ToggleHideCliResponses
@@ -27377,19 +27441,6 @@ impl TypedActionView for TerminalView {
                 ctx.dispatch_typed_action(&WorkspaceAction::OpenRepository { path: None });
             }
             OpenFilesPalette { source } => ctx.emit(Event::OpenFilesPalette { source: *source }),
-            DismissCodeToolbeltTooltip => {
-                CodeSettings::handle(ctx).update(ctx, |settings, ctx| {
-                    if let Err(e) = settings
-                        .dismissed_code_toolbelt_new_feature_popup
-                        .set_value(true, ctx)
-                    {
-                        log::warn!(
-                            "Failed to mark code toolbelt new feature popup as dismissed: {e}"
-                        );
-                    }
-                });
-                ctx.notify();
-            }
             OpenConversationsPalette => {
                 ctx.emit(Event::OpenConversationHistory);
             }
