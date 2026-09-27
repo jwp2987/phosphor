@@ -1,7 +1,7 @@
-use std::collections::HashMap;
-
+use hashbrown::HashMap;
 use indexmap::IndexMap;
 use warp_multi_agent_api as api;
+use warp_util::hashed::Hashed;
 
 use super::{
     task::{
@@ -21,18 +21,21 @@ struct ExchangeRef {
 /// O(1) average-case lookup of an exchange by id.
 #[derive(Debug, Clone)]
 pub struct TaskStore {
-    root_task_id: TaskId,
+    /// Carries the hash of the root task ID so root lookups skip rehashing it.
+    root_task_id: Hashed<TaskId>,
     tasks: HashMap<TaskId, Task>,
     exchanges: IndexMap<AIAgentExchangeId, ExchangeRef>,
 }
 
 impl TaskStore {
     pub fn with_root_task(root_task: Task) -> Self {
+        let tasks = HashMap::new();
         let root_task_id = root_task.id().clone();
+        let hashed_root_task_id = Hashed::new(root_task_id.clone(), tasks.hasher());
         let mut store = Self {
-            tasks: HashMap::new(),
+            tasks,
             exchanges: IndexMap::new(),
-            root_task_id: root_task_id.clone(),
+            root_task_id: hashed_root_task_id,
         };
         store.tasks.insert(root_task_id, root_task);
         store.rebuild_exchange_index();
@@ -42,6 +45,7 @@ impl TaskStore {
     /// Creates a TaskStore from an existing HashMap of tasks.
     /// Rebuilds the linearized index after construction.
     pub fn from_tasks(tasks: HashMap<TaskId, Task>, root_task_id: TaskId) -> Self {
+        let root_task_id = Hashed::new(root_task_id, tasks.hasher());
         let mut store = Self {
             tasks,
             exchanges: IndexMap::new(),
@@ -52,7 +56,7 @@ impl TaskStore {
     }
 
     pub fn root_task_id(&self) -> &TaskId {
-        &self.root_task_id
+        self.root_task_id.key()
     }
 
     pub fn get(&self, task_id: &TaskId) -> Option<&Task> {
@@ -140,22 +144,27 @@ impl TaskStore {
 
     /// Modifies the root task via the provided closure and rebuilds the exchange index if exchanges changed.
     pub fn modify_root_task<R>(&mut self, f: impl FnOnce(&mut Task) -> R) -> Option<R> {
-        let root_task_id = self.root_task_id.clone();
+        let root_task_id = self.root_task_id().clone();
         self.modify_task(&root_task_id, f)
     }
 
     pub fn root_task(&self) -> Option<&Task> {
-        self.tasks.get(&self.root_task_id)
+        self.tasks
+            .raw_entry()
+            .from_hash(self.root_task_id.hash(), |task_id| {
+                task_id == self.root_task_id()
+            })
+            .map(|(_, task)| task)
     }
 
     /// Sets or replaces the root task, removing any previous root if it exists.
     pub fn set_root_task(&mut self, root_task: Task) {
         // Remove the old root task and its exchange refs
-        let old_root_id = self.root_task_id.clone();
+        let old_root_id = self.root_task_id().clone();
         self.remove(&old_root_id);
 
         let new_root_id = root_task.id().clone();
-        self.root_task_id = new_root_id;
+        self.root_task_id = Hashed::new(new_root_id, self.tasks.hasher());
         self.insert(root_task);
     }
 
@@ -263,7 +272,7 @@ impl TaskStore {
     /// Reachability is computed transitively, because a subtask may itself spawn a
     /// sub-agent; pruning only direct children would strand whole subtrees.
     pub fn prune_unreachable_subtasks(&mut self) -> Vec<TaskId> {
-        let root_id = self.root_task_id.clone();
+        let root_id = self.root_task_id().clone();
 
         // BFS from the root over surviving Subagent tool calls.
         let mut reachable: std::collections::HashSet<TaskId> =
@@ -314,7 +323,7 @@ impl TaskStore {
         if message_ids.is_empty() {
             return;
         }
-        let root_id = self.root_task_id.clone();
+        let root_id = self.root_task_id().clone();
         for (task_id, task) in self.tasks.iter_mut() {
             if *task_id == root_id {
                 continue;
@@ -333,7 +342,7 @@ impl TaskStore {
 
     /// Rebuilds the linearized index from scratch using DFS traversal.
     fn rebuild_exchange_index(&mut self) {
-        self.exchanges = Self::build_exchange_index(&self.tasks, &self.root_task_id);
+        self.exchanges = Self::build_exchange_index(&self.tasks, self.root_task_id.key());
     }
 
     /// Builds linearized exchange refs via DFS traversal without mutating self.

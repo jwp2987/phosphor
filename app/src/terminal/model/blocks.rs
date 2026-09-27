@@ -33,6 +33,7 @@ use crate::terminal::{BlockPadding, ShellHost, SizeInfo, SizeUpdate};
 use anyhow::anyhow;
 use chrono::{DateTime, Local};
 use instant::SystemTime;
+use rustc_hash::FxHashMap;
 use std::io;
 use std::ops::{AddAssign, Range, RangeInclusive};
 use std::sync::Arc;
@@ -281,7 +282,7 @@ pub enum AgentTranscriptNavigableItem {
 pub struct BlockList {
     blocks: Vec<Block>,
     block_heights: SumTree<BlockHeightItem>,
-    block_id_to_block_index: HashMap<BlockId, BlockIndex>,
+    block_id_to_block_index: FxHashMap<BlockId, BlockIndex>,
     size: SizeInfo,
     early_output: EarlyOutput,
 
@@ -713,7 +714,7 @@ impl BlockList {
         BlockList {
             blocks: vec![],
             block_heights,
-            block_id_to_block_index: HashMap::new(),
+            block_id_to_block_index: FxHashMap::default(),
             removable_blocklist_item_positions: HashMap::new(),
             active_gap: None,
             dirty_rich_content_items: HashSet::new(),

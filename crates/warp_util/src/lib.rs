@@ -7,6 +7,7 @@ pub mod assets;
 pub mod content_version;
 pub mod file;
 pub mod file_type;
+pub mod hashed;
 pub mod host_id;
 pub mod launch_policy;
 pub mod local_or_remote_path;
