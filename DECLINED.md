@@ -896,3 +896,33 @@ upstream's behavior is actually a defect rather than a preference.
   dictionary membership alone is trusted. **Residue:** an *uninstalled* command that also
   happens to be an ordinary English word still overrides to AI once the command index is
   loaded — the fail-safe direction, but a real (documented) false positive.
+
+- **GUI accept applies a V4A rename or delete instead of always saving the buffer
+  in place** (2026-09-27, #688, `app/src/code/inline_diff.rs`,
+  `app/src/ai/blocklist/inline_action/code_diff_view.rs`). **Confirmed at the
+  pin** (`4111d08f9:app/src/code/inline_diff.rs:219-236`): `save_content` calls
+  `FileModel::save` with the editor buffer regardless of `DiffType`, so a
+  `DiffType::Update { rename: Some(to), .. }` writes the new content to the
+  ORIGINAL path (the file is never moved) and a `DiffType::Delete` truncates the
+  file to zero bytes instead of removing it — and `try_emit_diffs_saved`
+  reports the model a rename's original path and a delete's path as
+  `deleted_files` regardless, so the model is told a file moved or was removed
+  when it was not, and a later edit targets a path that no longer holds what
+  the model thinks it does. **We do:** `InlineDiffView::write_action` decides
+  `Write`/`Rename(to)`/`Delete` from the diff's `DiffType` and the session
+  backend — mirroring `warp_tui::tui_diff_storage::PersistAction::resolve`,
+  including its remote fallback (no rename primitive there, so a remote rename
+  resolves to an in-place write) — and `save_content` dispatches through the
+  matching guarded `FileModel` call (`rename_and_save_if_unchanged` /
+  `delete_if_unchanged` / `save_if_unchanged`). `try_emit_diffs_saved` builds
+  `updated_files`/`deleted_files` from `write_action()`, not the raw
+  `DiffType`, so a remote rename's in-place fallback is reported honestly. The
+  accept records what it did (`AcceptedAction::Wrote`/`Deleted`/`Renamed`), and
+  the GUI revert (`InlineDiffView::revert_plan`, extended from the #672/#684/#686
+  guarded-revert chain) gained the matching inverse steps: undoing a delete
+  re-creates the file from the raw original text; undoing a rename restores the
+  original text at the registered path and — only once that guarded write lands
+  — removes whatever the accept left at the destination
+  (`finish_rename_revert`), so a refused restore never triggers the
+  destination's removal. A re-pin must not restore the pin's unconditional
+  `FileModel::save` here.

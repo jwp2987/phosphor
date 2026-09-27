@@ -11535,10 +11535,33 @@ open findings that had no pre-existing row.
       and later rewinds of that file queue behind it, with no per-rewind timer to
       mark an in-flight write failed and abandon the lane.
 
-- [ ] **#688 — GUI accept never applies an agent's rename (`move_to`) or delete**,
+- [x] **#688 — GUI accept never applies an agent's rename (`move_to`) or delete**,
       and reports them to the model as done. Same behaviour at the pin
       (`4111d08f9`), so this is pin-parity, not a regression — recorded because it
       surfaced repeatedly during the revert-chain and rename-guard work this round.
+      **Fixed:** `InlineDiffView::write_action` (`app/src/code/inline_diff.rs`)
+      decides `Write`/`Rename(to)`/`Delete` from the diff's `DiffType` and the
+      session backend, mirroring `tui_diff_storage::PersistAction::resolve` —
+      including the remote fallback (no rename primitive there, so a remote
+      rename resolves to an in-place write). `save_content` dispatches through
+      the matching guarded `FileModel` call
+      (`rename_and_save_if_unchanged`/`delete_if_unchanged`/`save_if_unchanged`)
+      instead of always saving the editor buffer over the original path.
+      `CodeDiffView::try_emit_diffs_saved` now builds `updated_files`/
+      `deleted_files` from `write_action()` (via the new `rename_report` helper)
+      rather than the raw `DiffType`, so a remote rename is reported as the
+      in-place write it actually was, and a refused/failed write is reported in
+      neither list (it already went to `save_errors`). The accept records what
+      it did as an `AcceptedAction` (`Wrote`/`Deleted`/`Renamed`), and the GUI
+      revert (`InlineDiffView::revert_plan`) gained the matching inverse steps:
+      undoing a delete re-creates the file from `original_content`; undoing a
+      rename restores `original_content` at the registered path and then — only
+      if that guarded write lands — removes whatever the accept left at the
+      destination (`finish_rename_revert`), so a refused restore never triggers
+      the destination's removal. Confirmed the protected-path guard (#682) is
+      unaffected: the rename destination `PathBuf` reaching `dispatch_accept_rename`
+      is the same one `apply_v4a_update` already resolved and the guard already
+      checked; nothing here re-resolves or re-derives it.
 
 - [ ] **Cargo.lock: `signal-hook` was hand-added to `warpui`'s deps for #685**
       (SIGTERM/SIGHUP handling) rather than regenerated through `cargo`, since
