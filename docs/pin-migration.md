@@ -114,22 +114,40 @@ suspecting the ledger.
 
 ### Three generator defects found 2026-08-29 — fix before trusting its output
 
-- **Renames are reported as removals, then double-counted.** All three
-  `REMOVED AT NEW PIN` entries that round were moves
+- **FIXED 2026-09-27 (#747). Renames are reported as removals, then
+  double-counted.** All three `REMOVED AT NEW PIN` entries that round were moves
   (`user_workspaces_tests.rs` -> `user_workspaces/user_workspaces_tests.rs`;
   `app/src/bin/generate_settings_schema_tests.rs` -> `app/src/settings/schema_generation_tests.rs`;
   `app/src/util/path_tests.rs` -> `crates/warp_util/src/path_tests.rs`). The last two
   were then re-reported at their destinations, so the same tests were simultaneously
-  proposed for retirement and counted as new.
-- **`sym:` markers match substrings.** `sym:SettingsMode` fired on
+  proposed for retirement and counted as new. Fixed by adding `-M20%` to both
+  `git diff --name-status` invocations and threading the OLD path through to the
+  ledger/SCOPE lookups (which were recorded against it) while using the NEW path
+  for content checks. `-M20%`, not git's default `-M50%`: verified against the
+  real range that two of the three named renames only clear a 20-34% similarity
+  bar, because their destination files also picked up substantial new content in
+  the same upstream commit. **The third (`path_tests.rs`) is not a rename at
+  all** in this range — both paths already existed at the OLD pin, so it is a
+  content consolidation into a pre-existing file, which no rename-detection
+  threshold can represent; it re-runs as a plain, correct `REMOVED AT NEW PIN`
+  entry and still needs a human to go find what absorbed it.
+- **FIXED 2026-09-27 (#747). `sym:` markers match substrings.** `sym:SettingsMode` fired on
   `OpenWarpNewSettingsModes` in **3 of 11** DECLINED collisions — 27% false positives,
-  every one on a line upstream had deleted. Anchor to identifier boundaries.
-- **`keep:` markers on FORK-ORIGINAL symbols can never fire.** They are matched against
+  every one on a line upstream had deleted. Fixed by anchoring every marker match to
+  identifier boundaries (`\b<value>\b`, metacharacters escaped) via
+  `generate_repin_queue`'s new `marker_pattern()` helper, replacing the bare
+  `grep -qF` substring search. Re-verified against the real `42effe840 ->
+  4111d08f9` range: the fixed collision check still correctly fires on a genuine
+  standalone `SettingsMode` (a real `use settings::SettingsMode;` in the renamed
+  `schema_generation_tests.rs`), with no observed substring false positive.
+- **FIXED 2026-09-27 (#752 — see TODO.md "TWO BROKEN TRIPWIRES" T2). `keep:` markers on FORK-ORIGINAL symbols can never fire.** They are matched against
   the upstream diff, in which those symbols do not exist. That silently exempts the
   entire "we are ahead of the pin" class — the class most dangerous to revert — from
   collision detection. Verified inert for `denylist_match_candidates` and
-  `unquoted_command_parts`. Give every such row a second marker keyed on the *pin-side*
-  symbol or path it diverges from.
+  `unquoted_command_parts`. Gave every such row a second marker keyed on the *pin-side*
+  symbol or path it diverges from — see DECLINED.md's audit note (2026-09-27) for
+  which rows got one and why some legitimately did not (no shared pin-side
+  identifier exists to key on).
 
 ### The three invalidation rules
 
