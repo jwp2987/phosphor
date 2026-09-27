@@ -10953,7 +10953,7 @@ claim, which was wrong by four.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `persistence/agent.rs:46` is `100`; BOTH pins are `200` (`42effe840:...:45`, `02b53fcd8:...:45`) with the dropped "10–40 orchestration sessions of headroom" sentence. Verifier ran `git log -S`: `100` entered at `9840d7d52` and `200` never existed here. Eviction is a real `diesel::delete`, and all eight tests pass literal limits — never the constant.
       **FIXED 2026-08-21:** restored to `200` with the justifying sentence. No deliberate reason for `100` was found — sole usages are in-file, no test pins it, and `git log -S` confirms it entered at `9840d7d52`.
 
-- [ ] **`MAX_TASK_BLOB_BYTES`' doc asserts a guard that does not exist, and the
+- [x] **`MAX_TASK_BLOB_BYTES`' doc asserts a guard that does not exist, and the
       write-side skip corrupts conversations.** `agent.rs:13-16` says tasks over 10 MB
       are "skipped on both write and read"; the constant appears only at `:91` (write).
       Both read paths decode unconditionally, so the stated startup-OOM protection is
@@ -10963,7 +10963,37 @@ claim, which was wrong by four.
       (possibly root) task and silently promotes a child to root.
       **VERDICT PARTIAL — consequence wrong (independent verifier, 2026-08-21):** Doc mismatch confirmed (`agent.rs:13-16` claims read-side skipping; both read paths decode unconditionally at `:275`, `:383`), and the constant is fork-invented — absent from the pin. **But the claimed corruption is wrong:** a skipped root leaves no parentless task, so restore returns `RestoreConversationError::NoRootTask` (`conversation.rs:536-543`) and orphans are dropped with `log::error` (`:523-528`). No child is promoted to root.
 
-      **DOC FIXED 2026-08-21; READ-SIDE GUARD DECLINED, with the migration proposed.** Confirmed, plus a third thing wrong with the old sentence: the read it describes — "when all task records are loaded at once" — **has not existed since #431**, when startup moved to `read_agent_conversation_metadata`, which reads the `summary` column and touches `agent_tasks` only for pre-column rows. **So the protection was claimed for precisely the rows it does not cover.** What actually happens over the limit is neither truncation nor a failed write but a **silent skip that leaves the stale row** — `kept_task_ids` deliberately retains the id so the row is not deleted, so the DB keeps the last version that fit and restore hydrates a stale copy; if no version ever fit the task is absent, and a missing root gives `NoRootTask`. **Meanwhile `summary` is still derived from the full in-memory snapshot including the skipped task, so `is_restorable: true` is persisted — the conversation is listed in history and fails when opened.** Read enforcement **withheld deliberately**: a size check before `decode` would skip exactly the blobs written before this constant existed, and since `is_restorable` is what startup filters on and eviction deletes rows, it would turn "restores slowly" into "silently vanished from history". Migration shape recorded in the doc. **Also considered and rejected:** deriving `summary` from only the tasks on disk — it would make `is_restorable` honest but trade a *visible* restore failure for silent disappearance plus eviction eligibility. The skip log is promoted `warn` → `error` and reworded, since it is the only notice anyone gets that a turn was dropped.
+      **DOC FIXED 2026-08-21; READ-SIDE GUARD DECLINED, with the migration proposed.** Confirmed, plus a third thing wrong with the old sentence: the read it describes — "when all task records are loaded at once" — **has not existed since #431**, when startup moved to `read_agent_conversation_metadata`, which reads the `summary` column and touches `agent_tasks` only for pre-column rows. **So the protection was claimed for precisely the rows it does not cover.** What actually happens over the limit is neither truncation nor a failed write but a **silent skip that leaves the stale row** — `kept_task_ids` deliberately retains the id so the row is not deleted, so the DB keeps the last version that fit and restore hydrates a stale copy; if no version ever fit the task is absent, and a missing root gives `NoRootTask`. **Meanwhile `summary` is still derived from the full in-memory snapshot including the skipped task, so `is_restorable: true` is persisted — the conversation is listed in history and fails when opened.** Read enforcement **withheld deliberately**: a size check before `decode` would skip exactly the blobs written before this constant existed, and since `is_restorable` is what startup filters on and eviction deletes rows, it would turn "restores slowly" into "silently vanished from history". Migration shape recorded in the doc. **Also considered and rejected (at the time):** deriving `summary` from only the tasks on disk — it would make `is_restorable` honest but trade a *visible* restore failure for silent disappearance plus eviction eligibility. The skip log is promoted `warn` → `error` and reworded, since it is the only notice anyone gets that a turn was dropped.
+
+      **WRITE-SIDE FIXED 2026-09-27 (#742), superseding the "considered and rejected" note
+      above.** That note weighed visible failure against silent disappearance and picked
+      visible failure; this round re-weighs it the other way, prioritizing not persisting a
+      promise (`is_restorable: true`) that predictably fails, and — new since 2026-08-21 —
+      adds a real alternative to the binary "corrupt or drop" choice: **prune before
+      dropping.** New `prune_oversized_messages` (`agent.rs`) replaces the content of a task's
+      largest non-`UserQuery`/non-`SystemQuery` messages (`ToolCallResult` above all, largest
+      first) with a small placeholder until the task fits, leaving its identity and dependency
+      structure — and therefore its restorability — untouched. Only a task that still doesn't
+      fit after pruning everything prunable is dropped, same as before. When that happens, the
+      summary this write persists now excludes the dropped task from the snapshot it's derived
+      from, **and explicitly forces `is_restorable: false`** rather than trusting
+      `AgentConversationSummary::from_tasks`'s structural check alone — that check's
+      `tasks.len() <= 1` base case reads a conversation pruned down to zero or one surviving
+      task as trivially restorable, which is exactly the gap a naive "exclude and recompute"
+      fix would have missed. Eviction (`select_conversations_to_evict`) does not consult
+      `is_restorable` and is unaffected either way. Read-side enforcement for legacy rows
+      remains declined, unchanged from 2026-08-21 — this only affects new writes. **Known,
+      stated limitation:** no UI notification beyond the (unchanged) `log::error!` at the
+      drop site — the SQLite writer thread has no `AppContext` to raise one from, and building
+      that channel is a separate, larger change (see the doc comment on `MAX_TASK_BLOB_BYTES`
+      for the full reasoning, including why `DebugOutput` was chosen as the pruning
+      placeholder over the alternatives considered and rejected). Tests cover the pure pruning
+      logic (leaves an already-small task alone, never touches a `UserQuery` even when it's
+      the largest message, prunes largest-first and stops as soon as the budget is met, and
+      correctly reports failure by still exceeding the budget when nothing is prunable) and
+      the two end-to-end outcomes through `upsert_agent_conversation` (a task pruned under the
+      limit is persisted and the conversation stays `is_restorable: true`; a task that can't be
+      pruned at all is dropped and the conversation is marked `is_restorable: false`).
 
 - [x] **The macOS legacy-DB migration looks in a directory that can never exist, then
       records success forever.** `persistence/sqlite.rs:610` builds the legacy App Group

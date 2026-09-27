@@ -578,3 +578,252 @@ fn read_by_id_refuses_a_conversation_with_an_undecodable_task() {
         "refusing the read must leave every row in place",
     );
 }
+
+// ---------------------------------------------------------------------------
+// MAX_TASK_BLOB_BYTES: an oversized task is pruned rather than silently
+// dropped, and the persisted summary tells the truth about what happened.
+
+/// A `ToolCallResult` message carrying `byte_len` bytes of payload -- the
+/// class of message `MAX_TASK_BLOB_BYTES`'s doc comment names as the one that
+/// actually reaches this size.
+fn oversized_tool_call_result_message(
+    message_id: &str,
+    task_id: &str,
+    byte_len: usize,
+) -> api::Message {
+    api::Message {
+        id: message_id.to_string(),
+        task_id: task_id.to_string(),
+        message: Some(api::message::Message::ToolCallResult(
+            api::message::ToolCallResult {
+                tool_call_id: format!("{message_id}-call"),
+                result: Some(api::message::tool_call_result::Result::Server(
+                    api::message::tool_call_result::ServerResult {
+                        serialized_result: "x".repeat(byte_len),
+                    },
+                )),
+                ..Default::default()
+            },
+        )),
+        ..Default::default()
+    }
+}
+
+fn user_query_message(message_id: &str, task_id: &str, query: &str) -> api::Message {
+    api::Message {
+        id: message_id.to_string(),
+        task_id: task_id.to_string(),
+        message: Some(api::message::Message::UserQuery(api::message::UserQuery {
+            query: query.to_string(),
+            ..Default::default()
+        })),
+        ..Default::default()
+    }
+}
+
+fn task_with_messages(task_id: &str, description: &str, messages: Vec<api::Message>) -> api::Task {
+    api::Task {
+        id: task_id.to_string(),
+        description: description.to_string(),
+        dependencies: None,
+        messages,
+        summary: String::new(),
+        server_data: String::new(),
+    }
+}
+
+#[test]
+fn prune_oversized_messages_leaves_an_already_small_task_untouched() {
+    let mut task = task_with_messages("t", "d", vec![user_query_message("m1", "t", "hello")]);
+    let before = task.clone();
+    let pruned_ids = prune_oversized_messages(&mut task, 1_000_000);
+    assert!(pruned_ids.is_empty());
+    assert_eq!(
+        task, before,
+        "a task already under budget must not be modified"
+    );
+}
+
+#[test]
+fn prune_oversized_messages_never_touches_a_user_query_even_when_it_is_largest() {
+    let mut task = task_with_messages(
+        "t",
+        "d",
+        vec![user_query_message("m1", "t", &"q".repeat(500))],
+    );
+    let pruned_ids = prune_oversized_messages(&mut task, 100);
+    assert!(
+        pruned_ids.is_empty(),
+        "nothing prunable exists, so nothing should be reported as pruned"
+    );
+    assert!(
+        matches!(
+            task.messages[0].message,
+            Some(api::message::Message::UserQuery(_))
+        ),
+        "a UserQuery must never be replaced, even when it's the only oversized message"
+    );
+}
+
+#[test]
+fn prune_oversized_messages_prunes_the_largest_message_first_and_stops_once_it_fits() {
+    let mut task = task_with_messages(
+        "t",
+        "d",
+        vec![
+            user_query_message("query", "t", "hello"),
+            oversized_tool_call_result_message("small-result", "t", 200),
+            oversized_tool_call_result_message("big-result", "t", 2_000),
+        ],
+    );
+    let original_len = task.encoded_len();
+    let budget = original_len - 1_500; // fits once only the 2000-byte result is pruned
+    let pruned_ids = prune_oversized_messages(&mut task, budget);
+
+    assert_eq!(
+        pruned_ids,
+        vec!["big-result".to_string()],
+        "the larger result must be pruned first, and pruning must stop once the budget is met"
+    );
+    assert!(
+        matches!(
+            task.messages[0].message,
+            Some(api::message::Message::UserQuery(_))
+        ),
+        "the user query must survive"
+    );
+    assert!(
+        matches!(
+            task.messages[1].message,
+            Some(api::message::Message::ToolCallResult(_))
+        ),
+        "the smaller result must survive because pruning the bigger one alone was enough"
+    );
+    assert!(
+        matches!(
+            task.messages[2].message,
+            Some(api::message::Message::DebugOutput(_))
+        ),
+        "the pruned message's id and task_id must be kept so id-based pairing still works"
+    );
+    assert_eq!(task.messages[2].id, "big-result");
+    assert_eq!(task.messages[2].task_id, "t");
+    assert!(task.encoded_len() <= budget);
+}
+
+#[test]
+fn prune_oversized_messages_reports_failure_by_still_exceeding_the_budget() {
+    // Only a UserQuery is present, so there is nothing this function is allowed to prune;
+    // the caller distinguishes "pruned enough" from "couldn't" by re-checking encoded_len,
+    // not by the (necessarily empty) return value alone.
+    let mut task = task_with_messages(
+        "t",
+        "d",
+        vec![user_query_message("m1", "t", &"q".repeat(10_000))],
+    );
+    let pruned_ids = prune_oversized_messages(&mut task, 100);
+    assert!(pruned_ids.is_empty());
+    assert!(task.encoded_len() > 100);
+}
+
+/// A task whose only oversized message is a tool result is pruned and persisted -- the
+/// conversation stays restorable and its summary keeps saying so, not just "used to".
+#[test]
+fn oversized_task_is_pruned_and_persisted_and_stays_restorable() {
+    let mut conn = test_connection();
+    let root = task_with_messages(
+        "root",
+        "Root title",
+        vec![
+            user_query_message("root-query", "root", "Initial query"),
+            oversized_tool_call_result_message("huge-result", "root", MAX_TASK_BLOB_BYTES + 1),
+        ],
+    );
+    assert!(
+        root.encoded_len() > MAX_TASK_BLOB_BYTES,
+        "test setup: the task must actually be oversized"
+    );
+
+    upsert_agent_conversation(&mut conn, "conv-1", [&root], empty_conversation_data())
+        .expect("upsert should succeed even though the raw task is oversized");
+
+    assert_eq!(
+        task_ids_column(&mut conn, "conv-1"),
+        vec!["root".to_string()],
+        "the pruned task must still be written, not dropped"
+    );
+
+    let restored = read_agent_conversation_by_id(&mut conn, "conv-1")
+        .expect("read should succeed")
+        .expect("conversation should exist");
+    assert_eq!(restored.tasks.len(), 1);
+    let restored_task = &restored.tasks[0];
+    assert!(
+        restored_task.encoded_len() <= MAX_TASK_BLOB_BYTES,
+        "the persisted copy must fit under the limit"
+    );
+    assert!(
+        matches!(
+            restored_task.messages[0].message,
+            Some(api::message::Message::UserQuery(_))
+        ),
+        "the user's own query must survive pruning"
+    );
+    assert!(
+        matches!(
+            restored_task.messages[1].message,
+            Some(api::message::Message::DebugOutput(_))
+        ),
+        "the oversized tool result must have been replaced by a placeholder"
+    );
+
+    let summary: AgentConversationSummary = serde_json::from_str(
+        summary_column(&mut conn, "conv-1")
+            .expect("summary column should be written")
+            .as_str(),
+    )
+    .expect("summary should be valid JSON");
+    assert!(
+        summary.is_restorable,
+        "a conversation that was successfully pruned and written must still be restorable"
+    );
+}
+
+/// A task that cannot be pruned under the limit at all (its only content is a single
+/// oversized `UserQuery`, which pruning never touches) is dropped from the write, same as
+/// before pruning existed -- but the persisted summary must now say `is_restorable: false`
+/// instead of falsely promising a conversation that fails to open.
+#[test]
+fn a_task_that_cannot_be_pruned_is_dropped_and_marked_not_restorable() {
+    let mut conn = test_connection();
+    let root = task_with_messages(
+        "root",
+        "Root title",
+        vec![user_query_message(
+            "root-query",
+            "root",
+            &"q".repeat(MAX_TASK_BLOB_BYTES + 1),
+        )],
+    );
+    assert!(root.encoded_len() > MAX_TASK_BLOB_BYTES, "test setup check");
+
+    upsert_agent_conversation(&mut conn, "conv-1", [&root], empty_conversation_data())
+        .expect("upsert must still succeed as a whole; only the oversized task is dropped");
+
+    assert!(
+        task_ids_column(&mut conn, "conv-1").is_empty(),
+        "a task that was never written before, and still can't fit, must not appear"
+    );
+
+    let summary: AgentConversationSummary = serde_json::from_str(
+        summary_column(&mut conn, "conv-1")
+            .expect("summary column should be written")
+            .as_str(),
+    )
+    .expect("summary should be valid JSON");
+    assert!(
+        !summary.is_restorable,
+        "the sole (root) task was dropped, so the conversation must be marked not-restorable \
+         instead of being listed as restorable and then failing to open"
+    );
+}
