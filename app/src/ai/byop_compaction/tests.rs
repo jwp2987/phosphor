@@ -622,6 +622,21 @@ fn user_query(id: &str, task_id: &str, request_id: &str, seconds: i64) -> api::M
     }
 }
 
+fn invoke_skill(id: &str, task_id: &str, request_id: &str, seconds: i64) -> api::Message {
+    api::Message {
+        id: id.to_string(),
+        task_id: task_id.to_string(),
+        server_message_data: String::new(),
+        citations: vec![],
+        fetched_memories: vec![],
+        message: Some(api::message::Message::InvokeSkill(
+            api::message::InvokeSkill::default(),
+        )),
+        request_id: request_id.to_string(),
+        timestamp: Some(ts(seconds)),
+    }
+}
+
 fn agent_output(id: &str, task_id: &str, request_id: &str, seconds: i64) -> api::Message {
     api::Message {
         id: id.to_string(),
@@ -651,6 +666,28 @@ fn conversation_with_messages(messages: Vec<api::Message>) -> AIConversation {
     AIConversation::new_restored(AIConversationId::new(), vec![task], None).unwrap()
 }
 
+/// Issue #777: a run started with `/skill` has no `UserQuery` message at all — the
+/// backward anchor search must recognize `InvokeSkill` as a user turn too, or it falls
+/// back to a synthetic id that matches no real message and the summary is never
+/// re-inserted into later requests.
+#[test]
+fn commit_summarization_anchors_on_skill_invocation() {
+    let mut conversation = conversation_with_messages(vec![
+        invoke_skill("s1", "root", "r1", 1),
+        agent_output("a1", "root", "r1", 2),
+    ]);
+    let cfg = CompactionConfig {
+        tail_turns: 1,
+        preserve_recent_tokens: Some(1_000),
+        ..Default::default()
+    };
+
+    assert!(commit_summarization(&mut conversation, false, &cfg));
+    let completed = conversation.compaction_state.completed().last().unwrap();
+    assert_eq!(completed.user_msg_id, "s1");
+    assert_eq!(completed.assistant_msg_id, "a1");
+}
+
 #[test]
 fn commit_summarization_records_head_message_ids() {
     let mut conversation = conversation_with_messages(vec![
@@ -673,4 +710,25 @@ fn commit_summarization_records_head_message_ids() {
     assert_eq!(completed.assistant_msg_id, "a3");
     assert_eq!(completed.tail_start_id.as_deref(), Some("u3"));
     assert_eq!(completed.head_message_ids, ["u1", "a1", "u2", "a2"]);
+}
+
+// -- message_view ----------------------------------------------------------
+
+/// Issue #777: a skill invocation is replayed to the model as the user's turn (see
+/// `chat_stream::compose_invoke_skill_text`), so `WarpMessageView::role()` must report
+/// `Role::User` for it too — otherwise a conversation starting with `/skill` has no
+/// user-role message at all, and turn/tail selection (used by `select`/`prune_decisions`)
+/// misbehaves.
+#[test]
+fn warp_message_view_role_treats_invoke_skill_as_user() {
+    use super::message_view::{build_tool_name_lookup, project};
+    use super::state::CompactionState;
+
+    let msg = invoke_skill("s1", "root", "r1", 1);
+    let msgs = vec![&msg];
+    let state = CompactionState::default();
+    let tool_names = build_tool_name_lookup(msgs.iter().copied());
+    let views = project(&msgs, &state, &tool_names);
+    assert_eq!(views.len(), 1);
+    assert_eq!(views[0].role(), Role::User);
 }

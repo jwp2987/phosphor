@@ -79,6 +79,18 @@ fn estimate_message(msg: &api::Message) -> usize {
         .as_ref()
         .map(|inner| match inner {
             M::UserQuery(u) => u.query.chars().count(),
+            M::InvokeSkill(invoke) => {
+                let skill_chars = invoke
+                    .skill
+                    .as_ref()
+                    .and_then(|skill| skill.content.as_ref())
+                    .map_or(0, |content| content.content.chars().count());
+                let query_chars = invoke
+                    .user_query
+                    .as_ref()
+                    .map_or(0, |user_query| user_query.query.chars().count());
+                skill_chars + query_chars
+            }
             M::AgentOutput(a) => a.text.chars().count(),
             M::AgentReasoning(r) => r.reasoning.chars().count(),
             M::ToolCall(_) => msg.server_message_data.chars().count().max(64),
@@ -114,7 +126,11 @@ impl<'a> MessageRef for WarpMessageView<'a> {
     fn role(&self) -> Role {
         use api::message::Message as M;
         match &self.msg.message {
-            Some(M::UserQuery(_)) => Role::User,
+            // A skill invocation is replayed to the model as the user's turn (see
+            // `chat_stream::compose_invoke_skill_text`), so it must count as a user turn
+            // boundary here too — otherwise a conversation started with `/skill` has no
+            // `Role::User` message at all, and turn/tail selection misbehaves.
+            Some(M::UserQuery(_) | M::InvokeSkill(_)) => Role::User,
             Some(M::ToolCallResult(_)) => Role::Tool,
             // AgentOutput / AgentReasoning / ToolCall / other → Assistant
             _ => Role::Assistant,
