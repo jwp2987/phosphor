@@ -2767,7 +2767,7 @@ separately rather than inflating the queue count.
       **Closed via #713:** `script/install_cargo_binstall`'s download now retries at the
       shell level with exponential backoff (10s -> 20s -> 40s -> 80s -> fail), which works
       on curl versions too old for `--retry-all-errors`.
-- [ ] **`cff5f778c`** — **FOUR files, not one. This ledger entry previously described
+- [x] **`cff5f778c`** — **FOUR files, not one. This ledger entry previously described
       only the first and would itself have caused a partial port.**
       (a) `script/lint_powershell` throws on the first source with findings, hiding
       every later source — a gate that under-reports. (b) **`app/assets/bundled/bootstrap/pwsh.ps1`
@@ -2776,6 +2776,17 @@ separately rather than inflating the queue count.
       `script/windows/install_build_deps.ps1:6,9`. All four fork sites
       coordinator-verified at the pre-fix state. Cosmetic/lint-driven, but a porter
       following the old entry lands one file of four and the commit reads as done.
+      **Fixed 2026-09-27:** ported all four sites verbatim from `cff5f778c`.
+      `script/lint_powershell` now accumulates `$totalProblemCount` across the
+      `foreach` loop and throws once after it, instead of throwing inside the loop
+      on the first source with findings. The three `(Get-Location).Path`/
+      `.path` -> `$PWD.Path` swaps landed exactly at the four coordinator-verified
+      sites (`pwsh.ps1:433,510,515,579`; `bundle.ps1:62`;
+      `install_build_deps.ps1:6,9`), zero behavior change. No `.rs` touched, so
+      rustfmt/cloud-boundary/stub-coverage/declined-collisions gates are N/A for
+      this item. Not independently re-run through a real `pwsh` + PSScriptAnalyzer
+      here (none available); upstream's PR verified it that way and the change is
+      a mechanical, semantically-identical substitution.
 - [x] **`0140af045`** — zsh `compadd` override drops descriptions whenever `-d` arrives
       **clustered** (`-ld`), which is exactly what `_describe` emits — i.e. most zsh
       completions that have descriptions. Fork still has the pre-fix `(I)-d` code at
