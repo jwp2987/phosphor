@@ -2816,6 +2816,48 @@ flags already covered by `DECLINED.md`. **Do not touch the 49.**
       (`app/src/terminal/model/block/interaction_mode.rs`) exported through
       `tui_export.rs`, which was judged out of scope for this pass.
 
+## FIX ROUND 2026-09-27 — two small GUI observations, both confirmed and fixed
+
+- [x] **#740a — typing `@notes` in the agent input's @-mention picker found
+      nothing outside a git repo**, even though `notes.md` existed in cwd/$HOME,
+      while browsing "Files and folders" found it fine. **Root cause:**
+      `AIContextMenuView::setup_data_sources_for_all_categories`
+      (`app/src/search/ai_context_menu/view.rs`), used when a typed query fans
+      out across every category at the top level, had a match arm for
+      `AIContextMenuCategory::RepoFiles` but none for `CurrentFolderFiles`, so
+      it fell into the `_ => { // TODO: Add other categories }` catch-all —
+      `get_categories_for_mode` already selects `CurrentFolderFiles` (not
+      `RepoFiles`) for a cwd with no detected git repo, so outside a repo the
+      Files category was silently absent from top-level search entirely, not
+      merely searching the wrong path. `reset_mixer` (browsing "Files and
+      folders" explicitly) already handled both variants, which is why
+      browsing worked. **Fixed (`6fd544d39`):** added the missing
+      `CurrentFolderFiles` arm, mirroring `reset_mixer`'s (`file_data_source_for_pwd`
+      instead of the repo-scoped `file_data_source_for_current_repo`).
+- [x] **#740b — Settings > Appearance > host footer colour rules: pressing
+      Enter in the pattern field with an invalid regex showed only the error
+      border, not the explanatory text "Add rule" shows.** **Root cause:**
+      `SubmittableTextInput::on_try_submit` only emitted `Submit` once its own
+      validator passed; on failure it just set its own `has_error` (the
+      border). `commit_host_footer_color_rule` — the single place that sets
+      the actual error-text state, called unconditionally by "Add rule" and by
+      Enter in the name field — was never reached by an Enter in the pattern
+      field that failed validation. **Fixed (`1f169cd60`):** added
+      `SubmittableTextInputEvent::InvalidSubmit(String)`, emitted alongside the
+      existing border feedback, and routed into `commit_host_footer_color_rule`
+      the same way `Submit` is. **Residue, not a new gap:** two of the three
+      other exhaustive-match consumers of this widget (`warpify_page.rs`'s
+      added-commands editor, `ai_page.rs`'s CLI-agent-footer-command editor)
+      also have a real validator where `InvalidSubmit` can now fire, but were
+      left as a no-op — their own error border was already their only feedback
+      before this change, so wiring them up too was out of scope for this pass.
+      Both fixes are code-traced with high confidence but not covered by new
+      automated tests (constructing `AIContextMenuView`/`AppearanceSettingsPageView`
+      is heavy enough that this codebase already documents skipping it
+      elsewhere, e.g. `appearance_page_tests.rs`'s comment on
+      `commit_host_footer_color_rule`); left for the coordinator to verify by
+      hand.
+
 ## 🛑 BUILD FREEZE — in force from 2026-08-11 until the maintainer lifts it
 
 **No builds. Nothing that compiles.** Maintainer instruction, 2026-08-11:
