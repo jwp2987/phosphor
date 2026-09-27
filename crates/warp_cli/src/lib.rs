@@ -364,7 +364,7 @@ pub enum CliCommand {
     #[command(subcommand)]
     Model(crate::model::ModelCommand),
 
-    /// Print information about the logged-in user.
+    /// Show who the CLI runs as: always a local profile, since Phosphor has no accounts.
     Whoami,
 
     /// Manage providers.
