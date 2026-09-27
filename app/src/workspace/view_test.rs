@@ -6386,7 +6386,7 @@ fn test_tab_group_menu_rename_opens_focused_editor() {
         initialize_app(&mut app);
 
         let workspace = mock_workspace(&mut app);
-        let group_id = workspace.update(&mut app, |workspace, ctx| {
+        let group_id = workspace.update(&mut app, |workspace, _ctx| {
             let mut group = TabGroup::new();
             group.name = Some("Backend".to_string());
             let group_id = group.id;
