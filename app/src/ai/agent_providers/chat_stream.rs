@@ -7552,7 +7552,8 @@ fn sanitize_title(raw: &str) -> Option<String> {
         }
     }
 
-    // 4. Strips leading/trailing quotes (Chinese and English).
+    // 4. Strips leading/trailing quotes (Chinese and English), but not the closing backtick of
+    //    an inline code span that opens inside the title.
     let quotes = ['"', '\'', '`', '“', '”', '‘', '’', '《', '》', '「', '」'];
     while let Some(c) = s.chars().next() {
         if quotes.contains(&c) {
@@ -7562,6 +7563,11 @@ fn sanitize_title(raw: &str) -> Option<String> {
         }
     }
     while let Some(c) = s.chars().last() {
+        // A closing backtick whose opening one is still inside the title ends an inline code
+        // span ("Running `sleep 8`"), not a quote around the whole title: keep it.
+        if c == '`' && s[..s.len() - 1].contains('`') {
+            break;
+        }
         if quotes.contains(&c) {
             let new_len = s.len() - c.len_utf8();
             s.truncate(new_len);
