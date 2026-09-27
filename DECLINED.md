@@ -896,3 +896,44 @@ upstream's behavior is actually a defect rather than a preference.
   dictionary membership alone is trusted. **Residue:** an *uninstalled* command that also
   happens to be an ordinary English word still overrides to AI once the command index is
   loaded — the fail-safe direction, but a real (documented) false positive.
+
+- **`WARP_SKILL_DIRS` skill publishing never renames a conflicting entry aside**
+  (2026-09-27, #705, `app/src/ai/agent_sdk/driver/harness/skill_dirs_publish.rs`).
+  **Upstream:** `publish_skill` renames a conflicting entry at the target name to
+  `<name>.backup` and takes over the name, whenever `warp_isolation_platform::detect()`
+  reports a sandbox — on the premise that in a detected sandbox we own the whole
+  filesystem, so nothing is lost by moving an entry aside. **The defect:** that premise
+  does not hold in this fork. `detect()` (`crates/isolation_platform/src/lib.rs`)
+  reports a platform on any of: an explicit `WARP_ISOLATION_PLATFORM` env var, an NSC
+  workload-identity token, a Kubernetes service-account token
+  (`KUBERNETES_SERVICE_HOST`), or `/.dockerenv`
+  (`crates/isolation_platform/src/docker.rs:9`, `is_in_docker`) — i.e. devcontainers,
+  Codespaces, and containerized CI. Those are exactly the environments where a Phosphor
+  agent's `working_dir` is the user's real, bind-mounted repo checkout, not a disposable
+  container filesystem the agent owns exclusively. Confirmed present at the pin
+  (`4111d08f9:app/src/ai/agent_sdk/driver/harness/skill_dirs_publish.rs`, same
+  sandbox-gated rename-aside branch). **We do:** `publish_skill` never takes the
+  rename-aside branch, regardless of `detect()`'s result — a conflicting entry at the
+  real name is always left completely untouched, and the skill is published under the
+  `warp-<name>` alternate name instead (or not published at all, if the alternate name
+  also conflicts). The sandbox/non-sandbox branch, the `.backup` rename helper
+  (`reserve_conflict_backup_path`), and the `SANDBOX_BACKUP_SUFFIX` constant were removed
+  outright rather than kept as dead code; a re-pin must not reintroduce them.
+  `warp_isolation_platform::detect()` is no longer called from
+  `publish_warp_skill_dirs_for_claude`/`_codex` at all. The upstream-ported tests that
+  exercised the "leave a foreign entry untouched, publish under the alternate name"
+  behavior (previously the non-sandbox branch) are kept, renamed to drop the
+  `outside_a_sandbox` qualifier since that is now the only behavior; the tests that
+  asserted the rename-aside/backup behavior were adapted into
+  `publish_skill_dirs_leaves_a_pre_existing_environment_skill_untouched_and_uses_an_alternate_name`
+  and friends in `skill_dirs_publish_tests.rs`, asserting the new never-rename outcome for
+  the same scenario instead of deleting the coverage. Two further, Phosphor-specific
+  hardenings landed in the same change: `skill_root_is_safe_to_publish_into` refuses to
+  publish (logging, not erroring) when the deepest existing ancestor of the publish root
+  is a symlink resolving outside `working_dir`, or when `working_dir` itself is the
+  filesystem root or the user's home directory; and `exclude_from_git_status`
+  best-effort adds each published link path to `.git/info/exclude` (never `.gitignore`,
+  never a tracked file, skipped for a linked worktree's `.git` file) so a
+  `WARP_SKILL_DIRS`-configured run does not leave `git status` permanently dirty in
+  what is, in this fork, the user's own checkout rather than a torn-down container.
+  <!-- markers: sym:SANDBOX_BACKUP_SUFFIX sym:reserve_conflict_backup_path -->

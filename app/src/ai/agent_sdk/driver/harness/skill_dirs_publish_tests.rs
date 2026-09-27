@@ -23,7 +23,7 @@ fn publish_skill_creates_symlink() {
     let skill_root = TempDir::new().unwrap();
     let skill_dir = write_skill(source_root.path(), "github");
 
-    let target = publish_skill(skill_root.path(), "github", &skill_dir, false)
+    let target = publish_skill(skill_root.path(), "github", &skill_dir)
         .unwrap()
         .unwrap();
 
@@ -41,7 +41,7 @@ fn publish_skill_uses_the_real_skill_name() {
     let skill_root = TempDir::new().unwrap();
     let skill_dir = write_skill(source_root.path(), "linear");
 
-    publish_skill(skill_root.path(), "linear", &skill_dir, false)
+    publish_skill(skill_root.path(), "linear", &skill_dir)
         .unwrap()
         .unwrap();
 
@@ -61,28 +61,29 @@ fn publish_skill_is_a_noop_when_the_target_already_points_at_our_source() {
     let skill_root = TempDir::new().unwrap();
     let skill_dir = write_skill(source_root.path(), "github");
 
-    publish_skill(skill_root.path(), "github", &skill_dir, false)
+    publish_skill(skill_root.path(), "github", &skill_dir)
         .unwrap()
         .unwrap();
-    let published_again = publish_skill(skill_root.path(), "github", &skill_dir, false)
+    let published_again = publish_skill(skill_root.path(), "github", &skill_dir)
         .unwrap()
         .unwrap();
 
     let target = skill_root.path().join("github");
     assert_eq!(published_again, target);
     assert_eq!(fs::read_link(&target).unwrap(), skill_dir);
-    // No backup or alternate name was ever created for a clean no-op.
-    assert!(!skill_root.path().join("github.backup").exists());
+    // No alternate name was ever created for a clean no-op.
     assert!(!skill_root.path().join("warp-github").exists());
 }
 
 #[test]
-fn publish_skill_in_a_sandbox_replaces_a_foreign_symlink_and_backs_it_up() {
+fn publish_skill_leaves_a_foreign_symlink_untouched_and_uses_an_alternate_name() {
     // A symlink at the target that points somewhere other than the source
     // we're about to publish is not ours — it's foreign, exactly like a real
-    // directory would be, and gets the same sandboxed treatment: replaced,
-    // with the original preserved (as the symlink it was, not its resolved
-    // content) under a `.backup` name.
+    // directory would be. This fork never renames or replaces a conflicting
+    // entry (see the module docs' "Never rename aside" section — a
+    // Phosphor-specific divergence from upstream, which does so in a
+    // detected sandbox): the original is left completely untouched and the
+    // skill is published under the `warp-` alternate name instead.
     let source_root = TempDir::new().unwrap();
     let skill_root = TempDir::new().unwrap();
     let old_skill_dir = write_skill(source_root.path(), "old-github");
@@ -90,32 +91,7 @@ fn publish_skill_in_a_sandbox_replaces_a_foreign_symlink_and_backs_it_up() {
     let target = skill_root.path().join("github");
     create_symlink(&old_skill_dir, &target).unwrap();
 
-    let published = publish_skill(skill_root.path(), "github", &new_skill_dir, true)
-        .unwrap()
-        .unwrap();
-
-    assert_eq!(published, target);
-    assert_eq!(fs::read_link(&target).unwrap(), new_skill_dir);
-    let backup = skill_root.path().join("github.backup");
-    assert!(
-        fs::symlink_metadata(&backup)
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
-    assert_eq!(fs::read_link(&backup).unwrap(), old_skill_dir);
-}
-
-#[test]
-fn publish_skill_outside_a_sandbox_leaves_a_foreign_symlink_untouched_and_uses_an_alternate_name() {
-    let source_root = TempDir::new().unwrap();
-    let skill_root = TempDir::new().unwrap();
-    let old_skill_dir = write_skill(source_root.path(), "old-github");
-    let new_skill_dir = write_skill(source_root.path(), "github");
-    let target = skill_root.path().join("github");
-    create_symlink(&old_skill_dir, &target).unwrap();
-
-    let published = publish_skill(skill_root.path(), "github", &new_skill_dir, false)
+    let published = publish_skill(skill_root.path(), "github", &new_skill_dir)
         .unwrap()
         .unwrap();
 
@@ -127,7 +103,7 @@ fn publish_skill_outside_a_sandbox_leaves_a_foreign_symlink_untouched_and_uses_a
 }
 
 #[test]
-fn publish_skill_outside_a_sandbox_does_not_publish_when_the_alternate_name_is_a_foreign_symlink() {
+fn publish_skill_does_not_publish_when_the_alternate_name_is_a_foreign_symlink() {
     let source_root = TempDir::new().unwrap();
     let skill_root = TempDir::new().unwrap();
     let unrelated_skill_dir = write_skill(source_root.path(), "unrelated");
@@ -137,7 +113,7 @@ fn publish_skill_outside_a_sandbox_does_not_publish_when_the_alternate_name_is_a
     create_symlink(&unrelated_skill_dir, &target).unwrap();
     create_symlink(&unrelated_skill_dir, &alt_target).unwrap();
 
-    let published = publish_skill(skill_root.path(), "github", &skill_dir, false).unwrap();
+    let published = publish_skill(skill_root.path(), "github", &skill_dir).unwrap();
 
     // Never fall back to replacing: nothing was published under either name,
     // and both foreign symlinks are completely untouched.
@@ -147,12 +123,11 @@ fn publish_skill_outside_a_sandbox_does_not_publish_when_the_alternate_name_is_a
 }
 
 #[test]
-fn publish_skill_outside_a_sandbox_is_a_noop_when_the_alternate_name_already_points_at_our_source()
-{
-    // A second, non-sandboxed pass into the same working directory: the real
-    // name still has its original conflicting entry, but the alternate name
-    // was already correctly published by an earlier pass. That's a clean
-    // no-op, not a fresh conflict.
+fn publish_skill_is_a_noop_when_the_alternate_name_already_points_at_our_source() {
+    // A second pass into the same working directory: the real name still has
+    // its original conflicting entry, but the alternate name was already
+    // correctly published by an earlier pass. That's a clean no-op, not a
+    // fresh conflict.
     let source_root = TempDir::new().unwrap();
     let skill_root = TempDir::new().unwrap();
     let skill_dir = write_skill(source_root.path(), "github");
@@ -162,7 +137,7 @@ fn publish_skill_outside_a_sandbox_is_a_noop_when_the_alternate_name_already_poi
     fs::write(target.join("real-file.txt"), "do not touch me").unwrap();
     create_symlink(&skill_dir, &alt_target).unwrap();
 
-    let published = publish_skill(skill_root.path(), "github", &skill_dir, false)
+    let published = publish_skill(skill_root.path(), "github", &skill_dir)
         .unwrap()
         .unwrap();
 
@@ -176,57 +151,7 @@ fn publish_skill_outside_a_sandbox_is_a_noop_when_the_alternate_name_already_poi
 }
 
 #[test]
-fn publish_skill_in_a_sandbox_replaces_a_conflicting_real_directory_and_backs_it_up() {
-    let source_root = TempDir::new().unwrap();
-    let skill_root = TempDir::new().unwrap();
-    let skill_dir = write_skill(source_root.path(), "github");
-    let target = skill_root.path().join("github");
-    fs::create_dir_all(&target).unwrap();
-    fs::write(target.join("real-file.txt"), "do not delete me").unwrap();
-
-    let published = publish_skill(skill_root.path(), "github", &skill_dir, true)
-        .unwrap()
-        .unwrap();
-
-    // The published skill now owns the name...
-    assert_eq!(published, target);
-    assert!(
-        fs::symlink_metadata(&target)
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
-    assert_eq!(fs::read_link(&target).unwrap(), skill_dir);
-    // ...but the real, pre-existing directory was preserved, not deleted.
-    let backup = skill_root.path().join("github.backup");
-    assert!(backup.is_dir());
-    assert_eq!(
-        fs::read_to_string(backup.join("real-file.txt")).unwrap(),
-        "do not delete me"
-    );
-}
-
-#[test]
-fn publish_skill_in_a_sandbox_numbers_the_backup_when_one_already_exists() {
-    let source_root = TempDir::new().unwrap();
-    let skill_root = TempDir::new().unwrap();
-    let skill_dir = write_skill(source_root.path(), "github");
-    let target = skill_root.path().join("github");
-    fs::create_dir_all(&target).unwrap();
-    // A backup from an earlier override already occupies the first-choice name.
-    fs::create_dir_all(skill_root.path().join("github.backup")).unwrap();
-
-    publish_skill(skill_root.path(), "github", &skill_dir, true)
-        .unwrap()
-        .unwrap();
-
-    assert!(skill_root.path().join("github.backup").is_dir());
-    assert!(skill_root.path().join("github.backup-2").is_dir());
-}
-
-#[test]
-fn publish_skill_outside_a_sandbox_leaves_a_conflicting_real_directory_untouched_and_uses_an_alternate_name()
- {
+fn publish_skill_leaves_a_conflicting_real_directory_untouched_and_uses_an_alternate_name() {
     let source_root = TempDir::new().unwrap();
     let skill_root = TempDir::new().unwrap();
     let skill_dir = write_skill(source_root.path(), "github");
@@ -234,13 +159,13 @@ fn publish_skill_outside_a_sandbox_leaves_a_conflicting_real_directory_untouched
     fs::create_dir_all(&target).unwrap();
     fs::write(target.join("real-file.txt"), "do not touch me").unwrap();
 
-    let published = publish_skill(skill_root.path(), "github", &skill_dir, false)
+    let published = publish_skill(skill_root.path(), "github", &skill_dir)
         .unwrap()
         .unwrap();
 
     // The real, pre-existing directory at the real name is completely untouched:
     // still a real directory (not a symlink), with its original content, and no
-    // backup was created anywhere.
+    // alternate-name entry was created anywhere but the intended one.
     assert!(
         !fs::symlink_metadata(&target)
             .unwrap()
@@ -251,7 +176,6 @@ fn publish_skill_outside_a_sandbox_leaves_a_conflicting_real_directory_untouched
         fs::read_to_string(target.join("real-file.txt")).unwrap(),
         "do not touch me"
     );
-    assert!(!skill_root.path().join("github.backup").exists());
     // The skill was published under the `warp-` alternate name instead.
     let alt_target = skill_root.path().join("warp-github");
     assert_eq!(published, alt_target);
@@ -259,7 +183,7 @@ fn publish_skill_outside_a_sandbox_leaves_a_conflicting_real_directory_untouched
 }
 
 #[test]
-fn publish_skill_outside_a_sandbox_does_not_publish_when_the_alternate_name_also_conflicts() {
+fn publish_skill_does_not_publish_when_the_alternate_name_also_conflicts() {
     let source_root = TempDir::new().unwrap();
     let skill_root = TempDir::new().unwrap();
     let skill_dir = write_skill(source_root.path(), "github");
@@ -274,7 +198,7 @@ fn publish_skill_outside_a_sandbox_does_not_publish_when_the_alternate_name_also
     )
     .unwrap();
 
-    let published = publish_skill(skill_root.path(), "github", &skill_dir, false).unwrap();
+    let published = publish_skill(skill_root.path(), "github", &skill_dir).unwrap();
 
     // Never fall back to replacing: nothing was published under either name.
     assert_eq!(published, None);
@@ -306,7 +230,7 @@ fn publish_skill_errors_on_missing_source() {
     let skill_root = TempDir::new().unwrap();
     let missing_source = skill_root.path().join("does-not-exist");
 
-    let result = publish_skill(skill_root.path(), "github", &missing_source, false);
+    let result = publish_skill(skill_root.path(), "github", &missing_source);
 
     assert!(result.is_err());
     assert!(!skill_root.path().join("github").exists());
@@ -324,7 +248,11 @@ fn publish_skill_dirs_prefers_most_specific_directory_on_name_collision() {
     let general_linear = write_skill(&general_dir, "linear");
     let skill_root = TempDir::new().unwrap();
 
-    let published = publish_skill_dirs(skill_root.path(), &[specific_dir, general_dir], false);
+    let published = publish_skill_dirs(
+        skill_root.path(),
+        &[specific_dir, general_dir],
+        skill_root.path(),
+    );
 
     assert_eq!(published, 2);
     assert_eq!(
@@ -338,7 +266,13 @@ fn publish_skill_dirs_prefers_most_specific_directory_on_name_collision() {
 }
 
 #[test]
-fn publish_skill_dirs_in_a_sandbox_overrides_an_existing_environment_skill_and_preserves_it() {
+fn publish_skill_dirs_leaves_a_pre_existing_environment_skill_untouched_and_uses_an_alternate_name()
+{
+    // This is the scenario upstream's sandbox branch used to handle by
+    // renaming the pre-existing entry aside and taking over its name. This
+    // fork never does that (see the module docs' "Never rename aside"
+    // section) — the pre-existing skill is preserved exactly where it is,
+    // untouched, and the published skill goes out under the alternate name.
     let root = TempDir::new().unwrap();
     let source_dir = root.path().join("skills");
     fs::create_dir_all(&source_dir).unwrap();
@@ -350,19 +284,24 @@ fn publish_skill_dirs_in_a_sandbox_overrides_an_existing_environment_skill_and_p
     fs::create_dir_all(&existing_target).unwrap();
     fs::write(existing_target.join("SKILL.md"), "pre-existing skill").unwrap();
 
-    let published = publish_skill_dirs(skill_root.path(), &[source_dir], true);
+    let published = publish_skill_dirs(skill_root.path(), &[source_dir], skill_root.path());
 
     assert_eq!(published, 1);
-    // The published skill wins under the real name...
-    assert_eq!(
-        fs::read_link(skill_root.path().join("github")).unwrap(),
-        published_github
+    // The pre-existing skill at the real name is completely untouched...
+    assert!(
+        !fs::symlink_metadata(&existing_target)
+            .unwrap()
+            .file_type()
+            .is_symlink()
     );
-    // ...and the pre-existing skill was moved aside, not deleted.
-    let backup = skill_root.path().join("github.backup");
     assert_eq!(
-        fs::read_to_string(backup.join("SKILL.md")).unwrap(),
+        fs::read_to_string(existing_target.join("SKILL.md")).unwrap(),
         "pre-existing skill"
+    );
+    // ...and the published skill went out under the alternate name.
+    assert_eq!(
+        fs::read_link(skill_root.path().join("warp-github")).unwrap(),
+        published_github
     );
 }
 
@@ -374,7 +313,7 @@ fn publish_skill_dirs_skips_entries_without_skill_md() {
     write_skill(&source_dir, "github");
     let skill_root = TempDir::new().unwrap();
 
-    let published = publish_skill_dirs(skill_root.path(), &[source_dir], false);
+    let published = publish_skill_dirs(skill_root.path(), &[source_dir], skill_root.path());
 
     assert_eq!(published, 1);
     assert!(skill_root.path().join("github").exists());
@@ -386,7 +325,7 @@ fn publish_skill_dirs_is_a_noop_for_empty_source_dirs() {
     let outer = TempDir::new().unwrap();
     let skill_root = outer.path().join("skills");
 
-    assert_eq!(publish_skill_dirs(&skill_root, &[], false), 0);
+    assert_eq!(publish_skill_dirs(&skill_root, &[], outer.path()), 0);
     // Doesn't even create the skill root when there's nothing to publish.
     assert!(!skill_root.exists());
 }
@@ -400,7 +339,11 @@ fn publish_skill_dirs_recovers_from_missing_source_directory() {
     write_skill(&present_dir, "github");
     let skill_root = TempDir::new().unwrap();
 
-    let published = publish_skill_dirs(skill_root.path(), &[missing_dir, present_dir], false);
+    let published = publish_skill_dirs(
+        skill_root.path(),
+        &[missing_dir, present_dir],
+        skill_root.path(),
+    );
 
     assert_eq!(published, 1);
     assert!(skill_root.path().join("github").exists());
@@ -411,9 +354,9 @@ fn publish_skill_dirs_recovers_from_missing_source_directory() {
 // These target the specific properties `AGENTS.md` requires we not regress:
 // the identity check must be robust to path representation (not just exact
 // string equality), a dangling symlink must never be silently treated as
-// "already ours", and reclaiming a foreign symlink's *name* in a sandbox must
-// never touch the *content* that symlink pointed at (we rename the link
-// entry itself; we never write through it).
+// "already ours", and a foreign symlink is never touched — reclaiming its
+// name the way upstream's sandbox branch used to is exactly the divergence
+// `DECLINED.md`'s `IMPROVED` entry records.
 
 #[test]
 fn publish_skill_dangling_symlink_target_is_treated_as_foreign() {
@@ -421,7 +364,9 @@ fn publish_skill_dangling_symlink_target_is_treated_as_foreign() {
     // "ours" just because canonicalizing our own source also fails to match
     // it — `points_at_our_source` fails closed (returns `false`, i.e.
     // foreign) whenever either side can't be canonicalized, so a dangling
-    // link is always a genuine conflict, never a silent no-op.
+    // link is always a genuine conflict, never a silent no-op. It is left
+    // completely alone, and the skill is published under the alternate name
+    // instead.
     let source_root = TempDir::new().unwrap();
     let skill_root = TempDir::new().unwrap();
     let skill_dir = write_skill(source_root.path(), "github");
@@ -429,9 +374,7 @@ fn publish_skill_dangling_symlink_target_is_treated_as_foreign() {
     let nonexistent = source_root.path().join("this-does-not-exist");
     create_symlink(&nonexistent, &target).unwrap();
 
-    // Outside a sandbox: the dangling link is left completely alone, and the
-    // skill is published under the alternate name instead.
-    let published = publish_skill(skill_root.path(), "github", &skill_dir, false)
+    let published = publish_skill(skill_root.path(), "github", &skill_dir)
         .unwrap()
         .unwrap();
     assert!(
@@ -447,33 +390,12 @@ fn publish_skill_dangling_symlink_target_is_treated_as_foreign() {
 }
 
 #[test]
-fn publish_skill_dangling_symlink_target_is_replaced_in_a_sandbox() {
-    let source_root = TempDir::new().unwrap();
-    let skill_root = TempDir::new().unwrap();
-    let skill_dir = write_skill(source_root.path(), "github");
-    let target = skill_root.path().join("github");
-    let nonexistent = source_root.path().join("this-does-not-exist");
-    create_symlink(&nonexistent, &target).unwrap();
-
-    // In a sandbox: a dangling symlink is a conflict like any other foreign
-    // entry, so it is backed up (as the dangling link it was) rather than
-    // silently treated as already ours or deleted outright.
-    let published = publish_skill(skill_root.path(), "github", &skill_dir, true)
-        .unwrap()
-        .unwrap();
-    assert_eq!(published, target);
-    assert_eq!(fs::read_link(&target).unwrap(), skill_dir);
-    let backup = skill_root.path().join("github.backup");
-    assert_eq!(fs::read_link(&backup).unwrap(), nonexistent);
-}
-
-#[test]
 fn publish_skill_is_a_noop_when_target_symlink_uses_relative_dotdot_path_to_our_source() {
     // The ownership check must compare canonicalized paths, not raw link
     // text, so a functionally-identical symlink written with a different
     // (but resolving-to-the-same-place) path representation is still
     // recognized as ours and left alone — not treated as a foreign conflict
-    // that gets backed up or shadowed under an alternate name.
+    // that gets shadowed under an alternate name.
     let source_root = TempDir::new().unwrap();
     let skill_root = TempDir::new().unwrap();
     let skill_dir = write_skill(source_root.path(), "github");
@@ -491,51 +413,15 @@ fn publish_skill_is_a_noop_when_target_symlink_uses_relative_dotdot_path_to_our_
         skill_dir.canonicalize().unwrap()
     );
 
-    let published = publish_skill(skill_root.path(), "github", &skill_dir, false)
+    let published = publish_skill(skill_root.path(), "github", &skill_dir)
         .unwrap()
         .unwrap();
 
     assert_eq!(published, target);
     // Untouched: still the original relative-dotdot link, not replaced with
-    // our own absolute one, and no backup or alternate name was created.
+    // our own absolute one, and no alternate name was created.
     assert_eq!(fs::read_link(&target).unwrap(), relative_via_dotdot);
-    assert!(!skill_root.path().join("github.backup").exists());
     assert!(!skill_root.path().join("warp-github").exists());
-}
-
-#[test]
-fn publish_skill_in_a_sandbox_backup_never_touches_the_content_a_foreign_symlink_pointed_at() {
-    // Reclaiming a foreign symlink's *name* must rename the link entry
-    // itself (a directory-entry operation) and must never write through the
-    // link to modify or delete whatever it pointed at. This is the concrete
-    // guarantee that keeps the sandboxed override path from being a
-    // symlink-following footgun: the thing on the other end of a foreign
-    // link is never touched, only the link's own directory entry moves.
-    let source_root = TempDir::new().unwrap();
-    let skill_root = TempDir::new().unwrap();
-    let old_skill_dir = write_skill(source_root.path(), "old-github");
-    fs::write(old_skill_dir.join("marker.txt"), "original content").unwrap();
-    let new_skill_dir = write_skill(source_root.path(), "github");
-    let target = skill_root.path().join("github");
-    create_symlink(&old_skill_dir, &target).unwrap();
-
-    publish_skill(skill_root.path(), "github", &new_skill_dir, true)
-        .unwrap()
-        .unwrap();
-
-    // The pointed-at directory and its content are completely intact...
-    assert_eq!(
-        fs::read_to_string(old_skill_dir.join("marker.txt")).unwrap(),
-        "original content"
-    );
-    // ...only reachable now via the renamed-aside backup link, proving the
-    // backup step moved the link entry, not the thing it pointed at.
-    let backup = skill_root.path().join("github.backup");
-    assert_eq!(fs::read_link(&backup).unwrap(), old_skill_dir);
-    assert_eq!(
-        fs::read_to_string(backup.join("marker.txt")).unwrap(),
-        "original content"
-    );
 }
 
 #[test]
@@ -553,8 +439,296 @@ fn publish_skill_never_publishes_a_source_directory_missing_skill_md_even_via_sy
     fs::write(not_a_skill_dir.join("secret.txt"), "not a skill").unwrap();
     let skill_root = TempDir::new().unwrap();
 
-    let result = publish_skill(skill_root.path(), "github", &not_a_skill_dir, false);
+    let result = publish_skill(skill_root.path(), "github", &not_a_skill_dir);
 
     assert!(result.is_err());
     assert!(!skill_root.path().join("github").exists());
+}
+
+// --- Phosphor-specific: symlinked-parent and working-directory safety (#705) ---
+//
+// `publish_skill_dirs` refuses to touch the filesystem at all when the path
+// leading to `skill_root` isn't provably inside `working_dir`, or when
+// `working_dir` itself is unreasonably broad. See
+// `skill_root_is_safe_to_publish_into` and the module docs' "Safety note".
+
+#[test]
+fn publish_skill_dirs_refuses_when_a_skill_root_ancestor_is_a_symlink_to_outside_working_dir() {
+    let working_dir = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    let source_root = TempDir::new().unwrap();
+    write_skill(source_root.path(), "github");
+
+    // `.claude` itself is a symlink pointing outside `working_dir`.
+    create_symlink(outside.path(), &working_dir.path().join(".claude")).unwrap();
+    let skill_root = working_dir.path().join(".claude").join("skills");
+
+    let published = publish_skill_dirs(
+        &skill_root,
+        &[source_root.path().to_path_buf()],
+        working_dir.path(),
+    );
+
+    assert_eq!(published, 0);
+    // Nothing was ever written on the far side of the symlink.
+    assert!(!outside.path().join("skills").exists());
+    // The symlink itself is untouched.
+    assert_eq!(
+        fs::read_link(working_dir.path().join(".claude")).unwrap(),
+        outside.path()
+    );
+}
+
+#[test]
+fn publish_skill_dirs_refuses_when_skill_root_itself_is_a_symlink_to_outside_working_dir() {
+    let working_dir = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    let source_root = TempDir::new().unwrap();
+    write_skill(source_root.path(), "github");
+
+    fs::create_dir_all(working_dir.path().join(".claude")).unwrap();
+    let skill_root = working_dir.path().join(".claude").join("skills");
+    create_symlink(outside.path(), &skill_root).unwrap();
+
+    let published = publish_skill_dirs(
+        &skill_root,
+        &[source_root.path().to_path_buf()],
+        working_dir.path(),
+    );
+
+    assert_eq!(published, 0);
+    assert!(!outside.path().join("github").exists());
+    // The symlink itself is untouched.
+    assert_eq!(fs::read_link(&skill_root).unwrap(), outside.path());
+}
+
+#[test]
+fn publish_skill_dirs_publishes_normally_when_no_ancestor_is_symlinked() {
+    let working_dir = TempDir::new().unwrap();
+    let source_root = TempDir::new().unwrap();
+    write_skill(source_root.path(), "github");
+    let skill_root = working_dir.path().join(".claude").join("skills");
+
+    let published = publish_skill_dirs(
+        &skill_root,
+        &[source_root.path().to_path_buf()],
+        working_dir.path(),
+    );
+
+    assert_eq!(published, 1);
+    assert!(skill_root.join("github").exists());
+}
+
+#[test]
+fn publish_skill_dirs_refuses_when_working_dir_is_the_filesystem_root() {
+    let source_root = TempDir::new().unwrap();
+    write_skill(source_root.path(), "github");
+    // This never gets far enough to touch the filesystem under `skill_root`:
+    // the filesystem-root check happens before any ancestor is inspected or
+    // created.
+    let skill_root = Path::new("/this-warp-skill-dirs-test-path-must-not-exist/.claude/skills");
+
+    let published = publish_skill_dirs(
+        skill_root,
+        &[source_root.path().to_path_buf()],
+        Path::new("/"),
+    );
+
+    assert_eq!(published, 0);
+    assert!(!skill_root.exists());
+}
+
+#[test]
+#[serial_test::serial]
+fn publish_skill_dirs_refuses_when_working_dir_is_the_home_directory() {
+    let home_dir = TempDir::new().unwrap();
+    let source_root = TempDir::new().unwrap();
+    write_skill(source_root.path(), "github");
+    let old_home = std::env::var_os("HOME");
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("HOME", home_dir.path()) };
+
+    let skill_root = home_dir.path().join(".claude").join("skills");
+    let published = publish_skill_dirs(
+        &skill_root,
+        &[source_root.path().to_path_buf()],
+        home_dir.path(),
+    );
+
+    match old_home {
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        Some(home) => unsafe { std::env::set_var("HOME", home) },
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        None => unsafe { std::env::remove_var("HOME") },
+    }
+
+    assert_eq!(published, 0);
+    assert!(!skill_root.exists());
+}
+
+// --- Phosphor-specific: `.git/info/exclude` git-status hygiene (#705) ---
+
+#[test]
+fn publish_skill_dirs_adds_published_links_to_git_info_exclude() {
+    let repo_root = TempDir::new().unwrap();
+    fs::create_dir_all(repo_root.path().join(".git")).unwrap();
+    let source_root = TempDir::new().unwrap();
+    write_skill(source_root.path(), "github");
+    let skill_root = repo_root.path().join(".claude").join("skills");
+
+    let published = publish_skill_dirs(
+        &skill_root,
+        &[source_root.path().to_path_buf()],
+        repo_root.path(),
+    );
+
+    assert_eq!(published, 1);
+    let exclude =
+        fs::read_to_string(repo_root.path().join(".git").join("info").join("exclude")).unwrap();
+    assert!(exclude.lines().any(|line| line == "/.claude/skills/github"));
+}
+
+#[test]
+fn publish_skill_dirs_does_not_duplicate_git_info_exclude_entries_on_repeat_publish() {
+    let repo_root = TempDir::new().unwrap();
+    fs::create_dir_all(repo_root.path().join(".git")).unwrap();
+    let source_root = TempDir::new().unwrap();
+    write_skill(source_root.path(), "github");
+    let skill_root = repo_root.path().join(".claude").join("skills");
+    let source_dirs = [source_root.path().to_path_buf()];
+
+    publish_skill_dirs(&skill_root, &source_dirs, repo_root.path());
+    publish_skill_dirs(&skill_root, &source_dirs, repo_root.path());
+
+    let exclude =
+        fs::read_to_string(repo_root.path().join(".git").join("info").join("exclude")).unwrap();
+    let occurrences = exclude
+        .lines()
+        .filter(|line| *line == "/.claude/skills/github")
+        .count();
+    assert_eq!(occurrences, 1);
+}
+
+#[test]
+fn publish_skill_dirs_never_touches_gitignore_or_tracked_files() {
+    let repo_root = TempDir::new().unwrap();
+    fs::create_dir_all(repo_root.path().join(".git")).unwrap();
+    fs::write(repo_root.path().join(".gitignore"), "target/\n").unwrap();
+    let source_root = TempDir::new().unwrap();
+    write_skill(source_root.path(), "github");
+    let skill_root = repo_root.path().join(".claude").join("skills");
+
+    publish_skill_dirs(
+        &skill_root,
+        &[source_root.path().to_path_buf()],
+        repo_root.path(),
+    );
+
+    assert_eq!(
+        fs::read_to_string(repo_root.path().join(".gitignore")).unwrap(),
+        "target/\n"
+    );
+}
+
+#[test]
+fn publish_skill_dirs_does_not_write_git_info_exclude_for_a_worktree_git_file() {
+    // A `.git` *file* (rather than a directory) marks a linked worktree
+    // checkout — its content is a one-line pointer to the real gitdir
+    // elsewhere. This is deliberately not resolved (see the module docs);
+    // the publish still succeeds, it just doesn't get the git-status
+    // convenience.
+    let repo_root = TempDir::new().unwrap();
+    fs::write(
+        repo_root.path().join(".git"),
+        "gitdir: /elsewhere/.git/worktrees/example\n",
+    )
+    .unwrap();
+    let source_root = TempDir::new().unwrap();
+    write_skill(source_root.path(), "github");
+    let skill_root = repo_root.path().join(".claude").join("skills");
+
+    let published = publish_skill_dirs(
+        &skill_root,
+        &[source_root.path().to_path_buf()],
+        repo_root.path(),
+    );
+
+    assert_eq!(published, 1);
+    assert!(skill_root.join("github").exists());
+    // `.git` is still the same one-line file; nothing was created under it.
+    assert_eq!(
+        fs::read_to_string(repo_root.path().join(".git")).unwrap(),
+        "gitdir: /elsewhere/.git/worktrees/example\n"
+    );
+}
+
+#[test]
+fn publish_skill_dirs_publishes_normally_outside_any_git_repo() {
+    let working_dir = TempDir::new().unwrap();
+    let source_root = TempDir::new().unwrap();
+    write_skill(source_root.path(), "github");
+    let skill_root = working_dir.path().join(".claude").join("skills");
+
+    let published = publish_skill_dirs(
+        &skill_root,
+        &[source_root.path().to_path_buf()],
+        working_dir.path(),
+    );
+
+    assert_eq!(published, 1);
+    assert!(skill_root.join("github").exists());
+    assert!(!working_dir.path().join(".git").exists());
+}
+
+// --- `warp_skill_source_dirs` (#705) ---
+
+#[test]
+#[serial_test::serial]
+fn warp_skill_source_dirs_resolves_relative_entries_against_working_dir() {
+    let working_dir = TempDir::new().unwrap();
+    let old = std::env::var_os(ai::skills::WARP_SKILL_DIRS_ENV);
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe {
+        std::env::set_var(
+            ai::skills::WARP_SKILL_DIRS_ENV,
+            "relative-skills,/abs/skills",
+        )
+    };
+
+    let dirs = warp_skill_source_dirs(working_dir.path());
+
+    match old {
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        Some(v) => unsafe { std::env::set_var(ai::skills::WARP_SKILL_DIRS_ENV, v) },
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        None => unsafe { std::env::remove_var(ai::skills::WARP_SKILL_DIRS_ENV) },
+    }
+
+    assert_eq!(
+        dirs,
+        vec![
+            working_dir.path().join("relative-skills"),
+            PathBuf::from("/abs/skills"),
+        ]
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn warp_skill_source_dirs_is_empty_when_env_var_is_unset() {
+    let working_dir = TempDir::new().unwrap();
+    let old = std::env::var_os(ai::skills::WARP_SKILL_DIRS_ENV);
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var(ai::skills::WARP_SKILL_DIRS_ENV) };
+
+    let dirs = warp_skill_source_dirs(working_dir.path());
+
+    match old {
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        Some(v) => unsafe { std::env::set_var(ai::skills::WARP_SKILL_DIRS_ENV, v) },
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        None => unsafe { std::env::remove_var(ai::skills::WARP_SKILL_DIRS_ENV) },
+    }
+
+    assert!(dirs.is_empty());
 }
