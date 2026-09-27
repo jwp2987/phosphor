@@ -111,7 +111,7 @@ fn will_terminate_lsp_step_terminates_every_language_server() {
     App::test((), |mut app| async move {
         app.update(lsp::init);
 
-        app.update(terminate_language_servers_for_app_exit);
+        app.update(|ctx| terminate_language_servers_for_app_exit(APP_EXIT_SHUTDOWN_GRACE, ctx));
 
         app.read(|ctx| {
             assert!(
@@ -127,8 +127,55 @@ fn will_terminate_lsp_step_is_a_noop_without_an_lsp_manager() {
     // The remote-server daemon shares these callbacks but never calls
     // `lsp::init`; `LspManagerModel::handle` would panic there.
     App::test((), |mut app| async move {
-        app.update(terminate_language_servers_for_app_exit);
+        app.update(|ctx| terminate_language_servers_for_app_exit(APP_EXIT_SHUTDOWN_GRACE, ctx));
 
         app.read(|ctx| assert!(!ctx.has_singleton_model::<lsp::LspManagerModel>()));
+    });
+}
+
+// jwp2987/phosphor#687: the same hook stops MCP servers, against one deadline shared
+// with the language servers. The manager's own tests (`templatable_manager::native`)
+// drive real in-memory sessions; these cover the app-side wiring.
+
+#[test]
+fn will_terminate_server_step_is_a_noop_without_any_manager() {
+    // The remote-server daemon registers neither manager; `handle` would panic.
+    App::test((), |mut app| async move {
+        let start = instant::Instant::now();
+
+        app.update(shut_down_servers_for_app_exit);
+
+        assert!(start.elapsed() < APP_EXIT_SHUTDOWN_GRACE);
+        assert!(
+            app.update(begin_mcp_servers_shutdown_for_app_exit)
+                .is_none()
+        );
+        app.read(|ctx| {
+            assert!(!ctx.has_singleton_model::<TemplatableMCPServerManager>());
+            assert!(!ctx.has_singleton_model::<lsp::LspManagerModel>());
+        });
+    });
+}
+
+#[test]
+fn will_terminate_server_step_stops_lsp_and_mcp_within_the_shared_grace() {
+    App::test((), |mut app| async move {
+        app.update(lsp::init);
+        app.add_singleton_model(|_| TemplatableMCPServerManager::default());
+        let start = instant::Instant::now();
+
+        app.update(shut_down_servers_for_app_exit);
+
+        assert!(
+            start.elapsed() < APP_EXIT_SHUTDOWN_GRACE,
+            "with nothing running, quitting must not wait out the grace"
+        );
+        app.read(|ctx| {
+            assert!(lsp::LspManagerModel::as_ref(ctx).terminated_for_app_exit());
+        });
+        let mcp_shutdown = app
+            .update(begin_mcp_servers_shutdown_for_app_exit)
+            .expect("a registered MCP manager is shut down on exit");
+        assert_eq!(mcp_shutdown.pending(), 0);
     });
 }

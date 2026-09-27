@@ -1,13 +1,15 @@
+use crate::ai::mcp::FileBasedMCPManager;
+use crate::ai::mcp::app_exit::{self, McpAppExitShutdown};
 use crate::ai::mcp::file_based_manager::FileBasedMCPManagerEvent;
 use crate::ai::mcp::templatable_manager::oauth::{
     load_credentials_from_secure_storage, write_to_secure_storage, FILE_BASED_MCP_CREDENTIALS_KEY,
     TEMPLATABLE_MCP_CREDENTIALS_KEY,
 };
-use crate::ai::mcp::FileBasedMCPManager;
 use core::fmt;
 use itertools::Itertools;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::{collections::HashMap, future::Future};
 
 use crate::ai::mcp::http_client::build_client_with_headers;
@@ -868,6 +870,7 @@ impl TemplatableMCPServerManager {
         let is_reconnect = mode.is_reconnect();
 
         self.change_server_state(installation_uuid, MCPServerState::Starting, ctx);
+        let child_pid = Arc::new(AtomicU32::new(0));
         let task = ctx.spawn(
             spawn_server(
                 server_name,
@@ -876,6 +879,7 @@ impl TemplatableMCPServerManager {
                 server.transport_type.clone(),
                 logger.clone(),
                 auth_context,
+                child_pid.clone(),
             )
             .compat(),
             move |me, server_info: Result<_, rmcp::RmcpError>, ctx| {
@@ -953,6 +957,7 @@ impl TemplatableMCPServerManager {
             SpawnedServerInfo {
                 abort_handle: task.abort_handle(),
                 oauth_result_tx,
+                child_pid,
             },
         );
 
@@ -994,6 +999,60 @@ impl TemplatableMCPServerManager {
         }}
 
         log::debug!("Successfully shut down server with installation uuid {installation_uuid}");
+    }
+
+    /// Starts stopping every MCP server this process spawned, for app exit
+    /// (jwp2987/phosphor#687). Finish with [`McpAppExitShutdown::finish`], which waits
+    /// up to a deadline and then kills any stdio child still running.
+    ///
+    /// Unlike [`Self::shutdown_server`] this persists nothing and emits no state changes:
+    /// the servers were running when the user quit, so they must restore next launch.
+    ///
+    /// - A running server has its rmcp service cancelled here, synchronously, so its
+    ///   service loop (on async-compat's tokio runtime) closes the transport right away:
+    ///   stdin EOF for a stdio server, a transport close for HTTP/SSE. A background task
+    ///   reports each close's completion; the main thread is about to block in `finish`,
+    ///   so it cannot be a foreground task.
+    /// - A server still starting has no session to close, so its child (if spawned yet)
+    ///   is killed now, before the spawn is aborted, so rmcp cannot reap it first and
+    ///   free its pid for reuse.
+    pub fn begin_shutdown_for_app_exit(
+        &mut self,
+        ctx: &mut ModelContext<'_, Self>,
+    ) -> McpAppExitShutdown {
+        for (installation_uuid, spawned) in self.spawned_servers.drain() {
+            let pid = spawned.child_pid.load(Ordering::Acquire);
+            if app_exit::kill_child_process(pid) {
+                log::info!(
+                    "Killed still-starting MCP server {installation_uuid} (pid {pid}) for app exit"
+                );
+            }
+            spawned.abort_handle.abort();
+        }
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let mut pending = HashMap::new();
+        let executor = ctx.background_executor();
+        for (installation_uuid, server_info) in self.active_servers.drain() {
+            let child_pid = server_info.child_pid;
+            let service = server_info.service;
+            service.cancellation_token().cancel();
+            let done = done_tx.clone();
+            executor
+                .spawn(async move {
+                    let _ = service.cancel().await;
+                    let _ = done.send(installation_uuid);
+                })
+                .detach();
+            pending.insert(installation_uuid, child_pid);
+        }
+        if !pending.is_empty() {
+            log::info!(
+                "Stopping {} running MCP server(s) for app exit",
+                pending.len()
+            );
+        }
+        McpAppExitShutdown::new(done_rx, pending)
     }
 
     pub fn get_installation_by_template_uuid(
@@ -1759,10 +1818,12 @@ async fn spawn_server(
     transport_type: TransportType,
     logger: SimpleLogger,
     auth_context: AuthContext,
+    child_pid: Arc<AtomicU32>,
 ) -> Result<TemplatableMCPServerInfo, rmcp::RmcpError> {
     logger.log("[note] Attention! There may be sensitive information (such as API keys) in these logs. Make sure to redact any secrets before sharing with others.".to_string());
 
     let mut is_authenticated_transport = false;
+    let mut stdio_child_pid = None;
     let service = match transport_type {
         TransportType::CLIServer(cli_server) => {
             logger.log("[info] MCP: Using stdio transport".to_string());
@@ -1834,6 +1895,12 @@ async fn spawn_server(
                 rmcp::RmcpError::transport_creation::<rmcp::transport::TokioChildProcess>(err)
             })?;
 
+            // Record the pid before the handshake, so app exit can kill a server that
+            // is still starting (jwp2987/phosphor#687).
+            stdio_child_pid = transport.id();
+            if let Some(id) = stdio_child_pid {
+                child_pid.store(id, Ordering::Release);
+            }
             let pid = transport
                 .id()
                 .map(|pid| pid.to_string())
@@ -1869,7 +1936,13 @@ async fn spawn_server(
             };
 
             // Create the MCP client and connect to the server.
-            Ok::<_, rmcp::RmcpError>(make_client_info().into_dyn().serve(transport).await?)
+            let service = make_client_info().into_dyn().serve(transport).await;
+            if service.is_err() {
+                // rmcp dropped (and is killing) the child; don't let app exit signal a
+                // pid that may since have been reused.
+                child_pid.store(0, Ordering::Release);
+            }
+            Ok::<_, rmcp::RmcpError>(service?)
         }
         TransportType::ServerSentEvents(sse_server) => {
             let headers: std::collections::HashMap<String, String> = sse_server
@@ -1993,6 +2066,7 @@ async fn spawn_server(
         installation_id: uuid,
         description,
         is_authenticated_transport,
+        child_pid: stdio_child_pid,
     })
 }
 

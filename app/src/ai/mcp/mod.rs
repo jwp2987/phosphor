@@ -31,6 +31,8 @@ use strum_macros::EnumIter;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::Icon;
 
+#[cfg(not(target_family = "wasm"))]
+pub mod app_exit;
 pub mod manager;
 pub mod templatable_manager;
 #[cfg(not(target_family = "wasm"))]

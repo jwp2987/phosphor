@@ -2338,24 +2338,70 @@ fn initialize_app(
     app_state
 }
 
-/// Hard upper bound on how long quitting waits for language servers to shut down.
-/// Shutdowns run concurrently, so this is the whole budget, not a per-server one.
-const LSP_APP_EXIT_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+/// Hard upper bound on how long quitting waits for the servers it spawned (language
+/// servers and MCP servers) to shut down. They all shut down concurrently against one
+/// deadline, so this is the whole budget, not a per-server or per-kind one. It sits well
+/// inside the 5s hard cap the SIGTERM/SIGHUP quit path arms (jwp2987/phosphor#685).
+const APP_EXIT_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Stops every language server and MCP server the app spawned, as the app terminates
+/// (jwp2987/phosphor#680, #687). Returns within [`APP_EXIT_SHUTDOWN_GRACE`] (plus the
+/// time to send a few kill signals), so a wedged server cannot hang quit.
+///
+/// The MCP shutdown is started first so it runs while the language-server shutdown
+/// waits; both then share the one deadline.
+fn shut_down_servers_for_app_exit(ctx: &mut AppContext) {
+    let deadline = instant::Instant::now() + APP_EXIT_SHUTDOWN_GRACE;
+
+    #[cfg(not(target_family = "wasm"))]
+    let mcp_shutdown = begin_mcp_servers_shutdown_for_app_exit(ctx);
+
+    terminate_language_servers_for_app_exit(
+        deadline.saturating_duration_since(instant::Instant::now()),
+        ctx,
+    );
+
+    #[cfg(not(target_family = "wasm"))]
+    if let Some(mcp_shutdown) = mcp_shutdown {
+        let outcome = mcp_shutdown.finish(deadline);
+        log::info!("MCP servers at app exit: {outcome:?}");
+    }
+}
 
 /// Gracefully shuts down every language server as the app terminates (jwp2987/phosphor#680;
-/// the pin does the same from `on_will_terminate`). Waits at most
-/// [`LSP_APP_EXIT_SHUTDOWN_GRACE`], so a wedged server cannot hang quit.
+/// the pin does the same from `on_will_terminate`). Waits at most `grace`, so a wedged
+/// server cannot hang quit.
 ///
 /// A no-op when `LspManagerModel` was never registered: `lsp::init` runs only on the client
 /// app's `workspace::init` path, the remote-server daemon shares these callbacks without it,
 /// and `LspManagerModel::handle` panics on an unregistered singleton.
-fn terminate_language_servers_for_app_exit(ctx: &mut AppContext) {
+fn terminate_language_servers_for_app_exit(grace: std::time::Duration, ctx: &mut AppContext) {
     if !ctx.has_singleton_model::<lsp::LspManagerModel>() {
         return;
     }
     lsp::LspManagerModel::handle(ctx).update(ctx, |manager, ctx| {
-        manager.terminate_for_app_exit(LSP_APP_EXIT_SHUTDOWN_GRACE, ctx);
+        manager.terminate_for_app_exit(grace, ctx);
     });
+}
+
+/// Starts stopping every MCP server the app spawned, for app exit (jwp2987/phosphor#687).
+/// The winit loop ends in `std::process::exit`, which skips `Drop`, so without this rmcp
+/// never kills a stdio server's child and one that ignores stdin EOF outlives the app.
+///
+/// Returns `None`, doing nothing, when `TemplatableMCPServerManager` was never registered
+/// (the remote-server daemon shares these callbacks; so do test apps that skip it), since
+/// `handle` panics on an unregistered singleton. The pin stops no MCP server on exit.
+#[cfg(not(target_family = "wasm"))]
+fn begin_mcp_servers_shutdown_for_app_exit(
+    ctx: &mut AppContext,
+) -> Option<crate::ai::mcp::app_exit::McpAppExitShutdown> {
+    if !ctx.has_singleton_model::<TemplatableMCPServerManager>() {
+        return None;
+    }
+    Some(
+        TemplatableMCPServerManager::handle(ctx)
+            .update(ctx, |manager, ctx| manager.begin_shutdown_for_app_exit(ctx)),
+    )
 }
 
 fn app_callbacks(is_integration_test: bool) -> warpui::platform::AppCallbacks {
@@ -2424,10 +2470,10 @@ fn app_callbacks(is_integration_test: bool) -> warpui::platform::AppCallbacks {
                 writer.terminate();
             });
 
-            // Shut down all LSP servers gracefully before app termination. Every quit path
-            // (last-window close, `workspace:terminate_app` / Ctrl+Shift+Q, menu Quit, the
-            // headless/TUI loop exit) converges on this hook.
-            terminate_language_servers_for_app_exit(ctx);
+            // Shut down all LSP and MCP servers before app termination. Every quit path
+            // (last-window close, `workspace:terminate_app` / Ctrl+Shift+Q, menu Quit,
+            // SIGTERM/SIGHUP, the headless/TUI/agent-SDK loop exit) converges on this hook.
+            shut_down_servers_for_app_exit(ctx);
 
             // We want to tear down the terminal server before relaunching for
             // autoupdate, to ensure we're not running any extra Zap processes
