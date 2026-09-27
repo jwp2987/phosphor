@@ -60,6 +60,22 @@ impl Ord for ConversationNavigationData {
     }
 }
 
+/// Whether a live conversation belongs in navigation/history at all.
+///
+/// A conversation with no exchanges yet is never listed, not even when it is the pane's
+/// selected conversation: that `is_selected` bypass of `conversation_would_render_in_blocklist`
+/// exists so a conversation that already has messages, but whose only task happens to be
+/// hidden from the blocklist (e.g. a CLI-subagent-only turn), still shows for its own pane --
+/// not so a brand-new, still-empty conversation shows up the instant a split or a new agent tab
+/// creates it, before the user has sent anything. See issue #693.
+pub(crate) fn should_list_live_conversation(
+    conversation: &AIConversation,
+    is_selected: bool,
+) -> bool {
+    conversation.exchange_count() > 0
+        && (is_selected || blocklist_filter::conversation_would_render_in_blocklist(conversation))
+}
+
 impl ConversationNavigationData {
     #[allow(clippy::too_many_arguments)]
     pub fn from_ai_conversation(
@@ -212,11 +228,7 @@ impl ConversationNavigationData {
                             let is_selected =
                                 !is_closed && Some(conversation.id()) == selected_conversation_id;
 
-                            if !is_selected
-                                && !blocklist_filter::conversation_would_render_in_blocklist(
-                                    conversation,
-                                )
-                            {
+                            if !should_list_live_conversation(conversation, is_selected) {
                                 continue;
                             }
 
@@ -346,3 +358,7 @@ impl ConversationNavigationData {
         conversations
     }
 }
+
+#[cfg(test)]
+#[path = "should_list_live_conversation_test.rs"]
+mod should_list_live_conversation_test;
