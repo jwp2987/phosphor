@@ -75,9 +75,11 @@ fn toast_message_wraps_io_errors_with_file_and_cause() {
 
 // ── Revert settlement (#684) ─────────────────────────────────────────────
 //
-// `revert_changes` builds a `RevertingDiffs` from what each file's
-// `restore_diff_base` returned, `handle_save_completed` feeds each write's
-// outcome to `CodeDiffState::record_revert_write`, and both then call
+// `begin_revert` queues each file in a `RevertingDiffs`,
+// `dispatch_file_revert` / `abandon_file_revert` record what each file's
+// `restore_diff_base` returned (or that it was given up on),
+// `handle_save_completed` feeds each write's
+// outcome to `CodeDiffState::record_revert_write`, and all of them then call
 // `CodeDiffState::settle_revert`, marking the action reverted in the
 // conversation if and only if it returns `true`. These tests drive exactly
 // those calls; the view around them is glue.
@@ -129,7 +131,7 @@ fn a_revert_whose_write_lands_reverts_the_card_and_marks_the_action() {
 #[test]
 fn a_revert_with_no_write_dispatched_settles_immediately_as_not_reverted() {
     let mut reverting = RevertingDiffs::default();
-    reverting.file_not_reverted();
+    reverting.file_not_reverted(0);
     let mut state = CodeDiffState::Reverting(reverting);
     assert!(!state.settle_revert());
     assert!(is_accepted(&state), "got {state:?}");
@@ -203,4 +205,69 @@ fn a_retry_with_nothing_left_to_write_is_a_revert() {
 #[test]
 fn a_revert_in_flight_is_complete() {
     assert!(reverting(&[0]).is_complete());
+}
+
+// ── Queued files (#686) ──────────────────────────────────────────────────
+//
+// A rewind queues every file at `begin_revert` and dispatches each one only
+// when the newer reverts of the same file have settled. A queued file is
+// outstanding: the card must not settle past it.
+
+/// Every queued file must still be dispatched (or given up on) before the
+/// card settles — otherwise the first file to land would mark the whole
+/// action reverted while an older file had not been written yet.
+#[test]
+fn a_queued_file_keeps_the_revert_open_until_it_lands() {
+    let mut reverting = RevertingDiffs::default();
+    reverting.write_queued(0);
+    reverting.write_queued(1);
+    reverting.write_dispatched(0);
+    let mut state = CodeDiffState::Reverting(reverting);
+
+    assert!(state.record_revert_write(0, true));
+    assert!(
+        !state.settle_revert(),
+        "file 1 is queued, not reverted: the card must not settle"
+    );
+    assert!(matches!(state, CodeDiffState::Reverting(_)));
+
+    let CodeDiffState::Reverting(reverting) = &mut state else {
+        unreachable!()
+    };
+    reverting.write_dispatched(1);
+    assert!(!state.settle_revert());
+    assert!(state.record_revert_write(1, true));
+    assert!(state.settle_revert());
+    assert!(matches!(state, CodeDiffState::Reverted));
+}
+
+/// A queued file given up on (a newer revert of the same file did not land)
+/// was not reverted, so neither is the card — even if every other file was.
+#[test]
+fn an_abandoned_queued_file_leaves_the_card_accepted() {
+    let mut reverting = RevertingDiffs::default();
+    reverting.write_queued(0);
+    reverting.write_queued(1);
+    reverting.write_dispatched(0);
+    let mut state = CodeDiffState::Reverting(reverting);
+    assert!(state.record_revert_write(0, true));
+
+    let CodeDiffState::Reverting(reverting) = &mut state else {
+        unreachable!()
+    };
+    reverting.file_not_reverted(1);
+    assert!(!state.settle_revert());
+    assert!(is_accepted(&state), "got {state:?}");
+}
+
+/// A write outcome for a file that is queued but was never dispatched is not
+/// one this revert is waiting on.
+#[test]
+fn an_outcome_for_a_queued_file_not_yet_dispatched_is_ignored() {
+    let mut reverting = RevertingDiffs::default();
+    reverting.write_queued(0);
+    let mut state = CodeDiffState::Reverting(reverting);
+    assert!(!state.record_revert_write(0, true));
+    assert!(!state.settle_revert());
+    assert!(matches!(state, CodeDiffState::Reverting(_)));
 }

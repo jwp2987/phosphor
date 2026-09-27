@@ -1,3 +1,4 @@
+use crate::ai::blocklist::rewind_revert::RevertStart;
 use crate::ai::blocklist::view_util::render_provider_icon_button;
 use crate::ai::skills::{SkillOpenOrigin, SkillTelemetryEvent};
 use anyhow::Result;
@@ -280,6 +281,15 @@ pub enum CodeDiffViewEvent {
         provider: MCPProvider,
         path: PathBuf,
     },
+    /// The guarded revert write for pending diff `file_idx`, dispatched by
+    /// [`CodeDiffView::dispatch_file_revert`], has come back: `reverted` if it
+    /// landed. Emitted once per dispatched write, after the card has recorded
+    /// the outcome. A rewind waits on this to dispatch the next-older revert
+    /// of the same file (#686).
+    RevertWriteSettled {
+        file_idx: usize,
+        reverted: bool,
+    },
 }
 
 /// A file whose write failed while accepting a set of diffs, paired with the
@@ -406,6 +416,11 @@ impl SaveStatus {
 /// once every write has come back and every one of them landed (#684).
 #[derive(Clone, Debug, Default)]
 pub struct RevertingDiffs {
+    /// Indices of files this attempt will revert but has not dispatched yet.
+    /// Only a rewind queues files: it reverts each file's edits strictly
+    /// newest to oldest, so an older edit's write waits for the newer one's
+    /// to settle (#686). A queued file is still outstanding.
+    queued: HashSet<usize>,
     /// Indices (into `CodeDiffView::pending_diffs`) of writes dispatched by this
     /// attempt whose outcome has not arrived yet.
     in_flight: HashSet<usize>,
@@ -416,11 +431,21 @@ pub struct RevertingDiffs {
 }
 
 impl RevertingDiffs {
+    fn write_queued(&mut self, idx: usize) {
+        self.queued.insert(idx);
+    }
+
     fn write_dispatched(&mut self, idx: usize) {
+        self.queued.remove(&idx);
         self.in_flight.insert(idx);
     }
 
-    fn file_not_reverted(&mut self) {
+    /// File `idx` was not reverted and no write for it is (or will be) in
+    /// flight: refused before dispatch, never writable, or — for a queued
+    /// file — abandoned because a newer revert of the same file was not
+    /// reverted.
+    fn file_not_reverted(&mut self, idx: usize) {
+        self.queued.remove(&idx);
         self.any_not_reverted = true;
     }
 
@@ -437,10 +462,10 @@ impl RevertingDiffs {
         true
     }
 
-    /// `None` while any write is in flight; then whether every file was
-    /// reverted.
+    /// `None` while any write is queued or in flight; then whether every file
+    /// was reverted.
     fn all_reverted(&self) -> Option<bool> {
-        self.in_flight.is_empty().then_some(!self.any_not_reverted)
+        (self.queued.is_empty() && self.in_flight.is_empty()).then_some(!self.any_not_reverted)
     }
 }
 
@@ -554,7 +579,6 @@ pub enum CodeDiffViewAction {
     OpenSettings,
     ToggleAcceptMenu,
     OpenCodeReviewPane,
-    RevertChanges,
     OpenSkill {
         reference: SkillReference,
         path: PathBuf,
@@ -1250,61 +1274,123 @@ impl CodeDiffView {
         self.send_telemetry_for_edit_resolution(RequestedEditResolution::Reject, ctx);
     }
 
-    /// Revert all changes by replacing file contents with the base version.
-    /// For newly created files, this deletes them instead.
-    ///
-    /// This only *starts* the revert. Every write is guarded and resolves
+    /// Reverting the accepted changes — restoring each file's diff base, or
+    /// deleting a file the accept created — is driven from outside, one file
+    /// at a time: the only trigger is a rewind, which reverts several cards
+    /// and must order the writes to any one file across them, strictly newest
+    /// first (#686; `RewindRevertBatch`). Every write is guarded and resolves
     /// later, so the card enters [`CodeDiffState::Reverting`] and becomes
     /// `Reverted` — with the action marked reverted in the conversation — only
-    /// once every write has landed (`handle_save_completed`). A refusal leaves
-    /// the card accepted and the action un-reverted (#684).
-    fn revert_changes(&mut self, ctx: &mut ViewContext<Self>) {
+    /// once every file's write has landed (`handle_save_completed`). A refusal
+    /// leaves the card accepted and the action un-reverted (#684).
+    ///
+    /// Starts a revert whose writes the caller dispatches one file at a time
+    /// with [`Self::dispatch_file_revert`] (or gives up on with
+    /// [`Self::abandon_file_revert`]). The card enters
+    /// [`CodeDiffState::Reverting`] with every file still to revert queued, and
+    /// settles only once each of them has been dispatched and come back, or
+    /// been given up on.
+    ///
+    /// Returns those files — index into the pending diffs, and path — or
+    /// `None`, changing nothing, if the card is not in a revertible state. Files
+    /// an earlier, partly refused attempt already reverted are skipped; if that
+    /// is all of them, the card settles as reverted at once and the list is
+    /// empty.
+    pub fn begin_revert(
+        &mut self,
+        ctx: &mut ViewContext<Self>,
+    ) -> Option<Vec<(usize, Option<StandardizedPath>)>> {
         if !matches!(self.state, CodeDiffState::Accepted(None)) {
             log::warn!(
                 "Attempted to revert changes when not in Accepted(None) state - actual state: {:?}",
                 self.state
             );
-            return;
+            return None;
         }
 
-        let window_id = ctx.window_id();
         let mut reverting = RevertingDiffs::default();
+        let mut files = Vec::new();
         for (idx, diff) in self.pending_diffs.iter().enumerate() {
             if self.reverted_diff_indices.contains(&idx) {
                 continue;
             }
-            match diff
-                .diff_view
-                .update(ctx, |v, ctx| v.restore_diff_base(ctx))
-            {
-                Ok(RevertDispatch::WriteInFlight) => reverting.write_dispatched(idx),
-                Ok(RevertDispatch::NoBackingFile) => {
-                    // Nothing was written, so nothing was reverted. Previously
-                    // this counted as a successful revert.
-                    log::info!("Not reverting a diff with no backing file");
-                    reverting.file_not_reverted();
-                }
-                Err(err) => {
-                    // `restore_diff_base` refuses with a complete user-facing
-                    // sentence (which file, why, and that nothing was changed),
-                    // so it is shown as-is. A refusal that is only discovered at
-                    // write time — the file changed after the accept — arrives
-                    // later through `InlineDiffViewEvent::FailedToSave` instead.
-                    log::error!("Failed to restore diff base: {err}");
-                    ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
-                        toast_stack.add_ephemeral_toast(
-                            DismissibleToast::error(err),
-                            window_id,
-                            ctx,
-                        );
-                    });
-                    reverting.file_not_reverted();
-                }
-            }
+            reverting.write_queued(idx);
+            files.push((idx, diff.diff_view.as_ref(ctx).file_path().cloned()));
         }
 
         self.state = CodeDiffState::Reverting(reverting);
-        // Settles at once if no write was dispatched.
+        // Settles at once if nothing is queued.
+        self.settle_revert(ctx);
+        Some(files)
+    }
+
+    /// Dispatches the guarded revert write for queued file `idx`.
+    ///
+    /// [`RevertStart::InFlight`]: the outcome arrives later, and is announced
+    /// with [`CodeDiffViewEvent::RevertWriteSettled`] once the card has
+    /// recorded it. [`RevertStart::NotReverted`]: the file was not reverted
+    /// and never will be by this attempt — refused before anything was
+    /// written (and toasted), or not writable at all — and no event follows.
+    pub fn dispatch_file_revert(&mut self, idx: usize, ctx: &mut ViewContext<Self>) -> RevertStart {
+        let is_queued = matches!(
+            &self.state,
+            CodeDiffState::Reverting(reverting) if reverting.queued.contains(&idx)
+        );
+        let Some(diff) = self.pending_diffs.get(idx).filter(|_| is_queued) else {
+            log::warn!("Not reverting diff {idx}: it is not queued for revert");
+            return RevertStart::NotReverted;
+        };
+
+        let window_id = ctx.window_id();
+        let dispatched = diff
+            .diff_view
+            .update(ctx, |v, ctx| v.restore_diff_base(ctx));
+        let start = match dispatched {
+            Ok(RevertDispatch::WriteInFlight) => RevertStart::InFlight,
+            Ok(RevertDispatch::NoBackingFile) => {
+                // Nothing was written, so nothing was reverted. Previously
+                // this counted as a successful revert.
+                log::info!("Not reverting a diff with no backing file");
+                RevertStart::NotReverted
+            }
+            Err(err) => {
+                // `restore_diff_base` refuses with a complete user-facing
+                // sentence (which file, why, and that nothing was changed),
+                // so it is shown as-is. A refusal that is only discovered at
+                // write time — the file changed after the accept — arrives
+                // later through `InlineDiffViewEvent::FailedToSave` instead.
+                log::error!("Failed to restore diff base: {err}");
+                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_ephemeral_toast(DismissibleToast::error(err), window_id, ctx);
+                });
+                RevertStart::NotReverted
+            }
+        };
+
+        if let CodeDiffState::Reverting(reverting) = &mut self.state {
+            match start {
+                RevertStart::InFlight => reverting.write_dispatched(idx),
+                RevertStart::NotReverted => reverting.file_not_reverted(idx),
+            }
+        }
+        self.settle_revert(ctx);
+        start
+    }
+
+    /// Gives up on reverting queued file `idx` without writing anything: a
+    /// newer edit to the same file could not be reverted, so the file does
+    /// not hold what this edit left there and a revert of it would be
+    /// refused, or worse, wrong (#686). The file is not reverted, so neither
+    /// is the card.
+    pub fn abandon_file_revert(&mut self, idx: usize, ctx: &mut ViewContext<Self>) {
+        if let CodeDiffState::Reverting(reverting) = &mut self.state {
+            if reverting.queued.contains(&idx) {
+                log::info!(
+                    "Not reverting diff {idx}: a newer edit to the same file was not reverted"
+                );
+                reverting.file_not_reverted(idx);
+            }
+        }
         self.settle_revert(ctx);
     }
 
@@ -2468,10 +2554,16 @@ impl CodeDiffView {
             // The outcome of a revert write. The failure itself has already
             // been toasted by the `FailedToSave` subscription arm.
             let reverted = save_error.is_none();
-            if self.state.record_revert_write(file_idx, reverted) && reverted {
+            let recorded = self.state.record_revert_write(file_idx, reverted);
+            if recorded && reverted {
                 self.reverted_diff_indices.insert(file_idx);
             }
             self.settle_revert(ctx);
+            // After settling, so a listener sees the card in its final state
+            // for this outcome.
+            if recorded {
+                ctx.emit(CodeDiffViewEvent::RevertWriteSettled { file_idx, reverted });
+            }
         } else {
             log::warn!("Received saved diff when not accepting or reverting");
         }
@@ -3061,9 +3153,6 @@ impl TypedActionView for CodeDiffView {
                     entrypoint: CodeReviewPaneEntrypoint::CodeDiffHeader,
                 });
                 ctx.notify();
-            }
-            CodeDiffViewAction::RevertChanges => {
-                self.revert_changes(ctx);
             }
             CodeDiffViewAction::OpenSkill {
                 reference,

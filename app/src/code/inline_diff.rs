@@ -925,4 +925,130 @@ mod tests {
             );
         });
     }
+
+    // ── Rewind over several edits to one file (#686) ─────────────────────
+
+    /// What the agent's second accepted edit left in the file. Its diff base is
+    /// `ACCEPTED`, the first edit's accepted text.
+    const SECOND_ACCEPTED: &str = "fn main() {\n    println!(\"second\");\n}\n";
+
+    /// Dispatches `write` against the already-registered `file_id` and waits
+    /// for its real outcome.
+    async fn write_and_wait(
+        app: &mut warpui::App,
+        files: &warpui::ModelHandle<FileModel>,
+        file_id: FileId,
+        write: RevertWrite,
+    ) -> Result<(), std::sync::Arc<FileSaveError>> {
+        let completion = files.update(app, |files, _| files.save_completion(file_id));
+        files
+            .update(app, |files, ctx| {
+                dispatch_revert_write(files, file_id, write, ContentVersion::new(), ctx)
+            })
+            .expect("the revert write should dispatch");
+        completion.await
+    }
+
+    fn edit_revert(accepted: &str, base: &str) -> std::cell::RefCell<Option<RevertWrite>> {
+        std::cell::RefCell::new(Some(
+            revert_plan(
+                false,
+                Some(accepted.to_owned()),
+                Some(base.to_owned()),
+                None,
+            )
+            .expect("plan"),
+        ))
+    }
+
+    /// Why a rewind must order reverts: the older edit's revert asserts the
+    /// older edit's accepted text, which is only on disk again once the newer
+    /// edit's revert has landed. Run first (as the concurrent dispatch
+    /// effectively did), it is refused and the file is left alone.
+    #[test]
+    fn the_older_revert_of_a_file_is_refused_before_the_newer_one_lands() {
+        warpui::App::test((), |mut app| async move {
+            let directory = tempfile::tempdir().expect("temp dir");
+            let file = directory.path().join("twice.rs");
+            std::fs::write(&file, SECOND_ACCEPTED).expect("write file");
+            let files = app.add_singleton_model(FileModel::new);
+            let file_id = files.update(&mut app, |files, ctx| {
+                files.register_file_path(&file, false, ctx)
+            });
+
+            let older = edit_revert(ACCEPTED, BASE).take().unwrap();
+            write_and_wait(&mut app, &files, file_id, older)
+                .await
+                .expect_err("the older revert must be refused while the newer edit stands");
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), SECOND_ACCEPTED);
+        });
+    }
+
+    /// The regression (#686), end to end on a real file through the real
+    /// guarded writes: two accepted edits to one file, rewound through
+    /// `RevertSequence`, which holds the older revert back until the newer one
+    /// has landed. Both land, and the file is back to its original contents.
+    #[test]
+    fn two_edits_to_one_file_revert_newest_first_to_the_original() {
+        use crate::ai::blocklist::rewind_revert::{RevertSequence, RevertStart};
+
+        warpui::App::test((), |mut app| async move {
+            let directory = tempfile::tempdir().expect("temp dir");
+            let file = directory.path().join("twice.rs");
+            std::fs::write(&file, SECOND_ACCEPTED).expect("write file");
+            let files = app.add_singleton_model(FileModel::new);
+            let file_id = files.update(&mut app, |files, ctx| {
+                files.register_file_path(&file, false, ctx)
+            });
+
+            // Newest first, as the rewind collects them.
+            let mut sequence = RevertSequence::new([
+                (Some("twice.rs"), edit_revert(SECOND_ACCEPTED, ACCEPTED)),
+                (Some("twice.rs"), edit_revert(ACCEPTED, BASE)),
+            ]);
+            let mut dispatched = Vec::new();
+
+            assert!(
+                sequence
+                    .start(|write| {
+                        dispatched.push(write.take().expect("dispatched once"));
+                        RevertStart::InFlight
+                    })
+                    .is_empty()
+            );
+            assert_eq!(
+                dispatched.len(),
+                1,
+                "only the newer revert may be in flight"
+            );
+            write_and_wait(&mut app, &files, file_id, dispatched.pop().unwrap())
+                .await
+                .expect("the newer revert should land");
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), ACCEPTED);
+
+            let abandoned = sequence
+                .settled(
+                    |_| true,
+                    true,
+                    |write| {
+                        dispatched.push(write.take().expect("dispatched once"));
+                        RevertStart::InFlight
+                    },
+                )
+                .expect("the newer revert was in flight");
+            assert!(abandoned.is_empty());
+            assert_eq!(dispatched.len(), 1, "the older revert is dispatched now");
+            write_and_wait(&mut app, &files, file_id, dispatched.pop().unwrap())
+                .await
+                .expect("the older revert should land");
+
+            assert!(
+                sequence
+                    .settled(|_| true, true, |_| unreachable!("nothing left to dispatch"))
+                    .is_some_and(|abandoned| abandoned.is_empty())
+            );
+            assert!(sequence.is_settled());
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), BASE);
+        });
+    }
 }
