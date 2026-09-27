@@ -727,3 +727,26 @@ upstream's behavior is actually a defect rather than a preference.
   prefers a root with messages but does not otherwise pick deterministically between
   two — preferable to deletion, not a finished answer. See `TODO.md`.
   <!-- markers: keep:PersistedTaskRetention keep:upsert_agent_conversation_with_retention keep:restored_with_synthesized_root -->
+
+- **Linux and Windows have a quit shortcut, `ctrl-shift-Q`** (2026-09-26,
+  `app/src/util/bindings.rs`, `app/src/resource_center/utils.rs`; the default key
+  lives on `workspace:terminate_app` in `app/src/workspace/mod.rs`). **Upstream:**
+  quitting by keyboard exists only as the macOS menu's `cmd-q`
+  (`StandardAction::Quit => mac_only_keystroke("cmd-q")`), and the editable
+  "Quit Warp" binding `workspace:terminate_app` ships with no default key on any
+  platform. **The defect:** off macOS there is no menu bar, so the app cannot be
+  quit from the keyboard at all — only by closing every window, one at a time.
+  Worse, the resource-center keybindings page lists "Quit — `cmd-q`" on every
+  platform, advertising a key that does nothing on Linux. **Confirmed at the pin**
+  (`4111d08f9:app/src/util/bindings.rs:250`,
+  `4111d08f9:app/src/resource_center/utils.rs:138`,
+  `4111d08f9:app/src/workspace/mod.rs:1078`). **We do:** give
+  `workspace:terminate_app` a Linux/Windows default of `ctrl-shift-Q` (still
+  user-editable, same command-palette entry), show it for `StandardAction::Quit`,
+  and list the menu's `cmd-q` on the keybindings page only on macOS. Quitting goes
+  through `terminate_app(Cancellable)`, so the "Quit Phosphor?" running-processes
+  dialog and the `on_will_terminate` flush are the same as macOS `cmd-q`.
+  **Why not `ctrl-q`:** it is XON and readline's quoted-insert, a control character
+  that must reach the shell (`CONTROL_CHARACTER_KEY_REGEX` would reject it). macOS
+  is unchanged.
+  <!-- markers: keep:LINUX_OR_WINDOWS_QUIT_KEYSTROKE keep:test_quit_binding_default_and_no_collision -->
