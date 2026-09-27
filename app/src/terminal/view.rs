@@ -24949,9 +24949,16 @@ impl TerminalView {
         generation: u64,
         ctx: &mut ViewContext<Self>,
     ) {
-        view.update(ctx, |view, ctx| {
+        // The timer holds a clone of the card's handle, which keeps the view alive but not
+        // its window: closing the window before the deadline fires is an expected teardown
+        // race, and a plain `update` would panic on it. Nothing is left to settle then. A
+        // circular update is still a bug.
+        match view.try_update(ctx, |view, ctx| {
             view.timeout_file_revert(file_idx, generation, ctx)
-        });
+        }) {
+            Ok(_) | Err(warpui::ViewUpdateError::WindowClosed) => {}
+            Err(warpui::ViewUpdateError::CircularUpdate) => panic!("Circular view update"),
+        }
     }
 
     /// A rewind's revert write for `file_idx` of card `view_id` has come back:
