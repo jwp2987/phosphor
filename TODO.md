@@ -2619,14 +2619,22 @@ separately rather than inflating the queue count.
       `TODO.md:6267-6296`). Taking the struct wholesale re-imports the declined half.
       Also note the pin's bodies use let-chains (`if let … && let …`); the fork's copy at
       `driver.rs:120-185` uses nested `if let` and should stay that way.
-- [ ] **`c6266ee19`** — verify the installed binary, not binstall's metadata (CI caches
-      restore metadata without the binary).
-- [ ] **`6e0feaf9c` — SUPPLY CHAIN.** Fork CI still uses the third-party
+- [x] **`c6266ee19`** — verify the installed binary, not binstall's metadata (CI caches
+      restore metadata without the binary). **Closed via #712:** `script/install_cargo_release_deps`
+      and `script/install_cargo_bundle` now check the installed binary's own version and
+      `--force` reinstall on a mismatch, instead of trusting `cargo binstall`'s metadata.
+- [x] **`6e0feaf9c` — SUPPLY CHAIN.** Fork CI still uses the third-party
       `cargo-bins/cargo-binstall` action (`prepare_environment/action.yml:87`,
       `pr-check.yml:249`) while the fork's own SHA-verified script sits unused. Also adds
       a missing binstall bootstrap to the wasm deps script.
-- [ ] **`352a7fc10`** — retry + exponential backoff on the binstall download; the fork's
+      **Closed via #713:** `prepare_environment/action.yml` and `pr-check.yml`'s
+      `licenses` job now run `./script/install_cargo_binstall`; `script/wasm/install_build_deps`
+      calls it explicitly instead of relying on it having run beforehand.
+- [x] **`352a7fc10`** — retry + exponential backoff on the binstall download; the fork's
       `curl` has no `--retry` at all, so a CDN brownout fails bootstrap outright.
+      **Closed via #713:** `script/install_cargo_binstall`'s download now retries at the
+      shell level with exponential backoff (10s -> 20s -> 40s -> 80s -> fail), which works
+      on curl versions too old for `--retry-all-errors`.
 - [ ] **`cff5f778c`** — **FOUR files, not one. This ledger entry previously described
       only the first and would itself have caused a partial port.**
       (a) `script/lint_powershell` throws on the first source with findings, hiding
@@ -2645,7 +2653,8 @@ separately rather than inflating the queue count.
       own release workflow already documents a `SKIP_SETTINGS_SCHEMA=1` escape hatch,
       i.e. it is already paying and working around this. Touches the three diverged
       `script/{linux,macos,windows}` bundle scripts — a real port, not a cherry-pick.
-- [ ] **`b1bcc3564`** — add `rust-analyzer` to `rust-toolchain.toml` components. One word.
+- [x] **`b1bcc3564`** — add `rust-analyzer` to `rust-toolchain.toml` components. One word.
+      **Closed via #714.**
 - [ ] **`1e4b86a81`** — `release-cli` `codegen-units` 1 -> 4; roughly halves that
       profile's build time for ~4% larger stripped binaries. The fork does use
       `release-cli` for the macOS and musl TUI builds.
@@ -2692,7 +2701,7 @@ move re-opens them. Invisible to the queue, the identity manifest, and every CI 
 - [x] `warp_multi_agent_api` `b0886a952` -> **`f0028fa6d05db1ba63726eaf6f8d33ab17abe37b`**.
       See `def3fd0e3` above. Compile-surface change; sequence with the code shards.
       **Closed 2026-09-26:** bumped to `f0028fa6d` in `4a6c07d83` (`Cargo.toml:384`).
-- [ ] **`tink-core` / `tink-proto` / `tink-hybrid` — pre-existing, NOT introduced by this
+- [x] **`tink-core` / `tink-proto` / `tink-hybrid` — pre-existing, NOT introduced by this
       move, and worse than drift.** The fork pins them to a floating
       `branch = "warpdotdev/main"` (`Cargo.toml:593-595`) where both pins use
       `rev = "54b9ac9af93b0c08b446a7bc0582836c9403a71b"`. A branch pin is a
@@ -2701,6 +2710,20 @@ move re-opens them. Invisible to the queue, the identity manifest, and every CI 
       Either pin back to the rev or write the reason at the pin line.
       **`docs/pin-migration.md` recorded these as "3 correctly absent (cloud-coupled)",
       which is false; corrected under #625.**
+      **Closed via #715:** investigated rather than blindly applying the suggested rev —
+      `54b9ac9af9` is the tip of `warpdotdev/v0.3.0-eecf54c` (a different branch, a rebase
+      onto tink-rust v0.3.0), not `warpdotdev/main`. The fork's Cargo.lock already resolves
+      the floating branch to `0141035f04a5e262b955c450857b689cff877469` (unchanged since
+      2025-12-09), and `54b9ac9af9` is 16 commits ahead of it touching only `aead/*`,
+      `integration/{awskms,gcpkms}`, `prf/`, `testing/`, `tests/` and `core/Cargo.toml` —
+      none of it `tink-core`/`tink-proto`/`tink-hybrid` source, none of it consumed here.
+      Pinned to `rev = "0141035f04a5e262b955c450857b689cff877469"` instead: reproducible,
+      and the build doesn't change. `deny.toml`'s `allow-org = { github = ["warpdotdev"] }`
+      already covers this repo regardless of branch vs. rev; `check_license_config_sync`
+      only compares license lists and is unaffected. **Needs `cargo update -p tink-core
+      -p tink-proto -p tink-hybrid`** to refresh `Cargo.lock`'s source URLs from
+      `?branch=warpdotdev%2Fmain#...` to `?rev=0141035f0...#...` (same resolved commit, so
+      no dependency-tree change) — not yet run; coordinator builds.
 - `winit` — **deliberate, leave alone.** Reason IS written at `Cargo.toml:432-437`
   (carries `rust-windowing/winit#4453`, Windows dark-mode registry detection). Upstream's
   own winit rev did not move between the two pins. Verified 2026-09-27:
