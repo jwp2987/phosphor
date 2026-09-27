@@ -5,6 +5,7 @@ use anyhow::anyhow;
 use chrono::{DateTime, Local, TimeDelta};
 use futures::channel::oneshot;
 use futures_util::StreamExt;
+use settings::Setting as _;
 use uuid::Uuid;
 use warp_multi_agent_api::response_event;
 use warpui::{Entity, ModelContext};
@@ -19,6 +20,7 @@ use crate::{
     ai::byop_readiness::BlockedByopReadinessError,
     network::NetworkStatus,
     report_error, send_telemetry_from_ctx,
+    settings::AISettings,
 };
 use warpui::SingletonEntity;
 
@@ -278,6 +280,11 @@ struct ByopDispatch {
     /// image/pdf/audio Override). Computed by `resolve_for_model`. The UI display
     /// and runtime behavior reference the same caps.
     attachment_caps: crate::ai::agent_providers::attachment_caps::AttachmentCaps,
+    /// Present when another usable BYOP provider besides this one is configured --
+    /// see `chat_stream::UnreachableProviderHint`. Computed here (rather than in
+    /// `chat_stream`, which has no `AppContext`) since this is the one place that
+    /// already has both the active `AgentProvider` and `ctx` in hand.
+    other_provider_hint: Option<crate::ai::agent_providers::chat_stream::UnreachableProviderHint>,
 }
 
 /// BYOP config dedicated to title generation (may share the same provider as the main base model, or may not).
@@ -394,6 +401,24 @@ fn byop_dispatch_info(
             );
             crate::ai::agent_providers::attachment_caps::caps_for(provider.api_type, &model_id)
         });
+    // #719 item 7: "when an agent request fails with a connection error ... and at least
+    // one other provider is configured, make the existing error say so." Computed here,
+    // not probed for at request-failure time -- this fork does no background
+    // reachability checking, it only enriches the message an already-failed request
+    // produces. `None` when the active provider is the only one configured.
+    let other_provider_hint = AISettings::as_ref(ctx)
+        .agent_providers
+        .value()
+        .iter()
+        .any(|other| other.id != provider.id && other.is_usable())
+        .then(
+            || crate::ai::agent_providers::chat_stream::UnreachableProviderHint {
+                provider_name: provider.name.clone(),
+                redacted_endpoint: crate::ai::agent_providers::chat_stream::scheme_host_port(
+                    &provider.resolved_base_url(),
+                ),
+            },
+        );
     Some(ByopDispatch {
         base_url: provider.resolved_base_url(),
         api_key,
@@ -410,6 +435,7 @@ fn byop_dispatch_info(
         context_window,
         max_output_tokens,
         attachment_caps,
+        other_provider_hint,
     })
 }
 
@@ -577,6 +603,7 @@ impl ResponseStream {
                             max_output_tokens: byop.max_output_tokens,
                             cancellation_rx,
                             attachment_caps: byop.attachment_caps,
+                            other_provider_hint: byop.other_provider_hint,
                         },
                     )
                     .await
@@ -746,6 +773,7 @@ impl ResponseStream {
                             max_output_tokens: byop.max_output_tokens,
                             cancellation_rx,
                             attachment_caps: byop.attachment_caps,
+                            other_provider_hint: byop.other_provider_hint,
                         },
                     )
                     .await

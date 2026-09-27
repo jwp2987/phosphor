@@ -5406,6 +5406,81 @@ fn map_genai_error(err: genai::Error) -> OpenAiCompatibleError {
     }
 }
 
+/// A configured-but-unused BYOP provider to suggest when the active one turns out to be
+/// unreachable. Computed once at dispatch time (`response_stream.rs::byop_dispatch_info`,
+/// which already has the active `AgentProvider` and `AppContext` in hand) rather than
+/// probed for at error time -- this fork does no background reachability probing (#719
+/// item 7); it only enriches the error message an already-failed request produces.
+///
+/// `None` when the active provider is the only one configured, since there is then
+/// nothing else to suggest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnreachableProviderHint {
+    /// The active provider's display name (`AgentProvider::name`).
+    pub provider_name: String,
+    /// The active provider's endpoint, redacted to `scheme://host[:port]` -- see
+    /// [`scheme_host_port`]. Never the raw `base_url`, which may carry a path or
+    /// (rarely) embedded credentials.
+    pub redacted_endpoint: String,
+}
+
+/// Redacts a provider base URL down to `scheme://host[:port]`, dropping any path, query,
+/// and embedded userinfo.
+///
+/// A small, local helper, deliberately not shared with this file's existing
+/// `redact_url_userinfo`: that one keeps the full path and query and strips only
+/// `user:password@`, which is the right shape for a debug log line but the wrong one for
+/// a user-facing error message, which should say *where* the request went without
+/// repeating potentially sensitive path segments (some self-hosted gateways embed a
+/// routing token in the path).
+pub(crate) fn scheme_host_port(base_url: &str) -> String {
+    let Ok(parsed) = url::Url::parse(base_url) else {
+        // Not a parseable URL at all (e.g. a malformed manual entry) -- fall back to a
+        // placeholder rather than ever echoing the raw, unvalidated string back to the user.
+        return "its configured endpoint".to_string();
+    };
+    let scheme = parsed.scheme();
+    let Some(host) = parsed.host_str() else {
+        return "its configured endpoint".to_string();
+    };
+    match parsed.port_or_known_default() {
+        Some(port) => format!("{scheme}://{host}:{port}"),
+        None => format!("{scheme}://{host}"),
+    }
+}
+
+/// Builds the message for a failed *open-stream* BYOP request (before any response byte
+/// has arrived -- see the sole call site in `generate_byop_output`), appending an "other
+/// providers are configured" hint when the failure looks like the endpoint could not be
+/// reached at all.
+///
+/// Deliberately keyed on `OpenAiCompatibleError::Stream` specifically, not `Other`/
+/// `Status`/`Decode`: `map_genai_error` maps `genai::Error::WebStream` /
+/// `WebAdapterCall` / `WebModelCall` -- reqwest connection, TLS, DNS, and timeout
+/// failures -- to `Stream`, and this function is only ever called at the open-stream site
+/// (before any response has been received), so a `Stream` error reaching it always means
+/// the connection attempt itself failed, never a genuine mid-response interruption. An
+/// HTTP error status, auth failure, or decode failure is a *reachable* provider that
+/// refused or mishandled the request -- suggesting another provider there would be
+/// actively misleading (#719 item 7: "when an agent request fails with a connection error
+/// (connection refused / DNS / timeout) ... make the existing error say so").
+///
+/// Pure formatting, no I/O -- unit-tested directly in this file's `#[cfg(test)]` section.
+fn describe_byop_open_stream_failure(
+    mapped: &OpenAiCompatibleError,
+    other_provider_hint: Option<&UnreachableProviderHint>,
+) -> String {
+    let base = format!("BYOP open stream failed: {mapped}");
+    let (OpenAiCompatibleError::Stream(_), Some(hint)) = (mapped, other_provider_hint) else {
+        return base;
+    };
+    format!(
+        "{base}\n\n{} at {} is unreachable; you have other providers configured -- pick one \
+         with /model",
+        hint.provider_name, hint.redacted_endpoint
+    )
+}
+
 /// Drops the cached Vertex bearer when the provider rejects it as an auth failure.
 ///
 /// `credential` is `Some` only on the Vertex path (see `generate_byop_output`); every other
@@ -5488,6 +5563,11 @@ pub struct ByopOutputInput {
     /// Override) already applied. Computed by `resolve_for_model`, keeping UI display and
     /// runtime behavior in sync.
     pub attachment_caps: attachment_caps::AttachmentCaps,
+    /// Present when a usable, non-active BYOP provider is configured besides this
+    /// request's own -- see [`UnreachableProviderHint`]. Computed once at dispatch time
+    /// (`response_stream.rs::byop_dispatch_info`), not probed for here; used only to
+    /// enrich the message if *this* request fails to open its stream (#719 item 7).
+    pub other_provider_hint: Option<UnreachableProviderHint>,
 }
 
 // ---------------------------------------------------------------------------
@@ -5622,6 +5702,7 @@ pub async fn generate_byop_output(
         max_output_tokens,
         cancellation_rx: _cancellation_rx,
         attachment_caps,
+        other_provider_hint,
     } = input;
 
     let force_echo_reasoning = super::reasoning::model_requires_reasoning_echo(api_type, &model_id);
@@ -6085,9 +6166,9 @@ pub async fn generate_byop_output(
                 let mapped = map_genai_error(e);
                 log::error!("[byop] open stream failed: {mapped:#}");
                 evict_vertex_token_on_auth_failure(vertex_credential.as_ref(), &mapped);
-                yield Err(Arc::new(AIApiError::Other(anyhow::anyhow!(
-                    "BYOP open stream failed: {mapped}"
-                ))));
+                let message =
+                    describe_byop_open_stream_failure(&mapped, other_provider_hint.as_ref());
+                yield Err(Arc::new(AIApiError::Other(anyhow::anyhow!(message))));
                 return;
             }
         };
@@ -12454,6 +12535,106 @@ mod dispatch_byop_web_tool_tests {
             Some("error"),
             "expected a rejected tool_result, got: {result}"
         );
+    }
+}
+
+/// #719 item 7: which message `describe_byop_open_stream_failure` selects for which
+/// state -- pure decision logic, no network/view/ctx involved.
+#[cfg(test)]
+mod byop_unreachable_provider_hint_tests {
+    use super::*;
+
+    fn hint() -> UnreachableProviderHint {
+        UnreachableProviderHint {
+            provider_name: "DeepSeek Official".to_string(),
+            redacted_endpoint: "https://api.deepseek.com:443".to_string(),
+        }
+    }
+
+    #[test]
+    fn connection_failure_with_another_provider_configured_names_it() {
+        let mapped = OpenAiCompatibleError::Stream("connection refused".to_string());
+        let message = describe_byop_open_stream_failure(&mapped, Some(&hint()));
+
+        assert!(
+            message.contains("DeepSeek Official"),
+            "must name the other configured provider, got: {message}"
+        );
+        assert!(
+            message.contains("https://api.deepseek.com:443"),
+            "must name its redacted endpoint, got: {message}"
+        );
+        assert!(
+            message.contains("unreachable"),
+            "must say the active provider is unreachable, got: {message}"
+        );
+        assert!(
+            message.contains("/model"),
+            "must point at how to switch providers, got: {message}"
+        );
+    }
+
+    #[test]
+    fn connection_failure_with_no_other_provider_configured_says_nothing_extra() {
+        let mapped = OpenAiCompatibleError::Stream("connection refused".to_string());
+        let message = describe_byop_open_stream_failure(&mapped, None);
+
+        assert!(
+            !message.contains("other providers configured"),
+            "with no other provider configured there is nothing to suggest, got: {message}"
+        );
+        assert!(message.contains("BYOP open stream failed"));
+    }
+
+    /// An HTTP status, auth failure, or decode failure means the provider WAS reached and
+    /// responded -- suggesting another provider would be actively misleading, even when one
+    /// is configured.
+    #[test]
+    fn non_connection_failures_never_get_the_unreachable_hint_even_with_another_provider() {
+        let status = OpenAiCompatibleError::Status {
+            status: 401,
+            body: "invalid api key".to_string(),
+        };
+        let other = OpenAiCompatibleError::Other("request construction failed".to_string());
+        let decode = OpenAiCompatibleError::Decode("bad json".to_string());
+
+        for mapped in [status, other, decode] {
+            let message = describe_byop_open_stream_failure(&mapped, Some(&hint()));
+            assert!(
+                !message.contains("unreachable"),
+                "a reachable-but-refusing provider must not be called unreachable, got: {message}"
+            );
+            assert!(
+                !message.contains("DeepSeek Official"),
+                "must not suggest another provider when this one was actually reached, \
+                 got: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn scheme_host_port_drops_path_query_and_credentials() {
+        assert_eq!(
+            scheme_host_port("https://user:secret@api.example.com/v1/chat?key=abc"),
+            "https://api.example.com:443"
+        );
+        assert_eq!(
+            scheme_host_port("http://localhost:11434"),
+            "http://localhost:11434"
+        );
+        // No explicit port: falls back to the scheme's known default rather than omitting
+        // it, so the redacted form is still unambiguous.
+        assert_eq!(
+            scheme_host_port("https://api.deepseek.com/v1"),
+            "https://api.deepseek.com:443"
+        );
+    }
+
+    #[test]
+    fn scheme_host_port_falls_back_on_an_unparseable_url() {
+        let redacted = scheme_host_port("not a url at all");
+        // Must not echo the raw, unvalidated input back to the user.
+        assert!(!redacted.contains("not a url"));
     }
 }
 
