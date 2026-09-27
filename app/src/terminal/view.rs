@@ -26055,12 +26055,17 @@ impl TerminalView {
 
     pub(super) fn toggle_file_tree(
         &mut self,
-        source: crate::server::telemetry::FileTreeSource,
         cli_agent: Option<crate::server::telemetry::CLIAgentType>,
         ctx: &mut ViewContext<Self>,
     ) {
-        use crate::server::telemetry::TelemetryEvent;
+        use crate::server::telemetry::{FileTreeSource, TelemetryEvent};
 
+        // The footer's File explorer item is the only caller: with a CLI agent session
+        // attached it is the CLI agent footer, otherwise Warp's own agent toolbelt.
+        let source = match cli_agent {
+            Some(_) => FileTreeSource::CLIAgentView,
+            None => FileTreeSource::AgentToolbelt,
+        };
         self.toggle_left_panel_file_tree(false, ctx);
         send_telemetry_from_ctx!(
             TelemetryEvent::FileTreeToggled {

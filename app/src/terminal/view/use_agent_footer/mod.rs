@@ -58,7 +58,7 @@ use warpui::{
 use crate::{
     ai::blocklist::{agent_view::agent_view_bg_fill, block::cli_controller::CLISubagentEvent},
     cmd_or_ctrl_shift,
-    server::telemetry::{CLIAgentType, CLISubagentControlState, FileTreeSource, TelemetryEvent},
+    server::telemetry::{CLIAgentType, CLISubagentControlState, TelemetryEvent},
     settings::{
         AISettings, AISettingsChangedEvent, CompiledCommandsForCodingAgentToolbar,
         InputModeSettings,
@@ -255,11 +255,7 @@ impl TerminalView {
                 );
             }
             UseAgentToolbarEvent::ToggleFileExplorer(cli_agent) => {
-                let source = match cli_agent {
-                    Some(_) => FileTreeSource::CLIAgentView,
-                    None => FileTreeSource::AgentToolbelt,
-                };
-                self.toggle_file_tree(source, cli_agent.map(Into::into), ctx);
+                self.toggle_file_tree(cli_agent.map(Into::into), ctx);
             }
             UseAgentToolbarEvent::OpenRichInput => {
                 if self.has_active_cli_agent_input_session(ctx) {
