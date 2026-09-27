@@ -1170,18 +1170,14 @@ impl CodeDiffView {
                 .diff_view
                 .update(ctx, |v, ctx| v.restore_diff_base(ctx))
             {
-                log::error!("Failed to restore diff base: {err:?}");
-                let file_name = diff
-                    .diff_view
-                    .as_ref(ctx)
-                    .file_name()
-                    .unwrap_or_else(|| "file".to_string());
+                // `restore_diff_base` refuses with a complete user-facing
+                // sentence (which file, why, and that nothing was changed), so
+                // it is shown as-is. A refusal that is only discovered at write
+                // time — the file changed after the accept — arrives later
+                // through `InlineDiffViewEvent::FailedToSave` instead.
+                log::error!("Failed to restore diff base: {err}");
                 ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
-                    toast_stack.add_ephemeral_toast(
-                        DismissibleToast::error(format!("Failed to revert changes to {file_name}")),
-                        window_id,
-                        ctx,
-                    );
+                    toast_stack.add_ephemeral_toast(DismissibleToast::error(err), window_id, ctx);
                 });
             }
         }

@@ -1,3 +1,5 @@
+#[cfg(not(target_family = "wasm"))]
+use std::cell::RefCell;
 use std::rc::Rc;
 
 #[cfg(not(target_family = "wasm"))]
@@ -5,14 +7,16 @@ use crate::ai::blocklist::inline_action::code_diff_view::DiffSessionType;
 use ai::diff_validation::DiffType;
 #[cfg(not(target_family = "wasm"))]
 use warp_files::{ExpectedDiskState, FileModel, FileModelEvent};
+#[cfg(not(target_family = "wasm"))]
+use warp_util::content_version::ContentVersion;
 use warp_util::file::FileId;
 #[cfg(not(target_family = "wasm"))]
 use warp_util::file::FileSaveError;
 use warp_util::standardized_path::StandardizedPath;
-#[cfg(not(target_family = "wasm"))]
-use warpui::SingletonEntity;
 use warpui::elements::ChildView;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext, ViewHandle};
+#[cfg(not(target_family = "wasm"))]
+use warpui::{ModelContext, SingletonEntity};
 
 use super::DiffResult;
 use super::diff_viewer::DiffViewer;
@@ -62,6 +66,20 @@ pub struct InlineDiffView {
     /// Whether the diff is a new file creation (for revert: delete instead of restore).
     #[cfg(not(target_family = "wasm"))]
     is_new_file: bool,
+    /// The exact text the accept asked `FileModel` to write, recorded at accept
+    /// time. This is the pre-image a revert asserts: a revert undoes the accept,
+    /// so it may only run against a file that still holds what the accept left
+    /// there. `None` until an accept has dispatched a write.
+    ///
+    /// A `RefCell` because the accept path (`DiffViewer::accept_and_save_diff`)
+    /// takes `&self`.
+    #[cfg(not(target_family = "wasm"))]
+    accepted_content: RefCell<Option<String>>,
+    /// Set once a revert has dispatched its write, so that the write's
+    /// asynchronous refusal is reported as a failed *revert* rather than as a
+    /// failed save of the accept.
+    #[cfg(not(target_family = "wasm"))]
+    revert_dispatched: bool,
 }
 
 impl InlineDiffView {
@@ -99,6 +117,10 @@ impl InlineDiffView {
             backing_file_id: None,
             #[cfg(not(target_family = "wasm"))]
             is_new_file,
+            #[cfg(not(target_family = "wasm"))]
+            accepted_content: RefCell::new(None),
+            #[cfg(not(target_family = "wasm"))]
+            revert_dispatched: false,
         };
 
         model.apply_diffs_if_any(ctx);
@@ -178,16 +200,19 @@ impl InlineDiffView {
         self.backing_file_id = Some(file_id);
 
         // Subscribe to FileModel events for this file.
-        ctx.subscribe_to_model(&file_model, move |_me, _file_model, event, ctx| {
+        ctx.subscribe_to_model(&file_model, move |me, _file_model, event, ctx| {
             if file_id == event.file_id() {
                 match event {
                     FileModelEvent::FileSaved { .. } => {
                         ctx.emit(InlineDiffViewEvent::FileSaved);
                     }
                     FileModelEvent::FailedToSave { error, .. } => {
-                        ctx.emit(InlineDiffViewEvent::FailedToSave {
-                            error: error.clone(),
-                        });
+                        let error = if me.revert_dispatched {
+                            Rc::new(revert_failure(error))
+                        } else {
+                            error.clone()
+                        };
+                        ctx.emit(InlineDiffViewEvent::FailedToSave { error });
                     }
                     _ => {}
                 }
@@ -287,6 +312,14 @@ impl InlineDiffView {
                 return;
             }
         };
+
+        // Recorded before the write is dispatched, and whether or not it lands:
+        // it is what a later revert requires the file to still hold. If this
+        // accept is refused, the file never held it, and a revert guarded by it
+        // is refused in turn — which is right, because there is nothing of the
+        // accept's to undo, and the unguarded revert this replaced would have
+        // written the base over (or deleted) whatever *was* there.
+        *self.accepted_content.borrow_mut() = Some(content.clone());
 
         if let Err(err) = FileModel::handle(ctx).update(ctx, |file_model, ctx| {
             file_model.save_if_unchanged(file_id, content, expected, version, ctx)
@@ -408,56 +441,171 @@ impl DiffViewer for InlineDiffView {
                 .backing_file_id
                 .expect("backing_file_id must be Some — checked by early return above");
 
-            if self.is_new_file {
-                // For newly created files, delete instead of restoring.
-                //
-                // Unguarded, for the same reason as the restore below and with
-                // the same cost: `FileModel::delete_if_unchanged` exists and
-                // would take a pre-image, but the only honest pre-image here is
-                // what the accept wrote, which this view does not retain. A file
-                // the accept created and something else then rewrote is removed
-                // by this call with no check and no message. Filed with the
-                // revert follow-up rather than guarded against the wrong thing.
-                let version = self.editor.as_ref(_ctx).version(_ctx);
-                FileModel::handle(_ctx)
-                    .update(_ctx, |file_model, ctx| {
-                        file_model.delete(file_id, version, ctx)
-                    })
-                    .map_err(|e| format!("Failed to delete file: {e:?}"))?;
-                return Ok(());
-            }
-
-            // For existing files, restore the base content from the editor's DiffModel.
+            // Guarded, like the accept (`save_content`), and against the right
+            // pre-image: not the diff base — that is what the revert puts back —
+            // but the text the accept wrote, recorded in `accepted_content`.
+            // See `revert_plan` for what each case asserts.
             //
-            // This write is deliberately left unguarded, unlike `save_content`.
-            // Revert is only reachable from `CodeDiffState::Accepted(None)`, so
-            // its pre-image is not the diff base but whatever the accept just
-            // wrote — bytes this view does not durably record. Guarding it
-            // against the base instead would refuse every revert that follows a
-            // format-on-save, which is the common case rather than the
-            // dangerous one. Closing this properly needs the accepted content
-            // retained at accept time; filed rather than guessed at here.
-            let base_content = self
-                .editor
-                .as_ref(_ctx)
-                .model
-                .as_ref(_ctx)
-                .diff()
-                .as_ref(_ctx)
-                .base()
-                .ok_or_else(|| "Missing base content".to_string())?
-                .to_string();
+            // # Divergence from the pinned oracle
+            //
+            // Not a parity port. Pinned Warp `4111d08f9` reverts with the
+            // unconditional `FileModel::save` / `FileModel::delete`, so a revert
+            // destroys every edit made to the file after the accept, and deletes
+            // an agent-created file the user has since built on, with no check
+            // and no message. A re-pin must not "restore parity" here.
+            let base = if self.is_new_file {
+                None
+            } else {
+                self.editor
+                    .as_ref(_ctx)
+                    .model
+                    .as_ref(_ctx)
+                    .diff()
+                    .as_ref(_ctx)
+                    .base()
+                    .map(|base| base.to_string())
+            };
+            let write = revert_plan(
+                self.is_new_file,
+                self.accepted_content.borrow().clone(),
+                base,
+                self.file_path.as_ref(),
+            )?;
 
             let version = self.editor.as_ref(_ctx).version(_ctx);
             FileModel::handle(_ctx)
                 .update(_ctx, |file_model, ctx| {
-                    file_model.save(file_id, base_content, version, ctx)
+                    dispatch_revert_write(file_model, file_id, write, version, ctx)
                 })
-                .map_err(|e| format!("Failed to save file: {e:?}"))?;
+                .map_err(|error| revert_failure(&error).to_string())?;
+            // Only once a write is actually in flight: its refusal, if any,
+            // arrives later as `FileModelEvent::FailedToSave` and is reported as
+            // a failed revert from there.
+            self.revert_dispatched = true;
         }
 
         Ok(())
     }
+}
+
+/// The single guarded write that undoes an accepted diff.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Debug, PartialEq, Eq)]
+enum RevertWrite {
+    /// The accept created the file; remove it, but only if it still holds what
+    /// the accept wrote.
+    Delete { expected: ExpectedDiskState },
+    /// The accept overwrote the file; put `content` (the diff base) back, but
+    /// only if the file still holds what the accept wrote.
+    Restore {
+        content: String,
+        expected: ExpectedDiskState,
+    },
+}
+
+/// Decides the write that undoes an accept, and the pre-image it asserts.
+///
+/// The GUI counterpart of `warp_tui::tui_diff_storage::revert_plan`, with the
+/// same semantics: a revert's pre-image is what the accept left on disk, so
+///
+/// * a **creation** is undone by a delete that requires the file to still hold
+///   the accepted text — an agent-created file the user has since edited is
+///   not deleted;
+/// * an **edit** is undone by writing the diff base back, which requires the
+///   file to still hold the accepted text — edits made after the accept are not
+///   overwritten.
+///
+/// Unlike the TUI, the accepted text cannot be re-derived from the diff: this
+/// view is editable, and the user may have changed the agent's proposal before
+/// accepting it. So the accept records what it wrote (`accepted_content`) and
+/// that is what arrives here.
+///
+/// A formatter or anything else that touched the file after the accept
+/// therefore refuses the revert. That is the intended trade, and the TUI's:
+/// the common case (nothing touched the file) still passes, and the comparison
+/// in `FileModel` is line-ending-normalised, so a CRLF file is not a refusal.
+///
+/// `Err` is a refusal with a user-facing message; nothing is written.
+#[cfg(not(target_family = "wasm"))]
+fn revert_plan(
+    is_new_file: bool,
+    accepted: Option<String>,
+    base: Option<String>,
+    file_path: Option<&StandardizedPath>,
+) -> Result<RevertWrite, String> {
+    let path = || {
+        file_path
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "file".to_owned())
+    };
+
+    // No record of an accept means no way to tell what the file should hold.
+    // Reverting blind is exactly the overwrite this guard exists to prevent.
+    let accepted = accepted.ok_or_else(|| {
+        format!(
+            "{} was not reverted: there is no record of what accepting this edit \
+             wrote, so there is no way to tell whether the file changed since. \
+             Nothing was changed.",
+            path()
+        )
+    })?;
+
+    if is_new_file {
+        return Ok(RevertWrite::Delete {
+            expected: ExpectedDiskState::Content(accepted),
+        });
+    }
+
+    let content = base.ok_or_else(|| {
+        format!(
+            "{} was not reverted: the original contents this edit replaced are no \
+             longer available. Nothing was changed.",
+            path()
+        )
+    })?;
+
+    Ok(RevertWrite::Restore {
+        content,
+        expected: ExpectedDiskState::Content(accepted),
+    })
+}
+
+/// Dispatches `write` through `FileModel`'s guarded operations. Its outcome —
+/// including a refusal because the file changed — arrives asynchronously as
+/// `FileModelEvent::FileSaved` / `FileModelEvent::FailedToSave`.
+#[cfg(not(target_family = "wasm"))]
+fn dispatch_revert_write(
+    file_model: &mut FileModel,
+    file_id: FileId,
+    write: RevertWrite,
+    version: ContentVersion,
+    ctx: &mut ModelContext<FileModel>,
+) -> Result<(), FileSaveError> {
+    match write {
+        RevertWrite::Delete { expected } => {
+            file_model.delete_if_unchanged(file_id, expected, version, ctx)
+        }
+        RevertWrite::Restore { content, expected } => {
+            file_model.save_if_unchanged(file_id, content, expected, version, ctx)
+        }
+    }
+}
+
+/// Rewrites a write failure as a failed *revert*, so the toast does not read
+/// as a failed accept.
+///
+/// A guarded refusal (`FileSaveError::Other`) is a full sentence that already
+/// names the file and says it was left alone, so it is prefixed rather than
+/// wrapped in a second path. Anything else keeps its reason.
+#[cfg(not(target_family = "wasm"))]
+fn revert_failure(error: &FileSaveError) -> FileSaveError {
+    let reason = match error {
+        FileSaveError::Other(message) => message.clone(),
+        // `IOError`'s own `Display` is a constant; the `io::Error` is the reason.
+        FileSaveError::IOError { error, path } => format!("{}: {error}", path.display()),
+        other => other.to_string(),
+    };
+    FileSaveError::Other(format!("Did not revert the agent's edit. {reason}"))
 }
 
 impl Entity for InlineDiffView {
@@ -546,5 +694,191 @@ mod tests {
         let error = pre_image_for_diff(false, None, None)
             .expect_err("a missing base must not produce a pre-image");
         assert!(error.starts_with("file was not written"), "got: {error}");
+    }
+
+    // ── Revert (`revert_plan` + `dispatch_revert_write`) ─────────────────
+    //
+    // `restore_diff_base` is two editor-handle dereferences around these two
+    // functions; the same fixture limitation as above applies to it. The
+    // decisions are here, and the disk tests below push each plan through the
+    // real `FileModel` guarded writes against a real file.
+
+    /// What the user accepted — the agent's proposal, possibly hand-edited.
+    const ACCEPTED: &str = "fn main() {\n    println!(\"accepted\");\n}\n";
+    /// What the user wrote to the file after accepting.
+    const LATER_EDIT: &str = "fn main() {\n    println!(\"my own work\");\n}\n";
+
+    /// The defect: a revert's pre-image is what the accept wrote, never the
+    /// base it is about to put back.
+    #[test]
+    fn reverting_an_edit_restores_the_base_guarded_by_the_accepted_text() {
+        assert_eq!(
+            revert_plan(
+                false,
+                Some(ACCEPTED.to_owned()),
+                Some(BASE.to_owned()),
+                Some(&path())
+            ),
+            Ok(RevertWrite::Restore {
+                content: BASE.to_owned(),
+                expected: ExpectedDiskState::Content(ACCEPTED.to_owned()),
+            })
+        );
+    }
+
+    /// A creation is undone by a delete that is itself guarded; it does not
+    /// need, and does not consult, a base.
+    #[test]
+    fn reverting_a_creation_is_a_delete_guarded_by_the_accepted_text() {
+        assert_eq!(
+            revert_plan(true, Some(ACCEPTED.to_owned()), None, Some(&path())),
+            Ok(RevertWrite::Delete {
+                expected: ExpectedDiskState::Content(ACCEPTED.to_owned()),
+            })
+        );
+    }
+
+    /// No record of the accept is a refusal, not "nothing to compare, go
+    /// ahead" — for a creation as much as for an edit.
+    #[test]
+    fn a_revert_with_no_record_of_the_accept_refuses() {
+        for is_new_file in [false, true] {
+            let error = revert_plan(is_new_file, None, Some(BASE.to_owned()), Some(&path()))
+                .expect_err("reverting blind must be refused");
+            assert!(error.contains("/tmp/example.rs"), "got: {error}");
+            assert!(error.contains("Nothing was changed"), "got: {error}");
+        }
+    }
+
+    #[test]
+    fn a_revert_with_no_base_to_restore_refuses() {
+        let error = revert_plan(false, Some(ACCEPTED.to_owned()), None, None)
+            .expect_err("there is nothing to restore");
+        assert!(error.starts_with("file was not reverted"), "got: {error}");
+    }
+
+    /// A refusal reaching the toast says it was the *revert* that did not
+    /// happen, and keeps the guard's own explanation.
+    #[test]
+    fn a_revert_refusal_reads_as_a_failed_revert() {
+        let refusal = FileSaveError::Other("x.rs changed on disk.".to_owned());
+        assert_eq!(
+            revert_failure(&refusal).to_string(),
+            "Did not revert the agent's edit. x.rs changed on disk."
+        );
+    }
+
+    /// Registers `path` the way `register_file` does, dispatches `write`
+    /// through the same function `restore_diff_base` uses, and waits for the
+    /// write's real outcome.
+    async fn revert_on_disk(
+        app: &mut warpui::App,
+        path: &std::path::Path,
+        write: RevertWrite,
+    ) -> Result<(), std::sync::Arc<FileSaveError>> {
+        let files = app.add_singleton_model(FileModel::new);
+        let file_id = files.update(app, |files, ctx| files.register_file_path(path, false, ctx));
+        let completion = files.update(app, |files, _| files.save_completion(file_id));
+        files
+            .update(app, |files, ctx| {
+                dispatch_revert_write(files, file_id, write, ContentVersion::new(), ctx)
+            })
+            .expect("the revert write should dispatch");
+        completion.await
+    }
+
+    /// The data-loss case: the user accepts, keeps working on the file, then
+    /// clicks revert. Their work must survive, and they must be told why.
+    #[test]
+    fn revert_after_a_later_edit_is_refused_and_leaves_the_file_alone() {
+        warpui::App::test((), |mut app| async move {
+            let directory = tempfile::tempdir().expect("temp dir");
+            let file = directory.path().join("edited.rs");
+            std::fs::write(&file, LATER_EDIT).expect("write file");
+
+            let write = revert_plan(
+                false,
+                Some(ACCEPTED.to_owned()),
+                Some(BASE.to_owned()),
+                None,
+            )
+            .expect("plan");
+            let error = revert_on_disk(&mut app, &file, write)
+                .await
+                .expect_err("the revert must be refused");
+
+            assert!(
+                revert_failure(&error)
+                    .to_string()
+                    .contains("changed on disk"),
+                "the refusal must say why, got: {error}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&file).unwrap(),
+                LATER_EDIT,
+                "the user's later edit must survive the revert"
+            );
+        });
+    }
+
+    /// ...and the ordinary case still reverts.
+    #[test]
+    fn revert_with_no_later_edit_restores_the_base() {
+        warpui::App::test((), |mut app| async move {
+            let directory = tempfile::tempdir().expect("temp dir");
+            let file = directory.path().join("untouched.rs");
+            std::fs::write(&file, ACCEPTED).expect("write file");
+
+            let write = revert_plan(
+                false,
+                Some(ACCEPTED.to_owned()),
+                Some(BASE.to_owned()),
+                None,
+            )
+            .expect("plan");
+            revert_on_disk(&mut app, &file, write)
+                .await
+                .expect("the revert should succeed");
+
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), BASE);
+        });
+    }
+
+    #[test]
+    fn reverting_an_untouched_created_file_deletes_it() {
+        warpui::App::test((), |mut app| async move {
+            let directory = tempfile::tempdir().expect("temp dir");
+            let file = directory.path().join("created.rs");
+            std::fs::write(&file, ACCEPTED).expect("write file");
+
+            let write = revert_plan(true, Some(ACCEPTED.to_owned()), None, None).expect("plan");
+            revert_on_disk(&mut app, &file, write)
+                .await
+                .expect("the revert should succeed");
+
+            assert!(!file.exists(), "the created file must be gone");
+        });
+    }
+
+    /// The limb that matters most: a delete is the one outcome nothing later
+    /// can undo, and the user may have built on the file the agent created.
+    #[test]
+    fn reverting_a_modified_created_file_is_refused_and_keeps_it() {
+        warpui::App::test((), |mut app| async move {
+            let directory = tempfile::tempdir().expect("temp dir");
+            let file = directory.path().join("created.rs");
+            std::fs::write(&file, LATER_EDIT).expect("write file");
+
+            let write = revert_plan(true, Some(ACCEPTED.to_owned()), None, None).expect("plan");
+            revert_on_disk(&mut app, &file, write)
+                .await
+                .expect_err("the delete must be refused");
+
+            assert_eq!(
+                std::fs::read_to_string(&file).unwrap(),
+                LATER_EDIT,
+                "the modified file must not be deleted"
+            );
+        });
     }
 }
