@@ -750,3 +750,22 @@ upstream's behavior is actually a defect rather than a preference.
   that must reach the shell (`CONTROL_CHARACTER_KEY_REGEX` would reject it). macOS
   is unchanged.
   <!-- markers: keep:LINUX_OR_WINDOWS_QUIT_KEYSTROKE keep:test_quit_binding_default_and_no_collision -->
+
+  exchange — the one deliberate empty snapshot — asks for `DeleteMissingEvenIfEmpty`.
+  `read_agent_conversation_by_id` refuses a conversation with any undecodable task row
+  instead of handing out an editable copy that lacks it, and restore refuses a
+  conversation with more than one parentless task carrying messages
+  (`RestoreConversationError::AmbiguousRootTask`) instead of picking one in `HashMap`
+  order and letting the next save delete the others; a choice among empty stubs is by
+  id. In both refusals the rows stay on disk. **Rejected alternative:** a first cut
+  (`489771261`) also made a conversation restored with a synthesized root save with a
+  `KeepMissing` retention for its whole in-memory life. Once reads are lazy and refuse
+  undecodable rows, a synthesized root only exists when there are *no* rows to protect,
+  so the override protected nothing — and it silently disabled that conversation's
+  legitimate deletes (a rewind to empty left its root row; a pruned sub-agent came back
+  after restart), while in the old shape it was built for it only delayed the loss to
+  the next restart. **Known residual:** a synthesized root whose rows *were* readable
+  (only the pre-`4b0d1300f` eager restore produced one) would still lose the original
+  root when its follow-up's new server root is saved — a non-empty snapshot cannot tell
+  that apart from a legitimate root replacement. See `TODO.md`.
+  <!-- markers: keep:PersistedTaskRetention keep:upsert_agent_conversation_with_retention keep:AmbiguousRootTask -->

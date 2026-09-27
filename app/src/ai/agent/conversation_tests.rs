@@ -1332,22 +1332,10 @@ fn persisted_task_retention(conversation: &AIConversation) -> PersistedTaskReten
     task_retention
 }
 
-/// A conversation restored with no tasks has a synthesized root that knows nothing about
-/// what is persisted, so none of its saves may delete rows or replace the summary.
-#[test]
-fn conversation_restored_without_tasks_saves_with_keep_missing() {
-    let conversation =
-        AIConversation::new_restored_synthesizing_on_empty(AIConversationId::new(), vec![], None)
-            .expect("an empty task list synthesizes a root");
-
-    assert_eq!(
-        persisted_task_retention(&conversation),
-        PersistedTaskRetention::KeepMissing,
-    );
-}
-
-/// A conversation restored from real tasks, or created fresh, keeps replace semantics so
-/// pruned subtasks are still deleted.
+/// Every conversation's ordinary saves use replace semantics, including one restored with
+/// a synthesized root: there is no lifetime override, so its rewinds and subtask pruning
+/// reach the disk like any other conversation's. (Its empty saves are protected by the
+/// persistence layer's empty-snapshot rule instead.)
 #[test]
 fn restored_and_new_conversations_save_with_delete_missing() {
     assert_eq!(
@@ -1355,7 +1343,82 @@ fn restored_and_new_conversations_save_with_delete_missing() {
         PersistedTaskRetention::DeleteMissing,
     );
     assert_eq!(
+        persisted_task_retention(
+            &AIConversation::new_restored_synthesizing_on_empty(
+                AIConversationId::new(),
+                vec![],
+                None,
+            )
+            .expect("an empty task list synthesizes a root"),
+        ),
+        PersistedTaskRetention::DeleteMissing,
+    );
+    assert_eq!(
         persisted_task_retention(&AIConversation::new(false)),
         PersistedTaskRetention::DeleteMissing,
     );
+}
+
+fn parentless_task(id: &str, messages: Vec<api::Message>) -> api::Task {
+    api::Task {
+        id: id.to_string(),
+        messages,
+        dependencies: None,
+        description: String::new(),
+        summary: String::new(),
+        server_data: String::new(),
+    }
+}
+
+/// Two parentless tasks that both carry messages have no single root. Picking one would put
+/// the other outside the next save's snapshot, and `DeleteMissing` would delete its rows —
+/// which history survived would depend on `HashMap` order. Restore must refuse instead, in
+/// either input order.
+#[test]
+fn restore_refuses_two_parentless_tasks_with_messages() {
+    let first = parentless_task(
+        "root-a",
+        vec![user_query_message("a-msg", "request-a", "first history")],
+    );
+    let second = parentless_task(
+        "root-b",
+        vec![user_query_message("b-msg", "request-b", "second history")],
+    );
+    for tasks in [
+        vec![first.clone(), second.clone()],
+        vec![second.clone(), first.clone()],
+    ] {
+        let result = AIConversation::new_restored(AIConversationId::new(), tasks, None);
+        assert!(
+            matches!(
+                result,
+                Err(RestoreConversationError::AmbiguousRootTask { candidates: 2 })
+            ),
+            "two parentless tasks with messages must not restore",
+        );
+    }
+}
+
+/// With no candidate carrying messages (only stubs), the pick is by id, not `HashMap` order.
+#[test]
+fn restore_picks_among_empty_stubs_deterministically() {
+    for _ in 0..20 {
+        let conversation = AIConversation::new_restored(
+            AIConversationId::new(),
+            vec![
+                parentless_task("stub-b", vec![]),
+                parentless_task("stub-a", vec![]),
+            ],
+            None,
+        )
+        .expect("stubs alone still restore");
+        assert_eq!(
+            conversation
+                .get_root_task()
+                .expect("restored conversation must have a root task")
+                .id()
+                .to_string(),
+            "stub-a",
+        );
+    }
 }
