@@ -19,7 +19,16 @@ impl Default for StandingQueryDefinitions {
     fn default() -> Self {
         Self {
             project_skill_provider_paths: Vec::new(),
-            project_rule_file_names: vec!["WARP.md".to_string(), "AGENTS.md".to_string()],
+            // Single-sourced from `warp_util::project_rules::RULES_FILE_PATTERN` so this,
+            // the only rule-file source over SSH, agrees with the local path's
+            // `ai::project_context::model::RULES_FILE_PATTERN` (same constant, re-exported
+            // there). Before this fix, a remote repo's CLAUDE.md was never indexed and
+            // never reached the agent over SSH, even though it worked locally via the
+            // `ai` crate's fast-path scan.
+            project_rule_file_names: warp_util::project_rules::RULES_FILE_PATTERN
+                .iter()
+                .map(|name| name.to_string())
+                .collect(),
         }
     }
 }
