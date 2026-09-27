@@ -7,6 +7,7 @@ mod link_targets {
         OpenFileLayout, PreferMarkdownViewer, PreferTabbedEditorView,
     };
     use crate::util::openable_file_type::FileTarget;
+    use settings::Setting as _;
     use std::path::Path;
 
     fn settings(editor_choice: EditorChoice) -> EditorSettings {
