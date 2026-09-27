@@ -839,6 +839,25 @@ upstream's behavior is actually a defect rather than a preference.
   on macOS (`proc_pidinfo`), and the spawn-time process handle on Windows. Kernels
   without pidfds (<5.3) and FreeBSD get no force-kill handle — the child still gets
   stdin EOF but is never force-killed; that residue is still open (see `TODO.md`).
+  **Hardened again (`392fd39d5`, 2026-09-27, #707):** the direct child alone was not
+  enough — a grandchild it spawned itself (e.g. under `npx`/`uvx`, or a shell
+  wrapper) that ignores stdin EOF outlived the app, since upstream has no process
+  group here either. **We do:** spawn it into a new process group of its own on
+  Unix (`process_group(0)`, so `pgid == pid`), and `ChildKillHandle::kill` now also
+  best-effort signals the whole group (`kill(-pid, SIGKILL)`) alongside the
+  existing handle-guarded single-process kill — used by both the app-exit
+  force-kill and the ordinary per-server stop/restart path, so stopping one server
+  also kills its group. The group signal is a plain numeric pgid syscall with no
+  pidfd (or start-time) equivalent, so unlike the direct-child kill it carries a
+  narrower residual race: the group would have to fully empty out and that exact
+  number be reissued as an unrelated process's own new group between the two
+  syscalls. Accepted as the same kind of residue already documented above (macOS
+  start-time check, pre-5.3 kernels). **Also expected divergence at re-pin.**
+  **Still open:** no Windows equivalent (a Job Object would need plumbing through
+  to this out-of-band kill path, not just to rmcp's own `Child`); putting the
+  child in its own group also means Ctrl-C at a host terminal no longer reaches it
+  directly — shutdown now always goes through the app's own graceful
+  `on_will_terminate` path, which is the point, not a regression.
 
 - **Rewind revert sequencing** (`dab34b159`, 2026-09-26, #686). **Upstream** has no guard
   on its unconditional `RevertChanges` fan-out, so it has no ordering either — every

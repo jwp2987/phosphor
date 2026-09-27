@@ -11555,11 +11555,20 @@ open findings that had no pre-existing row.
       teardown and the persistence flush all get skipped on a Windows console
       close or logoff.
 
-- [ ] **MCP stdio servers are not spawned in their own process group**, so on
+- [x] **#707 — MCP stdio servers are not spawned in their own process group**, so on
       exit only the direct child is killed by handle (`be564eeaf`); a grandchild
-      (e.g. under `npx`) that ignores EOF can survive. Consider a process group
-      plus a group kill (a Job Object on Windows), bearing in mind the TUI's
-      SIGINT behaviour. Related residue from the same hardening: MCP force-kill
+      (e.g. under `npx`) that ignores EOF can survive.
+      **Fixed (`392fd39d5`):** the child is spawned in a new process group on Unix
+      (`process_group(0)`, pgid == pid); `ChildKillHandle::kill` also best-effort
+      signals the whole group (`kill(-pid, SIGKILL)`) alongside the existing
+      pidfd/start-time-guarded single-process kill, used by both the app-exit
+      force-kill and (via `ReleaseChildOnClose::close`) the ordinary
+      `shutdown_server` stop/restart path, so stopping one server kills its group
+      too. See `DECLINED.md`'s #687 entry for why the group signal's residual race
+      is accepted. **Still open:** Windows has no process-group equivalent — a Job
+      Object would need plumbing through to the out-of-band kill path, not just to
+      rmcp's own `Child`, and was left as a follow-up rather than attempted.
+      Related residue from the same hardening, not addressed here: MCP force-kill
       has no handle at all on pidfd-less Linux (<5.3) or FreeBSD, so those
       children get stdin EOF but are never force-killed.
 
