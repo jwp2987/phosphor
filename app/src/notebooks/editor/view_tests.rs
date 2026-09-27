@@ -890,6 +890,7 @@ fn test_cmd_click_missing_markdown_anchor_falls_back_to_link_resolution() {
                 window_id,
                 session.clone(),
                 Some(base.path()),
+                None::<String>,
                 None,
                 ctx,
             );

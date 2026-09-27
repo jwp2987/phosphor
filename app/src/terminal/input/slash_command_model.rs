@@ -280,11 +280,17 @@ impl SlashCommandModel {
 
         // A `Remote` path (connected SSH session) resolves against that host's stored
         // catalog via `SkillPathOrigin::Remote`; see
-        // `ActiveSession::current_working_directory_location`'s doc comment.
-        let cwd_path = self
-            .active_session
-            .as_ref(ctx)
-            .current_working_directory_location(ctx);
+        // `ActiveSession::current_working_directory_location`'s doc comment. An
+        // unresolved-remote session (handshake in flight) must not fall back to this
+        // machine's local skills — `get_skills_for_working_directory` treats a bare
+        // `None` working directory as local, so that case is short-circuited here
+        // rather than by forwarding `None` through. See
+        // `ActiveSession::is_unresolved_remote_session`'s doc comment.
+        let active_session = self.active_session.as_ref(ctx);
+        if active_session.is_unresolved_remote_session(ctx) {
+            return None;
+        }
+        let cwd_path = active_session.current_working_directory_location(ctx);
         let skills = SkillManager::handle(ctx)
             .as_ref(ctx)
             .get_skills_for_working_directory(cwd_path.as_ref(), ctx);
@@ -524,10 +530,14 @@ impl SlashCommandDataSource {
             };
         let skill_name = possible_command.strip_prefix('/')?;
 
-        let cwd_path = self
-            .active_session()
-            .as_ref(ctx)
-            .current_working_directory_location(ctx);
+        // An unresolved-remote session (handshake in flight) must not fall back to
+        // this machine's local skills — see
+        // `ActiveSession::is_unresolved_remote_session`'s doc comment.
+        let active_session = self.active_session().as_ref(ctx);
+        if active_session.is_unresolved_remote_session(ctx) {
+            return None;
+        }
+        let cwd_path = active_session.current_working_directory_location(ctx);
         let matched_skill = SkillManager::handle(ctx)
             .as_ref(ctx)
             .get_skills_for_working_directory(cwd_path.as_ref(), ctx)

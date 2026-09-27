@@ -207,10 +207,22 @@ impl SyncDataSource for SkillSelectorDataSource {
         query: &Query,
         app: &AppContext,
     ) -> Result<Vec<QueryResult<Self::Action>>, DataSourceRunErrorWrapper> {
-        let cwd = self.get_current_working_directory(app);
         let cli_agent_providers = self.active_cli_agent_providers(app);
-        let skills =
-            SkillManager::as_ref(app).get_skills_for_working_directory(cwd.as_ref(), app);
+        // An unresolved-remote session (SSH handshake not yet complete) must not fall
+        // back to this machine's local skills — `get_skills_for_working_directory`
+        // treats a `None` working directory as local, so the check has to happen here
+        // rather than by just forwarding `None` through. See
+        // `ActiveSession::is_unresolved_remote_session`'s doc comment.
+        let skills = if self
+            .active_session
+            .as_ref(app)
+            .is_unresolved_remote_session(app)
+        {
+            Vec::new()
+        } else {
+            let cwd = self.get_current_working_directory(app);
+            SkillManager::as_ref(app).get_skills_for_working_directory(cwd.as_ref(), app)
+        };
 
         // Filter out bundled skills when in open mode, since they cannot be opened.
         // When CLI agent input is open, filter to skills that exist in a supported

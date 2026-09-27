@@ -4,9 +4,13 @@ use std::{
     sync::{Arc, Weak},
 };
 
+use warp_util::local_or_remote_path::LocalOrRemotePath;
+use warp_util::remote_path::RemotePath;
+use warp_util::standardized_path::StandardizedPath;
 use warpui::{Entity, EntityId, ModelContext, SingletonEntity, WindowId};
 
-use crate::terminal::model::session::Session;
+use crate::code::buffer_location::core_host_id_to_util;
+use crate::terminal::model::session::{Session, SessionType};
 
 /// The active terminal session in each window. The active session of a window is the current
 /// session of the most-recently-focused terminal pane of the active tab of the window's workspace.
@@ -30,6 +34,12 @@ struct WindowActiveSession {
     session: Option<Weak<Session>>,
     /// The active session's working directory, if it's local.
     path_if_local: Option<PathBuf>,
+    /// The active session's raw working directory string, regardless of whether the
+    /// session is local or remote. Paired with `session`'s `SessionType` in
+    /// [`ActiveSession::current_working_directory_location`] to build a host-aware
+    /// [`LocalOrRemotePath`] for consumers (e.g. skill-listing menus) that must not
+    /// silently treat a remote cwd as local.
+    pwd: Option<String>,
     /// The [`EntityId`]` for the [`TerminalView`] for the active session, if there is one.
     terminal_view_id: Option<EntityId>,
 }
@@ -56,6 +66,56 @@ impl ActiveSession {
             .as_deref()
     }
 
+    /// The active session's working directory as a [`LocalOrRemotePath`]: `Remote` for a
+    /// connected `WarpifiedRemote` (SSH) session, `Local` otherwise.
+    ///
+    /// Unlike [`Self::path_if_local`], this does not collapse a remote session to `None` —
+    /// it distinguishes "no known cwd yet" (`None`) from "cwd known and it's on host X"
+    /// (`Some(Remote(..))`), the same distinction
+    /// `terminal::model::session::active_session::ActiveSession::current_working_directory_location`
+    /// makes for the AI agent's own skills/rules lookups. Returns `None` for a
+    /// `WarpifiedRemote` session whose `host_id` hasn't resolved yet — see
+    /// [`Self::is_unresolved_remote_session`], which callers must check before treating a
+    /// `None` here as "local with unknown cwd".
+    pub fn current_working_directory_location(
+        &self,
+        window_id: WindowId,
+    ) -> Option<LocalOrRemotePath> {
+        let window_state = self.window_sessions.get(&window_id)?;
+        let session = window_state.session.as_ref()?.upgrade()?;
+        let pwd = window_state.pwd.as_ref()?;
+        match session.session_type() {
+            SessionType::WarpifiedRemote {
+                host_id: Some(host_id),
+            } => {
+                let path = StandardizedPath::try_new(pwd).ok()?;
+                Some(LocalOrRemotePath::Remote(RemotePath::new(
+                    core_host_id_to_util(&host_id),
+                    path,
+                )))
+            }
+            SessionType::WarpifiedRemote { host_id: None } => None,
+            SessionType::Local => Some(LocalOrRemotePath::Local(pwd.into())),
+        }
+    }
+
+    /// Whether the active session is a `WarpifiedRemote` (SSH) session whose `host_id`
+    /// hasn't resolved yet. See [`Self::current_working_directory_location`]'s doc comment:
+    /// callers must skip host-aware lookups (list nothing) rather than treat this session
+    /// as local just because its location isn't resolved yet.
+    pub fn is_unresolved_remote_session(&self, window_id: WindowId) -> bool {
+        self.window_sessions
+            .get(&window_id)
+            .and_then(|state| state.session.as_ref())
+            .and_then(Weak::upgrade)
+            .is_some_and(|session| {
+                matches!(
+                    session.session_type(),
+                    SessionType::WarpifiedRemote { host_id: None }
+                )
+            })
+    }
+
     /// Set the current session, for use in tests.
     #[cfg(test)]
     pub fn set_session_for_test(
@@ -63,6 +123,7 @@ impl ActiveSession {
         window_id: WindowId,
         session: Arc<Session>,
         path_if_local: Option<impl Into<PathBuf>>,
+        pwd: Option<impl Into<String>>,
         terminal_view_id: Option<EntityId>,
         ctx: &mut ModelContext<Self>,
     ) {
@@ -70,6 +131,7 @@ impl ActiveSession {
             window_id,
             Some(session),
             path_if_local.map(Into::into),
+            pwd.map(Into::into),
             terminal_view_id,
             ctx,
         );
@@ -80,6 +142,7 @@ impl ActiveSession {
         window_id: WindowId,
         session: Option<Arc<Session>>,
         path_if_local: Option<PathBuf>,
+        pwd: Option<String>,
         terminal_view_id: Option<EntityId>,
         ctx: &mut ModelContext<Self>,
     ) {
@@ -101,6 +164,11 @@ impl ActiveSession {
 
         if window_state.path_if_local != path_if_local {
             window_state.path_if_local = path_if_local;
+            ctx.notify();
+        }
+
+        if window_state.pwd != pwd {
+            window_state.pwd = pwd;
             ctx.notify();
         }
 

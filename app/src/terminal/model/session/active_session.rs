@@ -171,6 +171,24 @@ impl ActiveSession {
         }
     }
 
+    /// Whether the active session is a `WarpifiedRemote` (SSH) session whose `host_id`
+    /// hasn't resolved yet.
+    ///
+    /// `current_working_directory_location` already returns `None` for this case rather
+    /// than mislabeling the cwd as local, but `SkillManager::get_skills_for_working_directory`
+    /// treats *any* `None` working directory as `SkillPathOrigin::Local` (its historical
+    /// "no known cwd yet" fallback for local sessions). Without this check, a skill-listing
+    /// menu that simply forwards `current_working_directory_location`'s `None` through would
+    /// silently list this machine's local skills for a tab that is actually connected to a
+    /// remote host — the wrong-host bug this exists to prevent. Callers should skip the skill
+    /// lookup entirely (list nothing) when this returns `true`.
+    pub fn is_unresolved_remote_session(&self, app: &AppContext) -> bool {
+        matches!(
+            self.session(app).as_deref().map(Session::session_type),
+            Some(SessionType::WarpifiedRemote { host_id: None })
+        )
+    }
+
     /// Returns the `WarpAiExecutionContext` for the active session.
     ///
     /// Falls back to the last known value (see

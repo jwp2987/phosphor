@@ -766,6 +766,7 @@ fn test_file_data_source_for_pwd_holistic_behavior() {
                 window_id,
                 Arc::new(Session::test()),
                 Some(test_dir_path),
+                None::<String>,
                 None,
                 ctx,
             );

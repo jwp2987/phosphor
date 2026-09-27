@@ -516,14 +516,21 @@ impl SyncDataSource for SlashCommandDataSource {
             let cli_agent_providers = self.active_cli_agent_providers(app);
             // A `Remote` path (connected SSH session) resolves against that host's stored
             // catalog via `SkillPathOrigin::Remote`; see
-            // `ActiveSession::current_working_directory_location`'s doc comment.
-            let cwd_path = self
-                .active_session
-                .as_ref(app)
-                .current_working_directory_location(app);
-            let skills = SkillManager::handle(app)
-                .as_ref(app)
-                .get_skills_for_working_directory(cwd_path.as_ref(), app);
+            // `ActiveSession::current_working_directory_location`'s doc comment. An
+            // unresolved-remote session (handshake in flight) must not fall back to
+            // this machine's local skills — `get_skills_for_working_directory` treats
+            // a bare `None` working directory as local, so that case is
+            // short-circuited here rather than by forwarding `None` through. See
+            // `ActiveSession::is_unresolved_remote_session`'s doc comment.
+            let active_session = self.active_session.as_ref(app);
+            let skills = if active_session.is_unresolved_remote_session(app) {
+                Vec::new()
+            } else {
+                let cwd_path = active_session.current_working_directory_location(app);
+                SkillManager::handle(app)
+                    .as_ref(app)
+                    .get_skills_for_working_directory(cwd_path.as_ref(), app)
+            };
 
             let skill_manager = SkillManager::as_ref(app);
             for mut skill in skills {

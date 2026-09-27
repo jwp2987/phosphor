@@ -317,7 +317,14 @@ fn test_load_before_session() {
         // Once a local session is available, the view should use it.
         let session = Arc::new(Session::test());
         ActiveSession::handle(&app).update(&mut app, |active_session, ctx| {
-            active_session.set_session_for_test(window_id, session.clone(), Some("."), None, ctx);
+            active_session.set_session_for_test(
+                window_id,
+                session.clone(),
+                Some("."),
+                None::<String>,
+                None,
+                ctx,
+            );
         });
 
         handle.read(&app, |view, _| {

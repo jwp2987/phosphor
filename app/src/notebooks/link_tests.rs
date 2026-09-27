@@ -72,7 +72,14 @@ fn init_link_model(app: &mut App, base_directory: Option<&Path>) -> ModelHandle<
     };
     app.add_singleton_model(|ctx| {
         let mut session = ActiveSession::default();
-        session.set_session_for_test(window_id, TEST_SESSION.clone(), base_directory, None, ctx);
+        session.set_session_for_test(
+            window_id,
+            TEST_SESSION.clone(),
+            base_directory,
+            None::<String>,
+            None,
+            ctx,
+        );
         session
     });
     // Link resolution reads EditorSettings (prefer_markdown_viewer, the editor
