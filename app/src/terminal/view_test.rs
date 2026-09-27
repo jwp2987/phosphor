@@ -7122,6 +7122,32 @@ fn test_block_right_click_menu_offers_paste() {
     })
 }
 
+/// Right-clicking empty space (or a rich-content block) with no block selected used to
+/// produce a menu with no Paste at all.
+#[test]
+fn test_right_click_menu_offers_paste_with_no_block_selected() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_block("ls", "foo");
+            assert!(view.selected_blocks.is_empty());
+
+            let right_click = BlockListMenuSource::OutsideBlockRightClick {
+                position_in_terminal_view: Vector2F::zero(),
+            };
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text("echo hi".to_owned()));
+            assert_eq!(paste_item_state(view, &right_click, ctx), Some(false));
+
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text(String::new()));
+            assert_eq!(paste_item_state(view, &right_click, ctx), Some(true));
+        });
+    })
+}
+
 // ── ControlMaster banner dismissal, ported from the pinned oracle ──────────────────
 
 #[test]

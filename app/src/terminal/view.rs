@@ -16540,10 +16540,10 @@ impl TerminalView {
                 None,
                 true,
             ) => {
-                // If selection is empty, only show non-block related options
-                let items: Vec<MenuItem<TerminalAction>> = Vec::new();
+                // If selection is empty, only show non-block related options. "Paste" is one:
+                // right-clicking empty space is the most natural place to reach for it.
                 // Zap: removed session_sharing_context_menu_items (cloud shared session entry point)
-                items
+                vec![self.paste_menu_item(ctx)]
             }
             _ => vec![],
         };
