@@ -305,8 +305,10 @@ pub mod text {
                             write!(w, " {title}")?;
                         }
                         writeln!(w)?;
-                        let file_paths: HashSet<_> =
-                            file_edits.iter().flat_map(|edit| edit.file()).collect();
+                        let file_paths: HashSet<_> = file_edits
+                            .iter()
+                            .flat_map(|edit| edit.written_paths())
+                            .collect();
                         for path in file_paths {
                             writeln!(w, "- {path}")?;
                         }
@@ -958,8 +960,10 @@ pub mod json {
                         Some(JsonMessage::ToolCall(JsonToolCall::ReadFiles { files }))
                     }
                     AIAgentActionType::RequestFileEdits { file_edits, title } => {
-                        let file_paths: Vec<&str> =
-                            file_edits.iter().filter_map(|edit| edit.file()).collect();
+                        let file_paths: Vec<&str> = file_edits
+                            .iter()
+                            .flat_map(|edit| edit.written_paths())
+                            .collect();
                         Some(JsonMessage::ToolCall(JsonToolCall::EditFiles {
                             title: title.as_deref(),
                             file_paths,

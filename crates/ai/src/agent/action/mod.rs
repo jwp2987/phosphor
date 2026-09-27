@@ -778,6 +778,21 @@ impl FileEdit {
             Self::Delete { file } => file.as_deref(),
         }
     }
+
+    /// Every path this edit writes to or removes: the file it applies to plus, for a V4A
+    /// rename, the `move_to` destination.
+    ///
+    /// Use this, not [`Self::file`], for any permission or protected-path decision.
+    /// [`Self::file`] is the *source* of a rename; the destination is where the content is
+    /// written, so a guard fed only [`Self::file`] can be walked around by renaming an
+    /// innocuous file onto a protected one.
+    pub fn written_paths(&self) -> impl Iterator<Item = &str> {
+        let move_to = match self {
+            Self::Edit(diff) => diff.move_to().map(String::as_str),
+            Self::Create { .. } | Self::Delete { .. } => None,
+        };
+        self.file().into_iter().chain(move_to)
+    }
 }
 
 #[cfg(test)]
@@ -836,5 +851,68 @@ mod accept_without_own_ui_tests {
         ] {
             assert!(action.can_be_accepted_without_its_own_ui(), "{action:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod written_paths_tests {
+    use super::*;
+
+    fn v4a(file: &str, move_to: Option<&str>) -> FileEdit {
+        FileEdit::Edit(ParsedDiff::V4AEdit {
+            file: Some(file.to_owned()),
+            move_to: move_to.map(ToOwned::to_owned),
+            hunks: Vec::new(),
+        })
+    }
+
+    /// A V4A rename writes its destination. `file()` names only the source, so a guard built
+    /// on it never saw where the content landed; `written_paths` must name both.
+    #[test]
+    fn a_rename_reports_its_destination_as_well_as_its_source() {
+        let edit = v4a("notes.md", Some("~/.claude.json"));
+        assert_eq!(edit.file(), Some("notes.md"));
+        assert_eq!(
+            edit.written_paths().collect::<Vec<_>>(),
+            vec!["notes.md", "~/.claude.json"]
+        );
+    }
+
+    #[test]
+    fn edits_without_a_move_report_only_their_file() {
+        assert_eq!(
+            v4a("src/lib.rs", None).written_paths().collect::<Vec<_>>(),
+            vec!["src/lib.rs"]
+        );
+        let str_replace = FileEdit::Edit(ParsedDiff::StrReplaceEdit {
+            file: Some("a.rs".to_owned()),
+            search: None,
+            replace: None,
+        });
+        assert_eq!(
+            str_replace.written_paths().collect::<Vec<_>>(),
+            vec!["a.rs"]
+        );
+        let create = FileEdit::Create {
+            file: Some("new.rs".to_owned()),
+            content: None,
+        };
+        assert_eq!(create.written_paths().collect::<Vec<_>>(), vec!["new.rs"]);
+        let delete = FileEdit::Delete {
+            file: Some("old.rs".to_owned()),
+        };
+        assert_eq!(delete.written_paths().collect::<Vec<_>>(), vec!["old.rs"]);
+    }
+
+    /// A rename whose source is missing still reports its destination: dropping the edit
+    /// from the check because it has no source would silently skip the path it writes.
+    #[test]
+    fn a_rename_without_a_source_still_reports_its_destination() {
+        let edit = FileEdit::Edit(ParsedDiff::V4AEdit {
+            file: None,
+            move_to: Some(".mcp.json".to_owned()),
+            hunks: Vec::new(),
+        });
+        assert_eq!(edit.written_paths().collect::<Vec<_>>(), vec![".mcp.json"]);
     }
 }

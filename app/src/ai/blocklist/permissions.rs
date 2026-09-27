@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     ai::{
-        agent::conversation::AIConversationId,
+        agent::{FileEdit, conversation::AIConversationId},
         execution_profiles::{
             AIExecutionProfile, ActionPermission, AskUserQuestionPermission, WriteToPtyPermission,
             profiles::{AIExecutionProfilesModel, ClientProfileId},
@@ -16,6 +16,9 @@ use crate::{
     workspaces::{user_workspaces::UserWorkspaces, workspace::AiAutonomySettings},
 };
 use warp_core::execution_mode::AppExecutionMode;
+
+use crate::ai::paths::host_native_absolute_path;
+use crate::terminal::ShellLaunchData;
 
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::mcp::TemplatableMCPServerManager;
@@ -767,6 +770,26 @@ impl BlocklistAIPermissions {
         self.determine_write_permissions_from_active_profile(terminal_view_id, ctx)
     }
 
+    /// Returns whether Agent Mode can automatically apply `file_edits`.
+    ///
+    /// This is the entry point for a batch of agent file edits; prefer it over
+    /// [`Self::can_write_files`], which trusts its caller to have named every path. It feeds
+    /// the protected-path guard every path the batch writes or removes — including a V4A
+    /// rename's `move_to` destination — in both the spelling the model emitted and the
+    /// absolute spelling the writer resolves it to. See [`file_edit_guard_paths`].
+    pub fn can_apply_file_edits(
+        &self,
+        conversation_id: &AIConversationId,
+        file_edits: &[FileEdit],
+        shell: &Option<ShellLaunchData>,
+        current_working_directory: &Option<String>,
+        terminal_view_id: Option<EntityId>,
+        ctx: &AppContext,
+    ) -> FileWritePermission {
+        let paths = file_edit_guard_paths(file_edits, shell, current_working_directory);
+        self.can_write_files(conversation_id, &paths, terminal_view_id, ctx)
+    }
+
     #[cfg(not(target_family = "wasm"))]
     pub fn can_call_mcp_tool(
         &self,
@@ -1257,6 +1280,46 @@ impl BlocklistAIPermissions {
     }
 }
 
+/// Every path a batch of agent file edits writes to or removes, in every spelling the
+/// protected-path guard must see.
+///
+/// # Why the destination
+///
+/// A V4A edit with `move_to` writes the destination and removes the source
+/// (`diff_application.rs`, `apply_v4a_update` -> `DiffType::Update { rename }` ->
+/// `rename_and_save`). `FileEdit::file()` names only the source, and this list used to be
+/// built from it alone, so renaming an innocuous file onto `~/.claude.json` or `.mcp.json`
+/// was auto-approved under an auto-write setting while the guard never saw the path being
+/// written. [`FileEdit::written_paths`] names both ends.
+///
+/// # Why two spellings of each path
+///
+/// The writer resolves every path — source and destination alike — through
+/// [`host_native_absolute_path`]: tilde expansion, a join against the session cwd, lexical
+/// normalisation. The guard is given that resolved spelling so it judges the file actually
+/// written; e.g. `config.toml` from a cwd of `~/.codex` is `~/.codex/config.toml`, which no
+/// check of the raw string can recognise. The raw spelling is kept as well, so resolution can
+/// only ever add denials, never remove one the raw path already triggered (a remote or WSL
+/// session's resolved spelling need not look like a local home path).
+///
+/// Both are lexical. Symlinks are not followed for the destination, exactly as they are not
+/// for the source — see the residue note on [`is_protected_write_path`].
+pub(crate) fn file_edit_guard_paths(
+    file_edits: &[FileEdit],
+    shell: &Option<ShellLaunchData>,
+    current_working_directory: &Option<String>,
+) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for path in file_edits.iter().flat_map(|edit| edit.written_paths()) {
+        let resolved = host_native_absolute_path(path, shell, current_working_directory);
+        if resolved != path {
+            paths.push(PathBuf::from(resolved));
+        }
+        paths.push(PathBuf::from(path));
+    }
+    paths
+}
+
 /// Returns `Some(Denied(ProtectedPath))` if any of the given paths are system-protected
 /// and must never be auto-written regardless of user autonomy settings.
 /// Returns `None` if no paths are protected.
@@ -1315,11 +1378,11 @@ fn check_protected_write_paths(paths: &[PathBuf]) -> Option<FileWritePermission>
 ///   already-resolved path — `request_file_edits.rs` imports `host_native_absolute_path`
 ///   and uses it six lines away — and that stays worth doing; this function is the backstop,
 ///   not the whole answer.
-/// - **Rename destinations never reach here at all.** `ParsedDiff::file()`
-///   (`crates/ai/src/diff_validation/mod.rs:39-45`) returns the *source* of a V4A edit and
-///   never `move_to`, so `should_autoexecute` builds its path list without the destination
-///   while `diff_application.rs:396-431` renames onto it. No amount of hardening inside this
-///   function can see a path it is never given.
+/// - **Rename destinations** used to never reach here: `should_autoexecute` built its list
+///   from `FileEdit::file()`, the *source* of a V4A move. Closed by
+///   [`BlocklistAIPermissions::can_apply_file_edits`] / [`file_edit_guard_paths`], which pass
+///   the `move_to` destination too, resolved the way the writer resolves it — which also
+///   closes the cwd-relative residue above for every file-edit path.
 ///
 /// Covered by `test_can_write_files_mcp_config_always_denied`.
 fn is_protected_write_path(path: &Path) -> bool {

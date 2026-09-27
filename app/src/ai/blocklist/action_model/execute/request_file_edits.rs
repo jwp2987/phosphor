@@ -5,7 +5,6 @@ mod telemetry;
 use warp_util::file::FileSaveError;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use ai::diff_validation::AIRequestedCodeDiff;
 use futures::{FutureExt, channel::oneshot, future::BoxFuture};
@@ -36,7 +35,7 @@ use crate::{
             conversation::AIConversationId,
         },
         blocklist::{
-            BlocklistAIPermissions, RequestedEditResolution,
+            BlocklistAIPermissions, RequestedEditResolution, SessionContext,
             inline_action::code_diff_view::{
                 CodeDiffView, CodeDiffViewEvent, DiffSessionType, FileDiff, FileSaveFailure,
             },
@@ -125,11 +124,6 @@ impl RequestFileEditsExecutor {
             return false;
         };
 
-        let paths: Vec<PathBuf> = file_edits
-            .iter()
-            .filter_map(|edit| edit.file().map(PathBuf::from))
-            .collect();
-
         // Don't allow autoexecution if the diff was generated passively.
         let Some(latest_exchange) = BlocklistAIHistoryModel::as_ref(ctx)
             .conversation(&conversation_id)
@@ -153,8 +147,20 @@ impl RequestFileEditsExecutor {
             return true;
         }
 
+        // Guard every path the edits write — including a V4A rename's `move_to` destination —
+        // resolved against the same shell and cwd the writer (`apply_diff_model`) uses. The
+        // list used to be built from `edit.file()` alone, which is a rename's SOURCE, so an
+        // auto-approved move could write a protected path the guard never saw.
+        let session_context = SessionContext::from_session(self.active_session.as_ref(ctx), ctx);
         BlocklistAIPermissions::as_ref(ctx)
-            .can_write_files(&conversation_id, &paths, Some(self.terminal_view_id), ctx)
+            .can_apply_file_edits(
+                &conversation_id,
+                file_edits,
+                session_context.shell(),
+                session_context.current_working_directory(),
+                Some(self.terminal_view_id),
+                ctx,
+            )
             .is_allowed()
     }
 
