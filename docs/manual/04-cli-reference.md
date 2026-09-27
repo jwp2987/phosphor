@@ -261,7 +261,8 @@ searched, in precedence order, under `.agents/skills/`, `.warp/skills/`,
 
 `--profile <ID>` takes an ID exactly as `agent profile list` prints it: a
 locally created profile's `Client-<uuid>`, or `default` for the default
-profile. An unknown ID fails with a message pointing back at
+profile. The match is exact and case-sensitive for every ID, `default`
+included; surrounding whitespace is ignored. An unknown ID fails with a message pointing back at
 `agent profile list`.
 
 ---
@@ -327,7 +328,7 @@ directory sort is send order.
 |---|---|
 | `pretty` (default) | Unicode box-drawn table for list commands; human prose for `agent run`. |
 | `text` | Tab-separated, column-aligned table for list commands; the same prose as `pretty` for `agent run`. |
-| `json` | One JSON document, newline-terminated. For list commands: a single array on one line. For `agent run`: a pretty-printed array of the run's events, printed **when the run ends** (use `ndjson` to stream). |
+| `json` | One JSON document, newline-terminated. For list commands: a single array on one line. For `agent run`: an array of the run's events, one per line, printed **when the process exits** — completed, failed, or interrupted — and ending with a `run_failed` / `run_interrupted` record when it did not complete (use `ndjson` to stream). |
 | `ndjson` | One JSON object per line. |
 
 ```console
@@ -460,6 +461,12 @@ Phosphor has no sign-in: agents run locally with the model provider keys you con
 There is nothing to sign in to, so `whoami` always reports a local profile. It
 supports `pretty`, `text` (`local`) and `json`
 (`{"type":"local","account":null}`), but not `ndjson`.
+
+> **Changed in the #637 fix (breaking for scripts).** `whoami` used to print a
+> placeholder user: `text` gave `user:test_user_uid`, and `json` gave an object
+> with `uid`, `type: "user"` and `email` fields. Those values were never a real
+> identity. Scripts that parsed them must switch to the `type` field, which is
+> now always `"local"`.
 
 ### … collect diagnostics for a bug report?
 
@@ -640,10 +647,23 @@ argument.
 
 ## 4.12 Known rough edges
 
-**`agent run --output-format json` prints nothing until the run ends.** It is a
-single JSON document, so the run's records are collected and printed as one
-array when the run finishes (or fails). If the process is killed first, nothing
-is printed. Use `ndjson` to see records as they arrive.
+**`agent run --output-format json` prints nothing until the process exits.** It
+is a single JSON document, so the run's records are collected and printed as one
+array on the way out: when the run completes, when it fails (including during
+setup, before any record — the array then holds just the failure), and when it
+is interrupted with Ctrl-C or SIGTERM. The last record says how the run ended
+if it did not complete:
+
+```json
+{"type":"system","event_type":"run_failed","error":"…"}
+{"type":"system","event_type":"run_interrupted"}
+```
+
+A record that fails to serialize appears as an `output_error` record instead of
+being dropped. Only an exit that skips shutdown altogether — `SIGKILL`, or a
+second Ctrl-C while shutting down — prints nothing. Argument errors (for
+example `--share`) are reported on stderr with no document, as clap's own parse
+errors are. Use `ndjson` to see records as they arrive.
 
 ---
 
@@ -764,7 +784,8 @@ Mailbox
 Output formats
 - crates/warp_cli/src/agent.rs:9-32 — OutputFormat: json, ndjson, pretty (default), text
 - app/src/ai/agent_sdk/output.rs — write_list: Json = one-line array + newline (#637); Ndjson = one object per line; Pretty = comfy-table UTF8_FULL + rounded; Text = TabWriter
-- app/src/ai/agent_sdk/driver.rs — agent run: records render via output::json; AgentDriver::emit_output streams them under Ndjson and collects them under Json, and finish_json_document prints the array when the run ends (called from agent_sdk/mod.rs create_and_run_driver) (#637)
+- app/src/ai/agent_sdk/driver.rs — agent run: records render via output::json; AgentDriver::emit_output streams them under Ndjson and hands them to json_document under Json (#637)
+- app/src/ai/agent_sdk/json_document.rs — the json document: armed in run_agent, outcome set by create_and_run_driver / report_fatal_error, printed once by finish() from on_will_terminate in app/src/lib.rs (runs on completion, fatal error, and SIGINT via the headless loop's app_will_terminate)
 - app/src/ai/agent_sdk/driver/output.rs:525-578 — JsonMessage tagged "type"; JsonSystemEvent tagged "event_type"
 - app/src/ai/agent_sdk/driver/output.rs:1151-1186 — write_message writes one object per line
 - app/src/ai/agent_sdk/driver/output.rs:269-300, 463-473 — text rendering ("Running `{command}`", "Reading …", "Run ID: …", "New conversation started with debug ID: …")
@@ -794,7 +815,7 @@ Auth / whoami
 
 Profiles
 - app/src/ai/agent_sdk/profiles.rs — profile_cli_id: sync ID string, or "default" for the unsynced default profile
-- app/src/ai/agent_sdk/driver.rs configure_terminal → profiles.rs find_profile_by_cli_id: matches --profile against the listed IDs; "default" selects the default profile; else AgentDriverError::ProfileError
+- app/src/ai/agent_sdk/driver.rs configure_terminal → profiles.rs find_profile_by_cli_id: matches --profile exactly (trimmed, case-sensitive) against the listed IDs; "default" selects the default profile; else AgentDriverError::ProfileError
 - app/src/server/ids.rs:153-158, 212-223 — ServerId is exactly 22 chars
 - app/src/server/ids.rs:62-69 — SyncId::ClientId is the locally-generated variant
 
