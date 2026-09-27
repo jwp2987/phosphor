@@ -61,7 +61,8 @@ pub struct InlineDiffView {
     ///
     /// When `None` (WASM, restored conversations, or before registration):
     /// - The editor is selection-only (never editable).
-    /// - Accept, save, and revert are no-ops.
+    /// - Accept and save are no-ops; revert writes nothing and reports
+    ///   [`RevertDispatch::NoBackingFile`].
     backing_file_id: Option<FileId>,
     /// Whether the diff is a new file creation (for revert: delete instead of restore).
     #[cfg(not(target_family = "wasm"))]
@@ -428,63 +429,106 @@ impl DiffViewer for InlineDiffView {
         #[cfg(not(target_family = "wasm"))]
         self.save_content(ctx);
     }
+}
 
-    fn restore_diff_base(&mut self, _ctx: &mut ViewContext<Self>) -> Result<(), String> {
-        // No-op when no file is registered (WASM / restored conversations).
-        if self.backing_file_id.is_none() {
-            return Ok(());
-        }
+/// What [`InlineDiffView::restore_diff_base`] did. A revert is not done when
+/// this returns: callers must not record one until its outcome arrives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+pub enum RevertDispatch {
+    /// A guarded write is in flight. Its outcome arrives later, exactly once, as
+    /// [`InlineDiffViewEvent::FileSaved`] (the file was reverted) or
+    /// [`InlineDiffViewEvent::FailedToSave`] (the write was refused or failed,
+    /// and the file was left alone).
+    WriteInFlight,
+    /// No file is registered (WASM, restored conversations): nothing was
+    /// written, no event will follow, and the file was **not** reverted.
+    NoBackingFile,
+}
 
-        #[cfg(not(target_family = "wasm"))]
-        {
-            let file_id = self
-                .backing_file_id
-                .expect("backing_file_id must be Some — checked by early return above");
+impl InlineDiffView {
+    /// Undoes this view's accepted diff on disk: restores the diff base, or
+    /// deletes a file the accept created — guarded, so a file that changed after
+    /// the accept is left alone.
+    ///
+    /// An inherent method rather than a `DiffViewer` member: this is the only
+    /// revert there is. The trait used to declare one with an `Ok(())` default,
+    /// and `LocalCodeEditorView` implemented it with an unguarded
+    /// `std::fs::remove_file` / `GlobalBufferModel::save`; neither had a caller
+    /// (nor at pin `4111d08f9`), and both are gone so that no unguarded or
+    /// silently-succeeding revert can be reached by a future caller (#684).
+    ///
+    /// `Err` is a refusal decided before anything was dispatched, with a
+    /// user-facing message; nothing was written and no event will follow.
+    pub fn restore_diff_base(
+        &mut self,
+        ctx: &mut ViewContext<Self>,
+    ) -> Result<RevertDispatch, String> {
+        let Some(file_id) = self.backing_file_id else {
+            return Ok(RevertDispatch::NoBackingFile);
+        };
+        self.dispatch_guarded_revert(file_id, ctx)
+    }
 
-            // Guarded, like the accept (`save_content`), and against the right
-            // pre-image: not the diff base — that is what the revert puts back —
-            // but the text the accept wrote, recorded in `accepted_content`.
-            // See `revert_plan` for what each case asserts.
-            //
-            // # Divergence from the pinned oracle
-            //
-            // Not a parity port. Pinned Warp `4111d08f9` reverts with the
-            // unconditional `FileModel::save` / `FileModel::delete`, so a revert
-            // destroys every edit made to the file after the accept, and deletes
-            // an agent-created file the user has since built on, with no check
-            // and no message. A re-pin must not "restore parity" here.
-            let base = if self.is_new_file {
-                None
-            } else {
-                self.editor
-                    .as_ref(_ctx)
-                    .model
-                    .as_ref(_ctx)
-                    .diff()
-                    .as_ref(_ctx)
-                    .base()
-                    .map(|base| base.to_string())
-            };
-            let write = revert_plan(
-                self.is_new_file,
-                self.accepted_content.borrow().clone(),
-                base,
-                self.file_path.as_ref(),
-            )?;
+    /// Nothing is ever registered on WASM, so `restore_diff_base` never gets
+    /// here; this only keeps the signature total.
+    #[cfg(target_family = "wasm")]
+    fn dispatch_guarded_revert(
+        &mut self,
+        _file_id: FileId,
+        _ctx: &mut ViewContext<Self>,
+    ) -> Result<RevertDispatch, String> {
+        Ok(RevertDispatch::NoBackingFile)
+    }
 
-            let version = self.editor.as_ref(_ctx).version(_ctx);
-            FileModel::handle(_ctx)
-                .update(_ctx, |file_model, ctx| {
-                    dispatch_revert_write(file_model, file_id, write, version, ctx)
-                })
-                .map_err(|error| revert_failure(&error).to_string())?;
-            // Only once a write is actually in flight: its refusal, if any,
-            // arrives later as `FileModelEvent::FailedToSave` and is reported as
-            // a failed revert from there.
-            self.revert_dispatched = true;
-        }
+    #[cfg(not(target_family = "wasm"))]
+    fn dispatch_guarded_revert(
+        &mut self,
+        file_id: FileId,
+        ctx: &mut ViewContext<Self>,
+    ) -> Result<RevertDispatch, String> {
+        // Guarded, like the accept (`save_content`), and against the right
+        // pre-image: not the diff base — that is what the revert puts back —
+        // but the text the accept wrote, recorded in `accepted_content`.
+        // See `revert_plan` for what each case asserts.
+        //
+        // # Divergence from the pinned oracle
+        //
+        // Not a parity port. Pinned Warp `4111d08f9` reverts with the
+        // unconditional `FileModel::save` / `FileModel::delete`, so a revert
+        // destroys every edit made to the file after the accept, and deletes
+        // an agent-created file the user has since built on, with no check
+        // and no message. A re-pin must not "restore parity" here.
+        let base = if self.is_new_file {
+            None
+        } else {
+            self.editor
+                .as_ref(ctx)
+                .model
+                .as_ref(ctx)
+                .diff()
+                .as_ref(ctx)
+                .base()
+                .map(|base| base.to_string())
+        };
+        let write = revert_plan(
+            self.is_new_file,
+            self.accepted_content.borrow().clone(),
+            base,
+            self.file_path.as_ref(),
+        )?;
 
-        Ok(())
+        let version = self.editor.as_ref(ctx).version(ctx);
+        FileModel::handle(ctx)
+            .update(ctx, |file_model, ctx| {
+                dispatch_revert_write(file_model, file_id, write, version, ctx)
+            })
+            .map_err(|error| revert_failure(&error).to_string())?;
+        // Only once a write is actually in flight: its refusal, if any,
+        // arrives later as `FileModelEvent::FailedToSave` and is reported as
+        // a failed revert from there.
+        self.revert_dispatched = true;
+        Ok(RevertDispatch::WriteInFlight)
     }
 }
 
