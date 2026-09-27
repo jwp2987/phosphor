@@ -5671,8 +5671,16 @@ impl Workspace {
             // a path that handler would launch, whether or not it came from
             // `resolve_file_target`. Launchable text that was headed for the system default app
             // gets the editor-only route; anything else is revealed.
+            //
+            // #706 exception: a file the user double-clicked (or pressed Enter on) in the file
+            // tree already had this same check applied -- and undone -- in
+            // `FileTreeView::open_file` (`permit_system_open_from_file_tree`), so a
+            // `CodeSource::FileTree` target reaching here as `SystemDefault`/`SystemGeneric` is
+            // the file tree's deliberate decision to open it, not a hand-built target that
+            // skipped the policy. Every other `CodeSource` still re-applies it.
             target @ (FileTarget::SystemDefault | FileTarget::SystemGeneric)
-                if crate::util::openable_file_type::is_launchable_path(&path) =>
+                if crate::util::openable_file_type::is_launchable_path(&path)
+                    && !matches!(code_source, CodeSource::FileTree { .. }) =>
             {
                 if matches!(target, FileTarget::SystemDefault)
                     && crate::util::openable_file_type::is_file_openable_in_warp(&path).is_some()
@@ -5684,11 +5692,39 @@ impl Workspace {
                     ctx.open_file_path_in_explorer(&resolved.path);
                 }
             }
+            // #706: in the real flow a `CodeSource::FileTree` target only reaches this arm
+            // non-launchable (`permit_system_open_from_file_tree` already collapsed the launchable
+            // case to `SystemGeneric` below), so this check is a defensive backstop, not a live
+            // path -- but `open_file_path_with_editor`'s platform fallback ends at
+            // `AppContext::open_file_path`, which re-applies the launch policy, so a future caller
+            // that skips the file tree's own undo would otherwise still get re-revealed here.
             FileTarget::SystemDefault => {
-                crate::util::file::open_file_path_with_editor(line_col, path.clone(), None, ctx);
+                if matches!(code_source, CodeSource::FileTree { .. })
+                    && crate::util::openable_file_type::is_launchable_path(&path)
+                {
+                    ctx.open_file_path_from_file_tree(&path);
+                } else {
+                    crate::util::file::open_file_path_with_editor(
+                        line_col,
+                        path.clone(),
+                        None,
+                        ctx,
+                    );
+                }
             }
+            // #706: `CodeSource::FileTree` is the one origin permitted to reach the OS default
+            // handler for a launchable path -- see the exception above. Route it around
+            // `AppContext::open_file_path`'s own launch-policy check (the process-wide backstop
+            // every other caller must still hit) via the file-tree-only escape hatch, so this
+            // one origin isn't re-revealed one layer down.
             FileTarget::SystemGeneric => {
-                ctx.open_file_path(&path);
+                if matches!(code_source, CodeSource::FileTree { .. })
+                    && crate::util::openable_file_type::is_launchable_path(&path)
+                {
+                    ctx.open_file_path_from_file_tree(&path);
+                } else {
+                    ctx.open_file_path(&path);
+                }
             }
             FileTarget::RevealInFileManager => {
                 // Reveal the resolved path the policy checked, not a symlink or `..` spelling.

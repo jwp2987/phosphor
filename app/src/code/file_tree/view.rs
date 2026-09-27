@@ -2259,13 +2259,20 @@ impl FileTreeView {
         let target = if editor_layout.is_some() {
             resolve_file_target_to_open_in_warp(path, settings, editor_layout)
         } else {
-            resolve_file_target_with_editor_choice(
+            let target = resolve_file_target_with_editor_choice(
                 path,
                 *settings.open_code_panels_file_editor,
                 *settings.prefer_markdown_viewer,
                 *settings.open_file_layout,
                 editor_layout,
-            )
+            );
+            // #706: this branch is reached only by a double-click or Enter on the selected item
+            // (`select_and_execute_item_at_id`) -- a deliberate choice about a path the user
+            // picked from the tree, unlike the link surfaces #681 was written to stop. Undo the
+            // launch policy's substitution so the file opens with its normal target instead of
+            // being revealed; every other caller of `resolve_file_target_with_editor_choice`
+            // keeps the substitution.
+            crate::util::openable_file_type::permit_system_open_from_file_tree(path, target)
         };
 
         send_telemetry_from_ctx!(

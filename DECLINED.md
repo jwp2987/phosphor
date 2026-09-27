@@ -812,12 +812,25 @@ upstream's behavior is actually a defect rather than a preference.
   `warp_util::launch_policy::is_launchable_path` routes it to the file manager instead
   (launchable *text* still opens in the in-app editor), enforced in
   `resolve_file_target`, the workspace sink, `AppContext::open_file_path`, the terminal
-  URL handler and `set_before_open_url`. **Open questions, not covered by this decision:**
-  `.html` under `open_file_editor` still resolves to `system_default`; `uri/mod.rs`'s
-  "Open with Phosphor" still executes runnable scripts by design; a file-tree
-  double-click of a `.docx`/`.app` now reveals rather than opens (a deliberate,
-  user-initiated choice, unlike the link surfaces above). A re-pin must not restore
-  `SystemGeneric` for these paths.
+  URL handler and `set_before_open_url`. **Decided 2026-09-27 (maintainer, closing two of
+  the three open questions below):** (i) **`.html` keeps following `open_file_editor`** —
+  under `system_default` it still resolves to `system_default`, unchanged; this was never a
+  defect, just an unresolved question about how far #681 should reach, and it does not
+  reach here. (ii) **A double-click (or Enter) on a file in the FILE TREE now OPENS it with
+  its normal target instead of revealing it** (`FileTreeView::open_file`,
+  `select_and_execute_item_at_id`, #706) — a deliberate, user-initiated choice about a path
+  the user picked themselves, unlike the link surfaces above (model output, notebooks, AI
+  documents, terminal output, `file://` URLs, `set_before_open_url`), all of which keep
+  revealing. `permit_system_open_from_file_tree`
+  (`app/src/util/openable_file_type.rs`) undoes the launch-policy substitution for
+  `CodeSource::FileTree` only, applied once at the file tree's own resolve call; the
+  workspace sink (`Workspace::open_file_with_target`) and the new
+  `AppContext::open_file_path_from_file_tree` escape hatch are the two layers downstream
+  that must not re-apply the substitution for that one origin — every other `CodeSource`
+  (`Link`, `AIAction`, `ProjectRules`, `RemoteFileTree`, `Finder`, `Skill`) still does.
+  **Still open, not covered by this decision:** `uri/mod.rs`'s "Open with Phosphor" still
+  executes runnable scripts by design. A re-pin must not restore `SystemGeneric` for a
+  launchable path reached through any origin other than the file tree.
 
 - **LSP shutdown on quit** (`736e26767`, 2026-09-26, #680). **Upstream's**
   `on_will_terminate` calls `LspManagerModel::terminate` from a fire-and-forget spot

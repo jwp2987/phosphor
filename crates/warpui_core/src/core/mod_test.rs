@@ -2960,6 +2960,40 @@ fn open_file_path_reveals_launchable_paths_instead_of_opening_them() {
     });
 }
 
+/// #706: `AppContext::open_file_path_from_file_tree` is the one sanctioned way around the
+/// backstop above -- for the file tree's deliberate, user-picked open only. It hands a
+/// launchable path straight to the platform opener instead of revealing it, but still resolves
+/// the path (`~`, symlinks, `..`) the same way the backstop does.
+#[test]
+fn open_file_path_from_file_tree_opens_launchable_paths_instead_of_revealing_them() {
+    use crate::platform::test::{RecordedSystemOpen, recorded_system_opens_matching};
+    use std::path::PathBuf;
+    use warp_util::launch_policy::canonical_path_for_open;
+
+    const NEEDLE: &str = "phosphor-706-file-tree-open-bypass";
+    App::test((), |mut app| async move {
+        let dir = PathBuf::from(format!("/nonexistent/{NEEDLE}"));
+        let app_bundle = dir.join("Evil.app");
+        let installer = dir.join("setup.pkg");
+        let document = dir.join("paper.pdf");
+
+        app.update(|ctx| {
+            ctx.open_file_path_from_file_tree(&app_bundle);
+            ctx.open_file_path_from_file_tree(&installer);
+            ctx.open_file_path_from_file_tree(&document);
+        });
+
+        assert_eq!(
+            recorded_system_opens_matching(NEEDLE),
+            vec![
+                RecordedSystemOpen::OpenedFile(canonical_path_for_open(&app_bundle)),
+                RecordedSystemOpen::OpenedFile(canonical_path_for_open(&installer)),
+                RecordedSystemOpen::OpenedFile(canonical_path_for_open(&document)),
+            ]
+        );
+    });
+}
+
 /// #681: a `set_before_open_url` rewrite to the empty string vetoes the open.
 #[test]
 fn open_url_rewritten_to_empty_is_not_opened() {

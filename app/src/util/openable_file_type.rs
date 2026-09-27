@@ -103,6 +103,40 @@ pub fn guard_system_handler_target(path: &Path, target: FileTarget) -> FileTarge
     }
 }
 
+/// Reverses [`guard_system_handler_target`]'s reveal-instead-of-open substitution for a file the
+/// user explicitly opened from the file tree (#706, following #681): a double-click or Enter on
+/// an item the file tree already shows the user is a deliberate choice about a path they picked
+/// themselves, unlike a link in model output, a notebook, an AI document, or terminal output --
+/// the surfaces the launch policy exists to stop. Every other origin must keep calling
+/// `resolve_file_target`/`resolve_file_target_with_editor_choice` unmodified.
+///
+/// `target` must be exactly what `resolve_file_target`/`resolve_file_target_with_editor_choice`
+/// returned for `path`. This recognises only the two targets those functions construct *because
+/// of* the launch policy -- [`FileTarget::RevealInFileManager`], always built from
+/// [`FileTarget::SystemGeneric`] by [`guard_system_handler_target`], and
+/// [`FileTarget::DefaultEditorOnly`], only built by the `EditorChoice::SystemDefault` branch when
+/// [`is_launchable_path`] is true -- and maps each back to [`FileTarget::SystemGeneric`]: once the
+/// path is going to be launched rather than edited, there is no meaningful line/column jump left
+/// to preserve, so both collapse to the same generic "hand it to the OS" target the ordinary
+/// binary-file path already uses. Any other target, including a `RevealInFileManager` or
+/// `DefaultEditorOnly` for a path that is not (or is no longer) launchable, is returned unchanged,
+/// so this cannot become a general-purpose override of the launch policy.
+///
+/// Callers: the file tree's `open_file` (double-click / Enter, `CodeSource::FileTree`) applies
+/// this to the target it resolves before emitting `FileTreeEvent::OpenFile`. The workspace sink
+/// (`open_file_with_target`) and `AppContext::open_file_path_from_file_tree` are the other two
+/// layers that must not re-reveal the result -- see their doc comments.
+pub fn permit_system_open_from_file_tree(path: &Path, target: FileTarget) -> FileTarget {
+    match target {
+        FileTarget::RevealInFileManager | FileTarget::DefaultEditorOnly(_)
+            if is_launchable_path(path) =>
+        {
+            FileTarget::SystemGeneric
+        }
+        other => other,
+    }
+}
+
 /// The path to reveal for a `file:` URL, when handing that URL to the OS would launch its path
 /// (#681): the resolved path the policy checked (symlinks, `..` and `~` resolved). `None` for
 /// every other scheme, for a `file:` URL that names another host or does not convert to a path,
@@ -968,6 +1002,61 @@ mod tests {
         ] {
             assert_eq!(guard_system_handler_target(app, target.clone()), target);
         }
+    }
+
+    /// #706: the file-tree undo maps both launch-policy substitutions back to
+    /// `SystemGeneric` -- the file tree's deliberate, user-picked open should hand a
+    /// launchable path straight to the OS, exactly like an ordinary binary already does.
+    #[test]
+    fn permit_system_open_from_file_tree_undoes_the_launch_policy() {
+        let app = Path::new("/tmp/Evil.app");
+        let script = Path::new("/tmp/run.command");
+        assert_eq!(
+            permit_system_open_from_file_tree(app, FileTarget::RevealInFileManager),
+            FileTarget::SystemGeneric
+        );
+        assert_eq!(
+            permit_system_open_from_file_tree(
+                script,
+                FileTarget::DefaultEditorOnly(EditorLayout::SplitPane)
+            ),
+            FileTarget::SystemGeneric
+        );
+    }
+
+    /// #706: the undo never invents a bypass for a target the launch policy didn't produce, or
+    /// for a path that isn't (or is no longer) launchable -- it can only reverse its own effect.
+    #[test]
+    fn permit_system_open_from_file_tree_leaves_everything_else_alone() {
+        let pdf = Path::new("/tmp/paper.pdf");
+        let app = Path::new("/tmp/Evil.app");
+        for target in [
+            FileTarget::SystemGeneric,
+            FileTarget::SystemDefault,
+            FileTarget::CodeEditor(EditorLayout::SplitPane),
+            FileTarget::MarkdownViewer(EditorLayout::SplitPane),
+            FileTarget::ImageViewer(EditorLayout::SplitPane),
+            FileTarget::EnvEditor,
+        ] {
+            assert_eq!(
+                permit_system_open_from_file_tree(app, target.clone()),
+                target
+            );
+        }
+        // A non-launchable path never had its target substituted by the launch policy in the
+        // first place, so `RevealInFileManager`/`DefaultEditorOnly` for one must be some other
+        // (hypothetical) caller's deliberate choice, not ours to undo.
+        assert_eq!(
+            permit_system_open_from_file_tree(pdf, FileTarget::RevealInFileManager),
+            FileTarget::RevealInFileManager
+        );
+        assert_eq!(
+            permit_system_open_from_file_tree(
+                pdf,
+                FileTarget::DefaultEditorOnly(EditorLayout::SplitPane)
+            ),
+            FileTarget::DefaultEditorOnly(EditorLayout::SplitPane)
+        );
     }
 
     /// #681: `file:` URLs to launchable paths are recognised, including percent-encoded ones;
