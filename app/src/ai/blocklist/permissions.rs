@@ -25,7 +25,7 @@ use strum::IntoEnumIterator as _;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use warp_completer::parsers::simple::{
-    command_without_leading_env_vars, decompose_command, unquoted_command_parts,
+    command_without_leading_env_vars, decompose_command, executed_commands, unquoted_command_parts,
 };
 use warp_core::user_preferences::GetUserPreferences;
 use warp_core::{features::FeatureFlag, settings::Setting};
@@ -61,6 +61,11 @@ pub enum CommandExecutionPermissionDeniedReason {
     ContainsRedirection,
     Inconclusive,
     AgentDecided,
+    /// A denylist applies, but some command word the line executes cannot be determined
+    /// without running the shell (`$CMD`, `$(which rm)`, a glob, unparseable input), so the
+    /// denylist cannot vouch for it. Fails closed: the user confirms. See
+    /// `warp_completer::parsers::simple::executed_commands`.
+    UnresolvedCommandWord,
 }
 
 impl CommandExecutionPermission {
@@ -913,10 +918,21 @@ impl BlocklistAIPermissions {
         let (commands, contains_redirection) = decompose_command(&normalized_command, escape_char);
         // Match denylist predicates against every shell-equivalent spelling of each
         // subcommand, not just the one the model typed. See `denylist_match_candidates`.
-        let denylist_candidates_per_command = commands
+        let mut denylist_candidates_per_command = commands
             .iter()
             .map(|command| denylist_match_candidates(command, escape_char))
             .collect::<Vec<_>>();
+
+        // `decompose_command` is shared with command x-ray and the allowlist and is not a
+        // shell parser: it can hide the command word behind a redirect (`>/dev/null rm`,
+        // `rm>/dev/null`), a brace expansion (`{rm,-rf,~}`), a control-flow keyword
+        // (`if …; then rm …; fi`) or a wrapper (`sudo`, `env`, `find -exec`, `sh -c`). So the
+        // denylist is *also* matched against every command a shell-accurate analysis says the
+        // line executes (#678). Additive, like everything else here: it can only deny more.
+        let executed = executed_commands(&normalized_command, escape_char);
+        denylist_candidates_per_command
+            .push(with_flattened_line_breaks(executed.policy_spellings()));
+        let command_words_resolved = executed.is_fully_resolved();
 
         // Local auto-approve may bypass the user-configured denylist, but workspace policy must
         // always be evaluated. Sandboxed processes use a separate organization-managed denylist
@@ -947,6 +963,21 @@ impl BlocklistAIPermissions {
             );
         }
 
+        // Fail closed. If some executed command word could not be determined statically, "no
+        // denylist rule matched" means nothing — the unknown word might be `rm`. Every path
+        // below can auto-approve, so none of them may run on an unverified denylist.
+        //
+        // Gated on the denylist being non-empty because that is the only case in which the
+        // parse changes the outcome: with no rules there is nothing an unknown word could
+        // match, and the remaining decisions (auto-approve, AlwaysAllow, the model's own
+        // read-only/risk verdicts) never consulted the parse. The allowlist *does* consult it,
+        // and is gated separately below.
+        if !command_words_resolved && !denylist.is_empty() {
+            return CommandExecutionPermission::Denied(
+                CommandExecutionPermissionDeniedReason::UnresolvedCommandWord,
+            );
+        }
+
         if auto_approve_enabled {
             return CommandExecutionPermission::Allowed(
                 CommandExecutionPermissionAllowedReason::RunToCompletion,
@@ -968,12 +999,18 @@ impl BlocklistAIPermissions {
                     );
                 }
 
+                // An allowlist match vouches for the text `decompose_command` produced, which
+                // is only trustworthy when every executed command word was resolved; otherwise
+                // a match could approve a command the text does not show. Never *widens* the
+                // allowlist: it can only withhold a match.
                 let allowlist = self.get_execute_commands_allowlist(ctx, terminal_view_id);
-                if commands.iter().all(|command| {
-                    allowlist
-                        .iter()
-                        .any(|allowlist_item| allowlist_item.matches(command))
-                }) {
+                if command_words_resolved
+                    && commands.iter().all(|command| {
+                        allowlist
+                            .iter()
+                            .any(|allowlist_item| allowlist_item.matches(command))
+                    })
+                {
                     return CommandExecutionPermission::Allowed(
                         CommandExecutionPermissionAllowedReason::ExplicitlyAllowlisted,
                     );
@@ -997,11 +1034,15 @@ impl BlocklistAIPermissions {
             ActionPermission::AlwaysAsk => {
                 let allowlist = self.get_execute_commands_allowlist(ctx, terminal_view_id);
 
-                if commands.iter().all(|command| {
-                    allowlist
-                        .iter()
-                        .any(|allowlist_item| allowlist_item.matches(command))
-                }) {
+                // Only trustworthy when every executed command word was resolved; see the
+                // `AgentDecides` arm above.
+                if command_words_resolved
+                    && commands.iter().all(|command| {
+                        allowlist
+                            .iter()
+                            .any(|allowlist_item| allowlist_item.matches(command))
+                    })
+                {
                     CommandExecutionPermission::Allowed(
                         CommandExecutionPermissionAllowedReason::ExplicitlyAllowlisted,
                     )
@@ -1466,61 +1507,63 @@ pub fn is_agent_mode_autonomy_allowed(ctx: &AppContext) -> bool {
 ///   because `decompose_command` already hands each subcommand here separately.
 ///   (`test_can_autoexecute_command_denylist_matches_quoted_command_names`)
 ///
+/// # Handled by the shell-accurate analysis instead (#678)
+///
+/// These used to be listed below as residue because this function receives text from
+/// `decompose_command` and cannot repair a parse that has already lost the command word.
+/// They are now closed in `can_autoexecute_command` by also matching the denylist against
+/// `warp_completer::parsers::simple::executed_commands`, a separate analysis that exists
+/// precisely so that `decompose_command` — shared with command x-ray, error underlining and
+/// the allowlist — keeps its tokenisation. Every entry is covered by
+/// `test_can_autoexecute_command_denylist_sees_every_executed_command_word` and, in more
+/// depth, by `command_words_test.rs`.
+///
+/// - Redirection glued to, or preceding, the command name: `rm>/dev/null -rf ~`,
+///   `>/dev/null rm -rf ~`, `2>&1 rm`, `&>x rm`, `{fd}>x rm`.
+/// - Brace expansion forming the command: `{rm,-rf,~}`, `{r,}m -rf ~`.
+/// - Control-flow and grouping: `if`/`then`/`elif`/`else`, `while`/`until`/`for`/`select`
+///   `… do …; done`, `case … in x) …;; esac`, `{ …; }`, `( … )`, `! cmd`, `time -p cmd`,
+///   `[[ … ]] && cmd`, function bodies.
+/// - Command prefixes with their own option grammar: `env` (including `env -S`), `command`,
+///   `builtin`, `exec`, `nice`, `nohup`, `sudo`, `doas`, `timeout`, `stdbuf`, `setsid`,
+///   `ionice`, `taskset`, `chrt`, `flock`, `xargs`, `watch`, `su -c`, `script -c`; and the
+///   commands whose *arguments* are commands: `eval`, `sh -c`/`bash -c`/…, `find -exec`,
+///   `alias x=…`, `trap '…' SIG`. An option outside a wrapper's table makes every suffix a
+///   candidate rather than guessing.
+/// - ANSI-C escape decoding inside `$'...'`: `$'\x72m'`, `$'\162m'`.
+/// - bash array assignments as a prefix: `FOO=(a b) rm file.txt`.
+/// - Path equivalence by program name: `/bin/rm` and `./rm` also match `rm` rules.
+///
+/// # Fail-closed where the analysis cannot decide
+///
+/// Whatever needs the shell to be *evaluated* — `R=rm; $R -rf ~`, `${R}`, `$(echo rm) -rf ~`,
+/// `` `which rm` ``, globs in the command word (`/bin/r?`), history expansion (`!rm`),
+/// `eval "$X"`, or input that does not parse — makes `executed_commands` report the command
+/// word unresolved, and `can_autoexecute_command` then returns
+/// `Denied(UnresolvedCommandWord)` whenever a denylist applies, and withholds allowlist
+/// approval regardless. "No rule matched" is never read from a parse that could not see the
+/// command. (`test_can_autoexecute_command_fails_closed_on_unresolved_command_words`)
+///
 /// # Not handled (explicit residue, not an oversight)
 ///
-/// - ANSI-C escape *decoding* inside `$'...'`: `$'\x72m'` and `$'\162m'` run `rm` and are not
-///   recognised. The completer's lexer keeps single-quoted content verbatim; decoding it would
-///   mean teaching the lexer a bash-only escape dialect, which changes tokenisation for every
-///   consumer — the blast radius this function exists to avoid.
-/// - Redirection glued to, or preceding, the command name. `parse_part` consumes `<`/`>`
-///   *inside* a word, so `rm>/dev/null -rf ~` yields the candidates `rm>/dev/null -rf ~` and
-///   `rm/dev/null -rf ~` and no `rm` rule matches; `parse_command_list` consumes a leading
-///   redirect, so `>/dev/null rm -rf ~` decomposes to `/dev/null rm -rf ~` and the redirect
-///   *target* becomes the command name. Both run `rm`. `rm 2>/dev/null -rf ~` is caught, which
-///   is why this reads as accidental rather than chosen — but it cannot be repaired from here:
-///   by the time this function receives text, the operator has already been consumed and the
-///   target is indistinguishable from an argument. Fixing it means changing `parse_part` /
-///   `parse_command_list`, which changes tokenisation for command x-ray, error underlining and
-///   the allowlist. Note that the `contains_redirection` guard does **not** compensate: it is
-///   consulted only in the `AgentDecides` arm of `can_autoexecute_command`, i.e. *after* the
-///   denylist, and never under `AlwaysAllow` or auto-approve-with-org-denylist — the exact
-///   modes in which the denylist is the only gate.
-/// - Brace expansion: `{rm,-rf,~}` decomposes to the single command `rm,-rf,~`, and
-///   `{r,}m -rf ~` to `r,` plus `m -rf ~`; both run `rm`. This is purely textual and would be
-///   statically decidable, and the *grouping* form `{ rm -rf ~; }` is caught, so the parser is
-///   inconsistent here rather than deliberate — but expanding braces is a parser change, not a
-///   candidate-set change, so it is out of scope for this function.
-/// - Shell control-flow keywords: in `if true; then rm -rf ~; fi`,
-///   `while …; do rm …; done` and `for … do rm …; done`, the parser treats `then`/`do` as the
-///   command name and `rm` as an argument. Carrying denylist entries for the prefix (the
-///   advice given for `sudo` below) does not help — nobody writes a rule for `then`, and a
-///   model can wrap anything in a one-iteration loop.
-/// - Command prefixes: `command rm`, `env rm`, `exec rm`, `sudo rm`, `nohup`, `nice`,
-///   `timeout`, `stdbuf`, `setsid`, `xargs rm`. This set is open-ended and each member has its
-///   own option grammar (`env -i`, `env X=1`, `timeout 5s`), so a partial list would create
-///   false confidence. Deliberately out of scope; a denylist that wants to stop these should
-///   also carry entries for the prefixes themselves (as the default denylist does for shells).
-/// - An env-var assignment whose value opens a word the lexer splits: bash's array form
-///   `FOO=(a b) rm file.txt` runs `rm`, but lexes as `FOO=(a` + `b)` + `rm` + `file.txt`, so
-///   the assignment is dropped and `b)` becomes the resolved command name. The
-///   `FOO=a=b rm file.txt` case that used to sit here is **fixed**:
-///   `Command::remove_leading_env_vars` now applies the shell's own `NAME=value` rule
-///   instead of the pin's `split('=').count() == 2`, so a value containing `=` no longer
-///   hides the command. That rule is also *narrower* than the pin's in the other direction
-///   — `1FOO=b rm x`, `FOO-1=b rm x` and `=b rm x` are no longer stripped — which loses this
-///   function no coverage, because no shell runs `rm` for any of them (each reports
-///   "command not found" for the prefix itself; confirmed with an `rm` shim).
-/// - Any indirection that needs the shell to be *evaluated*: `R=rm; $R -rf ~`, `${R} -rf ~`,
-///   `$(echo rm) -rf ~`, shell aliases and functions, `eval`.
-/// - Path equivalence: `/bin/rm`, `./rm`, `busybox rm` are different text and stay different.
-/// - Encoded payloads piped to an interpreter (`... | base64 -d | sh`). The interpreter itself
-///   is on the default denylist; the general class is not solvable here.
+/// - Aliases and functions defined *before* this command line, in the user's shell. A
+///   same-line `alias` or function body is analysed; one from `.bashrc` cannot be.
+/// - Interpreters running code given as an argument (`python -c`, `perl -e`, `awk`'s
+///   `system()`, `node -e`) and encoded payloads piped to an interpreter
+///   (`... | base64 -d | sh`). The shells themselves are on the default denylist, and so is
+///   `eval`; the general class is not solvable textually.
+/// - Remote execution (`ssh host rm …`): the remote command is not a local command word, and
+///   `ssh` is on the default denylist.
+/// - Path equivalence beyond the program name: `busybox rm` is caught (busybox is peeled),
+///   but a rule written against a full path (`/bin/rm .*`) is not matched by `rm`, and a
+///   hard link or copy of `rm` under another name is invisible.
+/// - PowerShell is analysed with the POSIX grammar and a backtick escape. That errs towards
+///   *more* candidates and more `UnresolvedCommandWord`, never fewer, but PowerShell-only
+///   constructs (script blocks passed to `ForEach-Object`, `Start-Process`, `-EncodedCommand`)
+///   are not understood beyond what `decompose_command` already offers.
 ///
-/// The residue is real, and it is bounded by what can be decided without executing the
-/// command. It is not a *complete* account of every spelling a shell accepts, and it should
-/// not be read as one: three of the entries above (redirection, brace expansion, control-flow
-/// keywords) are short, purely textual bypasses that this layer cannot close, because they
-/// have to be fixed in the parser. Treat the denylist as defence in depth, not as a boundary.
+/// Treat the denylist as defence in depth, not as a boundary: it matches text, and a program
+/// is free to do anything once it runs.
 fn denylist_match_candidates(command: &str, escape_char: EscapeChar) -> Vec<String> {
     fn push(candidates: &mut Vec<String>, candidate: String) {
         if !candidate.is_empty() && !candidates.contains(&candidate) {
@@ -1567,15 +1610,25 @@ fn denylist_match_candidates(command: &str, escape_char: EscapeChar) -> Vec<Stri
     // matched by no `rm .*` rule, for every command, not just `rm`. Flattening line breaks to
     // spaces gives those rules something to match. Additive like everything else here, so it
     // can only deny more.
+    with_flattened_line_breaks(candidates)
+}
+
+/// `candidates`, plus a line-break-flattened spelling of each one that carries a `\n`.
+///
+/// Rules are compiled as `^{rule}$` by `AgentModeCommandExecutionPredicate`, and in the
+/// `regex` crate `.` does not match `\n` while `$` anchors to the end of the *haystack*, so a
+/// newline in one argument defeats every rule ending in `.*`. Additive: it can only deny more.
+fn with_flattened_line_breaks(mut candidates: Vec<String>) -> Vec<String> {
     let flattened = candidates
         .iter()
         .filter(|candidate| candidate.contains('\n'))
         .map(|candidate| candidate.replace('\n', " "))
         .collect::<Vec<_>>();
     for candidate in flattened {
-        push(&mut candidates, candidate);
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
     }
-
     candidates
 }
 
