@@ -128,6 +128,29 @@ impl FooterMode {
     }
 }
 
+/// Status message for a file whose extension has no entry in `LanguageId`
+/// (`crates/lsp/src/config.rs`), i.e. one that could never get an LSP server
+/// regardless of installation or enablement state.
+///
+/// Markdown (and, by extension, other file types with no language-server
+/// concept at all) has its own rendering/highlighting path (`crates/languages`)
+/// entirely independent of `LanguageId` -- there was never a language server
+/// to enable in the first place. Showing "language support is unavailable for
+/// this file type" there reads as "this editor doesn't support Markdown,"
+/// which is false, so it's suppressed for Markdown specifically rather than
+/// for every `LanguageId::from_path` miss (e.g. a truly unsupported code file
+/// should still say so).
+fn unsupported_language_status_message(path: &Path) -> (Option<String>, bool) {
+    if warp_util::file_type::is_markdown_file(path) {
+        (None, false)
+    } else {
+        (
+            Some("Language support is unavailable for this file type".to_string()),
+            false,
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum CodeFooterViewAction {
     CloseMenu,
@@ -1583,10 +1606,9 @@ impl CodeFooterView {
                 lsp_repo_status,
                 ..
             } => match PersistedWorkspace::as_ref(app).has_enabled_lsp_server_for_file_path(path) {
-                LSPEnablementResultForFile::UnsupportedLanguage => (
-                    Some("Language support is unavailable for this file type".to_string()),
-                    false,
-                ),
+                LSPEnablementResultForFile::UnsupportedLanguage => {
+                    unsupported_language_status_message(path)
+                }
                 LSPEnablementResultForFile::LSPNotEnabled { root_name } => match lsp_repo_status {
                     LspRepoStatus::CheckingForInstallation => (
                         Some(format!(
@@ -1979,5 +2001,36 @@ impl TypedActionView for CodeFooterView {
                 ctx.notify();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // #702: Markdown has no `LanguageId` entry (`crates/lsp/src/config.rs`) because it has no
+    // LSP server at all -- not because this editor lacks Markdown support -- so it must not
+    // show the generic "language support is unavailable" message.
+    #[test]
+    fn markdown_files_get_no_unsupported_language_message() {
+        let (message, is_error) = unsupported_language_status_message(Path::new("README.md"));
+        assert_eq!(message, None);
+        assert!(!is_error);
+
+        let (message, is_error) = unsupported_language_status_message(Path::new("notes.markdown"));
+        assert_eq!(message, None);
+        assert!(!is_error);
+    }
+
+    // A file type that genuinely has no language support at all (and isn't Markdown) should
+    // still say so.
+    #[test]
+    fn other_unsupported_files_still_get_the_message() {
+        let (message, is_error) = unsupported_language_status_message(Path::new("data.xyz"));
+        assert_eq!(
+            message,
+            Some("Language support is unavailable for this file type".to_string())
+        );
+        assert!(!is_error);
     }
 }

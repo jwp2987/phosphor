@@ -283,6 +283,74 @@ fn selecting_a_custom_profile_default_clears_the_session_override() {
     });
 }
 
+/// #701: the profile settings page (`settings_view::execution_profile_view`) shows a
+/// profile's configured `base_model`, but the model actually driving a request can
+/// differ -- `byop_last_used_model_id` (whatever was last picked with `/model` in the
+/// composer) is consulted ahead of any profile's `base_model`. This pins the exact
+/// resolution the page uses, `get_effective_base_model_for_profile`, against that
+/// divergence: given a profile configured for one model and a `byop_last_used_model_id`
+/// naming a *different*, still-valid one, it must resolve to the last-used model, not the
+/// configured one -- proving the page has a real signal to show its "currently using"
+/// note from.
+#[test]
+fn effective_base_model_for_profile_follows_last_used_model_over_the_configured_one() {
+    App::test((), |mut app| async move {
+        install_profile_model_singletons(&mut app);
+        let profiles = app.add_singleton_model(|ctx| {
+            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+        });
+        let custom_model_id = LLMId::from("custom-endpoint");
+        let preferences =
+            app.add_singleton_model(|_| preferences_for_profile_model_tests(&custom_model_id));
+        let surface_id = EntityId::new();
+        let profile_id = profiles.read(&app, |profiles, ctx| {
+            *profiles.active_profile(Some(surface_id), ctx).id()
+        });
+
+        // The profile is configured for "claude-opus" ...
+        profiles.update(&mut app, |profiles, ctx| {
+            profiles.set_base_model(profile_id, Some(LLMId::from("claude-opus")), ctx);
+        });
+        // ... but the picker's last-used model is the (different, still-valid) custom endpoint.
+        app.update(|ctx| {
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                settings
+                    .byop_last_used_model_id
+                    .set_value(custom_model_id.as_str().to_string(), ctx)
+                    .expect("setting the last-used model id should succeed");
+            });
+        });
+
+        let configured_id = profiles.read(&app, |profiles, ctx| {
+            profiles
+                .get_profile_by_id(profile_id, ctx)
+                .and_then(|profile| profile.data().base_model.clone())
+        });
+        assert_eq!(
+            configured_id.as_ref().map(LLMId::as_str),
+            Some("claude-opus"),
+            "sanity check: the profile's configured base_model is unaffected by the picker"
+        );
+
+        preferences.read(&app, |preferences, ctx| {
+            let effective =
+                preferences.get_effective_base_model_for_profile(ctx, configured_id.as_ref());
+            assert_eq!(
+                effective.id.as_str(),
+                custom_model_id.as_str(),
+                "the page's resolution must follow byop_last_used_model_id, not the \
+                 profile's own configured base_model, exactly as the composer chip does"
+            );
+            assert_ne!(
+                effective.id.as_str(),
+                "claude-opus",
+                "confirms the two values actually diverge -- otherwise this test would \
+                 pass even if get_effective_base_model_for_profile ignored last_used entirely"
+            );
+        });
+    });
+}
+
 /// `/fork` copies a pane's model selection with `copy_agent_mode_selection`, not with
 /// `update_preferred_agent_mode_llm`. The latter is the model picker's entry point and
 /// *always* writes `byop_last_used_model_id`, which `get_preferred_base_model` consults

@@ -53,6 +53,11 @@ pub fn manual_url(section: &str) -> String {
     format!("{}/blob/{DOCS_BRANCH}/docs/manual/{section}", repo_url())
 }
 
+/// This fork's contribution guide (`CONTRIBUTING.md`, at the repo root), rendered on GitHub.
+pub fn contributing_url() -> String {
+    format!("{}/blob/{DOCS_BRANCH}/CONTRIBUTING.md", repo_url())
+}
+
 /// A specific issue form, by its `.github/ISSUE_TEMPLATE/` file name. The
 /// template declares its own labels, so nothing else needs pinning here.
 pub fn issue_form_url(template: &str) -> String {

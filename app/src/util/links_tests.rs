@@ -21,6 +21,7 @@ fn every_project_link_is_derived_from_the_repo_constants() {
         github_issues_url(),
         user_docs_url(),
         manual_url(MANUAL_TROUBLESHOOTING),
+        contributing_url(),
         feedback_form_url(),
         new_issue_url(),
         issue_form_url("01_bug_report.yml"),

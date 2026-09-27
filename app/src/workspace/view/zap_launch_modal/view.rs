@@ -24,12 +24,10 @@ use crate::view_components::action_button::{ActionButton, ActionButtonTheme, But
 const MODAL_WIDTH: f32 = 420.;
 const HERO_HEIGHT: f32 = 92.;
 const HERO_IMAGE_PATH: &str = "async/png/onboarding/zap_launch_banner.png";
-const REPO_URL: &str = "https://github.com/warpdotdev/warp";
-const CONTRIBUTING_URL: &str = "https://github.com/warpdotdev/warp/blob/master/CONTRIBUTING.md";
 
 struct InlineLink {
     text: String,
-    url: &'static str,
+    url: String,
 }
 
 struct FeatureItem {
@@ -48,7 +46,7 @@ fn feature_items() -> [FeatureItem; 3] {
             description: crate::t!("zap-launch-contribute-description"),
             inline_link: Some(InlineLink {
                 text: crate::t!("zap-launch-contribute-link-text"),
-                url: CONTRIBUTING_URL,
+                url: crate::util::links::contributing_url(),
             }),
         },
         FeatureItem {
@@ -263,7 +261,7 @@ impl ZapLaunchModal {
             text: link.text.clone(),
             styles: FormattedTextStyles {
                 underline: true,
-                hyperlink: Some(Hyperlink::Url(link.url.into())),
+                hyperlink: Some(Hyperlink::Url(link.url.clone())),
                 ..Default::default()
             },
         };
@@ -411,7 +409,7 @@ impl TypedActionView for ZapLaunchModal {
                 ctx.emit(ZapLaunchModalEvent::Close);
             }
             ZapLaunchModalAction::VisitRepo => {
-                ctx.open_url(REPO_URL);
+                ctx.open_url(&crate::util::links::repo_url());
                 ctx.emit(ZapLaunchModalEvent::Close);
             }
         }

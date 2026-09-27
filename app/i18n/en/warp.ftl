@@ -260,6 +260,7 @@ terminal-agent-header-for-terminal = for terminal
 # names the DIRECT parent. Children of the tree root keep the classic
 # "for Orchestrator"; deeper subagents name their parent agent, or fall back
 # to the generic wording when that parent has no name.
+terminal-host-footer-bar-unknown-host = Unknown host
 terminal-agent-header-for-orchestrator = for Orchestrator
 terminal-agent-header-for-parent-agent = for parent agent
 terminal-agent-header-for-parent-named = for { $name }
@@ -1155,7 +1156,7 @@ settings-features-prefer-low-power-gpu = Prefer rendering new windows with integ
 settings-features-use-wayland = Use Wayland for window management
 settings-features-use-wayland-tooltip = Enables the use of Wayland
 settings-features-ctrl-tab-behavior-label = Ctrl+Tab behavior:
-settings-features-right-click-behavior-label = Right-click:
+settings-features-right-click-behavior-label = Right-click behavior:
 settings-features-extra-meta-key-left-mac = Left Option key is Meta
 settings-features-extra-meta-key-right-mac = Right Option key is Meta
 settings-features-extra-meta-key-left-other = Left Alt key is Meta
@@ -1308,6 +1309,7 @@ settings-exec-profile-auto = Auto
 settings-exec-profile-section-models = MODELS
 settings-exec-profile-section-permissions = PERMISSIONS
 settings-exec-profile-base-model = Base model:
+settings-exec-profile-base-model-currently-using = Currently using { $model } (chosen with /model)
 settings-exec-profile-full-terminal-use = Full terminal use:
 settings-exec-profile-title-model = Title generation:
 settings-exec-profile-active-ai-model = Active AI:
@@ -1566,6 +1568,8 @@ settings-appearance-host-footer-bar-empty = No rules configured yet.
 settings-appearance-host-footer-bar-add-rule = Add rule
 settings-appearance-host-footer-bar-pattern-placeholder = e.g. ^prod-
 settings-appearance-host-footer-bar-name-placeholder = Name (optional)
+settings-appearance-host-footer-bar-invalid-pattern = Enter a valid regular expression.
+settings-appearance-host-footer-bar-duplicate-pattern = A rule for this pattern already exists.
 settings-appearance-host-footer-bar-unknown-color-label = Color when host can't be identified
 settings-appearance-host-footer-bar-unknown-color-description = Used when a session is plausibly on a remote host but that host couldn't be determined, so it's never mistaken for a safe local shell.
 settings-appearance-zen-mode-label = Show the tab bar

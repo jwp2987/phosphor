@@ -141,6 +141,33 @@ fn header_toolbar_chip_selection_custom_with_code_review_on_left_reports_present
 }
 
 #[test]
+fn host_footer_color_rule_eq_compares_pattern_only() {
+    let production = HostFooterColorRule {
+        pattern: Regex::new("^prod-").unwrap(),
+        color: AnsiColorIdentifier::Red,
+        name: Some("Production".to_string()),
+    };
+    let same_pattern_different_color_and_name = HostFooterColorRule {
+        pattern: Regex::new("^prod-").unwrap(),
+        color: AnsiColorIdentifier::Blue,
+        name: None,
+    };
+    let different_pattern = HostFooterColorRule {
+        pattern: Regex::new("^staging-").unwrap(),
+        color: AnsiColorIdentifier::Red,
+        name: Some("Production".to_string()),
+    };
+
+    // Two rules with the same pattern are the same rule for duplicate-detection purposes
+    // (`settings_view::appearance_page::commit_host_footer_color_rule` rejects adding a second
+    // one), regardless of color or display name: a duplicate pattern can never match, since
+    // rules are tried first-to-last and the first match wins, so it would be silently dead
+    // configuration if accepted.
+    assert_eq!(production, same_pattern_different_color_and_name);
+    assert_ne!(production, different_pattern);
+}
+
+#[test]
 fn header_toolbar_chip_selection_custom_empty_reports_all_absent() {
     let config = HeaderToolbarChipSelection::Custom {
         left: vec![],
