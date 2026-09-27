@@ -12803,30 +12803,68 @@ claim, which was wrong by four.
       2s prompt watchdog can abandon a request whose OSC reply was merely slow, not absent; when
       that late reply then arrives, there was nothing to answer it with (the request, and its
       `results_tx`, were already gone), so the shell's `read -d $'\4'` -- which the shell entered
-      the instant it sent that OSC reply -- hung forever. Fixed with a new
-      `has_pending_late_completions_prompt_reply` flag, set when the watchdog abandons an
-      `AwaitingPrompt` phase: if `SendCompletionsPrompt` later arrives with no matching live state
-      and this flag set, the handler now answers with a bare EOT terminator (no completion text,
-      no resurrected request) so the shell's `read` returns. Both fixes are covered by new tests
-      in `pty_controller_tests.rs`
-      (`late_completions_finished_does_not_destroy_a_newer_awaiting_prompt_request`,
-      `late_send_completions_prompt_after_watchdog_abandons_it_answers_with_eot_only`); the first
-      fails against the pre-fix take-before-match code. **Both fixes remain gated behind the same
-      unreachable `FeatureFlag::NativeShellCompletions`**, so neither can be what produced the
-      originally-reported field lockup -- they close real defects in the mechanism, not the
-      mystery. **Diagnostics also added** for the still-unexplained reported lockup: `can_write_to_pty`
-      has two gates (line editor inactive; awaiting a completions prompt), and neither previously
-      had any observability. `execute_next_queued_write` now tracks, via
-      `track_pty_write_gate_stall`, how long the gate has been continuously shut while writes are
-      queued, and logs once (throttled to one line per stall, not one per keystroke) past a 3s
-      threshold, naming which gate is shut, both gates' states, and the queue length -- no write
-      contents are ever logged, per #718. Covered by a new
-      `pty_write_gate_stall_is_tracked_and_logged_once_per_unbroken_stretch` test that drives the
-      tracking directly (fast-forwarding the recorded start time past the threshold rather than
-      sleeping) and asserts it logs once per unbroken stretch and resets when the queue drains.
+      the instant it sent that OSC reply -- hung forever. **First cut wrong, see the
+      2026-09-27 REWORKED note below** -- the fix actually shipped is shell-side, not the flag
+      described here originally. Both fixes are covered by new tests in `pty_controller_tests.rs`.
+      **Both fixes remain gated behind the same unreachable `FeatureFlag::NativeShellCompletions`**,
+      so neither can be what produced the originally-reported field lockup -- they close real
+      defects in the mechanism, not the mystery. **Diagnostics also added** for the
+      still-unexplained reported lockup: `can_write_to_pty` has two gates (line editor inactive;
+      awaiting a completions prompt), and neither previously had any observability.
+      `execute_next_queued_write` now tracks, via `track_pty_write_gate_stall`, how long the gate
+      has been continuously shut while writes are queued, and logs once (throttled to one line
+      per stall, not one per keystroke) past a 3s threshold, naming which gate is shut, both
+      gates' states, and the queue length -- no write contents are ever logged, per #718.
       **Still open, unverified: nothing here was compiled**
       (see HANDOFF.md's build-queue constraints for this round); the root cause of the reported
       lockup itself remains unknown pending a fresh capture with these diagnostics in place.
+
+      **REWORKED 2026-09-27, same day, after adversarial review.** Two problems were found in the
+      above:
+      1. **BLOCKER: the follow-up (2) fix (the blind EOT) could exit the user's shell.** It assumed
+         zsh was still blocked in `read -d $'\4'` when the late OSC reply arrived, but the shell's
+         `read` can return for reasons the app cannot observe -- most plausibly Ctrl-C, a very
+         normal reaction to a Tab that visibly did nothing after the 2s watchdog fires. SIGINT
+         aborts that `read`, leaving the shell at a live, empty prompt; the late EOT then lands
+         there as Ctrl-D, which exits the shell (no `IGNOREEOF` is set in the bootstrap). The flag
+         was also never cleared when a new request started. **Reverted** (revert commit, ref
+         #770). Replaced with a shell-side fix: `warp_read_completion_buffer` in
+         `app/assets/bundled/bootstrap/zsh_body.sh` now bounds its own `read` with `-t 20`
+         (comfortably longer than the app's 15s results budget) and bails out without touching
+         `BUFFER` on timeout, so the shell can no longer be wedged by an app that never answers,
+         for any reason. On the app side, a `SendCompletionsPrompt` event with no matching live
+         state now writes *nothing at all* -- not even a terminator -- which is the only move that
+         is safe regardless of what state the shell's prompt is actually in; this was already true
+         of the (kept) follow-up (1) fix's peek-before-take guard, so no further app-side change
+         was needed once the flag-and-EOT mechanism was removed. Old test
+         `late_send_completions_prompt_after_watchdog_abandons_it_answers_with_eot_only` replaced
+         with `late_send_completions_prompt_with_no_live_state_writes_nothing_to_the_pty`.
+      2. **The follow-up (1) fix's "whatever it is" claim was incomplete.**
+         `run_native_shell_completions` and the `PtyWrite::RunNativeShellCompletions` dispatch arm
+         unconditionally overwrote `in_flight_native_completions_state` regardless of whether one
+         was already in flight. `AwaitingResults` deliberately does not gate `can_write_to_pty`
+         (typing must not block on completions results for up to 15s), so a second request --
+         e.g. `CompletionsTrigger::AsYouType` firing again on the next keystroke -- could be queued
+         and dispatched behind the first request's back, dropping its `results_tx` and later
+         handing its own `CompletionsFinished` reply to the *second* request instead (still a
+         phase match, just the wrong request). Neither event carries a request id, so
+         phase-matching alone cannot tell them apart once this happens. **Fixed structurally**:
+         `run_native_shell_completions` now skips starting a new request outright while one is
+         already in flight, in either phase, so at most one request ever exists at a time. New
+         test `run_native_shell_completions_does_not_start_a_second_request_while_one_is_in_flight`
+         fails on the pre-fix code.
+      3. **Minor, also fixed:** the stall diagnostic only re-checked on the next
+         `execute_next_queued_write` call, so if the user stopped typing entirely once the gate
+         stuck, the log could be arbitrarily delayed or never fire. `track_pty_write_gate_stall`
+         now arms a one-shot timer when a stall begins, calling back into itself; it is
+         self-contained (re-checks `can_write_to_pty` itself) so this is safe from any caller.
+         New test `pty_write_gate_stall_logs_itself_without_further_input`.
+
+      All of the above stays gated behind the still-unreachable `FeatureFlag::NativeShellCompletions`
+      except the shell-side `read -t` bound (which is unconditional, since it protects the shell
+      regardless of which app-side code path -- present or future -- fails to answer) and the
+      stall diagnostics (which watch the line-editor gate too, not just completions). The
+      originally-reported field lockup is still unexplained.
 
 ## FIX ROUND 2026-09-26/27 — items with no earlier ledger row
 
