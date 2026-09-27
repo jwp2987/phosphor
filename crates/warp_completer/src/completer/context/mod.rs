@@ -119,12 +119,13 @@ pub trait CompletionContext: Send + Sync {
     /// `$PATH` scan lands) as English prose just because it also happens to be a dictionary
     /// word.
     ///
-    /// Most implementations have no such async step (an unindexed name really is unknown the
-    /// moment they exist), so the default is `true`. A context backed by a live shell session
-    /// overrides this to track its own probe, and one with no session at all (e.g. a
-    /// shared-session viewer) overrides it to `false`, since it cannot know either way.
+    /// The default is `false` ("can't tell"), because a wrong `true` is the unsafe direction:
+    /// it lets the safety gate call any unindexed dictionary word prose, while a wrong `false`
+    /// only makes it demand stronger evidence. A context backed by a live shell session
+    /// overrides this to track its own probe; a context with no `$PATH` view at all (e.g. a
+    /// session-agnostic or shared-session-viewer context) should keep the default.
     fn top_level_commands_fully_loaded(&self) -> bool {
-        true
+        false
     }
 }
 
