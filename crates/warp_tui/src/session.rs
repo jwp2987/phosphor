@@ -27,13 +27,28 @@ use crate::telemetry::TuiStartupTelemetryEvent;
 use crate::terminal_background::TuiHostTerminalBackground;
 use crate::terminal_session_view::{TuiConversationRestoreOrigin, TuiConversationRestoreTarget};
 
-/// Version string printed by `--version`. Release builds get `GIT_RELEASE_TAG`
-/// (the same env var `ChannelState::app_version` reads at runtime); local
-/// cargo builds fall back to a numeric placeholder.
-const CLI_VERSION: &str = match option_env!("GIT_RELEASE_TAG") {
-    Some(version) => version,
-    None => "v0.0.0.0.0.0",
-};
+/// Version string printed by `--version`, single-sourced with the GUI/`warp_cli`
+/// paths (issue #640, #756): the injected `GIT_RELEASE_TAG` when present,
+/// otherwise `v{app version}-dev` via `ChannelState::display_version` --
+/// never the old bare `v0.0.0.0.0.0` placeholder. `PHOSPHOR_APP_VERSION` is
+/// injected by this crate's own `build.rs`, which mirrors `warp_cli/build.rs`
+/// (see that file's doc comment for why each dependent of `app` has to read
+/// `app/Cargo.toml` itself rather than share one constant: `env!`/`option_env!`
+/// expand using the crate that contains the macro, not the crate that calls
+/// the function built around it).
+///
+/// Not a `const`: `ChannelState::display_version` reads a runtime mutex
+/// (to let tests mock the tag), so this has to be a function, not a
+/// compile-time-evaluated value -- clap's `#[command(version = ...)]`
+/// accepts either, since it is spliced into a builder call inside a regular
+/// function body.
+fn cli_version() -> &'static str {
+    warp_core::channel::ChannelState::display_version(concat!(
+        "v",
+        env!("PHOSPHOR_APP_VERSION"),
+        "-dev"
+    ))
+}
 
 /// Name this binary is invoked by, used for clap's usage/help output and for
 /// any instruction we print for the user to run. The cargo bin is
@@ -49,7 +64,7 @@ const CLI_NAME: &str = "phosphor-tui";
 const REPORT_MODIFIER_KEY_LIFECYCLE: bool = false;
 
 #[derive(Debug, Parser)]
-#[command(name = CLI_NAME, version = CLI_VERSION)]
+#[command(name = CLI_NAME, version = cli_version())]
 struct TuiArgs {
     /// Resume an Oz/Warp conversation by server token.
     #[arg(long)]
@@ -174,7 +189,7 @@ pub fn run() -> Result<()> {
         Ok(args) => args,
         // Match the zero-state version line: bare tag/version, no binary name prefix.
         Err(error) if error.kind() == ErrorKind::DisplayVersion => {
-            println!("{CLI_VERSION}");
+            println!("{}", cli_version());
             return Ok(());
         }
         Err(error) if error.kind() == ErrorKind::DisplayHelp => {

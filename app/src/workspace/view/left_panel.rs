@@ -95,6 +95,15 @@ pub enum LeftPanelEvent {
         path: PathBuf,
         target: FileTarget,
         line_col: Option<LineAndColumnArg>,
+        /// Which left-panel sub-feature produced this open (#757): a genuine
+        /// file-tree double-click/Enter, or a Global Search result. Both used
+        /// to funnel through this same event shape with no way to tell them
+        /// apart, so the handler hardcoded `CodeSource::FileTree` for both --
+        /// silently giving search results the #706 exception (permission to
+        /// reach the OS default handler for a launchable path) that was meant
+        /// only for the file tree. The handler now tags the `CodeSource` it
+        /// builds from this field instead of assuming `FileTree`.
+        origin: FileOpenOrigin,
     },
     OpenSkillFile {
         source: CodeSource,
@@ -122,6 +131,14 @@ pub enum LeftPanelEvent {
         terminal_view_id: Option<warpui::EntityId>,
     },
     ShowDeleteAllConfirmationDialog,
+}
+
+/// Which left-panel sub-feature originated a [`LeftPanelEvent::OpenFileWithTarget`]
+/// (#757). See that variant's doc comment for why this exists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileOpenOrigin {
+    FileTree,
+    GlobalSearch,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -811,6 +828,7 @@ impl LeftPanelView {
                             path: path.clone(),
                             target,
                             line_col: Some(line_col),
+                            origin: FileOpenOrigin::GlobalSearch,
                         });
                     }
                     LocalOrRemotePath::Remote(remote) => {
@@ -871,6 +889,7 @@ impl LeftPanelView {
                     path: path.clone(),
                     target: target.clone(),
                     line_col: *line_col,
+                    origin: FileOpenOrigin::FileTree,
                 });
             }
             FileTreeEvent::CDToDirectory { path } => {

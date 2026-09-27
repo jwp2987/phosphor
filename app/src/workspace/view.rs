@@ -93,7 +93,7 @@ use crate::workspace::bonus_grant_notification_model::BonusGrantNotificationEven
 use crate::workspace::toast_stack::ToastStack;
 use crate::workspace::view::global_search::view::GlobalSearchEntryFocus;
 use crate::workspace::view::left_panel::{
-    LeftPanelAction, LeftPanelEvent, LeftPanelView, ToolPanelView,
+    FileOpenOrigin, LeftPanelAction, LeftPanelEvent, LeftPanelView, ToolPanelView,
 };
 use crate::workspace::view::right_panel::{RightPanelEvent, RightPanelView};
 
@@ -5678,7 +5678,10 @@ impl Workspace {
             // `FileTreeView::open_file` (`permit_system_open_from_file_tree`), so a
             // `CodeSource::FileTree` target reaching here as `SystemDefault`/`SystemGeneric` is
             // the file tree's deliberate decision to open it, not a hand-built target that
-            // skipped the policy. Every other `CodeSource` still re-applies it.
+            // skipped the policy. Every other `CodeSource` still re-applies it -- including
+            // `CodeSource::GlobalSearch` (#757): a Global Search result used to arrive here
+            // hardcoded as `FileTree` and silently inherit this exception even though the
+            // user never picked the path from the file tree.
             target @ (FileTarget::SystemDefault | FileTarget::SystemGeneric)
                 if crate::util::openable_file_type::is_launchable_path(&path)
                     && !matches!(code_source, CodeSource::FileTree { .. }) =>
@@ -5779,12 +5782,22 @@ impl Workspace {
                 path,
                 target,
                 line_col,
+                origin,
             } => {
+                // #757: tag the real origin instead of assuming `FileTree` --
+                // only a genuine file-tree open gets #706's OS-default-handler
+                // exception; a Global Search result keeps #681's
+                // reveal-not-launch behaviour (see the `!FileTree` guard arms
+                // below in `open_file_with_target`).
+                let code_source = match origin {
+                    FileOpenOrigin::FileTree => CodeSource::FileTree { path: path.clone() },
+                    FileOpenOrigin::GlobalSearch => CodeSource::GlobalSearch { path: path.clone() },
+                };
                 self.open_file_with_target(
                     path.clone(),
                     target.clone(),
                     *line_col,
-                    CodeSource::FileTree { path: path.clone() },
+                    code_source,
                     ctx,
                 );
             }

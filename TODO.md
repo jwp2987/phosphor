@@ -609,16 +609,22 @@ before acting):
       exempting legacy dated beta tags (`v2026.09.04.1-beta`); `workflow_dispatch`'s generated
       `v0.<date>` tag is intentionally left alone (see the workflow's comment — it's an
       ad-hoc, unversioned build, not a numbered release).
-
-- [ ] **`phosphor-tui` has its own `CLI_VERSION`, not covered by #640's `display_version`
-      fix (#756).** `crates/warp_tui/src/session.rs:33` defines a separate
-      `const CLI_VERSION` read from `option_env!("GIT_RELEASE_TAG")` with fallback
-      `"v0.0.0.0.0.0"`, used on `TuiArgs`'s `#[command(version = CLI_VERSION)]`. A local
-      dev build (no `GIT_RELEASE_TAG`) makes `phosphor-tui --version` print that raw
-      placeholder instead of the `v{app/Cargo.toml version}-dev` format #640 established
-      for the GUI/`warp_cli` paths via `ChannelState::display_version()`. Needs the same
-      `PHOSPHOR_APP_VERSION` build-time injection (or a direct call into
-      `display_version()`'s format) threaded into `warp_tui`.
+- [x] **`phosphor-tui` had its own `CLI_VERSION`, not covered by #640's `display_version`
+      fix — FIXED (#756), 2026-09-27.** `crates/warp_tui/src/session.rs:33` defined a
+      separate `const CLI_VERSION` read from `option_env!("GIT_RELEASE_TAG")` with fallback
+      `"v0.0.0.0.0.0"`, used on `TuiArgs`'s `#[command(version = CLI_VERSION)]`, so a local
+      dev build (no `GIT_RELEASE_TAG`) made `phosphor-tui --version` print that raw
+      placeholder instead of the `v{app/Cargo.toml version}-dev` format #640 established for
+      the GUI/`warp_cli` paths. `crates/warp_tui/build.rs` now injects
+      `PHOSPHOR_APP_VERSION` the same way `warp_cli/build.rs` does (`warp_tui` is also a
+      dependency of `app`, not the other way around, so it reads `app/Cargo.toml` itself);
+      `CLI_VERSION` became `cli_version()`, a function calling
+      `ChannelState::display_version(concat!("v", env!("PHOSPHOR_APP_VERSION"), "-dev"))`
+      directly — no new crate dependency needed, `warp_tui` already depends on `warp_core`.
+      Tests: `version_falls_back_to_app_version_dev_format_when_untagged` and
+      `version_prefers_the_release_tag_when_present` added to
+      `crates/warp_tui/src/session_tests.rs`; the existing `version_flag_prints_cli_version`
+      updated to call `cli_version()` instead of the removed constant.
 - [x] **Three places decided "is this a remote session the file tools cannot reach", and
       only one of them was right — FIXED 2026-09-03.** The runtime guard in
       `app/src/ai/blocklist/action_model/execute/read_files.rs:129` refuses when the session
@@ -12523,21 +12529,26 @@ open findings that had no pre-existing row.
       `AppContext::open_file_path_from_file_tree`). `uri/mod.rs`'s "Open with
       Phosphor" still executing runnable scripts by design remains open,
       untouched by this round.
-- [ ] **`CodeSource::FileTree` and a `GlobalSearch` origin are conflated, so a search
-      result inherits file-tree-only permissions (#706 follow-up, #757).**
-      `app/src/workspace/view.rs:5777`'s `LeftPanelEvent::OpenFileWithTarget` handler
-      hardcodes `CodeSource::FileTree { path: path.clone() }` for every event of that
-      shape, but that event is also emitted from
-      `app/src/workspace/view/left_panel.rs:810`, inside `handle_global_search_event`'s
-      `GlobalSearchViewEvent::OpenMatch` arm — i.e. clicking a Global Search result. #706
-      made `CodeSource::FileTree` "the one origin permitted to reach the OS default
-      [app]" and the one exception to the reveal-before-open confirmation
-      (`workspace/view.rs:5678-5721`), on the assumption that `FileTree` means a genuine
-      file-tree double-click. A file opened from search therefore silently gets those
-      same permissions. `app/src/code/editor_management.rs`'s `CodeSource` enum has no
-      `GlobalSearch` variant to distinguish the two. Needs: a new variant, threading the
-      real origin through instead of hardcoding `FileTree` at the handler, and updating
-      #706's permission checks to treat the two origins differently.
+- [x] **`CodeSource::FileTree` and a `GlobalSearch` origin were conflated, so a search
+      result inherited file-tree-only permissions — FIXED (#706 follow-up, #757),
+      2026-09-27.** `app/src/workspace/view.rs`'s `LeftPanelEvent::OpenFileWithTarget`
+      handler hardcoded `CodeSource::FileTree { path: path.clone() }` for every event of
+      that shape, but that event was also emitted from
+      `app/src/workspace/view/left_panel.rs`'s `handle_global_search_event`
+      (`GlobalSearchViewEvent::OpenMatch`) — i.e. clicking a Global Search result — so a
+      file opened from search silently inherited #706's "reach the OS default handler for
+      a launchable path" exception, meant only for a genuine file-tree double-click/Enter.
+      Fixed with a new `CodeSource::GlobalSearch { path }` variant
+      (`app/src/code/editor_management.rs`, telemetry name `"global_search"`) and a
+      `FileOpenOrigin { FileTree, GlobalSearch }` field threaded through
+      `LeftPanelEvent::OpenFileWithTarget` (`app/src/workspace/view/left_panel.rs`) so the
+      handler builds the right `CodeSource` from the real origin instead of assuming
+      `FileTree`; every exhaustive match on `CodeSource` updated
+      (`editor_management.rs`'s own `impl` block, `agent_sdk/driver/output.rs`'s
+      code-block-source formatter). Global Search keeps #681's reveal-not-launch behavior.
+      Test: `test_open_file_with_target_global_search_origin_reveals_launchable_paths`
+      added to `app/src/workspace/view_test.rs`, alongside the existing #706 sink test.
+      `DECLINED.md`'s #681/#706 entry updated with the conflation and its fix.
 - [ ] **Make `script/precheck`'s integration step a hard gate once a clean baseline is
       recorded (#721 follow-up).** #721 added the integration-suite step but left it
       deliberately advisory (`warn`, not `fail`) on scenario failures, matching

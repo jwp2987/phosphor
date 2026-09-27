@@ -1349,6 +1349,7 @@ fn format_agent_text<W: Write>(text: &AIAgentText, w: &mut W) -> io::Result<()> 
                     Some(CodeSource::AIAction { .. })
                     | Some(CodeSource::New { .. })
                     | Some(CodeSource::FileTree { .. })
+                    | Some(CodeSource::GlobalSearch { .. })
                     | Some(CodeSource::RemoteFileTree { .. })
                     | Some(CodeSource::Finder { .. })
                     | None => {}
