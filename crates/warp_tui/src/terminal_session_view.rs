@@ -2292,7 +2292,8 @@ impl TuiTerminalSessionView {
                 }
                 SessionsEvent::SessionBootstrapped(_)
                 | SessionsEvent::SessionInitialized { .. }
-                | SessionsEvent::EnvironmentVariablesUpdated { .. } => {}
+                | SessionsEvent::EnvironmentVariablesUpdated { .. }
+                | SessionsEvent::LegacySshFallback { .. } => {}
             },
         );
         ctx.subscribe_to_model(&active_session, |view, _, event, ctx| match event {

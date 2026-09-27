@@ -14,7 +14,11 @@ use warpui::{
 
 use remote_server::setup::UnsupportedReason;
 
-use crate::{terminal::model::session::SessionId, ui_components::icons::Icon, Appearance};
+use crate::{
+    terminal::model::session::{LegacySshFallbackReason, SessionId},
+    ui_components::icons::Icon,
+    Appearance,
+};
 
 const BANNER_BODY: &str =
     "While advanced features like file browsing and code review are currently \
@@ -44,6 +48,14 @@ pub enum SshRemoteServerFailureKind {
     /// path at all, let alone why (TODO.md "Remote-session setup degrades
     /// silently", item 1).
     Unsupported,
+    /// The command executor for this legacy SSH session was constructed
+    /// without ever reaching a connected remote-server client, and without
+    /// an explicit `Failed`/`Unsupported` state recorded for it either --
+    /// the feature flag may be off, or the connection may simply not have
+    /// completed yet. This is the "default fully-silent case" of TODO.md
+    /// "Remote-session setup degrades silently", item 1: previously nothing
+    /// at all distinguished this session from a fully phosphorized one.
+    Legacy,
 }
 
 impl SshRemoteServerFailureKind {
@@ -53,6 +65,7 @@ impl SshRemoteServerFailureKind {
             Self::BinaryInstall => "SSH extension couldn't be installed".to_string(),
             Self::Launch => "SSH extension couldn't be started".to_string(),
             Self::Unsupported => crate::t!("terminal-ssh-remote-server-unsupported-title"),
+            Self::Legacy => crate::t!("terminal-ssh-remote-server-legacy-title"),
         }
     }
 
@@ -68,6 +81,7 @@ impl SshRemoteServerFailureKind {
                 "The SSH extension could not be started on the remote host.".to_string()
             }
             Self::Unsupported => crate::t!("terminal-ssh-remote-server-unsupported-description"),
+            Self::Legacy => crate::t!("terminal-ssh-remote-server-legacy-description"),
         }
     }
 }
@@ -90,6 +104,25 @@ pub fn describe_unsupported_reason(reason: &UnsupportedReason) -> String {
             "terminal-ssh-remote-server-unsupported-non-glibc-detail",
             name = name.clone()
         ),
+    }
+}
+
+/// Explains, in one line, why this legacy SSH session never reached a
+/// connected remote-server client. Shown as the
+/// [`SshRemoteServerFailedBanner`]'s detail line for
+/// [`SshRemoteServerFailureKind::Legacy`].
+///
+/// Pure and unit-tested on its own (see `ssh_remote_server_failed_banner_tests.rs`)
+/// so the mapping from [`LegacySshFallbackReason`] to user-facing text can be
+/// checked without constructing any view.
+pub fn describe_legacy_fallback_reason(reason: &LegacySshFallbackReason) -> String {
+    match reason {
+        LegacySshFallbackReason::FeatureDisabled => {
+            crate::t!("terminal-ssh-remote-server-legacy-feature-disabled-detail")
+        }
+        LegacySshFallbackReason::NoConnectedClient => {
+            crate::t!("terminal-ssh-remote-server-legacy-no-client-detail")
+        }
     }
 }
 

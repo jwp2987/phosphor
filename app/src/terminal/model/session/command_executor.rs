@@ -26,7 +26,7 @@ use crate::terminal::{
     event::ExecutedExecutorCommandEvent, model::session::Sessions, shell::Shell,
 };
 
-use super::SessionInfo;
+use super::{LegacySshFallbackReason, SessionInfo};
 
 pub use in_band_command_executor::{
     is_in_band_command, InBandCommand, InBandCommandCancelledEvent, InBandCommandExecutor,
@@ -165,7 +165,7 @@ fn new_command_executor_for_local_tty_session(
         },
     };
 
-    use super::IsLegacySSHSession;
+    use super::{IsLegacySSHSession, SessionsEvent};
 
     // When the remote server feature flag is enabled and the session is a
     // legacy SSH session, use the remote server executor *if* the manager
@@ -180,8 +180,12 @@ fn new_command_executor_for_local_tty_session(
     // fall through to the existing ControlMaster-based
     // `RemoteCommandExecutor` below. This preserves the fallback behavior
     // described in specs/APP-3797.
+    let is_legacy_ssh_session_for_remote_server = matches!(
+        session_info.is_legacy_ssh_session,
+        IsLegacySSHSession::Yes { .. }
+    );
     if FeatureFlag::SshRemoteServer.is_enabled() {
-        if let IsLegacySSHSession::Yes { .. } = &session_info.is_legacy_ssh_session {
+        if is_legacy_ssh_session_for_remote_server {
             let session_id = session_info.session_id;
             let maybe_client = RemoteServerManager::handle(ctx)
                 .read(ctx, |mgr, _| mgr.client_for_session(session_id).cloned());
@@ -194,6 +198,28 @@ fn new_command_executor_for_local_tty_session(
                  falling back to ControlMaster executor"
             );
         }
+    }
+
+    // This is the "default fully-silent" legacy fallback (TODO.md
+    // "Remote-session setup degrades silently", item 1): no
+    // `RemoteServerSetupState::Failed`/`Unsupported` is necessarily recorded
+    // for a session that reaches here (setup may still be in progress, or the
+    // flag may simply be off), so nothing else tells the view layer this
+    // session settled into the legacy executor.
+    // `legacy_ssh_fallback_reason` is the decision (pure, unit-tested in
+    // `command_executor_tests.rs`); `TerminalView::handle_sessions_event`
+    // shows the same dismissible, once-per-session banner used for
+    // `Failed`/`Unsupported`, and does so at most once per session because
+    // this is the single call site that ever constructs this session's
+    // command executor.
+    if let Some(reason) = legacy_ssh_fallback_reason(
+        is_legacy_ssh_session_for_remote_server,
+        FeatureFlag::SshRemoteServer.is_enabled(),
+    ) {
+        ctx.emit(SessionsEvent::LegacySshFallback {
+            session_id: session_info.session_id,
+            reason,
+        });
     }
 
     if FeatureFlag::SSHTmuxWrapper.is_enabled()
@@ -367,6 +393,35 @@ fn new_command_executor_for_local_tty_session(
     }
 }
 
+/// Whether [`new_command_executor_for_local_tty_session`] should emit
+/// `SessionsEvent::LegacySshFallback` for this session's executor
+/// construction, and with what reason -- the "default fully-silent" legacy
+/// fallback (TODO.md "Remote-session setup degrades silently", item 1).
+///
+/// Pure decision logic, factored out so it's unit-testable without
+/// constructing a `Sessions` model, a `RemoteServerManager`, or real
+/// feature-flag state (see `command_executor_tests.rs`).
+///
+/// Callers must have already handled the "found a connected remote-server
+/// client" case before calling this -- that path returns
+/// `RemoteServerCommandExecutor` early and never reaches this decision. So
+/// `remote_server_flag_enabled: true` here always means "the flag is on, but
+/// no connected client was found for this session."
+#[cfg(feature = "local_tty")]
+fn legacy_ssh_fallback_reason(
+    is_legacy_ssh_session: bool,
+    remote_server_flag_enabled: bool,
+) -> Option<LegacySshFallbackReason> {
+    if !is_legacy_ssh_session {
+        return None;
+    }
+    if remote_server_flag_enabled {
+        Some(LegacySshFallbackReason::NoConnectedClient)
+    } else {
+        Some(LegacySshFallbackReason::FeatureDisabled)
+    }
+}
+
 #[cfg(any(test, feature = "test-util"))]
 pub mod testing {
     use crate::terminal::shell::ShellType;
@@ -425,3 +480,7 @@ pub mod testing {
         }
     }
 }
+
+#[cfg(all(test, feature = "local_tty"))]
+#[path = "command_executor_tests.rs"]
+mod tests;

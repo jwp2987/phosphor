@@ -152,7 +152,7 @@ use crate::terminal::view::ssh_remote_server_choice_view::{
 };
 use crate::terminal::view::ssh_remote_server_failed_banner::{
     SshRemoteServerFailedBanner, SshRemoteServerFailedBannerEvent, SshRemoteServerFailureKind,
-    describe_unsupported_reason,
+    describe_legacy_fallback_reason, describe_unsupported_reason,
 };
 use crate::terminal::view::telemetry::PromptSuggestionFallbackReason;
 use crate::workspaces::user_workspaces::UserWorkspacesEvent;
@@ -480,7 +480,9 @@ use crate::terminal::model::grid::grid_handler::{FragmentBoundary, TermMode};
 use crate::terminal::model::index::{Point, Side};
 use crate::terminal::model::mouse::MouseState;
 use crate::terminal::model::selection::{SelectAction, SelectionDirection};
-use crate::terminal::model::session::{BootstrapSessionType, SessionType, Sessions, SessionsEvent};
+use crate::terminal::model::session::{
+    BootstrapSessionType, LegacySshFallbackReason, SessionType, Sessions, SessionsEvent,
+};
 use crate::terminal::model::terminal_model::{BlockIndex, TerminalInputState};
 use crate::terminal::model::terminal_model::{
     BlockSelectionCardinality, SelectedBlocks, WithinModel,
@@ -9139,6 +9141,22 @@ impl TerminalView {
             }
             SessionsEvent::SessionBootstrapped(event) => {
                 self.handle_session_bootstrapped(*event, ctx);
+            }
+            // The "default fully-silent" legacy-SSH-fallback case (TODO.md
+            // "Remote-session setup degrades silently", item 1): fired at
+            // most once per session, from the one place the command executor
+            // for a legacy SSH session is ever constructed
+            // (`new_command_executor_for_local_tty_session`), so the
+            // dismissible banner it shows below is shown at most once per
+            // session by construction -- it cannot reappear after dismissal
+            // because nothing emits this event for that session again.
+            SessionsEvent::LegacySshFallback { session_id, reason } => {
+                self.show_ssh_remote_server_failed_banner(
+                    session_id,
+                    SshRemoteServerFailureKind::Legacy,
+                    &describe_legacy_fallback_reason(&reason),
+                    ctx,
+                );
             }
             _ => {}
         }

@@ -97,3 +97,56 @@ fn the_two_unsupported_reasons_produce_different_text() {
 
     assert_ne!(glibc_detail, non_glibc_detail);
 }
+
+#[test]
+fn legacy_kind_has_distinct_title_and_description_from_every_other_kind() {
+    init_i18n();
+
+    let legacy_title = SshRemoteServerFailureKind::Legacy.title();
+    let legacy_description = SshRemoteServerFailureKind::Legacy.description();
+
+    for other_kind in [
+        SshRemoteServerFailureKind::BinaryCheck,
+        SshRemoteServerFailureKind::BinaryInstall,
+        SshRemoteServerFailureKind::Launch,
+        SshRemoteServerFailureKind::Unsupported,
+    ] {
+        assert_ne!(
+            other_kind.title(),
+            legacy_title,
+            "Legacy must read differently from {other_kind:?}",
+        );
+        assert_ne!(
+            other_kind.description(),
+            legacy_description,
+            "Legacy must read differently from {other_kind:?}",
+        );
+    }
+
+    // Same fluent-resolution guard as the Unsupported test above.
+    assert_ne!(legacy_title, "terminal-ssh-remote-server-legacy-title");
+    assert_ne!(
+        legacy_description,
+        "terminal-ssh-remote-server-legacy-description"
+    );
+}
+
+#[test]
+fn feature_disabled_and_no_connected_client_produce_different_text() {
+    init_i18n();
+
+    let feature_disabled =
+        describe_legacy_fallback_reason(&LegacySshFallbackReason::FeatureDisabled);
+    let no_client = describe_legacy_fallback_reason(&LegacySshFallbackReason::NoConnectedClient);
+
+    assert_ne!(feature_disabled, no_client);
+    // Same fluent-resolution guard as the Unsupported-reason tests above.
+    assert_ne!(
+        feature_disabled,
+        "terminal-ssh-remote-server-legacy-feature-disabled-detail"
+    );
+    assert_ne!(
+        no_client,
+        "terminal-ssh-remote-server-legacy-no-client-detail"
+    );
+}
