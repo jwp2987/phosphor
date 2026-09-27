@@ -576,9 +576,23 @@ before acting):
       the three enable paths comes back. The red-dot/menu-item asymmetry the report describes
       is now moot in a shipped build — both sides are unreachable — and is **not** separately
       fixed; it would matter again to anyone building `--features autoupdate`.
-- [ ] **Nothing a user sees reports `0.1.2`.** Cargo says `0.1.2`, About and `--version` show
-      the dated git tag, and the embedded macOS `Info.plist` still carries `0.1.0`.
-      **In progress 2026-09-26:** #640, decision pending.
+- [x] **Nothing a user sees reports `0.1.2`. — FIXED (#640), 2026-09-27.** `app/Cargo.toml`'s
+      version is the decided single source of truth. The macOS `Info.plist` was already
+      derived from `CARGO_PKG_VERSION` (no change needed there). `--version`
+      (`crates/warp_cli/src/lib.rs::version_string`) and the About page + "Copy version"
+      action now show the injected `GIT_RELEASE_TAG` when present, otherwise
+      `v{app/Cargo.toml version}-dev` (`ChannelState::display_version`,
+      `crates/warp_core/src/channel/state.rs`) instead of the dated tag / `<unknown>` / `Dev`
+      placeholder — `warp_cli`'s own `build.rs` reads `app/Cargo.toml` directly and injects
+      `PHOSPHOR_APP_VERSION` at compile time, since it's a dependency of `app` and can't see
+      `app`'s Cargo.toml via its own `CARGO_PKG_VERSION`. `ChannelState::app_version()` itself
+      is unchanged — its `None`-means-untagged-build semantics are load-bearing for ~45 other
+      call sites (autoupdate, `chat_stream`'s user-agent, `remote_server`'s versioned paths).
+      Also added: `.github/workflows/phosphor_release.yml`'s `prepare_metadata` job now fails
+      a tag-triggered run early if the tag doesn't match `v<app/Cargo.toml version>[-suffix]`,
+      exempting legacy dated beta tags (`v2026.09.04.1-beta`); `workflow_dispatch`'s generated
+      `v0.<date>` tag is intentionally left alone (see the workflow's comment — it's an
+      ad-hoc, unversioned build, not a numbered release).
 - [x] **Three places decided "is this a remote session the file tools cannot reach", and
       only one of them was right — FIXED 2026-09-03.** The runtime guard in
       `app/src/ai/blocklist/action_model/execute/read_files.rs:129` refuses when the session
@@ -11669,8 +11683,8 @@ open findings that had no pre-existing row.
       cherry-picked (`05e8c04d`, window.rs blob identical to upstream's); workspace
       `winit` rev and `Cargo.lock` repointed. Distinct from the 2026-08-10 entry,
       which only moved the fork to a repo this project controls.
-- [ ] **#640 — version display.** See the existing item above ("Nothing a user
-      sees reports `0.1.2`") — decision still pending.
+- [x] **#640 — version display. FIXED, 2026-09-27.** See the existing item above ("Nothing a
+      user sees reports `0.1.2`") for the full resolution.
 - [ ] **#681 — open questions.** See the #681 item above for the fixed core
       (launchable paths revealed, not opened); `.html` policy and the file-tree
       double-click behaviour are still open questions there, not closed by this

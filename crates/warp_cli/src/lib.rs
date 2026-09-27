@@ -522,11 +522,22 @@ pub fn binary_name() -> Option<String> {
 
 /// The version string shown for `--version` / `-V`.
 ///
-/// Sourced from [`ChannelState::app_version`], which is populated from the
-/// `GIT_RELEASE_TAG` env var at compile time. Falls back to a placeholder for
-/// untagged builds (e.g. local `cargo run`).
+/// Shows the injected `GIT_RELEASE_TAG` (a tagged release build) when
+/// present; otherwise falls back to `v{app version}-dev` rather than a
+/// placeholder, so an untagged build (local `cargo run`, or CI without a
+/// release tag) still reports a real, single-sourced version number
+/// (issue #640). `PHOSPHOR_APP_VERSION` is injected by `build.rs`, which
+/// reads it directly from `app/Cargo.toml` -- see that file's doc comment
+/// for why this crate can't just use its own `CARGO_PKG_VERSION` (this
+/// crate isn't the app; it has no meaningful version of its own).
+///
+/// This is a *display* string only. It must not be confused with
+/// [`ChannelState::app_version`], which callers throughout the app rely on
+/// returning `None` for an untagged build (autoupdate gating, the
+/// `chat_stream` user-agent, `remote_server`'s versioned paths, ...); this
+/// function does not change that.
 pub fn version_string() -> &'static str {
-    ChannelState::app_version().unwrap_or("<unknown>")
+    ChannelState::display_version(concat!("v", env!("PHOSPHOR_APP_VERSION"), "-dev"))
 }
 
 #[cfg(test)]
