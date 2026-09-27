@@ -2605,8 +2605,10 @@ separately rather than inflating the queue count.
       `TODO.md:6267-6296`). Taking the struct wholesale re-imports the declined half.
       Also note the pin's bodies use let-chains (`if let … && let …`); the fork's copy at
       `driver.rs:120-185` uses nested `if let` and should stay that way.
-- [ ] **`c6266ee19`** — verify the installed binary, not binstall's metadata (CI caches
-      restore metadata without the binary).
+- [x] **`c6266ee19`** — verify the installed binary, not binstall's metadata (CI caches
+      restore metadata without the binary). **Closed via #712:** `script/install_cargo_release_deps`
+      and `script/install_cargo_bundle` now check the installed binary's own version and
+      `--force` reinstall on a mismatch, instead of trusting `cargo binstall`'s metadata.
 - [ ] **`6e0feaf9c` — SUPPLY CHAIN.** Fork CI still uses the third-party
       `cargo-bins/cargo-binstall` action (`prepare_environment/action.yml:87`,
       `pr-check.yml:249`) while the fork's own SHA-verified script sits unused. Also adds
