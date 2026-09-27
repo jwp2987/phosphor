@@ -2426,10 +2426,36 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
 
 **Agent / AI (8)**
 
-- [ ] `dff0d13fe` **P0 — skills are invisible to Claude Code and Codex.** The fork
+- [x] `dff0d13fe` **P0 — skills are invisible to Claude Code and Codex.** The fork
       ships both harnesses and supports `WARP_SKILL_DIRS`, but carries the pre-fix
       gate at `driver.rs:1083` ("Skill loading is Oz-only"). Upstream publishes them
       as symlinks into `.claude/skills` and `.agents/skills`. All deps present.
+      **Fixed 2026-09-27 (#705, `ab48bd376`):** ported verbatim as a new
+      `skill_dirs_publish` module (`app/src/ai/agent_sdk/driver/harness/`), wired
+      from `prepare_claude_environment_config`/`prepare_codex_environment_config`.
+      `driver.rs:1083`'s Oz-only gate is untouched, matching upstream — it governs a
+      different (in-app `SkillManager`) load path, not this one. Identity check
+      (canonicalize both sides), sandbox-vs-non-sandbox conflict resolution
+      (`.backup` rename vs. never-touch + `warp-<name>` alias), and precedence are
+      byte-faithful to upstream; upstream's own care level (never dereferences a
+      foreign symlink's target, only lstat-classifies and canonicalize-compares)
+      already meets the bar set by this fork's `SKILL_FILE_PATTERN`
+      arbitrary-file-read fix ("FIXED 2026-08-21"), so no IMPROVED divergence was
+      needed. Added 5 tests beyond the ported suite for the specific
+      safety properties: a dangling foreign symlink is never treated as ours, a
+      relative/`..`-based symlink to our own source is still recognized as ours by
+      canonical identity, and reclaiming a foreign symlink's name in a sandbox
+      renames the link entry without ever touching what it pointed at. **Residual,
+      not upstream's problem to solve and not solved here:** Warp's working
+      directory is an ephemeral per-task container upstream tears down with the
+      task, so the published symlinks never persist; in Phosphor the harness
+      working directory is typically the user's own repo checkout, so a
+      `WARP_SKILL_DIRS`-configured run leaves real symlinks at `.claude/skills/*`
+      and `.agents/skills/*` that show up in `git status`. Upstream's PR does not
+      address this (its "Cleanup: not needed" reasoning is container-teardown, which
+      doesn't apply here) and neither does this port — no `.git/info/exclude`
+      equivalent exists anywhere else in the fork for harness-written files, so
+      there's no existing pattern to extend. Flagged for a follow-up, not blocking.
 - [x] `9921300b7` **P0 — Ctrl-C on a third-party harness reports nothing.**
       `CLIAgentSessionStatus` has no `Cancelled` variant. ~1000 lines incl. tests;
       fully local (PTY byte observation), the harness is never signaled.
