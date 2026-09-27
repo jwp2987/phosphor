@@ -68,6 +68,16 @@ pub struct PaintContext<'a> {
     pub current_selection: Option<Selection>,
     /// Holds the time the scene should be repainted next, if animated.
     repaint_at: Option<Instant>,
+    /// Whether the scheduled `repaint_at` (if any) requires a full layout when it
+    /// fires. Set by every call to `repaint_after`/`repaint_at`, regardless of
+    /// whether that particular call ends up being the nearest one — so as long as
+    /// *any* element painted this frame still wants a layout-affecting repaint
+    /// (e.g. a live counter that rebuilds its content during layout), the next
+    /// scheduled wake stays conservative and gets a full layout. Only stays
+    /// `false` when every repaint request this frame was the paint-only variant
+    /// (e.g. a blinking cursor), which is what lets `AppContext::build_scene`
+    /// skip layout for that wake. See issue #703.
+    repaint_needs_layout: bool,
     pending_assets: HashSet<AssetHandle>,
     /// Keep track of all the views that were actually painted in this scene.
     views_painted: EntityIdSet,
@@ -343,6 +353,51 @@ impl Presenter {
         max_texture_dimension_2d: Option<u32>,
         ctx: &mut AppContext,
     ) -> Rc<Scene> {
+        self.build_scene_impl(
+            window_size,
+            scale_factor,
+            max_texture_dimension_2d,
+            ctx,
+            false,
+        )
+    }
+
+    /// Like [`Presenter::build_scene`], but when `skip_layout` is true, reuses the
+    /// previous frame's layout (and skips `after_layout`) and only re-runs paint.
+    ///
+    /// Only [`AppContext::build_scene`] should pass `true`, and only when the
+    /// window's only pending invalidation is a paint-only timer repaint (see
+    /// [`crate::WindowInvalidation::paint_only_redraw_requested`]) — i.e. no view
+    /// was notified or removed, and no other (layout-affecting) redraw was
+    /// requested. Every element's stored `size`/`origin` from the last real layout
+    /// stays valid in that case, since nothing in the view tree changed; paint
+    /// still runs in full, so anything read fresh at paint time (blink state,
+    /// hover, other time-based painting) still updates. See issue #703.
+    pub(crate) fn build_scene_skip_layout_if(
+        &mut self,
+        window_size: Vector2F,
+        scale_factor: f32,
+        max_texture_dimension_2d: Option<u32>,
+        ctx: &mut AppContext,
+        skip_layout: bool,
+    ) -> Rc<Scene> {
+        self.build_scene_impl(
+            window_size,
+            scale_factor,
+            max_texture_dimension_2d,
+            ctx,
+            skip_layout,
+        )
+    }
+
+    fn build_scene_impl(
+        &mut self,
+        window_size: Vector2F,
+        scale_factor: f32,
+        max_texture_dimension_2d: Option<u32>,
+        ctx: &mut AppContext,
+        skip_layout: bool,
+    ) -> Rc<Scene> {
         self.position_cache.clear_single_frame_positions();
 
         // Scale the window size by the zoom factor. We implement zoom by faking a window size that
@@ -352,16 +407,18 @@ impl Presenter {
         let zoomed_window_size = window_size.scale_down(ctx.zoom_factor());
         let zoomed_scale_factor = scale_factor.scale_up(ctx.zoom_factor());
 
-        self.layout(zoomed_window_size, ctx);
-        // In theory, after_layout would be a good place for Elements to update app state with the
-        // results of layout (for example, if a View stored the heights of its children to
-        // implement scrolling). However, it's not safe to pass a AppContext to after_layout
-        // because the presenter is mutably borrowed. Doing so can cause crashes like CORE-1544.
-        // In the future, we might:
-        // * Decouple after_layout from the presenter so it can take a AppContext
-        // * Extend the AfterLayoutContext API to allow state updates, but not other effects
-        self.after_layout(ctx);
-        let (scene, repaint_at, pending_assets) = self.paint(
+        if !skip_layout {
+            self.layout(zoomed_window_size, ctx);
+            // In theory, after_layout would be a good place for Elements to update app state with
+            // the results of layout (for example, if a View stored the heights of its children to
+            // implement scrolling). However, it's not safe to pass a AppContext to after_layout
+            // because the presenter is mutably borrowed. Doing so can cause crashes like CORE-1544.
+            // In the future, we might:
+            // * Decouple after_layout from the presenter so it can take a AppContext
+            // * Extend the AfterLayoutContext API to allow state updates, but not other effects
+            self.after_layout(ctx);
+        }
+        let (scene, repaint_at, repaint_needs_layout, pending_assets) = self.paint(
             zoomed_scale_factor,
             zoomed_window_size,
             max_texture_dimension_2d,
@@ -369,12 +426,22 @@ impl Presenter {
         );
         // After paint, collect a delayed repaint if it exists and start the timer.
         if let Some(repaint_at) = repaint_at {
-            ctx.manage_delayed_repaint_timers(self.window_id, repaint_at);
+            ctx.manage_delayed_repaint_timers(self.window_id, repaint_at, repaint_needs_layout);
         }
         ctx.manage_pending_assets(self.window_id, pending_assets);
         let scene = Rc::new(scene);
         self.scene = Some(scene.clone());
-        self.text_layout_cache.finish_frame();
+        if !skip_layout {
+            // `finish_frame` ages the 2-generation line/text-frame cache (see
+            // `text_layout.rs`): whatever wasn't re-fetched via `layout_line`/
+            // `layout_text` since the last call gets evicted. Layout is the only
+            // thing that calls those, so advancing the generation on a
+            // skip-layout frame wouldn't reflect anything actually going stale —
+            // it would just evict everything after ~2 idle blinks (~1s) for no
+            // reason, forcing a cold reshape of the whole visible tree on the
+            // next real layout. See issue #703 review follow-up.
+            self.text_layout_cache.finish_frame();
+        }
         self.frame_count += 1;
         ctx.load_requested_fallback_families(self.window_id);
         scene
@@ -414,9 +481,10 @@ impl Presenter {
         window_size: Vector2F,
         max_texture_dimension_2d: Option<u32>,
         ctx: &mut AppContext,
-    ) -> (Scene, Option<Instant>, HashSet<AssetHandle>) {
+    ) -> (Scene, Option<Instant>, bool, HashSet<AssetHandle>) {
         let mut scene = Scene::new(scale_factor, ctx.rendering_config());
         let mut repaint_at = None;
+        let mut repaint_needs_layout = false;
         let mut pending_assets = HashSet::new();
 
         if let Some(root_view_id) = ctx.root_view_id(self.window_id) {
@@ -431,12 +499,14 @@ impl Presenter {
                 highlighted_view: self.highlighted_view,
                 current_selection: None,
                 repaint_at: None,
+                repaint_needs_layout: false,
                 pending_assets: HashSet::new(),
                 views_painted: EntityIdSet::default(),
             };
             paint_ctx.paint(root_view_id, Vector2F::zero(), ctx);
 
             repaint_at = paint_ctx.repaint_at;
+            repaint_needs_layout = paint_ctx.repaint_needs_layout;
             pending_assets.extend(paint_ctx.pending_assets);
 
             // If the cursor shape had been changed by a view and that view is no longer being
@@ -466,7 +536,7 @@ impl Presenter {
             }
         }
 
-        (scene, repaint_at, pending_assets)
+        (scene, repaint_at, repaint_needs_layout, pending_assets)
     }
 
     pub fn ancestors(&self, mut view_id: EntityId) -> Vec<EntityId> {
@@ -636,23 +706,53 @@ impl PaintContext<'_> {
     }
 
     /// Notifies the window it needs a repaint after a certain duration.
+    ///
+    /// This repaint is assumed to potentially require a full layout (the common,
+    /// safe default). If the *only* thing an element needs on its next repaint is
+    /// to re-run paint (nothing about the view tree or its layout changed — e.g. a
+    /// blinking cursor), use [`Self::repaint_after_paint_only`] instead so an idle
+    /// window doesn't pay for a full-tree layout on every blink. See issue #703.
     pub fn repaint_after(&mut self, delay: Duration) {
         let start_time = Instant::now();
         let new_repaint_at = start_time + delay;
-
-        // We want the repaint timer with the nearest repaint time.
-        if self
-            .repaint_at
-            .is_some_and(|repaint_at| repaint_at <= new_repaint_at)
-        {
-            return;
-        }
         self.repaint_at(new_repaint_at);
     }
 
     /// Notifies the window it needs a repaint at a certain Instant.
     /// If there's an existing repaint_at time, keeps the earlier time.
+    ///
+    /// See [`Self::repaint_after`] for why this assumes a full layout is needed;
+    /// use [`Self::repaint_at_paint_only`] when it isn't.
     pub fn repaint_at(&mut self, new_repaint_at: Instant) {
+        // Any plain (layout-affecting) repaint request this frame makes the next
+        // scheduled wake conservative, regardless of whether it ends up being the
+        // nearest one: see the `repaint_needs_layout` field doc for why.
+        self.repaint_needs_layout = true;
+        self.set_nearest_repaint_at(new_repaint_at);
+    }
+
+    /// Like [`Self::repaint_after`], but declares that this repaint only needs
+    /// paint to re-run, not layout: nothing about this element's size, position,
+    /// or content will have changed, only something read fresh at paint time
+    /// (e.g. a blink flag toggled by a timer). Used by the editor's cursor blink;
+    /// see `crates/editor/src/render/element/mod.rs`'s `update_blink_state`.
+    ///
+    /// If any other element painted this frame requests a plain (layout-required)
+    /// repaint, that takes precedence for the next scheduled wake even if this
+    /// call's deadline is nearer — see the `repaint_needs_layout` field doc.
+    pub fn repaint_after_paint_only(&mut self, delay: Duration) {
+        let start_time = Instant::now();
+        let new_repaint_at = start_time + delay;
+        self.repaint_at_paint_only(new_repaint_at);
+    }
+
+    /// Like [`Self::repaint_at`], but see [`Self::repaint_after_paint_only`] for
+    /// why this doesn't mark the next repaint as layout-required.
+    pub fn repaint_at_paint_only(&mut self, new_repaint_at: Instant) {
+        self.set_nearest_repaint_at(new_repaint_at);
+    }
+
+    fn set_nearest_repaint_at(&mut self, new_repaint_at: Instant) {
         // We want the repaint timer with the nearest repaint time.
         if self
             .repaint_at

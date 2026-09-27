@@ -948,7 +948,13 @@ impl<V: EditorView> RichTextElement<V> {
         };
 
         *timer_guard = Some(next_update);
-        ctx.repaint_after(next_update - now);
+        // Paint-only: toggling `blink_cursor_visible` doesn't change this element's
+        // size, position, or content — `blinking_cursors_visible()` is read fresh
+        // from `paint()` (see `paint.rs`), so a full layout of the window isn't
+        // needed to reflect the new value, only another paint. This is what lets an
+        // idle focused editor's blink skip re-running layout on the whole window.
+        // See issue #703.
+        ctx.repaint_after_paint_only(next_update - now);
     }
 
     /// Whether or not blinking cursors are visible

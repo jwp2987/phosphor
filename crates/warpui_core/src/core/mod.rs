@@ -206,6 +206,13 @@ pub struct WindowInvalidation {
     /// only store a boolean. In the future we can extend this to store entity ids
     /// for specific views that need to be redrawn once we have that capability.
     pub redraw_requested: bool,
+    /// Set when the *only* reason this window is being redrawn is a timer-driven
+    /// repaint that was explicitly requested via `PaintContext::repaint_after_paint_only`/
+    /// `repaint_at_paint_only` (e.g. a blinking cursor) — i.e. no view was notified,
+    /// no view was removed, and no other (layout-affecting) `redraw_requested` reason
+    /// applies. When this is the sole invalidation, `AppContext::build_scene` reuses the
+    /// previous frame's layout and only re-runs paint. See issue #703.
+    pub paint_only_redraw_requested: bool,
 }
 
 pub enum Effect {
