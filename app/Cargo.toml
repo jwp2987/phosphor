@@ -563,7 +563,6 @@ default = [
     "nld_improvements",
     "file_tree",
     "vim_code_editor",
-    "code_launch_modal",
     "allow_ignoring_input_suggestions",
     "mcp_oauth",
     "expand_edit_to_pane",
@@ -691,7 +690,6 @@ default = [
 dhat_heap_profiling = ["dep:dhat"]
 dynamic_workflow_enums = []
 editable_markdown_mermaid = []
-default_adeberry_theme = []
 drag_tabs_to_windows = []
 embedded_code_review_comments = []
 interactive_conversation_management_view = []
@@ -900,7 +898,6 @@ undo_closed_panes = []
 revert_diff_hunk = []
 code_review_save_changes = []
 file_tree = []
-code_launch_modal = []
 api_key_authentication = []
 api_key_management = []
 diff_set_as_context = []

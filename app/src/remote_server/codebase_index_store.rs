@@ -55,7 +55,9 @@ use diesel::SqliteConnection;
 use http_client::Client;
 use std::collections::HashMap;
 
-use crate::ai::agent_providers::embeddings::{EmbeddingEndpoint, HttpEmbeddingProvider};
+use crate::ai::agent_providers::embeddings::{
+    EmbeddingEndpoint, EmbeddingEndpoints, HttpEmbeddingProvider,
+};
 use crate::persistence::{
     codebase_index_children, codebase_index_node_summaries, codebase_index_vectors,
     establish_codebase_index_connection, known_codebase_index_hashes,
@@ -379,8 +381,40 @@ impl DaemonStoreClient {
     /// `None` clears it, which is what a client with no configured provider
     /// sends; the daemon then reports indexing as unavailable rather than
     /// producing vectors nobody can compare against.
+    ///
+    /// This is the same two-cache shape `b09c024f6` fixed on the app path.
+    /// There, `CodebaseIndex` (`crates/ai/src/index/full_source_code_embedding/
+    /// codebase_index.rs:155`) keeps its own `embedding_config`, refreshed only
+    /// periodically (`:877`), while `RefreshingStoreClient`/`HttpEmbeddingProvider`
+    /// hold the current one; the two disagreeing for up to twenty minutes was
+    /// the reported defect. The same `CodebaseIndex` is what the daemon's
+    /// `CodebaseIndexManager` wraps around this store client (`mod.rs`), so it
+    /// has the identical stale-cache window here: every `StoreClient` method
+    /// that takes an explicit `embedding_config` (`generate_embeddings`,
+    /// `sync_merkle_tree`, ...) is handed *that* cached value by the caller,
+    /// not whatever `self.config` currently holds.
+    ///
+    /// Before this fix, `self.provider` used `set_endpoint` -- one endpoint
+    /// that answers for *any* model asked of it -- so a stale `embedding_config`
+    /// from an un-refreshed `CodebaseIndex` would silently reach whatever
+    /// provider is currently configured, regardless of whether that provider
+    /// actually serves that model. Using `set_endpoints` with a single-entry
+    /// [`EmbeddingEndpoints`] table instead closes the window the same way it
+    /// did on the app path: `endpoint()` requires an exact model match, so a
+    /// stale `embedding_config` that no longer matches the current entry
+    /// simply fails to resolve, surfacing as `IndexError::NoEmbeddingProvider`
+    /// -- a loud, correct failure -- instead of a silent cross-wire. There is
+    /// still only ever one model in the table at a time here
+    /// (`remote_client_preferences` sends only the client's single preferred
+    /// model, unlike the app path's full multi-model table), so this does not
+    /// add per-model routing so much as make the existing single entry
+    /// self-checking against a stale caller.
     pub fn configure(&self, endpoint: Option<EmbeddingEndpoint>, config: Option<EmbeddingConfig>) {
-        self.provider.set_endpoint(endpoint);
+        let endpoints = match (config, endpoint) {
+            (Some(config), Some(endpoint)) => EmbeddingEndpoints::single(config, endpoint),
+            _ => EmbeddingEndpoints::default(),
+        };
+        self.provider.set_endpoints(endpoints);
         if let Ok(mut slot) = self.config.lock() {
             *slot = config;
         }
@@ -511,4 +545,162 @@ pub fn build_daemon_store_client(data_dir: &Path) -> Arc<DaemonStoreClient> {
     let client = Arc::new(DaemonStoreClient::new(provider, store));
     set_daemon_store_client(Arc::clone(&client));
     client
+}
+
+/// Mirrors `app/src/ai/codebase_embeddings.rs`'s `endpoint_refresh_tests` --
+/// `a_newly_preferred_model_does_not_hijack_the_one_an_index_is_already_using`
+/// and `a_model_whose_provider_was_removed_reports_that_model_by_name` -- for
+/// `DaemonStoreClient::configure` rather than `RefreshingStoreClient::reconfigure`.
+/// See `configure`'s doc comment for why the two are the same defect.
+#[cfg(test)]
+mod configure_tests {
+    use std::path::PathBuf;
+
+    use futures::executor::block_on;
+    use http_client::Client;
+    use string_offset::ByteOffset;
+
+    use super::*;
+
+    fn a_client() -> DaemonStoreClient {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Arc::new(DaemonVectorStore::open(&dir.path().join("index.sqlite")));
+        DaemonStoreClient::new(
+            Arc::new(HttpEmbeddingProvider::new(Client::new(), None)),
+            store,
+        )
+    }
+
+    fn a_fragment() -> Fragment {
+        let content = "fn main() {}".to_owned();
+        let content_hash = ContentHash::from_content(&content);
+        let length = content.len();
+        Fragment::from_byte_range(
+            content,
+            content_hash,
+            PathBuf::from("/repo/src/main.rs"),
+            ByteOffset::from(0)..ByteOffset::from(length),
+        )
+    }
+
+    /// Asks the client to embed one fragment for `embedding_config` -- as a
+    /// sync driven by a cached, possibly-stale `embedding_config` would --
+    /// and reports how it failed. It always fails: no test here configures a
+    /// reachable HTTP endpoint, and `HttpEmbeddingProvider::embed` resolves
+    /// the endpoint (and can therefore report `NoEmbeddingProvider`) before
+    /// it opens a socket.
+    fn embed_error_for(
+        client: &DaemonStoreClient,
+        embedding_config: EmbeddingConfig,
+    ) -> IndexError {
+        let fragment = a_fragment();
+        let root_hash = NodeHash::from(fragment.content_hash().clone());
+        block_on(client.generate_embeddings(
+            embedding_config,
+            vec![fragment],
+            root_hash,
+            RepoMetadata { path: None },
+        ))
+        .expect_err("no reachable provider is configured in this test")
+    }
+
+    /// A public `http://` host: both of `agent_providers::embeddings`'
+    /// transport guards refuse it before a socket is opened, so which
+    /// endpoint a request *would* have gone to is observable in the error
+    /// offline and deterministically -- only the host is asserted on.
+    fn an_endpoint(host: &str) -> EmbeddingEndpoint {
+        EmbeddingEndpoint {
+            base_url: format!("http://{host}/v1"),
+            api_key: "sk-secret".to_owned(),
+        }
+    }
+
+    /// The regression this fix closes. In production the caller asking for
+    /// `embedding_config` is `CodebaseIndex`, which only re-reads its cached
+    /// model on a full sync (twenty minutes apart) -- so every incremental
+    /// sync in that window keeps passing the *old* model down to the store
+    /// client, even after `configure` has moved the daemon to a new one.
+    /// Before this fix, `HttpEmbeddingProvider::set_endpoint` pointed *every*
+    /// model at whatever endpoint was current, so that stale request would
+    /// silently reach the new provider instead of erroring. It must instead
+    /// fail loudly, by name.
+    #[test]
+    fn a_stale_model_from_the_caller_does_not_reach_the_current_provider() {
+        let client = a_client();
+
+        client.configure(
+            Some(an_endpoint("voyage.example.invalid")),
+            Some(EmbeddingConfig::Voyage3_5_512),
+        );
+
+        // The user switches providers -- e.g. `UpdatePreferences` after an
+        // edit under Settings > AI -- while a sync built against the old
+        // model is still in flight.
+        client.configure(
+            Some(an_endpoint("openai.example.invalid")),
+            Some(EmbeddingConfig::OpenAiTextSmall3_256),
+        );
+
+        let error = embed_error_for(&client, EmbeddingConfig::Voyage3_5_512);
+        assert!(
+            matches!(
+                error,
+                IndexError::NoEmbeddingProvider {
+                    model: "voyage-3.5"
+                }
+            ),
+            "a stale request for the old model must fail loudly by name, not \
+             silently reach the new provider; got {error}"
+        );
+    }
+
+    /// The other half: the model the daemon is *actually* configured for
+    /// right now must still resolve and reach its own endpoint, not the one
+    /// it was just switched away from.
+    #[test]
+    fn the_currently_configured_model_still_resolves_to_its_own_endpoint() {
+        let client = a_client();
+        client.configure(
+            Some(an_endpoint("voyage.example.invalid")),
+            Some(EmbeddingConfig::Voyage3_5_512),
+        );
+        client.configure(
+            Some(an_endpoint("openai.example.invalid")),
+            Some(EmbeddingConfig::OpenAiTextSmall3_256),
+        );
+
+        let error = embed_error_for(&client, EmbeddingConfig::OpenAiTextSmall3_256).to_string();
+        assert!(
+            error.contains("openai.example.invalid"),
+            "the model the daemon is currently configured for must still \
+             reach its provider; got {error}"
+        );
+        assert!(
+            !error.contains("voyage.example.invalid"),
+            "it must not reach the endpoint the daemon was just switched \
+             away from; got {error}"
+        );
+    }
+
+    /// `configure(None, None)` -- what a client with no configured provider
+    /// sends -- must not leave the previously-configured endpoint reachable
+    /// for any model.
+    #[test]
+    fn clearing_the_configuration_leaves_no_endpoint_reachable() {
+        let client = a_client();
+        client.configure(
+            Some(an_endpoint("voyage.example.invalid")),
+            Some(EmbeddingConfig::Voyage3_5_512),
+        );
+        client.configure(None, None);
+
+        assert!(
+            matches!(
+                embed_error_for(&client, EmbeddingConfig::Voyage3_5_512),
+                IndexError::NoEmbeddingProvider { .. }
+            ),
+            "clearing the configuration must not leave the previous endpoint \
+             reachable"
+        );
+    }
 }

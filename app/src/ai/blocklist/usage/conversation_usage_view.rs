@@ -51,6 +51,7 @@ pub enum ConversationUsageViewAction {
     ShowAllAgentRows,
 }
 
+#[derive(Clone)]
 pub struct ConversationUsageInfo {
     pub credits_spent: f32,
     // Credits spent over the last block, where the block comprises
@@ -68,6 +69,7 @@ pub struct ConversationUsageInfo {
 /// Timing information for the last set of agent responses
 /// (all blocks since the last user input, as this is the granularity
 /// at which we show the usage footer)
+#[derive(Clone)]
 pub struct TimingInfo {
     /// Time to first token for the last block (in milliseconds)
     pub time_to_first_token_ms: i64,
@@ -135,6 +137,18 @@ impl ConversationUsageView {
     /// this usage footer belongs to; if it turns out to have locally-loaded
     /// descendants with spent credits, the footer grows a "View details"
     /// toggle over the per-agent breakdown (see [`Self::rollup`]).
+    ///
+    /// Every stat this view renders is now read live from
+    /// `parent_conversation_id` at render time (see
+    /// [`Self::effective_usage_info`]/[`Self::effective_timing_info`])
+    /// instead of from this constructor's snapshot arguments -- but a live
+    /// *read* only matters if something actually asks for a re-render when
+    /// the conversation changes. Deliberately no `ViewContext` parameter
+    /// here (many pure unit tests below build a view with this constructor
+    /// with no `App`/`ViewContext` in scope at all); wiring the
+    /// re-render subscription is the caller's job -- see
+    /// `terminal/view.rs::handle_usage_footer_toggled`, the only production
+    /// caller, which subscribes right after calling this.
     pub fn new_footer_with_rollup(
         usage_info: ConversationUsageInfo,
         timing_info: Option<TimingInfo>,
@@ -212,17 +226,81 @@ impl ConversationUsageView {
             .unwrap_or(self.usage_info.credits_spent)
     }
 
+    /// Returns this view's usage data, derived **live** from
+    /// `parent_conversation_id` on every call rather than read from a value
+    /// snapshotted once when the footer opened -- the same defect class
+    /// [`Self::headline_total_credits`] already closed for the credits
+    /// headline (2026-08-21), generalized to the rest of the card: tool
+    /// calls, models, context-window usage, and the files/lines/commands
+    /// stats all used to sit frozen in `self.usage_info` while the user
+    /// watched them. Recomputes exactly the fields
+    /// `terminal/view.rs::handle_usage_footer_toggled` used to compute once
+    /// at construction, from the same conversation methods.
+    ///
+    /// Falls back to the constructor-provided `self.usage_info` when there
+    /// is no live conversation to read: `DisplayMode::Settings` views (built
+    /// by [`Self::new`], no `parent_conversation_id`), where `usage_info` is
+    /// historical data rather than a live conversation and is authoritative,
+    /// or a footer view whose conversation has since been removed from the
+    /// history model.
+    fn effective_usage_info(&self, app: &AppContext) -> ConversationUsageInfo {
+        let Some(parent_id) = self.parent_conversation_id else {
+            return self.usage_info.clone();
+        };
+        let Some(conversation) = BlocklistAIHistoryModel::as_ref(app).conversation(&parent_id)
+        else {
+            return self.usage_info.clone();
+        };
+        let tool_usage = conversation.tool_usage_metadata();
+        ConversationUsageInfo {
+            credits_spent: conversation.credits_spent(),
+            credits_spent_for_last_block: conversation.credits_spent_for_last_block(),
+            tool_calls: tool_usage.total_tool_calls(),
+            models: conversation.token_usage().to_vec(),
+            context_window_usage: conversation.context_window_usage(),
+            files_changed: tool_usage.apply_file_diff_stats.files_changed,
+            lines_added: tool_usage.apply_file_diff_stats.lines_added,
+            lines_removed: tool_usage.apply_file_diff_stats.lines_removed,
+            commands_executed: tool_usage.run_command_stats.commands_executed,
+        }
+    }
+
+    /// Timing counterpart to [`Self::effective_usage_info`]; see its doc
+    /// comment for why this reads live instead of a frozen snapshot. Only
+    /// ever rendered in `DisplayMode::Footer`, but harmless to compute
+    /// otherwise.
+    fn effective_timing_info(&self, app: &AppContext) -> Option<TimingInfo> {
+        let Some(parent_id) = self.parent_conversation_id else {
+            return self.timing_info.clone();
+        };
+        let Some(conversation) = BlocklistAIHistoryModel::as_ref(app).conversation(&parent_id)
+        else {
+            return self.timing_info.clone();
+        };
+        Some(TimingInfo {
+            time_to_first_token_ms: conversation.time_to_first_token_for_last_user_query_ms(),
+            total_agent_response_time_ms: conversation
+                .total_agent_response_time_since_last_user_query_ms(),
+            wall_to_wall_response_time_ms: conversation
+                .wall_to_wall_response_time_since_last_query(),
+        })
+    }
+
     /// Helper to collect models grouped by category.
     /// Returns a HashMap mapping category name to list of (model_id, is_byok) tuples.
     /// Custom-endpoint rows share the `is_byok` external-key icon bucket with BYOK
     /// rows, since both represent the user's own credentials rather than Zap's.
     /// Handles both category-based fields and legacy warp_tokens/byok_tokens/
-    /// custom_endpoint_tokens fields.
-    fn collect_models_by_category(&self) -> HashMap<String, Vec<(String, bool)>> {
+    /// custom_endpoint_tokens fields. Takes `usage_info` explicitly (rather than
+    /// reading `self.usage_info`) so callers can pass the live-derived value from
+    /// [`Self::effective_usage_info`].
+    fn collect_models_by_category(
+        usage_info: &ConversationUsageInfo,
+    ) -> HashMap<String, Vec<(String, bool)>> {
         let mut entries_by_category: HashMap<String, Vec<(String, bool)>> = HashMap::new();
 
         // Collect from category-based fields
-        for model in &self.usage_info.models {
+        for model in &usage_info.models {
             for (category, &tokens) in &model.warp_token_usage_by_category {
                 if tokens > 0 {
                     entries_by_category
@@ -251,7 +329,7 @@ impl ConversationUsageView {
 
         // Fallback to legacy fields for backwards compatibility
         if entries_by_category.is_empty() {
-            for model in &self.usage_info.models {
+            for model in &usage_info.models {
                 if model.warp_tokens > 0 {
                     entries_by_category
                         .entry(PRIMARY_AGENT_CATEGORY.to_string())
@@ -283,6 +361,8 @@ impl ConversationUsageView {
 
         let rollup = self.rollup(app);
         let total_credits_value = self.headline_total_credits(app, rollup.as_ref());
+        let usage_info = self.effective_usage_info(app);
+        let timing_info = self.effective_timing_info(app);
 
         let mut labels: Vec<Box<dyn Element>> = vec![];
         let mut values: Vec<Box<dyn Element>> = vec![];
@@ -295,9 +375,9 @@ impl ConversationUsageView {
         values.push(render_section_header("".to_string(), appearance));
 
         if self.display_mode == DisplayMode::Footer
-            && self.usage_info.credits_spent_for_last_block.is_some()
+            && usage_info.credits_spent_for_last_block.is_some()
         {
-            let last_block_credits = self.usage_info.credits_spent_for_last_block.unwrap();
+            let last_block_credits = usage_info.credits_spent_for_last_block.unwrap();
             labels.push(render_label_text(
                 "Credits spent (last response)",
                 appearance,
@@ -329,11 +409,11 @@ impl ConversationUsageView {
 
         labels.push(render_label_text("Tool calls", appearance));
         values.push(render_value_text(
-            format_value_text(self.usage_info.tool_calls, "call"),
+            format_value_text(usage_info.tool_calls, "call"),
             appearance,
         ));
 
-        let entries_by_category = self.collect_models_by_category();
+        let entries_by_category = Self::collect_models_by_category(&usage_info);
         let mut categories: Vec<_> = entries_by_category.keys().cloned().collect();
         categories.sort_by(|a, b| match (a.as_str(), b.as_str()) {
             (PRIMARY_AGENT_CATEGORY, _) => Ordering::Less,
@@ -426,8 +506,7 @@ impl ConversationUsageView {
         }
 
         labels.push(render_label_text("Context window used", appearance));
-        let context_usage_str =
-            format!("{}%", (self.usage_info.context_window_usage * 100.).round());
+        let context_usage_str = format!("{}%", (usage_info.context_window_usage * 100.).round());
         let context_window_element = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(4.)
@@ -438,7 +517,7 @@ impl ConversationUsageView {
             )
             .with_child(
                 ConstrainedBox::new(render_context_window_usage_icon(
-                    self.usage_info.context_window_usage,
+                    usage_info.context_window_usage,
                     theme,
                     None,
                 ))
@@ -470,7 +549,7 @@ impl ConversationUsageView {
 
         labels.push(render_label_text("Files changed", appearance));
         values.push(render_value_text(
-            format_value_text(self.usage_info.files_changed, "file"),
+            format_value_text(usage_info.files_changed, "file"),
             appearance,
         ));
 
@@ -479,7 +558,7 @@ impl ConversationUsageView {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_child(
                 Text::new(
-                    format!("+ {}", self.usage_info.lines_added),
+                    format!("+ {}", usage_info.lines_added),
                     appearance.ui_font_family(),
                     font_size,
                 )
@@ -501,7 +580,7 @@ impl ConversationUsageView {
             )
             .with_child(
                 Text::new(
-                    format!("- {}", self.usage_info.lines_removed),
+                    format!("- {}", usage_info.lines_removed),
                     appearance.ui_font_family(),
                     font_size,
                 )
@@ -513,13 +592,13 @@ impl ConversationUsageView {
 
         labels.push(render_label_text("Commands executed", appearance));
         values.push(render_value_text(
-            format_value_text(self.usage_info.commands_executed, "command"),
+            format_value_text(usage_info.commands_executed, "command"),
             appearance,
         ));
 
         // Last response time
         if self.display_mode == DisplayMode::Footer {
-            if let Some(timing) = &self.timing_info {
+            if let Some(timing) = &timing_info {
                 if timing.time_to_first_token_ms != 0
                     || timing.total_agent_response_time_ms != 0
                     || timing.wall_to_wall_response_time_ms.is_some()
@@ -964,7 +1043,7 @@ mod tests {
         );
 
         assert_eq!(
-            view.collect_models_by_category()
+            ConversationUsageView::collect_models_by_category(&view.usage_info)
                 .get(PRIMARY_AGENT_CATEGORY),
             Some(&vec![("Friendly alias".to_string(), true)])
         );
@@ -989,7 +1068,7 @@ mod tests {
         );
 
         assert_eq!(
-            view.collect_models_by_category()
+            ConversationUsageView::collect_models_by_category(&view.usage_info)
                 .get(PRIMARY_AGENT_CATEGORY),
             Some(&vec![("legacy-custom-endpoint".to_string(), true)])
         );
@@ -1520,6 +1599,110 @@ mod tests {
         });
     }
 
+    /// Generalizes the credits-only test above to the rest of the card:
+    /// `effective_usage_info` must re-derive every field from
+    /// `parent_conversation_id` on each call, not just `credits_spent`. Before
+    /// this fix, `context_window_usage` (like `tool_calls`, `models`, and the
+    /// files/lines/commands stats) sat frozen in the constructor's snapshot
+    /// for the entire time the footer stayed open.
+    #[test]
+    fn effective_usage_info_tracks_live_stats_while_the_footer_is_open() {
+        App::test((), |mut app| async move {
+            crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+            app.add_singleton_model(|_| Appearance::mock());
+            let terminal_view_id = warpui::EntityId::new();
+            let history = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+
+            let conversation_id = history.update(&mut app, |history, ctx| {
+                history.start_new_conversation(terminal_view_id, false, false, ctx)
+            });
+            history.update(&mut app, |history, _| {
+                history
+                    .conversation_mut(&conversation_id)
+                    .expect("conversation is loaded")
+                    .set_context_window_usage_for_test(0.1);
+            });
+
+            // Exactly the snapshot `handle_usage_footer_toggled` captures when
+            // the user opens the footer: 0.1, matching the conversation at
+            // that moment.
+            let view = ConversationUsageView::new_footer_with_rollup(
+                ConversationUsageInfo {
+                    context_window_usage: 0.1,
+                    ..placeholder_usage_info()
+                },
+                None,
+                MouseStateHandle::default(),
+                conversation_id,
+            );
+
+            // The conversation's context window keeps filling while the
+            // footer stays open.
+            history.update(&mut app, |history, _| {
+                history
+                    .conversation_mut(&conversation_id)
+                    .expect("conversation is loaded")
+                    .set_context_window_usage_for_test(0.9);
+            });
+
+            history.read(&app, |_, app_ctx| {
+                let live = view.effective_usage_info(app_ctx);
+                assert_eq!(
+                    live.context_window_usage, 0.9,
+                    "must reflect the conversation's current usage, not the \
+                     value frozen when the footer was opened"
+                );
+                assert_ne!(
+                    live.context_window_usage, view.usage_info.context_window_usage,
+                    "the open-time snapshot must not still be what renders once \
+                     the conversation's usage has changed"
+                );
+            });
+        });
+    }
+
+    /// `effective_usage_info` and `effective_timing_info` fall back to the
+    /// constructor-provided values -- rather than panicking or defaulting to
+    /// zero -- when there is no live conversation to read: `DisplayMode::
+    /// Settings` views built by [`ConversationUsageView::new`], which never
+    /// have a `parent_conversation_id` at all.
+    #[test]
+    fn effective_usage_info_and_timing_fall_back_to_the_snapshot_without_a_parent_conversation() {
+        App::test((), |mut app| async move {
+            let history = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+
+            let usage_info = ConversationUsageInfo {
+                context_window_usage: 0.42,
+                tool_calls: 7,
+                ..placeholder_usage_info()
+            };
+            let timing_info = TimingInfo {
+                time_to_first_token_ms: 123,
+                total_agent_response_time_ms: 456,
+                wall_to_wall_response_time_ms: Some(789),
+            };
+            let view = ConversationUsageView::new(
+                usage_info,
+                DisplayMode::Settings,
+                Some(timing_info),
+                MouseStateHandle::default(),
+            );
+
+            history.read(&app, |_, app_ctx| {
+                let live_usage = view.effective_usage_info(app_ctx);
+                assert_eq!(live_usage.context_window_usage, 0.42);
+                assert_eq!(live_usage.tool_calls, 7);
+
+                let live_timing = view
+                    .effective_timing_info(app_ctx)
+                    .expect("a Settings view with timing_info must still report it");
+                assert_eq!(live_timing.time_to_first_token_ms, 123);
+                assert_eq!(live_timing.total_agent_response_time_ms, 456);
+                assert_eq!(live_timing.wall_to_wall_response_time_ms, Some(789));
+            });
+        });
+    }
+
     // -----------------------------------------------------------------------
     // `collect_models_by_category` — the model/category/key-icon grouping the
     // usage panel renders from.
@@ -1551,7 +1734,7 @@ mod tests {
             MouseStateHandle::default(),
         );
 
-        let by_category = view.collect_models_by_category();
+        let by_category = ConversationUsageView::collect_models_by_category(&view.usage_info);
         let mut rows = by_category
             .get(PRIMARY_AGENT_CATEGORY)
             .expect("the primary agent category is present")
@@ -1588,7 +1771,7 @@ mod tests {
             MouseStateHandle::default(),
         );
 
-        let by_category = view.collect_models_by_category();
+        let by_category = ConversationUsageView::collect_models_by_category(&view.usage_info);
         assert_eq!(by_category.len(), 2);
         assert_eq!(
             by_category.get(PRIMARY_AGENT_CATEGORY),
@@ -1622,7 +1805,7 @@ mod tests {
             MouseStateHandle::default(),
         );
 
-        assert!(view.collect_models_by_category().is_empty());
+        assert!(ConversationUsageView::collect_models_by_category(&view.usage_info).is_empty());
     }
 
     /// **Documents a limitation of the legacy fallback, it does not endorse
@@ -1663,7 +1846,7 @@ mod tests {
         );
 
         assert_eq!(
-            view.collect_models_by_category()
+            ConversationUsageView::collect_models_by_category(&view.usage_info)
                 .get(PRIMARY_AGENT_CATEGORY),
             Some(&vec![("new-schema".to_string(), false)]),
             "the legacy-only model is currently invisible in this panel"

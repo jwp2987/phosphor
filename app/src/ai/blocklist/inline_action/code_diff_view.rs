@@ -469,6 +469,54 @@ impl RevertingDiffs {
     }
 }
 
+/// Which generation of revert write is currently in flight for each file
+/// index that has one (#686 follow-up).
+///
+/// A stale caller — a deadline timer armed for a write that has since
+/// resolved, whether by its real outcome or by an earlier timeout — must not
+/// be mistaken for the timer that belongs to whichever write is in flight for
+/// the same index *now*. [`RevertingDiffs::in_flight`] cannot make that
+/// distinction on its own: it is rebuilt fresh (as a new [`RevertingDiffs`])
+/// every time a card re-enters [`CodeDiffState::Reverting`], so a later
+/// attempt's write to the same index looks, to a stale caller, exactly like
+/// the one it was waiting on. A monotonically increasing generation, held
+/// here across attempts rather than inside any one [`RevertingDiffs`], is
+/// what tells them apart.
+#[derive(Debug, Default, Clone)]
+struct RevertWriteGenerations {
+    /// The generation currently in flight for each file index that has one.
+    in_flight: HashMap<usize, u64>,
+    /// The next generation [`Self::dispatched`] will hand out.
+    next: u64,
+}
+
+impl RevertWriteGenerations {
+    /// Records a fresh generation for a write just put in flight for `idx`,
+    /// superseding whatever generation (if any) `idx` previously held, and
+    /// returns it.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    fn dispatched(&mut self, idx: usize) -> u64 {
+        let generation = self.next;
+        self.next = self.next.wrapping_add(1);
+        self.in_flight.insert(idx, generation);
+        generation
+    }
+
+    /// The generation currently in flight for `idx`, if any.
+    fn current(&self, idx: usize) -> Option<u64> {
+        self.in_flight.get(&idx).copied()
+    }
+
+    /// Whether `generation` is still the one in flight for `idx` — `false`
+    /// for a stale generation, one whose write has since resolved (and, if a
+    /// later attempt dispatched a new write for the same `idx`, been
+    /// superseded by a newer generation this returns `false` for too).
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    fn is_current(&self, idx: usize, generation: u64) -> bool {
+        self.current(idx) == Some(generation)
+    }
+}
+
 /// Decides how `try_emit_diffs_saved` should report one file's write, given
 /// what [`InlineDiffView::write_action`] says actually happened — not the raw
 /// `DiffType` a diff card was built from.
@@ -696,6 +744,22 @@ pub struct CodeDiffView {
     /// "changed on disk", and — for a refused creation whose text happens to
     /// match — a guarded delete would remove a file the agent never created.
     accept_failed_diff_indices: HashSet<usize>,
+    /// The generation of each file index's current in-flight revert write, if
+    /// it has one — bumped every time [`Self::dispatch_file_revert`] puts a
+    /// new write in flight for that index.
+    ///
+    /// A revert write outcome does not have to be the first one this card
+    /// ever dispatches for `idx`: a failed or timed-out attempt returns the
+    /// card to `Accepted(None)`, and a later rewind can call
+    /// [`Self::begin_revert`]/[`Self::dispatch_file_revert`] for the same
+    /// index again. [`CodeDiffState::record_revert_write`]'s `in_flight` set
+    /// only knows "is a write for `idx` outstanding right now" — it cannot
+    /// tell a stale caller (a timer armed for an earlier attempt's write)
+    /// apart from the current one once a new write for the same `idx` is
+    /// itself in flight. `revert_write_generations`, checked by
+    /// [`Self::current_revert_generation`] and enforced by
+    /// [`Self::timeout_file_revert`], is what tells them apart.
+    revert_write_generations: RevertWriteGenerations,
 }
 
 impl CodeDiffView {
@@ -1118,6 +1182,7 @@ impl CodeDiffView {
             should_expand_when_complete: false,
             reverted_diff_indices: HashSet::new(),
             accept_failed_diff_indices: HashSet::new(),
+            revert_write_generations: RevertWriteGenerations::default(),
             selected_tab: 0,
             display_mode,
             title,
@@ -1454,8 +1519,24 @@ impl CodeDiffView {
                 RevertStart::NotReverted => reverting.file_not_reverted(idx),
             }
         }
+        if matches!(start, RevertStart::InFlight) {
+            // A fresh generation for this dispatch, so a timer armed for an
+            // earlier attempt's write to the same `idx` (one that failed or
+            // timed out, returning the card to `Accepted(None)` before a
+            // later rewind dispatched this one) cannot be mistaken for the
+            // timer that belongs to it — see `RevertWriteGenerations`' doc.
+            self.revert_write_generations.dispatched(idx);
+        }
         self.settle_revert(ctx);
         start
+    }
+
+    /// The generation [`Self::timeout_file_revert`] must be given to time out
+    /// the write [`Self::dispatch_file_revert`] just put in flight for `idx`.
+    /// `None` if that call did not put a write in flight (nothing to time
+    /// out).
+    pub fn current_revert_generation(&self, idx: usize) -> Option<u64> {
+        self.revert_write_generations.current(idx)
     }
 
     /// Gives up on reverting queued file `idx` without writing anything: a
@@ -1473,6 +1554,64 @@ impl CodeDiffView {
             }
         }
         self.settle_revert(ctx);
+    }
+
+    /// Marks the in-flight revert write for file `idx` failed because it never resolved
+    /// within the caller's deadline (`REWIND_REVERT_WRITE_TIMEOUT`, `terminal/view.rs`),
+    /// rather than leaving the card stuck `Reverting` forever and every later rewind of the
+    /// same file queued behind it (#686 follow-up).
+    ///
+    /// Returns `false`, changing nothing, if this write already resolved before the
+    /// deadline fired — via [`CodeDiffState::record_revert_write`]'s own idempotence, the
+    /// same guard that makes a duplicate real outcome a no-op. The caller must treat `false`
+    /// as "this timeout is stale, ignore it": the real settle already ran
+    /// `RevertSequence::settled` for this job, and running it a second time here would
+    /// advance a lane a write ahead of where it should be.
+    ///
+    /// `generation` must be the value [`Self::current_revert_generation`] returned right
+    /// after the dispatch this timer was armed for. It is also `false`, changing nothing,
+    /// when `generation` is stale: a failed or timed-out attempt returns the card to
+    /// `Accepted(None)`, and a later rewind can dispatch a *new* write for the same `idx`
+    /// while this timer is still pending. Without this check that new write's `in_flight`
+    /// entry would look, to `record_revert_write`, exactly like the one this timer is
+    /// waiting on, and this would fail the wrong write early.
+    pub fn timeout_file_revert(
+        &mut self,
+        idx: usize,
+        generation: u64,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        if !self.revert_write_generations.is_current(idx, generation) {
+            return false;
+        }
+        let recorded = self.state.record_revert_write(idx, false);
+        if recorded {
+            let window_id = ctx.window_id();
+            let file_path = self
+                .pending_diffs
+                .get(idx)
+                .and_then(|diff| diff.diff_view.as_ref(ctx).file_path())
+                .map(ToString::to_string);
+            let message = match file_path {
+                Some(path) => {
+                    format!("Reverting {path} timed out; the file may still hold the agent's edit.")
+                }
+                None => {
+                    "Reverting a file timed out; it may still hold the agent's edit.".to_owned()
+                }
+            };
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(DismissibleToast::error(message), window_id, ctx);
+            });
+            self.settle_revert(ctx);
+            // After settling, so a listener sees the card in its final state for this
+            // outcome — same ordering `handle_save_completed` uses for a real outcome.
+            ctx.emit(CodeDiffViewEvent::RevertWriteSettled {
+                file_idx: idx,
+                reverted: false,
+            });
+        }
+        recorded
     }
 
     /// Leaves `Reverting` once every dispatched write has come back, marking

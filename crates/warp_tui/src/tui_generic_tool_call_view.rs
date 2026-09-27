@@ -243,6 +243,7 @@ impl TuiGenericToolCallView {
             AIAgentActionType::FileGlobV2 {
                 patterns,
                 search_dir,
+                ..
             } => {
                 let path = search_dir.as_deref().unwrap_or(".");
                 format!("{}\n  in {path}", patterns.join("\n"))

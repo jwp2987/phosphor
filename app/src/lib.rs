@@ -3235,8 +3235,6 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::KittyImages,
         #[cfg(feature = "warp_packs")]
         FeatureFlag::WarpPacks,
-        #[cfg(feature = "default_adeberry_theme")]
-        FeatureFlag::DefaultAdeberryTheme,
         #[cfg(feature = "agent_mode_primary_xml")]
         FeatureFlag::AgentModePrimaryXML,
         #[cfg(feature = "agent_mode_pre_plan_xml")]
@@ -3363,11 +3361,6 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::FileTree,
         #[cfg(feature = "allow_ignoring_input_suggestions")]
         FeatureFlag::AllowIgnoringInputSuggestions,
-        // Zap (localization): the cloud entry points for the ambient agent / agent
-        // management view have been physically retired. Running BYOP agents locally
-        // doesn't depend on these entry points.
-        #[cfg(feature = "code_launch_modal")]
-        FeatureFlag::CodeLaunchModal,
         #[cfg(feature = "api_key_authentication")]
         FeatureFlag::APIKeyAuthentication,
         #[cfg(feature = "api_key_management")]

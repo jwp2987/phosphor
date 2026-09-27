@@ -106,6 +106,7 @@ impl FileGlobExecutor {
                 | AIAgentActionType::FileGlobV2 {
                     patterns,
                     search_dir: path,
+                    ..
                 },
             ..
         } = input.action
@@ -133,13 +134,23 @@ impl FileGlobExecutor {
         let patterns_clone = patterns.clone();
         let conversation_id_clone = input.conversation_id;
         let is_file_glob_v2 = is_file_glob_v2(&input);
+        // Only `FileGlobV2` carries a request-side limit; a plain `FileGlob` (v1) request,
+        // or any action built before this field existed, gets `None` -- no additional
+        // truncation here beyond `glob_result_to_json`'s own cap, exactly as before this
+        // field was added.
+        let result_limit = match input.action.action {
+            AIAgentActionType::FileGlobV2 { result_limit, .. } => result_limit,
+            _ => None,
+        };
         ActionExecution::new_async(
             async move {
                 match run_file_glob(patterns_clone, absolute_path, session, shell_launch_data)
                     .with_timeout(FILE_GLOB_TIMEOUT)
                     .await
                 {
-                    Ok(result) => result,
+                    Ok(result) => {
+                        result.map(|glob_result| apply_result_limit(glob_result, result_limit))
+                    }
                     Err(_) => Err(anyhow::anyhow!("File glob operation timed out")),
                 }
             },
@@ -196,6 +207,33 @@ impl FileGlobExecutor {
 
 fn is_file_glob_v2(input: &ExecuteActionInput) -> bool {
     matches!(input.action.action, AIAgentActionType::FileGlobV2 { .. })
+}
+
+/// Truncates a successful glob result to `limit` -- the model's `limit` argument, already
+/// clamped upstream to `GLOB_RESULT_LIMIT` (`app/src/ai/agent_providers/tools/search.rs`).
+///
+/// `None` means no request-side limit is known (a plain `FileGlob` v1 request, or a
+/// `FileGlobV2` action built before `result_limit` existed): this applies no truncation of
+/// its own, leaving `glob_result_to_json`'s independent cap as the sole backstop, exactly
+/// as before this limit was honoured here. Errors and cancellation pass through unchanged
+/// -- there is nothing to truncate about them.
+fn apply_result_limit(result: FileGlobV2Result, limit: Option<usize>) -> FileGlobV2Result {
+    let Some(limit) = limit else {
+        return result;
+    };
+    match result {
+        FileGlobV2Result::Success {
+            mut matched_files,
+            warnings,
+        } => {
+            matched_files.truncate(limit);
+            FileGlobV2Result::Success {
+                matched_files,
+                warnings,
+            }
+        }
+        other => other,
+    }
 }
 
 async fn run_file_glob(

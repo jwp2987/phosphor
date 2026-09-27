@@ -619,3 +619,154 @@ fn non_container_bootstrap_is_written_as_a_single_unchunked_write() {
         drop(model_events_tx);
     });
 }
+
+/// The native-completions watchdog is what stands between an unanswered `^Y` handshake and a
+/// permanently wedged pane (see `arm_native_completions_watchdog`'s doc comment): if the shell
+/// never replies, `in_flight_native_completions_state` stays `AwaitingPrompt` forever, which
+/// gates `can_write_to_pty` shut for good.
+///
+/// This drives `arm_native_completions_watchdog` directly rather than through
+/// `run_native_shell_completions` -> `execute_next_queued_write`, because that path additionally
+/// requires the line editor to be active (this harness's line editor never is -- see the
+/// file-level comment), and the watchdog is the mechanism under test.
+#[test]
+fn native_completions_watchdog_recovers_an_unanswered_prompt_handshake() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        let (results_tx, results_rx) = async_channel::unbounded();
+        controller.update(&mut app, |controller, ctx| {
+            controller.in_flight_native_completions_state =
+                Some(NativeShellCompletionsState::AwaitingPrompt {
+                    buffer_text: "echo hi".to_owned(),
+                    results_tx,
+                });
+            controller.arm_native_completions_watchdog(Duration::from_millis(20), true, ctx);
+        });
+
+        controller.read(&app, |controller, _| {
+            assert!(
+                controller.in_flight_native_completions_state.is_some(),
+                "the watchdog must not clear the state before its timeout elapses."
+            );
+        });
+
+        // Long enough for the 20ms watchdog to fire and its callback to run.
+        Timer::after(Duration::from_millis(200)).await;
+
+        controller.read(&app, |controller, _| {
+            assert!(
+                controller.in_flight_native_completions_state.is_none(),
+                "an unanswered handshake must be abandoned so `can_write_to_pty` reopens, \
+                 not left wedging the pane forever."
+            );
+        });
+        assert!(
+            results_rx.recv().await.is_err(),
+            "dropping the abandoned state must close `results_tx` so the requester's \
+             `results_rx.recv().await.ok()` resolves to `None` instead of leaking the \
+             channel and hanging forever."
+        );
+
+        drop(model_events_tx);
+    });
+}
+
+/// A watchdog timer belongs to the generation it was armed under (`native_completions_generation`);
+/// a stale timer from a superseded phase must not tear down a later, still-live handshake, but
+/// the later phase's own watchdog must still fire on schedule. Without this guard a
+/// slow-but-successful handshake could be torn down by its own predecessor's timeout, per
+/// `arm_native_completions_watchdog`'s doc comment.
+#[test]
+fn native_completions_watchdog_generation_guard_ignores_a_superseded_timer() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        // Generation 1: a prompt handshake with a short-fused watchdog.
+        let (first_results_tx, _first_results_rx) = async_channel::unbounded();
+        controller.update(&mut app, |controller, ctx| {
+            controller.in_flight_native_completions_state =
+                Some(NativeShellCompletionsState::AwaitingPrompt {
+                    buffer_text: "first".to_owned(),
+                    results_tx: first_results_tx,
+                });
+            controller.arm_native_completions_watchdog(Duration::from_millis(20), true, ctx);
+        });
+
+        // The shell replies before generation 1's watchdog fires: the handshake advances to
+        // `AwaitingResults` and arms its own, longer-lived generation-2 watchdog -- exactly what
+        // `ModelEvent::SendCompletionsPrompt` does in production.
+        let (second_results_tx, second_results_rx) = async_channel::unbounded();
+        controller.update(&mut app, |controller, ctx| {
+            controller.in_flight_native_completions_state =
+                Some(NativeShellCompletionsState::AwaitingResults {
+                    results_tx: second_results_tx,
+                });
+            controller.arm_native_completions_watchdog(Duration::from_millis(500), false, ctx);
+        });
+
+        // Long enough for generation 1's 20ms timer to have fired; short of generation 2's 500ms.
+        Timer::after(Duration::from_millis(150)).await;
+
+        controller.read(&app, |controller, _| {
+            assert!(
+                controller.in_flight_native_completions_state.is_some(),
+                "a stale timer from a superseded phase must not tear down the current handshake."
+            );
+        });
+        assert!(
+            second_results_rx.try_recv().is_err(),
+            "the current handshake's channel must still be open."
+        );
+
+        // Generation 2's own watchdog must still fire and recover the pane.
+        Timer::after(Duration::from_millis(500)).await;
+
+        controller.read(&app, |controller, _| {
+            assert!(
+                controller.in_flight_native_completions_state.is_none(),
+                "the current generation's own watchdog must still fire on schedule."
+            );
+        });
+
+        drop(model_events_tx);
+    });
+}

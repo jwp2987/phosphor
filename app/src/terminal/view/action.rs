@@ -370,7 +370,6 @@ pub enum TerminalAction {
     OpenFilesPalette {
         source: PaletteSource,
     },
-    DismissCodeToolbeltTooltip,
     ToggleLongRunningCommandControl,
     ToggleHideCliResponses,
     ExitAgentView,
@@ -685,7 +684,6 @@ impl fmt::Debug for TerminalAction {
             OpenConversationsPalette => write!(f, "OpenConversationsPalette"),
             PickRepoToOpen => write!(f, "PickRepoToOpen"),
             OpenFilesPalette { .. } => write!(f, "OpenFilesPalette"),
-            DismissCodeToolbeltTooltip => write!(f, "DismissCodeToolbeltTooltip"),
             SummarizeConversation => write!(f, "SummarizeConversation"),
             ToggleLongRunningCommandControl => {
                 write!(f, "TakeOverLongRunningCommandControlForUser")

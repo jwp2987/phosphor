@@ -325,6 +325,7 @@ fn label_for_action(
         AIAgentActionType::FileGlobV2 {
             patterns,
             search_dir,
+            ..
         } => {
             let matched_count = match result {
                 Some(AIAgentActionResultType::FileGlobV2(FileGlobV2Result::Success {

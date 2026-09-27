@@ -490,10 +490,22 @@ should not be left implying otherwise.
       writes — that ordering is pin-verbatim (see the doc comment on `maybe_copy_on_select`) and
       was explicitly NOT touched by this fix; it needs its own maintainer sign-off (AGENTS.md
       §5.10) and tracking issue before reordering.
-- [ ] **The literal-`#` escape hatch is fragile** — Escape immediately keeps the `#`, but
+- [x] **The literal-`#` escape hatch is fragile** — Escape immediately keeps the `#`, but
       Backspace-then-Escape deletes it, because clearing the filter chip makes the panel look
       empty. Worth a UX look **specifically because this release ships the setting that
       exists to address that complaint**.
+      **Fixed, #767 (`3e1e45568`):** confirmed by tracing `handle_command_search_closed`
+      (`app/src/terminal/input.rs`) against `SearchBar`'s `EditorEvent::BackspaceOnEmptyBuffer`
+      arm — the `#` is never in the panel's own editor to backspace out of; it is consumed
+      into the filter chip the instant the panel opens, so "empty query, no chip" can only be
+      reached by the user clearing the chip, not by erasing the `#`. The old
+      `is_command_search_empty` branch treated that identically to "never asked anything" and
+      cleared the buffer anyway. Removed that branch — clearing now happens only for a real,
+      non-empty natural-language query (`was_non_empty_ai_command_search`) — so
+      Backspace-then-Escape now behaves exactly like Escape-immediately. Decision logic
+      extracted into pure `should_clear_hashtag_buffer_on_command_search_close` and unit
+      tested directly (`input_test.rs`); the surrounding `was_triggered_by_hashtag` check and
+      the actual buffer clear remain GUI-only.
 - [x] **Empty "Learn more" links** — `SSH_DOCS_URL` and `SUBSHELL_DOCS_URL` are empty
       strings; clicking does nothing.
       **Closed 2026-09-26:** `SSH_DOCS_URL`/`SUBSHELL_DOCS_URL` were removed in `3337759b8`; the links point at the in-repo manual or the control is hidden.
@@ -554,7 +566,7 @@ in front of a user. **All of these are in the `v2026.08.29.1-beta` build.**
       referenced by nothing, and **added by `ab8ff5787`** — a commit about making "Fetch from
       API" work for Ollama. Accidental `git add`. **DELETED 2026-09-04 (#639)**, after
       confirming by grep that nothing in the tree referenced it.
-- [ ] **Residue of #634, not part of that change.** Three orphans, all verified by grep,
+- [x] **Residue of #634, not part of that change.** Three orphans, all verified by grep,
       all left in place deliberately — each removal reaches further than that fix's diff:
       - `TerminalAction::DismissCodeToolbeltTooltip` has **no dispatcher**. The variant, its
         `Display` arm (`terminal/view/action.rs`) and its handler (`terminal/view.rs`) are
@@ -574,6 +586,23 @@ in front of a user. **All of these are in the `v2026.08.29.1-beta` build.**
       `crates/integration/src/test/settings_private.rs`;
       `PrivacySettings::disable_default_regex_trigger` lost its only caller but is kept on
       purpose, with the reason at its definition.
+
+      **Fixed, all three removed (`17c3a4b10`/`4a015a07d`):** the `DismissCodeToolbeltTooltip` variant, its `Display`
+      arm and its handler are gone (the handler's only effect,
+      `dismissed_code_toolbelt_new_feature_popup.set_value(true, ...)`, keeps its real writer
+      in `one_time_modal_model.rs` untouched, confirmed by grep before removal); `CodeSettings`
+      import in `terminal/view.rs` dropped with it, now unused. `FeatureFlag::CodeLaunchModal`
+      and `FeatureFlag::DefaultAdeberryTheme` removed — enum variants
+      (`warp_features/src/lib.rs`), their `#[cfg(feature = "...")]` registrations in
+      `enabled_features()` (`app/src/lib.rs`), and the `code_launch_modal`/
+      `default_adeberry_theme` Cargo features (`app/Cargo.toml`, including `code_launch_modal`
+      out of `default`) — re-grepped the whole tree afterward to confirm nothing else named
+      either flag or the removed action. `theme.rs`'s comment about
+      `FeatureFlag::DefaultAdeberryTheme` having "no reader at all" updated to say the flag
+      itself is gone. No test: this is pure dead-code deletion with no independently testable
+      behavior change; the one live behavior it touches
+      (`dismissed_code_toolbelt_new_feature_popup`) already has coverage, untouched, in
+      `settings_private.rs`.
 
 **Agent-reported, not yet coordinator-verified** (recorded so they are not lost; verify
 before acting):
@@ -10795,7 +10824,7 @@ Ordered by severity, not by area.
       allow-list at all.
       **Closed 2026-09-26:** historical correction; the underlying defect was closed by `55bd7b4c4`.
 
-- [ ] **The usage footer is still frozen at open time for everything except credits.**
+- [x] **The usage footer is still frozen at open time for everything except credits.**
       `terminal/view.rs:6438-6448` builds a `ConversationUsageInfo` snapshot when the
       footer opens and passes it into `new_footer_with_rollup`. The credits headline was
       moved to a live read on 2026-08-21, but `credits_spent_for_last_block`, `tool_calls`,
@@ -10804,12 +10833,38 @@ Ordered by severity, not by area.
       **Clean fix:** stop passing a snapshot at all and let the view derive everything from
       `parent_conversation_id` at render, exactly as the credits now do. Same defect class,
       wider surface.
+      **Fixed 2026-09-27 (#755).** Added `ConversationUsageView::effective_usage_info`/
+      `effective_timing_info`, which derive a fresh `ConversationUsageInfo`/`TimingInfo`
+      from `parent_conversation_id` on every call (exactly what `handle_usage_footer_toggled`
+      used to compute once), falling back to the constructor snapshot only when there is no
+      live conversation (`DisplayMode::Settings`, or a since-removed conversation).
+      `render_unified_layout` now calls these instead of reading `self.usage_info`/
+      `self.timing_info` directly; `collect_models_by_category` takes the live value as a
+      parameter. Tests: `effective_usage_info_tracks_live_stats_while_the_footer_is_open`,
+      `effective_usage_info_and_timing_fall_back_to_the_snapshot_without_a_parent_conversation`
+      (`conversation_usage_view.rs`).
 
-- [ ] **Unverified assumption: is the usage-footer rich-content view re-rendered when its**
+- [x] **Unverified assumption: is the usage-footer rich-content view re-rendered when its**
       **conversation updates?** If it is not, the live credits read is inert. Note this
       would be **pre-existing and would affect the rollup limb equally** — `b18a81603`
       already depends on it — so it is not something the 2026-08-21 change introduced.
       Needs a run to settle; the build gate was closed when it was found.
+      **Settled 2026-09-27 (#755): it was NOT re-rendered.** This is a notify-driven view,
+      not an immediate-mode repaint, and nothing subscribed it to anything — confirmed by
+      inspection of `ctx.subscribe_to_model`/`ctx.notify()` usage elsewhere in the crate, not
+      a live run (still not possible in this sandbox). `handle_usage_footer_toggled`'s
+      `ctx.add_typed_action_view` closure now subscribes to `BlocklistAIHistoryModel` and
+      calls `ctx.notify()` on every event while the footer view is alive, so the live reads
+      above are no longer inert. **Known simplification vs. the pin:** the pin
+      (`4111d08f9:app/src/ai/blocklist/usage/conversation_usage_view.rs:172-223`) filters
+      this subscription to a dedicated `BlocklistAIHistoryEvent::ConversationUsageMetadataUpdated
+      { conversation_id }` event (plus removal/deletion), narrowing to the exact touched
+      conversation. This fork's `BlocklistAIHistoryEvent` has no such variant — nothing emits
+      it anywhere — so matching that would mean threading a new event through every site that
+      mutates `conversation_usage_metadata`, a materially larger change. This fix notifies
+      unconditionally on every history event while the footer is open instead: correct (never
+      stale) but redraws somewhat more than necessary for a rarely-open, cheap-to-render view.
+      Filed as a separate, smaller finding rather than blocking this fix on it.
 
 #### BYOP logging residuals — the exhaustive list (2026-08-21)
 
@@ -10882,6 +10937,27 @@ claim, which was wrong by four.
       reverts. See `DECLINED.md` → IMPROVED.
       **Revert-chain review fixes (`6c60a4940`):** the GUI revert restores the raw
       original text (CRLF/mixed endings preserved) and skips files the accept never wrote.
+      **Deadline follow-up, #768 (`17c3a4b10`):** a revert write that never resolves (most plausibly a
+      remote host gone unreachable mid-write) left the card stuck `Reverting` and every
+      later rewind of the same file queued behind it forever, because `RevertSequence`'s
+      lane only advances on a settle and nothing but a settle ever produced one.
+      `TerminalView::dispatch_file_revert_with_deadline` now arms a 20s
+      `REWIND_REVERT_WRITE_TIMEOUT`; `CodeDiffView::timeout_file_revert` marks a write that
+      outlives it failed, toasts distinctly, and settles the card through the same
+      `RevertWriteSettled` path a real outcome uses. Finishing the in-progress fix (WIP
+      already on this branch) surfaced two real defects in it, both fixed: (1) the timeout
+      path called `rewind_revert_write_settled` directly **in addition to** emitting the
+      event its own subscription turns into that same call, advancing the lane twice per
+      timed-out write; (2) a timer armed for one write could fire after a *later* write to
+      the same `(view, file_idx)` was already in flight (a second rewind, after the first
+      attempt failed or timed out) and resolve the wrong one, because a fresh `Reverting`
+      attempt's `in_flight` set can't distinguish attempts — fixed with a monotonically
+      increasing per-index generation (`RevertWriteGenerations`) held across attempts. A
+      late real outcome after a recorded timeout was already a no-op via
+      `record_revert_write`'s existing idempotence. `RevertWriteGenerations`'s guard logic
+      is unit tested (`code_diff_view_tests.rs`); the double-settle fix and the timer
+      actually firing are GUI/event-loop-only and unverified by this change (nothing here
+      was compiled — see #768).
 
 - [x] **`warp_tui/src/tui_diff_storage.rs:147` is the TUI counterpart of the lost-update**
       **defect.** Same AI-diff persistence, same `register_file_path(..., false, ...)`, same
@@ -10953,11 +11029,21 @@ claim, which was wrong by four.
       **Fixed 2026-09-26 (#678, `f3cad7ab5`)** — same fix as the redirection item above,
       `executed_commands` also expands braces and follows control-flow keywords.
 
-- [ ] **Zero-command input makes both the denylist and the allowlist vacuous.** `;`, `{}`, `()`
+- [x] **Zero-command input makes both the denylist and the allowlist vacuous.** `;`, `{}`, `()`
       and whitespace-only input decompose to zero commands, so the denylist `.any()` is false and
       the allowlist `.all()` is true, and `AlwaysAsk` returns `Allowed(ExplicitlyAllowlisted)`.
       No zero-command spelling was found that also executes anything, so this is a latent hazard
       rather than a bypass — recorded so it is not rediscovered as one.
+      **Fixed 2026-09-27 (#746).** `command_words_resolved` now also requires
+      `!commands.is_empty()`, so zero-command input is treated exactly like an unresolved
+      command word (#678): `Denied(UnresolvedCommandWord)` when a denylist is configured,
+      `Denied(AlwaysAskEnabled)`/`Denied(AgentDecided)` otherwise — never a vacuous allowlist
+      match. **Pin-identical defect** (`4111d08f9:app/src/ai/blocklist/permissions.rs:899`
+      has the same unguarded `commands.iter().all(...)`), so this is a deliberate divergence,
+      recorded in `DECLINED.md`'s `IMPROVED` section. Tests:
+      `test_can_autoexecute_command_zero_command_input_fails_closed_under_always_ask`,
+      `test_can_autoexecute_command_zero_command_input_fails_closed_when_denylist_configured`
+      (`app/src/ai/blocklist/permissions_test.rs`).
 
 - [x] **The codebase-index embedding model switches on provider-list ORDER, spending the**
       **user's quota.** `resolve_configured_embedding_model` returns the first entry of
@@ -10992,11 +11078,27 @@ claim, which was wrong by four.
       previous model, or persistence briefly unavailable) rather than silently as a side effect
       of unrelated provider-list edits.
 
-- [ ] **`DaemonStoreClient` has the same two-cache desync the app path just fixed.**
+- [x] **`DaemonStoreClient` has the same two-cache desync the app path just fixed.**
       `remote_server/codebase_index_store.rs:354-386` holds one model in a `Mutex` while its own
       `CodebaseIndex` caches another, and `remote_client_preferences` only ever ships the
       *preferred* model's endpoint. The per-model endpoint table (`set_endpoints`) is available
       to it; wiring it needs that file.
+      **Fixed 2026-09-27 (#759).** `DaemonStoreClient::configure` now calls
+      `HttpEmbeddingProvider::set_endpoints` with a single-entry `EmbeddingEndpoints` table
+      instead of `set_endpoint`'s any-model blanket endpoint. `CodebaseIndex`
+      (`crates/ai/src/index/full_source_code_embedding/codebase_index.rs:155`) refreshes its
+      own cached `embedding_config` only as a side effect of a completed sync (`:877`), and
+      every `StoreClient` method that takes an explicit `embedding_config` is handed that
+      cached value by the caller — so a stale request for a model the daemon has since been
+      reconfigured away from now fails loudly (`IndexError::NoEmbeddingProvider`) instead of
+      silently reaching the new provider under the old model's name. Still only one entry in
+      the table at a time — `remote_client_preferences` ships only the preferred model, unlike
+      the app path's full table — so this makes the single entry self-checking rather than
+      adding true per-model routing. No pin equivalent (fork-original file). Tests in new
+      `codebase_index_store.rs::configure_tests`, mirroring
+      `codebase_embeddings.rs::endpoint_refresh_tests`'
+      `a_newly_preferred_model_does_not_hijack_the_one_an_index_is_already_using`/
+      `a_model_whose_provider_was_removed_reports_that_model_by_name`.
 
 - [x] **`crates/warp_features/src/lib.rs:888` still states the opposite of the code.**
       It says *"This fork does not ship autoupdate: … the release workflow publishes no
@@ -11053,11 +11155,19 @@ claim, which was wrong by four.
       pre-existing gate gap, not introduced here. A real `docker`/`podman exec -it`
       container needs a live check this sandbox cannot perform.
 
-- [ ] **One stale "preprocessing" comment in `crates/warp_tui/`.** `test_fixtures.rs:43-45`
+- [x] **One stale "preprocessing" comment in `crates/warp_tui/`.** `test_fixtures.rs:43-45`
       says the helper enqueues "action preprocessing through `ctx.spawn`"; it emits synchronously,
       so `settle()` is still needed but for the effect flush, not preprocessing — the code is right
       and its justification is wrong. (Rewritten 2026-09-26: the two "real preprocess pipeline"
       comments in `tui_permission_prompt_tests.rs` and `tui_generic_tool_call_view_tests.rs` are gone.)
+      **Fixed (`ad9e438c9`):** confirmed `queue_tui_permission_action` → `BlocklistAIActionModel::queue_confirmation_action`
+      (`app/src/ai/blocklist/action_model.rs`) has no `ctx.spawn` and pushes + `ctx.emit`s
+      synchronously (its own doc comment already says it exists precisely to skip
+      preprocessing). Traced `ctx.emit`/`ctx.notify` to `ModelContext`: both only push an
+      `Effect` onto `AppContext::pending_effects`, drained by `flush_effects` — that queue,
+      not preprocessing, is why a synchronous test body still needs `settle()`'s yields.
+      Rewrote `settle()`'s doc comment to say so, and to still cover the real, `ctx.spawn`-based
+      preprocessing path the wider action pipeline uses.
 
 - [x] 🟠 **Daemon sockets are not version-partitioned in practice, despite the docs and**
       **three tests saying they are.** `daemon_socket_name()` / `daemon_pid_name()` — and so
@@ -11094,12 +11204,35 @@ claim, which was wrong by four.
       FNV-1a + MurmurHash3-fmix64 algorithm, plus a second input to guard against a
       degenerate constant-output regression.
 
-- [ ] **`AIAgentActionType::FileGlobV2` has no slot for a result limit, so a model's**
+- [x] **`AIAgentActionType::FileGlobV2` has no slot for a result limit, so a model's**
       **`limit` cannot be honoured.** The parameter is accepted and the schema says plainly
       that results are always capped at 200 and a smaller value is not applied — so it is
       documented rather than silently dropped — but honouring it needs a field on that
       pin-inherited enum, which carries the upstream `TODO: Maybe implement client side depth
       and result limits`. Filed rather than diverging a shared crate.
+      **Fixed 2026-09-27 (#761).** Added `result_limit: Option<usize>` to
+      `AIAgentActionType::FileGlobV2`. `glob_from_args` now forwards the model's `limit`
+      (clamped to `GLOB_RESULT_LIMIT`) into the proto's `max_matches` instead of always
+      sending the hardcoded cap; `convert.rs` carries it into `result_limit`; the executor
+      (`action_model/execute/file_glob.rs`) truncates the match list to it via a new
+      `apply_result_limit` before the result is built. `glob_result_to_json`'s own cap
+      stays as an independent backstop. `PersistedAIAgentActionType::FileGlobV2` grew the
+      matching field with `#[serde(default)]` for backward compatibility with actions
+      persisted before this field existed (`result_limit: None`, meaning "no request-side
+      limit known" — same behavior as before). Every other pattern match on the struct
+      variant (11 sites) updated to `..`. **This does diverge from the pin** (byte-identical
+      enum, `4111d08f9:crates/ai/src/agent/action/mod.rs:95-99`), recorded in `DECLINED.md`'s
+      `IMPROVED` section. Tests: `glob_from_args_forwards_a_smaller_limit_into_max_matches`,
+      `glob_from_args_clamps_a_larger_limit_to_the_cap`,
+      `glob_from_args_defaults_max_matches_to_the_cap_when_no_limit_is_sent` (`search.rs`);
+      `max_matches_becomes_result_limit`,
+      `a_negative_max_matches_degrades_to_no_limit_rather_than_panicking` (`convert.rs`);
+      `apply_result_limit_truncates_a_success_result_to_the_limit`,
+      `apply_result_limit_is_a_no_op_when_the_limit_is_not_exceeded`,
+      `apply_result_limit_with_no_limit_leaves_the_result_unchanged`,
+      `apply_result_limit_passes_non_success_results_through_unchanged` (`file_glob_tests.rs`);
+      `persisted_file_glob_v2_accepts_legacy_actions_without_a_result_limit`,
+      `persisted_file_glob_v2_round_trips_result_limit` (`persistence_test.rs`).
 
 - [x] **`script/precheck` does not run `-p integration`.** Its package list covers 40 crates
       and excludes the integration suite, which CI runs as a separate 3-shard job under
@@ -12645,6 +12778,19 @@ claim, which was wrong by four.
       request whose OSC reply is merely slow, after which the late reply is
       ignored and no EOT is sent -- a narrower hazard the watchdog introduced.
       The actual lockup needs a fresh capture at the time it happens.
+      **Test coverage added 2026-09-27 (#748).** Verified the watchdog described above
+      (`arm_native_completions_watchdog`, `NATIVE_COMPLETIONS_PROMPT_TIMEOUT`/
+      `_RESULTS_TIMEOUT`, `native_completions_generation`) is implemented exactly as this
+      entry says, but had **zero** test coverage anywhere in the crate. Added
+      `native_completions_watchdog_recovers_an_unanswered_prompt_handshake` (the timeout
+      clears the state and closes `results_tx` so the requester's future resolves instead
+      of hanging) and `native_completions_watchdog_generation_guard_ignores_a_superseded_timer`
+      (a stale generation's timer is a no-op; the current generation's own watchdog still
+      fires) to `pty_controller_tests.rs`. **Left open, deliberately not touched:** the two
+      correction follow-ups above are both gated behind `FeatureFlag::NativeShellCompletions`,
+      which has no enabler anywhere in the tree, so they are inert in production; fixing them
+      is out of scope for a test-coverage change. The original field lockup remains
+      unexplained pending a fresh capture.
 
 ## FIX ROUND 2026-09-26/27 — items with no earlier ledger row
 

@@ -869,6 +869,16 @@ impl AIConversation {
         self.conversation_usage_metadata.credits_spent = credits;
     }
 
+    /// Test-only helper that sets the conversation's context-window usage
+    /// directly, for the same reason as
+    /// [`Self::set_credits_spent_for_test`]: it lets a unit test (e.g.
+    /// `ConversationUsageView`'s live-derivation tests) exercise
+    /// live-vs-snapshot behavior without wiring up a full turn.
+    #[cfg(test)]
+    pub(crate) fn set_context_window_usage_for_test(&mut self, usage: f32) {
+        self.conversation_usage_metadata.context_window_usage = usage;
+    }
+
     // Credits spent over the last block, where the block comprises
     // all agent outputs since the most recent user input.
     pub fn credits_spent_for_last_block(&self) -> Option<f32> {

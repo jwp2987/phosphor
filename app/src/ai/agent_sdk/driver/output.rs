@@ -329,6 +329,7 @@ pub mod text {
                     AIAgentActionType::FileGlobV2 {
                         patterns,
                         search_dir,
+                        ..
                     } => {
                         write!(w, "Finding files matching {}", format_queries(patterns))?;
                         if let Some(path) = search_dir {
@@ -1000,6 +1001,7 @@ pub mod json {
                     AIAgentActionType::FileGlobV2 {
                         patterns,
                         search_dir,
+                        ..
                     } => Some(JsonMessage::ToolCall(JsonToolCall::FileGlob {
                         patterns,
                         path: search_dir.as_deref(),

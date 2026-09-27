@@ -178,6 +178,12 @@ pub(crate) enum PersistedAIAgentActionType {
     FileGlobV2 {
         patterns: Vec<String>,
         search_dir: Option<String>,
+        /// Added alongside `AIAgentActionType::FileGlobV2::result_limit`.
+        /// `#[serde(default)]` so a record persisted before this field existed
+        /// deserializes with `None` -- "no request-side limit known" -- rather
+        /// than failing to load.
+        #[serde(default)]
+        result_limit: Option<usize>,
     },
     ReadMCPResource {
         server_id: Option<Uuid>,
@@ -287,9 +293,11 @@ impl From<&AIAgentActionType> for PersistedAIAgentActionType {
             AIAgentActionType::FileGlobV2 {
                 patterns,
                 search_dir,
+                result_limit,
             } => Self::FileGlobV2 {
                 patterns: patterns.clone(),
                 search_dir: search_dir.clone(),
+                result_limit: *result_limit,
             },
             AIAgentActionType::CallMCPTool {
                 server_id,
@@ -392,9 +400,11 @@ impl TryFrom<PersistedAIAgentActionType> for AIAgentActionType {
             PersistedAIAgentActionType::FileGlobV2 {
                 patterns,
                 search_dir,
+                result_limit,
             } => Ok(Self::FileGlobV2 {
                 patterns,
                 search_dir,
+                result_limit,
             }),
             PersistedAIAgentActionType::CallMCPTool {
                 server_id,

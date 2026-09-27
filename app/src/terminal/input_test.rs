@@ -9297,3 +9297,68 @@ fn hotkey_opens_ai_command_search_even_when_hash_trigger_disabled() {
         );
     });
 }
+
+// ── Literal-`#` escape hatch: `should_clear_hashtag_buffer_on_command_search_close`
+//    (TODO.md, #767) ─────────────────────────────────────────────────────────
+//
+// `handle_command_search_closed` decides whether to erase the `#` a hashtag
+// trigger opened the AI command search panel from, once the panel closes.
+// These pin the decision itself, independent of `was_triggered_by_hashtag`
+// (which needs a real buffer/view) or the actual buffer clearing (GUI-only).
+
+/// Escape immediately after the `#` opens the panel: the chip is showing
+/// (`Some(QueryFilter::NaturalLanguage)`) and nothing was typed. The `#` must
+/// be kept -- this is the escape hatch working as intended, and the case the
+/// fragile heuristic already got right.
+#[test]
+fn keeps_the_hashtag_when_the_chip_is_showing_and_the_query_is_empty() {
+    assert!(!should_clear_hashtag_buffer_on_command_search_close(
+        "",
+        &Some(QueryFilter::NaturalLanguage)
+    ));
+}
+
+/// The regression this function exists to fix (#767): Backspace on the empty
+/// panel clears only the filter chip (`SearchBar`'s
+/// `EditorEvent::BackspaceOnEmptyBuffer` arm), not the `#` itself -- the `#`
+/// was never in the panel's own editor to begin with. A following Escape must
+/// therefore behave exactly like an immediate Escape and keep the `#`, not
+/// erase it.
+#[test]
+fn keeps_the_hashtag_when_the_chip_was_backspaced_away_and_the_query_is_empty() {
+    assert!(!should_clear_hashtag_buffer_on_command_search_close(
+        "", &None
+    ));
+}
+
+/// A real natural-language query was typed and, presumably, answered: this is
+/// the one case that clears the buffer, `#` included.
+#[test]
+fn clears_the_hashtag_after_a_non_empty_natural_language_query() {
+    assert!(should_clear_hashtag_buffer_on_command_search_close(
+        "how do I revert a commit",
+        &Some(QueryFilter::NaturalLanguage)
+    ));
+}
+
+/// A query is only "empty" once trimmed -- whitespace-only input must not be
+/// mistaken for an answered query.
+#[test]
+fn treats_a_whitespace_only_query_as_empty() {
+    assert!(!should_clear_hashtag_buffer_on_command_search_close(
+        "   ",
+        &Some(QueryFilter::NaturalLanguage)
+    ));
+}
+
+/// A non-empty query under any filter other than `NaturalLanguage` (the user
+/// tabbed into a different registered filter, e.g. history or workflows) is
+/// not an answered AI query, so it must not clear the `#` either -- only a
+/// natural-language answer does.
+#[test]
+fn keeps_the_hashtag_for_a_non_empty_query_under_a_different_filter() {
+    assert!(!should_clear_hashtag_buffer_on_command_search_close(
+        "revert",
+        &Some(QueryFilter::History)
+    ));
+}
