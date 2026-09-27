@@ -35,11 +35,15 @@ pub struct CodeSnippetButtonHandles {
 }
 
 impl CodeSnippetButtonHandles {
-    // Resets the hover state of all buttons that trigger a focus change.
-    pub fn reset_hover_state_on_focus_change(&self) {
-        if let Ok(mut state) = self.open_button.lock() {
-            state.reset_hover_state();
-        }
+    /// Resets the hover state of all buttons that trigger a focus change (the "open" button),
+    /// returning whether it was hovered -- and so whether the owner needs to repaint.
+    pub fn reset_hover_state_on_focus_change(&self) -> bool {
+        let Ok(mut state) = self.open_button.lock() else {
+            return false;
+        };
+        let was_hovered = state.is_hovered();
+        state.reset_hover_state();
+        was_hovered
     }
 }
 

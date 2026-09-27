@@ -428,3 +428,37 @@ fn detected_non_image_path_has_no_override() {
         );
     }
 }
+
+// ── Tooltip dismissal only repaints when something changed (#677) ──
+
+/// `dismiss_ai_tooltips` gates its repaint on this return value, so it must report `true` only
+/// when a tooltip was actually open.
+#[test]
+fn secret_tooltip_dismiss_reports_whether_one_was_open() {
+    use super::TextLocation;
+    use super::secret_redaction::SecretRedactionState;
+    use warpui::elements::SecretRange;
+
+    let mut state = SecretRedactionState::default();
+    assert!(!state.dismiss_tooltip(), "nothing open");
+
+    let location = TextLocation::Output {
+        section_index: 0,
+        line_index: 0,
+    };
+    let range = SecretRange {
+        char_range: 0..4,
+        byte_range: 0..4,
+    };
+    state.show_secret_tooltip(&location, &range);
+    assert!(state.dismiss_tooltip(), "an open tooltip was closed");
+    assert!(state.open_tooltip_location().is_none());
+    assert!(!state.dismiss_tooltip(), "second dismiss is a no-op");
+}
+
+/// A code-snippet "open" button that was never hovered needs no repaint on focus change.
+#[test]
+fn unhovered_code_snippet_button_reset_reports_no_change() {
+    let handles = crate::ai::blocklist::code_block::CodeSnippetButtonHandles::default();
+    assert!(!handles.reset_hover_state_on_focus_change());
+}

@@ -4611,22 +4611,36 @@ impl AIBlock {
         }
     }
 
+    /// Dismisses this block's tooltips and resets code-snippet button hover state.
+    ///
+    /// `TerminalView::dismiss_tooltips` calls this on EVERY AI block on each focus change and
+    /// scroll, so it only repaints when something visible actually changed (#677, the tooltip
+    /// half of upstream `216d0efe7`). The dismiss events are still emitted unconditionally: the
+    /// terminal's copy of the tooltip can outlive this block's (e.g. `replace_all_links` clears
+    /// ours without emitting), and emitting costs no repaint.
     pub fn dismiss_ai_tooltips(&mut self, ctx: &mut ViewContext<Self>) {
-        self.detected_links_state.link_location_open_tooltip = None;
+        let dismissed_link_tooltip = self
+            .detected_links_state
+            .link_location_open_tooltip
+            .take()
+            .is_some();
         ctx.emit(AIBlockEvent::DismissLinkTooltip);
-        self.secret_redaction_state.dismiss_tooltip();
+        let dismissed_secret_tooltip = self.secret_redaction_state.dismiss_tooltip();
         ctx.emit(AIBlockEvent::DismissSecretTooltip);
 
         // The hover state for the "open" button in linked code blocks should be reset on a focus change.
+        let mut reset_button_hover = false;
         for button_handles in self
             .state_handles
             .normal_response_code_snippet_buttons
             .iter()
         {
-            button_handles.reset_hover_state_on_focus_change();
+            reset_button_hover |= button_handles.reset_hover_state_on_focus_change();
         }
 
-        ctx.notify();
+        if dismissed_link_tooltip || dismissed_secret_tooltip || reset_button_hover {
+            ctx.notify();
+        }
     }
 
     fn open_link(
