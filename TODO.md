@@ -12011,6 +12011,19 @@ claim, which was wrong by four.
       request whose OSC reply is merely slow, after which the late reply is
       ignored and no EOT is sent -- a narrower hazard the watchdog introduced.
       The actual lockup needs a fresh capture at the time it happens.
+      **Test coverage added 2026-09-27 (#748).** Verified the watchdog described above
+      (`arm_native_completions_watchdog`, `NATIVE_COMPLETIONS_PROMPT_TIMEOUT`/
+      `_RESULTS_TIMEOUT`, `native_completions_generation`) is implemented exactly as this
+      entry says, but had **zero** test coverage anywhere in the crate. Added
+      `native_completions_watchdog_recovers_an_unanswered_prompt_handshake` (the timeout
+      clears the state and closes `results_tx` so the requester's future resolves instead
+      of hanging) and `native_completions_watchdog_generation_guard_ignores_a_superseded_timer`
+      (a stale generation's timer is a no-op; the current generation's own watchdog still
+      fires) to `pty_controller_tests.rs`. **Left open, deliberately not touched:** the two
+      correction follow-ups above are both gated behind `FeatureFlag::NativeShellCompletions`,
+      which has no enabler anywhere in the tree, so they are inert in production; fixing them
+      is out of scope for a test-coverage change. The original field lockup remains
+      unexplained pending a fresh capture.
 
 ## FIX ROUND 2026-09-26/27 — items with no earlier ledger row
 
