@@ -205,6 +205,20 @@ TOKEN = re.compile(r"(?<![A-Za-z0-9_.:\-])(Zap|Oz|Warp)(?![A-Z0-9_\-])")
 # this is scoped to `typeform.com` rather than `warp.dev` generally.
 HOST = re.compile(r"(?i)\bwarpdotdev\.typeform\.com\b")
 
+# Upstream's own repo, reached as a hyperlink target (#695: a "visit the repo"
+# / "read CONTRIBUTING.md" link that pointed at warpdotdev/warp instead of this
+# fork). Same shape as HOST above -- all-lowercase, no whitespace, so it clears
+# both TOKEN (no capital Warp) and rule 3 ("a token, not a sentence") on its
+# own. The trailing `(?![\w-])` stops it matching `warpdotdev/warp-internal`
+# or `warpdotdev/warp-server`, upstream's *other* repos, which are legitimate
+# citations (a linked PR, an `@see`) and appear only in comments -- never in a
+# string literal -- throughout this tree; comments are outside this guard's
+# scope already (rule 2), so this pattern does not need to special-case them.
+# A literal that must cite the real upstream repo (declared debt, evidence for
+# a parity issue) stays legal via the same `brand-guard: allow` marker as any
+# other hit.
+REPO_HOST = re.compile(r"(?i)github\.com/warpdotdev/warp(?![\w-])")
+
 STRING = re.compile(r'"((?:[^"\\]|\\.)*)"')
 MARKER = re.compile(r"brand-guard:\s*allow")
 
@@ -306,10 +320,10 @@ def check_rust():
         for start, end, literal in rust_literals(text):
             token_hit = TOKEN.search(literal) and re.search(r"\s", literal)
             # rule 3 ("a token, not a sentence") only applies to TOKEN: HOST
-            # matches a hyperlink URL, which is user-visible copy precisely
-            # because it IS a single token wired to a click target. See "THE
-            # SECOND PATTERN" in the header.
-            host_hit = HOST.search(literal)
+            # and REPO_HOST match a hyperlink URL, which is user-visible copy
+            # precisely because it IS a single token wired to a click target.
+            # See "THE SECOND PATTERN" in the header.
+            host_hit = HOST.search(literal) or REPO_HOST.search(literal)
             if not token_hit and not host_hit:
                 continue
             lineno = lineno_of(start)
@@ -353,7 +367,7 @@ def check_fluent():
                 value = line  # continuation of a multi-line value
             else:
                 continue
-            if not TOKEN.search(value) and not HOST.search(value):
+            if not TOKEN.search(value) and not HOST.search(value) and not REPO_HOST.search(value):
                 continue
             # Comment line directly above ONLY. `MARKER.search(line)` used to
             # be accepted too, but in Fluent everything after the `=` is the
