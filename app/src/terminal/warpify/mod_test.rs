@@ -29,6 +29,17 @@ const LEGACY_REMOTE_SNIPPET: &str = include_str!(concat!(
     "/assets/bundled/bootstrap/legacy_remote_subshell_bootstrap_block_output.txt"
 ));
 
+/// Not scanned by `assert_no_stray_warp_branding` below: this script is riddled with
+/// internal `Warp-*` function/variable names (`Warp-Send-JsonMessage`, `$global:_warpOriginalPrompt`,
+/// ...) that are lineage, not branding, exactly like `check_brand_strings`' own carve-out for
+/// identifiers such as `SourcedRcFileForWarp`. Only the one genuinely user-visible string in
+/// it -- the `Write-Error` shown directly in the user's PowerShell session when the OS
+/// execution policy blocks Phosphorization -- is asserted here.
+const PWSH_INIT_SHELL_SNIPPET: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/bundled/bootstrap/pwsh_init_shell.ps1"
+));
+
 /// The one identifier these snippets are allowed to carry: the DCS hook name
 /// itself, which is a wire value, not prose.
 const ALLOWED_WARP_IDENTIFIER: &str = "SourcedRcFileForWarp";
@@ -72,6 +83,19 @@ fn legacy_remote_snippet_names_phosphor() {
 /// (`dcs_hooks.rs`'s `"SourcedRcFileForWarp" => Some(DProtoHook::SourcedRcFileForWarp { .. })`).
 /// If this ever drifts, auto-bootstrap silently stops being recognized on the
 /// other end.
+#[test]
+fn pwsh_init_shell_execution_policy_error_says_phosphorize() {
+    assert!(
+        PWSH_INIT_SHELL_SNIPPET.contains("Unable to Phosphorize this PowerShell session."),
+        "expected the pwsh execution-policy Write-Error to say Phosphorize: not found in \
+         pwsh_init_shell.ps1"
+    );
+    assert!(
+        !PWSH_INIT_SHELL_SNIPPET.contains("Warpify"),
+        "pwsh_init_shell.ps1's user-visible execution-policy error still says Warpify"
+    );
+}
+
 #[test]
 fn shell_snippets_still_emit_the_expected_wire_hook() {
     for (label, snippet) in [("fish", FISH_SNIPPET), ("bash/zsh", BASH_ZSH_SNIPPET)] {
