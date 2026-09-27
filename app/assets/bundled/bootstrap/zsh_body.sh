@@ -1444,8 +1444,10 @@ esac
 
   # Lists completion matches via the builtin list-choices widget.
   function warp_complete_via_list_choices () {
-    # Start by reading in the completion buffer.
-    zle warp_read_completion_buffer
+    # Start by reading in the completion buffer. This can time out (see
+    # warp_read_completion_buffer) if the app's reply never arrives; bail out
+    # rather than complete on a stale or empty buffer.
+    zle warp_read_completion_buffer || return
 
     # Adding a post-hook here is not helpful because
     # it doesn't tell us when the completions have all been _listed_.
@@ -1461,8 +1463,10 @@ esac
   # Gathers completion matches by overriding compadd
   # and emitting the completions directly there.
   function warp_complete_via_compadd_override () {
-    # Start by reading in the completion buffer.
-    zle warp_read_completion_buffer
+    # Start by reading in the completion buffer. This can time out (see
+    # warp_read_completion_buffer) if the app's reply never arrives; bail out
+    # rather than complete on a stale or empty buffer.
+    zle warp_read_completion_buffer || return
 
     compprefuncs=( warp_mark_start_of_completions_for_compadd_override )
     comppostfuncs=( warp_mark_end_of_completions )
@@ -1478,8 +1482,29 @@ esac
     # to the terminal (it would be treated as background output), so we use -s
     # to suppress echoing and send an OSC as the synchronization signal (so the
     # terminal knows when to send the input buffer that needs completions).
+    #
+    # `-t` bounds this read so an abandoned handshake can never wedge this
+    # shell in `read` forever (see TODO.md, "The shell lockup", and
+    # phosphor#770): if the app gives up on this request -- its own prompt
+    # watchdog fires, or its reply is lost for any other reason -- this read
+    # must still return on its own rather than depend on the app to answer.
+    # The bound is comfortably longer than the app's own completions-results
+    # budget (`NATIVE_COMPLETIONS_RESULTS_TIMEOUT`, 15s in pty_controller.rs
+    # as of this writing) so a legitimately slow-but-successful reply still
+    # gets through; it only protects against a reply that never arrives.
     local TEMP
-    IFS= read -d $'\4' -s "$(echo -e "TEMP?\e]9280;P\a")" < /dev/tty
+    if ! IFS= read -t 20 -d $'\4' -s "$(echo -e "TEMP?\e]9280;P\a")" < /dev/tty; then
+      # Timed out (or /dev/tty went away) before the app answered. Whatever
+      # partial bytes landed in TEMP are not a completable buffer. The app
+      # cannot be trusted to answer late either way: once it has abandoned
+      # this request (which it will have, well before this bound elapses),
+      # `ModelEvent::SendCompletionsPrompt` writes nothing at all for it (see
+      # pty_controller.rs) precisely so it never types into a prompt whose
+      # state it can no longer see. Bail out of the widget without touching
+      # BUFFER, so whatever the user had typed before pressing the completion
+      # key is left exactly as it was.
+      return 1
+    fi
     BUFFER="$TEMP"
 
     # We push and pop the buffer stack to get zle to properly treat the buffer

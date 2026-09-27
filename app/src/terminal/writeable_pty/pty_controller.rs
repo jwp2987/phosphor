@@ -69,6 +69,12 @@ const NATIVE_COMPLETIONS_UNAVAILABLE_MESSAGE: &str = "Tab completions aren't ava
      shell -- it has no Phosphor shell integration to answer them. This is usual for a shell \
      entered with su, sudo su - or ksu.";
 
+/// How long the PTY write gate must stay shut with writes queued before
+/// `track_pty_write_gate_stall` logs it. Chosen to be well above ordinary scheduling jitter
+/// (`LineEditorStatusEvent::Active` firing a beat late) but well below the point where a user
+/// would already suspect something is wrong, so the log line is there before they go looking.
+const PTY_WRITE_GATE_STALL_LOG_THRESHOLD: Duration = Duration::from_secs(3);
+
 /// Represents a single call to write bytes to the PTY asynchronously.
 enum PtyWrite {
     Command {
@@ -149,6 +155,16 @@ pub struct PtyController<T: EventLoopSender> {
     /// the life of the shell -- the un-phosphorized shell that causes this answers no Tab, ever,
     /// and a toast on every keystroke would be worse than the silence it replaces.
     has_reported_native_completions_unavailable: bool,
+    /// When the current unbroken stretch of the PTY write gate being shut *with writes queued*
+    /// began, if we are in one. Diagnostic-only bookkeeping for the still-unexplained field lockup
+    /// in TODO.md ("The shell lockup"): the watchdog above only ever fires for the (currently
+    /// unreachable, `FeatureFlag::NativeShellCompletions`-gated) native-completions handshake, but
+    /// the *other* gate in `can_write_to_pty` -- the line editor being inactive -- has no such
+    /// watchdog and is a live suspect. Cleared whenever the gate opens or the queue drains.
+    pty_write_gate_blocked_since: Option<std::time::Instant>,
+    /// Whether the current stretch tracked by `pty_write_gate_blocked_since` has already produced
+    /// its one log line, so a long stall logs once instead of once per queued keystroke.
+    has_logged_current_pty_write_stall: bool,
 }
 
 impl<T: EventLoopSender> PtyController<T> {
@@ -214,26 +230,72 @@ impl<T: EventLoopSender> PtyController<T> {
                 }
             }
             ModelEvent::CompletionsFinished(data) => {
-                let Some(NativeShellCompletionsState::AwaitingResults { results_tx }) = me.in_flight_native_completions_state.take() else {
-                    log::warn!("Received CompletionsFinished event but didn't have a channel to send results over!");
+                // Check the variant *before* taking. `.take()` unconditionally empties the slot
+                // and returns the old value; matching on that returned value in a `let-else`
+                // still leaves the slot empty even when the match fails. If this event is a late
+                // reply for a request that has since been superseded (its watchdog fired and a
+                // newer request is now in flight, in whichever phase), taking first would destroy
+                // that newer, still-live request's state -- e.g. an `AwaitingPrompt` for request B
+                // -- and neither the shell nor the app would ever finish B's handshake, leaving
+                // zsh stuck inside `read -d $'\4'` forever. See the entry in TODO.md ("The shell
+                // lockup") for the full trace. So: peek, and only take when it actually matches.
+                if !matches!(
+                    me.in_flight_native_completions_state,
+                    Some(NativeShellCompletionsState::AwaitingResults { .. })
+                ) {
+                    log::warn!(
+                        "Received CompletionsFinished event but wasn't awaiting results \
+                         (generation {}); ignoring it without touching the in-flight state.",
+                        me.native_completions_generation
+                    );
                     return;
+                }
+                let Some(NativeShellCompletionsState::AwaitingResults { results_tx }) =
+                    me.in_flight_native_completions_state.take()
+                else {
+                    unreachable!("checked above");
                 };
                 let _ = block_on(results_tx.send(data.clone()));
             }
             ModelEvent::SendCompletionsPrompt => {
+                // Same peek-before-take reasoning as `CompletionsFinished` above.
+                //
+                // If this event has no matching live state, we do *not* write anything to the
+                // PTY -- not even a bare terminator. An earlier version of this fix tried to
+                // answer a late reply for an already-abandoned request with a bare EOT, on the
+                // theory that the shell must still be blocked in `read -d $'\4'` waiting for one.
+                // That assumption is unsafe: the shell's own `read` in
+                // `warp_read_completion_buffer` (zsh_body.sh) can return for reasons the app
+                // cannot observe -- most plausibly the user hitting Ctrl-C after a Tab that
+                // visibly did nothing, which is exactly what the 2s prompt watchdog produces.
+                // SIGINT aborts that `read`, and the shell is back at a live, empty prompt. A
+                // blind EOT sent after that point is Ctrl-D typed at an interactive prompt, which
+                // exits the shell outright unless IGNOREEOF happens to be set. Recovering the
+                // shell from a stuck handshake now belongs entirely to the shell side (a bounded
+                // `read -t` in `warp_read_completion_buffer`, per TODO.md and phosphor#770); the
+                // app's only safe move on the app side is to never type anything into a prompt it
+                // cannot see the state of.
+                if !matches!(
+                    me.in_flight_native_completions_state,
+                    Some(NativeShellCompletionsState::AwaitingPrompt { .. })
+                ) {
+                    log::warn!(
+                        "Received SendCompletionsPrompt event but wasn't awaiting a prompt \
+                         (generation {}); ignoring it without touching the in-flight state.",
+                        me.native_completions_generation
+                    );
+                    return;
+                }
                 let Some(NativeShellCompletionsState::AwaitingPrompt {
                     buffer_text,
                     results_tx,
-                }) = me.in_flight_native_completions_state.take() else {
-                    log::warn!("Received SendCompletionsPrompt event but didn't have a prompt to send!");
-                    return;
+                }) = me.in_flight_native_completions_state.take()
+                else {
+                    unreachable!("checked above");
                 };
-                me.in_flight_native_completions_state = Some(NativeShellCompletionsState::AwaitingResults { results_tx });
-                me.arm_native_completions_watchdog(
-                    NATIVE_COMPLETIONS_RESULTS_TIMEOUT,
-                    false,
-                    ctx,
-                );
+                me.in_flight_native_completions_state =
+                    Some(NativeShellCompletionsState::AwaitingResults { results_tx });
+                me.arm_native_completions_watchdog(NATIVE_COMPLETIONS_RESULTS_TIMEOUT, false, ctx);
 
                 let mut bytes = buffer_text.into_bytes();
                 // We use the EOT character to signal the end of the prompt.
@@ -310,6 +372,8 @@ impl<T: EventLoopSender> PtyController<T> {
             in_flight_native_completions_state: None,
             native_completions_generation: 0,
             has_reported_native_completions_unavailable: false,
+            pty_write_gate_blocked_since: None,
+            has_logged_current_pty_write_stall: false,
         }
     }
 
@@ -536,8 +600,11 @@ impl<T: EventLoopSender> PtyController<T> {
     /// when the line editor becomes active.
     fn execute_next_queued_write(&mut self, ctx: &mut ModelContext<Self>) {
         if !self.can_write_to_pty(ctx) {
+            self.track_pty_write_gate_stall(PTY_WRITE_GATE_STALL_LOG_THRESHOLD, ctx);
             return;
         }
+        self.pty_write_gate_blocked_since = None;
+        self.has_logged_current_pty_write_stall = false;
 
         if let Some(write) = self.pending_writes.pop_front() {
             let is_command = matches!(write, PtyWrite::Command { .. });
@@ -546,6 +613,77 @@ impl<T: EventLoopSender> PtyController<T> {
                 self.execute_next_queued_write(ctx);
             }
         }
+    }
+
+    /// Diagnostics for the still-unexplained field lockup in TODO.md ("The shell lockup"): the
+    /// reporter is on bash with no enabler for `FeatureFlag::NativeShellCompletions`, so the
+    /// watchdog above cannot be what wedged their pane -- but `can_write_to_pty` has a second
+    /// gate, the line editor being inactive, that has no watchdog and no diagnostics at all. This
+    /// makes the next capture decisive: if the gate is shut for more than a few seconds while
+    /// writes are queued, log once naming which gate is shut and how many writes are waiting,
+    /// then stay quiet until the stretch ends (a fresh keystroke reopening the gate, or the queue
+    /// draining) so a stuck pane cannot spam the log once per keystroke.
+    ///
+    /// Self-contained on purpose: it re-checks `can_write_to_pty` and re-derives everything else
+    /// from current state, so it is safe to call from anywhere, including the one-shot timer
+    /// below -- a stretch it was armed for that has since ended (or been superseded by a fresh
+    /// one) just resolves to a no-op or a fresh, correctly-short `stalled_for`, never a stale log.
+    ///
+    /// `threshold` is a parameter (rather than always reading `PTY_WRITE_GATE_STALL_LOG_THRESHOLD`
+    /// directly) purely so tests can drive it with a short duration instead of the real one, the
+    /// same reason `arm_native_completions_watchdog` takes an explicit `timeout`; every production
+    /// call site passes the real constant.
+    ///
+    /// Never logs write contents, only counts and booleans -- see #718 on log redaction.
+    fn track_pty_write_gate_stall(&mut self, threshold: Duration, ctx: &mut ModelContext<Self>) {
+        if self.can_write_to_pty(ctx) || self.pending_writes.is_empty() {
+            self.pty_write_gate_blocked_since = None;
+            self.has_logged_current_pty_write_stall = false;
+            return;
+        }
+
+        let now = std::time::Instant::now();
+        let is_new_stall = self.pty_write_gate_blocked_since.is_none();
+        let blocked_since = *self.pty_write_gate_blocked_since.get_or_insert(now);
+
+        if is_new_stall {
+            // `execute_next_queued_write` only re-checks the gate when something drives it --
+            // another queued write, or `LineEditorStatusEvent::Active`. If the user stops typing
+            // entirely once the gate sticks (a very plausible reaction to a pane that stopped
+            // responding), nothing would otherwise re-check until whatever input eventually comes
+            // next, which may be long after the threshold or may never come at all if the pane
+            // looks dead. Arm a one-shot timer, once per stall, so the log line fires on its own.
+            ctx.spawn(
+                async move {
+                    Timer::after(threshold).await;
+                },
+                move |me, _, ctx| {
+                    me.track_pty_write_gate_stall(threshold, ctx);
+                },
+            );
+        }
+
+        if self.has_logged_current_pty_write_stall {
+            return;
+        }
+
+        let stalled_for = now.saturating_duration_since(blocked_since);
+        if stalled_for < threshold {
+            return;
+        }
+
+        let line_editor_inactive = !self.line_editor_status.as_ref(ctx).is_line_editor_active();
+        let awaiting_completions_prompt = self
+            .in_flight_native_completions_state
+            .as_ref()
+            .is_some_and(|state| state.is_awaiting_prompt());
+        log::warn!(
+            "PTY write gate has been shut for {stalled_for:?} with {} write(s) queued \
+             (line_editor_inactive={line_editor_inactive}, awaiting_completions_prompt={awaiting_completions_prompt}); \
+             if the pane looks locked up, this is the capture to keep.",
+            self.pending_writes.len()
+        );
+        self.has_logged_current_pty_write_stall = true;
     }
 
     /// Writes a set of bytes to the PTY to begin bootstrapping a shell.
@@ -969,6 +1107,27 @@ impl<T: EventLoopSender> PtyController<T> {
         results_tx: async_channel::Sender<Vec<ShellCompletion>>,
         ctx: &mut ModelContext<Self>,
     ) {
+        // Never start a new native-completions request while one is already in flight, in
+        // *either* phase. `AwaitingResults` deliberately does not gate `can_write_to_pty` (typing
+        // should not block on completions results for up to
+        // `NATIVE_COMPLETIONS_RESULTS_TIMEOUT`), so without this check a newly queued request
+        // could be dequeued and dispatched immediately behind an `AwaitingResults` request that
+        // is still live -- e.g. from `CompletionsTrigger::AsYouType` firing again on the next
+        // keystroke. The dispatch arm below unconditionally overwrites
+        // `in_flight_native_completions_state`, so that would silently drop the current request's
+        // `results_tx` and hand its eventual, now-mismatched `CompletionsFinished` reply to the
+        // *new* request instead -- delivering one request's completions as if they were another
+        // request's answer. Neither event carries a request id to tell them apart after the fact,
+        // so the only structural fix is to make sure at most one request ever exists at a time.
+        //
+        // Dropping `results_tx` here (by simply not queuing anything) closes its channel
+        // immediately, so the caller's `results_rx.recv().await.ok()` resolves to `None` right
+        // away -- the same fallback shape an abandoned request already produces, and much better
+        // than either hanging or being handed some other request's results.
+        if self.in_flight_native_completions_state.is_some() {
+            return;
+        }
+
         // Make sure we only have a single pending native shell completions
         // request at a time by dropping any existing ones from the queue.
         self.pending_writes

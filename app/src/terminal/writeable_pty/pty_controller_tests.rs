@@ -770,3 +770,416 @@ fn native_completions_watchdog_generation_guard_ignores_a_superseded_timer() {
         drop(model_events_tx);
     });
 }
+
+/// Regression test for the destructive take-before-match bug (TODO.md, "The shell lockup",
+/// 2026-09-25 correction, follow-up (1)): a `CompletionsFinished` event that arrives in the
+/// wrong phase must not destroy whatever request is actually in flight.
+///
+/// On the old code, the `CompletionsFinished` handler did
+/// `let Some(AwaitingResults { .. }) = state.take() else { warn!(..); return };` -- `.take()`
+/// unconditionally empties `in_flight_native_completions_state` and returns the old value
+/// *before* the pattern match runs, so when the current state was actually `AwaitingPrompt` (a
+/// late reply for some earlier, already-superseded request landing while a newer request B is
+/// mid-handshake), the match failed, the `else` branch warned and returned -- but B's
+/// `AwaitingPrompt` state, and its `results_tx`, were already gone. Since `AwaitingPrompt` is one
+/// of `can_write_to_pty`'s two gates, and B's `results_tx` is now dropped with no request ever
+/// having answered it, that is exactly the "leaves zsh inside `read -d $'\4'`" lockup this entry
+/// describes: nothing will ever complete B's handshake, and every subsequent keystroke queues
+/// forever.
+#[test]
+fn late_completions_finished_does_not_destroy_a_newer_awaiting_prompt_request() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events.clone(),
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        // Request B is live, mid-handshake, waiting for the shell's OSC reply.
+        let (b_results_tx, b_results_rx) = async_channel::unbounded();
+        controller.update(&mut app, |controller, _ctx| {
+            controller.in_flight_native_completions_state =
+                Some(NativeShellCompletionsState::AwaitingPrompt {
+                    buffer_text: "request b".to_owned(),
+                    results_tx: b_results_tx,
+                });
+        });
+
+        // A `CompletionsFinished` arrives -- e.g. a late reply for some earlier request A that
+        // has already been superseded. It is the wrong phase for the current state
+        // (`AwaitingPrompt`, not `AwaitingResults`), so it must be ignored without touching that
+        // state. `ctx.emit` on the dispatcher's own context reaches `PtyController`'s
+        // subscription synchronously (see `input_test.rs`'s direct-emit pattern for the same
+        // dispatcher/subscriber relationship).
+        model_events.update(&mut app, |_dispatcher, ctx| {
+            ctx.emit(ModelEvent::CompletionsFinished(Vec::new()));
+        });
+
+        controller.read(&app, |controller, _| {
+            assert!(
+                matches!(
+                    controller.in_flight_native_completions_state,
+                    Some(NativeShellCompletionsState::AwaitingPrompt { .. })
+                ),
+                "a CompletionsFinished event in the wrong phase must not destroy a live, \
+                 still-in-progress AwaitingPrompt handshake."
+            );
+        });
+        assert!(
+            b_results_rx.try_recv().is_err(),
+            "request B's results channel must still be open -- nothing has wrongly answered or \
+             dropped it."
+        );
+
+        drop(model_events_tx);
+    });
+}
+
+/// Regression test for TODO.md's follow-up (2), reworked after review: a `SendCompletionsPrompt`
+/// event with no matching live `AwaitingPrompt` state -- e.g. a late reply for a request the
+/// prompt watchdog already abandoned -- must write *nothing at all* to the PTY, not even a bare
+/// terminator.
+///
+/// An earlier version of this fix answered such a late reply with a bare EOT, reasoning that the
+/// shell must still be blocked in `read -d $'\4'` waiting for one. That is unsafe: the shell's
+/// `read` can return for reasons the app cannot observe (most plausibly Ctrl-C, a very normal
+/// reaction to a Tab that visibly did nothing after the 2s watchdog fires), and a blind EOT sent
+/// after that point is Ctrl-D typed at a live, empty prompt -- which exits the shell. Recovering
+/// the shell from a stuck handshake belongs to the shell side now (a bounded `read -t` in
+/// `warp_read_completion_buffer`, `zsh_body.sh`); the app's only safe move is to never write
+/// anything for a request it no longer has live state for.
+#[test]
+fn late_send_completions_prompt_with_no_live_state_writes_nothing_to_the_pty() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events.clone(),
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        // Simulate the prompt-phase watchdog having already fired and abandoned the request:
+        // there is no live state left for this event to match.
+        controller.update(&mut app, |controller, _ctx| {
+            controller.in_flight_native_completions_state = None;
+        });
+
+        // The shell's OSC reply finally arrives, late.
+        model_events.update(&mut app, |_dispatcher, ctx| {
+            ctx.emit(ModelEvent::SendCompletionsPrompt);
+        });
+
+        assert!(
+            sender.messages.lock().is_empty(),
+            "a SendCompletionsPrompt event with no matching live AwaitingPrompt state must not \
+             write anything to the PTY -- not completion text, and not a bare terminator either, \
+             since the app cannot tell whether the shell is still blocked in read() or already \
+             back at a live prompt."
+        );
+
+        controller.read(&app, |controller, _| {
+            assert!(
+                controller.in_flight_native_completions_state.is_none(),
+                "handling a late reply must not resurrect the abandoned request."
+            );
+        });
+
+        drop(model_events_tx);
+    });
+}
+
+/// Diagnostics for the still-unexplained field lockup in TODO.md ("The shell lockup"):
+/// `track_pty_write_gate_stall` must notice when the PTY write gate has been shut with writes
+/// queued for a while, log exactly once per unbroken stall (not once per queued write), and reset
+/// once the stall ends -- either because the gate reopens or because the queue drains out from
+/// under it.
+#[test]
+fn pty_write_gate_stall_is_tracked_and_logged_once_per_unbroken_stretch() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        // The line editor starts out inactive (this harness's default -- see the file-level
+        // comment), so `can_write_to_pty` is already shut. Queue a write so there is something
+        // pending behind that gate, and use a short threshold (rather than the real
+        // multi-second `PTY_WRITE_GATE_STALL_LOG_THRESHOLD`) so this test does not need to sleep
+        // for it -- the same reason the watchdog tests above pass short timeouts explicitly.
+        let threshold = Duration::from_millis(20);
+        controller.update(&mut app, |controller, ctx| {
+            controller.pending_writes.push_back(PtyWrite::Bytes {
+                bytes: Cow::Owned(vec![b'x']),
+            });
+            controller.track_pty_write_gate_stall(threshold, ctx);
+        });
+
+        controller.read(&app, |controller, _| {
+            assert!(
+                controller.pty_write_gate_blocked_since.is_some(),
+                "a shut gate with writes queued must start tracking when the stall began."
+            );
+            assert!(
+                !controller.has_logged_current_pty_write_stall,
+                "a stall that just started must not have logged yet."
+            );
+        });
+
+        // Long enough for the threshold to elapse; drive the tracker again -- this is the same
+        // call `execute_next_queued_write` makes on every subsequent queued write or
+        // `LineEditorStatusEvent::Active`.
+        Timer::after(Duration::from_millis(100)).await;
+        controller.update(&mut app, |controller, ctx| {
+            controller.track_pty_write_gate_stall(threshold, ctx);
+        });
+
+        controller.read(&app, |controller, _| {
+            assert!(
+                controller.has_logged_current_pty_write_stall,
+                "a stall past the threshold must be logged."
+            );
+        });
+
+        // Driving the tracker again while still stalled must not reset or re-log -- one log line
+        // per unbroken stretch, not one per keystroke.
+        let blocked_since_before = controller.read(&app, |controller, _| {
+            controller
+                .pty_write_gate_blocked_since
+                .expect("still stalled")
+        });
+        controller.update(&mut app, |controller, ctx| {
+            controller.track_pty_write_gate_stall(threshold, ctx);
+        });
+        controller.read(&app, |controller, _| {
+            assert_eq!(
+                controller.pty_write_gate_blocked_since,
+                Some(blocked_since_before),
+                "an already-logged, still-ongoing stall must not restart its clock."
+            );
+            assert!(
+                controller.has_logged_current_pty_write_stall,
+                "an already-logged, still-ongoing stall must stay logged, not reset."
+            );
+        });
+
+        // The queue draining ends the stall and must reset the tracker, even though the gate
+        // itself is still shut.
+        controller.update(&mut app, |controller, ctx| {
+            controller.pending_writes.clear();
+            controller.track_pty_write_gate_stall(threshold, ctx);
+        });
+        controller.read(&app, |controller, _| {
+            assert!(
+                controller.pty_write_gate_blocked_since.is_none(),
+                "an empty queue is not a stall, however long the gate has been shut."
+            );
+            assert!(
+                !controller.has_logged_current_pty_write_stall,
+                "the log-once flag must reset along with the stall."
+            );
+        });
+
+        drop(model_events_tx);
+    });
+}
+
+/// Regression test for phosphor#770 follow-up review, item 2: `run_native_shell_completions` must
+/// not start a new native-completions request while one is already in flight, in either phase.
+///
+/// `AwaitingResults` does not gate `can_write_to_pty` (typing must not block on completions
+/// results), so on the old code a second request -- e.g. from `CompletionsTrigger::AsYouType`
+/// firing again while the first request's results are still pending -- would be queued and could
+/// be dequeued and dispatched immediately, unconditionally overwriting
+/// `in_flight_native_completions_state`. That drops the first request's `results_tx` and, since
+/// neither event carries a request id, hands the first request's later, now-phase-matching
+/// `CompletionsFinished` reply to the *second* request instead.
+///
+/// This drives `run_native_shell_completions` directly with a request already in flight (rather
+/// than via `execute_next_queued_write`'s line-editor gate, which this harness's line editor
+/// never clears -- see the file-level comment) because the defect is in
+/// `run_native_shell_completions` itself queuing a second request at all, not in when queued
+/// writes get dispatched.
+#[test]
+fn run_native_shell_completions_does_not_start_a_second_request_while_one_is_in_flight() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events.clone(),
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        // Request A is already in flight, past the prompt phase and waiting on results -- the
+        // phase that does not gate `can_write_to_pty`.
+        let (a_results_tx, a_results_rx) = async_channel::unbounded();
+        controller.update(&mut app, |controller, _ctx| {
+            controller.in_flight_native_completions_state =
+                Some(NativeShellCompletionsState::AwaitingResults {
+                    results_tx: a_results_tx,
+                });
+        });
+
+        // Request B tries to start -- e.g. the next as-you-type keystroke -- while A is still
+        // live.
+        let (b_results_tx, b_results_rx) = async_channel::unbounded();
+        controller.update(&mut app, |controller, ctx| {
+            controller.run_native_shell_completions("request b".to_owned(), b_results_tx, ctx);
+        });
+
+        controller.read(&app, |controller, _| {
+            assert!(
+                matches!(
+                    controller.in_flight_native_completions_state,
+                    Some(NativeShellCompletionsState::AwaitingResults { .. })
+                ),
+                "starting request B while request A is in flight must not touch A's state at \
+                 all -- not even queue something that could later clobber it."
+            );
+            assert!(
+                controller.pending_writes.is_empty(),
+                "request B must not be queued while a request is already in flight -- queuing it \
+                 would let it be dequeued and dispatched behind A's back the moment the line \
+                 editor gate (which AwaitingResults does not touch) allows it."
+            );
+        });
+        assert!(
+            b_results_rx.try_recv().is_err(),
+            "request B must be dropped outright (its results_tx closed) rather than queued or \
+             silently kept waiting forever."
+        );
+
+        // Request A's own, later reply must still reach request A, not have been redirected to B.
+        model_events.update(&mut app, |_dispatcher, ctx| {
+            ctx.emit(ModelEvent::CompletionsFinished(vec![]));
+        });
+        assert!(
+            a_results_rx.try_recv().is_ok(),
+            "request A's own CompletionsFinished reply must still reach request A."
+        );
+
+        drop(model_events_tx);
+    });
+}
+
+/// The stall log must fire on its own once the threshold elapses, even if nothing else ever
+/// drives `execute_next_queued_write` again -- e.g. the user stops typing entirely once the gate
+/// sticks, which is a very plausible reaction to a pane that stopped responding. Without a
+/// self-armed timer, the log line would depend on some future keystroke or `LineEditorStatus`
+/// transition that may never come.
+#[test]
+fn pty_write_gate_stall_logs_itself_without_further_input() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        // Start a stall (line editor inactive, a write queued behind it) with a short threshold
+        // -- rather than the real multi-second `PTY_WRITE_GATE_STALL_LOG_THRESHOLD` -- so this
+        // test does not need to sleep for it, the same reason the watchdog tests above pass short
+        // timeouts explicitly.
+        let threshold = Duration::from_millis(20);
+        controller.update(&mut app, |controller, ctx| {
+            controller.pending_writes.push_back(PtyWrite::Bytes {
+                bytes: Cow::Owned(vec![b'x']),
+            });
+            controller.track_pty_write_gate_stall(threshold, ctx);
+        });
+
+        controller.read(&app, |controller, _| {
+            assert!(
+                !controller.has_logged_current_pty_write_stall,
+                "must not have logged yet -- only the timer armed when the stall began should \
+                 do that, and it has not fired yet."
+            );
+        });
+
+        // Nothing further drives `execute_next_queued_write` or `track_pty_write_gate_stall` from
+        // here -- only the one-shot timer armed when the stall began should fire and log this.
+        Timer::after(Duration::from_millis(200)).await;
+
+        controller.read(&app, |controller, _| {
+            assert!(
+                controller.has_logged_current_pty_write_stall,
+                "the self-armed timer must log the stall on its own, with no further input."
+            );
+        });
+
+        drop(model_events_tx);
+    });
+}
