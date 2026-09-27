@@ -158,9 +158,14 @@ pub fn launchable_file_url_path(url: &url::Url) -> Option<std::path::PathBuf> {
     resolved.launchable.then_some(resolved.path)
 }
 
-/// The `set_before_open_url` backstop for the launch policy (#681). The callback cannot veto an
-/// open, but it can rewrite the URL, and `AppContext::open_url` treats a rewrite to `""` as a
-/// veto. Returns `Some(rewrite)` to replace the URL, `None` to leave it alone.
+/// The `set_before_open_url` backstop for the launch policy (#681). Returns `Some(rewrite)` to
+/// replace the URL, `None` to leave it alone (i.e. defer to the caller's own scheme check).
+///
+/// This helper predates `OpenUrlDecision` (#716) and still signals its own refusals with the
+/// `""` sentinel rather than the newer `OpenUrlDecision::Refuse`: its caller
+/// (`app/src/lib.rs::set_before_open_url`) wraps `Some(rewrite)` in `OpenUrlDecision::Open`
+/// unconditionally, and `AppContext::open_url` keeps treating an effective URL of `""` as a
+/// no-op for exactly this reason, so the veto still reaches the same place it always did.
 ///
 /// * A `file:` URL naming another host is refused (`""`): on Windows it is a UNC path, i.e. an
 ///   SMB connection to a host the link chose; on Unix it does not name a local file at all.

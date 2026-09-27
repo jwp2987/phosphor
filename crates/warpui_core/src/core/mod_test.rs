@@ -2994,7 +2994,11 @@ fn open_file_path_from_file_tree_opens_launchable_paths_instead_of_revealing_the
     });
 }
 
-/// #681: a `set_before_open_url` rewrite to the empty string vetoes the open.
+/// #681/#716: a `set_before_open_url` rewrite to the empty string is still treated as a no-op,
+/// even though `OpenUrlDecision::Refuse` (below) is now the way a hook says "do not open" --
+/// some call sites intentionally call `ctx.open_url("")` as a placeholder-link no-op
+/// (`app/src/app_menus.rs`, `app/src/resource_center/view.rs`) and the default identity hook
+/// must keep passing that through as `Open("")`, not `Refuse`.
 #[test]
 fn open_url_rewritten_to_empty_is_not_opened() {
     use crate::platform::test::recorded_system_opens_matching;
@@ -3004,9 +3008,9 @@ fn open_url_rewritten_to_empty_is_not_opened() {
         app.update(|ctx| {
             ctx.set_before_open_url(|url, _| {
                 if url.contains("refuse") {
-                    String::new()
+                    OpenUrlDecision::Open(String::new())
                 } else {
-                    url.to_owned()
+                    OpenUrlDecision::Open(url.to_owned())
                 }
             });
             ctx.open_url(&format!("https://example.com/{NEEDLE}/refuse"));
@@ -3017,6 +3021,60 @@ fn open_url_rewritten_to_empty_is_not_opened() {
             recorded_system_opens_matching(NEEDLE),
             vec![crate::platform::test::RecordedSystemOpen::OpenedUrl(
                 format!("https://example.com/{NEEDLE}/allow")
+            )]
+        );
+    });
+}
+
+/// #716: `OpenUrlDecision::Refuse` is a hard veto, distinct from rewriting to `""` -- this is
+/// the capability the hook did not have before (`BeforeOpenUrlCallback` used to be
+/// `Fn(&str, &AppContext) -> String`, so a hook could only launder a URL into something
+/// harmless, never refuse it outright).
+#[test]
+fn open_url_refused_by_hook_is_not_opened() {
+    use crate::platform::test::recorded_system_opens_matching;
+
+    const NEEDLE: &str = "phosphor-716-open-url-refuse";
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            ctx.set_before_open_url(|url, _| {
+                if url.contains("refuse") {
+                    OpenUrlDecision::Refuse
+                } else {
+                    OpenUrlDecision::Open(url.to_owned())
+                }
+            });
+            ctx.open_url(&format!("https://example.com/{NEEDLE}/refuse"));
+            ctx.open_url(&format!("https://example.com/{NEEDLE}/allow"));
+        });
+
+        assert_eq!(
+            recorded_system_opens_matching(NEEDLE),
+            vec![crate::platform::test::RecordedSystemOpen::OpenedUrl(
+                format!("https://example.com/{NEEDLE}/allow")
+            )]
+        );
+    });
+}
+
+/// #716: a hook may still rewrite a URL to something else entirely (not just refuse or pass
+/// through unchanged), and that rewritten URL -- not the original -- is what reaches the
+/// platform delegate.
+#[test]
+fn open_url_rewritten_by_hook_opens_the_rewrite() {
+    use crate::platform::test::recorded_system_opens_matching;
+
+    const NEEDLE: &str = "phosphor-716-open-url-rewrite";
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            ctx.set_before_open_url(|url, _| OpenUrlDecision::Open(url.replace("before", "after")));
+            ctx.open_url(&format!("https://example.com/{NEEDLE}/before"));
+        });
+
+        assert_eq!(
+            recorded_system_opens_matching(NEEDLE),
+            vec![crate::platform::test::RecordedSystemOpen::OpenedUrl(
+                format!("https://example.com/{NEEDLE}/after")
             )]
         );
     });

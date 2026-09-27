@@ -2642,8 +2642,11 @@ fn render_legacy_table_section(
 /// an AI block renders, tables included -- and it fires on a plain click with no modifier. Before
 /// this guard it was `app.open_url(&hyperlink.url)`: a model could emit
 /// `[click me](file:///etc/passwd)`, `javascript:`, `ms-msdt:` or `phosphor://launch/<config>`
-/// and the OS handler would take it. `set_before_open_url` does not help, because its callback
-/// returns `String` and so cannot veto an open; the guard has to be here.
+/// and the OS handler would take it. `set_before_open_url`'s global backstop (#716) now refuses
+/// disallowed schemes too, but it enforces the *base* allow-list, which permits the app's own
+/// scheme -- a legitimate rewrite has to be able to reach it. Content this untrusted must refuse
+/// the own scheme as well (see [`openable_untrusted_content_url`]), so the guard still has to be
+/// here.
 ///
 /// The verdict comes from [`openable_untrusted_content_url`], the one shared policy, and the
 /// approved `Url` is what gets opened -- not the original string, so there is no second parse

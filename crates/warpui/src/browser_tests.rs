@@ -23,13 +23,28 @@ fn safe_browser_open_url_accepts_app_channel_urls() {
         "warppreview",
         "warpdev",
         "warplocal",
-        "warposs",
+        // The OSS channel's real scheme (`Channel::Oss => "phosphor"` in
+        // `warp_core::channel::ChannelState::url_scheme`), not the stale `warposs` this list
+        // used to carry (#716) -- that value was never registered by anything.
+        "phosphor",
         "warpintegration",
         "zap",
     ] {
         let url = format!("{scheme}://action/focus_cloud_mode");
         assert_eq!(safe_browser_open_url(&url).as_deref(), Some(url.as_str()));
     }
+}
+
+/// #716: `warposs` was a stale scheme name that never matched what the OSS channel actually
+/// registers (`phosphor`), so the wasm build's own deep links silently failed this check. Now
+/// that the list carries the real value, `warposs` itself must be refused like any other
+/// unregistered scheme.
+#[test]
+fn safe_browser_open_url_rejects_the_old_stale_warposs_scheme() {
+    assert_eq!(
+        safe_browser_open_url("warposs://action/focus_cloud_mode"),
+        None
+    );
 }
 
 #[test]

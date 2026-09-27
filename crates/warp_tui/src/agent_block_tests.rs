@@ -285,7 +285,7 @@ fn out_of_credits_failure_uses_shared_copy_warning_style_and_tui_actions() {
         app.update(|ctx| {
             ctx.set_before_open_url(move |url, _| {
                 opened_urls_for_callback.borrow_mut().push(url.to_owned());
-                url.to_owned()
+                warpui::OpenUrlDecision::Open(url.to_owned())
             });
         });
 

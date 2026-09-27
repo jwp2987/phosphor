@@ -28,6 +28,7 @@ use crate::{
     drive::ZapDriveObjectArgs,
     terminal::model::session::Session,
     uri::UriHost,
+    uri::link_policy::is_openable_url_scheme,
     uri::parse_url_paths::{get_item_data_from_warp_link, WarpWebLink},
     workspace::ActiveSession,
 };
@@ -540,45 +541,6 @@ mod link_policy_tests {
             );
         });
     }
-}
-
-/// Whether a URL's *scheme* is one we are willing to hand outside the process at all.
-///
-/// This is the scheme-level half of the policy and deliberately says nothing about what a URL
-/// is allowed to *mean*. The allowed set is:
-///
-/// * `http` / `https` -- the browser. The whole point of a web link.
-/// * `mailto` -- the mail composer. It opens a draft; it does not run anything.
-/// * the app's own channel scheme (`warp`, `warppreview`, `phosphor`, ...) -- it comes back to
-///   us through `uri::handle_incoming_uri`. It has to pass at this level because
-///   `set_before_open_url` in `lib.rs` deliberately rewrites recognised web URLs *into* this
-///   scheme, and that rewrite must not be discarded as an escalation.
-///
-/// Everything else is refused, because everything else can reach a program we know nothing
-/// about: `javascript:` and `data:` execute in whichever handler claims them, `file:` hands a
-/// path to the system opener, and a custom scheme (`vscode:`, `smb:`, `ms-msdt:`, anything a
-/// third-party installer registered) resolves to an arbitrary local binary with an
-/// attacker-chosen argument.
-///
-/// **This predicate is NOT sufficient for untrusted content, and it is not what guards `file:`.**
-/// Passing it only means the URL may leave the process. For a link that came out of a notebook
-/// use [`is_openable_notebook_link`], which additionally constrains what an own-scheme URL may
-/// mean; and note that `resolve` handles `file:` on its own path *before* consulting either
-/// predicate, so "`file` is absent from the list above" is not what stops a `file:` link.
-///
-/// The browser build already applies exactly this policy in `warpui::browser::safe_browser_open_url`
-/// before calling `window.open`. The desktop build had none: `ctx.open_url` goes straight to
-/// `open::that_detached` / `NSWorkspace.openURL`.
-///
-/// **This is ahead of the oracle, not a parity port.** Pinned Warp `42effe840` returns
-/// `LinkTarget::Url` for any scheme `Url::parse` accepts (`link.rs:147`) and calls
-/// `ctx.open_url` on it unconditionally (`link.rs:266`), so a plain click on a model-authored
-/// `[click me](file:///...)` reached the OS handler. Do not "restore" the pin's behaviour during
-/// a re-pin.
-pub fn is_openable_url_scheme(url: &Url) -> bool {
-    // `Url::parse` lower-cases the scheme, so this comparison needs no normalisation.
-    matches!(url.scheme(), "http" | "https" | "mailto")
-        || url.scheme() == ChannelState::url_scheme()
 }
 
 /// Whether a URL that came out of *notebook content* may be opened.

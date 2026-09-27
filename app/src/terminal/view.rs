@@ -18383,14 +18383,15 @@ impl TerminalView {
     ///
     /// This is the single point where terminal-sourced URIs reach the OS URL handler. The
     /// scheme allow-list lives in [`link_detection::openable_terminal_url`], which narrows the
-    /// one shared policy (`crate::notebooks::link::is_openable_url_scheme`) rather than
+    /// one shared policy (`crate::uri::link_policy::is_openable_url_scheme`) rather than
     /// restating it; see that function for why the app's own scheme is refused here.
     ///
     /// Previously this checked only `Url::parse(uri).is_err()`, so any byte stream the terminal
     /// rendered -- an SSH banner, a `cat`ted file, an agent's tool output -- could hand
     /// `file:`, `vscode:` or `ms-msdt:` to the system opener on a single click.
-    /// `set_before_open_url` cannot veto an open (its callback returns `String`), so the guard
-    /// has to be here.
+    /// `set_before_open_url`'s global backstop (#716) now refuses a disallowed scheme too, but it
+    /// enforces the *base* allow-list, which permits the app's own scheme; terminal content is
+    /// untrusted enough that the own scheme must be refused here as well, so the guard stays.
     fn open_terminal_content_url(&self, uri: &str, ctx: &mut ViewContext<Self>) {
         match link_detection::terminal_url_action(uri) {
             Ok(link_detection::TerminalUrlAction::Open(url)) => {
