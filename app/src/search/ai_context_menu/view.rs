@@ -1100,6 +1100,27 @@ impl AIContextMenu {
                         );
                     });
                 }
+                // `get_categories_for_mode` puts `CurrentFolderFiles` (not `RepoFiles`) in
+                // `categories` for a cwd with no detected git repo -- but this match had no
+                // arm for it, so it fell into the `_ => {}` catch-all below and no file data
+                // source was ever wired up: typing `@notes` outside a repo (e.g. in $HOME)
+                // found nothing, even though `notes.md` was right there and "Files and
+                // folders"'s own browse mode (`reset_mixer`, which already distinguishes these
+                // two) found it fine. Mirrors that call site's `CurrentFolderFiles` arm.
+                AIContextMenuCategory::CurrentFolderFiles => {
+                    self.mixer.update(ctx, |mixer, ctx| {
+                        mixer.add_async_source(
+                            file_data_source_for_pwd(ctx),
+                            [QueryFilter::Files],
+                            AddAsyncSourceOptions {
+                                debounce_interval: Some(Duration::from_millis(50)),
+                                run_in_zero_state: true,
+                                run_when_unfiltered: true,
+                            },
+                            ctx,
+                        );
+                    });
+                }
                 AIContextMenuCategory::Commands => {
                     let command_data_source = ctx.add_model(|_| CommandDataSource::new());
                     self.mixer.update(ctx, |mixer, _ctx| {
