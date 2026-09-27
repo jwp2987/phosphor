@@ -51,6 +51,7 @@ use crate::terminal::{ShowJumpToBottomOfBlockButton, SizeInfo};
 use crate::themes::theme::{self, RespectSystemTheme, SelectedSystemThemes, ThemeKind, WarpTheme};
 use crate::user_config::WarpConfig;
 use crate::util::bindings;
+use crate::util::truncation::truncate_from_end;
 use crate::window_settings::{
     BackgroundBlurRadius, BackgroundBlurTexture, BackgroundOpacity, LeftPanelVisibilityAcrossTabs,
     OpenWindowsAtCustomSize, WindowSettings, WindowSettingsChangedEvent, ZoomLevel,
@@ -510,6 +511,8 @@ pub enum AppearancePageAction {
     SetPendingHostFooterColorRuleColor(AnsiColorIdentifier),
     AddHostFooterColorRule,
     RemoveHostFooterColorRule(usize),
+    MoveHostFooterColorRuleUp(usize),
+    MoveHostFooterColorRuleDown(usize),
     SetUnknownHostColor(AnsiColorIdentifier),
 }
 
@@ -555,6 +558,17 @@ pub struct AppearanceSettingsPageView {
     color_picker_dot_states: Vec<Vec<MouseStateHandle>>,
     directory_tab_color_delete_buttons: Vec<ViewHandle<ActionButton>>,
     host_footer_color_rule_delete_buttons: Vec<ViewHandle<ActionButton>>,
+    /// Move-up / move-down buttons for reordering rules, index-aligned with
+    /// `host_footer_color_rule_delete_buttons` and rebuilt alongside it. These exist
+    /// because rules are matched first-to-last (`terminal::host_footer_color::matching_color`,
+    /// "first match wins"): without a way to reorder them, a rule added after an
+    /// earlier, broader-matching one could never take effect.
+    host_footer_color_rule_move_up_buttons: Vec<ViewHandle<ActionButton>>,
+    host_footer_color_rule_move_down_buttons: Vec<ViewHandle<ActionButton>>,
+    /// One persistent hover state per rule row, index-aligned with the buttons above
+    /// and rebuilt alongside them. Used only for rows whose pattern is long enough to
+    /// be ellipsized -- see `render_host_footer_color_rule_row_label`.
+    host_footer_color_rule_tooltip_states: Vec<MouseStateHandle>,
     /// One persistent mouse state per `TAB_COLOR_OPTIONS` entry, for the color swatch
     /// picker in the "add a rule" row. Fixed-size (`TAB_COLOR_OPTIONS` never changes at
     /// runtime) so, unlike `color_picker_dot_states`, this never needs resizing.
@@ -562,6 +576,12 @@ pub struct AppearanceSettingsPageView {
     /// The color selected for the rule currently being composed in the "add a rule"
     /// row; applied to the new rule by `commit_host_footer_color_rule`.
     host_footer_color_rule_pending_color: AnsiColorIdentifier,
+    /// Set by `commit_host_footer_color_rule` when the last submit attempt (from
+    /// either text field, or the "Add rule" button) was rejected -- an invalid regex,
+    /// or an exact duplicate of an already-configured pattern -- and cleared on the
+    /// next accepted submit. `SubmittableTextInput`'s red border on its own only says
+    /// "something is wrong", not what.
+    host_footer_color_rule_error: Option<String>,
     host_footer_color_rule_pattern_editor: ViewHandle<SubmittableTextInput>,
     host_footer_color_rule_name_editor: ViewHandle<EditorView>,
     add_host_footer_color_rule_button: ViewHandle<ActionButton>,
@@ -770,6 +790,12 @@ impl TypedActionView for AppearanceSettingsPageView {
                     let _ = settings.host_footer_color_rules.set_value(new_rules, ctx);
                 });
                 ctx.notify();
+            }
+            MoveHostFooterColorRuleUp(idx) => {
+                self.swap_host_footer_color_rules(*idx, idx.wrapping_sub(1), ctx);
+            }
+            MoveHostFooterColorRuleDown(idx) => {
+                self.swap_host_footer_color_rules(*idx, idx + 1, ctx);
             }
             SetUnknownHostColor(color) => {
                 let color = *color;
@@ -1531,10 +1557,24 @@ impl AppearanceSettingsPageView {
                 .collect(),
             directory_tab_color_delete_buttons: build_directory_delete_buttons(ctx),
             host_footer_color_rule_delete_buttons: build_host_footer_color_rule_delete_buttons(ctx),
+            host_footer_color_rule_move_up_buttons: build_host_footer_color_rule_move_buttons(
+                ctx,
+                HostFooterColorRuleMoveDirection::Up,
+            ),
+            host_footer_color_rule_move_down_buttons: build_host_footer_color_rule_move_buttons(
+                ctx,
+                HostFooterColorRuleMoveDirection::Down,
+            ),
+            host_footer_color_rule_tooltip_states: (0..TabSettings::as_ref(ctx)
+                .host_footer_color_rules
+                .len())
+                .map(|_| MouseStateHandle::default())
+                .collect(),
             host_footer_color_rule_picker_states: (0..TAB_COLOR_OPTIONS.len())
                 .map(|_| MouseStateHandle::default())
                 .collect(),
             host_footer_color_rule_pending_color: AnsiColorIdentifier::Red,
+            host_footer_color_rule_error: None,
             host_footer_color_rule_pattern_editor,
             host_footer_color_rule_name_editor,
             add_host_footer_color_rule_button,
@@ -3212,8 +3252,20 @@ impl AppearanceSettingsPageView {
             self.directory_tab_color_delete_buttons = build_directory_delete_buttons(ctx);
         }
         if let TabSettingsChangedEvent::HostFooterColorRuleList { .. } = event {
+            let count = TabSettings::as_ref(ctx).host_footer_color_rules.len();
             self.host_footer_color_rule_delete_buttons =
                 build_host_footer_color_rule_delete_buttons(ctx);
+            self.host_footer_color_rule_move_up_buttons = build_host_footer_color_rule_move_buttons(
+                ctx,
+                HostFooterColorRuleMoveDirection::Up,
+            );
+            self.host_footer_color_rule_move_down_buttons =
+                build_host_footer_color_rule_move_buttons(
+                    ctx,
+                    HostFooterColorRuleMoveDirection::Down,
+                );
+            self.host_footer_color_rule_tooltip_states
+                .resize_with(count, MouseStateHandle::default);
         }
         // `UnknownHostColor` needs no branch here: `HostFooterColorRulesWidget`
         // reads it fresh from `TabSettings` on every render rather than caching a
@@ -3234,6 +3286,10 @@ impl AppearanceSettingsPageView {
             log::warn!(
                 "Not adding host-color rule: {trimmed_pattern:?} is empty or not a valid regex"
             );
+            self.host_footer_color_rule_error = Some(crate::t!(
+                "settings-appearance-host-footer-bar-invalid-pattern"
+            ));
+            ctx.notify();
             return;
         }
         let pattern =
@@ -3249,14 +3305,35 @@ impl AppearanceSettingsPageView {
             Some(name_text.trim().to_string())
         };
         let color = self.host_footer_color_rule_pending_color;
+        let new_rule = HostFooterColorRule {
+            pattern,
+            color,
+            name,
+        };
+
+        // `HostFooterColorRule::eq` compares only `pattern` (see its impl in
+        // `tab_settings.rs`): a second rule with an identical pattern can never match,
+        // since rules are tried first-to-last and the first match wins, so it would be
+        // silently dead configuration if accepted.
+        let is_duplicate = TabSettings::as_ref(ctx)
+            .host_footer_color_rules
+            .iter()
+            .any(|existing| existing == &new_rule);
+        if is_duplicate {
+            log::warn!(
+                "Not adding host-color rule: {:?} is already configured",
+                new_rule.pattern.as_str()
+            );
+            self.host_footer_color_rule_error = Some(crate::t!(
+                "settings-appearance-host-footer-bar-duplicate-pattern"
+            ));
+            ctx.notify();
+            return;
+        }
 
         TabSettings::handle(ctx).update(ctx, |settings, ctx| {
             let mut new_rules = settings.host_footer_color_rules.to_vec();
-            new_rules.push(HostFooterColorRule {
-                pattern,
-                color,
-                name,
-            });
+            new_rules.push(new_rule);
             let _ = settings.host_footer_color_rules.set_value(new_rules, ctx);
         });
 
@@ -3272,6 +3349,23 @@ impl AppearanceSettingsPageView {
             .update(ctx, |editor, ctx| {
                 editor.system_reset_buffer_text("", ctx);
             });
+        self.host_footer_color_rule_error = None;
+        ctx.notify();
+    }
+
+    /// Swaps the rules at `a` and `b` in `TabSettings::host_footer_color_rules`, used by
+    /// the move-up/move-down buttons. A no-op (rather than a panic) if either index is
+    /// out of range, which covers `MoveHostFooterColorRuleUp(0)`'s `idx.wrapping_sub(1)`
+    /// underflow -- the button is disabled at that position, but this stays defensive
+    /// against a stale index from a build that raced a list change.
+    fn swap_host_footer_color_rules(&mut self, a: usize, b: usize, ctx: &mut ViewContext<Self>) {
+        TabSettings::handle(ctx).update(ctx, |settings, ctx| {
+            let mut new_rules = settings.host_footer_color_rules.to_vec();
+            if a < new_rules.len() && b < new_rules.len() {
+                new_rules.swap(a, b);
+                let _ = settings.host_footer_color_rules.set_value(new_rules, ctx);
+            }
+        });
         ctx.notify();
     }
 
@@ -6164,6 +6258,54 @@ fn build_host_footer_color_rule_delete_buttons(
         .collect()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostFooterColorRuleMoveDirection {
+    Up,
+    Down,
+}
+
+/// Builds the move-up or move-down button for every rule, index-aligned with
+/// `build_host_footer_color_rule_delete_buttons`'s output. The button at the list's
+/// leading edge (index 0 for `Up`, the last index for `Down`) is disabled rather than
+/// omitted, so the row layout stays identical whether or not a given rule can move
+/// that direction.
+fn build_host_footer_color_rule_move_buttons(
+    ctx: &mut ViewContext<AppearanceSettingsPageView>,
+    direction: HostFooterColorRuleMoveDirection,
+) -> Vec<ViewHandle<ActionButton>> {
+    let len = TabSettings::as_ref(ctx).host_footer_color_rules.len();
+    (0..len)
+        .map(|idx| {
+            let disabled = match direction {
+                HostFooterColorRuleMoveDirection::Up => idx == 0,
+                HostFooterColorRuleMoveDirection::Down => idx + 1 >= len,
+            };
+            ctx.add_typed_action_view(move |ctx| {
+                let icon = match direction {
+                    HostFooterColorRuleMoveDirection::Up => Icon::ChevronUp,
+                    HostFooterColorRuleMoveDirection::Down => Icon::ChevronDown,
+                };
+                let mut button = ActionButton::new("", NakedTheme)
+                    .with_icon(icon)
+                    .with_size(ButtonSize::XSmall)
+                    .on_click(move |ctx| {
+                        let action = match direction {
+                            HostFooterColorRuleMoveDirection::Up => {
+                                AppearancePageAction::MoveHostFooterColorRuleUp(idx)
+                            }
+                            HostFooterColorRuleMoveDirection::Down => {
+                                AppearancePageAction::MoveHostFooterColorRuleDown(idx)
+                            }
+                        };
+                        ctx.dispatch_typed_action(action);
+                    });
+                button.set_disabled(disabled, ctx);
+                button
+            })
+        })
+        .collect()
+}
+
 /// Whether `pattern_text`, trimmed, is a pattern `HostFooterColorRule::pattern` can actually
 /// store -- non-empty and a valid regex (the field deserializes via `serde_regex`, see
 /// `crate::workspace::tab_settings`, so an invalid regex can never round-trip through settings).
@@ -6185,7 +6327,9 @@ fn is_valid_host_footer_color_rule_pattern(pattern_text: &str) -> bool {
 /// other widget on this page currently needs, just for one row of input. Pressing Enter in
 /// either field submits the rule (same as clicking "Add rule"); the pattern field also shows
 /// a `SubmittableTextInput`'s own inline submit button and, on an invalid pattern, an error
-/// border.
+/// border. The border alone doesn't say why, so `view.host_footer_color_rule_error` (set by
+/// `commit_host_footer_color_rule`) is rendered as text underneath when the last attempt
+/// was rejected -- an invalid regex, or an exact duplicate of an already-configured pattern.
 fn render_host_footer_color_rule_add_row(
     view: &AppearanceSettingsPageView,
     appearance: &Appearance,
@@ -6236,14 +6380,69 @@ fn render_host_footer_color_rule_add_row(
         );
     }
 
-    Flex::row()
+    let add_row = Flex::row()
         .with_spacing(8.)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_child(pattern_input)
         .with_child(name_input)
         .with_child(dots_row.finish())
         .with_child(ChildView::new(&view.add_host_footer_color_rule_button).finish())
+        .finish();
+
+    let Some(error) = &view.host_footer_color_rule_error else {
+        return add_row;
+    };
+
+    Flex::column()
+        .with_spacing(4.)
+        .with_child(add_row)
+        .with_child(
+            Text::new(
+                error.clone(),
+                appearance.ui_font_family(),
+                appearance.ui_font_size(),
+            )
+            .with_color(theme.ui_error_color().into())
+            .finish(),
+        )
         .finish()
+}
+
+/// Nothing stops a user from pasting a 300-character regex into the pattern field, and
+/// an unbroken string that long would push a row's delete/reorder buttons off the row
+/// and, at the settings window's default width, off the window edge entirely. Long
+/// labels are ellipsized here, with the untruncated text shown in a tooltip on hover --
+/// `span_with_tooltip` is the same builder helper `info_button_with_tooltip` (used all
+/// over this page via `render_info_icon`) is built on, just wrapping a text span instead
+/// of an icon.
+const HOST_FOOTER_COLOR_RULE_LABEL_MAX_CHARS: usize = 60;
+
+fn render_host_footer_color_rule_row_label(
+    label_text: &str,
+    tooltip_state: MouseStateHandle,
+    appearance: &Appearance,
+) -> Box<dyn Element> {
+    let truncated = truncate_from_end(label_text, HOST_FOOTER_COLOR_RULE_LABEL_MAX_CHARS);
+    let span = appearance
+        .ui_builder()
+        .span(truncated.clone())
+        .with_style(UiComponentStyles {
+            font_color: Some(appearance.theme().nonactive_ui_text_color().into_solid()),
+            ..Default::default()
+        });
+
+    if truncated == label_text {
+        return Shrinkable::new(1., span.build().finish()).finish();
+    }
+
+    Shrinkable::new(
+        1.,
+        appearance
+            .ui_builder()
+            .span_with_tooltip(span, label_text.to_string(), tooltip_state)
+            .finish(),
+    )
+    .finish()
 }
 
 /// The `TabSettings::unknown_host_color` picker: the color painted when a session
@@ -6342,7 +6541,7 @@ impl SettingsWidget for HostFooterColorRulesWidget {
     type View = AppearanceSettingsPageView;
 
     fn search_terms(&self) -> &str {
-        "host color footer bar ssh remote production prod window"
+        "host color footer bar ssh remote production prod window reorder move up down"
     }
 
     fn render(
@@ -6413,18 +6612,13 @@ impl SettingsWidget for HostFooterColorRulesWidget {
                 Some(name) => format!("{name}  ({})", rule.pattern.as_str()),
                 None => rule.pattern.as_str().to_string(),
             };
-            let label = Shrinkable::new(
-                1.,
-                Text::new_inline(
-                    label_text,
-                    appearance.ui_font_family(),
-                    appearance.ui_font_size(),
-                )
-                .with_color(theme.nonactive_ui_text_color().into())
-                .soft_wrap(false)
-                .finish(),
-            )
-            .finish();
+            let tooltip_state = view
+                .host_footer_color_rule_tooltip_states
+                .get(idx)
+                .cloned()
+                .unwrap_or_default();
+            let label =
+                render_host_footer_color_rule_row_label(&label_text, tooltip_state, appearance);
 
             let mut row = Flex::row()
                 .with_main_axis_size(MainAxisSize::Max)
@@ -6438,9 +6632,21 @@ impl SettingsWidget for HostFooterColorRulesWidget {
                         .with_child(label)
                         .finish(),
                 );
-            if let Some(delete_button) = view.host_footer_color_rule_delete_buttons.get(idx) {
-                row = row.with_child(ChildView::new(delete_button).finish());
+            let mut trailing_buttons =
+                Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+            if let Some(move_up_button) = view.host_footer_color_rule_move_up_buttons.get(idx) {
+                trailing_buttons =
+                    trailing_buttons.with_child(ChildView::new(move_up_button).finish());
             }
+            if let Some(move_down_button) = view.host_footer_color_rule_move_down_buttons.get(idx) {
+                trailing_buttons =
+                    trailing_buttons.with_child(ChildView::new(move_down_button).finish());
+            }
+            if let Some(delete_button) = view.host_footer_color_rule_delete_buttons.get(idx) {
+                trailing_buttons =
+                    trailing_buttons.with_child(ChildView::new(delete_button).finish());
+            }
+            row = row.with_child(trailing_buttons.finish());
 
             content.add_child(
                 Container::new(row.finish())
