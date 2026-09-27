@@ -32,7 +32,7 @@ Each widget implements `SettingsWidget` (`settings_page.rs`):
 - `should_render(&self, app) -> bool` — defaults to `true`. This is one of **two** ways to conditionally show a setting, and usually not the right one — see "Two ways to gate a widget" below.
 - `widget_id()` / `static_widget_id()` — default to `std::any::type_name::<Self>()`, used for scroll-to and deeplinks.
 
-Note the name collision: `SettingsPageMeta::should_render` gates a whole **page** out of the sidebar (`WarpDriveSettingsPageView` uses it for `FeatureFlag::ZapNewSettingsModes`). `SettingsWidget::should_render` gates a single **widget**. They are unrelated.
+Note the name collision: `SettingsPageMeta::should_render` gates a whole **page** out of the sidebar (most pages return `true`; `WarpDriveSettingsPageView` used it to gate on `FeatureFlag::ZapNewSettingsModes` until that flag was retired with the c5e4a02e3 port). `SettingsWidget::should_render` gates a single **widget**. They are unrelated.
 
 **How search filters.** `PageType::update_filter(&mut self, query: &str, app: &AppContext)` keeps a widget when
 `widget.should_render(app) && search_terms_match(widget.search_terms(), query)`.
