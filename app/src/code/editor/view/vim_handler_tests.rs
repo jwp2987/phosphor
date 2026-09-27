@@ -25,7 +25,9 @@ use warp_util::user_input::UserInput;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
+use std::time::Duration;
 use warpui::geometry::vector::{vec2f, Vector2F};
+use warpui::r#async::Timer;
 use warpui::text::point::Point;
 use warpui::units::IntoPixels;
 use warpui::{
@@ -2406,5 +2408,54 @@ fn test_clicking_find_input_after_vim_search_word_restores_editing() {
 
         assert!(is_find_input_editable(&find_bar, &app));
         assert!(is_find_input_focused(&find_editor, &app));
+    });
+}
+
+/// Regression test for a CPU burn found in a GUI pass: `RichTextElement::paint` (in
+/// `crates/editor/src/render/element/mod.rs`) used to call `update_blink_state` -- which
+/// reschedules a repaint of the whole window via `ctx.repaint_after` -- for any `editable` pane,
+/// with no check on whether the pane was `focused`. Since the cursor is never actually drawn
+/// while unfocused (`RenderContext::cursors_visible()` in
+/// `crates/editor/src/render/element/paint.rs` requires `focused`), that timer served no visual
+/// purpose but kept scheduling another frame every `CURSOR_BLINK_INTERVAL` (500ms), forever, for
+/// as long as any editable-but-unfocused file-editor pane stayed open. This burned roughly 25% of
+/// a core under software rendering even for a tiny file, while a quiescent editor should schedule
+/// no further frames at all.
+#[test]
+fn quiescent_unfocused_editor_schedules_no_further_frames() {
+    App::test((), |mut app| async move {
+        initialize_code_editor_app(&mut app);
+
+        // A small file, matching the bug report ("even for a 14-line file").
+        let content = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n\
+                       eleven\ntwelve\nthirteen\nfourteen";
+        let (window_id, editor) = add_code_editor_with_window(content, &mut app);
+
+        layout_editor_view(&mut app, &editor).await;
+
+        let presenter = app
+            .presenter(window_id)
+            .expect("window should have a registered presenter");
+
+        // Settle the view with one explicit render, the same as opening the file and painting
+        // its first frame would do.
+        render_views(&mut app, &presenter, &[editor.id()]);
+
+        assert!(
+            !editor.read(&app, |view, ctx| view.is_focused(ctx)),
+            "editor must not be focused for this test to exercise the unfocused/idle case"
+        );
+
+        let frame_count_before = presenter.borrow().frame_count();
+
+        // Give any wrongly-scheduled cursor-blink repaint timer far more than enough real time
+        // to fire and drive another frame (CURSOR_BLINK_INTERVAL is 500ms).
+        Timer::after(Duration::from_millis(900)).await;
+
+        let frame_count_after = presenter.borrow().frame_count();
+        assert_eq!(
+            frame_count_before, frame_count_after,
+            "an idle, unfocused editor pane should not schedule any further frames"
+        );
     });
 }
