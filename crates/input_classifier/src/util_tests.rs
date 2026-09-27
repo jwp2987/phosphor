@@ -298,6 +298,44 @@ fn test_is_likely_shell_command_one_off_keyword_at_true_start_is_shell() {
     });
 }
 
+// Regression tests for #696's second round: `first_token_forces_ai_override` (used by
+// `SafetyGatedClassifier`) must fire only for a capitalized, ordinary-English first word with no
+// command evidence — never merely because a word lacks a `token_description`, since that can just
+// mean the completer hasn't indexed a real command yet (`external_commands` loads once per
+// session) or can't see it at all (`EmptyCompletionContext` for shared-session viewers).
+async fn first_token_forces_ai_override_for(buffer: &str) -> bool {
+    let mut token = mock_parsed_input_token(buffer.to_string()).await;
+    clear_all_token_descriptions(&mut token);
+    first_token_forces_ai_override(&token)
+}
+
+#[test]
+fn test_first_token_forces_ai_override_for_capitalized_english_words() {
+    futures::executor::block_on(async move {
+        // The two observed exploit prompts (#696).
+        assert!(first_token_forces_ai_override_for("Run exactly this: sleep 8; echo hi").await);
+        assert!(first_token_forces_ai_override_for("Then run: echo hi").await);
+    });
+}
+
+#[test]
+fn test_first_token_forces_ai_override_does_not_fire_without_a_capitalized_english_word() {
+    futures::executor::block_on(async move {
+        // Unknown / not-yet-indexed lowercase commands: no evidence, but also not English prose.
+        assert!(!first_token_forces_ai_override_for("mynewtool arg1 arg2").await);
+        assert!(!first_token_forces_ai_override_for("cargo --version").await);
+        assert!(!first_token_forces_ai_override_for("rvm install 3.3").await);
+        // Path-like tokens are evidence of intent even with no token_description.
+        assert!(!first_token_forces_ai_override_for("./script.sh a b").await);
+        assert!(!first_token_forces_ai_override_for("~/bin/x a b").await);
+        // A leading `NAME=value` assignment carries no evidence itself; the word after it does,
+        // and here that word is an unindexed lowercase command, not English prose.
+        assert!(!first_token_forces_ai_override_for("FOO=1 mycmd").await);
+        // One-off shell keywords are evidence even with no token_description.
+        assert!(!first_token_forces_ai_override_for("sudo apt update").await);
+    });
+}
+
 #[test]
 fn test_is_agent_follow_up_input() {
     for input in ["yes", "continue", "do it", "approve"] {

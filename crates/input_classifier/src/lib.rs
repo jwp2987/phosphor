@@ -5,6 +5,7 @@ mod input_type;
 #[cfg(feature = "onnx")]
 mod onnx;
 mod parser;
+mod safety_gate;
 pub mod test_utils;
 pub mod util;
 
@@ -17,6 +18,7 @@ pub use heuristic_classifier::HeuristicClassifier;
 pub use input_type::InputType;
 #[cfg(feature = "onnx")]
 pub use onnx::{Model as OnnxModel, OnnxClassifier};
+pub use safety_gate::SafetyGatedClassifier;
 
 /// Sources produced by the input classifier pipeline.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,11 +39,11 @@ pub enum InputClassifierDecisionSource {
     /// characters and was short-circuited straight to AI, since the
     /// dictionary and ML models are all English-only (see `util::contains_cjk`).
     CjkHeuristic,
-    /// Fork-original, not in the pin: the word-score heuristic scored the input as Shell, but the
-    /// very first token of the buffer isn't a real executable/builtin/alias/function known to this
-    /// session, so the result was overridden to AI. Shell metacharacters or a real command word
-    /// appearing anywhere other than the first position must never be enough on their own to
-    /// classify an English sentence as Shell (see `util::first_token_has_command_evidence`).
+    /// Fork-original, not in the pin: a classifier (any of them — this is enforced centrally by
+    /// [`SafetyGatedClassifier`], not per-classifier) scored the input as Shell, but the buffer's
+    /// effective first token has no command evidence and is itself an ordinary, capitalized
+    /// English word (e.g. "Run", "Then", "Please", "Delete"), so the result was overridden to AI.
+    /// See `util::first_token_forces_ai_override` and `safety_gate`.
     NoFirstTokenCommandEvidence,
 }
 

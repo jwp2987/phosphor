@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use input_classifier::{HeuristicClassifier, InputClassifier};
+use input_classifier::{HeuristicClassifier, InputClassifier, SafetyGatedClassifier};
 use warpui::{Entity, ModelContext, SingletonEntity};
 
 pub struct InputClassifierModel {
@@ -8,13 +8,18 @@ pub struct InputClassifierModel {
 }
 
 impl InputClassifierModel {
+    // Every branch below wraps its concrete classifier in `SafetyGatedClassifier` before storing
+    // it: whichever model is loaded (ONNX by default, then fasttext, then this heuristic
+    // fallback), the safety invariant that a Shell result requires real first-token command
+    // evidence has to be enforced once, centrally, here — not inside any one classifier, since a
+    // model-specific gate is dead code the moment a different model is loaded (#696).
     pub fn new(_ctx: &mut ModelContext<Self>) -> Self {
         #[cfg(feature = "nld_onnx_model")]
         match input_classifier::OnnxClassifier::new(input_classifier::OnnxModel::BertTiny) {
             Ok(classifier) => {
                 log::info!("Loaded onnx classifier");
                 return Self {
-                    classifier: Arc::new(classifier),
+                    classifier: Arc::new(SafetyGatedClassifier::new(classifier)),
                 };
             }
             Err(e) => log::warn!("Failed to load onnx classifier: {e:#}"),
@@ -26,7 +31,7 @@ impl InputClassifierModel {
                 Ok(classifier) => {
                     log::info!("Loaded fasttext classifier");
                     return Self {
-                        classifier: Arc::new(classifier),
+                        classifier: Arc::new(SafetyGatedClassifier::new(classifier)),
                     };
                 }
                 Err(e) => log::warn!("Failed to load fasttext classifier: {e:#}"),
@@ -34,7 +39,7 @@ impl InputClassifierModel {
         }
 
         Self {
-            classifier: Arc::new(HeuristicClassifier),
+            classifier: Arc::new(SafetyGatedClassifier::new(HeuristicClassifier)),
         }
     }
 

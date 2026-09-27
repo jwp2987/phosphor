@@ -75,6 +75,18 @@ pub fn natural_language_words_score(words: Vec<Cow<str>>, is_first_token_command
     natural_language_token_count
 }
 
+/// Returns true iff `word` is a recognized ordinary English dictionary word, after the same
+/// lowercasing / contraction-expansion / English-stemming preprocessing
+/// `natural_language_words_score` applies. Deliberately consults only the English word list, not
+/// the command or StackOverflow dictionaries: this is used to decide whether a word an agent
+/// classifier flagged as Shell is unmistakably English prose (e.g. "delete", "please"), so a word
+/// that is *also* a real or plausible tool/tag name should not qualify.
+pub fn is_ordinary_english_word(word: &str) -> bool {
+    let en_stemmer = Stemmer::create(Algorithm::English);
+    let preprocessed = token_preprocessing(word);
+    is_word(&en_stemmer.stem(&preprocessed), WordDb::English)
+}
+
 pub fn check_if_token_has_shell_syntax(word: &str) -> bool {
     // List of special characters from https://mywiki.wooledge.org/BashGuide/SpecialCharacters.
     // Note that here we check if the word contains whitespace first to make sure we are running

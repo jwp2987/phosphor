@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use lazy_static::lazy_static;
-use natural_language_detection::check_if_token_has_shell_syntax;
+use natural_language_detection::{check_if_token_has_shell_syntax, is_ordinary_english_word};
 use warp_completer::ParsedTokensSnapshot;
 
 /// The percentage of input tokens that can be described by our completion engine before
@@ -152,20 +152,66 @@ pub fn is_installed_binary(input: &ParsedTokensSnapshot) -> bool {
         .unwrap_or(false)
 }
 
-/// Returns true if the very first token of the whole buffer resolves to a real
-/// executable, builtin, alias, or function the completer already knows about
-/// in this session (`token_description.is_some()`), or is one of the always-
-/// shell one-off keywords.
+/// True iff `token` is a leading `NAME=value` environment assignment (`FOO=1`, `PAGER=less`),
+/// which carries no command evidence of its own — the word that would actually run is whatever
+/// comes after it (`env`/`export`-style invocations).
+fn is_env_assignment_token(token: &str) -> bool {
+    match token.split_once('=') {
+        Some((name, _)) => {
+            !name.is_empty()
+                && name.chars().enumerate().all(|(i, c)| {
+                    c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit())
+                })
+        }
+        None => false,
+    }
+}
+
+/// True iff `token` looks like a path the user meant to execute or reference directly
+/// (`./script.sh`, `~/bin/x`, `/usr/bin/foo`) rather than a plain word. The completer may have no
+/// `token_description` for a script that isn't itself a registered command (or when path
+/// completion isn't available in this context), but a path is unambiguous evidence of intent, not
+/// natural-language prose.
+fn is_path_like_token(token: &str) -> bool {
+    token.contains('/') || token.starts_with('.') || token.starts_with('~')
+}
+
+/// Returns true iff a Shell classification should be overridden back to AI for this buffer.
 ///
-/// This is the hard gate for Shell classification: a shell metacharacter
-/// (';', '>', '~', ...) appearing anywhere in the buffer, or a real command
-/// word appearing anywhere *other* than the very first position, must never
-/// be enough on its own to classify an English sentence as Shell. Only the
-/// first word actually being a real command can do that.
-pub fn first_token_has_command_evidence(input: &ParsedTokensSnapshot) -> bool {
-    input.parsed_tokens.first().is_some_and(|token| {
-        token.token_description.is_some() || is_one_off_shell_command_keyword(token.token.as_str())
-    })
+/// This is intentionally narrow: it only fires when the buffer's *effective* first token (the
+/// first token that isn't a leading `NAME=value` environment assignment) both (a) has no evidence
+/// of being a real command — no `token_description` from the completer, not a one-off shell
+/// keyword, and not path-like — **and** (b) is itself an ordinary, capitalized English dictionary
+/// word (e.g. "Run", "Then", "Please", "Delete"). Capitalization matters: genuine shell
+/// invocations are essentially always typed lowercase, while a capitalized word starting an
+/// English sentence is not.
+///
+/// Deliberately does *not* fire just because a token has no command evidence: the completer may
+/// simply not have indexed a real, lowercase command yet (`external_commands` loads once per
+/// session), or the word may be an unknown binary, a path, or a shell function/alias this
+/// particular completion context can't see (e.g. `EmptyCompletionContext` for shared-session
+/// viewers). None of those are natural-language prose, so none of them should be overridden.
+pub fn first_token_forces_ai_override(input: &ParsedTokensSnapshot) -> bool {
+    let mut tokens = input.parsed_tokens.iter();
+    let Some(mut token) = tokens.next() else {
+        return false;
+    };
+    while is_env_assignment_token(token.token.as_str()) {
+        let Some(next) = tokens.next() else {
+            return false;
+        };
+        token = next;
+    }
+
+    let word = token.token.as_str();
+    if token.token_description.is_some()
+        || is_one_off_shell_command_keyword(word)
+        || is_path_like_token(word)
+    {
+        return false;
+    }
+
+    word.chars().next().is_some_and(|c| c.is_uppercase()) && is_ordinary_english_word(word)
 }
 
 #[cfg(test)]
