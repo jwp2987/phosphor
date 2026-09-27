@@ -13353,18 +13353,16 @@ impl TerminalView {
         let rules = tab_settings.host_footer_color_rules.as_slice();
         let unknown_host_color = *tab_settings.unknown_host_color.value();
 
-        let color = host_footer_color::resolve_footer_bar_color(
-            &session_type,
-            &hostname,
-            pending_ssh_target.clone(),
-            rules,
-            unknown_host_color,
-        );
-        let tooltip = host_footer_color::resolve_footer_bar_tooltip(
+        // Resolves the host and matches the rule list exactly once for both values
+        // (#700): `resolve_footer_bar_color` and `resolve_footer_bar_tooltip` each do
+        // that resolution independently, which paid for the rule-matching regex work
+        // twice on every recompute for what is conceptually one decision.
+        let (color, tooltip) = host_footer_color::resolve_footer_bar_color_and_tooltip(
             &session_type,
             &hostname,
             pending_ssh_target,
             rules,
+            unknown_host_color,
         );
 
         if self.window_footer_bar_color != color || self.window_footer_bar_tooltip != tooltip {

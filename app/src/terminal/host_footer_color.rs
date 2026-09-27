@@ -157,6 +157,59 @@ pub fn resolve_footer_bar_color(
     }
 }
 
+/// The shared work behind [`resolve_footer_bar_color`], [`resolve_footer_bar_tooltip`]
+/// and [`resolve_footer_bar_color_and_tooltip`]: resolves the host once and, only for a
+/// [`ResolvedHost::Named`] host, matches the rule list once. Returns the resolved host
+/// alongside the first matching rule (`None` for `Local`/`Unknown`, or for a `Named`
+/// host no rule matches).
+fn resolve_host_and_rule<'a>(
+    session_type: &SessionType,
+    session_hostname: &str,
+    pending_ssh_target: Option<Option<String>>,
+    rules: &'a [HostFooterColorRule],
+) -> (ResolvedHost, Option<&'a HostFooterColorRule>) {
+    let host = resolve_host(session_type, session_hostname, pending_ssh_target);
+    let rule = match &host {
+        ResolvedHost::Named(named) => rules.iter().find(|rule| rule.pattern.is_match(named)),
+        ResolvedHost::Local | ResolvedHost::Unknown => None,
+    };
+    (host, rule)
+}
+
+/// Resolves the window-footer-bar color and its explanatory tooltip together, in one
+/// pass over [`resolve_host_and_rule`] -- the fix for #700's second half: callers that
+/// need both values (`TerminalView::recompute_window_footer_bar_color`) previously had
+/// to call [`resolve_footer_bar_color`] and [`resolve_footer_bar_tooltip`]
+/// independently, each of which resolves the host and, for a `Named` host, re-runs the
+/// rule-matching regex work the module doc's "Performance" section says must stay off
+/// the render/layout path -- paying that cost twice for what is conceptually one
+/// decision. Prefer this over calling the two individually whenever both are needed.
+pub fn resolve_footer_bar_color_and_tooltip(
+    session_type: &SessionType,
+    session_hostname: &str,
+    pending_ssh_target: Option<Option<String>>,
+    rules: &[HostFooterColorRule],
+    unknown_host_color: AnsiColorIdentifier,
+) -> (Option<AnsiColorIdentifier>, Option<String>) {
+    let (host, rule) =
+        resolve_host_and_rule(session_type, session_hostname, pending_ssh_target, rules);
+    match host {
+        ResolvedHost::Local => (None, None),
+        ResolvedHost::Unknown => (
+            Some(unknown_host_color),
+            Some(crate::t!("terminal-host-footer-bar-unknown-host")),
+        ),
+        ResolvedHost::Named(named) => {
+            let color = rule.map(|rule| rule.color);
+            let tooltip = rule.map(|rule| match &rule.name {
+                Some(rule_name) => format!("{named} ({rule_name})"),
+                None => named.clone(),
+            });
+            (color, tooltip)
+        }
+    }
+}
+
 /// Returns tooltip text explaining *why* the window footer bar has the color
 /// [`resolve_footer_bar_color`] resolved for the same inputs -- otherwise a colored
 /// footer bar gives no indication of which host or rule produced it (#700).
@@ -173,7 +226,7 @@ pub fn resolve_footer_bar_tooltip(
 ) -> Option<String> {
     match resolve_host(session_type, session_hostname, pending_ssh_target) {
         ResolvedHost::Local => None,
-        ResolvedHost::Unknown => Some("Unknown host".to_string()),
+        ResolvedHost::Unknown => Some(crate::t!("terminal-host-footer-bar-unknown-host")),
         ResolvedHost::Named(host) => rules
             .iter()
             .find(|rule| rule.pattern.is_match(&host))

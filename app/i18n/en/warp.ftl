@@ -260,6 +260,7 @@ terminal-agent-header-for-terminal = for terminal
 # names the DIRECT parent. Children of the tree root keep the classic
 # "for Orchestrator"; deeper subagents name their parent agent, or fall back
 # to the generic wording when that parent has no name.
+terminal-host-footer-bar-unknown-host = Unknown host
 terminal-agent-header-for-orchestrator = for Orchestrator
 terminal-agent-header-for-parent-agent = for parent agent
 terminal-agent-header-for-parent-named = for { $name }

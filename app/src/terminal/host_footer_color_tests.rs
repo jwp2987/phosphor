@@ -271,10 +271,85 @@ fn non_matching_named_host_has_no_tooltip() {
 
 /// An unknown host gets an explanatory tooltip too, independent of `rules` --
 /// mirrors `unknown_host_color_is_independent_of_rules` for the color.
+///
+/// #700: this text used to be a hardcoded English literal; it now goes through
+/// `crate::t!`, so this asserts against the same fluent key's resolved value --
+/// initializing i18n first, per `crate::i18n::init`'s doc, so a comparison against
+/// the raw key (the "not yet initialized" fallback) can't pass by accident.
 #[test]
 fn unknown_host_tooltip_is_independent_of_rules() {
+    crate::i18n::init(Some("en"));
     let rules = vec![rule(".*", AnsiColorIdentifier::Red)];
 
     let tooltip = resolve_footer_bar_tooltip(&SessionType::Local, "my-laptop", Some(None), &rules);
-    assert_eq!(tooltip.as_deref(), Some("Unknown host"));
+    assert_eq!(
+        tooltip.as_deref(),
+        Some(crate::t!("terminal-host-footer-bar-unknown-host").as_str())
+    );
+    assert_ne!(
+        tooltip.as_deref(),
+        Some("terminal-host-footer-bar-unknown-host")
+    );
+}
+
+// --- resolve_footer_bar_color_and_tooltip: single-pass resolution (#700) --------
+
+/// The combined resolver must agree with the two individual ones for a matched
+/// named host -- proving the single-pass refactor didn't change behavior, only
+/// how many times the host is resolved and the rules are matched.
+#[test]
+fn combined_resolver_agrees_with_individual_calls_for_matched_host() {
+    crate::i18n::init(Some("en"));
+    let session_type = SessionType::WarpifiedRemote { host_id: None };
+    let rules = vec![named_rule("^prod-", AnsiColorIdentifier::Red, "Production")];
+
+    let (color, tooltip) = resolve_footer_bar_color_and_tooltip(
+        &session_type,
+        "prod-db-1",
+        None,
+        &rules,
+        AnsiColorIdentifier::Yellow,
+    );
+
+    assert_eq!(color, Some(AnsiColorIdentifier::Red));
+    assert_eq!(tooltip.as_deref(), Some("prod-db-1 (Production)"));
+}
+
+/// Same agreement check for the unknown-host case: the combined resolver must
+/// still yield the configured unknown-host color and the localized tooltip,
+/// independent of `rules`.
+#[test]
+fn combined_resolver_agrees_with_individual_calls_for_unknown_host() {
+    crate::i18n::init(Some("en"));
+    let rules = vec![rule(".*", AnsiColorIdentifier::Red)];
+
+    let (color, tooltip) = resolve_footer_bar_color_and_tooltip(
+        &SessionType::Local,
+        "my-laptop",
+        Some(None),
+        &rules,
+        AnsiColorIdentifier::Yellow,
+    );
+
+    assert_eq!(color, Some(AnsiColorIdentifier::Yellow));
+    assert_eq!(
+        tooltip.as_deref(),
+        Some(crate::t!("terminal-host-footer-bar-unknown-host").as_str())
+    );
+}
+
+/// And for a plain local session: no color, no tooltip -- there is nothing to
+/// paint or explain.
+#[test]
+fn combined_resolver_agrees_with_individual_calls_for_local_session() {
+    let (color, tooltip) = resolve_footer_bar_color_and_tooltip(
+        &SessionType::Local,
+        "my-laptop",
+        None,
+        &[],
+        AnsiColorIdentifier::Yellow,
+    );
+
+    assert_eq!(color, None);
+    assert_eq!(tooltip, None);
 }

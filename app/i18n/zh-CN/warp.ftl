@@ -236,6 +236,7 @@ terminal-clear-upload = 清除上传
 terminal-manage-defaults = 管理默认值
 terminal-free-credits = 免费额度
 terminal-cloud-agent-run = 智能体运行
+terminal-host-footer-bar-unknown-host = 未知主机
 terminal-agent-header-for-terminal = 用于终端
 terminal-agent-header-for-orchestrator = 用于编排智能体
 terminal-agent-header-for-parent-agent = 用于父级智能体

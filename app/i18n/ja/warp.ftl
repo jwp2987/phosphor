@@ -200,6 +200,7 @@ terminal-clear-upload = アップロードをクリア
 terminal-manage-defaults = デフォルトを管理
 terminal-free-credits = 無料クレジット
 terminal-cloud-agent-run = エージェント実行
+terminal-host-footer-bar-unknown-host = 不明なホスト
 terminal-agent-header-for-terminal = ターミナル用
 terminal-agent-header-for-orchestrator = オーケストレーター用
 terminal-agent-header-for-parent-agent = 親エージェント用
