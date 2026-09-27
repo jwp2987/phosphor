@@ -10409,3 +10409,144 @@ fn visible_bootstrap_block_leaves_focus_on_tab_group_rename_editor() {
         }));
     });
 }
+
+/// Issue #650: a warpified remote session colors the window footer bar by its
+/// shell-integration hostname, and no `Session` ever changes from
+/// `WarpifiedRemote` back to `Local` in place. When the remote shell exits (`exit`,
+/// a dropped connection, a killed `ssh`), the only signal is the local shell's next
+/// precmd, whose metadata carries the local session's id. The bar must revert on
+/// that precmd -- not at the next preexec -- or it keeps a production host's color
+/// while the user is back on the local machine.
+///
+/// Breaks if `apply_block_metadata_update` stops recomputing
+/// `window_footer_bar_color` after switching the active block's session.
+#[test]
+fn window_footer_bar_color_reverts_when_warpified_remote_session_exits() {
+    use crate::terminal::model::session::SessionInfo;
+    use crate::workspace::tab_settings::HostFooterColorRule;
+
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        TabSettings::handle(&app).update(&mut app, |settings, ctx| {
+            let _ = settings.host_footer_color_rules.set_value(
+                vec![HostFooterColorRule {
+                    pattern: Regex::new("^prod-").expect("valid test regex"),
+                    color: AnsiColorIdentifier::Red,
+                    name: None,
+                }],
+                ctx,
+            );
+        });
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            let local_session_id = SessionId::from(9001);
+            let remote_session_id = SessionId::from(9002);
+            view.sessions.update(ctx, |sessions, _| {
+                sessions.register_session_for_test(
+                    SessionInfo::new_for_test().with_id(local_session_id),
+                );
+                sessions.register_session_for_test(
+                    SessionInfo::new_for_test()
+                        .with_id(remote_session_id)
+                        .with_session_type(BootstrapSessionType::WarpifiedRemote)
+                        .with_hostname("prod-db-1".to_owned()),
+                );
+            });
+
+            // A prompt from the local shell: nothing to color.
+            view.apply_block_metadata_update(
+                &BlockMetadata::new(Some(local_session_id), None),
+                false,
+                false,
+                BlockMetadataUpdateSource::Precmd,
+                ctx,
+            );
+            assert_eq!(view.window_footer_bar_color, None);
+
+            // A prompt from the warpified remote shell: the rule matches its hostname.
+            view.apply_block_metadata_update(
+                &BlockMetadata::new(Some(remote_session_id), None),
+                false,
+                false,
+                BlockMetadataUpdateSource::Precmd,
+                ctx,
+            );
+            assert_eq!(view.window_footer_bar_color, Some(AnsiColorIdentifier::Red));
+
+            // The remote shell exited; the local shell's precmd arrives. No preexec,
+            // no bootstrap -- the bar must revert on this alone.
+            view.apply_block_metadata_update(
+                &BlockMetadata::new(Some(local_session_id), None),
+                false,
+                false,
+                BlockMetadataUpdateSource::Precmd,
+                ctx,
+            );
+            assert_eq!(view.window_footer_bar_color, None);
+        });
+    });
+}
+
+/// Issue #650, in-band variant: an in-band command's metadata takes an early-return
+/// path in `apply_block_metadata_update`. If that update ever moves the active block
+/// to a different session, the footer bar must still follow it rather than keep the
+/// previous session's host color.
+///
+/// Breaks if the in-band early return skips the session-change recompute.
+#[test]
+fn window_footer_bar_color_follows_session_change_on_in_band_metadata() {
+    use crate::terminal::model::session::SessionInfo;
+    use crate::workspace::tab_settings::HostFooterColorRule;
+
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        TabSettings::handle(&app).update(&mut app, |settings, ctx| {
+            let _ = settings.host_footer_color_rules.set_value(
+                vec![HostFooterColorRule {
+                    pattern: Regex::new("^prod-").expect("valid test regex"),
+                    color: AnsiColorIdentifier::Red,
+                    name: None,
+                }],
+                ctx,
+            );
+        });
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            let local_session_id = SessionId::from(9101);
+            let remote_session_id = SessionId::from(9102);
+            view.sessions.update(ctx, |sessions, _| {
+                sessions.register_session_for_test(
+                    SessionInfo::new_for_test().with_id(local_session_id),
+                );
+                sessions.register_session_for_test(
+                    SessionInfo::new_for_test()
+                        .with_id(remote_session_id)
+                        .with_session_type(BootstrapSessionType::WarpifiedRemote)
+                        .with_hostname("prod-db-1".to_owned()),
+                );
+            });
+
+            view.apply_block_metadata_update(
+                &BlockMetadata::new(Some(remote_session_id), None),
+                false,
+                false,
+                BlockMetadataUpdateSource::Precmd,
+                ctx,
+            );
+            assert_eq!(view.window_footer_bar_color, Some(AnsiColorIdentifier::Red));
+
+            view.apply_block_metadata_update(
+                &BlockMetadata::new(Some(local_session_id), None),
+                true, // is_after_in_band_command
+                false,
+                BlockMetadataUpdateSource::Precmd,
+                ctx,
+            );
+            assert_eq!(view.window_footer_bar_color, None);
+        });
+    });
+}
