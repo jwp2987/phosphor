@@ -38,7 +38,7 @@
 //! with its default disposition, so the parent sees the conventional "terminated
 //! by SIGTERM" status rather than a clean exit.
 
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
@@ -47,6 +47,21 @@ use instant::Instant;
 /// How long a signal-initiated graceful shutdown may take before the process
 /// exits regardless.
 pub(crate) const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
+
+/// How long a graceful shutdown may take after Windows' `CTRL_CLOSE_EVENT`
+/// (the console window was closed) before exiting anyway. Windows' own
+/// budget for this event is documented as ~5s with no configurable margin
+/// (`HungAppTimeout`/`WaitToKillAppTimeout` do not apply the same way to
+/// console handlers as they do to `WM_ENDSESSION`), so this stays under it
+/// rather than at it.
+pub(crate) const CONSOLE_CLOSE_DEADLINE: Duration = Duration::from_secs(4);
+
+/// How long a graceful shutdown may take after Windows' `CTRL_LOGOFF_EVENT`/
+/// `CTRL_SHUTDOWN_EVENT` (console/TUI), or `WM_ENDSESSION` (GUI), before
+/// exiting anyway. Logoff/shutdown gives the OS's own shutdown coordinator a
+/// substantially longer budget than a plain console close -- on the order of
+/// 20s (`WaitToKillAppTimeout`) -- so this can afford real margin.
+pub(crate) const CONSOLE_LOGOFF_DEADLINE: Duration = Duration::from_secs(15);
 
 /// How long after the first delivery of a signal a repeat of it must arrive to be
 /// taken as "exit now" rather than as a duplicate delivery.
@@ -225,6 +240,67 @@ impl ShutdownGate {
             *done = true;
             self.cond.notify_all();
         }
+    }
+}
+
+/// Counts how many nested calls into some piece of code are currently on the
+/// stack, so a caller elsewhere can tell whether it's safe to reach into
+/// state that's only valid when nothing else has it borrowed.
+///
+/// Exists for exactly one situation: code that must reach back into a
+/// long-lived `&mut` value through a raw pointer, from a context where the
+/// compiler can't otherwise prove no other live borrow of it exists. On
+/// Windows, a subclassed window procedure receiving a *sent* message (as
+/// opposed to a posted one, which only ever arrives through the owning
+/// thread's own top-level `GetMessage`/`DispatchMessage` loop) can run from
+/// *inside* a nested message pump the same thread is already running --
+/// `DefWindowProc`'s modal move/size loop, menu tracking, a native dialog,
+/// `DoDragDrop`, OLE/clipboard negotiation -- any of which can be several
+/// frames below some other code that is itself holding a `&mut` to that
+/// value. There is no static proof available that this can't happen; a
+/// runtime depth counter, incremented for the whole time that value's `&mut`
+/// is live and decremented (including on panic, via
+/// [`enter`](Self::enter)'s guard) when it stops being live, is what makes
+/// "no one else has this borrowed right now" checkable instead of assumed.
+/// See `windowing::winit::windows::end_session`, the only current user.
+///
+/// Backed by an atomic rather than a plain `Cell`/`RefCell` so it can live in
+/// a `static` without `unsafe` or a `thread_local!` (which cannot hand back
+/// a guard borrowing its contents across the `LocalKey::with` call that
+/// produced it) -- not because more than one thread is ever expected to
+/// touch a given instance. Every current user's invariant (this is
+/// main-thread-only state) still has to come from the caller, same as it
+/// would with a `thread_local!`; this type only tracks nesting depth on
+/// whichever thread(s) actually call it.
+pub(crate) struct ReentrancyDepth(AtomicU32);
+
+impl ReentrancyDepth {
+    pub(crate) const fn new() -> Self {
+        Self(AtomicU32::new(0))
+    }
+
+    /// How many calls into the guarded code are currently on the stack (on
+    /// whichever thread(s) called [`enter`](Self::enter)).
+    pub(crate) fn get(&self) -> u32 {
+        self.0.load(Ordering::Acquire)
+    }
+
+    /// Increments the depth now; the returned guard decrements it when
+    /// dropped, including during an unwinding panic, so [`get`](Self::get)
+    /// can never observe a depth lower than what is actually still on the
+    /// stack.
+    pub(crate) fn enter(&self) -> ReentrancyGuard<'_> {
+        self.0.fetch_add(1, Ordering::AcqRel);
+        ReentrancyGuard(&self.0)
+    }
+}
+
+/// Decrements a [`ReentrancyDepth`] on drop. See [`ReentrancyDepth::enter`].
+pub(crate) struct ReentrancyGuard<'a>(&'a AtomicU32);
+
+impl Drop for ReentrancyGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 

@@ -12938,7 +12938,10 @@ open findings that had no pre-existing row.
       Windows-only code, written and read carefully on a Linux host with no
       `cargo`/Windows build available (see the branch's hard rules), so none of
       it has actually compiled or run.** Whoever gets a Windows build next
-      should tick this once it's verified.
+      should tick this once it's verified. **Reworked once already** after an
+      adversarial review caught a real bug and a soundness gap in the first
+      pass (both below) — read the "what was wrong" note before assuming the
+      current shape is final; a second review has not happened yet.
 
       **Headless/TUI (`crates/warpui/src/platform/headless/console_close.rs`,
       new file):** a second `SetConsoleCtrlHandler` registration (alongside the
@@ -12946,54 +12949,101 @@ open findings that had no pre-existing row.
       `CTRL_LOGOFF_EVENT` and `CTRL_SHUTDOWN_EVENT`. Unlike a signal handler,
       this one must *block* (Windows kills the process shortly after every
       registered handler returns): it posts `AppEvent::Terminate` to the
-      headless loop, arms the same deadline watchdog `termination_signals`
-      uses, and blocks on a new `termination_signals::ShutdownGate` until
-      `headless::event_loop::run` signals completion (right after
-      `app_will_terminate`) or the deadline elapses.
+      headless loop, arms a deadline watchdog, and blocks on a
+      `termination_signals::ShutdownGate` until `headless::event_loop::run`
+      signals completion (right after `app_will_terminate`) or the deadline
+      elapses. `CTRL_CLOSE_EVENT` and `CTRL_LOGOFF_EVENT`/`CTRL_SHUTDOWN_EVENT`
+      use different deadlines (`CONSOLE_CLOSE_DEADLINE` 4s,
+      `CONSOLE_LOGOFF_DEADLINE` 15s) — see "deadlines" below.
 
       **GUI (`crates/warpui/src/windowing/winit/windows/end_session.rs`, new
-      file):** subclasses the first opened window's `WNDPROC` (via
-      `SetWindowLongPtrW`/`GWLP_WNDPROC`, chaining unhandled messages to
-      winit's own procedure via `CallWindowProcW`) to catch
-      `WM_QUERYENDSESSION` (answered immediately) and `WM_ENDSESSION` with
-      `wParam != 0`. Because these are *sent*, not posted, messages —
-      dispatched synchronously inside the same thread's own
-      `PeekMessageW`/`GetMessageW` call, never reaching winit's
+      file):** subclasses **every** opened window's `WNDPROC` (via
+      `SetWindowLongPtrW`/`GWLP_WNDPROC`, tracking each window's own previous
+      procedure in a small map keyed by `HWND` and removing that entry on
+      `WM_NCDESTROY`) to catch `WM_QUERYENDSESSION` (answered immediately) and
+      `WM_ENDSESSION` with `wParam != 0`. Because these are *sent*, not
+      posted, messages — dispatched synchronously inside the same thread's
+      own `PeekMessageW`/`GetMessageW` call, never reaching winit's
       `DispatchMessageW` — posting `CustomEvent::Terminate` and waiting for
       the ordinary `Event::LoopExiting` path was not an option (see the file's
       module doc for the full argument). Instead `Event::LoopExiting`'s body
       was extracted into `EventLoop::run_shutdown_body` (shared, unchanged
       behavior on the existing Unix/macOS paths) and the `WM_ENDSESSION`
-      handler calls it directly and synchronously, through a raw pointer to
-      the running `EventLoop` recorded once at `NewEvents(StartCause::Init)`
-      — safe because a sent message can't arrive while `handle_event` is
-      itself running (both are main-thread-only; see the module doc for the
-      full safety argument) — then ends the process itself, bounded by the
-      same deadline-watchdog pattern.
+      handler calls it directly and synchronously through a raw pointer to
+      the running `EventLoop`, recorded once at `NewEvents(StartCause::Init)`
+      and cleared on `Event::LoopExiting` so it can never dangle — guarded by
+      a runtime reentrancy check (`EVENT_HANDLER_DEPTH`, see below), not just
+      "both are main-thread-only" — then ends the process, bounded by
+      `CONSOLE_LOGOFF_DEADLINE` (WM_ENDSESSION is logoff/shutdown only; there
+      is no GUI equivalent of a console close).
 
-      **Extracted and unit-tested on Linux:** `termination_signals::ShutdownGate`,
-      the wait/notify primitive both of the above block on (`wait`/`signal`,
-      covered by `termination_signals_tests.rs::shutdown_gate`); this piece is
-      genuinely verified, including by a standalone `rustc --test` run outside
-      the workspace during this round (this file's own repo has no `cargo`
-      available here). Everything touching the real Win32 APIs
-      (`SetConsoleCtrlHandler`, the `WNDPROC` subclass, the `isize`↔`WNDPROC`
-      transmute, the raw `EventLoop` pointer) is unverified: it was written by
-      reading the exact `windows`/`winit` crate source at the pinned versions
+      **What the adversarial review found wrong in the first pass, and how
+      this round fixed it:**
+      - **Functional bug:** the subclass was installed once, on the first
+        window only; closing that window while others stayed open silently
+        lost `WM_ENDSESSION` handling (and the previous `WNDPROC` it was
+        chaining to) for the rest of the process's life. Fixed by subclassing
+        every window and tracking each one's own previous procedure
+        separately (above); a `SHUTDOWN_STARTED` flag still ensures the
+        shutdown body itself runs at most once no matter how many subclassed
+        windows receive `WM_ENDSESSION`.
+      - **Soundness gap:** the original safety argument ("a sent message can't
+        arrive while `handle_event` is on the stack, since both are
+        main-thread-only") is false in general — a sent message, including
+        `WM_ENDSESSION`, can be delivered from *inside* a nested message pump
+        the same thread is already running beneath some other code
+        (`DefWindowProc`'s modal move/size loop, menu tracking, a native
+        dialog, drag-and-drop, OLE/clipboard negotiation), while an outer
+        frame still holds the `&mut EventLoop` the pointer names. Fixed with
+        `termination_signals::ReentrancyDepth`, a small atomic depth counter
+        incremented (via a panic-safe RAII guard) for the whole duration of
+        every `EventLoop::handle_event` call; the `WM_ENDSESSION` handler only
+        dereferences the `EventLoop` pointer when the depth reads 0. At any
+        other depth it does **not** touch the `EventLoop` at all — the
+        documented fallback is to skip `app_will_terminate` entirely (so
+        LSP/MCP shutdown, terminal-server teardown and the persistence flush
+        are lost, same as an ordinary `SIGKILL`) and just hard-exit within the
+        deadline. This is a narrow, rare case (needs `WM_ENDSESSION` to land
+        inside one of the named nested pumps at the exact moment a logoff/
+        shutdown is requested), but it is a real, deliberate degradation, not
+        a hidden one — flagged for whoever reviews this next.
+      - **Deadline nit:** a single 5s `SHUTDOWN_DEADLINE` was being reused for
+        both `CTRL_CLOSE_EVENT` (Windows' own budget is ~5s, essentially zero
+        margin) and logoff/shutdown/`WM_ENDSESSION` (~20s budget, most of it
+        wasted). Split into `CONSOLE_CLOSE_DEADLINE` (4s) and
+        `CONSOLE_LOGOFF_DEADLINE` (15s), each with a comment citing the
+        budget it's under.
+
+      **Extracted and unit-tested on Linux (`termination_signals_tests.rs`):**
+      `ShutdownGate` (`shutdown_gate` module, unchanged from the previous
+      round) and the new `ReentrancyDepth` (`reentrancy_depth` module —
+      nesting, and panic-safety via `std::panic::catch_unwind`) and the new
+      deadline constants' sanity relationship
+      (`console_shutdown_deadlines` module). All of these were additionally
+      cross-checked by extracting the exact logic into standalone files and
+      running them with `rustc --test` outside the workspace (this repo has
+      no `cargo` available here) — genuinely verified, unlike the Windows-API
+      pieces below. Also added the `Win32_System_Console` feature to
+      `warpui`'s `windows` dependency in `Cargo.toml` (needed for
+      `SetConsoleCtrlHandler`/`CTRL_CLOSE_EVENT`/etc.); a Cargo feature, not a
+      lockfile entry, so no `Cargo.lock` change was needed.
+
+      **Still unverified — needs a Windows build:** everything touching the
+      real Win32 APIs (`SetConsoleCtrlHandler`, the per-window `WNDPROC`
+      subclass and its `isize`↔`WNDPROC` transmute, `WM_NCDESTROY` cleanup,
+      the raw `EventLoop` pointer and its depth guard) was written by reading
+      the exact `windows`/`winit` crate source at the pinned versions
       (`windows` 0.62.2 downloaded from crates.io and inspected directly; the
       `jwp2987/winit` fork at the rev in `Cargo.lock`) rather than compiled.
-      Also added the `Win32_System_Console` feature to `warpui`'s `windows`
-      dependency in `Cargo.toml` (needed for `SetConsoleCtrlHandler`/
-      `CTRL_CLOSE_EVENT`/etc.); this is a Cargo feature, not a lockfile entry,
-      so it needed no `Cargo.lock` change.
-
-      **What a Windows build must confirm:** the crate actually compiles
-      (feature gating, exact `windows`/`winit` API signatures); a closed
-      console window, a logoff, and a shutdown each still run
-      `app_will_terminate` and exit promptly, on both the TUI and the GUI
-      build; the GUI path doesn't regress ordinary window close, resize, or
-      any other message the subclass forwards; and that the deadline watchdog
-      doesn't fire spuriously on a normal, fast shutdown.
+      A Windows build must confirm: the crate actually compiles (feature
+      gating, exact API signatures); a closed console window, a logoff, and a
+      shutdown each still run `app_will_terminate` and exit promptly, on both
+      the TUI and the GUI build, with multiple windows open and with just
+      one; closing one window and leaving others open doesn't lose
+      `WM_ENDSESSION` handling; the GUI path doesn't regress ordinary window
+      close, resize, drag-and-drop, or any other message the subclass
+      forwards, including during a modal move/size loop; and the deadline
+      watchdogs don't fire spuriously on a normal, fast shutdown.
 
 - [x] **#707 — MCP stdio servers are not spawned in their own process group**, so on
       exit only the direct child is killed by handle (`be564eeaf`); a grandchild

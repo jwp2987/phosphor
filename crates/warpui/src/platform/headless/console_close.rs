@@ -27,11 +27,21 @@
 //! persistence flush) against that OS deadline with no guarantee it even
 //! starts in time. So this handler blocks -- on its own thread, not the main
 //! loop's -- on a [`ShutdownGate`] until either [`headless::event_loop::run`]
-//! signals that shutdown has completed, or
-//! [`termination_signals::SHUTDOWN_DEADLINE`] elapses, whichever comes
-//! first. Either way it is then safe to return: on the deadline path, the
-//! watchdog thread armed below hard-exits on its own if `app_will_terminate`
-//! is still wedged, exactly like the signal path in `termination_signals`.
+//! signals that shutdown has completed, or a deadline elapses, whichever
+//! comes first. Either way it is then safe to return: on the deadline path,
+//! the watchdog thread armed below hard-exits on its own if
+//! `app_will_terminate` is still wedged, exactly like the signal path in
+//! `termination_signals`.
+//!
+//! # Two different deadlines
+//!
+//! `CTRL_CLOSE_EVENT`'s documented budget (~5s, with no configurable margin)
+//! is far tighter than `CTRL_LOGOFF_EVENT`/`CTRL_SHUTDOWN_EVENT`'s (~20s, via
+//! `WaitToKillAppTimeout`), so each gets its own deadline --
+//! [`termination_signals::CONSOLE_CLOSE_DEADLINE`] and
+//! [`termination_signals::CONSOLE_LOGOFF_DEADLINE`] respectively -- rather
+//! than sharing one that would leave close with almost no margin, or waste
+//! most of logoff/shutdown's much larger one.
 //!
 //! The wait/notify coordination itself (`ShutdownGate`) is platform-independent
 //! and covered by tests that run on every host; only this file's use of the
@@ -86,31 +96,32 @@ unsafe extern "system" fn console_ctrl_handler(ctrl_type: u32) -> BOOL {
         CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
     };
 
-    match ctrl_type {
-        CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT => {
-            request_graceful_shutdown_and_wait();
-            TRUE
-        }
-        _ => FALSE,
-    }
+    let deadline = match ctrl_type {
+        CTRL_CLOSE_EVENT => termination_signals::CONSOLE_CLOSE_DEADLINE,
+        CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT => termination_signals::CONSOLE_LOGOFF_DEADLINE,
+        _ => return FALSE,
+    };
+    request_graceful_shutdown_and_wait(ctrl_type, deadline);
+    TRUE
 }
 
-/// Posts a non-cancellable terminate request to the headless loop, arms the
-/// same deadline watchdog the signal path uses, and blocks until either the
-/// loop confirms shutdown has completed or the deadline elapses.
-fn request_graceful_shutdown_and_wait() {
+/// Posts a non-cancellable terminate request to the headless loop, arms a
+/// deadline watchdog for `deadline` (the budget for `ctrl_type`, chosen by
+/// the caller -- see the module docs), and blocks until either the loop
+/// confirms shutdown has completed or that deadline elapses.
+fn request_graceful_shutdown_and_wait(ctrl_type: u32, deadline: std::time::Duration) {
     log::info!(
-        "Received a console close/logoff/shutdown event; shutting down gracefully (deadline {}s)",
-        termination_signals::SHUTDOWN_DEADLINE.as_secs()
+        "Received console control event {ctrl_type}; shutting down gracefully (deadline {}s)",
+        deadline.as_secs()
     );
 
     // If `app_will_terminate` hangs, exit anyway rather than let Windows
     // decide this handler (and therefore the process) is unresponsive.
     let spawned = std::thread::Builder::new()
         .name("shutdown-deadline".to_string())
-        .spawn(|| {
+        .spawn(move || {
             termination_signals::run_deadline_watchdog(
-                termination_signals::SHUTDOWN_DEADLINE,
+                deadline,
                 0,
                 std::thread::sleep,
                 termination_signals::hard_exit,
@@ -135,7 +146,7 @@ fn request_graceful_shutdown_and_wait() {
         return;
     }
 
-    SHUTDOWN_GATE.wait(termination_signals::SHUTDOWN_DEADLINE);
+    SHUTDOWN_GATE.wait(deadline);
 }
 
 /// Called by `headless::event_loop::run` right after `app_will_terminate`

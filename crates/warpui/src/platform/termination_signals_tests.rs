@@ -308,6 +308,78 @@ mod shutdown_gate {
     }
 }
 
+mod reentrancy_depth {
+    use super::super::ReentrancyDepth;
+
+    #[test]
+    fn starts_at_zero() {
+        let depth = ReentrancyDepth::new();
+        assert_eq!(depth.get(), 0);
+    }
+
+    #[test]
+    fn tracks_nesting_and_unwinds_in_order() {
+        let depth = ReentrancyDepth::new();
+
+        let outer = depth.enter();
+        assert_eq!(depth.get(), 1);
+        {
+            let inner = depth.enter();
+            assert_eq!(depth.get(), 2);
+            drop(inner);
+        }
+        assert_eq!(
+            depth.get(),
+            1,
+            "dropping the inner guard must not touch the outer one's count"
+        );
+        drop(outer);
+        assert_eq!(depth.get(), 0);
+    }
+
+    #[test]
+    fn a_panic_while_entered_still_decrements() {
+        // This is the whole point of `enter()` returning a guard rather than
+        // requiring a matched `enter`/`leave` pair: a caller that panics
+        // mid-body must not leave the depth stuck above zero forever, or a
+        // later, perfectly ordinary call would wrongly conclude someone else
+        // still has the guarded value borrowed.
+        let depth = std::sync::Arc::new(ReentrancyDepth::new());
+        let depth_for_panic = depth.clone();
+
+        let result = std::panic::catch_unwind(move || {
+            let _guard = depth_for_panic.enter();
+            assert_eq!(depth_for_panic.get(), 1);
+            panic!("boom");
+        });
+
+        assert!(result.is_err());
+        assert_eq!(
+            depth.get(),
+            0,
+            "the guard's Drop must run during unwinding, same as normal drop"
+        );
+    }
+}
+
+mod console_shutdown_deadlines {
+    use std::time::Duration;
+
+    use super::super::{CONSOLE_CLOSE_DEADLINE, CONSOLE_LOGOFF_DEADLINE};
+
+    #[test]
+    fn deadlines_leave_margin_under_their_documented_os_budget() {
+        // CTRL_CLOSE_EVENT's budget is ~5s with no configurable margin;
+        // CTRL_LOGOFF_EVENT/CTRL_SHUTDOWN_EVENT/WM_ENDSESSION's is ~20s.
+        assert!(CONSOLE_CLOSE_DEADLINE < Duration::from_secs(5));
+        assert!(CONSOLE_LOGOFF_DEADLINE < Duration::from_secs(20));
+        assert!(
+            CONSOLE_CLOSE_DEADLINE < CONSOLE_LOGOFF_DEADLINE,
+            "close's budget is far tighter than logoff/shutdown's"
+        );
+    }
+}
+
 mod approve_termination {
     use std::cell::Cell;
 

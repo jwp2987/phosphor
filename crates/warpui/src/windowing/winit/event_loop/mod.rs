@@ -58,6 +58,24 @@ use self::key_events::{
 /// double-click, triple-click, etc.
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 
+/// How many calls into [`EventLoop::handle_event`] are currently on this
+/// thread's stack -- normally 0 or 1, but a nested message pump (a modal
+/// move/size loop, menu tracking, a native dialog, drag-and-drop, OLE/
+/// clipboard negotiation) can push it higher, since any of those can, in
+/// turn, deliver a *sent* window message that re-enters this method (or,
+/// on Windows, a subclassed `WNDPROC` outside it entirely -- see
+/// `windowing::winit::windows::end_session`) before the outer call returns.
+///
+/// Its only reader outside this module is that Windows `WM_ENDSESSION`
+/// handler, which must not dereference its raw pointer to the running
+/// `EventLoop` unless this reads 0: `WM_ENDSESSION` is itself a sent
+/// message, so it can be delivered from inside one of those nested pumps,
+/// while some outer frame still holds the `&mut EventLoop` this same
+/// `handle_event` call received. Only at depth 0 is it certain nothing else
+/// has that borrowed.
+pub(super) static EVENT_HANDLER_DEPTH: crate::platform::termination_signals::ReentrancyDepth =
+    crate::platform::termination_signals::ReentrancyDepth::new();
+
 /// The debounce timeout for drag-and-drop files. Multiple DroppedFile events
 /// are received within this time window and then combined into a single DragAndDropFiles event.
 /// This timeout ensures all files in a multi-file drag operation are batched together efficiently.
@@ -558,6 +576,15 @@ impl EventLoop {
 
     /// Handles a single [`winit::event::Event`].
     pub fn handle_event(&mut self, evt: Event<CustomEvent>, window_target: &ActiveEventLoop) {
+        // Marks that a `&mut Self` borrow (this call) is live on this
+        // thread for the rest of this function, including through any
+        // nested message pump winit or a native dialog might run beneath
+        // it. Dropped (decrementing again, even on panic) when this call
+        // returns. See `EVENT_HANDLER_DEPTH`'s own doc comment and
+        // `windowing::winit::windows::end_session`, the only reader outside
+        // this module.
+        let _event_handler_depth_guard = EVENT_HANDLER_DEPTH.enter();
+
         window_target.set_control_flow(ControlFlow::Wait);
 
         match evt {
@@ -655,9 +682,11 @@ impl EventLoop {
 
                         // Catch logoff/shutdown (`WM_QUERYENDSESSION`/
                         // `WM_ENDSESSION`) on this window, so it still runs
-                        // `app_will_terminate` (jwp2987/phosphor#685
-                        // follow-up). Idempotent: only the first window
-                        // opened actually gets subclassed.
+                        // `app_will_terminate` (jwp2987/phosphor#685,
+                        // jwp2987/phosphor#773). Every window gets
+                        // subclassed, not just the first: closing an earlier
+                        // one must not silently lose `WM_ENDSESSION`
+                        // handling for the rest of the process's life.
                         #[cfg(windows)]
                         if let Some(hwnd) = window.hwnd() {
                             super::windows::end_session::install(hwnd);
@@ -980,6 +1009,12 @@ impl EventLoop {
             }
             Event::WindowEvent { window_id, event } => self.handle_window_event(window_id, event),
             Event::LoopExiting => {
+                // The `EventLoop` this pointer names is about to become
+                // invalid; clear it first so nothing can dereference it
+                // afterward, however this exit was reached (jwp2987/phosphor#773).
+                #[cfg(windows)]
+                super::windows::end_session::clear_event_loop();
+
                 self.run_shutdown_body();
 
                 // A signal-initiated quit ends the way the signal would have
