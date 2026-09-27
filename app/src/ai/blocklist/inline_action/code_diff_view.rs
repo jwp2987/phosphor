@@ -1346,7 +1346,7 @@ impl CodeDiffView {
     pub fn begin_revert(
         &mut self,
         ctx: &mut ViewContext<Self>,
-    ) -> Option<Vec<(usize, Option<RevertLaneKey>)>> {
+    ) -> Option<Vec<(usize, Vec<RevertLaneKey>)>> {
         if !matches!(self.state, CodeDiffState::Accepted(None)) {
             log::warn!(
                 "Attempted to revert changes when not in Accepted(None) state - actual state: {:?}",
@@ -1367,12 +1367,25 @@ impl CodeDiffView {
                 DiffSessionType::Local => None,
                 DiffSessionType::Remote(host) => Some(host),
             };
-            let lane = self.pending_diffs[idx]
-                .diff_view
-                .as_ref(ctx)
+            let diff_view = self.pending_diffs[idx].diff_view.as_ref(ctx);
+            // The registered (pre-rename) path's lane -- every revert has
+            // this one. A local rename ALSO belongs to its destination's
+            // lane (#686 follow-up): the card is, from the moment it is
+            // accepted, part of that file's history too, and a later edit to
+            // the destination has to revert before this rename is undone --
+            // see `RevertSequence`'s "Rename identity" doc. `write_action`,
+            // not the raw `DiffType`, decides this: a remote rename has
+            // already resolved to an in-place write with no second lane to
+            // join.
+            let mut lanes: Vec<RevertLaneKey> = diff_view
                 .file_path()
-                .map(|path| RevertLaneKey::new(host, path));
-            files.push((idx, lane));
+                .map(|path| RevertLaneKey::new(host, path))
+                .into_iter()
+                .collect();
+            if let FileWriteAction::Rename(to) = diff_view.write_action() {
+                lanes.push(RevertLaneKey::for_local_path(&to));
+            }
+            files.push((idx, lanes));
         }
 
         self.state = CodeDiffState::Reverting(reverting);
@@ -2125,26 +2138,42 @@ impl CodeDiffView {
             .finish()
     }
 
-    /// Returns the rename target path if this diff is a rename, None otherwise.
-    fn get_rename_target(diff_type: Option<&DiffType>) -> Option<&Path> {
-        match diff_type {
-            Some(DiffType::Update {
-                rename: Some(rename_to),
-                ..
-            }) => Some(rename_to.as_path()),
-            _ => None,
+    /// The rename target this diff will actually move the file to, or `None`
+    /// if the write will not be a move — driven by
+    /// [`InlineDiffView::write_action`], not the raw `DiffType`: a remote
+    /// session has no rename primitive, so `write_action` has already
+    /// resolved a proposed rename to an in-place write there, even though the
+    /// diff itself still carries `rename: Some(_)`. Showing "old → new" from
+    /// the raw diff on a remote session promised a move the accept never
+    /// performs (#688 follow-up; see [`Self::is_remote_rename_fallback`] for
+    /// the note shown instead).
+    fn get_rename_target(action: &FileWriteAction) -> Option<&Path> {
+        match action {
+            FileWriteAction::Rename(to) => Some(to.as_path()),
+            FileWriteAction::Write | FileWriteAction::Delete => None,
         }
     }
 
-    /// Returns true if this diff is a rename without any content changes.
-    fn is_rename_without_changes(diff_type: Option<&DiffType>) -> bool {
-        match diff_type {
-            Some(DiffType::Update {
-                rename: Some(_),
-                deltas,
-            }) => deltas.is_empty(),
-            _ => false,
-        }
+    /// Whether this diff proposed a rename that a remote session's lack of a
+    /// rename primitive turned into an ordinary in-place write — the case
+    /// [`Self::get_rename_target`] and [`Self::is_rename_without_changes`]
+    /// deliberately say nothing happened to the path for, but that still
+    /// deserves a note: the file is not going anywhere, even though the
+    /// agent proposed a rename.
+    fn is_remote_rename_fallback(action: &FileWriteAction, diff_type: Option<&DiffType>) -> bool {
+        matches!(action, FileWriteAction::Write)
+            && matches!(diff_type, Some(DiffType::Update { rename: Some(_), .. }))
+    }
+
+    /// Whether [`Self::render_editor`] should show the "renamed without
+    /// changes" placeholder instead of the (possibly empty) diff — only when
+    /// the write will actually be a rename. A remote session's in-place
+    /// fallback still performs an ordinary write (even one that reproduces
+    /// the same bytes), so it must show the real editor, not a placeholder
+    /// claiming a move that will not happen.
+    fn is_rename_without_changes(action: &FileWriteAction, diff_type: Option<&DiffType>) -> bool {
+        matches!(action, FileWriteAction::Rename(_))
+            && matches!(diff_type, Some(DiffType::Update { deltas, .. }) if deltas.is_empty())
     }
 
     fn render_file_selection(&self, appearance: &Appearance, app: &AppContext) -> Box<dyn Element> {
@@ -2167,6 +2196,7 @@ impl CodeDiffView {
 
         for (idx, diff) in self.pending_diffs.iter().enumerate() {
             let diff_type = diff.diff_view.as_ref(app).diff();
+            let action = diff.diff_view.as_ref(app).write_action();
             let file_name = match diff.diff_view.as_ref(app).file_name() {
                 Some(file_name) if matches!(diff_type, Some(DiffType::Create { .. })) => {
                     format!("{file_name} (new)")
@@ -2175,14 +2205,19 @@ impl CodeDiffView {
                     format!("{file_name} (deleted)")
                 }
                 Some(file_name) => {
-                    // Check if this is a rename
-                    if let Some(rename_to) = Self::get_rename_target(diff_type) {
+                    // What will actually happen to the path, per
+                    // `write_action` -- not the raw diff, which still shows a
+                    // rename on a remote session even though nothing will
+                    // move there (#688 follow-up).
+                    if let Some(rename_to) = Self::get_rename_target(&action) {
                         // Extract just the filename from the rename target path
                         let rename_file_name = rename_to
                             .file_name()
                             .and_then(|n| n.to_str())
                             .unwrap_or_default();
                         format!("{file_name} → {rename_file_name}")
+                    } else if Self::is_remote_rename_fallback(&action, diff_type) {
+                        format!("{file_name} (rename not supported remotely)")
                     } else {
                         file_name
                     }
@@ -2302,9 +2337,16 @@ impl CodeDiffView {
         let theme = appearance.theme();
         let diff_view = &self.pending_diffs[self.selected_tab].diff_view;
         let diff_type = diff_view.as_ref(app).diff();
+        let action = diff_view.as_ref(app).write_action();
 
-        // Check if this is a rename without changes - show placeholder instead of editor
-        if Self::is_rename_without_changes(diff_type) {
+        // Check if this is a rename without changes - show placeholder instead
+        // of editor. Gated on `write_action`, not the raw diff: a remote
+        // session's in-place fallback still performs an ordinary write (it
+        // just reproduces the same bytes when there were no content changes),
+        // so it falls through to the real editor below instead of claiming a
+        // rename that will not happen (#688 follow-up; the tab label in
+        // `render_file_selection` carries the "not supported remotely" note).
+        if Self::is_rename_without_changes(&action, diff_type) {
             let placeholder = Container::new(
                 Text::new(
                     "File renamed without changes",
@@ -2810,18 +2852,28 @@ impl CodeDiffView {
 
                 // Extract accepted file contents from editor buffers so the
                 // executor doesn't need to re-read from disk or the network.
+                //
+                // Keyed by the same path `updated_files` carries (via
+                // `rename_report`, driven by `write_action` -- the destination
+                // for a real local rename, the registered path for anything
+                // else, including a remote rename's in-place fallback), not
+                // by the registered (pre-rename) path unconditionally: the
+                // executor's `content_map` lookup in `request_file_edits.rs`
+                // is keyed by `FileLocations.name`, which for a rename IS the
+                // destination, so keying this by the registered path left a
+                // renamed file's content unreachable (`unwrap_or_default` ->
+                // empty) even though the write landed (#688 follow-up).
                 let file_contents: Vec<(String, String)> = self
                     .pending_diffs
                     .iter()
                     .filter_map(|diff| {
                         let path = diff.diff_view.as_ref(ctx).file_path()?.to_string();
+                        let action = diff.diff_view.as_ref(ctx).write_action();
                         // Skip deleted files — they have no meaningful content.
-                        if matches!(
-                            diff.diff_view.as_ref(ctx).diff(),
-                            Some(DiffType::Delete { .. })
-                        ) {
+                        if matches!(action, FileWriteAction::Delete) {
                             return None;
                         }
+                        let (reported_path, _) = rename_report(&action, &path);
                         let content = diff
                             .diff_view
                             .as_ref(ctx)
@@ -2829,7 +2881,7 @@ impl CodeDiffView {
                             .as_ref(ctx)
                             .text(ctx)
                             .into_string();
-                        Some((path, content))
+                        Some((reported_path, content))
                     })
                     .collect();
 

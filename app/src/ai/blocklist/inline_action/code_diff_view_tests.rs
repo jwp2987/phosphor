@@ -343,3 +343,93 @@ fn rename_report_treats_a_delete_like_an_ordinary_write() {
     assert_eq!(reported_path, "/work/gone.rs");
     assert_eq!(renamed_from, None);
 }
+
+// ── Remote rename UI: `get_rename_target` / `is_rename_without_changes` /
+//    `is_remote_rename_fallback` (#688 review, finding 4) ──────────────────
+//
+// The tab label and the "renamed without changes" placeholder used to read
+// the raw `DiffType`, so a remote session -- which has no rename primitive
+// and falls back to an in-place write, per `InlineDiffView::write_action` --
+// still showed "old -> new" and claimed a rename that never happened. These
+// three functions are now driven by `write_action`, not the raw diff.
+
+fn rename_diff(deltas: Vec<DiffDelta>, to: &str) -> DiffType {
+    DiffType::update(deltas, Some(to.to_owned()))
+}
+
+fn non_empty_delta() -> DiffDelta {
+    DiffDelta {
+        replacement_line_range: 0..1,
+        insertion: "changed\n".to_owned(),
+    }
+}
+
+#[test]
+fn get_rename_target_is_none_for_a_write_or_delete_action() {
+    assert_eq!(
+        CodeDiffView::get_rename_target(&FileWriteAction::Write),
+        None
+    );
+    assert_eq!(
+        CodeDiffView::get_rename_target(&FileWriteAction::Delete),
+        None
+    );
+}
+
+#[test]
+fn get_rename_target_returns_the_destination_for_a_local_rename() {
+    let action = FileWriteAction::Rename(PathBuf::from("/work/new.rs"));
+    assert_eq!(
+        CodeDiffView::get_rename_target(&action),
+        Some(Path::new("/work/new.rs"))
+    );
+}
+
+/// The regression: a remote session's fallback is `Write`, not `Rename`, so
+/// the tab must not show an arrow to a path the accept will never create.
+#[test]
+fn is_remote_rename_fallback_is_true_only_for_a_write_with_a_proposed_rename() {
+    let diff = rename_diff(vec![], "/work/new.rs");
+    assert!(CodeDiffView::is_remote_rename_fallback(
+        &FileWriteAction::Write,
+        Some(&diff)
+    ));
+    assert!(!CodeDiffView::is_remote_rename_fallback(
+        &FileWriteAction::Rename(PathBuf::from("/work/new.rs")),
+        Some(&diff)
+    ));
+    let plain_update = DiffType::update(vec![], None);
+    assert!(!CodeDiffView::is_remote_rename_fallback(
+        &FileWriteAction::Write,
+        Some(&plain_update)
+    ));
+}
+
+#[test]
+fn is_rename_without_changes_requires_both_a_rename_action_and_no_deltas() {
+    let no_deltas = rename_diff(vec![], "/work/new.rs");
+    let action = FileWriteAction::Rename(PathBuf::from("/work/new.rs"));
+    assert!(CodeDiffView::is_rename_without_changes(
+        &action,
+        Some(&no_deltas)
+    ));
+
+    let with_deltas = rename_diff(vec![non_empty_delta()], "/work/new.rs");
+    assert!(!CodeDiffView::is_rename_without_changes(
+        &action,
+        Some(&with_deltas)
+    ));
+}
+
+/// The regression, directly: a remote fallback with no content changes must
+/// NOT show the "renamed without changes" placeholder -- the write really
+/// does touch the file (an ordinary, if byte-identical, write), so the real
+/// editor is what is honest to show, not a claim that a move happened.
+#[test]
+fn is_rename_without_changes_is_false_for_a_remote_fallback_even_with_no_deltas() {
+    let no_deltas = rename_diff(vec![], "/work/new.rs");
+    assert!(!CodeDiffView::is_rename_without_changes(
+        &FileWriteAction::Write,
+        Some(&no_deltas)
+    ));
+}
