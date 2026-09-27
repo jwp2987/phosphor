@@ -429,6 +429,68 @@ fn detected_non_image_path_has_no_override() {
     }
 }
 
+// ── Model-named launchable paths are revealed, never opened (#681) ──
+
+/// The issue's case: a model names `Evil.app` / `setup.pkg` / `setup.exe` in an AI block. There
+/// is no override, so `TerminalView::open_file_path` resolves it with `resolve_file_target` --
+/// which must now pick Reveal, not `SystemGeneric`, under every editor choice.
+#[test]
+#[cfg(feature = "local_fs")]
+fn detected_launchable_path_resolves_to_reveal() {
+    use crate::util::file::external_editor::{Editor, settings::EditorChoice};
+    use crate::util::openable_file_type::{
+        EditorLayout, FileTarget, resolve_file_target_with_editor_choice,
+    };
+
+    for path in [
+        "/tmp/Evil.app",
+        "/tmp/setup.pkg",
+        "/tmp/image.dmg",
+        "/tmp/setup.exe",
+        "/tmp/setup.msi",
+        "/tmp/report.xlsx",
+    ] {
+        let path = std::path::Path::new(path);
+        assert_eq!(super::detected_file_path_target_override(path), None);
+        for editor_choice in [
+            EditorChoice::Zap,
+            EditorChoice::SystemDefault,
+            EditorChoice::ExternalEditor(Editor::VSCode),
+        ] {
+            assert_eq!(
+                resolve_file_target_with_editor_choice(
+                    path,
+                    editor_choice,
+                    false, /* prefer_markdown_viewer */
+                    EditorLayout::SplitPane,
+                    None,
+                ),
+                FileTarget::RevealInFileManager,
+                "{path:?} under {editor_choice:?}"
+            );
+        }
+    }
+}
+
+/// The raster shortcut is guarded too: a model-named `.png` that is actually an executable
+/// (execute bit + ELF header) is revealed rather than handed to the OS.
+#[test]
+#[cfg(all(feature = "local_fs", unix))]
+fn detected_raster_image_that_is_an_executable_is_revealed() {
+    use crate::util::openable_file_type::FileTarget;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let disguised = dir.path().join("photo.png");
+    std::fs::write(&disguised, b"\x7fELF\x02\x01\x01").unwrap();
+    std::fs::set_permissions(&disguised, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert_eq!(
+        super::detected_file_path_target_override(&disguised),
+        Some(FileTarget::RevealInFileManager)
+    );
+}
+
 // ── Tooltip dismissal only repaints when something changed (#677) ──
 
 /// `dismiss_ai_tooltips` gates its repaint on this return value, so it must report `true` only

@@ -24,9 +24,46 @@ use pathfinder_geometry::{
 };
 use std::any::Any;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+
+/// Something the test delegate was asked to hand to the OS: open a file, reveal one, or open a
+/// URL. Recorded so tests can assert what a click *would* have done (#681) -- in particular,
+/// that a launchable path was revealed rather than opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecordedSystemOpen {
+    /// `open_file_path`: the OS default handler.
+    OpenedFile(PathBuf),
+    /// `open_file_path_in_explorer`: the file manager.
+    RevealedFile(PathBuf),
+    /// `open_url`.
+    OpenedUrl(String),
+}
+
+/// Process-wide, because tests reach the delegate only through `AppContext`. Tests run in
+/// parallel, so read it with [`recorded_system_opens_matching`] and a path or URL unique to the
+/// test (a tempdir), never by position.
+static RECORDED_SYSTEM_OPENS: Mutex<Vec<RecordedSystemOpen>> = Mutex::new(Vec::new());
+
+fn record_system_open(open: RecordedSystemOpen) {
+    RECORDED_SYSTEM_OPENS.lock().push(open);
+}
+
+/// Every recorded system open whose path or URL contains `needle`, oldest first.
+pub fn recorded_system_opens_matching(needle: &str) -> Vec<RecordedSystemOpen> {
+    RECORDED_SYSTEM_OPENS
+        .lock()
+        .iter()
+        .filter(|open| match open {
+            RecordedSystemOpen::OpenedFile(path) | RecordedSystemOpen::RevealedFile(path) => {
+                path.to_string_lossy().contains(needle)
+            }
+            RecordedSystemOpen::OpenedUrl(url) => url.contains(needle),
+        })
+        .cloned()
+        .collect()
+}
 
 pub struct AppDelegate {
     clipboard: InMemoryClipboard,
@@ -189,8 +226,8 @@ impl platform::Delegate for AppDelegate {
         *self.cursor_shape.lock() = cursor;
     }
 
-    fn open_url(&self, _: &str) {
-        // no-op for tests
+    fn open_url(&self, url: &str) {
+        record_system_open(RecordedSystemOpen::OpenedUrl(url.to_owned()));
     }
 
     fn close_ime_async(&self, _window_id: WindowId) {
@@ -201,12 +238,12 @@ impl platform::Delegate for AppDelegate {
         // no-op for tests
     }
 
-    fn open_file_path(&self, _: &Path) {
-        // no-op for tests
+    fn open_file_path(&self, path: &Path) {
+        record_system_open(RecordedSystemOpen::OpenedFile(path.to_path_buf()));
     }
 
-    fn open_file_path_in_explorer(&self, _: &Path) {
-        // no-op for tests
+    fn open_file_path_in_explorer(&self, path: &Path) {
+        record_system_open(RecordedSystemOpen::RevealedFile(path.to_path_buf()));
     }
 
     fn open_file_picker(

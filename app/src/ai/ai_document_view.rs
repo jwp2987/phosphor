@@ -847,10 +847,6 @@ impl AIDocumentView {
                 force_open_in_warp,
             } => {
                 use crate::util::file::external_editor::EditorSettings;
-                use crate::util::openable_file_type::{
-                    is_supported_raster_image_file, resolve_file_target,
-                };
-
                 if *force_open_in_warp {
                     let layout = *EditorSettings::as_ref(ctx).open_file_layout;
                     let source = CodeSource::Link {
@@ -864,15 +860,7 @@ impl AIDocumentView {
                         line_col: *line_and_column_num,
                     });
                 } else {
-                    let settings = EditorSettings::as_ref(ctx);
-                    // Raster only (#675): an SVG link in a model-written document must not
-                    // reach the OS default handler (a browser, which runs its scripts). It
-                    // falls through to `resolve_file_target` -> in-app viewer or editor.
-                    let target = if is_supported_raster_image_file(path) {
-                        FileTarget::SystemGeneric
-                    } else {
-                        resolve_file_target(path, settings, None)
-                    };
+                    let target = document_link_target(path, EditorSettings::as_ref(ctx));
                     ctx.emit(AIDocumentEvent::OpenFileWithTarget {
                         path: path.clone(),
                         target,
@@ -1235,3 +1223,30 @@ impl BackingView for AIDocumentView {
         }
     }
 }
+
+/// The target for a file link clicked in an AI document. The document is model-written, so the
+/// path is attacker-namable.
+///
+/// Raster only (#675): an SVG link must not reach the OS default handler (a browser, which runs
+/// its scripts). It falls through to `resolve_file_target` -> in-app viewer or editor. A
+/// launchable path (`.app`, `.pkg`, `.exe`, ...) resolves to Reveal there, and the raster
+/// shortcut is guarded the same way (#681).
+#[cfg(feature = "local_fs")]
+fn document_link_target(
+    path: &std::path::Path,
+    settings: &crate::util::file::external_editor::EditorSettings,
+) -> FileTarget {
+    use crate::util::openable_file_type::{
+        guard_system_handler_target, is_supported_raster_image_file, resolve_file_target,
+    };
+
+    if is_supported_raster_image_file(path) {
+        guard_system_handler_target(path, FileTarget::SystemGeneric)
+    } else {
+        resolve_file_target(path, settings, None)
+    }
+}
+
+#[cfg(test)]
+#[path = "ai_document_view_tests.rs"]
+mod tests;

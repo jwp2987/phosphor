@@ -1685,6 +1685,16 @@ fn initialize_app(
             );
         }
 
+        // Backstop for the launch policy (#681): a `file:` URL naming an app bundle, installer,
+        // executable or script would be *launched* by the OS handler. The callback cannot veto,
+        // but it can rewrite -- to the nearest non-launchable containing folder, which the OS
+        // opens in the file manager. Call sites that accept `file:` URLs reveal the file itself
+        // (`TerminalView::open_terminal_content_url`); this catches any that do not.
+        if let Some(folder) = crate::util::openable_file_type::launchable_file_url_folder(&url) {
+            log::info!("Opening the containing folder instead of a launchable file URL: {folder}");
+            return folder;
+        }
+
         match maybe_rewrite_web_url_to_intent(&url) {
             Some(intent) if is_openable_url_scheme(&intent) => intent.to_string(),
             Some(intent) => {

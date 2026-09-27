@@ -21,7 +21,7 @@ use warpui::{
 use crate::util::file::external_editor::EditorSettings;
 #[cfg(feature = "local_fs")]
 use crate::util::openable_file_type::{
-    FileTarget, is_supported_raster_image_file, resolve_file_target,
+    FileTarget, guard_system_handler_target, is_supported_raster_image_file, resolve_file_target,
 };
 use crate::{
     ChannelState,
@@ -380,6 +380,92 @@ mod link_policy_tests {
                 }
                 other => panic!("expected OpenFileWithTarget for a .png link, got {other:?}"),
             }
+        });
+    }
+
+    /// #681: a notebook/markdown link to a launchable file or bundle is revealed in the file
+    /// manager -- never handed to the OS default handler -- whether it is a file (`setup.pkg`),
+    /// or a bundle directory (`Evil.app/`, which `LinkTarget::LocalDirectory` used to open, i.e.
+    /// launch). An ordinary directory still opens.
+    #[test]
+    fn launchable_links_are_revealed_not_opened() {
+        use warpui::platform::test::{RecordedSystemOpen, recorded_system_opens_matching};
+
+        App::test((), |mut app| async move {
+            let base = tempdir().unwrap();
+            let installer = base.path().join("setup.pkg");
+            touch(&installer).await;
+            let bundle = base.path().join("Evil.app");
+            async_fs::create_dir_all(bundle.join("Contents/MacOS"))
+                .await
+                .expect("creating bundle failed");
+            let plain_dir = base.path().join("docs");
+            async_fs::create_dir_all(&plain_dir)
+                .await
+                .expect("creating directory failed");
+            let links = init(&mut app, base.path());
+            let events = capture_events(&mut app, &links);
+
+            for path in [&installer, &bundle, &plain_dir] {
+                let url = Url::from_file_path(path).expect("temp path should convert to a URL");
+                links
+                    .update(&mut app, |links, ctx| {
+                        let future = links.resolve_and_open(url.as_str(), ctx);
+                        ctx.await_spawned_future(future.future_id())
+                    })
+                    .await;
+            }
+
+            let events = events.lock();
+            assert!(
+                !events.iter().any(|event| matches!(
+                    event,
+                    LinkEvent::OpenFileWithTarget { target, .. } if target.is_system_handler()
+                )),
+                "a launchable link reached the OS handler: {events:?}"
+            );
+            let needle = base.path().to_string_lossy().into_owned();
+            assert_eq!(
+                recorded_system_opens_matching(&needle),
+                vec![
+                    RecordedSystemOpen::RevealedFile(installer),
+                    RecordedSystemOpen::RevealedFile(bundle),
+                    // An ordinary directory still opens in the file manager, as before.
+                    RecordedSystemOpen::OpenedFile(plain_dir),
+                ]
+            );
+        });
+    }
+
+    /// #681: the raster-image shortcut is guarded too.
+    #[cfg(unix)]
+    #[test]
+    fn executable_disguised_as_raster_image_is_revealed() {
+        use std::os::unix::fs::PermissionsExt;
+        use warpui::platform::test::{RecordedSystemOpen, recorded_system_opens_matching};
+
+        App::test((), |mut app| async move {
+            let base = tempdir().unwrap();
+            let disguised = base.path().join("photo.png");
+            std::fs::write(&disguised, b"#!/bin/sh\necho pwned\n").unwrap();
+            std::fs::set_permissions(&disguised, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let links = init(&mut app, base.path());
+            let events = capture_events(&mut app, &links);
+
+            let url = Url::from_file_path(&disguised).expect("temp path should convert to a URL");
+            links
+                .update(&mut app, |links, ctx| {
+                    let future = links.resolve_and_open(url.as_str(), ctx);
+                    ctx.await_spawned_future(future.future_id())
+                })
+                .await;
+
+            let events = events.lock();
+            assert!(events.is_empty(), "{events:?}");
+            assert_eq!(
+                recorded_system_opens_matching(&base.path().to_string_lossy()),
+                vec![RecordedSystemOpen::RevealedFile(disguised)]
+            );
         });
     }
 }
@@ -842,7 +928,17 @@ impl NotebookLinks {
                 line_and_column,
                 ..
             } => open_file(path, line_and_column, ctx),
-            LinkTarget::LocalDirectory { path, .. } => ctx.open_file_path(&path),
+            // A directory can itself be launchable: a macOS bundle (`Evil.app/`) *is* a
+            // directory, and "opening" it launches it. Reveal those instead (#681).
+            // `AppContext::open_file_path` would catch this too; saying it here keeps the intent
+            // next to the link policy.
+            LinkTarget::LocalDirectory { path, .. } => {
+                if crate::util::openable_file_type::is_launchable_path(&path) {
+                    ctx.open_file_path_in_explorer(&path);
+                } else {
+                    ctx.open_file_path(&path);
+                }
+            }
         }
     }
 
@@ -930,12 +1026,18 @@ fn open_file(
         // `is_supported_image_file` because the latter's other callers mean "can we display this
         // as an image", which is still true of SVG. The AI block and AI document view share the
         // same predicate for the same reason (#675).
+        //
+        // The shortcut is still guarded by the launch policy (#681): a `.png` that is really an
+        // executable (execute bit + ELF/Mach-O/`#!` header) is revealed, not opened.
         if is_supported_raster_image_file(&path) {
-            ctx.emit(LinkEvent::OpenFileWithTarget {
-                path,
-                target: FileTarget::SystemGeneric,
-                line_col: line_and_column,
-            });
+            match guard_system_handler_target(&path, FileTarget::SystemGeneric) {
+                FileTarget::RevealInFileManager => ctx.open_file_path_in_explorer(&path),
+                target => ctx.emit(LinkEvent::OpenFileWithTarget {
+                    path,
+                    target,
+                    line_col: line_and_column,
+                }),
+            }
             return;
         }
 
@@ -954,8 +1056,13 @@ fn open_file(
                 });
             }
             // Dangerous targets: the OS default handler could execute the file.
-            // Reveal in Finder / Explorer instead.
-            FileTarget::SystemGeneric | FileTarget::SystemDefault => {
+            // Reveal in Finder / Explorer instead. Notebooks are stricter than the shared launch
+            // policy (#681): they reveal *every* OS-handler target, not only launchable paths,
+            // because a notebook link is document content rather than something the user
+            // printed. `RevealInFileManager` is the policy's own verdict for launchable paths.
+            FileTarget::SystemGeneric
+            | FileTarget::SystemDefault
+            | FileTarget::RevealInFileManager => {
                 ctx.open_file_path_in_explorer(&path);
             }
             FileTarget::ImageViewer(_) => {

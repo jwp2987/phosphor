@@ -2922,3 +2922,34 @@ fn test_dropping_tui_view_removes_it_from_tui_views_and_view_parents() {
         );
     })
 }
+
+/// #681: `AppContext::open_file_path` is the process-wide backstop. A path the OS default
+/// handler would launch is revealed in the file manager; an ordinary file still opens.
+#[test]
+fn open_file_path_reveals_launchable_paths_instead_of_opening_them() {
+    use crate::platform::test::{RecordedSystemOpen, recorded_system_opens_matching};
+    use std::path::PathBuf;
+
+    const NEEDLE: &str = "phosphor-681-app-context-backstop";
+    App::test((), |mut app| async move {
+        let dir = PathBuf::from(format!("/nonexistent/{NEEDLE}"));
+        let app_bundle = dir.join("Evil.app");
+        let installer = dir.join("setup.pkg");
+        let document = dir.join("paper.pdf");
+
+        app.update(|ctx| {
+            ctx.open_file_path(&app_bundle);
+            ctx.open_file_path(&installer);
+            ctx.open_file_path(&document);
+        });
+
+        assert_eq!(
+            recorded_system_opens_matching(NEEDLE),
+            vec![
+                RecordedSystemOpen::RevealedFile(app_bundle),
+                RecordedSystemOpen::RevealedFile(installer),
+                RecordedSystemOpen::OpenedFile(document),
+            ]
+        );
+    });
+}

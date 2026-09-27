@@ -4783,7 +4783,19 @@ impl AppContext {
     }
 
     /// Opens the file path using the default application configured to handle the given filetype.
+    ///
+    /// A path the default handler would *launch* -- an app bundle, installer, executable,
+    /// script, shortcut, or macro-bearing document; see
+    /// [`warp_util::launch_policy::is_launchable_path`] -- is revealed in the file manager
+    /// instead (#681). This is the process-wide backstop: every surface that opens a local file
+    /// "with the system" ends here, so a caller that forgets the policy still cannot launch a
+    /// path that terminal output, a model or a document named.
     pub fn open_file_path(&mut self, path: &Path) {
+        if warp_util::launch_policy::is_launchable_path(path) {
+            log::info!("Revealing instead of opening a launchable path: {path:?}");
+            self.platform_delegate.open_file_path_in_explorer(path);
+            return;
+        }
         self.platform_delegate.open_file_path(path);
     }
 

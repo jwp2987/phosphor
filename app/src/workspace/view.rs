@@ -5666,11 +5666,23 @@ impl Workspace {
                     ctx,
                 );
             }
+            // The sink re-applies the launch policy (#681): a target built by hand (a raster
+            // shortcut, a pane event, a future caller) must not reach the OS default handler for
+            // a path that handler would launch, whether or not it came from
+            // `resolve_file_target`.
+            FileTarget::SystemDefault | FileTarget::SystemGeneric
+                if crate::util::openable_file_type::is_launchable_path(&path) =>
+            {
+                ctx.open_file_path_in_explorer(&path);
+            }
             FileTarget::SystemDefault => {
                 crate::util::file::open_file_path_with_editor(line_col, path.clone(), None, ctx);
             }
             FileTarget::SystemGeneric => {
                 ctx.open_file_path(&path);
+            }
+            FileTarget::RevealInFileManager => {
+                ctx.open_file_path_in_explorer(&path);
             }
         }
     }
