@@ -850,14 +850,21 @@ fn late_completions_finished_does_not_destroy_a_newer_awaiting_prompt_request() 
     });
 }
 
-/// Regression test for TODO.md's follow-up (2): the prompt-phase watchdog can abandon a request
-/// whose OSC reply was merely slow, not absent. When that late reply finally arrives, it must
-/// answer the shell with a bare EOT terminator (so the shell's `read -d $'\4'` returns) instead
-/// of being silently ignored -- which is what left the shell waiting in `read` forever before
-/// this fix, since nothing else was ever going to send it a terminator once the app had already
-/// dropped the request.
+/// Regression test for TODO.md's follow-up (2), reworked after review: a `SendCompletionsPrompt`
+/// event with no matching live `AwaitingPrompt` state -- e.g. a late reply for a request the
+/// prompt watchdog already abandoned -- must write *nothing at all* to the PTY, not even a bare
+/// terminator.
+///
+/// An earlier version of this fix answered such a late reply with a bare EOT, reasoning that the
+/// shell must still be blocked in `read -d $'\4'` waiting for one. That is unsafe: the shell's
+/// `read` can return for reasons the app cannot observe (most plausibly Ctrl-C, a very normal
+/// reaction to a Tab that visibly did nothing after the 2s watchdog fires), and a blind EOT sent
+/// after that point is Ctrl-D typed at a live, empty prompt -- which exits the shell. Recovering
+/// the shell from a stuck handshake belongs to the shell side now (a bounded `read -t` in
+/// `warp_read_completion_buffer`, `zsh_body.sh`); the app's only safe move is to never write
+/// anything for a request it no longer has live state for.
 #[test]
-fn late_send_completions_prompt_after_watchdog_abandons_it_answers_with_eot_only() {
+fn late_send_completions_prompt_with_no_live_state_writes_nothing_to_the_pty() {
     App::test((), |mut app| async move {
         let model = terminal_model();
         let (model_events_tx, model_events_rx) = async_channel::unbounded();
@@ -881,11 +888,9 @@ fn late_send_completions_prompt_after_watchdog_abandons_it_answers_with_eot_only
         });
 
         // Simulate the prompt-phase watchdog having already fired and abandoned the request:
-        // the state is gone, but the "a late reply might still show up" flag is set, exactly as
-        // `arm_native_completions_watchdog`'s callback leaves it.
+        // there is no live state left for this event to match.
         controller.update(&mut app, |controller, _ctx| {
             controller.in_flight_native_completions_state = None;
-            controller.has_pending_late_completions_prompt_reply = true;
         });
 
         // The shell's OSC reply finally arrives, late.
@@ -893,26 +898,18 @@ fn late_send_completions_prompt_after_watchdog_abandons_it_answers_with_eot_only
             ctx.emit(ModelEvent::SendCompletionsPrompt);
         });
 
-        let messages = sender.messages.lock();
-        assert_eq!(
-            messages.len(),
-            1,
-            "the late reply must be answered with exactly one write: the bare terminator, and \
-             nothing else -- no completion text, since the request that would have supplied it \
-             was already dropped."
+        assert!(
+            sender.messages.lock().is_empty(),
+            "a SendCompletionsPrompt event with no matching live AwaitingPrompt state must not \
+             write anything to the PTY -- not completion text, and not a bare terminator either, \
+             since the app cannot tell whether the shell is still blocked in read() or already \
+             back at a live prompt."
         );
-        assert_input_matches(&messages[0], vec![escape_sequences::C0::EOT]);
-        drop(messages);
 
         controller.read(&app, |controller, _| {
             assert!(
                 controller.in_flight_native_completions_state.is_none(),
-                "answering a late reply must not resurrect the abandoned request."
-            );
-            assert!(
-                !controller.has_pending_late_completions_prompt_reply,
-                "the late-reply flag must be consumed so a second, truly stray \
-                 SendCompletionsPrompt does not also get answered with an EOT."
+                "handling a late reply must not resurrect the abandoned request."
             );
         });
 
