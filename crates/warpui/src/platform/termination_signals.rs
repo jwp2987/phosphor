@@ -54,6 +54,7 @@ pub(crate) const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
 /// (`HungAppTimeout`/`WaitToKillAppTimeout` do not apply the same way to
 /// console handlers as they do to `WM_ENDSESSION`), so this stays under it
 /// rather than at it.
+#[cfg_attr(not(windows), allow(dead_code))] // Only the Windows console/session-end paths use this.
 pub(crate) const CONSOLE_CLOSE_DEADLINE: Duration = Duration::from_secs(4);
 
 /// How long a graceful shutdown may take after Windows' `CTRL_LOGOFF_EVENT`/
@@ -61,6 +62,7 @@ pub(crate) const CONSOLE_CLOSE_DEADLINE: Duration = Duration::from_secs(4);
 /// exiting anyway. Logoff/shutdown gives the OS's own shutdown coordinator a
 /// substantially longer budget than a plain console close -- on the order of
 /// 20s (`WaitToKillAppTimeout`) -- so this can afford real margin.
+#[cfg_attr(not(windows), allow(dead_code))] // Only the Windows console/session-end paths use this.
 pub(crate) const CONSOLE_LOGOFF_DEADLINE: Duration = Duration::from_secs(15);
 
 /// How long after the first delivery of a signal a repeat of it must arrive to be
@@ -205,11 +207,13 @@ pub(crate) fn run_deadline_watchdog(
 /// current user. Kept here, and covered by tests that run on every platform,
 /// because the wait/notify coordination itself has nothing Windows-specific
 /// about it -- only the caller that blocks on it does.
+#[cfg_attr(not(windows), allow(dead_code))] // Only the Windows console/session-end paths use this.
 pub(crate) struct ShutdownGate {
     done: Mutex<bool>,
     cond: Condvar,
 }
 
+#[cfg_attr(not(windows), allow(dead_code))] // Only the Windows console/session-end paths use this.
 impl ShutdownGate {
     pub(crate) const fn new() -> Self {
         Self {
@@ -281,6 +285,7 @@ impl ReentrancyDepth {
 
     /// How many calls into the guarded code are currently on the stack (on
     /// whichever thread(s) called [`enter`](Self::enter)).
+    #[cfg_attr(not(windows), allow(dead_code))] // Read only by the Windows WM_ENDSESSION path.
     pub(crate) fn get(&self) -> u32 {
         self.0.load(Ordering::Acquire)
     }

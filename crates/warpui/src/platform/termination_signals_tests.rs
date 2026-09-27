@@ -245,8 +245,8 @@ fn signal_sets_cover_sigterm_and_sighup() {
 }
 
 mod shutdown_gate {
-    use std::sync::mpsc;
     use std::sync::Arc;
+    use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
 
