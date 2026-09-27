@@ -9857,13 +9857,19 @@ Ordered by severity, not by area.
       **FIXED 2026-08-21:** `output.rs:2741-2782` new `usage_pill_headline_credits` + `usage_pill_has_any_usage`, both rollup-derived, used for **both** the displayed number (`:2830`) and the suppression check — fixing only the number would have left the worse limb (button entirely absent) in place. Ported from `42effe840:output.rs:3686-3713`; no `platform_credits_spent` term exists in the pin's `render_usage_button`, so nothing BYOP-divergent had to be dropped, and the fork's BYO-API-key early return is preserved *ahead* of the rollup so BYOK users pay no cost. **Render cost considered and kept unmemoised, documented at the call site:** the non-orchestrator case is one empty-slice probe with no allocation; a cheaper totals-only sum was explicitly rejected as a second implementation free to drift from the footer, and headline-equals-footer is the invariant being fixed. Tests at `:3598` include the required case (orchestrator spends 0, child spends 30) plus a guard against the suppression check becoming a tautology. **Unrelated gap noticed, not acted on:** the pin's `output.rs` renders a "This response won't count towards your usage" notice via `should_show_failed_output_usage_notice`; the fork has both symbols (`view_util.rs:70,168`) but only `tui_export.rs:117` uses them, so the GUI output view is missing that notice.
 
 
-- [ ] **`[byop] build_client: endpoint_url=` logs the user's provider base URL.**
+- [x] **`[byop] build_client: endpoint_url=` logs the user's provider base URL.**
       `chat_stream.rs:4584` prints the configured endpoint at `Info`, which for a
       self-hosted or corporate gateway is an internal hostname, and `warp.log` goes
       into `write_log_bundle_zip_to`. Same exposure class as the request-content leak
       fixed 2026-08-21 but **config rather than conversation content**, so it was left
       out of that change deliberately and needs its own decision: redact to scheme+host,
       digest it, or accept it. Flagged by the agent that fixed the content leak.
+      **Fixed 2026-09-27 (#718, this commit):** decision made — redact to `scheme://host[:port]`
+      via a new `redact_endpoint_for_log` helper, applied at this log line AND the
+      insecure-endpoint-refusal warning beside it (same `endpoint_url`, previously undocumented
+      as a second site). Unit tests cover userinfo, query keys, IPv6 host, and
+      no-scheme/garbage input (placeholder). In-source residual list updated at
+      `chat_stream.rs`'s "Known residuals" doc comment.
 
 - [x] **`[byop] stream chunk error:` prints the provider's error body verbatim.**
       `chat_stream.rs:5794`. Some providers echo a fragment of the request in a 400
@@ -9976,9 +9982,16 @@ claim, which was wrong by four.
       `HTTP GET {url}` into its context chain, so the URL reaches `warn` ungated. Websearch
       (`:7570`) carries the Exa endpoint, not the query.
       **Closed as residual 2026-09-26:** recorded as a documented residual in the in-source list at `chat_stream.rs:3235-3253`.
-- [ ] **`[byop] open stream failed` (`:5887`)** — same class as the recorded `stream chunk
+- [x] **`[byop] open stream failed` (`:5887`)** — same class as the recorded `stream chunk
       error`, not previously recorded.
       **Rewritten 2026-09-26:** the one residual of this class NOT yet in the in-source list at `chat_stream.rs:3235-3253`. Action: add it to that list (source change), then close as a residual.
+      **Fixed 2026-09-27 (#718, this commit):** unlike the recorded `stream chunk error` (a
+      provider-supplied error body, kept verbatim on purpose), this one can also carry a bare
+      `reqwest::Error`'s `Display`, which embeds the request URL in prose
+      (`... for url (https://host/path)`). Added `redact_urls_in_error_text`, which finds and
+      reduces any `http(s)://` substring in the rendered error text to `scheme://host[:port]`
+      before logging — so the residual here is now the same shape as the redacted
+      `endpoint_url`, not the full URL. Added to the in-source residual list.
 - [x] **Parser error text** (`:6587`, `:7804`, `:7826`) — serde_json is normally
       position-only, but `unknown field` / `invalid value` renderings can quote a field name
       or a short value.
@@ -9987,8 +10000,14 @@ claim, which was wrong by four.
       default, but a verbosity switch is **not** a privacy opt-in, so it is a residual
       rather than a gate.
       **Closed as residual 2026-09-26:** recorded as a documented residual in the in-source list at `chat_stream.rs:3235-3253`.
-- [ ] **Proxy URL host** (`:4858`) still logged after userinfo redaction — same class as the
+- [x] **Proxy URL host** (`:4858`) still logged after userinfo redaction — same class as the
       already-recorded `endpoint_url`.
+      **Closed as residual 2026-09-27 (#718, this commit):** decision made — kept as-is
+      (credentials are already stripped by `redact_url_userinfo`, and the only time this line
+      fires is when the proxy URL failed to parse, where seeing the host — and the typo — is the
+      diagnosis). Broken out into its own bullet in the in-source residual list rather than
+      staying folded into the `endpoint_url` entry, since that one is now redacted and this one
+      deliberately is not.
 
 - [x] **`InlineDiffView::restore_diff_base` writes the diff base over the file with no**
       **conflict check.** Unlike accept (fixed 2026-08-21 via `FileModel::save_if_unchanged`),

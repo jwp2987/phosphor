@@ -3103,9 +3103,9 @@ fn args_shape_for_log(args: &str, err_text: &str) -> String {
 /// A proxy URL is a string the user typed into their own settings, and `http://user:pass@host`
 /// is an ordinary way to write one — so the one place this file logs a proxy URL was logging a
 /// password into a file that ships inside `write_log_bundle_zip_to`. The rest of the URL is left
-/// alone deliberately: it is the same class as the already-recorded `endpoint_url` residual (a
-/// host the user configured), and the only time a proxy URL is logged at all is when it failed
-/// to parse, where seeing the typo *is* the diagnosis.
+/// alone deliberately: it is the same reduced-detail class as the redacted `endpoint_url` below
+/// (a host the user configured), and the only time a proxy URL is logged at all is when it
+/// failed to parse, where seeing the typo *is* the diagnosis.
 ///
 /// Hand-rolled rather than `url::Url`-parsed for the obvious reason: the only caller has a
 /// string that `url::Url` already rejected. Splits on the authority (up to the first `/`, `?` or
@@ -3125,6 +3125,71 @@ fn redact_url_userinfo(url: &str) -> String {
         format!("{scheme}://")
     };
     format!("{scheme_prefix}<redacted-userinfo>@{}", &rest[at + 1..])
+}
+
+/// Reduces a provider endpoint URL to `scheme://host[:port]` for logging.
+///
+/// `[byop] build_client` (and the insecure-endpoint refusal beside it) used to log
+/// `endpoint_url` verbatim, which for a self-hosted or corporate gateway can carry userinfo, a
+/// path segment naming an internal service, or a query string with a deployment id or API
+/// version — none of which is needed to answer "which provider/gateway did this request go to",
+/// the only question these lines exist to answer. Only the scheme, host and an explicit port
+/// survive; userinfo, path, query and fragment are dropped.
+///
+/// Returns a fixed placeholder, never the input, when `url` cannot be parsed or has no host.
+/// `normalize_endpoint_url` passes a URL that failed to parse straight through unchanged (so the
+/// eventual HTTP call errors out instead of this code panicking), so the string reaching this
+/// function is not guaranteed to be a valid URL.
+fn redact_endpoint_for_log(url: &str) -> String {
+    const PLACEHOLDER: &str = "<unparseable-endpoint>";
+    let Ok(parsed) = url::Url::parse(url) else {
+        return PLACEHOLDER.to_owned();
+    };
+    let Some(host) = parsed.host_str() else {
+        return PLACEHOLDER.to_owned();
+    };
+    match parsed.port() {
+        Some(port) => format!("{}://{host}:{port}", parsed.scheme()),
+        None => format!("{}://{host}", parsed.scheme()),
+    }
+}
+
+/// Reduces every `http://`/`https://` URL substring inside free-form error text to
+/// `scheme://host[:port]` (see [`redact_endpoint_for_log`]), leaving everything else alone.
+///
+/// For `[byop] open stream failed`: `map_genai_error`'s `Display` output can wrap a
+/// `reqwest::Error`, whose own `Display` embeds the request URL in prose (e.g. `error sending
+/// request for url (https://host/path)`) rather than through a field this file controls, so it
+/// cannot be redacted at the source the way `endpoint_url` is. This scans the rendered text
+/// instead: a URL substring runs from `http(s)://` to the first character that cannot appear
+/// unescaped in one (whitespace or one of `)]}'"><,`), which is generous enough to catch the
+/// shapes reqwest and genai actually produce without needing a full URL grammar.
+fn redact_urls_in_error_text(text: &str) -> String {
+    fn url_start(s: &str) -> Option<usize> {
+        let http = s.find("http://");
+        let https = s.find("https://");
+        match (http, https) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) | (None, Some(a)) => Some(a),
+            (None, None) => None,
+        }
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut remaining = text;
+    while let Some(start) = url_start(remaining) {
+        out.push_str(&remaining[..start]);
+        let candidate = &remaining[start..];
+        let end = candidate
+            .find(|c: char| {
+                c.is_whitespace() || matches!(c, ')' | ']' | '}' | '\'' | '"' | '>' | ',')
+            })
+            .unwrap_or(candidate.len());
+        let (url, tail) = candidate.split_at(end);
+        out.push_str(&redact_endpoint_for_log(url));
+        remaining = tail;
+    }
+    out.push_str(remaining);
+    out
 }
 
 /// A tool name safe for the default tier: `mcp__<server>__<tool>` with the user-configured
@@ -3243,10 +3308,21 @@ fn diag_message_with_redacted_binaries(message: &ChatMessage) -> std::borrow::Co
 ///   `unknown field` / `invalid value` rendering can quote a field name or a short value. Same
 ///   trade as the provider error body: the arguments themselves are now a shape
 ///   (`args_shape_for_log`), and without the error the shape diagnoses nothing.
-/// * `[byop] build_client: … endpoint_url={endpoint_url}` and the insecure-endpoint refusal
-///   print the provider endpoint, which can be an internal host. Recorded in `TODO.md`. The
-///   proxy-URL line alongside them redacts only its `user:password@` segment
-///   (`redact_url_userinfo`) — a password is a different class from a host name.
+/// * `[byop] build_client: … endpoint_url={..}` and the insecure-endpoint refusal beside it
+///   both log the provider endpoint reduced to `scheme://host[:port]` (`redact_endpoint_for_log`)
+///   — userinfo, path, query and fragment are dropped, but the host itself is kept deliberately:
+///   knowing which provider/gateway a request went to is most of what these lines exist for, and
+///   a host the user typed into their own provider settings is the same class of information as
+///   the proxy host below.
+/// * The proxy-URL warning (`[byop] proxy URL '...' is invalid, skipping proxy configuration`)
+///   redacts only its `user:password@` segment (`redact_url_userinfo`) and keeps the host — a
+///   password is a different class from a host name, and the only time this fires is when the
+///   proxy URL failed to parse, where seeing the host (and the typo) is the diagnosis.
+/// * `[byop] open stream failed: {mapped}` — `mapped` can wrap a `reqwest::Error`, whose own
+///   `Display` embeds the request URL in prose (`... for url (https://host/path)`) rather than
+///   through a field this file controls. `redact_urls_in_error_text` reduces any `http(s)://`
+///   substring in the rendered text to `scheme://host[:port]` before this logs, so the residual
+///   here is the same shape as the `endpoint_url` line above, not the full URL.
 /// * `[byop][webfetch] error: {e:#}` prints the URL the agent tried to fetch (`web_runtime`
 ///   builds `HTTP GET {url}` into its context chain). It is the model's chosen target rather
 ///   than the user's own text, and a fetch failure with the URL removed is undiagnosable.
@@ -4956,7 +5032,10 @@ fn build_client_uncached(
     api_key: String,
 ) -> Client {
     let endpoint_url = normalize_endpoint_url(api_type, base_url);
-    log::info!("[byop] build_client: api_type={api_type:?} endpoint_url={endpoint_url}");
+    log::info!(
+        "[byop] build_client: api_type={api_type:?} endpoint_url={}",
+        redact_endpoint_for_log(&endpoint_url)
+    );
     // Vertex mints a short-lived OAuth2 bearer per request, so it needs an async resolver; every
     // other type routes through the synchronous static-key path below.
     let resolver = if api_type == AgentProviderApiType::Vertex {
@@ -4971,9 +5050,10 @@ fn build_client_uncached(
     let key_for_resolver = if !api_key.is_empty() && super::is_plaintext_bearer_risk(&endpoint_url) {
         log::warn!(
             "[byop] refusing to send the API key as a plaintext Authorization header to \
-             insecure endpoint {endpoint_url} — only https:// or a loopback http:// \
+             insecure endpoint {} — only https:// or a loopback http:// \
              (localhost/127.0.0.1) endpoint may carry it; use https, or point this \
-             provider at a local runtime"
+             provider at a local runtime",
+            redact_endpoint_for_log(&endpoint_url)
         );
         String::new()
     } else {
@@ -6083,7 +6163,10 @@ pub async fn generate_byop_output(
             }
             Err(e) => {
                 let mapped = map_genai_error(e);
-                log::error!("[byop] open stream failed: {mapped:#}");
+                log::error!(
+                    "[byop] open stream failed: {}",
+                    redact_urls_in_error_text(&format!("{mapped:#}"))
+                );
                 evict_vertex_token_on_auth_failure(vertex_credential.as_ref(), &mapped);
                 yield Err(Arc::new(AIApiError::Other(anyhow::anyhow!(
                     "BYOP open stream failed: {mapped}"
@@ -12948,6 +13031,76 @@ mod byop_diag_privacy_tests {
         );
     }
 
+    #[test]
+    fn provider_endpoint_is_reduced_to_scheme_host_port() {
+        // Userinfo, path, query and fragment all dropped; host and explicit port kept.
+        let redacted = redact_endpoint_for_log(&format!(
+            "https://user:{SECRET}@gateway.corp.internal:8443/v1/messages?api-version=2024&key={SECRET}#frag"
+        ));
+        assert_eq!(redacted, "https://gateway.corp.internal:8443");
+        assert_no_secret_substring(&redacted, "redact_endpoint_for_log");
+
+        // No explicit port -> no port in the output.
+        assert_eq!(
+            redact_endpoint_for_log("http://localhost/v1/chat/completions"),
+            "http://localhost"
+        );
+
+        // IPv6 host: `url::Url::host_str` already carries the brackets.
+        assert_eq!(
+            redact_endpoint_for_log("https://[2001:db8::1]:9443/v1"),
+            "https://[2001:db8::1]:9443"
+        );
+        assert_eq!(redact_endpoint_for_log("https://[::1]/v1"), "https://[::1]");
+
+        // No scheme, or outright garbage -> a fixed placeholder, never the input verbatim.
+        assert_eq!(
+            redact_endpoint_for_log("api.example.com/v1"),
+            "<unparseable-endpoint>"
+        );
+        assert_eq!(
+            redact_endpoint_for_log("not a url at all"),
+            "<unparseable-endpoint>"
+        );
+        assert_eq!(redact_endpoint_for_log(""), "<unparseable-endpoint>");
+    }
+
+    #[test]
+    fn error_text_urls_are_reduced_before_logging() {
+        // The reqwest-error shape: prose with a URL embedded in parens, carrying userinfo.
+        let text = format!(
+            "Web call failed for adapter 'OpenAi'.\nCause: Reqwest error: error sending request \
+             for url (https://user:{SECRET}@api.example.com:8443/v1/chat/completions?key={SECRET})"
+        );
+        let redacted = redact_urls_in_error_text(&text);
+        assert_no_secret_substring(&redacted, "redact_urls_in_error_text");
+        assert!(
+            redacted.contains("(https://api.example.com:8443)"),
+            "{redacted}"
+        );
+        assert!(
+            redacted.starts_with(
+                "Web call failed for adapter 'OpenAi'.\nCause: Reqwest error: \
+                                  error sending request for url "
+            ),
+            "{redacted}"
+        );
+
+        // Two URLs in the same message are both reduced.
+        let two_urls =
+            format!("first http://a.example.com/x?key={SECRET} then https://b.example.com:9000/y");
+        let redacted_two = redact_urls_in_error_text(&two_urls);
+        assert_no_secret_substring(&redacted_two, "redact_urls_in_error_text (two urls)");
+        assert_eq!(
+            redacted_two,
+            "first http://a.example.com then https://b.example.com:9000"
+        );
+
+        // No URL at all -> text passes through unchanged.
+        let plain = "Failed to parse stream data for model 'gpt-4o'.\nCause: invalid escape at line 1 column 4173";
+        assert_eq!(redact_urls_in_error_text(plain), plain);
+    }
+
     // -----------------------------------------------------------------------------------
     // End-to-end: drive the real call sites and read what they actually emitted.
     //
@@ -13123,6 +13276,8 @@ mod byop_diag_privacy_tests {
         "json_value_for_log(",
         "message_summary_for_log(",
         "redact_url_userinfo(",
+        "redact_endpoint_for_log(",
+        "redact_urls_in_error_text(",
         "diag_digest(",
     ];
 
