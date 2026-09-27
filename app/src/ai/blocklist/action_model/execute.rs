@@ -293,7 +293,8 @@ impl ActionInitiator {
     /// input from the Blocked UI: `SuggestNewConversation` (the executor pre-sends `Reject`
     /// to its own channel), `SuggestPrompt` (always auto-executes; the chip is driven by an
     /// executor event), `RequestFileEdits` (execution itself calls `accept_and_save` on the
-    /// diff view), and `TransferShellCommandControlToUser` (resolves on hand-back or when the
+    /// diff view — but see [`Self::can_stand_in_for_confirmation_of_write`] for protected
+    /// paths), and `TransferShellCommandControlToUser` (resolves on hand-back or when the
     /// block finishes, neither of which is the confirmation UI).
     pub(super) fn can_stand_in_for_confirmation(self, action: &AIAgentActionType) -> bool {
         match self {
@@ -306,6 +307,25 @@ impl ActionInitiator {
                 ) && action.can_be_accepted_without_its_own_ui()
             }
         }
+    }
+
+    /// [`Self::can_stand_in_for_confirmation`], additionally refusing every stand-in except
+    /// a real click when the action writes a protected path.
+    ///
+    /// The LRC tag-in override answers a prompt the user cannot see. That is acceptable for an
+    /// ordinary edit, but a write to `~/.ssh/authorized_keys`, an MCP config, a shell rc file
+    /// or this app's own settings is exactly how an agent escalates itself, so it must wait
+    /// for the user's own confirmation even if that leaves the turn blocked until the
+    /// long-running command releases the screen — the same trade-off computer use makes.
+    pub(super) fn can_stand_in_for_confirmation_of_write(
+        self,
+        action: &AIAgentActionType,
+        writes_protected_path: bool,
+    ) -> bool {
+        if writes_protected_path && self != Self::User {
+            return false;
+        }
+        self.can_stand_in_for_confirmation(action)
     }
 }
 
@@ -627,7 +647,17 @@ impl BlocklistAIActionExecutor {
         // NOT simply "the caller said user-initiated": the LRC tag-in override says that too,
         // and it must not be able to say it about computer use. See
         // `ActionInitiator::can_stand_in_for_confirmation`.
-        let confirmation_stood_in_for = initiator.can_stand_in_for_confirmation(&action.action);
+        //
+        // A write to a protected path (MCP/agent configs, this app's settings, ssh, shell rc,
+        // git hooks, ...: `blocklist::protected_paths`) is never stood in for by anything but
+        // the user's own click. `should_autoexecute` already refuses it on the autonomy path;
+        // this closes the LRC tag-in path, which otherwise bypassed the guard entirely (#682).
+        let writes_protected_path = self
+            .request_file_edits_executor
+            .as_ref(ctx)
+            .writes_protected_path(input, ctx);
+        let confirmation_stood_in_for =
+            initiator.can_stand_in_for_confirmation_of_write(&action.action, writes_protected_path);
 
         // The agent cannot auto execute and either:
         // - the agent is interactive, OR
@@ -1404,7 +1434,11 @@ mod tests;
 #[cfg(test)]
 mod initiator_tests {
     use super::ActionInitiator;
-    use crate::ai::agent::{AIAgentActionType, RequestComputerUseRequest, UseComputerRequest};
+    use crate::ai::agent::{
+        AIAgentActionType, FileEdit, RequestComputerUseRequest, UseComputerRequest,
+    };
+    use crate::ai::blocklist::permissions::file_edits_touch_protected_path;
+    use ai::diff_validation::ParsedDiff;
 
     fn use_computer() -> AIAgentActionType {
         AIAgentActionType::UseComputer(UseComputerRequest {
@@ -1508,6 +1542,57 @@ mod initiator_tests {
             "the question view submits the answers and then executes as the user"
         );
         assert!(!ActionInitiator::Agent.can_stand_in_for_confirmation(&ask_user_question()));
+    }
+
+    fn protected_move() -> AIAgentActionType {
+        AIAgentActionType::RequestFileEdits {
+            file_edits: vec![FileEdit::Edit(ParsedDiff::V4AEdit {
+                file: Some("notes.md".to_owned()),
+                move_to: Some("~/.claude.json".to_owned()),
+                hunks: Vec::new(),
+            })],
+            title: None,
+        }
+    }
+
+    /// The LRC tag-in override stood in for `RequestFileEdits` unconditionally, so a move onto
+    /// a protected path ran with no guard at all (#682). A protected write needs the user's
+    /// own click; the override (and the agent) must be refused, while an ordinary edit keeps
+    /// the override's deadlock-breaking power.
+    #[test]
+    fn the_tag_in_override_cannot_approve_a_protected_write() {
+        let edit = protected_move();
+        assert!(
+            !ActionInitiator::AutoAcceptedTagIn.can_stand_in_for_confirmation_of_write(&edit, true),
+            "a tag-in must never approve a write to a protected path"
+        );
+        assert!(!ActionInitiator::Agent.can_stand_in_for_confirmation_of_write(&edit, true));
+        assert!(
+            ActionInitiator::User.can_stand_in_for_confirmation_of_write(&edit, true),
+            "the user's own click on the edit is the explicit confirmation"
+        );
+        assert!(
+            ActionInitiator::AutoAcceptedTagIn.can_stand_in_for_confirmation_of_write(&edit, false),
+            "an unprotected edit keeps the override, or the alt-screen deadlock returns"
+        );
+    }
+
+    /// The executor feeds that verdict from the same guard `should_autoexecute` uses, so the
+    /// destination of a move — not only its source — must register as protected.
+    #[test]
+    fn a_move_onto_a_protected_path_is_detected() {
+        let AIAgentActionType::RequestFileEdits { file_edits, .. } = protected_move() else {
+            unreachable!()
+        };
+        let cwd = Some("/project".to_owned());
+        assert!(file_edits_touch_protected_path(&file_edits, &None, &cwd));
+
+        let ordinary = [FileEdit::Edit(ParsedDiff::V4AEdit {
+            file: Some("src/a.rs".to_owned()),
+            move_to: Some("src/b.rs".to_owned()),
+            hunks: Vec::new(),
+        })];
+        assert!(!file_edits_touch_protected_path(&ordinary, &None, &cwd));
     }
 
     /// Both out-of-band initiators dequeue one specific action rather than draining the queue,

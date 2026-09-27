@@ -11,7 +11,9 @@ use futures::{FutureExt, channel::oneshot, future::BoxFuture};
 use itertools::Itertools;
 use vec1::{Vec1, vec1};
 use warp_core::send_telemetry_from_ctx;
-use warpui::{Entity, EntityId, ModelContext, ModelHandle, SingletonEntity as _, ViewHandle};
+use warpui::{
+    AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity as _, ViewHandle,
+};
 
 use apply_diff_model::ApplyDiffModel;
 use diff_application::DiffApplicationError;
@@ -39,6 +41,7 @@ use crate::{
             inline_action::code_diff_view::{
                 CodeDiffView, CodeDiffViewEvent, DiffSessionType, FileDiff, FileSaveFailure,
             },
+            permissions::file_edits_touch_protected_path,
         },
         paths::host_native_absolute_path,
     },
@@ -162,6 +165,29 @@ impl RequestFileEditsExecutor {
                 ctx,
             )
             .is_allowed()
+    }
+
+    /// Whether `input` is a file-edit action that writes, removes or renames onto a protected
+    /// path (`blocklist::protected_paths`), judged exactly as [`Self::should_autoexecute`]
+    /// judges it: every written path including a V4A move's destination, raw and resolved
+    /// against the session's shell and cwd.
+    ///
+    /// The executor uses this to refuse stand-in confirmations (the LRC tag-in override) for
+    /// such writes; only the user's own click may approve them. `false` for any other action.
+    pub(super) fn writes_protected_path(
+        &self,
+        input: ExecuteActionInput,
+        ctx: &AppContext,
+    ) -> bool {
+        let AIAgentActionType::RequestFileEdits { file_edits, .. } = &input.action.action else {
+            return false;
+        };
+        let session_context = SessionContext::from_session(self.active_session.as_ref(ctx), ctx);
+        file_edits_touch_protected_path(
+            file_edits,
+            session_context.shell(),
+            session_context.current_working_directory(),
+        )
     }
 
     /// Registers a diff view to handle a RequestFileEdits action.
