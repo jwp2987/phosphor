@@ -19,6 +19,7 @@ use crate::cloud_object::JsonObjectType;
 use crate::cloud_object::ObjectType;
 
 use crate::editor::{EditorOptions, InteractionState, SingleLineEditorOptions, TextColors};
+use crate::report_settings_write_error;
 use crate::settings::InputSettings;
 use crate::settings::{
     AIAutoDetectionEnabled, AICommandDenylist, AISettingsChangedEvent, PromptTemplateDir,
@@ -1761,9 +1762,23 @@ impl AISettingsPageView {
                 widgets.push(Box::new(AgentProvidersWidget::new(ctx)));
             }
             Some(AISubpage::Profiles) => {
-                if should_show_usage_widget {
-                    widgets.push(Box::new(UsageWidget::default()));
+                if !should_show_usage_widget {
+                    // Only `AgentsWidget` renders here (no master-switch widget on this
+                    // subpage either, see `subpage_shows_master_ai_switch`), so the page
+                    // cannot be partially filtered -- it's a genuine monolith, not a
+                    // multi-widget page that happens to have one widget right now.
+                    // Returning early instead of falling into the shared
+                    // `new_uncategorized` wrap below keeps settings search from showing
+                    // a misleading match count (e.g. "(1)") next to "Profiles" in the
+                    // sidebar. Ports upstream's `be11be65d`, adapted to this fork's own
+                    // gate: upstream branches on `FeatureFlag::UsageBasedPricing`, which
+                    // this fork doesn't have, so `should_show_usage_widget`
+                    // (`!is_byo_api_key_enabled()`) is used instead -- porting the
+                    // upstream flag verbatim would reintroduce a flag this fork
+                    // deliberately doesn't carry.
+                    return PageType::new_monolith(AgentsWidget::default(), None, true);
                 }
+                widgets.push(Box::new(UsageWidget::default()));
                 widgets.push(Box::new(AgentsWidget::default()));
             }
             Some(AISubpage::Knowledge) => {
@@ -2469,7 +2484,7 @@ impl AISettingsPageView {
                 // tells the user *why*, instead of the model silently never appearing.
                 validation_error = p.validation_error();
             }
-            let _ = settings.agent_providers.set_value(providers, ctx);
+            report_settings_write_error!(settings.agent_providers.set_value(providers, ctx), ctx);
         });
         crate::ai::agent_providers::AgentProviderSecrets::handle(ctx).update(
             ctx,
@@ -3614,7 +3629,10 @@ impl TypedActionView for AISettingsPageView {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     let mut providers = settings.agent_providers.value().clone();
                     providers.push(crate::settings::AgentProvider::new_empty());
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 // The new provider has no models yet, so it lands in the "Disabled
                 // providers" section (see AgentProvider::effectively_disabled) -- force it
@@ -3626,7 +3644,10 @@ impl TypedActionView for AISettingsPageView {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     let mut providers = settings.agent_providers.value().clone();
                     providers.retain(|p| p.id != *provider_id);
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 crate::ai::agent_providers::AgentProviderSecrets::handle(ctx).update(
                     ctx,
@@ -3644,7 +3665,10 @@ impl TypedActionView for AISettingsPageView {
                     if let Some(p) = providers.iter_mut().find(|p| p.id == *provider_id) {
                         p.disabled = !p.disabled;
                     }
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 ctx.notify();
             }
@@ -3654,7 +3678,10 @@ impl TypedActionView for AISettingsPageView {
                     if let Some(p) = providers.iter_mut().find(|p| p.id == *provider_id) {
                         p.name = name.clone();
                     }
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 ctx.notify();
             }
@@ -3667,7 +3694,10 @@ impl TypedActionView for AISettingsPageView {
                     if let Some(p) = providers.iter_mut().find(|p| p.id == *provider_id) {
                         p.base_url = base_url.clone();
                     }
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 ctx.notify();
             }
@@ -3686,7 +3716,10 @@ impl TypedActionView for AISettingsPageView {
                             p.base_url = api_type.default_base_url().to_owned();
                         }
                     }
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 self.rebuild_current_page(ctx);
             }
@@ -3719,7 +3752,10 @@ impl TypedActionView for AISettingsPageView {
                     if let Some(p) = providers.iter_mut().find(|p| p.id == *provider_id) {
                         p.models = models.clone();
                     }
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 self.rebuild_current_page(ctx);
             }
@@ -3730,7 +3766,10 @@ impl TypedActionView for AISettingsPageView {
                         p.models
                             .push(crate::settings::AgentProviderModel::from_id(String::new()));
                     }
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 // A row-level add needs a new EditorView, so it goes through rebuild;
                 // rebuild_current_page already preserves scroll position.
@@ -3747,7 +3786,10 @@ impl TypedActionView for AISettingsPageView {
                             p.models.remove(*model_index);
                         }
                     }
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 // Deleting one entry shifts subsequent indices, so clear all expansion records
                 // for this provider to avoid accidentally expanding the wrong one.
@@ -3766,7 +3808,10 @@ impl TypedActionView for AISettingsPageView {
                             m.name = name.clone();
                         }
                     }
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 ctx.notify();
             }
@@ -3782,7 +3827,10 @@ impl TypedActionView for AISettingsPageView {
                             m.id = id.clone();
                         }
                     }
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 ctx.notify();
             }
@@ -3798,7 +3846,10 @@ impl TypedActionView for AISettingsPageView {
                             m.context_window = *context_window;
                         }
                     }
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 ctx.notify();
             }
@@ -3814,7 +3865,10 @@ impl TypedActionView for AISettingsPageView {
                             m.max_output_tokens = *max_output_tokens;
                         }
                     }
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 ctx.notify();
             }
@@ -3936,7 +3990,10 @@ impl TypedActionView for AISettingsPageView {
                                         }
                                     }
                                 }
-                                let _ = settings.agent_providers.set_value(providers, ctx);
+                                report_settings_write_error!(
+                                    settings.agent_providers.set_value(providers, ctx),
+                                    ctx
+                                );
                             });
                             // The model row count may have changed, so the widget rows need to
                             // be rebuilt.
@@ -3980,7 +4037,10 @@ impl TypedActionView for AISettingsPageView {
                     if let Some(p) = providers.iter_mut().find(|p| p.id == *provider_id) {
                         p.extra_headers.push((String::new(), String::new()));
                     }
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 // A changed header-row count requires creating/destroying EditorView handles;
                 // a plain notify won't refresh the rows.
@@ -3997,7 +4057,10 @@ impl TypedActionView for AISettingsPageView {
                             p.extra_headers.remove(*header_index);
                         }
                     }
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 // Deletion likewise shifts the index relative to existing HeaderRow handles,
                 // requiring the page to be rebuilt.
@@ -4016,7 +4079,10 @@ impl TypedActionView for AISettingsPageView {
                             *h = (key.clone(), value.clone());
                         }
                     }
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 ctx.notify();
             }
@@ -4102,7 +4168,10 @@ impl TypedActionView for AISettingsPageView {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     let mut providers = settings.agent_providers.value().clone();
                     providers.push(new_provider);
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 self.rebuild_current_page(ctx);
             }
@@ -4197,7 +4266,10 @@ impl TypedActionView for AISettingsPageView {
                             }
                         }
                     }
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 self.rebuild_current_page(ctx);
             }
@@ -4264,7 +4336,10 @@ impl TypedActionView for AISettingsPageView {
                             };
                         }
                     }
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 self.rebuild_current_page(ctx);
             }
@@ -4279,7 +4354,10 @@ impl TypedActionView for AISettingsPageView {
                             m.reasoning = !m.reasoning;
                         }
                     }
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 self.rebuild_current_page(ctx);
             }
@@ -4294,7 +4372,10 @@ impl TypedActionView for AISettingsPageView {
                             m.tool_call = !m.tool_call;
                         }
                     }
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 self.rebuild_current_page(ctx);
             }
@@ -4309,7 +4390,10 @@ impl TypedActionView for AISettingsPageView {
                             m.disabled = !m.disabled;
                         }
                     }
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 // Doesn't change model count/index/ViewHandle content, only render-time
                 // grouping/badge/color -- ctx.notify() is enough, same as the provider-level
@@ -4338,7 +4422,10 @@ impl TypedActionView for AISettingsPageView {
                             }
                         }
                     }
-                    let _ = settings.agent_providers.set_value(providers, ctx);
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
                 });
                 // Same reasoning as ToggleAgentProviderModelDisabled above: a bulk flip of
                 // `disabled` bools doesn't need a full ViewHandle rebuild, just a repaint --
@@ -7783,7 +7870,10 @@ impl AwsBedrockWidget {
                     buffer_text
                 };
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                    let _ = settings.aws_bedrock_profile.set_value(value, ctx);
+                    report_settings_write_error!(
+                        settings.aws_bedrock_profile.set_value(value, ctx),
+                        ctx
+                    );
                 });
                 if should_reset {
                     editor.update(ctx, |editor, ctx| {
@@ -8474,6 +8564,90 @@ mod master_ai_switch_tests {
                 "the settings page's master switch must be able to turn AI back on \
                  without hand-editing settings.toml"
             );
+        });
+    }
+}
+
+/// Guards the Profiles subpage's "(1)" search-match-count fix (upstream `be11be65d`,
+/// adapted to this fork's own gate -- see `build_page`'s `Some(AISubpage::Profiles)`
+/// arm for why it branches on `should_show_usage_widget`/BYOK rather than upstream's
+/// `FeatureFlag::UsageBasedPricing`).
+///
+/// These do not construct a live `AISettingsPageView` -- see
+/// `master_ai_switch_tests`'s module doc for why that needs thirteen singletons and
+/// is out of scope here. Instead they drive `PageType::update_filter` directly on a
+/// `PageType` built the same two ways `build_page` can build the Profiles subpage,
+/// which needs only a bare `AppContext`: `AgentsWidget::should_render` uses the
+/// trait's unconditional-`true` default and `search_terms()` reads only static
+/// feature flags, neither touching a settings singleton.
+#[cfg(test)]
+mod profiles_monolith_match_count_tests {
+    use super::*;
+    use warpui::App;
+
+    /// The bug this fixes: when only `AgentsWidget` renders (BYOK enabled, so the
+    /// usage widget is hidden), wrapping it in `new_uncategorized` -- a page that
+    /// claims to be independently filterable -- reports a numeric match count.
+    /// `MatchData::Display` renders that as literally `" (1)"` next to "Profiles" in
+    /// the settings-search sidebar, even though there is nothing to partially filter.
+    #[test]
+    fn a_single_widget_wrapped_as_uncategorized_reports_a_misleading_count() {
+        App::test((), |mut app| async move {
+            app.update(|ctx| {
+                let mut page: PageType<AISettingsPageView> =
+                    PageType::new_uncategorized(vec![Box::new(AgentsWidget::default())], None);
+                let match_data = page.update_filter("agent", ctx);
+                assert!(
+                    matches!(match_data, MatchData::Countable(1)),
+                    "expected a numeric match count from Uncategorized, got {match_data:?}"
+                );
+                assert_eq!(
+                    match_data.to_string(),
+                    " (1)",
+                    "this is the exact bogus sidebar text the fix removes"
+                );
+            });
+        });
+    }
+
+    /// The fix: `build_page` returns a `Monolith` instead in that same situation, and
+    /// a `Monolith` reports `Uncounted` -- no number renders next to "Profiles" at all,
+    /// matching every other genuinely single-widget settings page (About, Teams,
+    /// Referrals, MCP Servers, ...).
+    #[test]
+    fn the_same_single_widget_wrapped_as_a_monolith_reports_no_count() {
+        App::test((), |mut app| async move {
+            app.update(|ctx| {
+                let mut page: PageType<AISettingsPageView> =
+                    PageType::new_monolith(AgentsWidget::default(), None, true);
+                let match_data = page.update_filter("agent", ctx);
+                assert!(
+                    matches!(match_data, MatchData::Uncounted(true)),
+                    "expected an uncounted (but truthy) match from Monolith, got {match_data:?}"
+                );
+                assert_eq!(
+                    match_data.to_string(),
+                    "",
+                    "a monolith must never render a search-match count in the sidebar"
+                );
+            });
+        });
+    }
+
+    /// A non-matching query must still report no match either way -- the fix changes
+    /// how a match is *displayed*, not whether one is found.
+    #[test]
+    fn a_monolith_reports_no_match_for_a_non_matching_query() {
+        App::test((), |mut app| async move {
+            app.update(|ctx| {
+                let mut page: PageType<AISettingsPageView> =
+                    PageType::new_monolith(AgentsWidget::default(), None, true);
+                let match_data = page.update_filter("xyzzy-not-a-real-term", ctx);
+                assert!(
+                    !match_data.is_truthy(),
+                    "a query that matches nothing must not be truthy"
+                );
+            });
         });
     }
 }

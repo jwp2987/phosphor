@@ -1,8 +1,13 @@
+use ::local_control::protocol::{TabTarget, TargetSelector};
 use ::local_control::{ActionKind, ErrorCode};
 
 #[cfg(feature = "local_fs")]
 use super::resolve_against_working_directory;
-use super::validate_staged_input_text;
+use super::{tab_move, validate_staged_input_text};
+use crate::local_control::LocalControlBridge;
+use crate::workspace::TabMovement;
+use crate::workspace::view::tests::{initialize_app, mock_workspace};
+use warp_core::features::FeatureFlag;
 
 #[test]
 fn staged_input_rejects_line_breaks_and_control_sequences() {
@@ -86,5 +91,115 @@ fn agent_management_open_action_is_rejected_as_unsupported() {
             .expect_err("agent management open is not implemented");
         assert_eq!(error.code, ErrorCode::UnsupportedAction);
         assert!(error.message.contains("surface.agent_management.open"));
+    });
+}
+
+/// The regression: `tab_move` dispatched `MoveTabLeft`/`MoveTabRight` and acked
+/// unconditionally, even though `move_tab` itself silently no-ops a refused move
+/// (a pinned/group boundary, or the tab already at the edge) -- so a scripted
+/// caller could not tell a performed move from a refused one, and the
+/// `can_move_tab` port (2026-08-21) substantially enlarged the refused set.
+/// `tab_move` must now check the same predicate `move_tab` checks and return
+/// `TargetStateConflict` instead of acking, matching the other three
+/// `TargetStateConflict` uses in this file.
+#[test]
+fn tab_move_refuses_a_move_the_workspace_cannot_perform() {
+    let _pinned_guard = FeatureFlag::PinnedTabs.override_enabled(true);
+    warpui::App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        let tab_ids_before = workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 3);
+            // [P0, U1, U2]: the pinned/unpinned boundary sits between tabs 0 and
+            // 1, so moving tab 1 left would evict the pinned tab -- the same
+            // scenario `view.rs`'s own `can_move_tab` pinned-boundary tests use.
+            workspace.tabs[0].pinned = true;
+            assert!(
+                !workspace.can_move_tab(1, TabMovement::Left),
+                "test setup is wrong: this must be a move `can_move_tab` refuses"
+            );
+            workspace
+                .tabs
+                .iter()
+                .map(|tab| tab.pane_group.id())
+                .collect::<Vec<_>>()
+        });
+
+        let bridge = app.add_singleton_model(LocalControlBridge::new);
+        let error = bridge
+            .update(&mut app, |_bridge, ctx| {
+                tab_move(
+                    &None,
+                    &serde_json::json!({ "direction": "left" }),
+                    &TargetSelector {
+                        tab: Some(TabTarget::Index { index: 1 }),
+                        ..Default::default()
+                    },
+                    ctx,
+                )
+            })
+            .expect_err("a move can_move_tab refuses must not ack success");
+        assert_eq!(error.code, ErrorCode::TargetStateConflict);
+
+        let tab_ids_after = workspace.read(&app, |workspace, _| {
+            workspace
+                .tabs
+                .iter()
+                .map(|tab| tab.pane_group.id())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            tab_ids_before, tab_ids_after,
+            "the refused move must not have reordered any tab"
+        );
+    });
+}
+
+/// The mirror of the refusal test: a move `can_move_tab` allows must still ack
+/// success and actually perform the move, so the fix does not turn every
+/// `tab.move` into a refusal.
+#[test]
+fn tab_move_performs_and_acks_a_move_the_workspace_can_perform() {
+    warpui::App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        let (first_id, second_id) = workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 2);
+            assert!(workspace.can_move_tab(1, TabMovement::Left));
+            (
+                workspace.tabs[0].pane_group.id(),
+                workspace.tabs[1].pane_group.id(),
+            )
+        });
+
+        let bridge = app.add_singleton_model(LocalControlBridge::new);
+        bridge
+            .update(&mut app, |_bridge, ctx| {
+                tab_move(
+                    &None,
+                    &serde_json::json!({ "direction": "left" }),
+                    &TargetSelector {
+                        tab: Some(TabTarget::Index { index: 1 }),
+                        ..Default::default()
+                    },
+                    ctx,
+                )
+            })
+            .expect("a legal move must ack success, not refuse");
+
+        workspace.read(&app, |workspace, _| {
+            assert_eq!(
+                workspace
+                    .tabs
+                    .iter()
+                    .map(|tab| tab.pane_group.id())
+                    .collect::<Vec<_>>(),
+                vec![second_id, first_id],
+                "the move must actually have swapped the two tabs, not merely acked"
+            );
+        });
     });
 }

@@ -25,7 +25,7 @@ use crate::{
     },
     features::FeatureFlag,
     network::NetworkStatus,
-    send_telemetry_from_ctx,
+    report_settings_write_error, send_telemetry_from_ctx,
     server::telemetry::{PluginChipTelemetryKind, TelemetryEvent},
     settings::{AISettings, AISettingsChangedEvent},
     settings_view::SettingsSection,
@@ -1366,7 +1366,10 @@ impl AgentInputFooter {
                 // This setting actually indicates whether we've shown the ftu callout at all,
                 // but it originally tracked whether the user manually dismissed the callout and
                 // we don't want to resurface the callout to folks who have already dismissed.
-                let _ = settings.ftu_model_callout_dismissed.set_value(true, ctx);
+                report_settings_write_error!(
+                    settings.ftu_model_callout_dismissed.set_value(true, ctx),
+                    ctx
+                );
             });
         } else if !showing_ftu_model_picker && self.render_ftu_callout {
             self.render_ftu_callout = false;

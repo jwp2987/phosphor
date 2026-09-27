@@ -3347,6 +3347,7 @@ common-do-not-show-again = 今後表示しない
 common-dont-show-again-with-period = 今後表示しません。
 common-refresh = 更新
 common-resource-not-found-or-access-denied = リソースが見つからないか、アクセスが拒否されました
+common-settings-write-failed = 設定の変更を保存できませんでした。次回 Phosphor を起動すると失われる可能性があります。
 workspace-close-session = セッションを閉じる
 workspace-auto-reload = 自動再読み込み
 workspace-add-new-repo = {" "}+ 新しいリポジトリを追加

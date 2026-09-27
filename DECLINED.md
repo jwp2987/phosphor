@@ -1201,3 +1201,29 @@ upstream's behavior is actually a defect rather than a preference.
      view would use — matching this file's existing, stated testing
      philosophy. A live-view harness for the full sequencing remains open
      work; see TODO.md.
+
+- **A failed settings write now shows a toast, not just a log line** (#726,
+  2026-09-27, `app/src/settings_write_failure.rs`). **Upstream's `report_error()`
+  reports to Sentry** — a settings write that fails (e.g. `settings.toml` has
+  become unparseable, or the disk is full) is invisible to the user there too;
+  it only reaches upstream's own telemetry backend. This fork dropped the
+  Sentry sink along with the rest of the cloud backend, so `report_error()`
+  became a documented no-op (`crates/warp_core/src/errors.rs:212-223`) and
+  `report_if_error!`/the ~40 production `let _ = ...set_value(...)` sites that
+  didn't even call it left the user with strictly *less* signal than upstream's
+  telemetry-only behavior: the toggle they clicked flips in memory (or not at
+  all) and silently reverts the next time the app starts, with no record
+  anywhere the user can see. **We do:** a central `notify_settings_write_failed`
+  shows a rate-limited toast (15s floor, app-wide) in the active window on top
+  of the existing log line, and every production settings-write call site was
+  routed through it (`report_settings_write_error!`). The rate limit exists
+  because a settings file that has stopped parsing fails *every* subsequent
+  write for as long as it stays broken — without a floor, one bad file would
+  toast once per keystroke. **The blocker the TODO recorded turned out to be
+  solvable, not real:** `AppContext::windows().active_window()` already exists
+  and is used elsewhere (`app/src/notifications/toast_stack.rs`), so the
+  `AppContext`-only global-action handlers in `workspace/global_actions.rs`
+  that have no `window_id` of their own fall back to the active window instead
+  of needing one. **Not upstream's mechanism to diverge from** — the pin's
+  `report_error()` is a live Sentry client with no local user-facing analogue,
+  so this is a fork-original fix for a fork-original silence, not a port.

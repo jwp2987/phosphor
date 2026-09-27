@@ -14,33 +14,45 @@ use crate::persistence::schema::{self, agent_conversations, agent_tasks};
 /// Maximum size of a single serialized `api::Task` protobuf BLOB this code will **write** to
 /// `agent_tasks.task`.
 ///
-/// This is a write-side cap only, and the previous version of this comment said otherwise —
-/// it claimed tasks over the limit were "skipped on both write and read to prevent startup
-/// OOM when all task records are loaded at once". Neither half held. The constant has exactly
-/// one use, the `continue` in [`upsert_agent_conversation_with_retention`]; both readers
-/// decode every blob they load unconditionally and never consult it. And the read that the
-/// sentence describes no longer exists: since #431, startup goes through
+/// This is a write-side cap only, and an earlier version of this comment said otherwise — it
+/// claimed tasks over the limit were "skipped on both write and read to prevent startup OOM
+/// when all task records are loaded at once". Neither half held: the read that sentence
+/// describes hasn't existed since #431, when startup moved to
 /// [`read_agent_conversation_metadata`], which reads the `summary` column and touches
-/// `agent_tasks` only for rows written before that column existed. So the protection was
-/// claimed for precisely the rows it does not cover — the oversized ones already on disk.
+/// `agent_tasks` only for rows written before that column existed. Both readers that DO
+/// decode `agent_tasks` blobs decode unconditionally and never consult this constant.
 ///
-/// What actually happens when a task exceeds the cap: its blob is not written, and its row is
-/// deliberately *not* deleted either (see `kept_task_ids` below), so the database keeps the
-/// last version of that task that fit. Restore then hydrates a stale copy. If no earlier
-/// version was ever written, the task is simply absent: `AIConversation::new_restored` drops a
-/// task whose parent is missing with a `log::error!`, and a conversation missing its root
-/// fails with `RestoreConversationError::NoRootTask`. The `summary` column is still derived
-/// from the full in-memory snapshot including the skipped task, so such a conversation is
-/// listed in history as restorable and fails when opened.
+/// **What happens when a task's encoded size exceeds the cap, as of the fix below:**
+/// [`prune_oversized_messages`] is tried first, replacing the content of the task's largest
+/// non-query messages (`ToolCallResult` above all — see that function's doc) with a small
+/// placeholder, largest first, until the task fits. This is lossy for the pruned messages'
+/// own content, but **not** for the conversation's restorability: a task's identity and
+/// dependency structure are untouched, so [`AgentConversationSummary::from_tasks`]'s verdict
+/// on it does not change, and the pruned task is written and restores normally. Only when a
+/// task still doesn't fit after pruning everything prunable is it dropped from the write
+/// entirely — its existing row, if any, is left alone rather than deleted (see
+/// `kept_task_ids`), so the database keeps whichever earlier version of that task last fit,
+/// or the task is simply absent if none ever did. **The summary written in that case is
+/// honest about it**: [`upsert_agent_conversation_with_retention`] excludes the dropped task
+/// from the snapshot it derives `serialized_summary` from, and forces `is_restorable: false`
+/// whenever anything was dropped (the structural check alone isn't enough — see its comment)
+/// instead of persisting a `summary` that promised "restorable" for a conversation that fails
+/// to open with `RestoreConversationError::NoRootTask` or a subtask that's silently gone.
+/// There is no UI notification beyond the `log::error!` at the drop site: this runs on the
+/// SQLite writer thread with no `AppContext` to raise one from (`report_db_error` in
+/// `sqlite.rs`, the writer's only other error-reporting path, is log-only for the same
+/// reason) — a real fix needs a channel from that thread to the UI, which is a separate,
+/// larger change than a per-task size guard.
 ///
-/// **Read-side enforcement is deliberately not added here.** A size check before
-/// `api::Task::decode` would skip exactly the blobs written before this constant existed,
-/// turning "a conversation that restores, slowly" into "a conversation that has silently
-/// vanished from history" — `is_restorable` is what startup filters on, and eviction deletes
-/// rows. Making the OOM guarantee real needs a migration first: walk `agent_tasks` once,
-/// report oversized rows, and either re-encode them (pruning tool-output payloads, the only
-/// thing that reaches this size) or drop them with the user told which conversations were
-/// affected. Only after that can a reader refuse an oversized blob without destroying data.
+/// **Read-side enforcement is still deliberately not added here**, and this part of the
+/// analysis is unchanged by the fix above: a size check before `api::Task::decode` would
+/// skip exactly the blobs written before pruning existed, turning "a conversation that
+/// restores, slowly" into "a conversation that has silently vanished from history" —
+/// `is_restorable` is what startup filters on, and eviction deletes rows. Making the OOM
+/// guarantee real for those legacy rows needs a migration: walk `agent_tasks` once, and
+/// either re-encode oversized rows with the same pruning this write path now does, or drop
+/// them with the user told which conversations were affected. Only after that can a reader
+/// refuse an oversized blob without destroying data that pruning could have saved.
 const MAX_TASK_BLOB_BYTES: usize = 10 * 1024 * 1024; // 10 MB
 
 #[derive(Debug, Insertable, AsChangeset)]
@@ -99,6 +111,103 @@ fn stored_summary_names_initial_query(stored_summary: &str) -> bool {
         .is_ok_and(|summary| !summary.initial_query.is_empty())
 }
 
+/// Whether a message's content may be replaced by [`prune_oversized_messages`].
+///
+/// `UserQuery` is the user's own input and must never be silently discarded.
+/// `SystemQuery` is excluded too: its `AutoCodeDiff` variant is what
+/// [`AgentConversationSummary::from_tasks`] checks to set
+/// `is_unlisted_auto_code_diff`, so pruning it would change that classification
+/// as a side effect of a size fix. Everything else -- `ToolCallResult` above
+/// all, per `MAX_TASK_BLOB_BYTES`'s doc comment -- is model/tool output that
+/// the size limit exists to bound in the first place.
+fn message_content_is_prunable(message: &api::Message) -> bool {
+    !matches!(
+        message.message,
+        Some(api::message::Message::UserQuery(_))
+            | Some(api::message::Message::SystemQuery(_))
+            // Already a placeholder from a previous prune pass -- nothing left to shrink.
+            | Some(api::message::Message::DebugOutput(_))
+    )
+}
+
+/// Shrinks `task` to at most `max_bytes` encoded, if possible, by replacing the
+/// content of its largest prunable messages (see [`message_content_is_prunable`])
+/// with a small placeholder, largest first, stopping as soon as the task fits.
+///
+/// Returns the ids of every message whose content was replaced, in the order
+/// they were pruned; empty if `task` already fit or if it fit only because it
+/// had nothing prunable at all (both callable, since the return doesn't
+/// distinguish "already fine" from "nothing could be done" -- the caller
+/// checks `task.encoded_len()` again either way).
+///
+/// Each pruned message keeps its `id`/`task_id`/`request_id`/`timestamp`, so
+/// anything that pairs messages by id (a `ToolCall` with its `ToolCallResult`,
+/// for instance) keeps its anchor; only the message's own content shrinks to a
+/// short marker naming how many bytes were removed and why. This is a superset
+/// of "prune tool-output payloads" (the case `MAX_TASK_BLOB_BYTES`'s doc
+/// comment names as the one that actually reaches this size): it prunes
+/// whichever non-query messages are largest, so it also covers the rarer case
+/// of an oversized model response (`AgentOutput`) without needing this
+/// function to know the specific shape of every tool result variant.
+///
+/// **Why the placeholder is `DebugOutput`, specifically, and not a truncated
+/// copy of the original variant:** truncating in place would need per-variant
+/// knowledge of ~30 `ToolCallResult` result kinds (shell output, file
+/// contents, grep matches, ...), each with a different field to shorten, which
+/// is real scope this function does not take on. Of the generically
+/// constructible alternatives, `DebugOutput` was chosen over reassigning the
+/// slot to `AgentOutput` (which would misattribute fabricated text to the
+/// model) or `ToolCallResult`'s own `Server` result kind (which
+/// `convert_conversation.rs` documents as producing no exchange at all --
+/// same visibility problem as `DebugOutput`, with the added risk of being
+/// mistaken for a real server-issued result). A pruned `ToolCallResult`
+/// leaves its paired `ToolCall` without a result once re-sent to the model,
+/// which is not a new failure mode this introduces: `chat_stream.rs` already
+/// detects and drops orphaned tool calls/responses (`orphan_call_ids`,
+/// `orphan_or_misordered_tool_response`) for the same shape of gap that a
+/// crash or a cancelled operation produces today.
+///
+/// **Known limitation, stated rather than hidden:** `DebugOutput` is
+/// documented (`task.proto`) as staging/local-development-only content, and
+/// `render_collapsible_debug_output`'s call site gates it on
+/// `ChannelState::enable_debug_features()` -- so the placeholder text is
+/// invisible in the restored transcript on an ordinary build. The
+/// conversation still restores and remains usable; what's lost is an
+/// in-transcript indicator that something was pruned, beyond the `log::error!`
+/// at the write site. A visible, generic "content removed" message kind does
+/// not exist in the current protocol; adding one is out of scope here.
+fn prune_oversized_messages(task: &mut api::Task, max_bytes: usize) -> Vec<String> {
+    let mut prunable: Vec<usize> = task
+        .messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| message_content_is_prunable(message))
+        .map(|(i, _)| i)
+        .collect();
+    // Largest first: closing the size gap with the fewest, most size-efficient
+    // prunes keeps as much of the conversation's real content as possible.
+    prunable.sort_by_key(|&i| std::cmp::Reverse(task.messages[i].encoded_len()));
+
+    let mut pruned_ids = Vec::new();
+    for i in prunable {
+        if task.encoded_len() <= max_bytes {
+            break;
+        }
+        let message = &mut task.messages[i];
+        let original_len = message.encoded_len();
+        message.message = Some(api::message::Message::DebugOutput(
+            api::message::DebugOutput {
+                text: format!(
+                    "[Phosphor removed a {original_len}-byte message here: this conversation's \
+                 stored size exceeded the {max_bytes}-byte per-task limit.]"
+                ),
+            },
+        ));
+        pruned_ids.push(message.id.clone());
+    }
+    pruned_ids
+}
+
 pub(crate) fn upsert_agent_conversation_with_retention<'a>(
     conn: &mut SqliteConnection,
     conversation_id_param: &str,
@@ -139,11 +248,84 @@ pub(crate) fn upsert_agent_conversation_with_retention<'a>(
     // we already have would throw away the last copy of that task.
     let kept_task_ids: Vec<String> = tasks.iter().map(|task| task.id.clone()).collect();
 
-    // Derive the task-based summary here (on the writer thread) so every
-    // write path keeps the `summary` column in sync with the task snapshot,
-    // letting startup list conversations without loading `agent_tasks`.
-    let serialized_summary =
-        serde_json::to_string(&AgentConversationSummary::from_tasks(tasks.iter().copied())).ok();
+    // Fit each task under `MAX_TASK_BLOB_BYTES` before it reaches a BLOB write.
+    // An oversized task is pruned first (see `prune_oversized_messages`) rather
+    // than dropped outright, so the conversation stays restorable in the
+    // common case; only a task that still doesn't fit after pruning is
+    // dropped from this write, same as before pruning existed (its existing
+    // row, if any, is left alone -- see `kept_task_ids` above).
+    let mut tasks_to_write: Vec<api::Task> = Vec::with_capacity(tasks.len());
+    let mut dropped_task_ids: HashSet<&str> = HashSet::new();
+    for task in &tasks {
+        let encoded_len = task.encoded_len();
+        if encoded_len <= MAX_TASK_BLOB_BYTES {
+            tasks_to_write.push((*task).clone());
+            continue;
+        }
+        let mut pruned = (*task).clone();
+        let pruned_message_ids = prune_oversized_messages(&mut pruned, MAX_TASK_BLOB_BYTES);
+        let pruned_len = pruned.encoded_len();
+        if !pruned_message_ids.is_empty() && pruned_len <= MAX_TASK_BLOB_BYTES {
+            log::error!(
+                "Task {} in conversation {conversation_id_param} was {encoded_len} bytes \
+                 (limit {MAX_TASK_BLOB_BYTES}); pruned {} oversized message(s) down to \
+                 {pruned_len} bytes and persisted the pruned version so the conversation \
+                 stays restorable. Pruned message ids: {pruned_message_ids:?}.",
+                task.id,
+                pruned_message_ids.len(),
+            );
+            tasks_to_write.push(pruned);
+        } else {
+            // `error`, not `warn`: this drops a turn's worth of the user's conversation on
+            // the floor, and short of this log line there is no other notice today -- this
+            // runs on the SQLite writer thread with no `AppContext` to raise a UI
+            // notification from (the writer's own error path, `report_db_error` in
+            // `sqlite.rs`, is log-only for the identical reason). The row is left alone
+            // rather than deleted, so what survives on disk is whichever earlier version of
+            // this task last fit, or nothing at all if none ever did. Excluding this task's
+            // id from `dropped_task_ids`'s complement below keeps the summary this write
+            // persists honest about it.
+            log::error!(
+                "Task {} in conversation {conversation_id_param} is {encoded_len} bytes \
+                 (limit {MAX_TASK_BLOB_BYTES}) and could not be pruned under the limit; not \
+                 persisting it. Any existing row for this task keeps its previous, older \
+                 contents. This conversation's summary is now marked not-restorable, so it is \
+                 excluded from history instead of being listed there and failing to open.",
+                task.id,
+            );
+            dropped_task_ids.insert(task.id.as_str());
+        }
+    }
+
+    // Derive the task-based summary here (on the writer thread) so every write path keeps
+    // the `summary` column in sync with what actually lands on disk, letting startup list
+    // conversations without loading `agent_tasks`. Built from `tasks` (the original,
+    // unpruned snapshot) minus anything in `dropped_task_ids`, not from `tasks_to_write`:
+    // pruning only ever replaces a message's content, never a task's identity or dependency
+    // structure that `AgentConversationSummary::from_tasks` inspects, so the two agree except
+    // on dropped tasks -- and computing it from the original snapshot means a dropped task
+    // still contributes its real `UserQuery`/`AutoCodeDiff` content to `initial_query`/
+    // `is_unlisted_auto_code_diff` instead of being silently treated as absent everywhere.
+    let mut summary = AgentConversationSummary::from_tasks(
+        tasks
+            .iter()
+            .copied()
+            .filter(|task| !dropped_task_ids.contains(task.id.as_str())),
+    );
+    // `is_restorable` from `from_tasks` is a structural check
+    // (`tasks_are_restorable`: a single well-formed root, or the one documented multi-root
+    // exception) over the tasks it was GIVEN -- it has no way to know a task existed and was
+    // dropped, and its `tasks.len() <= 1` base case means dropping every task down to zero
+    // or one survivor reads as trivially restorable. So this is forced rather than left to
+    // that check whenever anything was dropped: without it, dropping a conversation's sole
+    // task persisted `is_restorable: true` for a conversation with no tasks at all, and
+    // dropping a non-root leaf could coincidentally leave a single-root shape that also read
+    // as restorable while failing to open with `RestoreConversationError::NoRootTask` or
+    // quietly missing a subtask the user actually had.
+    if !dropped_task_ids.is_empty() {
+        summary.is_restorable = false;
+    }
+    let serialized_summary = serde_json::to_string(&summary).ok();
 
     conn.transaction::<_, Error, _>(|conn| {
         let summary_to_write = if may_keep_stored_summary {
@@ -175,29 +357,10 @@ pub(crate) fn upsert_agent_conversation_with_retention<'a>(
             .set(&new_conversation)
             .execute(conn)?;
 
-        // Upsert each task
-        for task in &tasks {
-            // Check encoded size before allocating the full BLOB to avoid a
-            // large heap allocation that is immediately discarded.
-            let encoded_len = task.encoded_len();
-            if encoded_len > MAX_TASK_BLOB_BYTES {
-                // `error`, not `warn`: this drops a turn's worth of the user's conversation
-                // on the floor, and it is the only notice anyone gets. The row is left
-                // alone rather than deleted, so what survives on disk is whichever earlier
-                // version of this task last fit — or nothing at all, if none ever did, in
-                // which case restoring this conversation will fail with `NoRootTask` (or
-                // quietly lose the subtask) even though its `summary` still advertises it as
-                // restorable. See `MAX_TASK_BLOB_BYTES`.
-                log::error!(
-                    "Task {} encoded size is {} bytes (write limit {}); not persisting it. \
-                     Any existing row for this task keeps its previous, older contents, and \
-                     this conversation may not restore.",
-                    task.id,
-                    encoded_len,
-                    MAX_TASK_BLOB_BYTES,
-                );
-                continue;
-            }
+        // Upsert each task that fit under `MAX_TASK_BLOB_BYTES`, as-is or pruned -- sizing,
+        // pruning and the dropped-task logging all already happened above, before the
+        // transaction opened.
+        for task in &tasks_to_write {
             let task_binary = task.encode_to_vec();
             let new_task = NewAgentTask {
                 conversation_id: conversation_id_param.to_owned(),

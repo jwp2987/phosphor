@@ -68,8 +68,8 @@ pub use sqlite::establish_ro_connection;
 /// this data was on the server, so nothing local read it.
 #[cfg(any(feature = "local_fs", feature = "integration_tests"))]
 pub use sqlite::{
-    codebase_index_children, codebase_index_node_summaries, codebase_index_vectors,
-    known_codebase_index_hashes,
+    codebase_index_children, codebase_index_has_embeddings, codebase_index_node_summaries,
+    codebase_index_vectors, known_codebase_index_hashes,
 };
 /// Direct write paths for the codebase embedding index, plus the standalone
 /// connection that owns them. Used only by the remote-server daemon, which has

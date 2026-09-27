@@ -28,8 +28,9 @@ use crate::{
 };
 
 use super::{
-    decode_path, deduplicate_events, encode_path, get_all_codebase_index_metadata,
-    read_sqlite_data, save_app_state, save_codebase_index_metadata, setup_database, start_writer,
+    codebase_index_has_embeddings, decode_path, deduplicate_events, encode_path,
+    get_all_codebase_index_metadata, read_sqlite_data, save_app_state,
+    save_codebase_index_embeddings, save_codebase_index_metadata, setup_database, start_writer,
 };
 
 #[test]
@@ -288,6 +289,43 @@ fn sqlite_writer_reuses_codebase_index_metadata_events() {
     let mut conn = setup_database(&database_path).expect("database should reopen");
     let restored = get_all_codebase_index_metadata(&mut conn).expect("metadata should load");
     assert!(restored.is_empty());
+}
+
+/// Backs `EmbeddingEndpoints::preferred_model_favoring_existing`
+/// (`ai/agent_providers/embeddings.rs`): whether a model has ever been
+/// embedded against is answered per `embedding_space`
+/// (`EmbeddingConfig::storage_key()`), not globally, and only by rows in
+/// `codebase_index_embeddings` -- a `codebase_index_nodes` row alone (recorded
+/// for an unembedded merkle subtree) must not count as "has an index".
+#[test]
+fn codebase_index_has_embeddings_is_scoped_to_its_own_space() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+
+    assert!(
+        !codebase_index_has_embeddings(&mut conn, "voyage:voyage-4:512")
+            .expect("query should succeed"),
+        "an empty database must report no existing index for any space"
+    );
+
+    save_codebase_index_embeddings(
+        &mut conn,
+        "voyage:voyage-4:512".to_string(),
+        vec![("content-hash-1".to_string(), 512, vec![0u8; 4])],
+    )
+    .expect("saving an embedding should succeed");
+
+    assert!(
+        codebase_index_has_embeddings(&mut conn, "voyage:voyage-4:512")
+            .expect("query should succeed"),
+        "a space with a saved embedding must report an existing index"
+    );
+    assert!(
+        !codebase_index_has_embeddings(&mut conn, "openai:text-embedding-3-small:256")
+            .expect("query should succeed"),
+        "a different space must not see another space's rows"
+    );
 }
 
 #[test]

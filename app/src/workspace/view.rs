@@ -248,6 +248,7 @@ use crate::prompt::editor_modal::{
     OpenSource as PromptEditorOpenSource,
 };
 use crate::report_if_error;
+use crate::report_settings_write_error;
 use crate::resource_center::{
     ResourceCenterEvent, ResourceCenterPage, ResourceCenterView, Tip, TipAction, TipsCompleted,
     mark_feature_used_and_write_to_user_defaults, skip_tips_and_write_to_user_defaults,
@@ -2293,7 +2294,7 @@ impl Workspace {
 
         // Enable vertical tabs and open the panel so Step 2 has something to anchor to.
         TabSettings::handle(ctx).update(ctx, |settings, ctx| {
-            let _ = settings.use_vertical_tabs.set_value(true, ctx);
+            report_settings_write_error!(settings.use_vertical_tabs.set_value(true, ctx), ctx);
         });
         self.vertical_tabs_panel_open = true;
         self.sync_window_button_visibility(ctx);
@@ -13558,7 +13559,13 @@ impl Workspace {
     /// the entry rather than offer one that does nothing -- the same shape as
     /// `can_move_tab_group`, which was ported with its call sites and whose
     /// pinned rule this now literally shares ([`Self::pinned_step_allowed`]).
-    pub(super) fn can_move_tab(&self, index: usize, direction: TabMovement) -> bool {
+    ///
+    /// `pub(crate)`, not `pub(super)`: `local_control/handlers/app_state.rs`'s
+    /// `tab.move` handler needs to check this before it dispatches
+    /// `MoveTabLeft`/`MoveTabRight` and acks, so a scripted caller can tell a
+    /// performed move from a refused one instead of getting an unconditional
+    /// ack for both.
+    pub(crate) fn can_move_tab(&self, index: usize, direction: TabMovement) -> bool {
         let Some(tab) = self.tabs.get(index) else {
             return false;
         };
@@ -22298,7 +22305,10 @@ impl TypedActionView for Workspace {
             SetVerticalTabsTabItemMode(mode) => {
                 let mode = *mode;
                 TabSettings::handle(ctx).update(ctx, |settings, ctx| {
-                    let _ = settings.vertical_tabs_tab_item_mode.set_value(mode, ctx);
+                    report_settings_write_error!(
+                        settings.vertical_tabs_tab_item_mode.set_value(mode, ctx),
+                        ctx
+                    );
                 });
                 send_telemetry_from_ctx!(
                     VerticalTabsTelemetryEvent::DisplayOptionChanged(
@@ -22311,7 +22321,10 @@ impl TypedActionView for Workspace {
             SetVerticalTabsViewMode(mode) => {
                 let mode = *mode;
                 TabSettings::handle(ctx).update(ctx, |settings, ctx| {
-                    let _ = settings.vertical_tabs_view_mode.set_value(mode, ctx);
+                    report_settings_write_error!(
+                        settings.vertical_tabs_view_mode.set_value(mode, ctx),
+                        ctx
+                    );
                 });
                 send_telemetry_from_ctx!(
                     VerticalTabsTelemetryEvent::DisplayOptionChanged(

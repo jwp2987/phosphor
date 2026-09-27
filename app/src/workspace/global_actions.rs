@@ -4,7 +4,7 @@ use crate::persistence::ModelEvent;
 // `workspace:debug_create_anonymous_user` debug action were physically
 // removed together with the auth subsystem.
 use crate::app_state::get_app_state;
-use crate::report_if_error;
+use crate::report_settings_write_error;
 use crate::terminal::alt_screen_reporting::AltScreenReporting;
 use crate::terminal::general_settings::GeneralSettings;
 use crate::workspace::cross_window_tab_drag::CrossWindowTabDrag;
@@ -140,32 +140,38 @@ fn toggle_mouse_reporting(_: &(), ctx: &mut AppContext) {
         // Not an `expect`: a `settings.toml` that does not parse inhibits writes,
         // so this returns `Err` on an ordinary keybinding or command-palette
         // invocation. Panicking there would crash the app in exactly the state
-        // write inhibition exists to survive.
-        report_if_error!(reporting.mouse_reporting_enabled.toggle_and_save_value(ctx));
+        // write inhibition exists to survive. `report_settings_write_error!`
+        // both logs and toasts, so the user learns the toggle did not stick
+        // instead of finding out only when it reverts at the next launch --
+        // this handler has no `ViewContext`/`window_id` of its own, which is
+        // exactly the case `report_settings_write_error!` falls back to the
+        // active window for.
+        report_settings_write_error!(
+            reporting.mouse_reporting_enabled.toggle_and_save_value(ctx),
+            ctx
+        );
     });
 }
 
 fn toggle_scroll_reporting(_: &(), ctx: &mut AppContext) {
     AltScreenReporting::handle(ctx).update(ctx, |reporting, ctx| {
-        // Not an `expect`: a `settings.toml` that does not parse inhibits writes,
-        // so this returns `Err` on an ordinary keybinding or command-palette
-        // invocation. Panicking there would crash the app in exactly the state
-        // write inhibition exists to survive.
-        report_if_error!(
-            reporting
-                .scroll_reporting_enabled
-                .toggle_and_save_value(ctx)
+        // See `toggle_mouse_reporting` above for why this is
+        // `report_settings_write_error!` rather than an `expect`.
+        report_settings_write_error!(
+            reporting.scroll_reporting_enabled.toggle_and_save_value(ctx),
+            ctx
         );
     });
 }
 
 fn toggle_focus_reporting(_: &(), ctx: &mut AppContext) {
     AltScreenReporting::handle(ctx).update(ctx, |reporting, ctx| {
-        // Not an `expect`: a `settings.toml` that does not parse inhibits writes,
-        // so this returns `Err` on an ordinary keybinding or command-palette
-        // invocation. Panicking there would crash the app in exactly the state
-        // write inhibition exists to survive.
-        report_if_error!(reporting.focus_reporting_enabled.toggle_and_save_value(ctx));
+        // See `toggle_mouse_reporting` above for why this is
+        // `report_settings_write_error!` rather than an `expect`.
+        report_settings_write_error!(
+            reporting.focus_reporting_enabled.toggle_and_save_value(ctx),
+            ctx
+        );
     });
 }
 

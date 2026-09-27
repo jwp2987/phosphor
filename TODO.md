@@ -2591,12 +2591,20 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
 - [ ] `c6609ef2` — inner `Arc` + new `gitignore_cache` module + `parking_lot` dep.
       **Strictly ordered after `6e192572`**; taken out of order the type changes fight
       each other. Final shape at the pin is `Arc<Vec<Arc<Gitignore>>>`.
-- [ ] `be11be65d` — **Profiles half only.** Fixes a bogus "(1)" settings-search count.
+- [x] `be11be65d` — **Profiles half only.** Fixes a bogus "(1)" settings-search count.
       Higher value here than upstream: the fork's gate is
       `!is_byo_api_key_enabled()`, so the single-widget branch is the DEFAULT path in
       a BYOP fork, not an edge case. Reshape onto `ai_page.rs` and **keep the fork's
       gate** — a byte-faithful port reintroduces `UsageBasedPricing`. The Code
       Indexing half does not apply (fork's `code_page.rs` builds 11 discrete widgets).
+      **Fixed 2026-09-27 (#732):** `build_page`'s `Some(AISubpage::Profiles)` arm now
+      returns `PageType::new_monolith(AgentsWidget::default(), None, true)` early when
+      `!should_show_usage_widget`, instead of falling into the shared
+      `new_uncategorized` wrap every other subpage uses. Tests drive
+      `PageType::update_filter` directly on both page shapes (no live
+      `AISettingsPageView` needed) and assert on `MatchData`'s rendered text: `" (1)"`
+      for the old `Uncategorized`-wrapping-one-widget shape, `""` for the new
+      `Monolith`.
 - [x] `3a7a4a5b3` — suppress empty category headers. Cheap hardening; the fork already
       filters empty index lists, so **do not sell this as a live bug** — no
       configuration was found where it is user-visible today.
@@ -10156,7 +10164,7 @@ Ordered by severity, not by area.
       `browser.rs`'s stale `warposs` (never a real channel scheme; `Channel::Oss` has
       always mapped to `phosphor`) to `phosphor`.
 
-- [ ] **Failed settings writes are invisible to the user.**
+- [x] **Failed settings writes are invisible to the user.**
       `report_if_error!` is log-only since the Sentry sink was removed
       (`crates/warp_core/src/errors.rs:212-223` — `report_error` is a documented no-op),
       so a toggle clicked while `settings.toml` is unparseable flips **in-memory**, never
@@ -10168,13 +10176,27 @@ Ordered by severity, not by area.
       pattern at `app/src/root_view.rs:889-895`) plus a new `t!` string. **Blocked on**
       the `AppContext`-only global-action handlers (`workspace/global_actions.rs:137-172`)
       having no `window_id`. Deliberately not built blind during a no-build round.
+      **Fixed 2026-09-27 (#726):** the blocker wasn't real —
+      `AppContext::windows().active_window()` already exists (used elsewhere in
+      `app/src/notifications/toast_stack.rs`), so `workspace/global_actions.rs`'s three
+      `AppContext`-only handlers fall back to the active window instead of needing their
+      own `window_id`. New `app/src/settings_write_failure.rs` adds a rate-limited
+      (15s floor) toast on top of the existing log line; see the `DECLINED.md` IMPROVED
+      entry for why this isn't a pin port. `workspace:toggle_{mouse,scroll,focus}_reporting`
+      now route through it instead of the log-only `report_if_error!`.
 
-- [ ] **~40 production `let _ = …set_value(…)` sites discard the error entirely.**
+- [x] **~40 production `let _ = …set_value(…)` sites discard the error entirely.**
       `settings_view/ai_page.rs` (~20), `appearance_page.rs`, `app_menus.rs:730`,
       `agent_input_footer/mod.rs:1369`. This is the *pre-`e0c3dfe2f`* behaviour — silent
       no-op with no log line at all — so they are not crashes and were left out of the
       `.expect` sweep. `settings_view/features/external_editor.rs:245-250` is already
       correct (`report_if_error!` + `unwrap_or`) and is the pattern to copy.
+      **Fixed 2026-09-27 (#726):** all 26 production sites in `ai_page.rs` and the ~15
+      more in `appearance_page.rs` (7), `app_menus.rs`, `agent_input_footer/mod.rs`,
+      `settings/privacy.rs` (2), `workspace/hoa_onboarding/hoa_onboarding_flow.rs`, and
+      `workspace/view.rs` (3) now route through `report_settings_write_error!`. The two
+      occurrences in `ai/codebase_embeddings.rs` were left alone — they're inside a
+      `#[cfg(test)]` module, not production code.
 
 - [x] **`ai/blocklist/block.rs:274` maps `is_supported_image_file` straight to**
       **`FileTarget::SystemGeneric`, including `.svg`.** `.svg` is a scripting document
@@ -10306,7 +10328,7 @@ claim, which was wrong by four.
       `code-diff-save-conflict` with a `$file` variable.
       **Closed 2026-09-26:** fixed in `461af5a39` (regression test in `inline_action/code_diff_view_tests.rs`).
 
-- [ ] **`tab.move` over local control acks moves it did not perform.**
+- [x] **`tab.move` over local control acks moves it did not perform.**
       `local_control/handlers/app_state.rs:453-474` dispatches `MoveTabLeft/Right` and
       `ack(...)`s unconditionally, so a scripted caller cannot tell a performed move from a
       refused one — and the 2026-08-21 `can_move_tab` port substantially **enlarged** the
@@ -10314,6 +10336,11 @@ claim, which was wrong by four.
       and return `TargetStateConflict` (already used three times in that file).
       **Blocker:** `Workspace::can_move_tab` is `pub(super)`; it needs widening to
       `pub(crate)` or a thin `pub(crate)` wrapper. `TabMovement` is already reachable.
+      **Fixed 2026-09-27 (#739):** widened `can_move_tab` to `pub(crate)` and `tab_move`
+      now checks it before dispatching, returning `TargetStateConflict` on refusal.
+      Tests in `app_state_tests.rs` cover both directions: a pinned-boundary refusal acks
+      an error and leaves tab order untouched, and a legal move still acks success and
+      actually reorders the tabs.
 
 - [x] 🔴 **Redirection glued to or preceding the command name defeats the Agent Mode denylist.**
       `simple/parser.rs:146-149` consumes `<`/`>` *inside* `parse_part`, so `rm>/dev/null -rf ~`
@@ -10364,7 +10391,7 @@ claim, which was wrong by four.
       No zero-command spelling was found that also executes anything, so this is a latent hazard
       rather than a bypass — recorded so it is not rediscovered as one.
 
-- [ ] **The codebase-index embedding model switches on provider-list ORDER, spending the**
+- [x] **The codebase-index embedding model switches on provider-list ORDER, spending the**
       **user's quota.** `resolve_configured_embedding_model` returns the first entry of
       `SUPPORTED_EMBEDDING_MODELS` that resolves, so merely *adding* a provider can re-key an
       index that was working: `storage_key()` changes (`full_source_code_embedding/mod.rs:208-216`),
@@ -10377,6 +10404,25 @@ claim, which was wrong by four.
       cost. **A log line is not consent** — the honest fix is to stop making the choice on the
       user's behalf, not to add a prompt. Related: the index-consent-banner row in `DECLINED.md`.
       i18n keys drafted but not added: `settings-code-embedding-model-switched{,-desc}`.
+      **Fixed 2026-09-27 (#749):** new `EmbeddingEndpoints::preferred_model_favoring_existing`
+      takes an injectable `has_existing_rows` predicate (kept pure/unit-testable, no database
+      dependency in `embeddings.rs` itself); the real predicate is new
+      `SqliteVectorStore::has_embeddings_for` / `codebase_index_has_embeddings`, which checks
+      `codebase_index_embeddings` specifically (not the merkle-node table, which can have rows
+      for an unembedded subtree). Wired into both places that actually spend money on a
+      mismatch: `RefreshingStoreClient::reconfigure` (local index) and `remote_client_preferences`
+      (remote-daemon config, i.e. the client-side counterpart of
+      `remote_server/codebase_index_store.rs`) — the daemon can no longer land on a different
+      model than the local vector store purely from provider-list order. Plain `preferred_model`
+      (list order) is kept as the fallback for a fresh/never-synced index (nothing to prefer
+      yet) and for the one call site not threaded through a store handle: `code_page.rs`'s
+      settings-page display widget, which is read-only and not where the cost decision is made.
+      The i18n keys drafted for a consent-style notice were **not** added — a log line still
+      isn't consent, and eliminating the source of the silent switch is preferred over a prompt,
+      per this entry's own reasoning; the existing `log::warn!` is kept and its comment updated:
+      it now fires on a switch the user actually caused (removing the provider that served the
+      previous model, or persistence briefly unavailable) rather than silently as a side effect
+      of unrelated provider-list edits.
 
 - [ ] **`DaemonStoreClient` has the same two-cache desync the app path just fixed.**
       `remote_server/codebase_index_store.rs:354-386` holds one model in a `Mutex` while its own
@@ -11267,7 +11313,7 @@ claim, which was wrong by four.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `persistence/agent.rs:46` is `100`; BOTH pins are `200` (`42effe840:...:45`, `02b53fcd8:...:45`) with the dropped "10–40 orchestration sessions of headroom" sentence. Verifier ran `git log -S`: `100` entered at `9840d7d52` and `200` never existed here. Eviction is a real `diesel::delete`, and all eight tests pass literal limits — never the constant.
       **FIXED 2026-08-21:** restored to `200` with the justifying sentence. No deliberate reason for `100` was found — sole usages are in-file, no test pins it, and `git log -S` confirms it entered at `9840d7d52`.
 
-- [ ] **`MAX_TASK_BLOB_BYTES`' doc asserts a guard that does not exist, and the
+- [x] **`MAX_TASK_BLOB_BYTES`' doc asserts a guard that does not exist, and the
       write-side skip corrupts conversations.** `agent.rs:13-16` says tasks over 10 MB
       are "skipped on both write and read"; the constant appears only at `:91` (write).
       Both read paths decode unconditionally, so the stated startup-OOM protection is
@@ -11277,7 +11323,37 @@ claim, which was wrong by four.
       (possibly root) task and silently promotes a child to root.
       **VERDICT PARTIAL — consequence wrong (independent verifier, 2026-08-21):** Doc mismatch confirmed (`agent.rs:13-16` claims read-side skipping; both read paths decode unconditionally at `:275`, `:383`), and the constant is fork-invented — absent from the pin. **But the claimed corruption is wrong:** a skipped root leaves no parentless task, so restore returns `RestoreConversationError::NoRootTask` (`conversation.rs:536-543`) and orphans are dropped with `log::error` (`:523-528`). No child is promoted to root.
 
-      **DOC FIXED 2026-08-21; READ-SIDE GUARD DECLINED, with the migration proposed.** Confirmed, plus a third thing wrong with the old sentence: the read it describes — "when all task records are loaded at once" — **has not existed since #431**, when startup moved to `read_agent_conversation_metadata`, which reads the `summary` column and touches `agent_tasks` only for pre-column rows. **So the protection was claimed for precisely the rows it does not cover.** What actually happens over the limit is neither truncation nor a failed write but a **silent skip that leaves the stale row** — `kept_task_ids` deliberately retains the id so the row is not deleted, so the DB keeps the last version that fit and restore hydrates a stale copy; if no version ever fit the task is absent, and a missing root gives `NoRootTask`. **Meanwhile `summary` is still derived from the full in-memory snapshot including the skipped task, so `is_restorable: true` is persisted — the conversation is listed in history and fails when opened.** Read enforcement **withheld deliberately**: a size check before `decode` would skip exactly the blobs written before this constant existed, and since `is_restorable` is what startup filters on and eviction deletes rows, it would turn "restores slowly" into "silently vanished from history". Migration shape recorded in the doc. **Also considered and rejected:** deriving `summary` from only the tasks on disk — it would make `is_restorable` honest but trade a *visible* restore failure for silent disappearance plus eviction eligibility. The skip log is promoted `warn` → `error` and reworded, since it is the only notice anyone gets that a turn was dropped.
+      **DOC FIXED 2026-08-21; READ-SIDE GUARD DECLINED, with the migration proposed.** Confirmed, plus a third thing wrong with the old sentence: the read it describes — "when all task records are loaded at once" — **has not existed since #431**, when startup moved to `read_agent_conversation_metadata`, which reads the `summary` column and touches `agent_tasks` only for pre-column rows. **So the protection was claimed for precisely the rows it does not cover.** What actually happens over the limit is neither truncation nor a failed write but a **silent skip that leaves the stale row** — `kept_task_ids` deliberately retains the id so the row is not deleted, so the DB keeps the last version that fit and restore hydrates a stale copy; if no version ever fit the task is absent, and a missing root gives `NoRootTask`. **Meanwhile `summary` is still derived from the full in-memory snapshot including the skipped task, so `is_restorable: true` is persisted — the conversation is listed in history and fails when opened.** Read enforcement **withheld deliberately**: a size check before `decode` would skip exactly the blobs written before this constant existed, and since `is_restorable` is what startup filters on and eviction deletes rows, it would turn "restores slowly" into "silently vanished from history". Migration shape recorded in the doc. **Also considered and rejected (at the time):** deriving `summary` from only the tasks on disk — it would make `is_restorable` honest but trade a *visible* restore failure for silent disappearance plus eviction eligibility. The skip log is promoted `warn` → `error` and reworded, since it is the only notice anyone gets that a turn was dropped.
+
+      **WRITE-SIDE FIXED 2026-09-27 (#742), superseding the "considered and rejected" note
+      above.** That note weighed visible failure against silent disappearance and picked
+      visible failure; this round re-weighs it the other way, prioritizing not persisting a
+      promise (`is_restorable: true`) that predictably fails, and — new since 2026-08-21 —
+      adds a real alternative to the binary "corrupt or drop" choice: **prune before
+      dropping.** New `prune_oversized_messages` (`agent.rs`) replaces the content of a task's
+      largest non-`UserQuery`/non-`SystemQuery` messages (`ToolCallResult` above all, largest
+      first) with a small placeholder until the task fits, leaving its identity and dependency
+      structure — and therefore its restorability — untouched. Only a task that still doesn't
+      fit after pruning everything prunable is dropped, same as before. When that happens, the
+      summary this write persists now excludes the dropped task from the snapshot it's derived
+      from, **and explicitly forces `is_restorable: false`** rather than trusting
+      `AgentConversationSummary::from_tasks`'s structural check alone — that check's
+      `tasks.len() <= 1` base case reads a conversation pruned down to zero or one surviving
+      task as trivially restorable, which is exactly the gap a naive "exclude and recompute"
+      fix would have missed. Eviction (`select_conversations_to_evict`) does not consult
+      `is_restorable` and is unaffected either way. Read-side enforcement for legacy rows
+      remains declined, unchanged from 2026-08-21 — this only affects new writes. **Known,
+      stated limitation:** no UI notification beyond the (unchanged) `log::error!` at the
+      drop site — the SQLite writer thread has no `AppContext` to raise one from, and building
+      that channel is a separate, larger change (see the doc comment on `MAX_TASK_BLOB_BYTES`
+      for the full reasoning, including why `DebugOutput` was chosen as the pruning
+      placeholder over the alternatives considered and rejected). Tests cover the pure pruning
+      logic (leaves an already-small task alone, never touches a `UserQuery` even when it's
+      the largest message, prunes largest-first and stops as soon as the budget is met, and
+      correctly reports failure by still exceeding the budget when nothing is prunable) and
+      the two end-to-end outcomes through `upsert_agent_conversation` (a task pruned under the
+      limit is persisted and the conversation stays `is_restorable: true`; a task that can't be
+      pruned at all is dropped and the conversation is marked `is_restorable: false`).
 
 - [x] **The macOS legacy-DB migration looks in a directory that can never exist, then
       records success forever.** `persistence/sqlite.rs:610` builds the legacy App Group
