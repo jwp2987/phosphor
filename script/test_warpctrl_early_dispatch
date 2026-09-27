@@ -33,9 +33,11 @@
 #     warp_control_cli`.  This fork has no `warp_control_cli` CARGO feature --
 #     local control is gated at RUNTIME by `FeatureFlag::WarpControlCli`, and
 #     the CLI dispatch path itself is unconditional -- and it has no `warp`
-#     bin: `app/Cargo.toml` declares exactly two bins, `zap-oss` (default-run)
-#     and `generate_settings_schema`.  Keeping the pin's cargo-feature guard is
-#     the mistake that already made the bundle script never write the wrapper.
+#     bin: `app/Cargo.toml` declares exactly one bin, `zap-oss` (default-run).
+#     (Settings-schema generation used to be a second `generate_settings_schema`
+#     bin; it is now the `dump-settings-schema` subcommand of this same bin.)
+#     Keeping the pin's cargo-feature guard is the mistake that already made
+#     the bundle script never write the wrapper.
 #   * The pin BUILDS.  This test does not: it locates an already-built binary
 #     and SKIPS with a diagnostic when there is none (see "SKIP BEHAVIOUR").
 #     A build here would take tens of minutes and cannot run in the cheap-gate

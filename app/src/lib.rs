@@ -784,6 +784,16 @@ pub fn run() -> Result<()> {
             warp_cli::Command::DumpDebugInfo => {
                 return debug_dump::run();
             }
+            #[cfg(not(target_family = "wasm"))]
+            warp_cli::Command::DumpSettingsSchema {
+                channel,
+                output_path,
+            } => {
+                return settings::schema_generation::dump_settings_schema(
+                    channel.as_deref(),
+                    output_path.as_deref(),
+                );
+            }
         }
     }
 
@@ -3466,8 +3476,6 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::RestorePromptOnInlineModelSelectorSearch,
         #[cfg(feature = "directory_tab_colors")]
         FeatureFlag::DirectoryTabColors,
-        #[cfg(feature = "open_warp_new_settings_modes")]
-        FeatureFlag::ZapNewSettingsModes,
         #[cfg(feature = "hoa_code_review")]
         FeatureFlag::HoaCodeReview,
         #[cfg(feature = "vertical_tabs")]

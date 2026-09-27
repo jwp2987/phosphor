@@ -3,11 +3,9 @@ use crate::localization::localized;
 use crate::model::{OnboardingStateEvent, OnboardingStateModel};
 use crate::slides::{bottom_nav, layout, slide_content};
 use crate::telemetry::OnboardingEvent;
-use crate::visuals::theme_picker_visual;
 use crate::OnboardingIntention;
 use pathfinder_color::ColorU;
 use ui_components::{button, Component as _, Options as _};
-use warp_core::features::FeatureFlag;
 use warp_core::send_telemetry_from_ctx;
 use warp_core::ui::{appearance::Appearance, theme::color::internal_colors, theme::WarpTheme};
 use warpui::{
@@ -139,11 +137,11 @@ impl ThemePickerSlide {
             theme_options
         };
 
-        let mut content = vec![self.render_header_text(appearance), theme_options_section];
-
-        if FeatureFlag::ZapNewSettingsModes.is_enabled() {
-            content.push(self.render_sync_with_os_section(appearance));
-        }
+        let mut content = vec![
+            self.render_header_text(appearance),
+            theme_options_section,
+            self.render_sync_with_os_section(appearance),
+        ];
 
         // Add the local privacy note below the theme options when the user has
         // selected the terminal intention and won't hit the login slide
@@ -151,8 +149,7 @@ impl ThemePickerSlide {
         let state = self.onboarding_state.as_ref(app);
         let is_terminal = matches!(state.intention(), OnboardingIntention::Terminal);
         let warp_drive_enabled = state.ui_customization().show_warp_drive;
-        if is_terminal && !warp_drive_enabled && FeatureFlag::ZapNewSettingsModes.is_enabled()
-        {
+        if is_terminal && !warp_drive_enabled {
             content.push(self.render_disclaimer_section(appearance));
         }
 
@@ -248,12 +245,7 @@ impl ThemePickerSlide {
             },
         );
 
-        let theme_picker_last = FeatureFlag::ZapNewSettingsModes.is_enabled();
-        let next_label = if theme_picker_last {
-            localized("common-get-warping", "Get Started")
-        } else {
-            localized("common-next", "Next")
-        };
+        let next_label = localized("common-get-warping", "Get Started");
 
         let enter = Keystroke::parse("enter").unwrap_or_default();
         let next_button = self.next_button.render(
@@ -271,19 +263,11 @@ impl ThemePickerSlide {
             },
         );
 
-        let (step_index, step_count) = if theme_picker_last {
-            let is_terminal = matches!(
-                self.onboarding_state.as_ref(app).intention(),
-                OnboardingIntention::Terminal
-            );
-            if is_terminal {
-                (3, 4)
-            } else {
-                (4, 5)
-            }
-        } else {
-            (0, 4)
-        };
+        let is_terminal = matches!(
+            self.onboarding_state.as_ref(app).intention(),
+            OnboardingIntention::Terminal
+        );
+        let (step_index, step_count) = if is_terminal { (3, 4) } else { (4, 5) };
 
         bottom_nav::onboarding_bottom_nav(
             appearance,
@@ -458,17 +442,9 @@ impl ThemePickerSlide {
             .unwrap_or(&Self::VISUAL_IMAGE_PATHS[0])
     }
 
-    fn render_theme_picker_visual(
-        &self,
-        appearance: &Appearance,
-        app: &AppContext,
-    ) -> Box<dyn Element> {
-        if FeatureFlag::ZapNewSettingsModes.is_enabled() {
-            let path = self.theme_visual_path(app);
-            layout::onboarding_right_panel_with_bg(path, layout::FOREGROUND_LAYOUT_DEFAULT)
-        } else {
-            theme_picker_visual(appearance)
-        }
+    fn render_theme_picker_visual(&self, app: &AppContext) -> Box<dyn Element> {
+        let path = self.theme_visual_path(app);
+        layout::onboarding_right_panel_with_bg(path, layout::FOREGROUND_LAYOUT_DEFAULT)
     }
 }
 
@@ -487,7 +463,7 @@ impl View for ThemePickerSlide {
         // Background is rendered by the parent onboarding view (including background images).
         layout::static_left(
             || self.render_theme_picker_content(appearance, app),
-            || self.render_theme_picker_visual(appearance, app),
+            || self.render_theme_picker_visual(app),
         )
     }
 }
@@ -585,11 +561,7 @@ impl ThemePickerSlide {
 
     fn next(&mut self, ctx: &mut ViewContext<Self>) {
         self.onboarding_state.update(ctx, |model, ctx| {
-            if FeatureFlag::ZapNewSettingsModes.is_enabled() {
-                model.complete(ctx);
-            } else {
-                model.next(ctx);
-            }
+            model.complete(ctx);
         });
     }
 }

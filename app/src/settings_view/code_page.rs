@@ -329,39 +329,30 @@ impl CodeSettingsPageView {
     fn build_page(
         ctx: &mut ViewContext<Self>,
     ) -> (PageType<Self>, Option<ViewHandle<ExternalEditorView>>) {
-        let (widgets, external_editor_view) = if FeatureFlag::ZapNewSettingsModes.is_enabled()
-        {
-            let editor_view = ctx.add_typed_action_view(ExternalEditorView::new);
-            #[cfg_attr(target_family = "wasm", allow(unused_mut))]
-            let mut widgets: Vec<Box<dyn SettingsWidget<View = Self>>> = vec![
-                Box::new(ExternalEditorCodeWidget),
-                Box::new(AutoOpenCodeReviewPaneCodeWidget::default()),
-                Box::new(CodeReviewPanelToggleWidget::default()),
-                Box::new(CodeReviewDiffStatsToggleWidget::default()),
-                Box::new(ProjectExplorerToggleWidget::default()),
-                Box::new(GlobalSearchToggleWidget::default()),
-                Box::new(ShowHiddenFilesToggleWidget::default()),
-                Box::new(FormatOnSaveToggleWidget::default()),
-                Box::new(CodeEditorLineNumberModeWidget),
-                Box::new(LanguageServersWidget),
-                Box::new(CodebaseContextToggleWidget::default()),
-                Box::new(AutoIndexingToggleWidget::default()),
-                Box::new(CodebaseEmbeddingModelWidget),
-            ];
-            // Last, below the local indexing controls, mirroring the pin's order: the pin's
-            // Initialized-Folders section walks local workspaces first and remote entries after.
-            #[cfg(not(target_family = "wasm"))]
-            widgets.push(Box::new(RemoteIndexedFoldersWidget));
-            (widgets, Some(editor_view))
-        } else {
-            // Legacy view: in the old settings mode, the Code page renders nothing (the
-            // original CodePageWidget only rendered an LSP-era header with no real content, so
-            // this just returns an empty page).
-            (vec![], None)
-        };
+        let editor_view = ctx.add_typed_action_view(ExternalEditorView::new);
+        #[cfg_attr(target_family = "wasm", allow(unused_mut))]
+        let mut widgets: Vec<Box<dyn SettingsWidget<View = Self>>> = vec![
+            Box::new(ExternalEditorCodeWidget),
+            Box::new(AutoOpenCodeReviewPaneCodeWidget::default()),
+            Box::new(CodeReviewPanelToggleWidget::default()),
+            Box::new(CodeReviewDiffStatsToggleWidget::default()),
+            Box::new(ProjectExplorerToggleWidget::default()),
+            Box::new(GlobalSearchToggleWidget::default()),
+            Box::new(ShowHiddenFilesToggleWidget::default()),
+            Box::new(FormatOnSaveToggleWidget::default()),
+            Box::new(CodeEditorLineNumberModeWidget),
+            Box::new(LanguageServersWidget),
+            Box::new(CodebaseContextToggleWidget::default()),
+            Box::new(AutoIndexingToggleWidget::default()),
+            Box::new(CodebaseEmbeddingModelWidget),
+        ];
+        // Last, below the local indexing controls, mirroring the pin's order: the pin's
+        // Initialized-Folders section walks local workspaces first and remote entries after.
+        #[cfg(not(target_family = "wasm"))]
+        widgets.push(Box::new(RemoteIndexedFoldersWidget));
         (
             PageType::new_uncategorized(widgets, None),
-            external_editor_view,
+            Some(editor_view),
         )
     }
 
@@ -372,30 +363,22 @@ impl CodeSettingsPageView {
         _ctx: &mut ViewContext<Self>,
     ) -> (PageType<Self>, Option<ViewHandle<ExternalEditorView>>) {
         #[cfg_attr(target_family = "wasm", allow(unused_mut))]
-        let mut widgets: Vec<Box<dyn SettingsWidget<View = Self>>> =
-            if FeatureFlag::ZapNewSettingsModes.is_enabled() {
-                vec![
-                    Box::new(AutoOpenCodeReviewPaneCodeWidget::default()),
-                    Box::new(CodeReviewPanelToggleWidget::default()),
-                    Box::new(CodeReviewDiffStatsToggleWidget::default()),
-                    Box::new(ProjectExplorerToggleWidget::default()),
-                    Box::new(GlobalSearchToggleWidget::default()),
-                    Box::new(ShowHiddenFilesToggleWidget::default()),
-                    Box::new(FormatOnSaveToggleWidget::default()),
-                    Box::new(CodeEditorLineNumberModeWidget),
-                    Box::new(LanguageServersWidget),
-                    Box::new(CodebaseContextToggleWidget::default()),
-                    Box::new(AutoIndexingToggleWidget::default()),
-                    Box::new(CodebaseEmbeddingModelWidget),
-                ]
-            } else {
-                vec![]
-            };
-        // Only when the page has content at all -- an empty legacy page stays empty.
+        let mut widgets: Vec<Box<dyn SettingsWidget<View = Self>>> = vec![
+            Box::new(AutoOpenCodeReviewPaneCodeWidget::default()),
+            Box::new(CodeReviewPanelToggleWidget::default()),
+            Box::new(CodeReviewDiffStatsToggleWidget::default()),
+            Box::new(ProjectExplorerToggleWidget::default()),
+            Box::new(GlobalSearchToggleWidget::default()),
+            Box::new(ShowHiddenFilesToggleWidget::default()),
+            Box::new(FormatOnSaveToggleWidget::default()),
+            Box::new(CodeEditorLineNumberModeWidget),
+            Box::new(LanguageServersWidget),
+            Box::new(CodebaseContextToggleWidget::default()),
+            Box::new(AutoIndexingToggleWidget::default()),
+            Box::new(CodebaseEmbeddingModelWidget),
+        ];
         #[cfg(not(target_family = "wasm"))]
-        if !widgets.is_empty() {
-            widgets.push(Box::new(RemoteIndexedFoldersWidget));
-        }
+        widgets.push(Box::new(RemoteIndexedFoldersWidget));
         (PageType::new_uncategorized(widgets, None), None)
     }
 }
@@ -747,7 +730,7 @@ impl SettingsPageMeta for CodeSettingsPageView {
     }
 
     fn should_render(&self, _ctx: &AppContext) -> bool {
-        FeatureFlag::ZapNewSettingsModes.is_enabled()
+        true
     }
 
     fn on_page_selected(&mut self, _: bool, _ctx: &mut ViewContext<Self>) {}

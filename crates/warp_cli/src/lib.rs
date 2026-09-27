@@ -408,6 +408,33 @@ pub enum Command {
     /// Print debugging information and exit.
     #[clap(long_flag = "dump-debug-info")]
     DumpDebugInfo,
+
+    /// Print the JSON schema for Phosphor's user-facing settings and exit.
+    ///
+    /// Moved into the main binary from a separate `generate_settings_schema`
+    /// build target (upstream `83b4c101e`): a standalone generator binary
+    /// recompiled and relinked the whole `warp` dependency graph a second
+    /// time for no reason other than emitting this file.
+    #[cfg(not(target_family = "wasm"))]
+    #[clap(long_flag = "dump-settings-schema")]
+    DumpSettingsSchema {
+        /// Simulate this channel's feature flags (`dev`, `preview`, or
+        /// `stable`) instead of the flags this binary actually launched
+        /// with. Defaults to `dev`.
+        ///
+        /// Kept as an explicit override, unlike upstream's redesign (which
+        /// always reflects "the executable's initialized channel and
+        /// feature flags"): `script/prepare_bundled_resources` and
+        /// `script/windows/prepare_bundled_resources.ps1` both pass a
+        /// channel independent of this binary's own compiled channel, and
+        /// dropping the override would silently change what schema those
+        /// scripts produce.
+        #[arg(long)]
+        channel: Option<String>,
+
+        /// Write the schema to this path instead of standard output.
+        output_path: Option<std::path::PathBuf>,
+    },
 }
 
 impl Command {
@@ -417,6 +444,8 @@ impl Command {
             Command::Worker(_) => false,
             Command::CommandLine(_) | Command::DumpDebugInfo => true,
             Command::Completions { .. } => true,
+            #[cfg(not(target_family = "wasm"))]
+            Command::DumpSettingsSchema { output_path, .. } => output_path.is_none(),
         }
     }
 }

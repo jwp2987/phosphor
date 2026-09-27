@@ -2934,7 +2934,7 @@ separately rather than inflating the queue count.
       -> a directory split; four commits in this range already touch the new paths.**
       Until both are settled, Phase 6.5's "drop files absent from this fork" step will
       silently discard real work.
-- [ ] **`c5e4a02e3` — both halves.** (a) Delete the unreachable project onboarding step
+- [x] **`c5e4a02e3` — both halves.** (a) Delete the unreachable project onboarding step
       (-2587 lines; will need `script/check_large_deletions`). Reachability
       independently verified here: `OnboardingStep::Project` is only constructed in the
       `!ZapNewSettingsModes` branch (`crates/onboarding/src/model.rs:660`) and that
@@ -2943,13 +2943,81 @@ separately rather than inflating the queue count.
       (`code_page_tests.rs:237,261`) pin the legacy branch with `override_enabled(false)`;
       they assert action dispatch, not the widget list, so flipping them to `true`
       preserves what they assert — confirm that before deleting anything.
-- [ ] **`c9e5622943` — the settings-nav/search integration harness half only.** The
+      **Closed 2026-09-27:** ported verbatim from upstream `c5e4a02e3`. (a) deleted
+      `crates/onboarding/src/slides/project_slide.rs` and the whole `crates/onboarding/src/visuals/`
+      module (7 files), `ProjectOnboardingSettings`, `OnboardingTutorial::Project`/`InitProject`,
+      and the `agent_modality_enabled` param. (b) retired the flag across **17** fork files, not
+      the 10 this row named — the fork independently grew extra uses in `ai_page.rs`,
+      `code_page.rs`/`code_page_tests.rs` and `warp_drive_page.rs` since divergence; each collapsed
+      to its enabled branch the same way. **The row's own line numbers (`:237,261`) were stale**:
+      the real count was **three** `override_enabled(false)` tests, not two.
+      `code_page_action_writes_through_to_{codebase_context,auto_indexing}_setting` matched the
+      row's description (action dispatch, not widget list) and were fixed by deleting their
+      override line, same as the file's ten `override_enabled(true)` lines. The third,
+      `code_page_is_hidden_when_the_feature_flag_is_off`, asserted a state that no longer exists
+      once the flag is always-on (`should_render` is now unconditionally `true`) — deleted with an
+      explanatory comment rather than weakened (AGENTS.md 5.6). Also removed the now-dead legacy
+      duplicates this surfaced: `CodeReviewButtonWidget` (appearance_page.rs) and
+      `ExternalEditorWidget`/`AutoOpenCodeReviewPaneWidget` (features_page.rs), each already
+      superseded by the always-on widgets in `code_page.rs`. `script/check_cloud_boundary`,
+      `script/check_stub_coverage`, `script/check_declined_collisions` all green.
+      **Unverified: no cargo build/test in this round** — see the port's commit message and
+      handoff report for compile-risk hotspots (mainly: the many collapsed `if`/`else` branches
+      across onboarding slide files, none individually re-typechecked).
+- [x] **`c9e5622943` — the settings-nav/search integration harness half only.** The
       Code-page IA split is declined below with the rest of that program. The harness is
       independently valuable: the fork has 5 helpers in
       `integration_testing/settings/step.rs` against 20 at the pin, and no
       `crates/integration/src/test/settings_navigation.rs` at all. Its position-id scheme
       is keyed on `SettingsSection` variants rather than display labels, which suits this
       fork better than upstream since the fork's `Display` is localized.
+      **Fixed 2026-09-27:** ported the harness half only — production changes are the
+      `SavePosition` ids (`SEARCH_EDITOR_POSITION_ID`, `nav_page_position_id`,
+      `nav_umbrella_position_id`, `nav_subpage_position_id`, all new in
+      `app/src/settings_view/mod.rs`) wrapping the search editor and the three sidebar
+      row renderers, plus a `#[cfg(feature = "integration_tests")] impl SettingsView`
+      with `is_umbrella_expanded`/`search_query`, and widening
+      `cli_agent_settings_widget_id` from `pub(crate)` to `pub` so the new test crate
+      can reach it. `app/src/integration_testing/settings/step.rs` grew from 5 helpers
+      to 20 (`open_settings_page`, `click_settings_nav_page/_umbrella/_nav_subpage`,
+      `type_settings_search`, `clear_settings_search`, `press_settings_nav_up/_down`,
+      `assert_settings_section`, `assert_settings_nav_page/_subpage/_umbrella_visible`,
+      `assert_settings_widget_rendered`, `assert_umbrella_expanded`, plus the 5
+      pre-existing ones), matching the pin's 20. New
+      `crates/integration/src/test/settings_navigation.rs` (10 tests, 1 `#[ignore]`d,
+      matching the pin's 9 real + 1 ignored), registered in `crates/integration/src/test.rs`,
+      `crates/integration/src/bin/integration.rs`, and
+      `crates/integration/tests/integration/ui_tests.rs`.
+      **Adapted, not copied, because this fork's settings architecture differs from
+      upstream's in two structural ways the pin's tests assume don't exist:** (1) no
+      `SettingsSection::Account` — the decentralized fork drops the cloud account
+      surface entirely, and the default page is `WarpAgent` (itself an Agents-umbrella
+      subpage) — so every test that used `Account` as a neutral, non-umbrella starting
+      page now uses `SettingsSection::Code`, the fork's actual first non-umbrella nav
+      item; (2) no `SettingsSection::BillingAndUsage` (dropped the same way) — the
+      pin's two collapsed-umbrella keyboard-nav tests pin the adjacency between the
+      Agents umbrella and whatever page sits directly below/above it in nav order,
+      which in this fork is `Code`, not `BillingAndUsage`, so both tests target `Code`
+      instead. The "down into a collapsed umbrella" test additionally needed a
+      different anchor entirely: in this fork the Agents umbrella is the very FIRST
+      nav item (nothing precedes it to press Down from), so that test opens `About`
+      (the last page) instead and relies on `next_stop_index`'s documented wraparound
+      at the ends of the nav list (`app/src/settings_view/mod.rs`) to land on the
+      umbrella's first subpage — same mechanism the pin's test exercises, different
+      anchor page. Verified against the code (not run): `set_and_refresh_current_page_internal`
+      auto-expands the containing umbrella on navigation to any subpage, `About` is
+      unconditionally the last nav item regardless of the `Network`/`Scripting`
+      feature flags, and `ai_subpages()` orders `ThirdPartyCLIAgents` last — all load-bearing
+      assumptions behind the adapted assertions.
+      Gates: `check_cloud_boundary`, `check_stub_coverage`, `check_declined_collisions`
+      all green; `rustfmt --check` clean on every changed/new file (verified against
+      HEAD that unrelated flagged lines elsewhere in the same files are pre-existing
+      baseline drift, not new). **Not verified by compilation** (no cargo in this
+      task) — highest compile-risk spots: the exact `SettingsSection` variant names
+      used in the new test file (cross-checked by reading the enum definition
+      directly, not from memory) and the `App`/`AppContext` type distinctions in
+      `step.rs`'s new helpers (matched against existing call-site patterns in the
+      same file, e.g. `editor.as_ref(ctx).buffer_text(ctx)` at line ~1485).
 - [x] **`18179177a`** — the right-click behavior setting's follow-up copy. Its prerequisite
       `c25ac4070` is ported (`182ee1449`); only this follow-up remains. (Rewritten 2026-09-26.)
       **Fixed #738:** `RightClickBehaviorWidget::render` now passes
@@ -3042,7 +3110,7 @@ separately rather than inflating the queue count.
       **Closed via #713:** `script/install_cargo_binstall`'s download now retries at the
       shell level with exponential backoff (10s -> 20s -> 40s -> 80s -> fail), which works
       on curl versions too old for `--retry-all-errors`.
-- [ ] **`cff5f778c`** — **FOUR files, not one. This ledger entry previously described
+- [x] **`cff5f778c`** — **FOUR files, not one. This ledger entry previously described
       only the first and would itself have caused a partial port.**
       (a) `script/lint_powershell` throws on the first source with findings, hiding
       every later source — a gate that under-reports. (b) **`app/assets/bundled/bootstrap/pwsh.ps1`
@@ -3051,6 +3119,17 @@ separately rather than inflating the queue count.
       `script/windows/install_build_deps.ps1:6,9`. All four fork sites
       coordinator-verified at the pre-fix state. Cosmetic/lint-driven, but a porter
       following the old entry lands one file of four and the commit reads as done.
+      **Fixed 2026-09-27:** ported all four sites verbatim from `cff5f778c`.
+      `script/lint_powershell` now accumulates `$totalProblemCount` across the
+      `foreach` loop and throws once after it, instead of throwing inside the loop
+      on the first source with findings. The three `(Get-Location).Path`/
+      `.path` -> `$PWD.Path` swaps landed exactly at the four coordinator-verified
+      sites (`pwsh.ps1:433,510,515,579`; `bundle.ps1:62`;
+      `install_build_deps.ps1:6,9`), zero behavior change. No `.rs` touched, so
+      rustfmt/cloud-boundary/stub-coverage/declined-collisions gates are N/A for
+      this item. Not independently re-run through a real `pwsh` + PSScriptAnalyzer
+      here (none available); upstream's PR verified it that way and the change is
+      a mechanical, semantically-identical substitution.
 - [x] **`0140af045`** — zsh `compadd` override drops descriptions whenever `-d` arrives
       **clustered** (`-ld`), which is exactly what `_describe` emits — i.e. most zsh
       completions that have descriptions. Fork still has the pre-fix `(I)-d` code at
@@ -3061,11 +3140,64 @@ separately rather than inflating the queue count.
       `(I)` not `(i)`. Verified directly against a real zsh 5.9 binary: `${args[(I)-d]}`
       on `(-J -V -ld __array_name ...)` returns 0 (old, misses the clustered flag) vs the
       new match's `${flags[(I)-[a-zA-Z]#d]}` returning the correct index.
-- [ ] **`83b4c101e`** — move settings-schema generation out of a separate `[[bin]]` into
+- [x] **`83b4c101e`** — move settings-schema generation out of a separate `[[bin]]` into
       the main binary, removing a whole extra compile from the release path. The fork's
       own release workflow already documents a `SKIP_SETTINGS_SCHEMA=1` escape hatch,
       i.e. it is already paying and working around this. Touches the three diverged
       `script/{linux,macos,windows}` bundle scripts — a real port, not a cherry-pick.
+      **Fixed 2026-09-27:** ported upstream's core idea (drop the separate build
+      target, generate the schema from inside the shipped binary) but NOT its full
+      release-workflow rewrite (887 lines of `create_release.yml`, multi-arch
+      byte-for-byte comparison, `SETTINGS_SCHEMA_EXECUTABLE`/`_SOURCE` artifact
+      passing) — this fork's release pipeline is a single `phosphor_release.yml`
+      job, not upstream's per-arch matrix, so that machinery doesn't apply.
+      Concretely: removed the `generate_settings_schema` `[[bin]]` from
+      `app/Cargo.toml` and deleted `app/src/bin/generate_settings_schema.rs`;
+      moved its logic into `app/src/settings/schema_generation.rs` (new,
+      `pub(crate)`, with `dump_settings_schema`/`settings_schema_json` plus unit
+      tests in `schema_generation_tests.rs`); added
+      `Command::DumpSettingsSchema { channel, output_path }` to
+      `crates/warp_cli/src/lib.rs`, dispatched from `app/src/lib.rs::run()`.
+      Kept an explicit `--channel` override that upstream's redesign dropped
+      (upstream always reflects "the executable's initialized channel and
+      feature flags"): `script/prepare_bundled_resources` and
+      `script/windows/prepare_bundled_resources.ps1` both still pass a channel
+      independent of the invoking binary's own compiled channel, and dropping
+      the override would have silently changed what schema those scripts
+      produce. Also improved on the old binary's design: `settings_schema_json`
+      now takes a feature-flag predicate closure instead of mutating global
+      `FeatureFlag` state via `set_enabled` — the old bin could get away with
+      global mutation because it was a fresh, one-shot process, but this code
+      now runs inside the same long-lived process as the real app, which has
+      already called `init_feature_flags()` for its actual channel by the time
+      `dump-settings-schema` is dispatched (`set_enabled` only ever turns a
+      flag on, so mutating global state here could have leaked the real
+      channel's flags into a schema requested for a different `--channel`).
+      Updated every caller found by grepping `.github` and `script/`:
+      `script/prepare_bundled_resources` (bash) and
+      `script/windows/prepare_bundled_resources.ps1`, both now
+      `--bin phosphor-oss -- dump-settings-schema`; a documentation comment in
+      `.github/workflows/phosphor_release.yml`; the bin-count comment in
+      `script/test_warpctrl_early_dispatch` (two bins → one); and a stale
+      reference to the old binary's name in
+      `app/src/ai/skills/bundled.rs`'s `tui-migrate-setup` doc comment.
+      Confirmed `script/{linux,macos,windows}/bundle{,.ps1}` need no changes
+      of their own — they only forward args to `prepare_bundled_resources`/
+      `.ps1`, which is where the actual bin reference lived.
+      Gates: `check_cloud_boundary`, `check_stub_coverage`,
+      `check_declined_collisions` all green; `rustfmt --check` clean on every
+      changed/new `.rs` file (verified line-by-line against pre-existing
+      baseline drift elsewhere in the same files, e.g.
+      `app/src/settings/mod.rs:182-189`, confirmed identical to HEAD and thus
+      not new); `bash -n` clean on both changed bash scripts. **Not verified by
+      compilation** (no cargo in this task) — the highest compile-risk spots
+      are `settings::schema_generation::dump_settings_schema`'s path resolution
+      from `app/src/lib.rs` (this crate has both a `settings` extern crate
+      dependency and a local `pub mod settings`; bare `settings::` resolves to
+      the local module by existing convention — confirmed against several
+      other call sites in the same file, e.g. `settings::init(...)` — but never
+      compiled in this exact spot) and the `#[cfg(not(target_family = "wasm"))]`
+      gating added to the new `Command` variant and its two match arms.
 - [x] **`b1bcc3564`** — add `rust-analyzer` to `rust-toolchain.toml` components. One word.
       **Closed via #714.**
 - [x] **`1e4b86a81`** — `release-cli` `codegen-units` 1 -> 4; roughly halves that
@@ -6492,7 +6624,7 @@ moving the pin:
 
 ### Defects — user-visible
 
-- [ ] 🔴 **DIAGNOSED: the tab bar renders ONE tab for the whole test, so the six tab-group
+- [x] 🔴 **DIAGNOSED: the tab bar renders ONE tab for the whole test, so the six tab-group
       integration tests never drag anything.** Measured 2026-08-19 by logging inside
       `render_tab_bar_contents`: **`tabs=1 slots=1 active=0`, on all four paints**, during
       `test_drag_tab_out_of_group` — a test whose fixture creates FOUR tabs and whose model
@@ -6613,6 +6745,27 @@ moving the pin:
       first. So the exact path that produced the reported duplicate for a collapsed group has a
       fix and no regression test. Add one: collapse a group, drag a non-member over it, assert
       one header and one contiguous run.
+
+      **Fixed 2026-09-27 (#745), UNVERIFIED — no build available this round.**
+      `open_extra_tabs` (`crates/integration/src/test/tab_groups.rs`) now forces a
+      repaint after each tab is added, via
+      `app.update(|ctx| ctx.invalidate_all_views_for_window(window_id))` (same
+      pattern as `crates/warpui_core/src/core/tui_view_tests.rs:607`), added as a
+      step immediately after `wait_until_bootstrapped_single_pane_for_tab`. This
+      targets the mechanism exactly as diagnosed: `maybe_render_frame` only awaits
+      a frame when `has_window_invalidations` is already true at the moment it
+      checks, and the tab-adding steps left no pending invalidation at that point,
+      so the tab bar was never repainted after its first paint. Deliberately the
+      narrower, local fix (inside `tab_groups.rs`) rather than changing
+      `maybe_render_frame`'s gating in `crates/warpui_core/src/integration/step.rs`,
+      which every integration test in the suite goes through. No test assertions
+      were touched or weakened. **This is reasoned from the code, not confirmed by
+      a run** — no cargo available this round. If some other mechanism also
+      consumes the invalidation before `maybe_render_frame`'s check (not yet
+      identified — several earlier hypotheses in this entry were disproved by
+      instrumentation before landing on this one), the six tests could still not
+      exercise `on_tab_drag`, and only a real build+run (with `--no-capture`,
+      per the methodological note above) confirms it either way.
 
 - [x] **The Windows usage suite is FLAKY, and that is the real problem.** The two specific
       failures are fixed (`9c6eb1621`) and both now pass — but the failure COUNT swings wildly
@@ -12441,6 +12594,37 @@ open findings that had no pre-existing row.
       need the same plus a `FileModel` singleton and `register_file`. Worth
       building once a round has a build available to verify it compiles and
       passes before committing to it blind.
+      **Attempted 2026-09-27, left unticked (#751).** Built the fixture and two
+      live-view tests in `app/src/code/inline_diff.rs`:
+      `deleting_through_the_view_removes_the_file_and_revert_restores_it` and
+      `renaming_through_the_view_moves_the_file_and_revert_restores_it`. Both
+      construct a real `InlineDiffView` wrapping a real `CodeEditorView` (the
+      `initialize_editor` shape, plus a `FileModel` singleton and
+      `register_file`, matching how `CodeDiffView::set_candidate_diffs` builds
+      the same pair in production), register against a real temp file, and
+      drive `DiffViewer::accept_and_save_diff` / `InlineDiffView::restore_diff_base`
+      -- the real public entry points, not the private dispatch methods
+      directly -- asserting on disk state. The rename-revert case's second step
+      (`finish_rename_revert`'s destination cleanup, dispatched via `ctx.spawn`
+      against a transient `FileId` internal to that function) has no completion
+      future this test can obtain, so it is confirmed by a bounded disk-state
+      poll instead of an awaited future -- a real, failing-if-wrong check, but
+      a different mechanism than the rest of the file uses.
+      **Left `[ ]` on purpose: this was written by reading source with no
+      `cargo`/`nextest` available this round, not compiled or run.** No new
+      GitHub issue was needed for the item itself (this row already tracks it);
+      opened #751 to hold the "needs a real test run" follow-up. `rustfmt
+      --check`, `check_cloud_boundary`, `check_stub_coverage`, and
+      `check_declined_collisions` are all clean, and the addition introduces no
+      new formatting drift (verified against a stock rustfmt run of the
+      pre-change file: the same four pre-existing drift sites, all far above
+      this addition, are unchanged). Whoever gets a build next: run
+      `cargo nextest run -p warp --lib -E 'test(inline_diff)'` and tick this on
+      green; if it does not compile, the likely failure points are the exact
+      `warp_editor`/`warpui` import paths and the `ViewHandle::read`/`update`
+      closure signatures used in the new `build_live_diff_view` helper and its
+      two tests -- all copied from working call sites elsewhere in this file
+      and in `code_diff_view.rs`, but never compiled together in this shape.
 
 - [x] **Cargo.lock: `signal-hook` was hand-added to `warpui`'s deps for #685**
       (SIGTERM/SIGHUP handling) rather than regenerated through `cargo`, since

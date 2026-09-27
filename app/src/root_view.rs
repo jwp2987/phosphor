@@ -1489,13 +1489,10 @@ impl RootView {
                 if #[cfg(target_family = "wasm")] {
                     AuthOnboardingState::WebImport(AuthOnboardingTarget::Workspace(workspace_args.into()))
                 } else {
-                    // When ZapNewSettingsModes is enabled, show onboarding before login for
-                    // users who haven't completed it yet (tracked via a local UserPreferences key).
-                    let has_completed_local_onboarding = FeatureFlag::ZapNewSettingsModes.is_enabled()
-                        && has_completed_local_onboarding(ctx);
-                    let should_show_pre_login_onboarding = FeatureFlag::ZapNewSettingsModes.is_enabled()
-                        && FeatureFlag::AgentOnboarding.is_enabled()
-                        && !has_completed_local_onboarding;
+                    // Onboarding runs before login for users who have not completed it locally
+                    // (tracked via a local UserPreferences key).
+                    let should_show_pre_login_onboarding = FeatureFlag::AgentOnboarding.is_enabled()
+                        && !has_completed_local_onboarding(ctx);
                     if FeatureFlag::ForceLogin.is_enabled() {
                         // ForceLogin is true for Preview
                         AuthOnboardingState::Auth(workspace_args.into())
@@ -1718,7 +1715,6 @@ impl RootView {
                 models,
                 default_model_id,
                 workspace_enforces_autonomy,
-                FeatureFlag::AgentView.is_enabled(),
                 ctx,
             )
         });
@@ -2473,9 +2469,7 @@ impl RootView {
             return;
         };
 
-        if FeatureFlag::ZapNewSettingsModes.is_enabled()
-            && FeatureFlag::TabConfigs.is_enabled()
-        {
+        if FeatureFlag::TabConfigs.is_enabled() {
             let intention = tutorial.intention();
             // Terminal-intent users skip the session config modal.
             if matches!(intention, OnboardingIntention::AgentDrivenDevelopment) {

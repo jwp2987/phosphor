@@ -2,11 +2,10 @@ use crate::localization::localized;
 use crate::model::{OnboardingStateEvent, OnboardingStateModel, OnboardingStep, SelectedSettings};
 use crate::slides::{
     AgentSlide, CustomizeUISlide, IntentionSlide, IntroSlide, OnboardingModelInfo, OnboardingSlide,
-    ProjectSlide, ThemePickerSlide, ThemePickerSlideEvent, ThirdPartySlide,
+    ThemePickerSlide, ThemePickerSlideEvent, ThirdPartySlide,
 };
 use crate::telemetry::OnboardingEvent;
 use ai::LLMId;
-use warp_core::features::FeatureFlag;
 use warp_core::send_telemetry_from_ctx;
 use warpui::assets::asset_cache::AssetSource;
 use warpui::image_cache::ImageType;
@@ -43,7 +42,6 @@ pub struct AgentOnboardingView {
     customize_slide: ViewHandle<CustomizeUISlide>,
     agent_slide: ViewHandle<AgentSlide>,
     third_party_slide: ViewHandle<ThirdPartySlide>,
-    project_slide: ViewHandle<ProjectSlide>,
     skippable: bool,
     close_button: button::Button,
 }
@@ -86,16 +84,10 @@ impl AgentOnboardingView {
         models: Vec<OnboardingModelInfo>,
         default_model_id: LLMId,
         workspace_enforces_autonomy: bool,
-        agent_modality_enabled: bool,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
         let onboarding_state = ctx.add_model(|_| {
-            OnboardingStateModel::new(
-                models,
-                default_model_id,
-                workspace_enforces_autonomy,
-                agent_modality_enabled,
-            )
+            OnboardingStateModel::new(models, default_model_id, workspace_enforces_autonomy)
         });
         ctx.subscribe_to_model(&onboarding_state, |me, _model, event, ctx| {
             // Re-render when slide selection changes.
@@ -145,11 +137,6 @@ impl AgentOnboardingView {
             ctx.add_typed_action_view(move |ctx| ThirdPartySlide::new(onboarding_state, ctx))
         };
 
-        let project_slide = {
-            let onboarding_state = onboarding_state.clone();
-            ctx.add_typed_action_view(move |_| ProjectSlide::new(onboarding_state))
-        };
-
         Self {
             onboarding_state,
             intro_slide,
@@ -158,7 +145,6 @@ impl AgentOnboardingView {
             customize_slide,
             agent_slide,
             third_party_slide,
-            project_slide,
             skippable,
             close_button: button::Button::default(),
         }
@@ -201,9 +187,7 @@ impl AgentOnboardingView {
         ctx.focus_self();
 
         // Preload customize-slide images so they're ready when the user reaches that slide.
-        if FeatureFlag::ZapNewSettingsModes.is_enabled() {
-            Self::preload_onboarding_images(ctx);
-        }
+        Self::preload_onboarding_images(ctx);
 
         send_telemetry_from_ctx!(OnboardingEvent::OnboardingStarted, ctx);
         send_telemetry_from_ctx!(
@@ -311,7 +295,6 @@ impl View for AgentOnboardingView {
             OnboardingStep::Customize => ChildView::new(&self.customize_slide).finish(),
             OnboardingStep::Agent => ChildView::new(&self.agent_slide).finish(),
             OnboardingStep::ThirdParty => ChildView::new(&self.third_party_slide).finish(),
-            OnboardingStep::Project => ChildView::new(&self.project_slide).finish(),
         };
 
         stack.add_child(slide);
@@ -378,9 +361,6 @@ impl TypedActionView for AgentOnboardingView {
                 dispatch_onboarding_action_to_slide(slide, *action, ctx)
             }),
             OnboardingStep::ThirdParty => self.third_party_slide.update(ctx, |slide, ctx| {
-                dispatch_onboarding_action_to_slide(slide, *action, ctx)
-            }),
-            OnboardingStep::Project => self.project_slide.update(ctx, |slide, ctx| {
                 dispatch_onboarding_action_to_slide(slide, *action, ctx)
             }),
         }

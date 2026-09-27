@@ -430,7 +430,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
             $code
         }
 
-        $newTitle = (Get-Location).Path
+        $newTitle = $PWD.Path
         # Replace the literal home dir with a tilde.
         if ($newTitle.StartsWith($HOME)) {
             $newTitle = '~' + $newTitle.Substring($HOME.length)
@@ -507,12 +507,12 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
                 $hasNodeCommand = if ($nodeChipEnabled) { Get-Command -CommandType Application node 2>$null } else { $null }
                 if ($hasNodeCommand) {
                     try {
-                        $nodeCacheKey = "$((Get-Location).Path)|$env:PATH"
+                        $nodeCacheKey = "$($PWD.Path)|$env:PATH"
                         if ($nodeCacheKey -eq $script:warpNodeVersionCacheKey) {
                             $nodeVersion = $script:warpNodeVersionCacheValue
                         } else {
                             # Walk up from the current directory to find a package.json
-                            $dir = Get-Item -LiteralPath (Get-Location).Path
+                            $dir = Get-Item -LiteralPath $PWD.Path
                             $foundPackageJson = $false
                             $packageJsonDir = $null
                             while ($null -ne $dir) {
@@ -576,7 +576,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
             $precmdMsg = @{
                 hook = 'Precmd'
                 value = @{
-                    pwd = (Get-Location).Path
+                    pwd = $PWD.Path
                     # TODO(PLAT-687) - honor the PS1
                     ps1 = ''
                     honor_ps1 = $honor_ps1

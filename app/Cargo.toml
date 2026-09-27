@@ -17,9 +17,13 @@ license.workspace = true
 name = "warp"
 path = "src/lib.rs"
 
-# Phosphor keeps only two bins: phosphor-oss for packaging, and the build-time
-# tool generate_settings_schema. The original warp multi-channel release bins
-# (dev/stable/preview/local) have been removed.
+# Phosphor keeps only one bin: phosphor-oss. The original warp multi-channel
+# release bins (dev/stable/preview/local) have been removed, and the separate
+# generate_settings_schema build target was folded into this one as the
+# `dump-settings-schema` subcommand (upstream 83b4c101e) -- a standalone
+# generator binary recompiled and relinked the whole `warp` dependency graph a
+# second time for no reason other than emitting one file. See
+# `app/src/settings/schema_generation.rs`.
 #
 # This target name is what both packaging scripts pass to `cargo build --bin`,
 # and it is the on-disk executable name (macOS `CFBundleExecutable`). It is
@@ -29,11 +33,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "phosphor-oss"
 path = "src/bin/phosphor_oss.rs"
-test = false
-
-[[bin]]
-name = "generate_settings_schema"
-path = "src/bin/generate_settings_schema.rs"
 test = false
 
 [dependencies]
@@ -648,7 +647,6 @@ default = [
     "hoa_remote_control",
     "codex_notifications",
     "trim_trailing_blank_lines",
-    "open_warp_new_settings_modes",
     "settings_file",
     "ssh_tmux_wrapper",
     # Reachable at the pin (02b53fcd8) via its own `default`, but dropped from this
@@ -948,7 +946,6 @@ queue_slash_command = []
 inline_menu_headers = []
 restore_prompt_on_inline_model_selector_search = []
 directory_tab_colors = []
-open_warp_new_settings_modes = []
 hoa_code_review = []
 vertical_tabs = []
 async_find = []

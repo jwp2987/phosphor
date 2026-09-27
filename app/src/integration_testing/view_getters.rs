@@ -17,6 +17,7 @@ use crate::{
         command_palette::{self},
         command_search::view::CommandSearchView,
     },
+    settings_view::SettingsView,
     settings_view::keybindings::KeybindingsView,
     terminal::{input::Input, TerminalView},
     themes::theme_chooser::ThemeChooser,
@@ -218,6 +219,11 @@ pub fn theme_chooser_view(app: &App, window_id: WindowId) -> ViewHandle<ThemeCho
 
 /// Panics if there isn't a single single keybindings view in the view hierarchy.
 pub fn keybindings_view(app: &App, window_id: WindowId) -> ViewHandle<KeybindingsView> {
+    singleton_view_of_type(app, window_id)
+}
+
+/// Panics if there isn't a single settings view in the view hierarchy.
+pub fn settings_view(app: &App, window_id: WindowId) -> ViewHandle<SettingsView> {
     singleton_view_of_type(app, window_id)
 }
 

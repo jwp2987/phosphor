@@ -2358,4 +2358,257 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&file).unwrap(), BASE);
         });
     }
+
+    // ── Live-view accept/revert glue (#688 follow-up) ──────────────────────
+    //
+    // Everything above pushes a *decision* (`revert_plan`, `resolve_write_action`,
+    // `pre_image_for_diff`) or a disk-level write through `FileModel` directly
+    // (e.g. `accepting_a_rename_moves_and_writes_the_file`). Nothing above goes
+    // through a real, live `InlineDiffView`: `dispatch_accept_delete`,
+    // `dispatch_accept_rename`, the `UndoRename`/`FinishRename` branches of
+    // `dispatch_guarded_revert`, `finish_rename_revert`, and
+    // `suppress_next_backing_file_event` have no such coverage. The tests below
+    // build a real `InlineDiffView` wrapping a real `CodeEditorView` inside
+    // `App::test`, exactly as `CodeDiffView::set_candidate_diffs` does in
+    // production (`app/src/ai/blocklist/inline_action/code_diff_view.rs:1178-1207`),
+    // then drive `DiffViewer::accept_and_save_diff` and
+    // `InlineDiffView::restore_diff_base` -- the same two entry points a real
+    // accept/revert button dispatches -- and check the disk, not internal state.
+    //
+    // Awaiting completion: a single-step write (an accept, or reverting a
+    // delete, or the *first* step of reverting a rename) lands at the view's
+    // own `backing_file_id`, so the test registers its own
+    // `FileModel::save_completion(file_id)` waiter alongside the view's
+    // internal one. `save_completion` fans out to a `Vec` of waiters
+    // (`warp_files::FileModel::save_completion`, `save_waiters.entry(file_id)
+    // .or_default().push(tx)`), so this does not steal the view's own
+    // notification. Reverting a rename is a hidden TWO-step process
+    // (`dispatch_guarded_revert`'s `UndoRename` branch, then
+    // `finish_rename_revert`, chained via `ctx.spawn`): the second step
+    // registers a fresh, transient `FileId` for the rename destination that
+    // this test has no handle to, so that half is confirmed by polling the
+    // known destination path directly with a bounded, real-time retry loop
+    // instead of a completion future -- see the comment inline below for why
+    // that is still a real, failing-if-wrong assertion and not a vacuous one.
+    //
+    // UNVERIFIED WITHOUT A BUILD (no cargo in this pass): every type name,
+    // field/method visibility, and async-executor assumption below was
+    // established by reading the source (`app/src/code/editor/view.rs`,
+    // `app/src/code/editor/model.rs`, `crates/warp_files/src/lib.rs`,
+    // `app/src/ai/blocklist/inline_action/code_diff_view.rs`,
+    // `app/src/code/editor/view/view_tests.rs`'s `initialize_editor`), not by
+    // compiling or running it. Treat this block as unverified until nextest
+    // actually runs it; see the TODO.md entry this closes for the specific
+    // residual risks.
+
+    /// Builds a live `InlineDiffView` wrapping a live `CodeEditorView`, the
+    /// same fixture shape `CodeDiffView::set_candidate_diffs` builds in
+    /// production, minus the parts specific to that view (no
+    /// `set_language_with_path`, no `ctx.add_typed_action_view` -- a plain
+    /// `ctx.add_view` suffices since nothing here needs `InlineDiffView` to be
+    /// addressable as a `TypedActionView` target).
+    ///
+    /// `base` becomes the diff's pre-image (what the accept's guard checks the
+    /// file still holds; must match what the test writes to `file_path` on
+    /// disk) and `buffer_text` becomes the editor's actual content (what an
+    /// accept writes) -- distinct parameters because a real accepted edit
+    /// usually changes the text, and `DiffType::Update { deltas: vec![], .. }`
+    /// (a pure rename) never touches the buffer via `apply_diffs_if_any`, so
+    /// the buffer must already hold the intended final text before
+    /// construction.
+    fn build_live_diff_view(
+        app: &mut warpui::App,
+        diff_type: DiffType,
+        file_path: &std::path::Path,
+        base: &str,
+        buffer_text: &str,
+    ) -> (warpui::WindowId, ViewHandle<InlineDiffView>) {
+        crate::test_util::settings::initialize_settings_for_tests(app);
+
+        // The mock/singleton set `CodeEditorView::new` needs, copied from
+        // `app/src/code/editor/view/view_tests.rs`'s `initialize_editor`.
+        app.add_singleton_model(|_| warp_core::ui::appearance::Appearance::mock());
+        app.add_singleton_model(|_| crate::workspace::sync_inputs::SyncedInputState::mock());
+        app.add_singleton_model(|_| crate::vim_registers::VimRegisters::new());
+        app.add_singleton_model(|_| {
+            crate::settings_view::keybindings::KeybindingChangedNotifier::mock()
+        });
+        app.add_singleton_model(|_| crate::AuthStateProvider::new_for_test());
+        app.add_singleton_model(crate::cloud_object::model::persistence::ObjectStoreModel::mock);
+        app.add_singleton_model(|_| crate::workspace::ActiveSession::default());
+        app.add_singleton_model(crate::notebooks::editor::keys::NotebookKeybindings::new);
+        app.add_singleton_model(|ctx| {
+            crate::workspaces::user_workspaces::UserWorkspaces::mock(vec![], ctx)
+        });
+
+        let standardized_path =
+            StandardizedPath::try_new(file_path.to_str().expect("temp path must be utf8"))
+                .expect("temp path must be absolute");
+
+        app.add_window(warpui::platform::WindowStyle::NotStealFocus, |ctx| {
+            let editor = ctx.add_view(|ctx| {
+                CodeEditorView::new(
+                    None,
+                    None,
+                    super::editor::view::CodeEditorRenderOptions::new(
+                        warp_editor::render::element::VerticalExpansionBehavior::GrowToMaxHeight,
+                    ),
+                    ctx,
+                )
+            });
+            editor.update(ctx, |editor_view, ctx| {
+                // `reset_content` already sets the diff base to `state.text`
+                // (`app/src/code/editor/model.rs:2056`); the explicit
+                // `set_base` after it is what lets `base` and `buffer_text`
+                // differ (the rename test below needs that).
+                editor_view.reset(
+                    warp_editor::content::buffer::InitialBufferState::plain_text(buffer_text),
+                    ctx,
+                );
+                editor_view.set_base(base, false, ctx);
+            });
+
+            InlineDiffView::new(editor, Some(diff_type), None, Some(standardized_path), ctx)
+        })
+    }
+
+    #[test]
+    fn deleting_through_the_view_removes_the_file_and_revert_restores_it() {
+        warpui::App::test((), |mut app| async move {
+            let directory = tempfile::tempdir().expect("temp dir");
+            let file_path = directory.path().join("doomed.rs");
+            std::fs::write(&file_path, BASE).expect("write file");
+
+            let files = app.add_singleton_model(FileModel::new);
+
+            let (_window, view) = build_live_diff_view(
+                &mut app,
+                DiffType::deletion(BASE.lines().count()),
+                &file_path,
+                BASE,
+                BASE,
+            );
+            view.update(&mut app, |view, ctx| {
+                view.set_original_content(BASE.to_owned());
+                view.register_file(&DiffSessionType::Local, ctx);
+            });
+
+            let file_id = view
+                .read(&app, |view, _| view.backing_file_id)
+                .expect("register_file must set backing_file_id for a Local session");
+
+            // Accept, through the real view -- `DiffViewer::accept_and_save_diff`,
+            // not `FileModel` directly.
+            let accept_completion =
+                files.update(&mut app, |files, _| files.save_completion(file_id));
+            view.update(&mut app, |view, ctx| view.accept_and_save_diff(ctx));
+            accept_completion.await.expect("the delete should land");
+
+            assert!(!file_path.exists(), "the file must be deleted on accept");
+            assert!(
+                view.read(&app, |view, _| view.can_revert()),
+                "a landed delete must be revertible"
+            );
+
+            // Revert, through the real view -- `InlineDiffView::restore_diff_base`,
+            // the same public entry point a real revert button calls.
+            let revert_completion =
+                files.update(&mut app, |files, _| files.save_completion(file_id));
+            let dispatch = view
+                .update(&mut app, |view, ctx| view.restore_diff_base(ctx))
+                .expect("revert should dispatch, not refuse");
+            assert_eq!(dispatch, RevertDispatch::WriteInFlight);
+            revert_completion.await.expect("the revert should land");
+
+            assert_eq!(
+                std::fs::read_to_string(&file_path).expect("file should exist again"),
+                BASE
+            );
+        });
+    }
+
+    #[test]
+    fn renaming_through_the_view_moves_the_file_and_revert_restores_it() {
+        warpui::App::test((), |mut app| async move {
+            let directory = tempfile::tempdir().expect("temp dir");
+            let old_path = directory.path().join("old.rs");
+            let new_path = directory.path().join("new.rs");
+            std::fs::write(&old_path, BASE).expect("write file");
+
+            let files = app.add_singleton_model(FileModel::new);
+
+            const RENAMED_CONTENT: &str = "fn main() { renamed(); }\n";
+            let diff_type = local_rename(new_path.to_str().expect("temp path must be utf8"));
+
+            let (_window, view) =
+                build_live_diff_view(&mut app, diff_type, &old_path, BASE, RENAMED_CONTENT);
+            view.update(&mut app, |view, ctx| {
+                view.set_original_content(BASE.to_owned());
+                view.register_file(&DiffSessionType::Local, ctx);
+            });
+
+            let file_id = view
+                .read(&app, |view, _| view.backing_file_id)
+                .expect("register_file must set backing_file_id for a Local session");
+
+            // Accept, through the real view.
+            let accept_completion =
+                files.update(&mut app, |files, _| files.save_completion(file_id));
+            view.update(&mut app, |view, ctx| view.accept_and_save_diff(ctx));
+            accept_completion.await.expect("the rename should land");
+
+            assert!(!old_path.exists(), "the source must be gone after accept");
+            assert_eq!(
+                std::fs::read_to_string(&new_path).expect("destination should exist"),
+                RENAMED_CONTENT
+            );
+
+            // Revert step 1: `dispatch_guarded_revert`'s `UndoRename` branch
+            // restores the original text at `file_id` (the registered, original
+            // path) -- observable the same way as any other single-file
+            // completion, and this is also the write
+            // `suppress_next_backing_file_event` exists to hide from the
+            // ordinary per-file subscription.
+            let restore_completion =
+                files.update(&mut app, |files, _| files.save_completion(file_id));
+            let dispatch = view
+                .update(&mut app, |view, ctx| view.restore_diff_base(ctx))
+                .expect("revert should dispatch, not refuse");
+            assert_eq!(dispatch, RevertDispatch::WriteInFlight);
+            restore_completion
+                .await
+                .expect("the restore half of the rename revert should land");
+
+            assert_eq!(
+                std::fs::read_to_string(&old_path).expect("original path should exist again"),
+                BASE
+            );
+
+            // Revert step 2 is `finish_rename_revert`'s destination cleanup,
+            // dispatched from a `ctx.spawn`'d continuation against a fresh,
+            // transient `FileId` (`file_model.register_file_path(&at, false,
+            // ctx)`, `inline_diff.rs:905`) this test has no handle to register
+            // a `save_completion` waiter against. It genuinely runs on the
+            // same executor this `.await` chain above already drove forward
+            // (`App::test` uses a single-threaded test executor that services
+            // every spawned task, not just the polled top-level future), so
+            // polling the known destination path with a bounded, real-time
+            // retry loop is a real assertion -- it fails if the deletion never
+            // happens, or takes implausibly long -- not a vacuous one that
+            // could pass whether or not `finish_rename_revert` ever ran.
+            let mut destination_removed = false;
+            for _ in 0..50 {
+                if !new_path.exists() {
+                    destination_removed = true;
+                    break;
+                }
+                warpui::r#async::Timer::after(std::time::Duration::from_millis(20)).await;
+            }
+            assert!(
+                destination_removed,
+                "finish_rename_revert must remove the file it left at the rename \
+                 destination once the restore half of the revert lands"
+            );
+        });
+    }
 }

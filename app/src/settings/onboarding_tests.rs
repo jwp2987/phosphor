@@ -1,5 +1,5 @@
 use ai::LLMId;
-use onboarding::slides::{AgentAutonomy, AgentDevelopmentSettings, ProjectOnboardingSettings};
+use onboarding::slides::{AgentAutonomy, AgentDevelopmentSettings};
 use onboarding::SelectedSettings;
 use warpui::{App, SingletonEntity};
 
@@ -102,7 +102,6 @@ fn apply_onboarding_settings_preserves_existing_profile_object_on_existing_user_
                 disable_oz: false,
                 show_agent_notifications: true,
             },
-            project_settings: ProjectOnboardingSettings::default(),
             ui_customization: None,
         };
 

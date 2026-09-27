@@ -13,9 +13,7 @@
 // DECLINED.md's "Account-first onboarding, billing, paid tiers" row (#11).
 // Not a partial port: none of these types exist anywhere in this crate.
 use crate::OnboardingIntention;
-use crate::slides::{
-    AgentAutonomy, AgentDevelopmentSettings, OnboardingModelInfo, ProjectOnboardingSettings,
-};
+use crate::slides::{AgentAutonomy, AgentDevelopmentSettings, OnboardingModelInfo};
 use crate::telemetry::OnboardingEvent;
 use ai::LLMId;
 use warp_core::send_telemetry_from_ctx;
@@ -78,24 +76,18 @@ pub enum SelectedSettings {
     },
     AgentDrivenDevelopment {
         agent_settings: AgentDevelopmentSettings,
-        project_settings: ProjectOnboardingSettings,
         ui_customization: Option<UICustomizationSettings>,
     },
 }
 
 impl SelectedSettings {
     pub fn is_ai_enabled(&self) -> bool {
-        use warp_core::features::FeatureFlag;
         match self {
             SelectedSettings::AgentDrivenDevelopment { agent_settings, .. } => {
                 !agent_settings.disable_oz
             }
-            SelectedSettings::Terminal { .. } => {
-                // With old onboarding (no ZapNewSettingsModes), Terminal
-                // intent still leaves AI enabled; with new onboarding,
-                // Terminal intent explicitly disables AI.
-                !FeatureFlag::ZapNewSettingsModes.is_enabled()
-            }
+            // Terminal intent explicitly disables AI.
+            SelectedSettings::Terminal { .. } => false,
         }
     }
 
@@ -124,7 +116,6 @@ pub(crate) enum OnboardingStep {
     Customize,
     Agent,
     ThirdParty,
-    Project,
     ThemePicker,
 }
 
@@ -141,13 +132,10 @@ pub(crate) struct OnboardingStateModel {
     step: OnboardingStep,
     intention: OnboardingIntention,
     agent_settings: AgentDevelopmentSettings,
-    project_settings: ProjectOnboardingSettings,
     ui_customization: UICustomizationSettings,
     models: Vec<OnboardingModelInfo>,
     /// Whether the workspace enforces autonomy settings, hiding the user selection UI.
     workspace_enforces_autonomy: bool,
-    /// Whether the AgentView feature flag is enabled.
-    agent_modality_enabled: bool,
 }
 
 impl OnboardingStateModel {
@@ -156,27 +144,19 @@ impl OnboardingStateModel {
         models: Vec<OnboardingModelInfo>,
         default_model_id: LLMId,
         workspace_enforces_autonomy: bool,
-        agent_modality_enabled: bool,
     ) -> Self {
         Self {
             step: OnboardingStep::Intro,
             intention: OnboardingIntention::AgentDrivenDevelopment,
             agent_settings: AgentDevelopmentSettings::new(default_model_id),
-            project_settings: ProjectOnboardingSettings::default(),
             ui_customization: UICustomizationSettings::agent_defaults(),
             models,
             workspace_enforces_autonomy,
-            agent_modality_enabled,
         }
     }
 
     pub(crate) fn settings(&self) -> SelectedSettings {
-        use warp_core::features::FeatureFlag;
-        let ui_customization = if FeatureFlag::ZapNewSettingsModes.is_enabled() {
-            Some(self.ui_customization.clone())
-        } else {
-            None
-        };
+        let ui_customization = Some(self.ui_customization.clone());
 
         match &self.intention {
             OnboardingIntention::Terminal => SelectedSettings::Terminal {
@@ -199,7 +179,6 @@ impl OnboardingStateModel {
                         // Agent intention always has notifications enabled (no toggle shown).
                         show_agent_notifications: true,
                     },
-                    project_settings: self.project_settings.clone(),
                     ui_customization,
                 }
             }
@@ -218,16 +197,8 @@ impl OnboardingStateModel {
         &self.agent_settings
     }
 
-    pub(crate) fn project_settings(&self) -> &ProjectOnboardingSettings {
-        &self.project_settings
-    }
-
     pub(crate) fn workspace_enforces_autonomy(&self) -> bool {
         self.workspace_enforces_autonomy
-    }
-
-    pub(crate) fn agent_modality_enabled(&self) -> bool {
-        self.agent_modality_enabled
     }
 
     pub fn ui_customization(&self) -> &UICustomizationSettings {
@@ -476,19 +447,12 @@ impl OnboardingStateModel {
         default_model_id: LLMId,
         ctx: &mut ModelContext<Self>,
     ) {
-        use warp_core::features::FeatureFlag;
-
-        // If the user is past the agent slide, don't change the agent model from underneath them.
-        // When the new settings modes flag is on, ThemePicker comes after the agent slides
-        // so it must also be guarded.
-        let is_past_agent_slide = if FeatureFlag::ZapNewSettingsModes.is_enabled() {
-            matches!(
-                self.step,
-                OnboardingStep::ThirdParty | OnboardingStep::ThemePicker
-            )
-        } else {
-            matches!(self.step, OnboardingStep::Project)
-        };
+        // If the user is past the agent slide, don't change the agent model from underneath
+        // them. ThemePicker comes after the agent slides, so it must also be guarded.
+        let is_past_agent_slide = matches!(
+            self.step,
+            OnboardingStep::ThirdParty | OnboardingStep::ThemePicker
+        );
         if is_past_agent_slide {
             return;
         }
@@ -521,40 +485,6 @@ impl OnboardingStateModel {
         ctx.notify();
     }
 
-    pub(crate) fn set_project_selected_local_folder(
-        &mut self,
-        path: Option<String>,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        if path.is_some() {
-            send_telemetry_from_ctx!(OnboardingEvent::FolderSelected, ctx);
-        }
-        self.project_settings = ProjectOnboardingSettings::from_path(path);
-        ctx.notify();
-    }
-
-    pub(crate) fn toggle_project_initialize_projects_automatically(
-        &mut self,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        if let ProjectOnboardingSettings::Project {
-            initialize_projects_automatically,
-            ..
-        } = &mut self.project_settings
-        {
-            let new_value = !*initialize_projects_automatically;
-            send_telemetry_from_ctx!(
-                OnboardingEvent::SettingChanged {
-                    setting: "initialize_project".to_string(),
-                    value: new_value.to_string(),
-                },
-                ctx
-            );
-            *initialize_projects_automatically = new_value;
-            ctx.notify();
-        }
-    }
-
     fn send_completion_telemetry(&self, ctx: &mut ModelContext<Self>) {
         let (intention, model, autonomy) = match &self.intention {
             OnboardingIntention::Terminal => (self.intention.to_string(), None, None),
@@ -565,17 +495,12 @@ impl OnboardingStateModel {
             ),
         };
 
-        let has_project_path = matches!(
-            self.project_settings,
-            ProjectOnboardingSettings::Project { .. }
-        );
-
         send_telemetry_from_ctx!(
             OnboardingEvent::OnboardingSlidesCompleted {
                 intention,
                 model,
                 autonomy,
-                has_project_path,
+                has_project_path: false,
             },
             ctx
         );
@@ -588,32 +513,16 @@ impl OnboardingStateModel {
     }
 
     pub(crate) fn back(&mut self, ctx: &mut ModelContext<Self>) {
-        use warp_core::features::FeatureFlag;
-        let theme_picker_last = FeatureFlag::ZapNewSettingsModes.is_enabled();
-
-        let prev = if theme_picker_last {
-            match self.step {
-                OnboardingStep::Intro => None,
-                OnboardingStep::Intention => Some(OnboardingStep::Intro),
-                OnboardingStep::Customize => Some(OnboardingStep::Intention),
-                OnboardingStep::Agent => Some(OnboardingStep::Customize),
-                OnboardingStep::ThirdParty => match self.intention {
-                    OnboardingIntention::Terminal => Some(OnboardingStep::Customize),
-                    OnboardingIntention::AgentDrivenDevelopment => Some(OnboardingStep::Agent),
-                },
-                OnboardingStep::Project => Some(OnboardingStep::ThirdParty),
-                OnboardingStep::ThemePicker => Some(OnboardingStep::ThirdParty),
-            }
-        } else {
-            match self.step {
-                OnboardingStep::Intro => None,
-                OnboardingStep::ThemePicker => Some(OnboardingStep::Intro),
-                OnboardingStep::Intention => Some(OnboardingStep::ThemePicker),
-                OnboardingStep::Customize => None,
-                OnboardingStep::ThirdParty => None,
-                OnboardingStep::Agent => Some(OnboardingStep::Intention),
-                OnboardingStep::Project => Some(OnboardingStep::Agent),
-            }
+        let prev = match self.step {
+            OnboardingStep::Intro => None,
+            OnboardingStep::Intention => Some(OnboardingStep::Intro),
+            OnboardingStep::Customize => Some(OnboardingStep::Intention),
+            OnboardingStep::Agent => Some(OnboardingStep::Customize),
+            OnboardingStep::ThirdParty => match self.intention {
+                OnboardingIntention::Terminal => Some(OnboardingStep::Customize),
+                OnboardingIntention::AgentDrivenDevelopment => Some(OnboardingStep::Agent),
+            },
+            OnboardingStep::ThemePicker => Some(OnboardingStep::ThirdParty),
         };
 
         if let Some(prev) = prev {
@@ -623,43 +532,23 @@ impl OnboardingStateModel {
     }
 
     pub(crate) fn next(&mut self, ctx: &mut ModelContext<Self>) {
-        use warp_core::features::FeatureFlag;
-        let theme_picker_last = FeatureFlag::ZapNewSettingsModes.is_enabled();
-
-        let is_last_step = if theme_picker_last {
-            matches!(self.step, OnboardingStep::ThemePicker)
-        } else {
-            matches!(self.step, OnboardingStep::Project)
-        };
+        let is_last_step = matches!(self.step, OnboardingStep::ThemePicker);
         if !is_last_step {
             send_telemetry_from_ctx!(OnboardingEvent::SlideNavigatedNext, ctx);
         }
 
-        if theme_picker_last {
-            match self.step {
-                OnboardingStep::Intro => self.set_step(OnboardingStep::Intention, ctx),
-                OnboardingStep::Intention => self.set_step(OnboardingStep::Customize, ctx),
-                OnboardingStep::Customize => match self.intention {
-                    OnboardingIntention::Terminal => self.set_step(OnboardingStep::ThirdParty, ctx),
-                    OnboardingIntention::AgentDrivenDevelopment => {
-                        self.set_step(OnboardingStep::Agent, ctx)
-                    }
-                },
-                OnboardingStep::Agent => self.set_step(OnboardingStep::ThirdParty, ctx),
-                OnboardingStep::ThirdParty => self.set_step(OnboardingStep::ThemePicker, ctx),
-                OnboardingStep::Project => self.set_step(OnboardingStep::ThemePicker, ctx),
-                OnboardingStep::ThemePicker => {}
-            }
-        } else {
-            match self.step {
-                OnboardingStep::Intro => self.set_step(OnboardingStep::ThemePicker, ctx),
-                OnboardingStep::ThemePicker => self.set_step(OnboardingStep::Intention, ctx),
-                OnboardingStep::Intention => self.set_step(OnboardingStep::Agent, ctx),
-                OnboardingStep::Customize => {}
-                OnboardingStep::ThirdParty => {}
-                OnboardingStep::Agent => self.set_step(OnboardingStep::Project, ctx),
-                OnboardingStep::Project => {}
-            }
+        match self.step {
+            OnboardingStep::Intro => self.set_step(OnboardingStep::Intention, ctx),
+            OnboardingStep::Intention => self.set_step(OnboardingStep::Customize, ctx),
+            OnboardingStep::Customize => match self.intention {
+                OnboardingIntention::Terminal => self.set_step(OnboardingStep::ThirdParty, ctx),
+                OnboardingIntention::AgentDrivenDevelopment => {
+                    self.set_step(OnboardingStep::Agent, ctx)
+                }
+            },
+            OnboardingStep::Agent => self.set_step(OnboardingStep::ThirdParty, ctx),
+            OnboardingStep::ThirdParty => self.set_step(OnboardingStep::ThemePicker, ctx),
+            OnboardingStep::ThemePicker => {}
         }
     }
 
@@ -715,14 +604,6 @@ impl OnboardingStateModel {
                 send_telemetry_from_ctx!(
                     OnboardingEvent::SlideViewed {
                         slide_name: "third_party".to_string(),
-                    },
-                    ctx
-                );
-            }
-            OnboardingStep::Project => {
-                send_telemetry_from_ctx!(
-                    OnboardingEvent::SlideViewed {
-                        slide_name: "project".to_string(),
                     },
                     ctx
                 );
