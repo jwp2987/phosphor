@@ -2450,7 +2450,7 @@ mod tests {
                 CodeEditorView::new(
                     None,
                     None,
-                    super::editor::view::CodeEditorRenderOptions::new(
+                    crate::code::editor::view::CodeEditorRenderOptions::new(
                         warp_editor::render::element::VerticalExpansionBehavior::GrowToMaxHeight,
                     ),
                     ctx,

@@ -10,7 +10,7 @@ use super::{
     },
     SettingsAction,
 };
-use super::{SettingActionPairContexts, SettingActionPairDescriptions, ToggleSettingActionPair};
+use super::ToggleSettingActionPair;
 use crate::appearance::{Appearance, AppearanceEvent};
 use crate::channel::{Channel, ChannelState};
 use crate::context_chips::prompt::PromptEvent;
@@ -101,7 +101,6 @@ use warpui::ui_components::slider::SliderStateHandle;
 use warpui::ui_components::switch::SwitchStateHandle;
 use warpui::units::IntoPixels;
 
-use warpui::id;
 use warpui::{
     elements::{
         Align, Border, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,

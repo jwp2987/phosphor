@@ -5,6 +5,8 @@ use crate::features::FeatureFlag;
 use crate::settings::CodeSettings;
 use crate::terminal::shared_session::SharedSessionStatus;
 use crate::ui_components::icons::Icon;
+use settings::Setting as _;
+use warpui::SingletonEntity as _;
 
 use super::editor::AgentToolbarEditorMode;
 
