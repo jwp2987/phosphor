@@ -2308,9 +2308,19 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       updating — that is a real behaviour change to the command, NOT a §5.6 test
       weakening, and the PR must say so.** Keep upstream's `--null` long option:
       on BSD/macOS grep `-Z` silently means `--decompress`.
-- [ ] `294033bb` **P0 (pairs with `748b635c`)** — zsh `^P` bound to bare
+- [x] `294033bb` **P0 (pairs with `748b635c`)** — zsh `^P` bound to bare
       `kill-buffer` on `main` only; a user rc switching to vi mode makes the
       buffer-clear a no-op, leaking bootstrap residue into the next command.
+      **Fixed 2026-09-27 (#737):** ported `294033bb` verbatim to
+      `zsh_body.sh` — a dedicated `warp_kill_buffer_and_reset_insert_mode` widget
+      (clears the buffer and, on `vicmd`, switches back to `viins`) bound on all
+      four standard keymaps (`main`, `emacs`, `viins`, `vicmd`) instead of plain
+      `kill-buffer` on `main` only, each bind guarded with `2>/dev/null || :`.
+      Verified directly against a real zsh 5.9 binary in this sandbox (the pin's
+      own repro): pre-fix, `bindkey '^P' kill-buffer; bindkey -v; bindkey -M vicmd`
+      shows `^P` reverting to `up-history`; post-fix it stays on the warp widget.
+      **The `748b635c` pwsh half is NOT ported here** — out of scope for this
+      change (zsh-only); still open below.
 - [ ] `748b635c` **P0 (pairs with `294033bb`)** — same defect in `pwsh.ps1`.
       **Trap:** the fix ADDS a second `Warp-Configure-PSReadLine` call inside
       `Warp-Finish-Bootstrap`; the fork has exactly one call site (`:452`, precmd).
@@ -2622,10 +2632,16 @@ separately rather than inflating the queue count.
       `script/windows/install_build_deps.ps1:6,9`. All four fork sites
       coordinator-verified at the pre-fix state. Cosmetic/lint-driven, but a porter
       following the old entry lands one file of four and the commit reads as done.
-- [ ] **`0140af045`** — zsh `compadd` override drops descriptions whenever `-d` arrives
+- [x] **`0140af045`** — zsh `compadd` override drops descriptions whenever `-d` arrives
       **clustered** (`-ld`), which is exactly what `_describe` emits — i.e. most zsh
       completions that have descriptions. Fork still has the pre-fix `(I)-d` code at
       `zsh_body.sh:1330-1332`.
+      **Fixed 2026-09-27 (#737):** ported the pin's fix verbatim — match any flag token
+      `-[a-zA-Z]#d` (leading `-`, zero or more letters, trailing `d`) restricted to the
+      leading flags-only prefix (matching the neighboring `-O`/`-A`/`-D` check), using
+      `(I)` not `(i)`. Verified directly against a real zsh 5.9 binary: `${args[(I)-d]}`
+      on `(-J -V -ld __array_name ...)` returns 0 (old, misses the clustered flag) vs the
+      new match's `${flags[(I)-[a-zA-Z]#d]}` returning the correct index.
 - [ ] **`83b4c101e`** — move settings-schema generation out of a separate `[[bin]]` into
       the main binary, removing a whole extra compile from the release path. The fork's
       own release workflow already documents a `SKIP_SETTINGS_SCHEMA=1` escape hatch,
