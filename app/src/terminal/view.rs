@@ -481,7 +481,7 @@ use crate::terminal::model::index::{Point, Side};
 use crate::terminal::model::mouse::MouseState;
 use crate::terminal::model::selection::{SelectAction, SelectionDirection};
 use crate::terminal::model::session::{
-    BootstrapSessionType, LegacySshFallbackReason, SessionType, Sessions, SessionsEvent,
+    BootstrapSessionType, SessionType, Sessions, SessionsEvent,
 };
 use crate::terminal::model::terminal_model::{BlockIndex, TerminalInputState};
 use crate::terminal::model::terminal_model::{
