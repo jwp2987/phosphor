@@ -196,9 +196,27 @@ pub fn init(app: &mut AppContext) {
             EditorViewAction::MoveToLineEnd,
             text_entry.clone() & !id!("EditorSelectable"),
         ),
-        // The rendered Markdown viewer (`InteractionState::Selectable`) has no text cursor for
+        // `InteractionState::Selectable` ("will respond to selection actions, and ignore edit
+        // actions. No cursor is shown" -- see the enum's doc comment) has no text cursor for
         // Home/End/Page Up/Page Down to move, and previously only the mouse wheel could scroll
         // it at all. Scroll the viewport instead.
+        //
+        // This is every `RichTextEditorView` in Selectable mode, not just the notebook rendered
+        // Markdown viewer that #698 was filed against: read-only AI documents, code review
+        // comments, the read-only code/diff viewer, and workflow views all reuse this same view
+        // and all set Selectable for the same reason (a read-only, text-selectable display with
+        // no cursor), so the fix is intentionally applied at this shared level rather than
+        // special-cased to the notebook file viewer.
+        //
+        // Shift-Home/Shift-End (`SelectToLineStart`/`SelectToLineEnd`, below) are deliberately
+        // *not* excluded the same way: unlike plain Home/End, they extend the text *selection*,
+        // which Selectable mode explicitly supports and renders (it's how a read-only view lets
+        // you select text to copy). That they don't currently autoscroll a resulting off-screen
+        // selection into view is a real but separate, pre-existing gap shared by every
+        // selection-extending binding in Selectable mode alike (mouse-drag, Cmd+A, the
+        // shift-arrow keys, and these) -- not something introduced by, or unique to, Home/End's
+        // lack of a cursor -- so it's out of scope for #698, which is specifically about
+        // Home/End/Page Up/Page Down having no scrolling ability at all.
         FixedBinding::new(
             "home",
             EditorViewAction::ScrollToDocumentStart,
@@ -1446,6 +1464,30 @@ impl RichTextEditorView {
         }
     }
 
+    /// Forget which layout-affecting asset loads (Mermaid diagrams) this view has already
+    /// requested a rebuild for, or is already watching for.
+    ///
+    /// Must be called on every new document (`reset_with_markdown`/`reset_with_ipynb`): this
+    /// view is reused across documents (for example `AIDocumentView`'s editor, or a notebook
+    /// pane whose file changes), but `relaidout_mermaid_asset_sources` is keyed only by a hash
+    /// of the Mermaid source text (`mermaid_asset_source`), not by document or block identity.
+    /// Without this, a second document containing a byte-identical diagram to one already seen
+    /// would find its (freshly created, placeholder-sized) block's asset source already marked
+    /// "relaidout" from the previous document, and never get the rebuild it needs to pick up the
+    /// diagram's real size -- stale layout for the life of the new document, not a hang, but the
+    /// same underlying bug class as #697.
+    ///
+    /// `pending_layout_affecting_asset_loads` is cleared too, for the same reason: it's also
+    /// keyed on asset identity rather than document identity, so a stale entry could suppress a
+    /// duplicate-load watch that the new document's copy of that block genuinely needs. (A
+    /// leftover in-flight future for an old handle is harmless either way -- it only removes its
+    /// entry and, if still relevant, requests a relayout -- but there is no reason to keep it
+    /// around once the document it was watching for is gone.)
+    fn reset_layout_affecting_asset_load_tracking(&mut self) {
+        self.relaidout_mermaid_asset_sources.clear();
+        self.pending_layout_affecting_asset_loads.clear();
+    }
+
     fn watch_layout_affecting_asset_loads(&mut self, ctx: &mut ViewContext<Self>) {
         let loads = self.layout_affecting_asset_loads(ctx);
 
@@ -1738,12 +1780,14 @@ impl RichTextEditorView {
     }
 
     pub fn reset_with_markdown(&mut self, markdown: &str, ctx: &mut ViewContext<Self>) {
+        self.reset_layout_affecting_asset_load_tracking();
         self.model.update(ctx, |model, ctx| {
             model.reset_with_markdown(markdown, ctx);
         });
     }
 
     pub fn reset_with_ipynb(&mut self, ipynb: &str, ctx: &mut ViewContext<Self>) {
+        self.reset_layout_affecting_asset_load_tracking();
         self.model.update(ctx, |model, ctx| {
             model.reset_with_ipynb(ipynb, ctx);
         });

@@ -893,6 +893,15 @@ fn test_cmd_click_missing_markdown_anchor_falls_back_to_link_resolution() {
 /// Home/End/Page Up/Page Down should scroll the rendered (read-only) Markdown viewer -- it has
 /// no text cursor for them to move -- but must keep moving the cursor as before while editing.
 /// Regression test for https://github.com/warpdotdev/warp/issues/698.
+///
+/// This exercises the bare `RichTextEditorView`/`InteractionState::Selectable` directly, with no
+/// notebook-file-specific setup (`initialize_editor` builds a plain editor, not a
+/// `FileNotebookView`): that's deliberate, since the `EditorSelectable` keymap context and these
+/// bindings live on `RichTextEditorView` itself and so apply identically to every Selectable
+/// consumer -- read-only AI documents (`AIDocumentView`), code review comments, the read-only
+/// code/diff viewer, and workflow views all reuse this same view and set the same interaction
+/// state for the same reason (a read-only, text-selectable display with no cursor). This test
+/// (and `test_scroll_actions_scroll_rendered_markdown_viewport` below) stand in for all of them.
 #[test]
 fn test_keymap_context_scopes_home_end_page_bindings_to_selectable() {
     App::test((), |mut app| async move {
@@ -990,5 +999,132 @@ fn test_scroll_actions_scroll_rendered_markdown_viewport() {
         });
         let at_start = app.read(|ctx| render_state.as_ref(ctx).viewport().scroll_top());
         assert_eq!(at_start, warpui::units::Pixels::zero());
+    });
+}
+
+/// View-level regression test for #697, exercising the half of the fix that
+/// `test_rendered_markdown_with_code_block_and_trailing_mermaid_converges` (in `model_tests.rs`)
+/// cannot: that test's model has no attached `RichTextEditorView` (`model_from_markdown` creates
+/// it separately from the dummy view/model pair `setup_editor_window` wires up for its window),
+/// so it never runs `RichTextEditorView::watch_layout_affecting_asset_loads` or exercises
+/// `relaidout_mermaid_asset_sources` -- the dedup that stops the *view* from re-requesting a
+/// rebuild on every `render_state` notification while a queued one from an earlier request
+/// hasn't landed yet. `initialize_editor` attaches a real view, so this exercises that path
+/// directly, with the same document shape from the reported repro: a fenced code block near the
+/// top, then enough paragraphs to push a Mermaid block off the bottom of the viewport.
+#[test]
+fn test_rendered_markdown_view_with_code_block_and_trailing_mermaid_converges() {
+    App::test((), |mut app| async move {
+        let _flag = FeatureFlag::MarkdownMermaid.override_enabled(true);
+        let (_, editor_view, _) = initialize_editor(&mut app);
+
+        let mut markdown = String::from("# t\n\n```rust\nfn a() {}\n```\n\n");
+        for i in 1..=60 {
+            markdown.push_str(&format!(
+                "Paragraph {i} with some words to fill the line.\n\n"
+            ));
+        }
+        markdown.push_str("```mermaid\nflowchart LR\n  A --> B\n```\n");
+
+        reset_editor_with_markdown(&mut app, &editor_view, &markdown).await;
+        editor_view.update(&mut app, |editor, ctx| {
+            editor.set_interaction_state(InteractionState::Selectable, ctx);
+            editor.model.update(ctx, |model, ctx| {
+                model.set_default_mermaid_display_mode(MarkdownDisplayMode::Rendered, ctx);
+            });
+        });
+
+        let render_state = editor_view.read(&app, |editor, ctx| {
+            editor.model.as_ref(ctx).render_state().clone()
+        });
+
+        // If `RichTextEditorView`'s asset-load rebuild dedup regresses, these awaits hang
+        // forever: the loaded Mermaid SVG's cached layout config won't match its real aspect
+        // ratio until a queued rebuild lands, and every `render_state` notification arriving
+        // before that lands would otherwise re-observe the same stale config and re-queue
+        // another rebuild forever (100% CPU, `layout_complete()` never resolves).
+        for _ in 0..8 {
+            app.read(|ctx| render_state.as_ref(ctx).layout_complete())
+                .await;
+        }
+
+        assert_eq!(
+            editor_view.read(&app, |editor, _ctx| editor
+                .relaidout_mermaid_asset_sources
+                .len()),
+            1,
+            "the dedup should have let exactly one rebuild through for the diagram's asset source"
+        );
+    });
+}
+
+/// Regression test for R2: `relaidout_mermaid_asset_sources` is keyed only by a hash of the
+/// Mermaid diagram's source text (`mermaid_asset_source`), not by document or block identity, and
+/// `RichTextEditorView` is reused across documents (for example `AIDocumentView`'s editor, or a
+/// notebook pane whose file changes) via `reset_with_markdown`/`reset_with_ipynb`. Without
+/// clearing that set on reset, a second document containing a byte-identical Mermaid diagram to
+/// one already relaid-out in a previous document would find its (freshly created,
+/// placeholder-sized) block's asset source already marked "relaidout", and never get the rebuild
+/// it needs -- stale layout for the life of the new document, not a hang, but the same underlying
+/// bug class as #697.
+#[test]
+fn test_reset_with_markdown_clears_relaidout_mermaid_asset_sources() {
+    App::test((), |mut app| async move {
+        let _flag = FeatureFlag::MarkdownMermaid.override_enabled(true);
+        let (_, editor_view, _) = initialize_editor(&mut app);
+
+        let markdown = "Before\n\n```mermaid\nflowchart LR\n  A --> B\n```\n\nAfter";
+
+        reset_editor_with_markdown(&mut app, &editor_view, markdown).await;
+        editor_view.update(&mut app, |editor, ctx| {
+            editor.set_interaction_state(InteractionState::Selectable, ctx);
+            editor.model.update(ctx, |model, ctx| {
+                model.set_default_mermaid_display_mode(MarkdownDisplayMode::Rendered, ctx);
+            });
+        });
+        let render_state = editor_view.read(&app, |editor, ctx| {
+            editor.model.as_ref(ctx).render_state().clone()
+        });
+        for _ in 0..8 {
+            app.read(|ctx| render_state.as_ref(ctx).layout_complete())
+                .await;
+        }
+        assert_eq!(
+            editor_view.read(&app, |editor, _ctx| editor
+                .relaidout_mermaid_asset_sources
+                .len()),
+            1,
+            "the first document's diagram should have gotten its one dedup'd relayout"
+        );
+
+        // Reset to a second document, reusing the same view. Check the dedup set inside the same
+        // update as the (synchronous) `reset_with_markdown` call itself, before any subsequent
+        // layout pass gets a chance to legitimately repopulate it -- this isolates "did reset
+        // clear the stale entry" from "does the new document's block happen to need its own
+        // relayout", which depends on asset-cache timing this test shouldn't have to care about.
+        editor_view.update(&mut app, |editor, ctx| {
+            editor.reset_with_markdown(markdown, ctx);
+            assert_eq!(
+                editor.relaidout_mermaid_asset_sources.len(),
+                0,
+                "reset_with_markdown must clear the dedup set on every new document, not carry \
+                 over an entry keyed on a diagram's source text from the previous document"
+            );
+        });
+
+        // The new document should still converge normally (this reset didn't break anything).
+        editor_view.update(&mut app, |editor, ctx| {
+            editor.set_interaction_state(InteractionState::Selectable, ctx);
+            editor.model.update(ctx, |model, ctx| {
+                model.set_default_mermaid_display_mode(MarkdownDisplayMode::Rendered, ctx);
+            });
+        });
+        let render_state = editor_view.read(&app, |editor, ctx| {
+            editor.model.as_ref(ctx).render_state().clone()
+        });
+        for _ in 0..8 {
+            app.read(|ctx| render_state.as_ref(ctx).layout_complete())
+                .await;
+        }
     });
 }

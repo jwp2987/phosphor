@@ -286,6 +286,13 @@ impl NotebookCommand {
             && matches!(self.mermaid_display_mode, MarkdownDisplayMode::Rendered)
     }
 
+    /// Whether this block is a Mermaid-labeled code block, regardless of its current display
+    /// mode (`Raw` or `Rendered`). Used to scale `MAX_MERMAID_OFFSET_RESYNC_STREAK` with the
+    /// number of diagrams in the document -- see that constant's doc comment.
+    pub(crate) fn is_mermaid(&self, ctx: &AppContext) -> bool {
+        matches!(self.code_block_type(ctx), CodeBlockType::Mermaid)
+    }
+
     #[cfg(feature = "integration_tests")]
     pub(crate) fn is_shell_command(&self, ctx: &AppContext) -> bool {
         matches!(self.code_block_type(ctx), CodeBlockType::Shell)
