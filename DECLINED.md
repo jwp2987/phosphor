@@ -827,7 +827,17 @@ upstream's behavior is actually a defect rather than a preference.
   workspace sink (`Workspace::open_file_with_target`) and the new
   `AppContext::open_file_path_from_file_tree` escape hatch are the two layers downstream
   that must not re-apply the substitution for that one origin — every other `CodeSource`
-  (`Link`, `AIAction`, `ProjectRules`, `RemoteFileTree`, `Finder`, `Skill`) still does.
+  (`Link`, `AIAction`, `ProjectRules`, `GlobalSearch`, `RemoteFileTree`, `Finder`, `Skill`)
+  still does. **(iii) Fixed 2026-09-27 (#757): Global Search results were conflated with
+  file-tree opens.** `app/src/workspace/view.rs`'s `LeftPanelEvent::OpenFileWithTarget`
+  handler hardcoded `CodeSource::FileTree` for every event of that shape, but
+  `left_panel.rs`'s `handle_global_search_event` emitted the identical event for a clicked
+  Global Search result — so a search-opened launchable path silently got the file-tree
+  exception above even though the user never touched the file tree. Fixed with a new
+  `CodeSource::GlobalSearch { path }` variant and a `FileOpenOrigin` field threaded through
+  `LeftPanelEvent::OpenFileWithTarget` so the handler builds the correct `CodeSource`
+  instead of assuming `FileTree`; Global Search keeps the reveal-not-launch behavior like
+  every other non-file-tree origin.
   **Still open, not covered by this decision:** `uri/mod.rs`'s "Open with Phosphor" still
   executes runnable scripts by design. A re-pin must not restore `SystemGeneric` for a
   launchable path reached through any origin other than the file tree.

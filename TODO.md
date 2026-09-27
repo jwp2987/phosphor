@@ -12362,3 +12362,23 @@ open findings that had no pre-existing row.
       `AppContext::open_file_path_from_file_tree`). `uri/mod.rs`'s "Open with
       Phosphor" still executing runnable scripts by design remains open,
       untouched by this round.
+- [x] **`CodeSource::FileTree` and a `GlobalSearch` origin were conflated, so a search
+      result inherited file-tree-only permissions — FIXED (#706 follow-up, #757),
+      2026-09-27.** `app/src/workspace/view.rs`'s `LeftPanelEvent::OpenFileWithTarget`
+      handler hardcoded `CodeSource::FileTree { path: path.clone() }` for every event of
+      that shape, but that event was also emitted from
+      `app/src/workspace/view/left_panel.rs`'s `handle_global_search_event`
+      (`GlobalSearchViewEvent::OpenMatch`) — i.e. clicking a Global Search result — so a
+      file opened from search silently inherited #706's "reach the OS default handler for
+      a launchable path" exception, meant only for a genuine file-tree double-click/Enter.
+      Fixed with a new `CodeSource::GlobalSearch { path }` variant
+      (`app/src/code/editor_management.rs`, telemetry name `"global_search"`) and a
+      `FileOpenOrigin { FileTree, GlobalSearch }` field threaded through
+      `LeftPanelEvent::OpenFileWithTarget` (`app/src/workspace/view/left_panel.rs`) so the
+      handler builds the right `CodeSource` from the real origin instead of assuming
+      `FileTree`; every exhaustive match on `CodeSource` updated
+      (`editor_management.rs`'s own `impl` block, `agent_sdk/driver/output.rs`'s
+      code-block-source formatter). Global Search keeps #681's reveal-not-launch behavior.
+      Test: `test_open_file_with_target_global_search_origin_reveals_launchable_paths`
+      added to `app/src/workspace/view_test.rs`, alongside the existing #706 sink test.
+      `DECLINED.md`'s #681/#706 entry updated with the conflation and its fix.

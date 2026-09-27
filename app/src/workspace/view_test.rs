@@ -788,6 +788,65 @@ fn test_open_file_with_target_file_tree_origin_opens_launchable_paths() {
     });
 }
 
+/// #757: a Global Search result is a distinct origin from the file tree, and must NOT
+/// inherit the #706 exception above -- unlike `CodeSource::FileTree` in the test above, a
+/// `CodeSource::GlobalSearch` target reaching the sink as `SystemDefault`/`SystemGeneric`
+/// still gets the #681 reveal-not-launch treatment, exactly like `CodeSource::Link` in
+/// `test_open_file_with_target_reveals_launchable_paths`. Regression test for the bug where
+/// `LeftPanelEvent::OpenFileWithTarget` hardcoded `CodeSource::FileTree` for every event of
+/// that shape, including ones emitted by `handle_global_search_event`.
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_open_file_with_target_global_search_origin_reveals_launchable_paths() {
+    use warpui::platform::test::{RecordedSystemOpen, recorded_system_opens_matching};
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let app_bundle = temp_dir.path().join("Evil.app");
+        let installer = temp_dir.path().join("setup.pkg");
+        let script = temp_dir.path().join("run.command");
+        let document = temp_dir.path().join("paper.pdf");
+
+        for (path, target) in [
+            (&app_bundle, FileTarget::SystemGeneric),
+            (&installer, FileTarget::RevealInFileManager),
+            (&script, FileTarget::SystemDefault),
+            (&document, FileTarget::SystemGeneric),
+        ] {
+            workspace.update(&mut app, |workspace, ctx| {
+                workspace.open_file_with_target(
+                    path.clone(),
+                    target,
+                    None,
+                    CodeSource::GlobalSearch { path: path.clone() },
+                    ctx,
+                );
+            });
+        }
+
+        use warp_util::launch_policy::canonical_path_for_open as resolved;
+        let needle = temp_dir
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            recorded_system_opens_matching(&needle),
+            vec![
+                RecordedSystemOpen::RevealedFile(resolved(&app_bundle)),
+                RecordedSystemOpen::RevealedFile(resolved(&installer)),
+                // Launchable text headed for the system default app takes the editor-only
+                // route; it does not exist here, so it is revealed rather than edited.
+                RecordedSystemOpen::RevealedFile(resolved(&script)),
+                RecordedSystemOpen::OpenedFile(resolved(&document)),
+            ]
+        );
+    });
+}
+
 #[cfg(feature = "local_fs")]
 #[test]
 fn test_worktree_sidecar_search_editor_enter_executes_selection() {

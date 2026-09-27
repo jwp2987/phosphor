@@ -121,6 +121,17 @@ pub enum CodeSource {
     ProjectRules { path: PathBuf },
     /// Opened from file tree.
     FileTree { path: PathBuf },
+    /// Opened from a Global Search result (`GlobalSearchViewEvent::OpenMatch`,
+    /// local-path case). Deliberately distinct from `FileTree` (#757): both
+    /// used to funnel through the same `LeftPanelEvent::OpenFileWithTarget`
+    /// shape and get hardcoded to `FileTree` at the handler, so a search
+    /// result silently inherited `FileTree`'s #706 exception (permission to
+    /// reach the OS default handler for a launchable path, bypassing #681's
+    /// reveal-before-open confirmation) even though the user never picked
+    /// this path from the file tree. `GlobalSearch` gets none of `FileTree`'s
+    /// special permissions -- it falls through to the same reveal-not-open
+    /// behavior as every other non-file-tree origin.
+    GlobalSearch { path: PathBuf },
     /// A remote file opened by clicking it in the remote file tree (openWarp-only).
     /// Content is synced with the SSH daemon via the buffer-sync protocol; there is
     /// no local path, so tab identity is keyed by [`RemotePath`]. The pane is not
@@ -148,6 +159,7 @@ impl CodeSource {
             | Self::AIAction { .. }
             | Self::ProjectRules { .. }
             | Self::FileTree { .. }
+            | Self::GlobalSearch { .. }
             | Self::RemoteFileTree { .. }
             | Self::Finder { .. }
             | Self::Skill { .. } => None,
@@ -162,6 +174,7 @@ impl CodeSource {
             Self::Link { path, .. }
             | Self::ProjectRules { path }
             | Self::FileTree { path }
+            | Self::GlobalSearch { path }
             | Self::Finder { path }
             | Self::Skill { path, .. } => Some(path.clone()),
         }
@@ -181,6 +194,7 @@ impl CodeSource {
             Self::Link { path, .. }
             | Self::ProjectRules { path }
             | Self::FileTree { path }
+            | Self::GlobalSearch { path }
             | Self::Finder { path }
             | Self::Skill { path, .. } => Some(BufferLocation::Local(path.clone())),
         }
@@ -217,6 +231,7 @@ impl CodeSource {
             Self::AIAction { .. } => "ai_action",
             Self::ProjectRules { .. } => "project_rules",
             Self::FileTree { .. } => "file_tree",
+            Self::GlobalSearch { .. } => "global_search",
             Self::RemoteFileTree { .. } => "remote_file_tree",
             Self::Finder { .. } => "finder",
             Self::Skill { .. } => "skill",
