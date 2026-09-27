@@ -11,25 +11,34 @@ use clap::{Arg, Args, Command, ValueEnum};
 pub struct ShareArgs {
     /// Share the agent's session
     ///
-    /// Hidden: sharing is a cloud capability this fork does not have.
-    /// `build_merged_config_and_task` hardcodes `should_share = false`
-    /// (`app/src/ai/agent_sdk/mod.rs:500`) and `ShareArgs::is_shared` has no
-    /// callers, so this flag parses, validates its recipient grammar helpfully,
-    /// and then does nothing.
-    ///
-    /// `hide` rather than removal is deliberate: an existing script passing
-    /// `--share` keeps parsing instead of failing at the argument parser. The
-    /// flag stays inert either way, but a silent no-op the user never sees
-    /// advertised is better than a documented promise that is not kept, and
-    /// better than breaking a command line that works today.
+    /// Hidden: sharing is a cloud capability this fork does not have (the
+    /// session would have to be hosted, and recipients resolved, by Warp's
+    /// backend). The flag still parses, so an existing command line gets a
+    /// clear error from `agent run` ([`ShareArgs::unsupported_error`]) instead
+    /// of clap's generic "unexpected argument". It used to be accepted and
+    /// silently ignored, which let a user believe a session was shared when it
+    /// was not (#637).
     #[arg(long = "share", value_name = "RECIPIENTS", num_args=0..=1, hide = true)]
     pub share: Option<Vec<ShareRequest>>,
 }
+
+/// Why `agent run --share` is refused. Session sharing is declined cloud
+/// functionality (see DECLINED.md, "Agent session sharing").
+pub const SHARE_UNSUPPORTED_MESSAGE: &str = "`--share` is not supported in Phosphor: sharing an \
+     agent session needs a hosted sharing service, which this build does not include. Remove \
+     `--share` to run the agent locally.";
 
 impl ShareArgs {
     /// Returns `true` if the session should be shared.
     pub fn is_shared(&self) -> bool {
         self.share.is_some()
+    }
+
+    /// The error `agent run` reports when `--share` was passed, or `None` when
+    /// it was not. Sharing cannot happen here, so a request for it must fail
+    /// loudly rather than run unshared.
+    pub fn unsupported_error(&self) -> Option<&'static str> {
+        self.is_shared().then_some(SHARE_UNSUPPORTED_MESSAGE)
     }
 }
 

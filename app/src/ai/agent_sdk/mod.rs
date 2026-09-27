@@ -51,6 +51,7 @@ mod agent_message;
 mod common;
 mod config_file;
 pub(crate) mod driver;
+pub mod json_document;
 mod mcp;
 mod mcp_config;
 mod model;
@@ -151,10 +152,20 @@ fn run_agent(
             if args.harness != Harness::Oz && !FeatureFlag::AgentHarness.is_enabled() {
                 return Err(anyhow::anyhow!("unexpected argument '--harness' found"));
             }
+            if let Some(message) = args.share.unsupported_error() {
+                return Err(anyhow::anyhow!(message));
+            }
             if args.harness == Harness::OpenCode {
                 return Err(anyhow::anyhow!(
                     "The opencode harness is only supported for local child agent launches."
                 ));
+            }
+
+            // From here on the run owns stdout. Under `json` it prints exactly one document,
+            // from the will-terminate hook, however the process ends (#637). Argument errors
+            // above are usage errors and, like clap's, go to stderr with no document.
+            if global_options.output_format == OutputFormat::Json {
+                json_document::arm();
             }
 
             // Start the agent driver runner, which will handle the rest of the setup steps
@@ -179,9 +190,6 @@ fn run_agent(
             Ok(())
         }
         AgentCommand::Profile(sub) => profiles::run(ctx, global_options, sub),
-        AgentCommand::List(_) => Err(anyhow::anyhow!(
-            "Agent skill listing is disabled in Phosphor"
-        )),
         AgentCommand::Message(sub) => agent_message::run(global_options.output_format, sub),
     }
 }
@@ -497,6 +505,7 @@ impl AgentDriverRunner {
                 let (merged_config, task) =
                     build_merged_config_and_task(&args, &resolved_skill, &prompt_clone, ctx)?;
 
+                // `--share` is rejected up front in `run_agent`; sharing is declined cloud.
                 let should_share = false;
 
                 let third_party_harness_model_config = merged_config
@@ -556,6 +565,9 @@ impl AgentDriverRunner {
 
             ctx.spawn(agent_future, |_, result, ctx| match result {
                 Ok(()) => {
+                    // The `--output-format json` document itself is printed by the
+                    // will-terminate hook this triggers (#637).
+                    json_document::record_completed();
                     ctx.terminate_app(TerminationMode::ForceTerminate, None);
                 }
                 Err(err) => {
@@ -574,7 +586,6 @@ fn command_requires_auth(command: &CliCommand) -> bool {
             AgentCommand::Profile(sub) => match sub {
                 AgentProfileCommand::List => true,
             },
-            AgentCommand::List(_) => true,
             // The local mailbox is plain filesystem I/O with no BYOP/provider
             // dependency, and local children invoke it unattended -- it must
             // work regardless of auth state.
@@ -630,6 +641,11 @@ fn report_fatal_error(err: anyhow::Error, ctx: &mut AppContext) {
     for cause in err.chain().skip(1) {
         let _ = write!(&mut message, "\n=> {cause}");
     }
+
+    // Under `agent run --output-format json`, the document ends with this failure (a
+    // no-op for every other command) (#637). Recorded before the log-file hint, which is
+    // for a human reading stderr.
+    json_document::record_failed(&message);
 
     #[cfg(not(target_family = "wasm"))]
     {

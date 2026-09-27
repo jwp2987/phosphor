@@ -52,7 +52,6 @@ use crate::{
         },
     },
     auth::AuthStateProvider,
-    server::ids::{ServerId, SyncId},
 };
 use anyhow::Context as _;
 use futures::{
@@ -268,7 +267,8 @@ pub struct Task {
     /// The prompt for the agent.
     pub prompt: AgentRunPrompt,
     pub model: Option<LLMId>,
-    /// ID of the profile to run as (SyncId string). If None, use the default profile.
+    /// ID of the profile to run as, as `agent profile list` prints it: a sync ID string,
+    /// or `default`. If None, use the default profile.
     pub profile: Option<String>,
     /// MCP server specifications to start prior to execution.
     pub mcp_specs: Vec<MCPSpec>,
@@ -297,7 +297,9 @@ pub enum AgentDriverError {
     MCPJsonParseError(String),
     #[error("MCP server configuration is missing required variables")]
     MCPMissingVariables,
-    #[error("Agent profile \"{0}\" not found")]
+    #[error(
+        "Agent profile \"{0}\" not found. Run `agent profile list` to see the IDs `--profile` accepts."
+    )]
     ProfileError(String),
     #[error("Local user state is unavailable. Restart Phosphor and try again.")]
     NotLoggedIn,
@@ -482,6 +484,25 @@ impl AgentDriver {
 
     pub fn set_output_format(&mut self, output_format: OutputFormat) {
         self.output_format = output_format;
+    }
+
+    /// Write one batch of run output.
+    ///
+    /// `write` renders into a byte buffer in the driver's format. Under
+    /// `--output-format json` the rendered NDJSON records go to the single document
+    /// `super::json_document` prints when the process terminates (#637); every other
+    /// format goes straight to stdout.
+    fn emit_output<F>(&self, write: F) -> io::Result<()>
+    where
+        F: FnOnce(&mut Vec<u8>) -> io::Result<()>,
+    {
+        let mut bytes = Vec::new();
+        write(&mut bytes)?;
+        if self.output_format == OutputFormat::Json {
+            super::json_document::push_ndjson(&bytes)
+        } else {
+            output::with_stdout_buffered(|buf| buf.write_all(&bytes))
+        }
     }
 
     pub fn run(
@@ -1460,15 +1481,16 @@ impl AgentDriver {
         let terminal_id = self.terminal_driver.as_ref(ctx).terminal_view().id();
 
         if let Some(profile) = profile {
-            let server_id = ServerId::try_from(profile.as_str())
-                .map_err(|_| AgentDriverError::ProfileError(profile.clone()))?;
-            let sync_id = SyncId::ServerId(server_id);
+            // Accepts every ID `agent profile list` prints, including a locally created
+            // profile's `Client-<uuid>` and `default` (#637). This used to require a
+            // 22-character server ID, so no locally created profile was selectable.
             AIExecutionProfilesModel::handle(ctx).update(ctx, |model, ctx| {
-                if let Some(profile_id) = model.get_profile_id_by_sync_id(&sync_id) {
-                    model.set_active_profile(terminal_id, profile_id, ctx);
-                } else {
+                let Some(profile_id) =
+                    super::profiles::find_profile_by_cli_id(model, &profile, ctx)
+                else {
                     return Err(AgentDriverError::ProfileError(profile.clone()));
-                }
+                };
+                model.set_active_profile(terminal_id, profile_id, ctx);
                 Ok(())
             })?;
         }
@@ -1567,7 +1589,7 @@ impl AgentDriver {
 
                     if !written_conversation_id {
                         if let Some(token) = token_opt {
-                            report_if_error!(output::with_stdout_buffered(|buf| match me.output_format {
+                            report_if_error!(me.emit_output(|buf| match me.output_format {
                                 OutputFormat::Json | OutputFormat::Ndjson => output::json::conversation_started(&token, buf),
                                 OutputFormat::Text | OutputFormat::Pretty => output::text::conversation_started(&token, buf),
                             }).context("Failed to write conversation ID"));
@@ -1740,7 +1762,7 @@ impl AgentDriver {
 
     /// Write the inputs to an exchange to stdout.
     fn write_exchange_inputs(&self, exchange: &AIAgentExchange) -> io::Result<()> {
-        output::with_stdout_buffered(|buf| {
+        self.emit_output(|buf| {
             for input in &exchange.input {
                 self.write_input(buf, input)?;
             }
@@ -1755,7 +1777,7 @@ impl AgentDriver {
         };
         let output = shared.get();
 
-        output::with_stdout_buffered(|buf| self.write_output(buf, &output))
+        self.emit_output(|buf| self.write_output(buf, &output))
     }
 
     /// Format an agent input for display.

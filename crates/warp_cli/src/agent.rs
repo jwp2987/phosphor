@@ -9,7 +9,8 @@ use crate::{
 /// Output format for agent results.
 #[derive(Debug, Copy, Clone, ValueEnum, Eq, PartialEq, Default)]
 pub enum OutputFormat {
-    /// Output as JSON.
+    /// Output as a single JSON document. `agent run` prints it when the run ends; use
+    /// `ndjson` to stream records as they arrive.
     #[value(name = "json")]
     Json,
     /// Output as newline-delimited JSON.
@@ -232,8 +233,10 @@ pub enum AgentCommand {
     /// Manage agent profiles.
     #[command(subcommand)]
     Profile(AgentProfileCommand),
-    /// List all available agents.
-    List(ListAgentConfigsArgs),
+    // `agent list` was removed (#637). At the pin it listed agent configurations from
+    // Warp's hosted environments, or skills from a GitHub repo via `--repo`; neither
+    // source exists here, so it parsed fully and then always failed. Local skills are
+    // what `agent run --skill` resolves, from the directories its help names.
     /// Send or list messages in a local agent's on-disk mailbox.
     ///
     /// This is a local, filesystem-backed replacement for the pin's
@@ -317,8 +320,6 @@ pub struct RunAgentArgs {
     /// validates the repo's git remote matches the expected org.
     ///
     /// When used with --prompt, the skill provides the base context and the prompt is the task.
-    ///
-    /// To automate a skill on a schedule, use `oz schedule create --skill <SPEC>`.
     #[arg(long = "skill", value_name = "SPEC")]
     pub skill: Option<SkillSpec>,
 
@@ -387,6 +388,9 @@ pub struct RunAgentArgs {
     pub computer_use: HiddenComputerUseArgs,
 
     /// Agent profile to configure the terminal session.
+    ///
+    /// Takes an ID exactly as `agent profile list` prints it; `default` selects the
+    /// default profile.
     #[arg(long = "profile", value_name = "ID")]
     pub profile: Option<String>,
 
@@ -405,19 +409,6 @@ impl RunAgentArgs {
         specs.extend(self.mcp_servers.iter().cloned().map(MCPSpec::Uuid));
         specs
     }
-}
-
-/// Arguments for listing available agents.
-#[derive(Debug, Clone, Args)]
-pub struct ListAgentConfigsArgs {
-    /// List skills from a specific GitHub repository.
-    ///
-    /// Format: `owner/repo` or `https://github.com/owner/repo`
-    ///
-    /// When provided, lists skills from this repo instead of from your environments.
-    /// Any environments that include this repo will still be shown in the results.
-    #[arg(long = "repo", short = 'r', value_name = "REPO")]
-    pub repo: Option<String>,
 }
 
 #[cfg(test)]

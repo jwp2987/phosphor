@@ -10,7 +10,8 @@ pub enum ModelCommand {
 /// Shared CLI args for selecting a base model.
 #[derive(Debug, Clone, Args, Default)]
 pub struct ModelArgs {
-    /// Override the base model used by this command. Use `warp model list` to see available models.
+    /// Override the base model used by this command. Run the `model list` subcommand to see
+    /// available models.
     #[arg(long = "model", value_name = "MODEL_ID")]
     pub model: Option<String>,
 }

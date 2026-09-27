@@ -426,6 +426,17 @@ fn run_command_is_removed() {
     assert!(result.is_err());
 }
 
+// #637: `agent list` existed only to fail ("Agent skill listing is disabled in
+// Phosphor") -- its sources were Warp's hosted environments and GitHub repos. It is
+// removed rather than left as a command that parses and then always errors.
+#[test]
+fn agent_list_is_removed() {
+    assert!(Args::try_parse_from(["warp", "agent", "list"]).is_err());
+    assert!(Args::try_parse_from(["warp", "agent", "list", "--repo", "owner/repo"]).is_err());
+    // The local mailbox's `list` is unaffected.
+    assert!(Args::try_parse_from(["warp", "agent", "message", "list", "run-1"]).is_ok());
+}
+
 // `oz agent message *` is the local, filesystem-backed replacement for the
 // removed `oz run message *` mailbox -- see `crate::agent_mailbox`'s doc
 // comment for why `oz run` (a client for Warp's server-side hosted-CLI-task
@@ -888,4 +899,76 @@ fn agent_run_accepts_mcp() {
         run_args.mcp_specs.as_slice(),
         [crate::mcp::MCPSpec::Uuid(parsed_uuid)] if *parsed_uuid == uuid
     ));
+}
+
+/// Long help for `agent run`, as `<bin> agent run --help` renders it, with runs of
+/// whitespace collapsed so assertions do not depend on where clap wraps lines.
+fn agent_run_long_help() -> String {
+    let mut command = <Args as clap::CommandFactory>::command();
+    let help = command
+        .find_subcommand_mut("agent")
+        .expect("`agent` subcommand should exist")
+        .find_subcommand_mut("run")
+        .expect("`agent run` subcommand should exist")
+        .render_long_help()
+        .to_string();
+    help.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+// #637: `--model` pointed at `warp model list` (wrong binary) and `--skill` at
+// `oz schedule create`, a subcommand this fork removed with the cron scheduler.
+#[test]
+fn agent_run_help_has_no_stale_command_references() {
+    let help = agent_run_long_help();
+
+    assert!(
+        help.contains("model list"),
+        "`--model` should still say how to list models:\n{help}"
+    );
+    assert!(
+        !help.contains("warp model list"),
+        "`--model` help must not name the `warp` binary:\n{help}"
+    );
+    assert!(
+        !help.contains("schedule create"),
+        "`--skill` help must not point at the removed `schedule` subcommand:\n{help}"
+    );
+    assert!(
+        Args::try_parse_from(["warp", "schedule", "create"]).is_err(),
+        "`schedule` is removed; if it comes back, revisit the `--skill` help"
+    );
+}
+
+fn parse_agent_run(extra: &[&str]) -> crate::agent::RunAgentArgs {
+    let mut argv = vec!["warp", "agent", "run", "--prompt", "hello"];
+    argv.extend_from_slice(extra);
+    let args = Args::try_parse_from(argv).expect("agent run should parse");
+    let Some(Command::CommandLine(boxed_cmd)) = args.command else {
+        panic!("Expected `agent run` command");
+    };
+    let CliCommand::Agent(AgentCommand::Run(run_args)) = *boxed_cmd else {
+        panic!("Expected `agent run` command");
+    };
+    *run_args
+}
+
+// #637: `--share` used to parse and then be silently ignored, so a run the user
+// asked to share ran unshared with no indication. It still parses (a script gets a
+// clear error rather than clap's "unexpected argument"), but is now refused.
+#[test]
+fn agent_run_share_is_refused_with_a_clear_error() {
+    for extra in [&["--share"][..], &["--share", "team:view"][..]] {
+        let run_args = parse_agent_run(extra);
+        let message = run_args
+            .share
+            .unsupported_error()
+            .unwrap_or_else(|| panic!("{extra:?} must be refused, not ignored"));
+        assert!(message.contains("--share"), "{message}");
+        assert!(message.contains("not supported"), "{message}");
+    }
+}
+
+#[test]
+fn agent_run_without_share_is_not_refused() {
+    assert_eq!(parse_agent_run(&[]).share.unsupported_error(), None);
 }

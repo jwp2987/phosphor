@@ -2628,6 +2628,12 @@ fn app_callbacks(is_integration_test: bool) -> warpui::platform::AppCallbacks {
             ctx.dispatch_global_action("root_view:update_quake_mode_state", &update_quake_mode_arg);
         })),
         on_will_terminate: Some(Box::new(move |ctx| {
+            // `agent run --output-format json` prints its single document here, so it is
+            // written however the run ends: completion, fatal error, or Ctrl-C/SIGTERM,
+            // which leave the event loop without completing the driver's future (#637).
+            // A no-op for every other launch.
+            crate::ai::agent_sdk::json_document::finish();
+
             // Every quit path (last-window close, `workspace:terminate_app` /
             // Ctrl+Shift+Q, menu Quit, SIGTERM/SIGHUP, the headless/TUI/agent-SDK loop
             // exit) converges on this hook. See `run_will_terminate_steps` for why the

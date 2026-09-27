@@ -804,7 +804,7 @@ These are private settings: they have no TOML path and are stored in
 |---|---|---|
 | `phosphor-oss --dump-debug-info` | shell | Print the graphics/environment report and exit. |
 | `phosphor-oss mcp list` | shell | List runnable MCP servers. The whole `mcp` CLI surface. |
-| `phosphor-oss whoami` | shell | Prints the local placeholder identity. There is no account. |
+| `phosphor-oss whoami` | shell | Reports a local profile. There is no account. |
 | `phosphor-oss minidump-server <socket>` | worker | Hidden, and inert: the `crash_reporting` cargo feature is off in every shipped build, so this arm panics. |
 | `phosphor-oss completions [shell]` | shell | Print shell completions to stdout. |
 | **View Phosphor logs** | GUI palette | Build a log bundle and reveal it. |
@@ -829,7 +829,7 @@ the part you actually want.
 
 | Warp feature | What it did | In Phosphor |
 |---|---|---|
-| **Warp account / login / logout** | Signed you in to Warp's backend; gated everything else. | **Absent.** There is no account and nothing to sign in to. The `/logout` slash command is deliberately not registered — its handler is a documented no-op, and a menu row that does nothing when selected is worse than no row. `phosphor-oss whoami` still runs, but prints a fixed local placeholder identity rather than a real account. |
+| **Warp account / login / logout** | Signed you in to Warp's backend; gated everything else. | **Absent.** There is no account and nothing to sign in to. The `/logout` slash command is deliberately not registered — its handler is a documented no-op, and a menu row that does nothing when selected is worse than no row. `phosphor-oss whoami` still runs and says so: it reports a local profile with no account. |
 | **Credits, billing, paid tiers, upgrade flows** | Metered agent usage against a subscription. | **Absent.** You pay your provider directly, so there is no balance to show. **Replacement: `/usage` and `/cost`.** `/usage` reports the one budget a BYOP conversation actually spends against — the percentage of the model's context window used and remaining. `/cost` multiplies the token counts the provider reported by the per-model rates *you* configured. Where a rate is not configured it says so in words rather than rendering a plausible-looking `$0.00`. |
 | **Teams and workspaces** | Shared folders, workflows, org policy, admin panels. | **Absent, permanently.** `UserWorkspaces::has_teams()` and `current_team()` are hard-coded to "none". The consequence to know about: org-level command denylists, workspace AI-autonomy policy and enterprise secret-redaction rules are inert, because there is no server to deliver them. |
 | **Agent commit/PR attribution toggle** | A user preference uploaded to Warp's server, where the *server* decided whether to add a `Co-Authored-By` line. | **Absent.** The client never implemented the behaviour even upstream; there is no local attribution emitter to toggle. |
@@ -840,7 +840,7 @@ the part you actually want.
 | Warp feature | What it did | In Phosphor |
 |---|---|---|
 | **Session / block sharing, shareable links** | Published a session to Warp's servers for someone else to open. | **Absent.** Requires a backend to host the session and resolve recipients. |
-| **`agent run --share`** | Shared an agent session with `team:` / `public:` / `user@…` recipients. | **Parses, does nothing, and is hidden from `--help`.** Kept parseable so an existing script does not break at the argument parser; the code hard-codes "not shared". |
+| **`agent run --share`** | Shared an agent session with `team:` / `public:` / `user@…` recipients. | **Refused, and hidden from `--help`.** The flag still parses, so an existing script gets a clear "`--share` is not supported" error instead of an argument-parser failure; the run does not start. |
 | **Warp Drive cloud sync** | Cloud-stored, synced workflows, notebooks and prompts. | **The Library is local only.** Objects live in the local database and on disk; nothing syncs and nothing is fetched. `warp.dev/drive/...` links still parse but resolve to nothing. |
 | **Shared-session heartbeat** | Kept a shared session alive against the server. | **Absent** — it served a layer that no longer exists. |
 | **Cloud conversation storage / history** | Conversations stored server-side and available on any machine. | **Absent.** Conversations are local. The Privacy page's cloud-storage toggle was not ported because there is nothing local for it to control. |
@@ -976,7 +976,7 @@ the part you actually want.
 - server_root_url is a blackhole sentinel `http://192.0.2.0:9`: crates/warp_core/src/channel/state.rs:187-195, crates/warp_core/src/channel/config.rs:30
 - is_cloud_disabled() returns true: crates/warp_core/src/channel/state.rs:208-210
 - account.is_settings_sync_enabled has no production consumer: app/src/settings/cloud_preferences.rs:17-27; the only readers draw a "local only" badge (app/src/settings_view/settings_page.rs:522, features_page.rs:6469, keybindings.rs:1158, workspace/view.rs:20927); `is_setting_syncable_on_current_platform` (crates/settings/src/lib.rs:323) is referenced only by tests
-- AuthState is a local placeholder: app/src/auth/mod.rs:1-20, :189-219; whoami reads it: app/src/ai/agent_sdk/admin.rs:37-63
+- AuthState is a local placeholder: app/src/auth/mod.rs:1-20, :189-219; whoami no longer reads it and reports a local profile: app/src/ai/agent_sdk/admin.rs (#637)
 - privacy page: what was deliberately not ported (cloud conversation storage, network log, data management, docs.warp.dev link): app/src/settings_view/privacy_page.rs:9-20
 - crash-report toggle copy stating nothing is uploaded: app/i18n/en/warp.ftl:933-934
 
@@ -1114,7 +1114,7 @@ All rows are drawn from DECLINED.md; the specific rows and their supporting code
 - teams permanently stubbed: DECLINED.md "Teams stay stubbed" (#445); app/src/workspaces/user_workspaces.rs:533
 - workspace/team AI-autonomy and sandboxed-agent policy: DECLINED.md "Workspace / team AI-autonomy and sandboxed-agent overrides"
 - agent attribution: DECLINED.md "Agent commit/PR attribution" (#445)
-- session sharing / --share hidden but parseable: DECLINED.md "Agent session sharing"; crates/warp_cli/src/share.rs:9-27
+- session sharing / --share hidden, parseable, refused at run time: DECLINED.md "Agent session sharing"; crates/warp_cli/src/share.rs (ShareArgs::unsupported_error)
 - shared-session heartbeat: DECLINED.md "Shared-session heartbeat"
 - Warp Drive link resolution kept as dead code: DECLINED.md "warp.dev Drive link resolution" (#267)
 - cloud agent runners / RunAgents: DECLINED.md "RunAgents / cloud-runner orchestration" (#290)

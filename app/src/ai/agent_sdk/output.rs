@@ -277,7 +277,11 @@ where
     match output_format {
         OutputFormat::Json => {
             let items = items.into_iter().collect::<Vec<_>>();
-            serde_json::to_writer(&mut output, &items).context("unable to write JSON output")
+            serde_json::to_writer(&mut output, &items).context("unable to write JSON output")?;
+            // End with a newline like every other format, so the shell prompt does not
+            // land on the same line as the closing bracket (#637).
+            writeln!(&mut output)?;
+            Ok(())
         }
         OutputFormat::Ndjson => {
             for item in items {

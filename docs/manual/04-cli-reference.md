@@ -61,9 +61,8 @@ Two consequences worth knowing:
   `Usage: phosphor-oss …` as expected. The `Examples:` block is built from
   argv\[0\] on both paths.
 * Some **help strings in the source still say `warp` or `oz`** and were not
-  rebranded: the `completions` help shows `path/to/warp completions bash`, and
-  `--model`'s help says "Use `warp model list`". Read those as `phosphor-oss`.
-  See §4.13 for the one that is actually wrong rather than merely stale.
+  rebranded: the `completions` help shows `path/to/warp completions bash`. Read
+  it as `phosphor-oss`.
 
 Throughout this chapter examples use `phosphor-oss`. On a Linux desktop-package
 install, substitute `phosphor`.
@@ -117,13 +116,12 @@ phosphor-oss
 ├── agent
 │   ├── run  (alias: r)          run an agent headlessly
 │   ├── profile list             list agent profiles
-│   ├── list                     (present, but disabled — see §4.13)
 │   └── message
 │       ├── send                 write to a local agent's on-disk mailbox
 │       └── list                 read a local agent's on-disk mailbox
 ├── mcp list                     list runnable MCP servers
 ├── model list                   list selectable model IDs
-├── whoami                       print the local placeholder identity
+├── whoami                       report the local profile (there is no account)
 ├── completions [SHELL]          emit shell completion script
 └── dump-debug-info              print environment/GPU diagnostics
 ```
@@ -261,9 +259,11 @@ searched, in precedence order, under `.agents/skills/`, `.warp/skills/`,
 
 ### Selecting an agent profile
 
-`--profile <ID>` is accepted but see the caveat in §4.12 — the IDs printed by
-`agent profile list` are not, in a normal Phosphor install, in the form
-`--profile` requires.
+`--profile <ID>` takes an ID exactly as `agent profile list` prints it: a
+locally created profile's `Client-<uuid>`, or `default` for the default
+profile. The match is exact and case-sensitive for every ID, `default`
+included; surrounding whitespace is ignored. An unknown ID fails with a message pointing back at
+`agent profile list`.
 
 ---
 
@@ -328,7 +328,7 @@ directory sort is send order.
 |---|---|
 | `pretty` (default) | Unicode box-drawn table for list commands; human prose for `agent run`. |
 | `text` | Tab-separated, column-aligned table for list commands; the same prose as `pretty` for `agent run`. |
-| `json` | For list commands: a single JSON array on one line, **with no trailing newline**. For `agent run`: newline-delimited events (identical to `ndjson`). |
+| `json` | One JSON document, newline-terminated. For list commands: a single array on one line. For `agent run`: an array of the run's events, one per line, printed **when the process exits** — completed, failed, or interrupted — and ending with a `run_failed` / `run_interrupted` record when it did not complete (use `ndjson` to stream). |
 | `ndjson` | One JSON object per line. |
 
 ```console
@@ -342,7 +342,8 @@ $ phosphor-oss --output-format ndjson mcp list
 {"uuid":"9c07…","name":"github"}
 ```
 
-Agent runs emit a typed event stream under `json`/`ndjson`. Every record has a
+Agent runs emit typed event records under `json`/`ndjson` — streamed one per
+line under `ndjson`, collected into one array under `json`. Every record has a
 `type` discriminator:
 
 ```console
@@ -441,25 +442,31 @@ $ phosphor-oss agent profile list
 ╭───────────┬──────────────────╮
 │ ID        ┆ Name             │
 ╞═══════════╪══════════════════╡
-│ Unsynced  ┆ Default          │
+│ default   ┆ Default          │
 ╰───────────┴──────────────────╯
 ```
 
-The `ID` column shows a profile's sync ID when it has one and `Unsynced`
-otherwise. See §4.12 for why that matters for `--profile`.
+The `ID` column shows each profile's sync ID (`Client-<uuid>` for a locally
+created profile), or `default` for the default profile when it has none. Every
+value in it is accepted by `agent run --profile`.
 
 ### … check who Phosphor thinks I am?
 
 ```console
 $ phosphor-oss whoami
-User ID: test_user_uid
-Email: test_user@warp.dev
+Local profile (no account)
+Phosphor has no sign-in: agents run locally with the model provider keys you configure.
 ```
 
-That output is not a bug you can fix by signing in — there is nothing to sign in
-to. Phosphor's auth state is a hard-coded local placeholder, so `whoami` is only
-useful as a smoke test that the binary starts. It supports `pretty`, `text`
-(`user:test_user_uid`) and `json`, but not `ndjson`.
+There is nothing to sign in to, so `whoami` always reports a local profile. It
+supports `pretty`, `text` (`local`) and `json`
+(`{"type":"local","account":null}`), but not `ndjson`.
+
+> **Changed in the #637 fix (breaking for scripts).** `whoami` used to print a
+> placeholder user: `text` gave `user:test_user_uid`, and `json` gave an object
+> with `uid`, `type: "user"` and `email` fields. Those values were never a real
+> identity. Scripts that parsed them must switch to the `type` field, which is
+> now always `"local"`.
 
 ### … collect diagnostics for a bug report?
 
@@ -564,13 +571,13 @@ phosphor-oss completions powershell | Out-String | Invoke-Expression
 | `-n`, `--name <NAME>` | Name for the agent task. | skill name, then file `name` | yes |
 | `-C`, `--cwd <PATH>` | Working directory. | current directory | yes |
 | `--mcp <SPEC>` | MCP server: UUID, file path, or inline JSON. Repeatable. | none | yes |
-| `--profile <ID>` | Agent profile to configure the session. | active profile | yes |
+| `--profile <ID>` | Agent profile to configure the session: an ID from `agent profile list`, or `default`. | active profile | yes |
 | `--idle-on-complete [DURATION]` | Keep the session open after completion. | off; `45m` if the flag is given without a value | **no** (hidden) |
 | `--computer-use` / `--no-computer-use` | Force computer use on/off for this run. Mutually exclusive. | profile setting | **no** (hidden) |
 | `--harness <HARNESS>` | Execution harness: `oz`, `claude`, `opencode`, `gemini`, `codex`. | `oz` | **no** (hidden) |
 | `--gui` | Show the run's progress in the Phosphor window instead of running headlessly. | off | **no** (hidden) |
 | `--sandboxed` | Marks the run as sandboxed. | off | **no** (hidden) |
-| `--share [RECIPIENTS]` | **Inert. Parses and does nothing.** See §4.13. | — | **no** (hidden) |
+| `--share [RECIPIENTS]` | **Refused**: the run fails with an error saying sharing is not supported. See §4.13. | — | **no** (hidden) |
 | `--mcp-server <UUID>` | Legacy form of `--mcp` for UUIDs only. | none | **no** (hidden) |
 | `--bedrock-inference-role <ROLE_ARN>` | AWS Bedrock federated-credential role. Requires `--bedrock-role-region`. | — | **no** (hidden) |
 | `--bedrock-role-region <REGION>` | Region for the Bedrock `AssumeRoleWithWebIdentity` call. Requires `--bedrock-inference-role`. | — | **no** (hidden) |
@@ -596,15 +603,6 @@ checked against `model list`.
 |---|---|---|
 | `<RUN_ID>` (positional) | Mailbox to read. Required. | — |
 | `-L`, `--limit <N>` | Maximum messages, most recent kept. Must be ≥ 1. | `25` |
-
-### `agent list`
-
-| flag | what it does | default |
-|---|---|---|
-| `-r`, `--repo <REPO>` | List skills from `owner/repo` or a GitHub URL. | — |
-
-The command parses, but the handler returns
-`Agent skill listing is disabled in Phosphor` — see §4.13.
 
 ### `agent profile list`, `mcp list`, `model list`, `whoami`
 
@@ -649,24 +647,23 @@ argument.
 
 ## 4.12 Known rough edges
 
-Three things in this surface are inconsistent enough to be worth calling out
-before you hit them.
+**`agent run --output-format json` prints nothing until the process exits.** It
+is a single JSON document, so the run's records are collected and printed as one
+array on the way out: when the run completes, when it fails (including during
+setup, before any record — the array then holds just the failure), and when it
+is interrupted with Ctrl-C or SIGTERM. The last record says how the run ended
+if it did not complete:
 
-**`--profile <ID>` cannot address a locally created profile.** `agent profile
-list` prints `Unsynced` for any profile that has only a local ID, which in a
-normal Phosphor install is all of them; but `--profile` insists on a
-22-character legacy server-style ID and fails with a profile error for anything
-else. In practice this means `--profile` is unusable unless you already have a
-profile carrying a server-style ID. Select profiles in the app instead.
+```json
+{"type":"system","event_type":"run_failed","error":"…"}
+{"type":"system","event_type":"run_interrupted"}
+```
 
-**`--output-format json` is not JSON for `agent run`.** For list commands it
-emits a JSON array; for `agent run` it emits the same newline-delimited stream
-as `ndjson`. If you are piping a run into `jq`, use `jq -c` line-at-a-time
-semantics, not a whole-document parse.
-
-**List commands under `--output-format json` emit no trailing newline.** The
-array is written and the process exits. Shell pipelines that expect a final
-newline should tolerate its absence.
+A record that fails to serialize appears as an `output_error` record instead of
+being dropped. Only an exit that skips shutdown altogether — `SIGKILL`, or a
+second Ctrl-C while shutting down — prints nothing. Argument errors (for
+example `--share`) are reported on stderr with no document, as clap's own parse
+errors are. Use `ndjson` to see records as they arrive.
 
 ---
 
@@ -682,17 +679,17 @@ here. Each is a recorded decision in `DECLINED.md`, not an oversight.
 | `oz agent run-cloud` (and `run --task-id`, `--conversation`, snapshot flags) | **Removed.** Dispatch to Warp's hosted agent infrastructure. Runs are local processes here. |
 | `oz agent create/get/update/delete` | **Removed.** CRUD on named agents stored server-side. |
 | `oz environment …` | **Removed** with the cloud ambient-agent subsystem (cloud dev-environment provisioning, AWS/GCP OIDC). The parser reports it as an unrecognized subcommand. |
-| `oz schedule …` | **Removed.** Cron-scheduled cloud agents. Note that `--skill`'s own help text still points at `oz schedule create --skill …`; that command does not exist. |
+| `oz schedule …` | **Removed.** Cron-scheduled cloud agents. |
 | `oz secret …` | **Removed**, and explicitly rejected by name before parsing. It was a client for a server-side secret store. |
 | `oz federate …` | **Removed**, and explicitly rejected by name before parsing. |
 | `oz memory` / `oz memory-store …` | **Removed.** Team-shared memory synced to the server. |
 | `oz integration …` | **Removed.** Slack-triggered cloud agent runs. |
 | `oz artifact upload/download/get` | **Removed.** Cloud snapshot/artifact storage keyed by cloud run ID. |
 | `oz harness-support …` | **Removed.** Status callbacks a hosted harness reports to Warp's backend. This is why Warp's `oz-harness-support` and `orchestration` agent plugins are not installed by Phosphor — their scripts call this command. |
-| `oz agent run --share` | **Accepted but inert.** Sharing needs Warp's backend to host the session and resolve `team:` / `public:` / email recipients. The flag is hidden and validates its recipient grammar helpfully, then does nothing — sharing is hard-coded off. It was hidden rather than deleted so an existing script that passes it keeps parsing. **If you pass `--share`, nothing is shared and nothing tells you so.** |
-| `oz agent list` | **Present but disabled.** It parses, including `--repo`, then fails with `Agent skill listing is disabled in Phosphor`. |
+| `oz agent run --share` | **Refused.** Sharing needs Warp's backend to host the session and resolve `team:` / `public:` / email recipients. The flag is hidden but still parses, so a script that passes it gets a clear error (*"`--share` is not supported in Phosphor…"*) rather than clap's "unexpected argument"; the run does not start. |
+| `oz agent list` | **Removed.** It listed agent configurations from Warp's hosted environments, or skills from a GitHub repo (`--repo`). The skills `agent run --skill` can use are the local directories named in §4.4. |
 | `oz provider setup linear\|slack`, `oz provider list` | **Not reachable.** The subcommand is feature-gated off in every shipped build and the parser rejects it. It was never the AI-provider surface — see §4.7. |
-| `oz whoami` showing a real account | **Placeholder only.** It prints a fixed local identity (`test_user_uid` / `test_user@warp.dev`). Organisation and team fields are never populated, because teams are permanently absent. |
+| `oz whoami` showing a real account | **No account to show.** It reports a local profile. Organisation and team fields do not exist, because teams are permanently absent. |
 | `WARP_SERVER_ROOT_URL`, `WARP_WS_SERVER_URL`, `WARP_SESSION_SHARING_SERVER_URL` | **Do not exist.** These pointed at Warp's GraphQL and session-sharing backends. There is no backend to point at. |
 
 <!-- SOURCES
@@ -745,8 +742,8 @@ Subcommand inventory
 agent run
 - crates/warp_cli/src/agent.rs:291-300 — visible_alias "r"; ArgGroup prompt_group required over prompt/saved_prompt/skill
 - crates/warp_cli/src/agent.rs:50-60 — PromptArg: --prompt/-p, --saved-prompt, group(multiple=false)
-- crates/warp_cli/src/agent.rs:309-323 — --skill <SPEC>; search order .agents/skills, .warp/skills, .claude/skills, .codex/skills; long_help still references `oz schedule create --skill`
-- crates/warp_cli/src/model.rs:11-17 (enum at :5) — ModelArgs --model <MODEL_ID>, help text still says "warp model list"
+- crates/warp_cli/src/agent.rs — --skill <SPEC>; search order .agents/skills, .warp/skills, .claude/skills, .codex/skills (stale `oz schedule create` reference removed, #637)
+- crates/warp_cli/src/model.rs — ModelArgs --model <MODEL_ID>; help points at the `model list` subcommand (#637)
 - crates/warp_cli/src/config_file.rs:5-14 — -f/--file, env WARP_AGENT_CONFIG_FILE
 - crates/warp_cli/src/agent.rs:325-330 — --name/-n, --cwd/-C
 - crates/warp_cli/src/agent.rs:331-333 — --gui, hide = true
@@ -786,12 +783,13 @@ Mailbox
 
 Output formats
 - crates/warp_cli/src/agent.rs:9-32 — OutputFormat: json, ndjson, pretty (default), text
-- app/src/ai/agent_sdk/output.rs:267-323 — write_list: Json = to_writer of a Vec (no trailing newline); Ndjson = one object per line; Pretty = comfy-table UTF8_FULL + rounded; Text = TabWriter
-- app/src/ai/agent_sdk/driver.rs:1764-1773, 1871-1879 — agent run: Json and Ndjson both go to output::json (newline-delimited)
+- app/src/ai/agent_sdk/output.rs — write_list: Json = one-line array + newline (#637); Ndjson = one object per line; Pretty = comfy-table UTF8_FULL + rounded; Text = TabWriter
+- app/src/ai/agent_sdk/driver.rs — agent run: records render via output::json; AgentDriver::emit_output streams them under Ndjson and hands them to json_document under Json (#637)
+- app/src/ai/agent_sdk/json_document.rs — the json document: armed in run_agent, outcome set by create_and_run_driver / report_fatal_error, printed once by finish() from on_will_terminate in app/src/lib.rs (runs on completion, fatal error, and SIGINT via the headless loop's app_will_terminate)
 - app/src/ai/agent_sdk/driver/output.rs:525-578 — JsonMessage tagged "type"; JsonSystemEvent tagged "event_type"
 - app/src/ai/agent_sdk/driver/output.rs:1151-1186 — write_message writes one object per line
 - app/src/ai/agent_sdk/driver/output.rs:269-300, 463-473 — text rendering ("Running `{command}`", "Reading …", "Run ID: …", "New conversation started with debug ID: …")
-- app/src/ai/agent_sdk/admin.rs:112-121 — whoami rejects ndjson
+- app/src/ai/agent_sdk/admin.rs — write_whoami rejects ndjson
 
 Provider / model / BYOP
 - crates/warp_cli/src/provider.rs:5-11, 19-25 — ProviderCommand::Setup/List; ProviderType is Linear | Slack
@@ -807,17 +805,17 @@ Provider / model / BYOP
 - DECLINED.md:225 — provider API keys are set in-process through the /api-keys picker, not via a self-shelling CLI; the warp_tui --set-provider-api-key / --clear-provider-api-key flags are refused (#629)
 
 Auth / whoami
-- app/src/auth/mod.rs:31-32 — TEST_USER_EMAIL "test_user@warp.dev", TEST_USER_UID "test_user_uid"
+- app/src/auth/mod.rs:31-32 — TEST_USER_EMAIL / TEST_USER_UID back the local auth facade; whoami no longer prints them (#637)
 - app/src/auth/mod.rs:205-221 — User::test() is the placeholder identity
 - app/src/auth/mod.rs:261-291 — AuthState::new()/initialize(): api_key only sets a local Credentials::ApiKey
 - app/src/auth/mod.rs:393-395, 437-439 — user_id() / principal_type()
 - app/src/lib.rs:1352-1365 — api_key gated on FeatureFlag::APIKeyAuthentication; app/src/lib.rs:3157-3158 maps it to the `api_key_authentication` cargo feature, which IS in `app/Cargo.toml`'s `default` (line 558), so the CLI does accept the flag. `LaunchMode::CommandLine` is not dogfood-gated (unlike `App`/`Tui`). app/src/auth/mod.rs:272-289 — all it does is set a local `Credentials::ApiKey`.
-- app/src/ai/agent_sdk/admin.rs:36-125 — whoami output shape per format
+- app/src/ai/agent_sdk/admin.rs — write_whoami: output shape per format (local profile, no account)
 - DECLINED.md:83-86 — teams/current_team() are permanently None; login/logout removed
 
 Profiles
-- app/src/ai/agent_sdk/profiles.rs:29-58 — profile list; SyncId::ServerId → id string, otherwise "Unsynced"
-- app/src/ai/agent_sdk/driver.rs:1454-1477 — configure_terminal: --profile must parse as ServerId, else AgentDriverError::ProfileError
+- app/src/ai/agent_sdk/profiles.rs — profile_cli_id: sync ID string, or "default" for the unsynced default profile
+- app/src/ai/agent_sdk/driver.rs configure_terminal → profiles.rs find_profile_by_cli_id: matches --profile exactly (trimmed, case-sensitive) against the listed IDs; "default" selects the default profile; else AgentDriverError::ProfileError
 - app/src/server/ids.rs:153-158, 212-223 — ServerId is exactly 22 chars
 - app/src/server/ids.rs:62-69 — SyncId::ClientId is the locally-generated variant
 
@@ -834,13 +832,13 @@ dump-debug-info
 - crates/warp_cli/src/lib.rs:409-410 — DumpDebugInfo with long_flag "dump-debug-info"
 - app/src/debug_dump.rs:11-80 — printed fields
 
-agent list disabled
-- crates/warp_cli/src/agent.rs:410-420 — ListAgentConfigsArgs --repo/-r
-- app/src/ai/agent_sdk/mod.rs:177-180 — returns "Agent skill listing is disabled in Phosphor"
+agent list removed (#637)
+- crates/warp_cli/src/agent.rs — AgentCommand has no List variant; comment records why
+- crates/warp_cli/src/lib_tests.rs — agent_list_is_removed
 
 --share
 - crates/warp_cli/src/share.rs:11-27 — ShareArgs::share, hide = true, with the rationale in the doc comment
-- app/src/ai/agent_sdk/mod.rs:500 — should_share = false, hard-coded
+- crates/warp_cli/src/share.rs — ShareArgs::unsupported_error / SHARE_UNSUPPORTED_MESSAGE; app/src/ai/agent_sdk/mod.rs run_agent returns it before the run starts (#637)
 - DECLINED.md:227 — Agent session sharing declined; flag hidden 2026-08-10 rather than removed
 
 Environment variables
