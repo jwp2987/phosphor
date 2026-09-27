@@ -112,6 +112,15 @@ pub fn open_url_in_system(url: &str) {
                 // search-ms:, javascript:). We use the re-serialized URL from the parser
                 // rather than the raw input so that characters like `"` are percent-encoded
                 // (e.g. %22) before they reach explorer.exe's command line.
+                //
+                // This is a third, independent scheme allow-list (#716) -- deliberately
+                // narrower than `app::uri::link_policy::is_openable_url_scheme` (no `mailto`,
+                // no channel scheme: `rundll32.exe url.dll,FileProtocolHandler` is specifically
+                // a browser hand-off, and neither a mail composer nor this app's own scheme is
+                // reachable through it) and, like `crate::browser::safe_browser_open_url`,
+                // unable to consume the shared list at all: `warpui` sits below `warp_core`/
+                // `app` in the crate graph. Keep this allow-list at least as strict as that one
+                // if it ever changes.
                 let safe_url = url::Url::parse(url)
                     .ok()
                     .and_then(|u| matches!(u.scheme(), "http" | "https").then(|| u.to_string()));

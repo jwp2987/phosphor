@@ -3,21 +3,29 @@
 //! `AppContext::open_url` / `ViewContext::open_url` pass a string straight to the platform
 //! opener. With no scheme check that reaches `file:`, `javascript:`, `data:`, `vscode:`,
 //! `ms-msdt:` and the app's own scheme -- i.e. whichever program registered the scheme receives
-//! an attacker-chosen argument. `set_before_open_url` cannot close this: its callback is
-//! `Fn(&str, &AppContext) -> String` (`crates/warpui_core/src/core/app.rs`), so it can rewrite a
-//! URL but it **cannot veto** one. Every call site therefore has to guard itself, and this module
-//! is where the AI-block, AI-assistant, banner and context-chip call sites get their answer.
+//! an attacker-chosen argument. `set_before_open_url`'s global backstop (#716) now refuses a
+//! disallowed scheme reaching `AppContext::open_url` at all -- see `OpenUrlDecision` in
+//! `crates/warpui_core/src/core/app.rs` -- but it enforces only the *base* allow-list, which
+//! must permit the app's own scheme so that a legitimate web-URL-to-intent rewrite can still
+//! reach it. Content this untrusted has to refuse the own scheme too, so every call site here
+//! still guards itself; this module is where the AI-block, AI-assistant, banner and context-chip
+//! call sites get their answer.
 //!
-//! The scheme policy itself is **not restated here**. It is
-//! [`crate::notebooks::link::is_openable_url_scheme`], the single definition already used by
-//! `NotebookLinks::resolve`/`open`, by `set_before_open_url` in `lib.rs` and by the terminal's
-//! `openable_terminal_url`; the two functions below narrow it. Copying the allow-list instead
-//! would mean a future tightening reaches some sinks and not others.
+//! The scheme policy itself is **not restated here**. It is [`is_openable_url_scheme`], the
+//! single definition also used by `NotebookLinks::resolve`/`open`, by `set_before_open_url` in
+//! `lib.rs` and by the terminal's `openable_terminal_url`; the two functions below narrow it.
+//! Copying the allow-list instead would mean a future tightening reaches some sinks and not
+//! others.
 //!
-//! Architecturally `is_openable_url_scheme` wants to live *here*, next to `UriHost`, rather
-//! than under `notebooks/`: four subsystems now depend on it and none of them is a notebook
-//! concern. Moving it would collide with concurrent work in `notebooks/link.rs`, so the
-//! recommendation is recorded and the definition is imported rather than duplicated.
+//! `is_openable_url_scheme` lives *here*, next to `UriHost`, rather than under `notebooks/`
+//! (#716 moved it): four subsystems depend on it and none of them is a notebook concern.
+//!
+//! **Not every copy of this policy could move here.** `crates/warpui`'s wasm-only
+//! `browser::safe_browser_open_url` and its winit WSL-open guard are lower in the crate graph
+//! than `warp_core`/`app` -- neither `warpui` nor `warpui_core` depends on `warp_core`, so they
+//! cannot see `ChannelState` (which this definition reads) or anything in `app::uri`. Those two
+//! stay as separately-maintained, narrower backstops; see their own doc comments for what each
+//! actually allows and why.
 //!
 //! **This module is ahead of the oracle, not a parity port.** Pinned Warp `42effe840` passes
 //! every one of these URLs to the OS unchecked (`block/view_impl/common.rs:2650`,
@@ -28,10 +36,47 @@
 use url::Url;
 use warpui::{Entity, SingletonEntity as _, ViewContext};
 
-use crate::{
-    notebooks::link::is_openable_url_scheme, view_components::DismissibleToast, ChannelState,
-    ToastStack,
-};
+use crate::{ChannelState, ToastStack, view_components::DismissibleToast};
+
+/// Whether a URL's *scheme* is one we are willing to hand outside the process at all.
+///
+/// This is the scheme-level half of the policy and deliberately says nothing about what a URL
+/// is allowed to *mean*. The allowed set is:
+///
+/// * `http` / `https` -- the browser. The whole point of a web link.
+/// * `mailto` -- the mail composer. It opens a draft; it does not run anything.
+/// * the app's own channel scheme (`warp`, `warppreview`, `phosphor`, ...) -- it comes back to
+///   us through `uri::handle_incoming_uri`. It has to pass at this level because
+///   `set_before_open_url` in `lib.rs` deliberately rewrites recognised web URLs *into* this
+///   scheme, and that rewrite must not be discarded as an escalation.
+///
+/// Everything else is refused, because everything else can reach a program we know nothing
+/// about: `javascript:` and `data:` execute in whichever handler claims them, `file:` hands a
+/// path to the system opener, and a custom scheme (`vscode:`, `smb:`, `ms-msdt:`, anything a
+/// third-party installer registered) resolves to an arbitrary local binary with an
+/// attacker-chosen argument.
+///
+/// **This predicate is NOT sufficient for untrusted content, and it is not what guards `file:`.**
+/// Passing it only means the URL may leave the process. For a link that came out of a notebook
+/// use [`crate::notebooks::link::is_openable_notebook_link`], which additionally constrains what
+/// an own-scheme URL may mean; and note that `NotebookLinks::resolve` handles `file:` on its own
+/// path *before* consulting either predicate, so "`file` is absent from the list above" is not
+/// what stops a `file:` link.
+///
+/// The browser build applies a separate, narrower policy in
+/// `warpui::browser::safe_browser_open_url` before calling `window.open` -- see that module's
+/// doc comment for why it cannot simply call this function.
+///
+/// **This is ahead of the oracle, not a parity port.** Pinned Warp `42effe840` returns
+/// `LinkTarget::Url` for any scheme `Url::parse` accepts (`link.rs:147`) and calls
+/// `ctx.open_url` on it unconditionally (`link.rs:266`), so a plain click on a model-authored
+/// `[click me](file:///...)` reached the OS handler. Do not "restore" the pin's behaviour during
+/// a re-pin.
+pub fn is_openable_url_scheme(url: &Url) -> bool {
+    // `Url::parse` lower-cases the scheme, so this comparison needs no normalisation.
+    matches!(url.scheme(), "http" | "https" | "mailto")
+        || url.scheme() == ChannelState::url_scheme()
+}
 
 /// Why a URL carried by content was not handed to the OS URL handler.
 ///

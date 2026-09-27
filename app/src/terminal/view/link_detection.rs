@@ -7,7 +7,6 @@ use warp_core::channel::ChannelState;
 use warpui::{platform::Cursor, ViewContext};
 
 use crate::{
-    notebooks::link::is_openable_url_scheme,
     send_telemetry_from_ctx,
     server::telemetry::{LinkOpenMethod, TelemetryEvent},
     terminal::{
@@ -19,6 +18,7 @@ use crate::{
         },
         TerminalModel,
     },
+    uri::link_policy::is_openable_url_scheme,
 };
 
 cfg_if::cfg_if! {
@@ -307,11 +307,11 @@ impl BlockedTerminalLink {
 /// therefore never be *more* permissive than the notebook policy.
 ///
 /// The scheme policy itself is not restated here. It is
-/// [`crate::notebooks::link::is_openable_url_scheme`], the single definition also used by
+/// [`crate::uri::link_policy::is_openable_url_scheme`], the single definition also used by
 /// `NotebookLinks::resolve`/`open` and by `set_before_open_url` in `lib.rs`; this function
-/// narrows it. (Architecturally that predicate wants to live in `app/src/uri/` rather than under
-/// `notebooks/`, since three subsystems now depend on it -- but importing the one definition is
-/// strictly better than adding a fourth copy of the policy, which is already a filed defect.)
+/// narrows it. (#716 moved the definition to `app/src/uri/` -- its natural home, since four
+/// subsystems now depend on it and none of them is a notebook concern -- out of
+/// `notebooks::link`, where it used to live.)
 ///
 /// The narrowing is the app's own channel scheme (`warp`, `warppreview`, `phosphor`, ...), which
 /// notebooks allow and terminal content does not. Our own scheme is not inert: `UriHost::Launch`

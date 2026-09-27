@@ -161,7 +161,7 @@ use crate::ai::aws_credentials::AwsCredentialRefresher as _;
 use crate::ai::tui_api_keys::TuiApiKeyRefresher as _;
 use crate::ai::mcp::FileBasedMCPManager;
 use crate::ai::mcp::FileMCPWatcher;
-use crate::notebooks::link::is_openable_url_scheme;
+use crate::uri::link_policy::is_openable_url_scheme;
 use crate::uri::web_intent_parser::maybe_rewrite_web_url_to_intent;
 
 use ::ai::project_context::model::ProjectContextModel;
@@ -335,7 +335,7 @@ use crate::antivirus::AntivirusInfo;
 use warp_files::FileModel;
 use warpui::platform::TerminationMode;
 use warpui::windowing::state::ApplicationStage;
-use warpui::{AppContext, SingletonEntity, WindowId};
+use warpui::{AppContext, OpenUrlDecision, SingletonEntity, WindowId};
 
 #[derive(Clone, Copy, RustEmbed)]
 #[folder = "assets"]
@@ -1667,49 +1667,53 @@ fn initialize_app(
     // Only a rewrite whose result is still openable is used; anything else is discarded and the
     // original string passes through.
     //
-    // Note the asymmetry, which is a real limitation and not an oversight: the callback returns
-    // `String`, so it *cannot veto* an open. A URL that arrives here already carrying a
-    // disallowed scheme is logged and passed through -- blocking has to happen at the call site,
-    // as `NotebookLinks::resolve`/`open` now do for notebook content. Making this a genuine
-    // app-wide chokepoint needs `set_before_open_url` to take a `-> Option<String>` handler,
-    // which is a `warpui_core` change.
+    // This is also the app-wide chokepoint the scheme allow-list needed (#716): the callback
+    // returns `OpenUrlDecision`, so a disallowed scheme reaching this point -- from any call
+    // site, guarded or not -- is refused outright rather than merely logged and passed through.
+    // Call sites that want a *specific* refusal message still guard themselves first (e.g.
+    // `NotebookLinks::resolve`/`open` for notebook content, which reports which scheme it
+    // refused); this is the backstop for everything else.
     ctx.set_before_open_url(|url_str, _ctx| {
         // Launch policy backstop (#681), ahead of the parse below because a bare path, a UNC
         // path or a Windows drive path is exactly what fails (or mis-)parses as a URL and would
         // otherwise pass through to the OS opener unchanged. See
         // `openable_file_type::before_open_url_launch_policy`: a launchable local path is
         // rewritten to its containing folder, and a non-local `file:` URL or UNC path is
-        // refused (`""` is a veto in `AppContext::open_url`). Call sites that accept `file:`
-        // URLs still reveal the file itself (`TerminalView::open_terminal_content_url`).
+        // refused by rewriting to `""`, which `AppContext::open_url` still treats as a no-op
+        // (see its doc comment). Call sites that accept `file:` URLs still reveal the file
+        // itself (`TerminalView::open_terminal_content_url`).
         #[cfg(feature = "local_fs")]
         if let Some(rewrite) =
             crate::util::openable_file_type::before_open_url_launch_policy(url_str)
         {
             log::info!("Launch policy rewrote an opened URL: {url_str:?} -> {rewrite:?}");
-            return rewrite;
+            return OpenUrlDecision::Open(rewrite);
         }
 
         let Ok(url) = Url::parse(url_str) else {
-            return url_str.to_owned();
+            return OpenUrlDecision::Open(url_str.to_owned());
         };
 
         if !is_openable_url_scheme(&url) {
             log::warn!(
-                "Opening a URL whose scheme is outside the openable set: {:?}",
+                "Refusing to open a URL whose scheme is outside the openable set: {:?}",
                 url.scheme()
             );
+            return OpenUrlDecision::Refuse;
         }
 
         match maybe_rewrite_web_url_to_intent(&url) {
-            Some(intent) if is_openable_url_scheme(&intent) => intent.to_string(),
+            Some(intent) if is_openable_url_scheme(&intent) => {
+                OpenUrlDecision::Open(intent.to_string())
+            }
             Some(intent) => {
                 log::warn!(
                     "Discarding web-URL rewrite that produced a non-openable scheme: {:?}",
                     intent.scheme()
                 );
-                url_str.to_owned()
+                OpenUrlDecision::Open(url_str.to_owned())
             }
-            None => url_str.to_owned(),
+            None => OpenUrlDecision::Open(url_str.to_owned()),
         }
     });
 

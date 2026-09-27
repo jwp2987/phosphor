@@ -156,7 +156,7 @@ pub fn test_osc8_open_link_action_opens_url() -> Builder {
                     app.update(|ctx| {
                         ctx.set_before_open_url(|url, _ctx| {
                             captured_urls().lock().push(url.to_owned());
-                            url.to_owned()
+                            warpui::OpenUrlDecision::Open(url.to_owned())
                         });
                     });
                 })
@@ -211,7 +211,7 @@ pub fn test_osc8_file_scheme_opens_url() -> Builder {
                     app.update(|ctx| {
                         ctx.set_before_open_url(|url, _ctx| {
                             captured_urls().lock().push(url.to_owned());
-                            url.to_owned()
+                            warpui::OpenUrlDecision::Open(url.to_owned())
                         });
                     });
                 })

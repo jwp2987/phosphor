@@ -615,7 +615,25 @@ pub type DrawFrameErrorCallback = dyn Fn(&mut AppContext, WindowId);
 
 pub type FrameDrawnCallback = dyn Fn(&mut AppContext, WindowId);
 
-pub type BeforeOpenUrlCallback = dyn Fn(&str, &AppContext) -> String;
+/// What [`AppContext::open_url`] should do with a URL after the `set_before_open_url` hook has
+/// seen it (#716, following #681).
+///
+/// Before this type existed, the hook returned a plain `String` and the only way to veto an
+/// open was the undocumented convention of rewriting to `""`, which `open_url` special-cased.
+/// That meant a hook that wanted to *refuse* a URL outright (rather than launder it into
+/// something harmless) had no way to say so distinctly from "rewrite to nothing" -- and the
+/// production hook in `app/src/lib.rs` could therefore only log a warning and pass a
+/// disallowed-scheme URL through unchanged, since it had nothing else to return that wouldn't
+/// also silently swallow the legitimate `ctx.open_url("")` no-op call sites.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenUrlDecision {
+    /// Hand this URL (the original, or a rewrite of it) to the platform delegate.
+    Open(String),
+    /// Do not open anything. `open_url` logs and returns without calling the platform delegate.
+    Refuse,
+}
+
+pub type BeforeOpenUrlCallback = dyn Fn(&str, &AppContext) -> OpenUrlDecision;
 
 pub struct AppContext {
     /////////////////////////
@@ -856,7 +874,7 @@ impl AppContext {
             global_shortcuts: Default::default(),
             next_frame_callbacks: Default::default(),
             event_munger: Box::new(|_evt, _ctx| {}),
-            before_open_url_callback: Box::new(|url, _ctx| url.to_owned()),
+            before_open_url_callback: Box::new(|url, _ctx| OpenUrlDecision::Open(url.to_owned())),
             a11y_verbosity: Default::default(),
             platform_modal_data_map: Default::default(),
             on_draw_frame_error_callback: None,
@@ -1281,9 +1299,16 @@ impl AppContext {
     }
 
     /// Sets the callback invoked before opening a URL.
+    ///
+    /// The handler decides both whether the URL opens at all and, if so, what actually gets
+    /// passed to the platform delegate: see [`OpenUrlDecision`]. Returning
+    /// `OpenUrlDecision::Refuse` is a hard veto -- `open_url` never reaches the platform
+    /// delegate. Returning `OpenUrlDecision::Open(url)` opens `url`, which may be a rewrite of
+    /// the original (as `app/src/lib.rs`'s Zap-web-URL-to-intent rewrite does) or the original
+    /// passed straight through.
     pub fn set_before_open_url<F>(&mut self, handler: F)
     where
-        F: 'static + Fn(&str, &AppContext) -> String,
+        F: 'static + Fn(&str, &AppContext) -> OpenUrlDecision,
     {
         self.before_open_url_callback = Box::new(handler);
     }
@@ -5413,12 +5438,21 @@ impl AppContext {
     }
 
     /// Opens the given URL in the default application configured to handle the URL.
-    /// Opens `url` with the OS handler, after the `set_before_open_url` rewrite.
+    /// Opens `url` with the OS handler, after the `set_before_open_url` decision (#716).
     ///
-    /// A rewrite to the empty string is a veto: nothing is opened. That is how the app's
-    /// callback refuses a URL it cannot make safe (#681) without widening the callback's type.
+    /// `OpenUrlDecision::Refuse` is a hard veto: nothing is opened, and this is how the app's
+    /// callback refuses a URL it cannot make safe (#681, #716). An `OpenUrlDecision::Open("")`
+    /// is also treated as a no-op rather than handed to the platform delegate -- some call sites
+    /// intentionally pass `""` as a "nothing to open" placeholder (`app/src/app_menus.rs`,
+    /// `app/src/resource_center/view.rs`), and the default (identity) hook must keep that working.
     pub fn open_url(&self, url: &str) {
-        let effective_url = (self.before_open_url_callback)(url, self);
+        let effective_url = match (self.before_open_url_callback)(url, self) {
+            OpenUrlDecision::Open(effective_url) => effective_url,
+            OpenUrlDecision::Refuse => {
+                log::warn!("Not opening a URL the before-open callback refused: {url:?}");
+                return;
+            }
+        };
         if effective_url.is_empty() {
             log::warn!("Not opening a URL the before-open callback refused: {url:?}");
             return;
