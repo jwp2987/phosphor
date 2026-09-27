@@ -149,8 +149,14 @@ impl ChildProcessSlot {
 /// - macOS: no pidfds, so the child's start time is recorded, and the kill is only
 ///   sent if the pid still names a process with that start time.
 /// - Windows: a process handle opened at spawn. Holding it keeps the process object,
-///   and so its pid, from being reused.
+///   and so its pid, from being reused. No process-group/Job-Object equivalent of
+///   `kill_group` is implemented yet (jwp2987/phosphor#707); a stdio server's
+///   grandchild is not killed on Windows.
 /// - Anything else: no handle.
+///
+/// On Unix, `kill` also best-effort signals the child's whole process group (see
+/// [`ChildKillHandle::kill`]): the spawn site puts the direct child in a new group
+/// of its own, so `pgid == pid` and no separate id needs tracking.
 pub(crate) struct ChildKillHandle {
     pid: u32,
     inner: imp::Handle,
@@ -171,11 +177,22 @@ impl ChildKillHandle {
     /// Forcibly kills the child (`SIGKILL` / `TerminateProcess`), returning whether
     /// the kill was delivered. A child that has already exited is left alone.
     ///
-    /// rmcp spawns the child from a plain `tokio::process::Command` (no process
-    /// group), so this kills that process alone; anything it spawned itself is left
-    /// to notice its stdin/stdout closing.
+    /// The direct child is spawned into its own new process group (`pgid == pid`,
+    /// jwp2987/phosphor#707), so on Unix this also best-effort signals the whole
+    /// group (`kill(-pid, SIGKILL)`) after the pidfd-guarded (or, on macOS,
+    /// start-time-guarded) single-process kill: that part still cannot hit a
+    /// reused pid, but the group signal is a plain numeric `pgid` syscall with no
+    /// pidfd-equivalent, so it carries a narrower, accepted residual race (the
+    /// group would have to fully empty out and that exact number be reissued as an
+    /// unrelated process's own new group, between the two syscalls) -- the same
+    /// kind of residual this module already documents for macOS and pre-5.3
+    /// kernels. This is what lets the process-group survive a leftover
+    /// grandchild (e.g. under `npx`/`uvx`/a shell wrapper) that ignores stdin EOF:
+    /// without it, only the direct child died and the grandchild outlived the app.
     pub(crate) fn kill(&self) -> bool {
-        imp::kill(&self.inner, self.pid)
+        let killed = imp::kill(&self.inner, self.pid);
+        imp::kill_group(self.pid);
+        killed
     }
 }
 
@@ -222,6 +239,21 @@ mod imp {
             return false;
         }
         true
+    }
+
+    /// Best-effort `SIGKILL` to the whole process group (jwp2987/phosphor#707): the
+    /// spawn site puts the child in a new group of its own, so `pgid == pid`. A
+    /// negative pid signals the group rather than the single process. Errors
+    /// (`ESRCH`: the group is already empty) are not logged -- this runs on every
+    /// kill, including the common case where there was never a grandchild to reach.
+    pub(super) fn kill_group(pid: u32) {
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return;
+        };
+        // SAFETY: plain kill(2); a negative pid targets the process group `-pid`.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
     }
 }
 
@@ -271,6 +303,20 @@ mod imp {
         // SAFETY: plain kill(2).
         unsafe { libc::kill(raw, libc::SIGKILL) == 0 }
     }
+
+    /// Best-effort `SIGKILL` to the whole process group (jwp2987/phosphor#707); see
+    /// the Linux `kill_group` for the reasoning. macOS has no pidfd, but the
+    /// group-kill carries the same residual race either way -- it is a plain
+    /// numeric pgid syscall on every platform.
+    pub(super) fn kill_group(pid: u32) {
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return;
+        };
+        // SAFETY: plain kill(2); a negative pid targets the process group `-pid`.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -298,6 +344,12 @@ mod imp {
         // SAFETY: terminating the process our open handle refers to.
         unsafe { TerminateProcess(HANDLE(handle.0 as *mut core::ffi::c_void), 1) }.is_ok()
     }
+
+    /// No Windows equivalent yet (jwp2987/phosphor#707): a Job Object would need
+    /// plumbing through to this out-of-band kill path (not just to rmcp's own
+    /// `Child`), which is more than a "if simple" change. A stdio server's
+    /// grandchild is not killed on Windows.
+    pub(super) fn kill_group(_pid: u32) {}
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
@@ -311,6 +363,8 @@ mod imp {
     pub(super) fn kill(_handle: &Handle, _pid: u32) -> bool {
         false
     }
+
+    pub(super) fn kill_group(_pid: u32) {}
 }
 
 #[cfg(test)]
