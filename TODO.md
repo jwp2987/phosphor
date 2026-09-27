@@ -2400,11 +2400,20 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       `enum_then_path_option_signature` fixture, and all 4 of upstream's new
       tests. Legacy completer only, matching upstream's own scope (the v2 engine
       already resolves by position).
-- [ ] `4e49d04f` — **two separable ports, both valid.** (a) `parse_ls_script_output`
+- [x] `4e49d04f` — **two separable ports, both valid.** (a) `parse_ls_script_output`
       refactor + truncation/malformed-output guard: cross-platform, applies to every
       legacy-SSH listing, 8 new unit tests. (b) WSL guest enumeration: Windows-only.
       Land (a) alone if you want the low-risk half. The `-L` already present here
       came from `1b65a8b9`, not this commit — not a partial land.
+      **Fixed 2026-09-27 (#762):** landed half (a) only, per this row's own scope note
+      — half (b) (`wsl_guest_listing.rs`, `#[cfg(windows)]` call site) stays out,
+      Windows-only. `parse_ls_script_output`/`dir_entry_from_segment` extracted in
+      `app/src/completer/mod.rs`, reused by the `WarpifiedRemote` branch it was inlined
+      in before; the malformed/truncated-output `None` guard and non-UTF-8-drops-only-
+      the-bad-entry behavior now apply there. All 8 cross-platform unit tests ported
+      verbatim to `app/src/completer/test.rs` (`ls_script_for_dir` structure assertion +
+      7 `parse_ls_script_output` cases); the 3 WSL-guest-listing-module tests are not
+      applicable without half (b).
 
 **Terminal / rendering (6)**
 
