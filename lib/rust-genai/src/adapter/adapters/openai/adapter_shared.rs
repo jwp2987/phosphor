@@ -107,15 +107,25 @@ impl OpenAIAdapter {
 		let stream = matches!(service_type, ServiceType::ChatStream);
 
 		// -- compute reasoning_effort and eventual trimmed model_name
-		// For now, just for openai AdapterKind
+		//
+		// Suffix-based inference (e.g. trimming a trailing "-max"/"-high" and turning it into
+		// `reasoning_effort`) only makes sense for adapters where that naming convention is the
+		// provider's own (OpenAI, DeepSeek). Every other adapter routed through this shared
+		// function -- Custom (BYOP), Fireworks, Baidu, Zai, GitHub Copilot, Omlx, OpenCode Go's
+		// OpenAI-compatible mode -- carries user-chosen model names, and a BYOP name that
+		// happens to end in one of these keywords (e.g. "gpt-5-max", "my-model-high") must be
+		// sent to the endpoint unchanged. See https://github.com/zerx-lab/zap/pull/338: the
+		// PROTECTED_MODEL_NAMES allowlist in `chat_options.rs` only patches over the two names
+		// that PR happened to hit; it does not fix the general case for arbitrary BYOP names.
 		let (reasoning_effort, model_name): (Option<ReasoningEffort>, &str) = {
-			let (reasoning_effort, model_name) = options_set
-				.reasoning_effort()
-				.cloned()
-				.map(|v| (Some(v), model_name))
-				.unwrap_or_else(|| ReasoningEffort::from_model_name(model_name));
-
-			(reasoning_effort, model_name)
+			let explicit = options_set.reasoning_effort().cloned();
+			if let Some(effort) = explicit {
+				(Some(effort), model_name)
+			} else if matches!(model.adapter_kind, AdapterKind::OpenAI | AdapterKind::DeepSeek) {
+				ReasoningEffort::from_model_name(model_name)
+			} else {
+				(None, model_name)
+			}
 		};
 
 		// -- Build the basic payload
@@ -654,6 +664,56 @@ mod tests {
 				"function": { "name": "get_weather" }
 			})
 		);
+	}
+
+	/// A BYOP/custom-adapter model name ending in a reasoning-effort keyword (e.g. "-max")
+	/// must be sent to the endpoint unchanged: that naming convention belongs to OpenAI and
+	/// DeepSeek, not to arbitrary user-configured model names. Regression test for
+	/// https://github.com/zerx-lab/zap/pull/338, ported to this fork's PROTECTED_MODEL_NAMES
+	/// allowlist not covering the general case.
+	#[test]
+	fn test_custom_adapter_model_name_keeps_reasoning_effort_suffix() {
+		let target = ServiceTarget {
+			model: ModelIden::new(AdapterKind::Custom(0), "gpt-5-max"),
+			auth: AuthData::from_single("test-key"),
+			endpoint: Endpoint::from_static("https://example.com/v1/"),
+		};
+
+		let web_req = OpenAIAdapter::util_to_web_request_data(
+			target,
+			ServiceType::Chat,
+			ChatRequest::from_user("hello"),
+			ChatOptionsSet::default(),
+			None,
+		)
+		.expect("to_web_request_data should succeed");
+
+		assert_eq!(web_req.payload["model"], "gpt-5-max");
+		assert!(web_req.payload.get("reasoning_effort").is_none());
+	}
+
+	/// The same BYOP model name sent through the native OpenAI adapter kind is unaffected:
+	/// OpenAI's own suffix convention still applies there, and this pins that this fix does
+	/// not regress it.
+	#[test]
+	fn test_openai_adapter_model_name_still_infers_reasoning_effort_suffix() {
+		let target = ServiceTarget {
+			model: ModelIden::new(AdapterKind::OpenAI, "gpt-5-max"),
+			auth: AuthData::from_single("test-key"),
+			endpoint: Endpoint::from_static("https://api.openai.com/v1/"),
+		};
+
+		let web_req = OpenAIAdapter::util_to_web_request_data(
+			target,
+			ServiceType::Chat,
+			ChatRequest::from_user("hello"),
+			ChatOptionsSet::default(),
+			None,
+		)
+		.expect("to_web_request_data should succeed");
+
+		assert_eq!(web_req.payload["model"], "gpt-5");
+		assert_eq!(web_req.payload["reasoning_effort"], "max");
 	}
 
 	#[test]

@@ -10,7 +10,10 @@ the way it is and where it is heading, before making architectural changes.
   - `warp` remote → `warpdotdev/warp` — **Warp OSS proper**. The original, still
     moving daily. Cloud-agent product.
   - `upstream` remote → `zerx-lab/zap` — the **"Zap" fork** this repo descends
-    from. BYOP-native, but not actively developed (mostly bug-fix branches).
+    from. BYOP-native. **Corrected 2026-09-27** — this used to say "not
+    actively developed (mostly bug-fix branches)"; that stopped being true:
+    Zap merged four PRs on 2026-09-27/28 (see the "UPSTREAM ZAP PRS" triage in
+    `TODO.md`). Re-check its PR/issue activity before repeating "dormant".
   - `origin` → this personal fork (`jwp2987/phosphor`, previously `jwp2987/zap`).
 - **What this fork is:** a **BYOP** (Bring-Your-Own-Provider) terminal/agent. The
   cloud half of Warp (orchestration, Drive sync, auth/billing, remote agents) is
