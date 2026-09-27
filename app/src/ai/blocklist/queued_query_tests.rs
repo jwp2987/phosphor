@@ -1076,3 +1076,185 @@ fn remove_pending_lrc_rows_no_ops_when_no_pending_rows() {
         model.read(&app, |m, _| assert_eq!(m.queue(conv).len(), 1));
     });
 }
+
+// jwp2987/phosphor#690 follow-up: a follow-up submitted while the conversation is `Blocked` on
+// a pending action confirmation queues as `PendingApprovalFollowUp` instead of being refused.
+// Mirrors the `PendingLrcAutoQueue` coverage above; see that origin's tests for why lock
+// semantics gate submission/reorder/autofire only, not delete/edit.
+
+#[test]
+fn a_pending_approval_row_is_locked_for_submission_but_not_delete_or_edit() {
+    with_model(|mut app, model, _events| {
+        let conv = AIConversationId::new();
+        let locked_id = model.update(&mut app, |m, ctx| {
+            m.append(
+                conv,
+                QueuedQuery::new(
+                    "finish this once approved".to_owned(),
+                    QueuedQueryOrigin::PendingApprovalFollowUp,
+                ),
+                ctx,
+            )
+        });
+
+        model.read(&app, |m, _| {
+            assert!(
+                m.peek_autofire(conv).is_none(),
+                "a locked head must not autofire"
+            );
+            assert!(!m.has_autofireable_prompt(conv));
+        });
+
+        model.update(&mut app, |m, ctx| {
+            m.enter_edit_mode(conv, locked_id, ctx);
+        });
+        model.read(&app, |m, _| {
+            assert_eq!(
+                m.editing_row(conv),
+                Some(locked_id),
+                "must be editable while locked"
+            );
+        });
+
+        let removed = model.update(&mut app, |m, ctx| m.remove_by_id(conv, locked_id, ctx));
+        assert!(removed.is_some(), "must be deletable while locked");
+    });
+}
+
+#[test]
+fn unlock_pending_approval_rows_transitions_origin_and_enables_autofire() {
+    with_model(|mut app, model, events| {
+        let conv = AIConversationId::new();
+        let pending_id = model.update(&mut app, |m, ctx| {
+            m.append(
+                conv,
+                QueuedQuery::new(
+                    "finish this once approved".to_owned(),
+                    QueuedQueryOrigin::PendingApprovalFollowUp,
+                ),
+                ctx,
+            )
+        });
+        events.borrow_mut().clear();
+
+        model.update(&mut app, |m, ctx| m.unlock_pending_approval_rows(conv, ctx));
+
+        // The blocked action resolved (approved and finished, or rejected): the row is now
+        // ApprovalFollowUp -- unlocked and auto-fireable through the ordinary path, exactly
+        // like any other queued prompt.
+        model.read(&app, |m, _| {
+            let queue = m.queue(conv);
+            assert_eq!(queue[0].id(), pending_id);
+            assert_eq!(queue[0].origin(), QueuedQueryOrigin::ApprovalFollowUp);
+            assert!(m.has_autofireable_prompt(conv));
+            assert!(matches!(
+                m.peek_autofire(conv),
+                Some(AutofireAction::Submit { query_id, .. }) if query_id == pending_id
+            ));
+        });
+        let evts = events.borrow();
+        assert!(matches!(
+            evts.first(),
+            Some(QueuedQueryEvent::RowUnlocked { conversation_id }) if *conversation_id == conv
+        ));
+    });
+}
+
+#[test]
+fn unlock_pending_approval_rows_no_ops_when_no_pending_rows() {
+    with_model(|mut app, model, events| {
+        let conv = AIConversationId::new();
+        append_user(&model, &mut app, conv, "normal");
+        events.borrow_mut().clear();
+
+        model.update(&mut app, |m, ctx| m.unlock_pending_approval_rows(conv, ctx));
+
+        assert!(events.borrow().is_empty());
+        model.read(&app, |m, _| {
+            assert_eq!(
+                m.queue(conv)[0].origin(),
+                QueuedQueryOrigin::QueueSlashCommand
+            );
+        });
+    });
+}
+
+#[test]
+fn unlock_pending_approval_rows_leaves_pending_lrc_rows_alone() {
+    // The two locked origins are independent: resolving a blocked action must not also
+    // release a row that is still genuinely waiting on an LRC snapshot, and vice versa
+    // (covered by `unlock_pending_lrc_rows_transitions_origin_and_enables_autofire` not
+    // touching a `PendingApprovalFollowUp` row).
+    with_model(|mut app, model, _events| {
+        let conv = AIConversationId::new();
+        let lrc_id = model.update(&mut app, |m, ctx| {
+            m.append(conv, pending_lrc_query("lrc"), ctx)
+        });
+
+        model.update(&mut app, |m, ctx| m.unlock_pending_approval_rows(conv, ctx));
+
+        model.read(&app, |m, _| {
+            let queue = m.queue(conv);
+            assert_eq!(queue[0].id(), lrc_id);
+            assert_eq!(queue[0].origin(), QueuedQueryOrigin::PendingLrcAutoQueue);
+            assert!(queue[0].is_locked());
+        });
+    });
+}
+
+#[test]
+fn pop_front_no_ops_when_head_is_a_locked_pending_approval_row() {
+    // The "cancelled instead" path (view.rs's Error/Cancelled drain arm): a status transition
+    // must not be able to pop a `PendingApprovalFollowUp` row out from under the pending
+    // action it is still waiting on if the unlock call is ever reordered or skipped -- mirrors
+    // `pop_front_no_ops_when_head_is_locked` for the LRC origin.
+    with_model(|mut app, model, _events| {
+        let conv = AIConversationId::new();
+        let locked_id = model.update(&mut app, |m, ctx| {
+            m.append(
+                conv,
+                QueuedQuery::new(
+                    "finish this once approved".to_owned(),
+                    QueuedQueryOrigin::PendingApprovalFollowUp,
+                ),
+                ctx,
+            )
+        });
+
+        let popped = model.update(&mut app, |m, ctx| m.pop_front(conv, ctx));
+        assert!(popped.is_none());
+
+        model.read(&app, |m, _| {
+            assert_eq!(m.queue(conv)[0].id(), locked_id);
+        });
+    });
+}
+
+#[test]
+fn pop_front_restores_an_unlocked_approval_row_after_a_cancel() {
+    // The "cancelled instead" path in full: once `unlock_pending_approval_rows` has run (as
+    // view.rs's Error/Cancelled drain arm does before this), the row is an ordinary unlocked
+    // row and `pop_front` -- the primitive that arm uses to restore text to the input rather
+    // than auto-firing it -- returns it like any other head row. Never a silent send.
+    with_model(|mut app, model, _events| {
+        let conv = AIConversationId::new();
+        let query_id = model.update(&mut app, |m, ctx| {
+            m.append(
+                conv,
+                QueuedQuery::new(
+                    "finish this once approved".to_owned(),
+                    QueuedQueryOrigin::PendingApprovalFollowUp,
+                ),
+                ctx,
+            )
+        });
+        model.update(&mut app, |m, ctx| m.unlock_pending_approval_rows(conv, ctx));
+
+        let popped = model.update(&mut app, |m, ctx| m.pop_front(conv, ctx));
+
+        let popped = popped.expect("an unlocked row must be restorable, not silently dropped");
+        assert_eq!(popped.id(), query_id);
+        assert_eq!(popped.text(), "finish this once approved");
+        model.read(&app, |m, _| assert!(m.queue(conv).is_empty()));
+    });
+}
