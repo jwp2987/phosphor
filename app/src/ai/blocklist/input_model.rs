@@ -833,6 +833,7 @@ impl BlocklistAIInputModel {
                     let context = input_classifier::Context {
                         current_input_type,
                         is_agent_follow_up,
+                        commands_fully_loaded: completion_context.top_level_commands_fully_loaded(),
                     };
                     // The classifier now also reports *why* it decided (an
                     // `InputClassifierDecisionSource`, #428); this model does not

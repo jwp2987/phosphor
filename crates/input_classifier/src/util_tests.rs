@@ -260,6 +260,151 @@ fn test_is_likely_shell_command_downloads_log_path_false_for_nld_heuristic_v2() 
     });
 }
 
+// Regression test for #696: `token.token_index` is relative to its own parsed command and
+// resets to 0 for every `;` / `&&` / `||` / newline-separated command in the buffer, so checking
+// only `token.token_index == 0` for the one-off keyword allowlist fired for a keyword like `echo`
+// landing at the start of a *later* command, classifying an entire English sentence as Shell
+// purely because of where the keyword happened to land (e.g. "Run exactly this: sleep 8; echo
+// hi" was sent to bash as two separate commands). Only the true first token of the whole buffer
+// may trigger that allowlist. This test is not feature-gated: the one-off keyword check runs
+// unconditionally, before the nld_heuristic_v1 / v2 split.
+async fn one_off_keyword_after_semicolon_does_not_short_circuit() -> bool {
+    let mut token = mock_parsed_input_token("Run exactly this: sleep 8; echo hi".to_string()).await;
+    let word_tokens_count = token.parsed_tokens.len();
+    clear_all_token_descriptions(&mut token);
+    is_likely_shell_command(&token, word_tokens_count).await
+}
+
+#[test]
+fn test_is_likely_shell_command_one_off_keyword_after_semicolon_is_not_shell() {
+    futures::executor::block_on(async move {
+        assert!(!one_off_keyword_after_semicolon_does_not_short_circuit().await);
+    });
+}
+
+// The allowlist must still fire when the keyword genuinely is the first token of the buffer,
+// even when other commands with their own token_index 0 follow it.
+async fn one_off_keyword_at_true_start_still_short_circuits() -> bool {
+    let mut token = mock_parsed_input_token("echo hi; ls -la".to_string()).await;
+    let word_tokens_count = token.parsed_tokens.len();
+    clear_all_token_descriptions(&mut token);
+    is_likely_shell_command(&token, word_tokens_count).await
+}
+
+#[test]
+fn test_is_likely_shell_command_one_off_keyword_at_true_start_is_shell() {
+    futures::executor::block_on(async move {
+        assert!(one_off_keyword_at_true_start_still_short_circuits().await);
+    });
+}
+
+// Regression tests for #696's second round: `first_token_forces_ai_override` (used by
+// `SafetyGatedClassifier`) must fire only for an ordinary-English first word (matched
+// case-insensitively) with no command evidence — never merely because a word lacks a
+// `token_description`, since that can just mean the completer hasn't indexed a real command yet
+// (`external_commands` loads once per session) or can't see it at all (`EmptyCompletionContext`
+// for shared-session viewers). `commands_fully_loaded` distinguishes those two cases; see
+// `first_token_forces_ai_override`'s doc comment for the full rule.
+async fn first_token_forces_ai_override_for(buffer: &str, commands_fully_loaded: bool) -> bool {
+    let mut token = mock_parsed_input_token(buffer.to_string()).await;
+    clear_all_token_descriptions(&mut token);
+    first_token_forces_ai_override(&token, commands_fully_loaded)
+}
+
+#[test]
+fn test_first_token_forces_ai_override_for_english_words_when_commands_fully_loaded() {
+    futures::executor::block_on(async move {
+        // The two observed exploit prompts (#696), and their lowercase forms: the shipped ONNX
+        // classifier's tokenizer lowercases its input before scoring, so both forms must be
+        // caught identically once the command index is known to be complete.
+        for buffer in [
+            "Run exactly this: sleep 8; echo hi",
+            "run exactly this: sleep 8; echo hi",
+            "Then run: echo hi",
+            "then run: echo hi",
+        ] {
+            assert!(
+                first_token_forces_ai_override_for(buffer, true).await,
+                "expected {buffer:?} to be overridden with the command index fully loaded"
+            );
+        }
+    });
+}
+
+#[test]
+fn test_first_token_forces_ai_override_via_prose_shape_when_commands_not_loaded() {
+    futures::executor::block_on(async move {
+        // Same buffers, but simulating a command index that hasn't finished loading: dictionary
+        // membership alone isn't trusted, but each buffer still has a later token ending in ':'
+        // before its first shell operator, which is enough on its own.
+        for buffer in [
+            "Run exactly this: sleep 8; echo hi",
+            "run exactly this: sleep 8; echo hi",
+            "Then run: echo hi",
+            "then run: echo hi",
+        ] {
+            assert!(
+                first_token_forces_ai_override_for(buffer, false).await,
+                "expected {buffer:?} to be overridden via prose shape with the command index not \
+                 yet loaded"
+            );
+        }
+
+        // No colon anywhere: not enough evidence when the index isn't known to be complete.
+        assert!(!first_token_forces_ai_override_for("Then delete the temp directory", false).await);
+    });
+}
+
+#[test]
+fn test_first_token_forces_ai_override_does_not_fire_when_commands_not_loaded() {
+    futures::executor::block_on(async move {
+        // Unknown / not-yet-indexed lowercase commands: no evidence, and (with the index not
+        // known to be complete) no trustworthy prose signal either.
+        assert!(!first_token_forces_ai_override_for("mynewtool arg1 arg2", false).await);
+        assert!(!first_token_forces_ai_override_for("cargo --version", false).await);
+        assert!(!first_token_forces_ai_override_for("rvm install 3.3", false).await);
+        // Path-like tokens are evidence of intent even with no token_description.
+        assert!(!first_token_forces_ai_override_for("./script.sh a b", false).await);
+        assert!(!first_token_forces_ai_override_for("~/bin/x a b", false).await);
+        // A leading `NAME=value` assignment carries no evidence itself; the word after it does,
+        // and here that word is an unindexed lowercase command, not English prose.
+        assert!(!first_token_forces_ai_override_for("FOO=1 mycmd", false).await);
+        // One-off shell keywords are evidence even with no token_description.
+        assert!(!first_token_forces_ai_override_for("sudo apt update", false).await);
+    });
+}
+
+#[test]
+fn test_first_token_forces_ai_override_does_not_fire_for_non_dictionary_words_even_when_loaded() {
+    futures::executor::block_on(async move {
+        // Even with a fully-loaded index, a word that isn't in the English dictionary at all
+        // (an unknown tool name, an acronym) is never treated as prose.
+        assert!(!first_token_forces_ai_override_for("mynewtool arg1 arg2", true).await);
+        assert!(!first_token_forces_ai_override_for("rvm install 3.3", true).await);
+    });
+}
+
+#[test]
+fn test_first_token_forces_ai_override_fires_for_unindexed_english_word_when_loaded() {
+    futures::executor::block_on(async move {
+        // "cargo" is an ordinary English dictionary word; with the index fully loaded and no
+        // evidence for it, that is sufficient on its own -- no colon or other shape required.
+        assert!(first_token_forces_ai_override_for("cargo --version", true).await);
+    });
+}
+
+#[test]
+fn test_first_token_forces_ai_override_prose_colon_shape_does_not_match_realistic_commands() {
+    futures::executor::block_on(async move {
+        for buffer in ["docker run -p 80:80", "scp host:path .", "echo a: b"] {
+            assert!(
+                !first_token_forces_ai_override_for(buffer, false).await,
+                "expected {buffer:?} to not be overridden by the prose colon shape"
+            );
+        }
+    });
+}
+
 #[test]
 fn test_is_agent_follow_up_input() {
     for input in ["yes", "continue", "do it", "approve"] {

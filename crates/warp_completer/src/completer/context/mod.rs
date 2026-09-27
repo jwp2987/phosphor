@@ -107,6 +107,26 @@ pub trait CompletionContext: Send + Sync {
     fn shell_family(&self) -> Option<ShellFamily> {
         None
     }
+
+    /// Whether this context's external-command index (executables on `$PATH`, as opposed to
+    /// aliases/functions/builtins/the command registry, which are all resolved synchronously)
+    /// has finished loading, one way or another, for this session.
+    ///
+    /// This exists so a caller that sees "no evidence this word is a command" can tell "it
+    /// genuinely isn't one" apart from "the probe just hasn't finished yet" — concretely, the
+    /// Agent-input safety gate (`input_classifier`'s `first_token_forces_ai_override`, #696),
+    /// which must not treat an unindexed real command (`cargo`, `make`, `find`, ... before the
+    /// `$PATH` scan lands) as English prose just because it also happens to be a dictionary
+    /// word.
+    ///
+    /// The default is `false` ("can't tell"), because a wrong `true` is the unsafe direction:
+    /// it lets the safety gate call any unindexed dictionary word prose, while a wrong `false`
+    /// only makes it demand stronger evidence. A context backed by a live shell session
+    /// overrides this to track its own probe; a context with no `$PATH` view at all (e.g. a
+    /// session-agnostic or shared-session-viewer context) should keep the default.
+    fn top_level_commands_fully_loaded(&self) -> bool {
+        false
+    }
 }
 
 /// Keeps track of which separators characters are relevant in file paths.

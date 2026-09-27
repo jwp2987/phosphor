@@ -76,6 +76,13 @@ impl InputClassifier for HeuristicClassifier {
             );
         }
 
+        // Note: this classifier does not gate its own Shell results on first-token command
+        // evidence. That safety invariant is enforced once, centrally, by `SafetyGatedClassifier`
+        // (see `crate::safety_gate`), which wraps *every* concrete `InputClassifier` — including
+        // the ONNX and fasttext models this heuristic is only a fallback for — at the single point
+        // the app consumes a classifier's output. Gating here as well would be dead code whenever
+        // a different classifier is loaded (#696) while giving the false impression the guarantee
+        // is classifier-specific.
         self.classify_input(input, context)
             .await
             .map(|result| InputClassificationResult::new(result.to_input_type(), result.source))

@@ -44,6 +44,7 @@ fn test_input_detection() {
         let mut context = Context {
             current_input_type: InputType::AI,
             is_agent_follow_up: false,
+            commands_fully_loaded: true,
         };
 
         let token = mock_parsed_input_token("cargo --version".to_string()).await;
@@ -55,7 +56,11 @@ fn test_input_detection() {
         // We have to override the first token description here given the mocked completion
         // parser will parse the first token always as commands.
         //
-        // Mock the case where cargo is not installed. We should still parse this as Shell input.
+        // Mock the case where cargo is not installed. We should still parse this as Shell input:
+        // this classifier's own signals (the described `--version` flag) still vote Shell here,
+        // and that's fine — the safety invariant that a real command word must lead the buffer is
+        // enforced once, centrally, by `SafetyGatedClassifier` (`crate::safety_gate`), not by every
+        // individual classifier. See #696.
         let mut token = mock_parsed_input_token("cargo --version".to_string()).await;
         token.parsed_tokens[0].token_description = None;
         assert_eq!(
@@ -130,6 +135,7 @@ fn test_cjk_input_detection() {
         let context = Context {
             current_input_type: InputType::Shell,
             is_agent_follow_up: false,
+            commands_fully_loaded: true,
         };
 
         // A single CJK character also classifies as AI (default logic would classify it as Shell due to token count < 2).
@@ -183,6 +189,7 @@ fn test_input_detection_sources() {
         let context = Context {
             current_input_type: InputType::Shell,
             is_agent_follow_up: false,
+            commands_fully_loaded: true,
         };
 
         let token = mock_parsed_input_token_without_descriptions("echo hello");
@@ -212,5 +219,39 @@ fn test_input_detection_sources() {
                 InputClassifierDecisionSource::InputClassifierFallbackHeuristic,
             )
         );
+    });
+}
+
+/// Real shell usage, including the exact patterns named in #696 (`ls -la`, `git status; make`),
+/// must keep classifying as Shell. This classifier's own output is not the safety boundary (see
+/// `crate::safety_gate` for that, and its tests for the two observed exploit prompts) — this just
+/// guards against regressing the underlying heuristics (#696's Fix 1 / Fix 2) themselves.
+#[test]
+fn test_real_shell_commands_still_classify_as_shell() {
+    futures::executor::block_on(async move {
+        let classifier = HeuristicClassifier;
+        let context = Context {
+            current_input_type: InputType::AI,
+            is_agent_follow_up: false,
+            commands_fully_loaded: true,
+        };
+
+        for command in [
+            "ls -la",
+            "git status; make",
+            "echo hello world",
+            "sudo apt update",
+            "cd /tmp && ls",
+        ] {
+            let token = mock_parsed_input_token(command.to_string()).await;
+            assert_eq!(
+                classifier
+                    .detect_input_type(token, &context)
+                    .await
+                    .input_type,
+                InputType::Shell,
+                "expected {command:?} to classify as Shell"
+            );
+        }
     });
 }
