@@ -2539,3 +2539,75 @@ fn test_can_autoexecute_command_allowlist_unchanged_for_resolved_commands() {
         }
     })
 }
+
+#[test]
+fn test_can_autoexecute_command_denylist_follows_indirect_execution() {
+    // Follow-up to #678 (adversarial review): commands reached through aliases, git config,
+    // command-valued environment variables, case-insensitive names and PowerShell aliases are
+    // denied; input- or interpreter-driven code, and PowerShell outside the analysed subset,
+    // requires confirmation.
+    App::test((), |mut app| async move {
+        let state = initialize_permissions_test(&mut app);
+        configure_command_profile(
+            &mut app,
+            &state,
+            ActionPermission::AlwaysAllow,
+            &["rm .*"],
+            &[],
+        );
+
+        for (command, escape_char) in [
+            ("alias r=rm; r -rf ~", EscapeChar::Backslash),
+            ("git -c core.pager='rm -rf ~' log", EscapeChar::Backslash),
+            ("git -c alias.x='!rm -rf ~' x", EscapeChar::Backslash),
+            (
+                "GIT_EXTERNAL_DIFF='rm -rf ~' git diff",
+                EscapeChar::Backslash,
+            ),
+            ("echo hi # ; rm -rf ~", EscapeChar::Backslash),
+            ("coproc NAME { rm -rf ~; }", EscapeChar::Backslash),
+            ("true; and rm -rf ~", EscapeChar::Backslash),
+            ("RM -rf ~", EscapeChar::Backslash),
+            ("=rm -rf ~", EscapeChar::Backslash),
+            ("ri -rf ~", EscapeChar::Backtick),
+            ("& 'rm' -rf ~", EscapeChar::Backtick),
+        ] {
+            let result = autoexecute_decision(&app, &state, command, escape_char);
+            assert!(
+                matches!(
+                    result,
+                    CommandExecutionPermission::Denied(
+                        CommandExecutionPermissionDeniedReason::ExplicitlyDenylisted
+                    )
+                ),
+                "{command:?} runs `rm` and must be denied, got {result:?}"
+            );
+        }
+
+        for (command, escape_char) in [
+            ("${x:-rm} -rf ~", EscapeChar::Backslash),
+            ("xargs env", EscapeChar::Backslash),
+            ("python3 -c 'import shutil'", EscapeChar::Backslash),
+            ("perl -e 'unlink'", EscapeChar::Backslash),
+            ("git -c include.path=/tmp/x log", EscapeChar::Backslash),
+            ("LD_PRELOAD=/tmp/x.so ls", EscapeChar::Backslash),
+            ("r\u{200b}m -rf ~", EscapeChar::Backslash),
+            (
+                "Get-ChildItem | ForEach-Object { Remove-Item $_ }",
+                EscapeChar::Backtick,
+            ),
+            ("& $cmd -rf ~", EscapeChar::Backtick),
+        ] {
+            let result = autoexecute_decision(&app, &state, command, escape_char);
+            assert!(
+                matches!(
+                    result,
+                    CommandExecutionPermission::Denied(
+                        CommandExecutionPermissionDeniedReason::UnresolvedCommandWord
+                    )
+                ),
+                "{command:?} cannot be vouched for and must require confirmation, got {result:?}"
+            );
+        }
+    })
+}

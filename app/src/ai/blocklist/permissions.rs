@@ -61,9 +61,10 @@ pub enum CommandExecutionPermissionDeniedReason {
     ContainsRedirection,
     Inconclusive,
     AgentDecided,
-    /// A denylist applies, but some command word the line executes cannot be determined
-    /// without running the shell (`$CMD`, `$(which rm)`, a glob, unparseable input), so the
-    /// denylist cannot vouch for it. Fails closed: the user confirms. See
+    /// A denylist applies, but some command the line executes cannot be determined without
+    /// running it (`$CMD`, `$(which rm)`, a glob, `python -c` code, `xargs env`, PowerShell
+    /// outside the analysed subset, unparseable input), so the denylist cannot vouch for it.
+    /// Fails closed: the user confirms. See
     /// `warp_completer::parsers::simple::executed_commands`.
     UnresolvedCommandWord,
 }
@@ -1532,35 +1533,64 @@ pub fn is_agent_mode_autonomy_allowed(ctx: &AppContext) -> bool {
 ///   candidate rather than guessing.
 /// - ANSI-C escape decoding inside `$'...'`: `$'\x72m'`, `$'\162m'`.
 /// - bash array assignments as a prefix: `FOO=(a b) rm file.txt`.
-/// - Path equivalence by program name: `/bin/rm` and `./rm` also match `rm` rules.
+/// - Equivalent names: `/bin/rm`, `./rm`, zsh's `=rm`, `rm.exe`, and upper- or mixed-case
+///   `RM` (case-insensitive file systems on macOS and Windows), plus PowerShell's aliases
+///   (`ri`, `del`, `erase`, `rd`, `rmdir` for `Remove-Item`, …) and `source` for `.`.
+/// - Same-line aliases (`alias r=rm; r -rf ~`) and function bodies.
+/// - Commands in git config and environment: `git -c core.pager=…`, `alias.x=!…`,
+///   `credential.helper=!…`, `*.textconv`/`*.cmd`/…, `git config <key> <cmd>`,
+///   `rebase --exec`, `bisect run`, `submodule foreach`, `filter-branch --*-filter`,
+///   `difftool -x`; `GIT_EXTERNAL_DIFF`, `GIT_PAGER`/`PAGER`, `EDITOR`/`VISUAL`,
+///   `GIT_SSH_COMMAND`, `PROMPT_COMMAND`, `PS1` substitutions and the like, whether as a
+///   prefix, standalone, via `export` or via `env`.
+/// - Other shells' spellings: comments are also read as commands (zsh without
+///   `interactive_comments` runs them), `((…))` also as commands (dash, fish), zsh `;|`,
+///   `- cmd` and `repeat N cmd`, fish `and`/`or`/`not`.
 ///
 /// # Fail-closed where the analysis cannot decide
 ///
-/// Whatever needs the shell to be *evaluated* — `R=rm; $R -rf ~`, `${R}`, `$(echo rm) -rf ~`,
-/// `` `which rm` ``, globs in the command word (`/bin/r?`), history expansion (`!rm`),
-/// `eval "$X"`, or input that does not parse — makes `executed_commands` report the command
-/// word unresolved, and `can_autoexecute_command` then returns
-/// `Denied(UnresolvedCommandWord)` whenever a denylist applies, and withholds allowlist
-/// approval regardless. "No rule matched" is never read from a parse that could not see the
-/// command. (`test_can_autoexecute_command_fails_closed_on_unresolved_command_words`)
+/// These make `executed_commands` report the line unresolved, and `can_autoexecute_command`
+/// then returns `Denied(UnresolvedCommandWord)` whenever a denylist applies, and withholds
+/// allowlist approval regardless. "No rule matched" is never read from an analysis that could
+/// not see the command. (`test_can_autoexecute_command_fails_closed_on_unresolved_command_words`,
+/// `test_can_autoexecute_command_denylist_follows_indirect_execution`)
+///
+/// - A command word only known at run time: `$R`, `${R:-rm}`, `${!R}`, `$(echo rm)`,
+///   `` `which rm` ``, globs (`/bin/r?`), history expansion (`!rm`, `^a^b`, `fc`, zsh `r`),
+///   `hash -p`, and non-ASCII names (zero-width, bidi and look-alike characters).
+/// - Code handed to an interpreter inline or on stdin: `python -c`, `perl -e`, `ruby -e`,
+///   `node -e`/`-p`, `deno eval`, `php -r`, `lua -e`, `osascript -e`, `gdb -ex`, editor `-c`
+///   commands, `awk` programs using `system()` or pipes, GNU `sed`'s `e`, and a shell or
+///   interpreter with no script operand (`bash`, `sh -s`, `… | python3`, `python3 - <<EOF`).
+/// - Commands built from input: `xargs` whose input would become the command (`xargs env`,
+///   `xargs sh -c`, `-I` placeholders in the command word), `find -exec {}`, GNU `parallel`.
+/// - Code loaded from elsewhere: `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `BASH_ENV`, `ENV`,
+///   `NODE_OPTIONS`, `PERL5OPT`, `RUBYOPT`, `GIT_CONFIG_*`, `GIT_EXEC_PATH`, and git's
+///   `include.path`, `includeIf.*`, `core.hooksPath`, `--config-env`, `--exec-path=`.
+/// - `eval "$X"`, `sh -c "$X"`, dynamic aliases, trap actions and git config values.
+/// - PowerShell outside a simple subset: script blocks and hashtables (`{ … }`), .NET type
+///   access and static calls (`[…]`, `::`), method calls (`$f.Delete()`), `@( … )`,
+///   here-strings, block comments, `& $x`/`& ( … )`/`. $x` invocation of a computed command,
+///   `Set-Alias`/`New-Alias`, `Add-Type`, `New-Object`, `Invoke-Command`, `Start-Job`,
+///   `-EncodedCommand`, `--%`.
+/// - Input that does not parse, and input past the caps (64 KiB, 4096 commands, nesting,
+///   brace-expansion size).
 ///
 /// # Not handled (explicit residue, not an oversight)
 ///
-/// - Aliases and functions defined *before* this command line, in the user's shell. A
-///   same-line `alias` or function body is analysed; one from `.bashrc` cannot be.
-/// - Interpreters running code given as an argument (`python -c`, `perl -e`, `awk`'s
-///   `system()`, `node -e`) and encoded payloads piped to an interpreter
-///   (`... | base64 -d | sh`). The shells themselves are on the default denylist, and so is
-///   `eval`; the general class is not solvable textually.
-/// - Remote execution (`ssh host rm …`): the remote command is not a local command word, and
-///   `ssh` is on the default denylist.
-/// - Path equivalence beyond the program name: `busybox rm` is caught (busybox is peeled),
-///   but a rule written against a full path (`/bin/rm .*`) is not matched by `rm`, and a
-///   hard link or copy of `rm` under another name is invisible.
-/// - PowerShell is analysed with the POSIX grammar and a backtick escape. That errs towards
-///   *more* candidates and more `UnresolvedCommandWord`, never fewer, but PowerShell-only
-///   constructs (script blocks passed to `ForEach-Object`, `Start-Process`, `-EncodedCommand`)
-///   are not understood beyond what `decompose_command` already offers.
+/// - Code in *files*: `bash script.sh`, `python app.py`, `make`, `npm run`, `cargo run`,
+///   git hooks already in the repository, an `awk -f`/`sed -f` script. Running a file is
+///   indistinguishable, textually, from running any other program.
+/// - Aliases and functions defined *before* this command line, in the user's shell, and
+///   git aliases already in the user's config (`git x`).
+/// - Remote and container execution (`ssh host rm …`, `docker run … rm`, `kubectl exec`):
+///   the remote command is not a local command word. `ssh` is on the default denylist.
+/// - A rule written against a full path (`/bin/rm .*`) is not matched by `rm`, and a copy or
+///   link of a program under another name is invisible; `PATH` manipulation likewise.
+/// - Programs whose own configuration runs commands that are not in the command line
+///   (`less`'s `!`, an editor's config, a tool reading a config file).
+/// - Environment variables outside the lists in `command_words.rs` that some program
+///   happens to execute.
 ///
 /// Treat the denylist as defence in depth, not as a boundary: it matches text, and a program
 /// is free to do anything once it runs.
