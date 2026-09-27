@@ -2565,8 +2565,17 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       `DiffMatchFailures.fuzzy_match_failure_details` (`#[serde(skip)]`); the
       `RemoteFileOperationsUnsupported` arm and its comment are untouched.
 - [ ] `4cd1c77c4` — file-explorer chip in the native agent-view toolbelt; entirely local.
-- [ ] `ff16a0b2a` — `hashbrown` raw-entry + `FxHashMap` in hot paths. `rustc-hash`
+- [x] `ff16a0b2a` — `hashbrown` raw-entry + `FxHashMap` in hot paths. `rustc-hash`
       is already a workspace dep; `app/Cargo.toml` needs both added.
+      **Ported 2026-09-27 (`35fac964f`):** `Hashed<K>` added to `warp_util`;
+      `TaskStore::root_task_id` is `Hashed<TaskId>` with `hashbrown::HashMap`
+      backing (feature `raw-entry`); `AIBlock::requested_action_ids`,
+      `BlockList::block_id_to_block_index`, `AppContext::windows` /
+      `last_observed_active_cursor_positions` moved to `FxHashMap`/`FxHashSet`.
+      Skipped: upstream's `optimistic_root_task_id` field does not exist on
+      this fork's `TaskStore`, so that unrelated half of the upstream diff was
+      not carried over. `hashbrown` is a new workspace dep (0.17.1,
+      `raw-entry` feature) — not compiled; Cargo.lock not regenerated.
 - [x] `216d0efe7` — **port the tooltip half only.** `dismiss_ai_tooltips` currently
       fires an unconditional `ctx.notify()` on every focus change. The recording-span
       cache is dead on arrival (session recording declined, #350) and
