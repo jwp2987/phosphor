@@ -135,6 +135,14 @@ named to **8 measured**, and recording two traps for whoever unblocks it:
 orchestration-consumer increment, not before. Cluster A and shard E's
 `drop_pending_events_...` are the **same work item** as `60d602df6` — not three.
 
+**PARKED 2026-09-27 (maintainer decision).** The orchestration-consumer increment
+(`OrchestrationEventService` registration, `#310`) that unblocks this row is **out
+of scope for this branch** — it belongs to the separate "moth" branch, which owns
+`OrchestrationEventService`'s wiring. `60d602df6` is not merely blocked pending
+work we plan to do here; it is blocked pending work this branch does not do at
+all. Do not schedule it, or re-derive the orchestration-consumer increment as a
+task on this branch, without first checking whether "moth" has landed it.
+
 ### ACCOUNTING CORRECTION — the test debt and the port queue are mostly THE SAME WORK
 
 An earlier revision of this file reported "52 commits **plus** 60 tests of real work."
@@ -601,6 +609,16 @@ before acting):
       exempting legacy dated beta tags (`v2026.09.04.1-beta`); `workflow_dispatch`'s generated
       `v0.<date>` tag is intentionally left alone (see the workflow's comment — it's an
       ad-hoc, unversioned build, not a numbered release).
+
+- [ ] **`phosphor-tui` has its own `CLI_VERSION`, not covered by #640's `display_version`
+      fix (#756).** `crates/warp_tui/src/session.rs:33` defines a separate
+      `const CLI_VERSION` read from `option_env!("GIT_RELEASE_TAG")` with fallback
+      `"v0.0.0.0.0.0"`, used on `TuiArgs`'s `#[command(version = CLI_VERSION)]`. A local
+      dev build (no `GIT_RELEASE_TAG`) makes `phosphor-tui --version` print that raw
+      placeholder instead of the `v{app/Cargo.toml version}-dev` format #640 established
+      for the GUI/`warp_cli` paths via `ChannelState::display_version()`. Needs the same
+      `PHOSPHOR_APP_VERSION` build-time injection (or a direct call into
+      `display_version()`'s format) threaded into `warp_tui`.
 - [x] **Three places decided "is this a remote session the file tools cannot reach", and
       only one of them was right — FIXED 2026-09-03.** The runtime guard in
       `app/src/ai/blocklist/action_model/execute/read_files.rs:129` refuses when the session
@@ -2025,13 +2043,32 @@ its other files ship here **at the pre-fix state**:
 - [x] `98b1f5af8` — **refuted as N/A.** Fork ships both touched files at the exact
       pre-fix state; the U+21E7 fallback mismatch is live. 3-line port plus the
       generator hunk so it is not regenerated away.
-- [ ] `d2cb17abb` — **refuted as ALREADY-PRESENT.** The throttle is absent; the
+- [x] `d2cb17abb` — **refuted as ALREADY-PRESENT.** The throttle is absent; the
       fork's call site is a fork-local split (`oauth.rs:638`, not `native.rs`) on
       the spawn-failure/reconnect path — the hot path that produced upstream's
       4.4M events.
-- [ ] `d13a30f4` (part) — the `TuiLink::render` signature refactor only. Honest
+      **Fixed #743:** the refutation was right and the earlier ALREADY-PRESENT
+      verdict was wrong. `app/src/ai/mcp/templatable_manager/oauth.rs`'s
+      `delete_credentials_from_secure_storage` used plain `log::error!`, not even
+      the pre-fix `report_error!` form, so upstream's literal diff (switching an
+      existing `report_error!` call's mode) did not apply directly. Ported the
+      throttle as `report_error!("No template UUID found for installation UUID",
+      extra: { .. }, ReportErrorLogMode::OncePerRun)` — the mechanism this fork
+      already uses for the identical class of bug in
+      `crates/ai/src/index/file_outline/native.rs`. **Not compiled or run.**
+- [x] `d13a30f4` (part) — the `TuiLink::render` signature refactor only. Honest
       caveat from the refuter: no behaviour change, no new coverage; value is
       purely reduced re-pin conflict surface. Droppable on triage — but not CLOUD.
+      **Declined 2026-09-27, not CLOUD.** Verified the refuter's caveat: the fork
+      has exactly 3 call sites of `TuiLink::render` (`link_tests.rs` x2,
+      `statusline.rs`'s GitHub-PR link), so the blast radius really is small, but
+      threading a pre-computed `TuiStyle` through all three for a change with no
+      observable behaviour difference is not worth doing outside a round that is
+      already touching `link.rs` for another reason. No issue filed — it is not a
+      divergence from Warp behaviour (the signatures differ, the rendered output
+      does not), so `AGENTS.md` §5.10's "any deviation requires an issue" does not
+      apply. Revisit at the next re-pin if `link.rs`/`link_tests.rs` conflicts
+      become the reason to touch it anyway.
 - [x] `b870d25d7` (part) — `script/windows/prepare_bundled_resources.ps1:51`
       `Split-Path` argument-binding fix, byte-identical to the pin's pre-image. The
       commit message never mentions it, which is why the bucketer missed it.
@@ -2055,11 +2092,24 @@ its other files ship here **at the pre-fix state**:
       dropdown-in-a-row shape (`CodeEditorLineNumberModeWidget`), with en/ja/zh-CN
       strings and tests covering discovery and the write-through to
       `AppEditorSettings`.
-- [ ] `8cbb01d45` (partial) — the split itself is pure, but the pin-side path
+- [x] `8cbb01d45` (partial) — the split itself is pure, but the pin-side path
       `app/src/workspaces/user_workspaces.rs` ceases to exist at `4111d08f9` and
       fork tooling keys on it (`docs/SWEEP-INVENTORY.md:944`). Confirm
       `generate_repin_queue` / `generate_pin_identity_manifest` follow the rename
       rather than reading delete+add.
+      **Confirmed 2026-09-27 (#747):** `generate_repin_queue` now follows the
+      rename after the fix above — re-run against the real range, the file
+      appears once, correctly annotated `(renamed from
+      app/src/workspaces/user_workspaces_tests.rs)`, in exactly one bucket.
+      `generate_pin_identity_manifest` does **not** follow renames (it is a raw
+      path-hash comparison with no `-M` equivalent) and was left as-is — it
+      already documents this exact limitation in its own output
+      ("FORK-ONLY is not the same as fork-original... some FORK-ONLY paths here
+      are renamed pin files") and is an on-demand snapshot, not a live gate, so
+      the risk this entry worried about (silent, undisclosed wrongness) does not
+      apply to it. `docs/SWEEP-INVENTORY.md` itself is a dated, hand-traced
+      snapshot at the OLD-OLD pin (`02b53fcd8`) — left untouched; it is historical
+      record, not live tooling, and re-deriving it is out of scope here.
 
 #### Verdicts that survived but whose STATED REASON was wrong
 
@@ -2116,9 +2166,20 @@ Three consequences, in order of danger:
 3. The pin's default moved toward denying, so the decision is more necessary than
    when it was written, not less.
 
-- [ ] Re-anchor `DECLINED.md:173`'s evidence to the new path.
-- [ ] Add a team-side arm to `is_ai_allowed_in_remote_sessions_ignores_workspace_settings`.
-- [ ] Record the file split as a re-pin hazard (same family as `8cbb01d45`).
+- [x] Re-anchor `DECLINED.md:173`'s evidence to the new path.
+      **Fixed 2026-09-27 (#752):** re-anchored to
+      `4111d08f9:app/src/workspaces/user_workspaces/team_workspace_settings.rs:474`,
+      kept the old `42effe840` citation as explicitly-labelled history, and noted
+      the pin's new team-first default explicitly.
+- [x] Add a team-side arm to `is_ai_allowed_in_remote_sessions_ignores_workspace_settings`.
+      **Fixed 2026-09-27 (#752):** added
+      `is_ai_allowed_in_remote_sessions_ignores_team_settings` in
+      `app/src/workspaces/user_workspaces.rs` (a team whose own setting denies
+      remote AI, workspace setting saying the opposite, fork still says `true`).
+      **Not compiled or run — no cargo invocation was made.** `rustfmt --check`
+      shows no parse errors in the touched file.
+- [x] Record the file split as a re-pin hazard (same family as `8cbb01d45`).
+      **Fixed 2026-09-27 (#752):** recorded directly in the DECLINED.md row.
 
 #### T2 — `keep:` markers on FORK-ORIGINAL symbols can never fire
 
@@ -2139,9 +2200,31 @@ both inert, while upstream restructured `get_execute_commands_denylist`'s
 signature in this range. The intended backstop is a red test at build time — and
 this round has no build.
 
-- [ ] Give every `keep:` row on a fork-original symbol a SECOND marker keyed on the
+- [x] Give every `keep:` row on a fork-original symbol a SECOND marker keyed on the
       pin-side symbol or path it diverges from.
-- [ ] Audit `DECLINED.md` for other inert `keep:` markers.
+      **Fixed 2026-09-27 (#752):** audited all ~39 `keep:` values against the new
+      pin (`4111d08f9`) with `git grep`. Ten rows were genuinely fork-original
+      with no other pin-side anchor and got a second marker
+      (`is_any_ai_enabled`, `get_execute_commands_denylist`,
+      `active_window_index`, `WARP_CLI_AGENT_PROTOCOL_VERSION`,
+      `GlobalSearchView`, `mac_only_keystroke`, `read_agent_conversation_by_id`,
+      `middle_click_paste_enabled`, `should_autoexecute`,
+      `LONG_RUNNING_BOTTOM_PADDING_LINES`). `script/check_declined_collisions`
+      now checks 50 `keep:` markers (was 40) and stays green.
+- [x] Audit `DECLINED.md` for other inert `keep:` markers.
+      **Fixed 2026-09-27 (#752):** full audit recorded as a new note in
+      DECLINED.md right after "Machine-checkable markers", including the two
+      rows left deliberately unfixed because no safe non-generic anchor exists
+      (`ZapDriveObjectArgs`; the `ServerFileBrowserView`/`Event` `sym:` markers,
+      whose whole feature never existed upstream at any pin) and the rows that
+      needed nothing because a sibling marker on the same row, or the value
+      itself, already matches the pin (`has_locking_attachment`, the
+      `CustomEndpoint` BYOP row, `unique_skills` dedup, the hidden-files
+      keybinding row, `hide_env_values`, `is_byo_api_key_enabled`,
+      `CLI_AGENT_NOTIFICATION_SENTINEL`, `MCPGalleryManager`, `get_gallery`,
+      `ShareAccessLevel`/`ShareRequest`/`ShareSubject`, `IsTelemetryEnabled`,
+      `async_find_enabled`, `CODEX_BYPASS_HOOK_TRUST_FLAG`,
+      `test_change_font_size`, `use_ssh_tmux_wrapper`).
 
 ### DATA-INTEGRITY: five shas in the shard reports did not resolve
 
@@ -2242,16 +2325,41 @@ absent" was never the reason.
 
 ### QUEUE GENERATOR DEFECTS — fix before the next round
 
-- [ ] **Renames are reported as removals.** All three "REMOVED AT NEW PIN" entries
+- [x] **Renames are reported as removals.** All three "REMOVED AT NEW PIN" entries
       are moves: `user_workspaces_tests.rs` -> `user_workspaces/user_workspaces_tests.rs`;
       `app/src/bin/generate_settings_schema_tests.rs` -> `app/src/settings/schema_generation_tests.rs`;
       `app/src/util/path_tests.rs` -> `crates/warp_util/src/path_tests.rs`. The last two
       are then **re-reported at their destinations**, so the same tests are both
       retired and double-counted.
-- [ ] **`sym:` markers match substrings.** `sym:SettingsMode` fired on
+      **Fixed 2026-09-27 (#747):** added `-M20%` to both `git diff --name-status`
+      invocations in `script/generate_repin_queue` (git's default `-M50%` misses
+      two of the three named renames — their destinations picked up substantial
+      new content in the same commit, diluting similarity below 50%), and
+      rename-aware bucketing that keys ledger/SCOPE lookups on the OLD path while
+      using the NEW path for content checks. Re-ran against the real
+      `42effe840 -> 4111d08f9` range: `REMOVED AT NEW PIN` dropped from 3 to 1
+      (only `app/src/util/path_tests.rs`, which is **not** a rename in this
+      range at all — its destination already existed at the old pin, verified
+      with `git cat-file -e`; it's a content consolidation into a pre-existing
+      file, which no rename-detection threshold can represent).
+- [x] **`sym:` markers match substrings.** `sym:SettingsMode` fired on
       `OpenWarpNewSettingsModes` in **3 of 11** DECLINED collisions (27% false
       positives), every one on a line upstream deleted. Anchor to identifier
       boundaries.
+      **Fixed 2026-09-27 (#747):** `generate_repin_queue`'s collision check now
+      matches every marker value with a word-boundary-anchored ERE
+      (`marker_pattern()`, `\b<escaped value>\b`) instead of `grep -qF`
+      substring matching. Re-verified against the real
+      `42effe840 -> 4111d08f9` range: the fixed check still correctly fires on a
+      genuine standalone `SettingsMode` (`use settings::SettingsMode;` in the
+      renamed `schema_generation_tests.rs`), with no substring false positive
+      observed. **Round-5 markers checked for the same risk:**
+      `sym:SANDBOX_BACKUP_SUFFIX`, `sym:reserve_conflict_backup_path`,
+      `keep:middle_click_paste_gate` — none collide with any other identifier in
+      the tree (`grep -rnE` for each found only its own definition/removal
+      site); `script/check_declined_collisions` (which already anchors `sym:`
+      definitions to `struct|enum|trait|fn NAME\b`, so it was never vulnerable
+      to this specific bug) stays green at 135 markers checked.
 
 ### THE UNADJUDICATED TOTAL IS 1,100 TESTS, NOT 228 — and a third blind spot is open
 
@@ -2344,12 +2452,19 @@ what was dropped.
       `pub(crate)` for the backoff-fits-the-window test, and
       `cancelling_conversation_aborts_pending_auto_resume`
       (`controller_tests.rs`) updated for the new helper signature.
-- [ ] **`e1bcf5d07` — AI-page split. One hunk MUST NOT be ported.**
+- [x] **`e1bcf5d07` — AI-page split. One hunk MUST NOT be ported.**
       Two halves already present independently, and the fork's version is stronger
       (`persistence_key()`/`from_stable_key()` vs upstream's `slug()`). **Do not**
       port the `app/src/local_control/handlers/app_state.rs` switch to `from_slug`:
       the fork's `from_str` there is deliberate and documented, backing the
       `surface.settings.open` scripting contract, and must stay locale-independent.
+      **Superseded 2026-09-27 (#754): the broader question this row was hedging on
+      is now closed.** Maintainer decision: keep `ai_page.rs` as one page, do not
+      port the split at all — see DECLINED.md's new "AI settings page stays one
+      page" row (`sym:AgentProfilesPageView`, `sym:CLIAgentsPageView`). The
+      `from_slug` warning above stays true and worth keeping as a record, but it
+      no longer needs tracking as open work: there is no page split to port a hunk
+      of.
 - [x] **`0a7d5380e` — wasm/web guards. Port 2 of 6 hunk groups.**
       Portable: the wasm early-return in `insert_notifications_discovery_banner`
       and the `ConversationView` arm of the `WasmNUXDialog::should_display` guard.
@@ -2750,7 +2865,7 @@ separately rather than inflating the queue count.
       Compile-surface change; **sequence it BEFORE any port using new API types**, and
       sweep the queue for proto-dependent commits when ordering.
       **Closed 2026-09-26:** bumped to `f0028fa6d` in `4a6c07d83` (`Cargo.toml:384`).
-- [ ] **`60d602df6` — MAA teardown race guard (QUALITY-1801). BLOCKED, not schedulable
+- [x] **`60d602df6` — MAA teardown race guard (QUALITY-1801). BLOCKED, not schedulable
       yet. Re-verified 2026-08-29; the blocker is real and WIDER than this row said.**
       Its host function `conversation_ready_for_pending_events` does not exist here, and
       `OrchestrationEventServiceEvent::EventsReady` is emitted 3x and subscribed nowhere.
@@ -2758,6 +2873,13 @@ separately rather than inflating the queue count.
       `script/check_stub_coverage` exists to catch. **Attach as a prerequisite to the
       deferred orchestration-consumer increment** (`blocklist/mod.rs:21-24`, TODO #310),
       so the race closes the day the consumer lands.
+
+      **PARKED 2026-09-27 (maintainer decision): out of scope for this branch, not
+      merely blocked.** The orchestration-consumer increment (`#310`,
+      `OrchestrationEventService` registration) this row waits on belongs to the
+      separate "moth" branch. Ticked because the decision is terminal for this
+      branch, not because the underlying race is fixed — re-open only if "moth"'s
+      work lands here.
 
       **This row is also the home of test-adjudication "Cluster A" (6 driver tests) and
       shard E's `drop_pending_events_for_exiting_conversation` (1 controller test).** They
@@ -12223,11 +12345,18 @@ open findings that had no pre-existing row.
       building once a round has a build available to verify it compiles and
       passes before committing to it blind.
 
-- [ ] **Cargo.lock: `signal-hook` was hand-added to `warpui`'s deps for #685**
+- [x] **Cargo.lock: `signal-hook` was hand-added to `warpui`'s deps for #685**
       (SIGTERM/SIGHUP handling) rather than regenerated through `cargo`, since
       agents in this round do not build. Needs a real `cargo update -p
       signal-hook` (or equivalent) on the build host to make sure the resolved
       version and its transitive deps match what a real build would pick.
+      **Verified resolved 2026-09-27:** `Cargo.lock` now carries a proper
+      `[[package]] name = "signal-hook" version = "0.3.18"` entry (registry
+      source, checksum, `libc`/`signal-hook-registry` deps) and `warpui`'s own
+      `dependencies` list in `Cargo.lock` includes `"signal-hook"`, matching
+      `crates/warpui/Cargo.toml`'s `signal-hook = "0.3.17"` requirement. This
+      was a read-only check (`grep`/`awk` on `Cargo.lock`), not a `cargo`
+      invocation — no build was run to confirm this session.
 
 - [ ] **Windows graceful shutdown on console close / logoff is still incomplete
       (#685 follow-up).** Headless `CTRL_CLOSE_EVENT`
@@ -12394,3 +12523,29 @@ open findings that had no pre-existing row.
       `AppContext::open_file_path_from_file_tree`). `uri/mod.rs`'s "Open with
       Phosphor" still executing runnable scripts by design remains open,
       untouched by this round.
+- [ ] **`CodeSource::FileTree` and a `GlobalSearch` origin are conflated, so a search
+      result inherits file-tree-only permissions (#706 follow-up, #757).**
+      `app/src/workspace/view.rs:5777`'s `LeftPanelEvent::OpenFileWithTarget` handler
+      hardcodes `CodeSource::FileTree { path: path.clone() }` for every event of that
+      shape, but that event is also emitted from
+      `app/src/workspace/view/left_panel.rs:810`, inside `handle_global_search_event`'s
+      `GlobalSearchViewEvent::OpenMatch` arm — i.e. clicking a Global Search result. #706
+      made `CodeSource::FileTree` "the one origin permitted to reach the OS default
+      [app]" and the one exception to the reveal-before-open confirmation
+      (`workspace/view.rs:5678-5721`), on the assumption that `FileTree` means a genuine
+      file-tree double-click. A file opened from search therefore silently gets those
+      same permissions. `app/src/code/editor_management.rs`'s `CodeSource` enum has no
+      `GlobalSearch` variant to distinguish the two. Needs: a new variant, threading the
+      real origin through instead of hardcoding `FileTree` at the handler, and updating
+      #706's permission checks to treat the two origins differently.
+- [ ] **Make `script/precheck`'s integration step a hard gate once a clean baseline is
+      recorded (#721 follow-up).** #721 added the integration-suite step but left it
+      deliberately advisory (`warn`, not `fail`) on scenario failures, matching
+      `pr-check.yml`'s `integration-linux` job not being a required status check — nobody
+      has ever triaged a `known_test_failures.txt`-equivalent baseline for
+      `-p integration` (environment-dependent scenarios), and gating on an empty baseline
+      would fail on the first environment gap rather than an actual regression. Once
+      such a baseline is recorded (mirroring `script/check_test_failures`'s
+      diff-against-baseline approach for the rest of the suite), promote this step from
+      `warn` to `fail` in `script/precheck` and drop the "not yet gated" language from its
+      header comment.

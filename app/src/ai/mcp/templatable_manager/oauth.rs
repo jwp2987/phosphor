@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 use uuid::Uuid;
 use warp_core::channel::ChannelState;
+use warp_core::errors::{ReportErrorLogMode, report_error};
 use warpui::ModelSpawner;
 use warpui_extras::secure_storage::AppContextExt as _;
 
@@ -635,7 +636,20 @@ impl TemplatableMCPServerManager {
                 &self.server_credentials,
             );
         } else {
-            log::error!("No template UUID found for installation UUID {installation_uuid}");
+            // Ported from the pin's throttle (`d2cb17abb`, #15498): this fires on the
+            // spawn-failure/reconnect path (`native.rs`'s `spawn_server_process` error arm),
+            // which retries on a broken server and produced 4.4M+ Sentry events upstream from
+            // the equivalent call in `native.rs`. This fork's call site diverged into
+            // `oauth.rs` and used `log::error!` rather than `report_error!`, so upstream's
+            // fix (switching to `ReportErrorLogMode::OncePerRun`) was never applicable as a
+            // direct port -- ported here as the throttled `report_error!` form instead, which
+            // this fork already uses elsewhere for the same reason
+            // (`crates/ai/src/index/file_outline/native.rs`).
+            report_error!(
+                "No template UUID found for installation UUID",
+                extra: { "installation_uuid" => %installation_uuid },
+                ReportErrorLogMode::OncePerRun
+            );
         }
     }
 }

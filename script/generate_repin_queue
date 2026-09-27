@@ -304,6 +304,39 @@ declined_markers() {
         | cut -d: -f2-
 }
 
+marker_pattern() {
+    # Builds a word-boundary-anchored ERE for a marker VALUE, for matching
+    # against a diff's added/removed lines.
+    #
+    # Fixed 2026-08-29 (docs/pin-migration.md, "Three generator defects"): this
+    # used to be `grep -qF "$mv"`, a bare substring search. `sym:SettingsMode`
+    # matched `OpenWarpNewSettingsModes` on 3 of 11 real DECLINED collisions
+    # that round -- 27% false positives, every one on a line upstream had
+    # deleted, because "SettingsMode" is a literal substring of
+    # "SettingsModes". `\b...\b` fixes exactly this: word-boundary matching
+    # requires a non-identifier-char transition on both sides, and "Mode"
+    # immediately followed by "s" (both word characters) is not a boundary, so
+    # the anchored pattern no longer fires inside a longer identifier.
+    #
+    # Metacharacters are escaped because marker values are not always bare
+    # identifiers -- a `path:` marker can contain `.` and `/`, both of which
+    # are ERE-special (`.` matches any char) or would otherwise produce a
+    # subtly wrong match.
+    #
+    # Each side is anchored only when the marker's own edge character is a
+    # word character (#765). `\b` needs a word/non-word transition, so a value
+    # that already ends in a non-word char -- `path:app/.../init_project/` --
+    # followed by `"`, a space or EOL has no boundary there at all, and the
+    # anchored pattern silently missed a marker that was plainly present. A
+    # non-word edge delimits itself; only a word-char edge can run on into a
+    # longer identifier, which is the case the anchors exist for.
+    local body lead='' trail=''
+    body="$(printf '%s' "$1" | sed -E 's/[][\.^$*+?(){}|\\]/\\&/g')"
+    [[ "$1" =~ ^[A-Za-z0-9_] ]] && lead='\b'
+    [[ "$1" =~ [A-Za-z0-9_]$ ]] && trail='\b'
+    printf '%s%s%s' "$lead" "$body" "$trail"
+}
+
 collision_hits="$(mktemp)" unclassified="$(mktemp)" actionable="$(mktemp)"
 lowprio="$(mktemp)" removed="$(mktemp)" ledger_reexamine="$(mktemp)"
 cloud_count=0
@@ -315,7 +348,7 @@ marker_values="$(declined_markers)"
 total_changed=0
 total_test_bearing=0
 
-while IFS=$'\t' read -r status path; do
+while IFS=$'\t' read -r status path path2; do
     [[ -z "$path" ]] && continue
     total_changed=$((total_changed + 1))
 
@@ -326,12 +359,66 @@ while IFS=$'\t' read -r status path; do
         continue
     fi
 
+    # Rename/move (requires `-M20%` below; git prints "R<similarity>\t<old>\t<new>").
+    #
+    # Fixed 2026-08-29 (docs/pin-migration.md, "Three generator defects"): without
+    # `-M`, `git diff --name-status` cannot see a rename at all -- it reports the
+    # old path as a plain deletion and the new path as a plain addition, so a pure
+    # file move (no content judgment needed) lands in REMOVED AT NEW PIN and
+    # simultaneously in UNCLASSIFIED/ACTIONABLE at its destination: the same tests
+    # both retired and double-counted as new. `user_workspaces.rs` ->
+    # `user_workspaces/mod.rs` was exactly this case (R078 at git's default
+    # threshold).
+    #
+    # `-M20%`, not bare `-M` (git's default is `-M50%`): verified against the
+    # actual `42effe840 -> 4111d08f9` diff, two of the three renames
+    # docs/pin-migration.md names only clear a much lower bar --
+    # `generate_settings_schema_tests.rs` -> `schema_generation_tests.rs` is
+    # R034, `user_workspaces_tests.rs` -> `user_workspaces/user_workspaces_tests.rs`
+    # is R049 -- because the destination file also picked up substantial new
+    # content in the same commit, diluting the similarity score. 50% missed both.
+    # A lower threshold risks pairing two unrelated files that happen to share
+    # enough boilerplate; that risk is accepted here because a wrong pairing just
+    # means a ledger/SCOPE lookup under the wrong old_path, which most likely
+    # finds nothing and falls through to UNCLASSIFIED -- not a silent wrong
+    # answer. The third named rename (`app/src/util/path_tests.rs` ->
+    # `crates/warp_util/src/path_tests.rs`) is NOT a candidate for ANY threshold:
+    # both paths already existed at the OLD pin (verified with `git cat-file -e`
+    # on both, both pins), so this is a content consolidation into a
+    # pre-existing file, not a rename -- git's rename detection only pairs a
+    # deletion with an addition, and the destination here is a modification.
+    # That case has no mechanical fix; it needs a human to notice the deletion
+    # and go look at what absorbed it.
+    #
+    # A rename is still a CONTENT change from the sweep's point of view -- the
+    # ledger/SCOPE verdicts were recorded against the OLD path's content, so
+    # `old_path` (not the new `path`) is what invalidates them (rule 1) and what
+    # carries any inherited SCOPE verdict. `is_test_bearing`/`is_cloud_touching`,
+    # which read actual source, use the NEW path and the NEW pin, since that is
+    # where the content now lives.
+    old_path=""
+    if [[ "$status" == R* ]]; then
+        old_path="$path"
+        path="$path2"
+    fi
+
     is_test_bearing "$NEW_PIN" "$path" || continue
     total_test_bearing=$((total_test_bearing + 1))
 
+    rename_note=""
+    [[ -n "$old_path" ]] && rename_note="  (renamed from ${old_path})"
+
     # Declined-collision check: does this file's diff mention a marked name?
     if [[ -n "$marker_values" ]]; then
-        diff_text="$(git diff "$OLD_PIN" "$NEW_PIN" -- "$path" 2>/dev/null)"
+        # `-M` again: a per-file diff without it would show a renamed file's
+        # entire new content as "added" (nothing on the old-path side to pair it
+        # with), which can still find a real marker but for the wrong reason --
+        # every line reads as new, not just the ones upstream actually touched.
+        if [[ -n "$old_path" ]]; then
+            diff_text="$(git diff -M20% "$OLD_PIN" "$NEW_PIN" -- "$old_path" "$path" 2>/dev/null)"
+        else
+            diff_text="$(git diff "$OLD_PIN" "$NEW_PIN" -- "$path" 2>/dev/null)"
+        fi
         hit=""
         while IFS= read -r mv; do
             [[ -z "$mv" ]] && continue
@@ -340,13 +427,17 @@ while IFS=$'\t' read -r status path; do
             # and a marker near the END always returns 0, so the failure only
             # appears when there genuinely IS a collision, on the large files
             # most likely to have one. Measured: exit 0 at 64KB, 141 at 70KB+.
-            if grep -qF "$mv" <<<"$diff_text"; then
+            #
+            # Word-boundary anchored, not a bare substring (see marker_pattern's
+            # header): `grep -qF` previously let `sym:SettingsMode` fire on
+            # `OpenWarpNewSettingsModes`.
+            if grep -qE "$(marker_pattern "$mv")" <<<"$diff_text"; then
                 hit="$mv"
                 break
             fi
         done <<< "$marker_values"
         if [[ -n "$hit" ]]; then
-            printf '%s  (touches DECLINED.md marker: %s)\n' "$path" "$hit" >> "$collision_hits"
+            printf '%s%s  (touches DECLINED.md marker: %s)\n' "$path" "$rename_note" "$hit" >> "$collision_hits"
             continue
         fi
     fi
@@ -357,14 +448,18 @@ while IFS=$'\t' read -r status path; do
     # invalidates EVERY verdict recorded against it (the evidence was read
     # against the OLD content). Report it, with the verdict breakdown, rather
     # than falling through to the coarser SCOPE-*.md-letter path below.
+    #
+    # Keyed on `old_path` for a rename: sweep evidence was recorded against the
+    # path that existed when the sweep ran, which is the OLD side of a rename,
+    # not the new destination the file has not been re-swept under yet.
     if ((HAVE_LEDGER)); then
-        ledger_line="$(ledger_summary_for "$path")"
+        ledger_line="$(ledger_summary_for "${old_path:-$path}")"
         if [[ -n "$ledger_line" ]]; then
             n_ledger_tests="${ledger_line%%$'\t'*}"
             breakdown="${ledger_line#*$'\t'}"
             ledger_reexamine_tests=$((ledger_reexamine_tests + n_ledger_tests))
-            printf '%s  (%d ledger-adjudicated test(s) invalidated -- pin file changed: %s)\n' \
-                "$path" "$n_ledger_tests" "$breakdown" >> "$ledger_reexamine"
+            printf '%s%s  (%d ledger-adjudicated test(s) invalidated -- pin file changed: %s)\n' \
+                "$path" "$rename_note" "$n_ledger_tests" "$breakdown" >> "$ledger_reexamine"
             continue
         fi
     fi
@@ -374,16 +469,19 @@ while IFS=$'\t' read -r status path; do
         continue
     fi
 
-    verdict="$(scope_verdict_for "$path")"
+    # Same reasoning as the ledger check: a SCOPE-*.md row was written against
+    # whichever path existed when that file was read, which is the OLD side of
+    # a rename.
+    verdict="$(scope_verdict_for "${old_path:-$path}")"
     if [[ -z "$verdict" ]]; then
-        echo "$path" >> "$unclassified"
+        printf '%s%s\n' "$path" "$rename_note" >> "$unclassified"
     elif [[ "$verdict" == A* || "$verdict" == D* || "$verdict" == MIXED* ]]; then
-        printf '%s  (SCOPE verdict %s -- a VERDICT, not a fact; re-check before trusting it)\n' \
-            "$path" "$verdict" >> "$actionable"
+        printf '%s%s  (SCOPE verdict %s -- a VERDICT, not a fact; re-check before trusting it)\n' \
+            "$path" "$rename_note" "$verdict" >> "$actionable"
     else
-        printf '%s  (SCOPE verdict %s)\n' "$path" "$verdict" >> "$lowprio"
+        printf '%s%s  (SCOPE verdict %s)\n' "$path" "$rename_note" "$verdict" >> "$lowprio"
     fi
-done < <(git diff --name-status "$OLD_PIN" "$NEW_PIN" -- '*.rs' 2>/dev/null)
+done < <(git diff --name-status -M20% "$OLD_PIN" "$NEW_PIN" -- '*.rs' 2>/dev/null)
 
 n_collision=$(wc -l < "$collision_hits" | tr -d ' ')
 n_unclassified=$(wc -l < "$unclassified" | tr -d ' ')

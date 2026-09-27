@@ -972,6 +972,68 @@ mod tests {
         assert!(workspaces.is_ai_allowed_in_remote_sessions());
     }
 
+    /// Second arm of the same guard (DECLINED.md, `is_ai_allowed_in_remote_sessions`
+    /// row; TODO.md "TWO BROKEN TRIPWIRES" T1). The test above only ever built a
+    /// workspace with no team, so it cannot fail against the *new* pin's replacement
+    /// (`4111d08f9:app/src/workspaces/user_workspaces/team_workspace_settings.rs:474`),
+    /// which reads the team's setting first and falls back to the workspace only when
+    /// no team resolves. A team-scoped restoration would satisfy the test above (there
+    /// is still no team to disagree with) while silently changing behaviour the moment
+    /// a real team is attached.
+    ///
+    /// This fixture attaches a team whose own setting denies remote AI while the
+    /// *workspace* setting says the opposite, so whichever one a restoration reads
+    /// first, at least one of the two arms goes red if remote AI is ever allowed to
+    /// be denied again.
+    ///
+    /// NOT independently verified against a real build in this round (no cargo
+    /// invocation was made porting this fix) -- see the issue this test closes for
+    /// that caveat. It follows the file's own existing fixture patterns
+    /// (`Team::from_local_cache`, `Workspace::from_local_cache`) exactly, so a
+    /// compile failure here would most likely be a real defect, not a typo.
+    #[test]
+    fn is_ai_allowed_in_remote_sessions_ignores_team_settings() {
+        let mut team =
+            Team::from_local_cache(ServerId::from(1), "Test Team".to_owned(), None, None, None);
+        team.organization_settings
+            .ai_permissions_settings
+            .allow_ai_in_remote_sessions = false;
+
+        let mut workspace = Workspace::from_local_cache(
+            WorkspaceUid::from(ServerId::from(1)),
+            "Test Workspace".to_owned(),
+            Some(vec![team]),
+        );
+        // Deliberately the opposite of the team's setting, so a team-first read and
+        // a workspace-only read disagree -- proving which one actually fired.
+        workspace
+            .settings
+            .ai_permissions_settings
+            .allow_ai_in_remote_sessions = true;
+
+        let workspaces =
+            UserWorkspaces::new(vec![workspace], Some(WorkspaceUid::from(ServerId::from(1))));
+
+        assert!(
+            workspaces.current_workspace().is_some(),
+            "the fixture must really have a current workspace, or the assertions below \
+             prove nothing about which setting was ignored"
+        );
+        assert_eq!(
+            workspaces
+                .current_workspace()
+                .and_then(|workspace| workspace.teams.first())
+                .map(|team| team
+                    .organization_settings
+                    .ai_permissions_settings
+                    .allow_ai_in_remote_sessions),
+            Some(false),
+            "the fixture's team setting must actually be off, or this test cannot \
+             distinguish a team-scoped restoration from the workspace-only one above"
+        );
+        assert!(workspaces.is_ai_allowed_in_remote_sessions());
+    }
+
     /// `current_workspace()` is the one selector in this module that survived
     /// de-clouding with real logic in it (`current_team()` and friends are hard-`None`),
     /// and several live call sites resolve through it, so it is worth pinning.
