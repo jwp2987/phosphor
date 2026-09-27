@@ -6486,3 +6486,91 @@ fn test_cancel_active_rename_discards_tab_group_rename() {
         });
     });
 }
+
+/// Opens the tab context menu and gives it focus, as a right-click does.
+fn open_focused_tab_menu(workspace: &ViewHandle<Workspace>, app: &mut App) {
+    workspace.update(app, |workspace, ctx| {
+        workspace.show_tab_right_click_menu =
+            Some((0, TabContextMenuAnchor::Pointer(Vector2F::zero())));
+        ctx.focus(&workspace.tab_right_click_menu);
+    });
+}
+
+/// Queues the menu's Close event exactly as `MenuAction::Close` does.
+fn emit_tab_menu_close(workspace: &mut Workspace, ctx: &mut ViewContext<Workspace>) {
+    workspace.tab_right_click_menu.update(ctx, |_, ctx| {
+        ctx.emit(MenuEvent::Close {
+            via_select_item: true,
+        })
+    });
+}
+
+/// A mouse click on a menu item dispatches its actions in reverse, so the menu's
+/// Close event is queued before the item's action runs, and both land in one flush
+/// with the item's focus request still pending. Closing the menu must not take focus
+/// back from the rename editor the item opened. `test_tab_group_menu_rename_opens_focused_editor`
+/// runs the two steps in separate updates and so cannot see this ordering.
+#[test]
+fn test_mouse_chosen_group_rename_survives_tab_menu_close() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        let group_id = workspace.update(&mut app, |workspace, _| {
+            let mut group = TabGroup::new();
+            group.name = Some("Backend".to_string());
+            let group_id = group.id;
+            workspace.tab_groups.insert(group_id, group);
+            workspace.tabs[0].group_id = Some(group_id);
+            group_id
+        });
+        open_focused_tab_menu(&workspace, &mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            emit_tab_menu_close(workspace, ctx);
+            workspace.handle_action(&WorkspaceAction::RenameTabGroup(group_id), ctx);
+        });
+
+        let (being_renamed, editor_focused, buffer) =
+            tab_group_rename_state(&workspace, group_id, &app);
+        assert!(being_renamed);
+        assert!(editor_focused);
+        assert_eq!(buffer, "Backend");
+    });
+}
+
+/// "New group with tab" from the tab menu starts its rename through a deferred action.
+/// With Enter the item runs before Close; with a mouse click Close is queued first.
+/// In both orders the new group's rename editor must end up focused.
+#[test]
+fn test_new_group_from_tab_menu_keeps_rename_focus_for_enter_and_click() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    for close_first in [false, true] {
+        App::test((), |mut app| async move {
+            initialize_app(&mut app);
+
+            let workspace = mock_workspace(&mut app);
+            open_focused_tab_menu(&workspace, &mut app);
+
+            workspace.update(&mut app, |workspace, ctx| {
+                if close_first {
+                    emit_tab_menu_close(workspace, ctx);
+                    workspace.handle_action(&WorkspaceAction::NewTabGroupFromTab(0), ctx);
+                } else {
+                    workspace.handle_action(&WorkspaceAction::NewTabGroupFromTab(0), ctx);
+                    emit_tab_menu_close(workspace, ctx);
+                }
+            });
+
+            let group_id = workspace.read(&app, |workspace, _| workspace.tabs[0].group_id);
+            let group_id = group_id.expect("the tab was grouped");
+            let (being_renamed, editor_focused, _) =
+                tab_group_rename_state(&workspace, group_id, &app);
+            assert!(being_renamed, "close_first={close_first}");
+            assert!(editor_focused, "close_first={close_first}");
+        });
+    }
+}

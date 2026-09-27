@@ -8904,18 +8904,11 @@ impl Workspace {
                 self.show_tab_group_right_click_menu = None;
                 self.show_tab_selection_right_click_menu = None;
                 self.hide_move_to_group_sidecar(ctx);
-                // Only reclaim focus the hidden menu would otherwise keep. When an
-                // item is chosen with Enter, its action runs before this Close and
-                // may already have focused something else (a rename editor, a
-                // confirmation dialog); taking focus back here would blur it, which
-                // cancels the rename or commits the untouched auto title as a
-                // custom pane name. Diverges from upstream 43eae5e08, which
-                // refocuses unconditionally.
-                let window_id = ctx.window_id();
-                let focused = ctx.focused_view_id(window_id);
-                if focused.is_none() || focused == Some(self.tab_right_click_menu.id()) {
-                    self.focus_active_tab(ctx);
-                }
+                // Focus is handed back from a deferred action, never read here: a
+                // mouse-chosen item runs before this Close event is delivered, but
+                // the focus it requested (a rename editor, a dialog) is still only
+                // queued, so a synchronous check still sees the hidden menu focused.
+                ctx.dispatch_typed_action_deferred(WorkspaceAction::RestoreFocusAfterTabMenuClose);
                 ctx.notify();
             }
             MenuEvent::ItemHovered | MenuEvent::ItemSelected => {
@@ -11744,6 +11737,24 @@ impl Workspace {
         if let Some(group) = self.tab_groups.get_mut(&group_id) {
             group.collapsed = false;
             ctx.notify();
+        }
+    }
+
+    /// Returns focus to the active tab once the tab context menu has closed, so keys
+    /// don't go to a hidden menu (upstream 43eae5e08). Leaves focus alone when a menu
+    /// item claimed it: an inline rename is in progress, or something other than the
+    /// menu is focused (a confirmation dialog). The rename check matters because a
+    /// rename started by a deferred action (new group from tab) can still have its
+    /// editor focus queued behind this action. Diverges from upstream, which refocuses
+    /// unconditionally and so cancels a mouse-chosen rename.
+    fn restore_focus_after_tab_menu_close(&mut self, ctx: &mut ViewContext<Self>) {
+        let state = &self.current_workspace_state;
+        let renaming = state.is_tab_being_renamed()
+            || state.is_any_pane_being_renamed()
+            || state.is_any_tab_group_being_renamed();
+        let focused = ctx.focused_view_id(ctx.window_id());
+        if !renaming && (focused.is_none() || focused == Some(self.tab_right_click_menu.id())) {
+            self.focus_active_tab(ctx);
         }
     }
 
@@ -21547,6 +21558,7 @@ impl TypedActionView for Workspace {
                 self.cancel_pane_rename(ctx);
                 self.cancel_tab_group_rename(ctx);
             }
+            RestoreFocusAfterTabMenuClose => self.restore_focus_after_tab_menu_close(ctx),
             NewTabGroupFromTab(tab_index) => self.new_tab_group_from_tab(*tab_index, ctx),
             MoveTabToGroup {
                 tab_index,
