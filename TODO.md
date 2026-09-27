@@ -2786,14 +2786,35 @@ flags already covered by `DECLINED.md`. **Do not touch the 49.**
       **Fixed 2026-09-26 (#673, `1ea40df0d`):** the agent-driving check now runs before the
       subshell filter. The filter still applies to the user's own blocks.
 
-- [ ] **Not done: the TUI gets none of this.** `impl TerminalSurface for TuiTerminalSessionView`
-      (`crates/warp_tui/src/terminal_session_view.rs:5775`) overrides only `on_shell_determined`
-      and `on_pty_spawn_failed`, so it inherits the trait's `false` default for
-      `should_start_password_prompt_polling` and has never polled termios at all. That predates
-      this change. Its rendering half *is* wired — `terminal_use_status_text`
-      (`crates/warp_tui/src/tui_cli_subagent_view.rs:86`) shows the new state — so a TUI session
-      whose control state was set elsewhere displays correctly; it simply cannot detect the
-      prompt itself.
+- [x] **#733 — the TUI got none of this, agent-driven password-prompt half
+      fixed.** `impl TerminalSurface for TuiTerminalSessionView`
+      (`crates/warp_tui/src/terminal_session_view.rs`) overrode only
+      `on_shell_determined` and `on_pty_spawn_failed`, so it inherited the trait's
+      `false` default for `should_start_password_prompt_polling` and never polled
+      termios at all. That predated this change. Its rendering half *is* wired —
+      `terminal_use_status_text` (`crates/warp_tui/src/tui_cli_subagent_view.rs:86`)
+      shows the new state — so a TUI session whose control state was set elsewhere
+      displays correctly; it simply could not detect the prompt itself.
+      **Fixed:** `is_agent_driving_active_block` (mirrors the GUI's),
+      `should_start_password_prompt_polling` (arms whenever the agent drives the
+      active block — `TerminalManager<S>` is generic over the surface and real TUI
+      sessions already run through the same poller, so this was reachable, just
+      unimplemented), `should_stop_password_prompt_polling`, and
+      `on_possible_password_prompt` (hands control to the user via the TUI's
+      existing `cli_subagent_controller`). `BlockType` added to `tui_export.rs`.
+      **Deliberately scoped out, not a regression** (see the impl's doc comment):
+      polling for the *user's* own commands' password prompts
+      (`password_notifications_enabled`, the warpify-subshell-alias filter, SSH
+      drag-and-drop propagation — GUI-specific notification/DnD features with no
+      TUI equivalent; the TUI polled for nobody's password prompts before this).
+      **Still open — a real follow-up, not done here:** the non-password
+      `[y/N]`/`read -p` detection (`pending_interactive_prompt` /
+      `on_stalled_interactive_prompt` / `keeps_polling_after_prompt`, #673's later
+      half). The TUI already has the infrastructure this would need
+      (`ai_action_model`, `terminal_model`, `cli_subagent_controller`), but it also
+      needs `InteractivePromptCandidate`/`interactive_prompt_candidate`
+      (`app/src/terminal/model/block/interaction_mode.rs`) exported through
+      `tui_export.rs`, which was judged out of scope for this pass.
 
 ## 🛑 BUILD FREEZE — in force from 2026-08-11 until the maintainer lifts it
 
