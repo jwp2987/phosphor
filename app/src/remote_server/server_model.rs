@@ -1711,6 +1711,11 @@ impl ServerModel {
             Some(EmbeddingEndpoint {
                 base_url: config.base_url.clone(),
                 api_key: config.api_key.clone(),
+                // The remote-server RPC config (`EmbeddingProviderConfig`) has no
+                // extra-headers field yet -- adding one is a proto change, out of scope
+                // here. Local (non-remote) embedding/rerank calls get the provider's
+                // headers via `resolve_embedding_endpoint(s)`/`resolve_rerank_endpoint`.
+                extra_headers: Vec::new(),
             }),
             Some(embedding_config),
         );

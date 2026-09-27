@@ -5812,6 +5812,10 @@ pub struct TitleGenInput {
     pub model_id: String,
     pub api_type: AgentProviderApiType,
     pub reasoning_effort: crate::settings::ReasoningEffortSetting,
+    /// The provider's configured custom headers, forwarded the same way the main
+    /// streaming path forwards `ByopDispatch::extra_headers` -- see `OneshotConfig::extra_headers`
+    /// for why title generation needs this too. Values may contain secrets: never logged.
+    pub extra_headers: Vec<(String, String)>,
     /// UI language name ("English" / "Simplified Chinese" / …) substituted for the
     /// `{{ language }}` placeholder in title_system.md; the title-language fallback
     /// when the input language is ambiguous.
@@ -7803,6 +7807,7 @@ pub(crate) async fn generate_title_via_byop(
         model_id: tg.model_id.clone(),
         api_type: tg.api_type,
         reasoning_effort: tg.reasoning_effort,
+        extra_headers: tg.extra_headers.clone(),
     };
     // Static template with only the `{{ language }}` placeholder substituted (no
     // minijinja — not worth a template engine for a single variable). A profile

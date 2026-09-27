@@ -37,6 +37,13 @@ pub struct OneshotConfig {
     pub model_id: String,
     pub api_type: AgentProviderApiType,
     pub reasoning_effort: ReasoningEffortSetting,
+    /// The provider's configured custom headers (`AgentProvider::extra_headers`), forwarded
+    /// verbatim -- some self-hosted gateways reject a request that lacks a custom auth
+    /// header, and one-shot calls (active AI / next-command / commit-message / title gen)
+    /// used to drop these on the floor even though the main streaming path
+    /// (`ByopDispatch::extra_headers`) already carried them. Values may contain secrets:
+    /// never logged.
+    pub extra_headers: Vec<(String, String)>,
 }
 
 /// Optional parameters for a one-shot call.
@@ -89,6 +96,9 @@ fn build_oneshot_request(
                 chat_opts = chat_opts.with_reasoning_effort(effort);
             }
         }
+    }
+    if !cfg.extra_headers.is_empty() {
+        chat_opts = chat_opts.with_extra_headers(cfg.extra_headers.clone());
     }
 
     let max_chars = opts.max_chars.unwrap_or(DEFAULT_MAX_CHARS);
@@ -248,6 +258,7 @@ pub fn resolve_active_ai_oneshot(
         model_id,
         api_type: provider.api_type,
         reasoning_effort,
+        extra_headers: provider.extra_headers.clone(),
     })
 }
 
@@ -271,5 +282,61 @@ pub fn resolve_next_command_oneshot(
         model_id,
         api_type: provider.api_type,
         reasoning_effort,
+        extra_headers: provider.extra_headers.clone(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn a_config(extra_headers: Vec<(String, String)>) -> OneshotConfig {
+        OneshotConfig {
+            base_url: "http://127.0.0.1:1/v1".to_owned(),
+            api_key: "test-key".to_owned(),
+            model_id: "test-model".to_owned(),
+            api_type: AgentProviderApiType::OpenAi,
+            reasoning_effort: ReasoningEffortSetting::Auto,
+            extra_headers,
+        }
+    }
+
+    // The bug this closes: `TitleGenInput`/`OneshotConfig` used to have no
+    // `extra_headers` field at all, so a gateway that needs a custom auth header
+    // (checked in the main streaming path via `ByopDispatch::extra_headers`) rejected
+    // one-shot calls -- title generation, active AI, next-command, commit-message
+    // generation -- even when the same provider's streaming requests worked fine.
+    #[test]
+    fn extra_headers_are_forwarded_into_chat_options() {
+        let cfg = a_config(vec![(
+            "X-Gateway-Auth".to_owned(),
+            "secret-token".to_owned(),
+        )]);
+        let opts = OneshotOptions::default();
+        let (_req, chat_opts) = build_oneshot_request(&cfg, "system", "user", &opts);
+
+        let headers = chat_opts
+            .extra_headers
+            .as_ref()
+            .expect("extra_headers must be set on ChatOptions when the config carries any");
+        let found = headers
+            .iter()
+            .any(|(k, v)| k == "X-Gateway-Auth" && v == "secret-token");
+        assert!(
+            found,
+            "the provider's configured header must reach ChatOptions unchanged"
+        );
+    }
+
+    #[test]
+    fn no_extra_headers_means_chat_options_carries_none() {
+        let cfg = a_config(Vec::new());
+        let opts = OneshotOptions::default();
+        let (_req, chat_opts) = build_oneshot_request(&cfg, "system", "user", &opts);
+
+        assert!(
+            chat_opts.extra_headers.is_none(),
+            "an empty extra_headers must not synthesize an empty header set on the wire"
+        );
+    }
 }

@@ -1016,6 +1016,7 @@ mod endpoint_refresh_tests {
         EmbeddingEndpoint {
             base_url: format!("http://{host}/v1"),
             api_key: "sk-secret".to_owned(),
+            extra_headers: Vec::new(),
         }
     }
 
@@ -1034,6 +1035,7 @@ mod endpoint_refresh_tests {
                 EmbeddingEndpoint {
                     base_url: "http://embeddings.example.invalid/v1".to_owned(),
                     api_key: "sk-configured-after-launch".to_owned(),
+                    extra_headers: Vec::new(),
                 },
             ),
             None,
@@ -1116,6 +1118,7 @@ mod endpoint_refresh_tests {
                 EmbeddingEndpoint {
                     base_url: "http://openai.example.invalid/v1".to_owned(),
                     api_key: String::new(),
+                    extra_headers: Vec::new(),
                 },
             ),
             None,

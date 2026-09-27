@@ -98,6 +98,11 @@ pub struct EmbeddingEndpoint {
     /// Empty means "send no `Authorization` header", which is how a local
     /// runtime with no auth is supported — the same tolerance the chat path has.
     pub api_key: String,
+    /// The provider's configured custom headers (`AgentProvider::extra_headers`),
+    /// forwarded verbatim on every `/embeddings` and `/rerank` request the same way the
+    /// chat path forwards them -- some self-hosted gateways reject a request that lacks
+    /// a custom auth header. Values may contain secrets: never logged.
+    pub extra_headers: Vec<(String, String)>,
 }
 
 /// Whether `provider` is usable and offers `model_id`.
@@ -150,7 +155,11 @@ pub fn resolve_embedding_endpoint(
         .map(str::to_owned)
         .unwrap_or_default();
 
-    Some(EmbeddingEndpoint { base_url, api_key })
+    Some(EmbeddingEndpoint {
+        base_url,
+        api_key,
+        extra_headers: provider.extra_headers.clone(),
+    })
 }
 
 /// Every embedding model the user has a usable provider for, and where each
@@ -282,7 +291,14 @@ pub fn resolve_embedding_endpoints(app: &AppContext) -> EmbeddingEndpoints {
                 .map(str::to_owned)
                 .unwrap_or_default();
 
-            Some((embedding_config, EmbeddingEndpoint { base_url, api_key }))
+            Some((
+                embedding_config,
+                EmbeddingEndpoint {
+                    base_url,
+                    api_key,
+                    extra_headers: provider.extra_headers.clone(),
+                },
+            ))
         })
         .collect();
 
@@ -559,6 +575,9 @@ impl EmbeddingProvider for HttpEmbeddingProvider {
         if has_key {
             request = request.bearer_auth(&endpoint.api_key);
         }
+        for (name, value) in &endpoint.extra_headers {
+            request = request.header(name.clone(), value.clone());
+        }
 
         let response = request.send().await.map_err(|error| {
             IndexError::Other(anyhow::anyhow!(error).context("embedding request failed"))
@@ -653,7 +672,14 @@ pub fn resolve_rerank_endpoint(app: &AppContext) -> Option<(EmbeddingEndpoint, &
             .map(str::to_owned)
             .unwrap_or_default();
 
-        return Some((EmbeddingEndpoint { base_url, api_key }, model_id));
+        return Some((
+            EmbeddingEndpoint {
+                base_url,
+                api_key,
+                extra_headers: provider.extra_headers.clone(),
+            },
+            model_id,
+        ));
     }
 
     None
@@ -756,6 +782,9 @@ impl RerankProvider for HttpRerankProvider {
         let mut request = self.client.post(&url).json(&body);
         if has_key {
             request = request.bearer_auth(&self.endpoint.api_key);
+        }
+        for (name, value) in &self.endpoint.extra_headers {
+            request = request.header(name.clone(), value.clone());
         }
 
         let response = request.send().await.map_err(|error| {

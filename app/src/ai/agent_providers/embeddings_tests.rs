@@ -145,6 +145,7 @@ fn set_endpoint_replaces_a_missing_one() {
     provider.set_endpoint(Some(EmbeddingEndpoint {
         base_url: "https://api.voyageai.com/v1".to_owned(),
         api_key: "k".to_owned(),
+        extra_headers: Vec::new(),
     }));
 
     let endpoint = provider
@@ -239,6 +240,7 @@ fn a_rerank_provider_reports_the_model_it_will_call() {
         EmbeddingEndpoint {
             base_url: "https://api.voyageai.com/v1".to_owned(),
             api_key: "k".to_owned(),
+            extra_headers: Vec::new(),
         },
         "rerank-2.5",
     );
@@ -257,6 +259,7 @@ fn a_rerank_provider_refuses_to_send_a_key_over_plaintext() {
             EmbeddingEndpoint {
                 base_url: "http://example.com/v1".to_owned(),
                 api_key: "secret".to_owned(),
+                extra_headers: Vec::new(),
             },
             "rerank-2.5",
         );
@@ -280,6 +283,7 @@ fn an_empty_rerank_costs_no_request() {
             EmbeddingEndpoint {
                 base_url: "https://api.voyageai.com/v1".to_owned(),
                 api_key: "k".to_owned(),
+                extra_headers: Vec::new(),
             },
             "rerank-2.5",
         );
@@ -307,6 +311,7 @@ fn a_keyless_endpoint(base_url: &str) -> EmbeddingEndpoint {
     EmbeddingEndpoint {
         base_url: base_url.to_owned(),
         api_key: String::new(),
+        extra_headers: Vec::new(),
     }
 }
 
@@ -443,6 +448,7 @@ fn a_keyed_private_network_endpoint_is_still_refused_for_its_key() {
             Some(EmbeddingEndpoint {
                 base_url: "http://192.168.1.50:11434/v1".to_owned(),
                 api_key: "sk-secret".to_owned(),
+                extra_headers: Vec::new(),
             }),
         );
 
@@ -465,6 +471,7 @@ fn dummy_endpoint() -> EmbeddingEndpoint {
     EmbeddingEndpoint {
         base_url: "https://example.test".to_owned(),
         api_key: String::new(),
+        extra_headers: Vec::new(),
     }
 }
 
