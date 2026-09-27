@@ -1,4 +1,5 @@
-use super::{InstallOrigin, MCPServersSettingsPageView};
+use super::{InstallOrigin, MCPServersSettingsPageView, MCPServersSettingsWidget};
+use crate::settings_view::settings_page::{search_terms_match, SettingsWidget};
 
 // These tests cover the origin-first decision tree introduced in
 // specs/GH686/product.md. The underlying `start_server_installation` flow
@@ -57,4 +58,20 @@ fn in_app_origin_shows_modal_only_for_variables_or_instructions() {
         true,
         true,
     ));
+}
+
+// This page is a monolithic `SettingsWidget` (`PageType::new_monolith`), so its own
+// `search_terms()` is the only thing settings search indexes for anything it renders --
+// including the "Auto-spawn servers from third-party agents" toggle
+// (`settings-mcp-list-file-based-toggle-label`, `list_page.rs`), which upstream users refer
+// to as "file-based" MCP servers (see the sibling `MCPServersWidget::search_terms()` on the
+// AI settings page, which already includes the term).
+#[test]
+fn search_terms_include_file_based_mcp_toggle() {
+    let widget = MCPServersSettingsWidget::default();
+    assert!(
+        search_terms_match(widget.search_terms(), "file-based"),
+        "searching \"file-based\" should find the MCP Servers settings page, since it hosts \
+         the file-based MCP auto-spawn toggle"
+    );
 }

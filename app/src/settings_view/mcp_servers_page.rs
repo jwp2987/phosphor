@@ -573,7 +573,11 @@ impl SettingsWidget for MCPServersSettingsWidget {
     type View = MCPServersSettingsPageView;
 
     fn search_terms(&self) -> &str {
-        "mcp servers"
+        // Includes the terms for the "Auto-spawn servers from third-party agents" toggle
+        // (`settings-mcp-list-file-based-toggle-label`, `list_page.rs`) this page renders --
+        // this is a monolithic page widget, so its own `search_terms` is the only thing
+        // settings search indexes for anything on it, including that toggle.
+        "mcp servers file-based file based auto-spawn third-party agents"
     }
 
     fn render(
