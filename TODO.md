@@ -2574,10 +2574,24 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       insertion point but parses the diff first.
       **Fixed 2026-09-26 (#679, `2c941fe37`):** early return before parse, fork's staged
       preserved; real-repo regression test added.
-- [ ] `e0d01fff` — **port the `system/info.rs` half only.** It gates a real local
+- [x] `e0d01fff` — **port the `system/info.rs` half only.** It gates a real local
       `MemoryUsageHigh` emit + jemalloc dump that latch for the process lifetime. The
       `telemetry/events.rs` half is dead weight: `send_telemetry_sync_from_ctx!` is a
       compile-only no-op here.
+      **Fixed 2026-09-27:** ported `SystemInfo::check_for_excessive_memory_usage`'s
+      confirm-on-next-tick logic verbatim (`pending_excessive_memory_footprint_bytes`,
+      `MEMORY_USAGE_WARNING_THRESHOLD_BYTES` as a plain `u64`) -- a threshold crossing
+      no longer triggers the jemalloc dump + `MemoryUsageHigh` emit + latch on the tick
+      that first observes it, only once still excessive on the *next* tick, so a freed
+      transient spike is skipped instead of producing a worthless heap profile and
+      permanently silencing later detection via the once-per-process latch. Per this
+      row's own scope note, the new `TransientMemorySpike` `TelemetryEvent` variant was
+      NOT added -- `send_telemetry_sync_from_ctx!` is a compile-only no-op in this fork
+      (telemetry channel removed, see DECLINED.md), so the skip path logs via
+      `log::info!` instead, matching the existing convention for this exact situation
+      (DECLINED.md's `write_skips_pty_permission_check` entry, "the allow-reason for the
+      sibling `RequestCommandOutput` path is now `log::info!` as well, because
+      `send_telemetry_from_ctx!` is a no-op here").
 - [x] `8b88df98` **(land before `40e39717`)** — tab shortcut hints.
       **Fixed 2026-09-27 (#760):** ported verbatim onto this fork's tab bar (`app/src/tab.rs`)
       and vertical-tabs sidebar (`app/src/workspace/view/vertical_tabs.rs`, whose `PaneProps::new`
