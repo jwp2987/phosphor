@@ -209,8 +209,22 @@ impl SyncDataSource for SkillSelectorDataSource {
     ) -> Result<Vec<QueryResult<Self::Action>>, DataSourceRunErrorWrapper> {
         let cwd = self.get_current_working_directory(app);
         let cli_agent_providers = self.active_cli_agent_providers(app);
-        let skills =
-            SkillManager::as_ref(app).get_skills_for_working_directory(cwd.as_ref(), app);
+        // A session whose host isn't resolved yet -- a legacy SSH session (plain `ssh`
+        // in a local PTY, no remote-server extension; `host_id` there is permanently
+        // `None`, not just transiently unresolved -- see `IsLegacySSHSession`'s doc
+        // comment) or a `WarpifiedRemote` session mid-handshake -- reports `cwd` as
+        // `None` here (see `current_working_directory_location`'s doc comment). There is
+        // no reliable signal that distinguishes "handshake still in flight" from
+        // "permanently unresolved" (the legacy-SSH case, and a session with the
+        // remote-server feature flag off, both look identical to a mid-handshake one at
+        // this layer), so rather than guess and risk permanently hiding skills for a
+        // legacy SSH tab -- or blocking an explicitly typed `/skill-name` command, which
+        // must never be refused just because the working directory is unknown --
+        // `get_skills_for_working_directory` is called with whatever `cwd` is: `None`
+        // falls back to its historical `SkillPathOrigin::Local` behavior (this
+        // machine's home + bundled skills), matching what every session type showed
+        // before host-aware resolution existed.
+        let skills = SkillManager::as_ref(app).get_skills_for_working_directory(cwd.as_ref(), app);
 
         // Filter out bundled skills when in open mode, since they cannot be opened.
         // When CLI agent input is open, filter to skills that exist in a supported

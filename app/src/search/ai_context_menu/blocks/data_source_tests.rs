@@ -229,6 +229,7 @@ fn fuzzy_query_active_session_blocks_rank_above_other_sessions() {
                 active_window_id,
                 std::sync::Arc::new(crate::terminal::model::session::Session::test()),
                 None::<std::path::PathBuf>,
+                None::<String>,
                 Some(active_view_id),
                 ctx,
             );

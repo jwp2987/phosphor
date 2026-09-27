@@ -516,7 +516,12 @@ impl SyncDataSource for SlashCommandDataSource {
             let cli_agent_providers = self.active_cli_agent_providers(app);
             // A `Remote` path (connected SSH session) resolves against that host's stored
             // catalog via `SkillPathOrigin::Remote`; see
-            // `ActiveSession::current_working_directory_location`'s doc comment.
+            // `ActiveSession::current_working_directory_location`'s doc comment. A legacy
+            // SSH session (permanently `host_id: None`) and a `WarpifiedRemote` session
+            // still handshaking both report `None` here, with no reliable signal to tell
+            // them apart at this layer, so this falls back to
+            // `get_skills_for_working_directory`'s historical `SkillPathOrigin::Local`
+            // behavior rather than hide the menu's skills entirely.
             let cwd_path = self
                 .active_session
                 .as_ref(app)

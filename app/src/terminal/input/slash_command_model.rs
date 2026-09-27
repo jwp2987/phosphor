@@ -280,7 +280,14 @@ impl SlashCommandModel {
 
         // A `Remote` path (connected SSH session) resolves against that host's stored
         // catalog via `SkillPathOrigin::Remote`; see
-        // `ActiveSession::current_working_directory_location`'s doc comment.
+        // `ActiveSession::current_working_directory_location`'s doc comment. A legacy
+        // SSH session (plain `ssh`, no remote-server extension -- permanently `host_id:
+        // None`, not merely mid-handshake) or a `WarpifiedRemote` session still
+        // handshaking both report `None` here, with no reliable way to tell them apart
+        // at this layer; `get_skills_for_working_directory` then falls back to its
+        // historical `SkillPathOrigin::Local` behavior rather than this refusing to
+        // match anything -- an explicitly typed `/skill-name` must never fail to
+        // execute just because the working directory's host is unknown.
         let cwd_path = self
             .active_session
             .as_ref(ctx)
@@ -524,6 +531,10 @@ impl SlashCommandDataSource {
             };
         let skill_name = possible_command.strip_prefix('/')?;
 
+        // See `detect_skill_command`'s comment above: a legacy SSH session and a
+        // mid-handshake `WarpifiedRemote` session are indistinguishable here (both
+        // report `None`), so this falls back to `SkillPathOrigin::Local` rather than
+        // refuse to match an explicitly typed `/skill-name`.
         let cwd_path = self
             .active_session()
             .as_ref(ctx)
