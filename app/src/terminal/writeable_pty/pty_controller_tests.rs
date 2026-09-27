@@ -770,3 +770,82 @@ fn native_completions_watchdog_generation_guard_ignores_a_superseded_timer() {
         drop(model_events_tx);
     });
 }
+
+/// Regression test for the destructive take-before-match bug (TODO.md, "The shell lockup",
+/// 2026-09-25 correction, follow-up (1)): a `CompletionsFinished` event that arrives in the
+/// wrong phase must not destroy whatever request is actually in flight.
+///
+/// On the old code, the `CompletionsFinished` handler did
+/// `let Some(AwaitingResults { .. }) = state.take() else { warn!(..); return };` -- `.take()`
+/// unconditionally empties `in_flight_native_completions_state` and returns the old value
+/// *before* the pattern match runs, so when the current state was actually `AwaitingPrompt` (a
+/// late reply for some earlier, already-superseded request landing while a newer request B is
+/// mid-handshake), the match failed, the `else` branch warned and returned -- but B's
+/// `AwaitingPrompt` state, and its `results_tx`, were already gone. Since `AwaitingPrompt` is one
+/// of `can_write_to_pty`'s two gates, and B's `results_tx` is now dropped with no request ever
+/// having answered it, that is exactly the "leaves zsh inside `read -d $'\4'`" lockup this entry
+/// describes: nothing will ever complete B's handshake, and every subsequent keystroke queues
+/// forever.
+#[test]
+fn late_completions_finished_does_not_destroy_a_newer_awaiting_prompt_request() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events.clone(),
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        // Request B is live, mid-handshake, waiting for the shell's OSC reply.
+        let (b_results_tx, b_results_rx) = async_channel::unbounded();
+        controller.update(&mut app, |controller, _ctx| {
+            controller.in_flight_native_completions_state =
+                Some(NativeShellCompletionsState::AwaitingPrompt {
+                    buffer_text: "request b".to_owned(),
+                    results_tx: b_results_tx,
+                });
+        });
+
+        // A `CompletionsFinished` arrives -- e.g. a late reply for some earlier request A that
+        // has already been superseded. It is the wrong phase for the current state
+        // (`AwaitingPrompt`, not `AwaitingResults`), so it must be ignored without touching that
+        // state. `ctx.emit` on the dispatcher's own context reaches `PtyController`'s
+        // subscription synchronously (see `input_test.rs`'s direct-emit pattern for the same
+        // dispatcher/subscriber relationship).
+        model_events.update(&mut app, |_dispatcher, ctx| {
+            ctx.emit(ModelEvent::CompletionsFinished(Vec::new()));
+        });
+
+        controller.read(&app, |controller, _| {
+            assert!(
+                matches!(
+                    controller.in_flight_native_completions_state,
+                    Some(NativeShellCompletionsState::AwaitingPrompt { .. })
+                ),
+                "a CompletionsFinished event in the wrong phase must not destroy a live, \
+                 still-in-progress AwaitingPrompt handshake."
+            );
+        });
+        assert!(
+            b_results_rx.try_recv().is_err(),
+            "request B's results channel must still be open -- nothing has wrongly answered or \
+             dropped it."
+        );
+
+        drop(model_events_tx);
+    });
+}

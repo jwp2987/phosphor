@@ -214,26 +214,56 @@ impl<T: EventLoopSender> PtyController<T> {
                 }
             }
             ModelEvent::CompletionsFinished(data) => {
-                let Some(NativeShellCompletionsState::AwaitingResults { results_tx }) = me.in_flight_native_completions_state.take() else {
-                    log::warn!("Received CompletionsFinished event but didn't have a channel to send results over!");
+                // Check the variant *before* taking. `.take()` unconditionally empties the slot
+                // and returns the old value; matching on that returned value in a `let-else`
+                // still leaves the slot empty even when the match fails. If this event is a late
+                // reply for a request that has since been superseded (its watchdog fired and a
+                // newer request is now in flight, in whichever phase), taking first would destroy
+                // that newer, still-live request's state -- e.g. an `AwaitingPrompt` for request B
+                // -- and neither the shell nor the app would ever finish B's handshake, leaving
+                // zsh stuck inside `read -d $'\4'` forever. See the entry in TODO.md ("The shell
+                // lockup") for the full trace. So: peek, and only take when it actually matches.
+                if !matches!(
+                    me.in_flight_native_completions_state,
+                    Some(NativeShellCompletionsState::AwaitingResults { .. })
+                ) {
+                    log::warn!(
+                        "Received CompletionsFinished event but wasn't awaiting results \
+                         (generation {}); ignoring it without touching the in-flight state.",
+                        me.native_completions_generation
+                    );
                     return;
+                }
+                let Some(NativeShellCompletionsState::AwaitingResults { results_tx }) =
+                    me.in_flight_native_completions_state.take()
+                else {
+                    unreachable!("checked above");
                 };
                 let _ = block_on(results_tx.send(data.clone()));
             }
             ModelEvent::SendCompletionsPrompt => {
+                // Same peek-before-take reasoning as `CompletionsFinished` above.
+                if !matches!(
+                    me.in_flight_native_completions_state,
+                    Some(NativeShellCompletionsState::AwaitingPrompt { .. })
+                ) {
+                    log::warn!(
+                        "Received SendCompletionsPrompt event but wasn't awaiting a prompt \
+                         (generation {}); ignoring it without touching the in-flight state.",
+                        me.native_completions_generation
+                    );
+                    return;
+                }
                 let Some(NativeShellCompletionsState::AwaitingPrompt {
                     buffer_text,
                     results_tx,
-                }) = me.in_flight_native_completions_state.take() else {
-                    log::warn!("Received SendCompletionsPrompt event but didn't have a prompt to send!");
-                    return;
+                }) = me.in_flight_native_completions_state.take()
+                else {
+                    unreachable!("checked above");
                 };
-                me.in_flight_native_completions_state = Some(NativeShellCompletionsState::AwaitingResults { results_tx });
-                me.arm_native_completions_watchdog(
-                    NATIVE_COMPLETIONS_RESULTS_TIMEOUT,
-                    false,
-                    ctx,
-                );
+                me.in_flight_native_completions_state =
+                    Some(NativeShellCompletionsState::AwaitingResults { results_tx });
+                me.arm_native_completions_watchdog(NATIVE_COMPLETIONS_RESULTS_TIMEOUT, false, ctx);
 
                 let mut bytes = buffer_text.into_bytes();
                 // We use the EOT character to signal the end of the prompt.
