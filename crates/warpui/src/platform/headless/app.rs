@@ -53,6 +53,16 @@ impl App {
             warpui_core::platform::app::AppCallbackDispatcher::new(callbacks, ui_app.clone());
 
         // Run the event loop until the app terminates.
-        event_loop::run(ui_app, &mut callbacks, Box::new(init_fn), receiver, sender)
+        let result = event_loop::run(ui_app, &mut callbacks, Box::new(init_fn), receiver, sender);
+
+        // A signal-initiated quit ends the way the signal would have
+        // (jwp2987/phosphor#685), matching the winit and macOS loops; otherwise
+        // this returns and `result` is reported as usual. `event_loop::run` itself
+        // does not make this call (see its doc comment): it returns to this, its
+        // caller, before the exit status is decided (jwp2987/phosphor#717).
+        #[cfg(not(target_family = "wasm"))]
+        platform::termination_signals::exit_after_signal_shutdown();
+
+        result
     }
 }

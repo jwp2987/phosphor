@@ -233,8 +233,11 @@ fn initiating_signal() -> Option<i32> {
 /// has finished; otherwise returns so the caller exits as usual.
 ///
 /// Called by platform loops right after `app_will_terminate` where the process is
-/// about to exit anyway (winit, macOS). Not by the headless loop, whose caller still
-/// has to restore the terminal.
+/// about to exit anyway (winit, macOS). Not by the headless loop itself
+/// (`headless::event_loop::run`), which still has to return control to its caller
+/// to restore the terminal (the TUI) or otherwise wind down first; that caller
+/// (`headless::app::App::run`) calls this once `event_loop::run` returns
+/// (jwp2987/phosphor#717).
 pub(crate) fn exit_after_signal_shutdown() {
     match final_exit(initiating_signal()) {
         FinalExit::Status(0) => {}
