@@ -647,43 +647,64 @@ before acting):
       they prove the withdrawal keys on the right predicate, not that a live session
       classifies as `WarpifiedRemote` with no client.
 - [x] **An agent command on the warpify path is never monitorable or seizable.** Fixed:
-      issue #753. The `Agent` long-running control state was installed in exactly one place —
-      the BYOP LRC monitor fallback (`app/src/ai/blocklist/block/cli_controller.rs`), gated on
-      the agent's action result carrying a `LongRunningCommandSnapshot` (or the
-      `WriteToLongRunningShellCommand`/`ReadShellCommandOutput`/
-      `TransferShellCommandControlToUser` equivalents). **Root cause, confirmed**:
-      `TerminalModel::blocks::reinit_shell` finishes the active block (`finish(0)`, exit code 0)
-      the instant the shell-integration DCS confirms a subshell/warpified session started —
-      for a working key-authenticated SSH connection or a container that starts in well under a
-      second (the common case), that confirmation wins the race against the 2-second
-      `MAX_WAIT_DURATION` an async `RequestCommandOutput` waits before checking whether the
-      block is still running. The agent sees `Completed` with exit code 0, never a snapshot, so
-      the fallback's gate is never satisfied and `long_running_control_state` stays `None` for
-      the life of the block — spawning no subagent, exactly as this entry originally described.
-      Three user-visible failures followed from that one gap: the warping indicator/"Take over"
-      affordance was suppressed (`status_bar.rs`); a submitted prompt was filed
-      `PendingLrcAutoQueue` and locked the queue with no production unlock, since no subagent
-      task existed for `BlockCompleted`'s cleanup to retire; and `is_agent_driving_active_block`
-      stayed false, so the password-prompt hand-over could not fire. Reported as an agent inside
-      tmux inside ssh sitting on an unanswerable prompt with no way to intervene.
-      **Fix follows the pin's own server-timing model, not a constructor tweak.** Installing
-      `Agent { .. }` in `new_hidden` was tried and reverted (see git history at `2633f931e` /
-      `9a4daa681`) because two widely consulted predicates are defined in terms of that state
-      being *absent*: `is_agent_driving_command`'s fallback arm requires
-      `long_running_control_state().is_none()`, and `is_agent_monitoring()` is
-      `is_active_and_long_running() && state.is_some()`. Those predicates are untouched by this
-      fix. Instead, the exact same upgrade the snapshot-triggered fallback performs (silent CLI
-      subagent task + `set_agent_interaction_mode_for_agent_monitored_command` +
-      `CreatedSubtask`/`SpawnedSubagent`/`UpdatedControl`) is extracted into
-      `CLISubagentController::try_upgrade_block_to_agent_monitored` and triggered a second way,
-      from `TerminalView::trigger_subshell_bootstrap` / `TerminalView::continue_warpify_ssh_session`
-      (`app/src/terminal/view.rs`) — the warpify bootstrap trigger points — while the block about
-      to be replaced by `reinit_shell` is still active and genuinely unfinished, so
-      `needs_byop_monitor_upgrade` (unchanged) still says yes. Control state still arrives
-      asynchronously, after the block starts, matching the pin's timing; the `AfterBlockStarted`
-      ~50 ms window is untouched. `crates/warp_tui` shares the same `CLISubagentController` but
-      has no warpify bootstrap trigger of its own (grep confirms zero matches), so there is
-      nothing to wire up there yet.
+      issue #753 — but not the way the issue originally analyzed it. An adversarial re-review
+      (verified by code trace) found that two of the three reported symptoms were never actually
+      broken, and that the first fix attempt (installing a subagent at the warpify bootstrap
+      trigger) introduced a real regression. Recorded here in full because the wrong diagnosis
+      shipped first and the corrected one needs to be traceable against it.
+      **Root cause, still confirmed as originally described**: the only place
+      `long_running_control_state` is installed for a BYOP command is the snapshot-triggered
+      fallback in `app/src/ai/blocklist/block/cli_controller.rs`, and
+      `TerminalModel::blocks::reinit_shell` finishes an agent-requested warpify-path block
+      (`ssh`, `docker run`, ...) via `finish(0)` the instant the shell-integration DCS confirms
+      the subshell/warpified session started — almost always inside the 2-second
+      `MAX_WAIT_DURATION` an async `RequestCommandOutput` waits before it would otherwise notice
+      the command is still running and produce a `LongRunningCommandSnapshot`. So
+      `long_running_control_state` stays `None` for the block's whole (short) life. That part of
+      the original analysis holds.
+      **Two of the three "symptoms" were never actually symptoms.** `AgentInteractionMetadata::
+      new_hidden` sets `requested_command_action_id` with `long_running_control_state: None` from
+      the moment the block is created — *not* only after some later upgrade. `is_agent_driving_
+      command`'s fallback arm is defined exactly in terms of that state (`interaction_mode.rs`),
+      so it is `true` from block creation regardless of whether an upgrade ever happens, and
+      `take_over_for_user` (`interaction_mode.rs`, `take_over_for_user`) already admits a
+      `BlockedOnInput` take-over with `long_running_control_state: None` as long as
+      `requested_command_action_id` is `Some` — precisely the state a warpify-path block is in
+      for its entire life. The password-prompt hand-over (`view.rs`'s
+      `should_start_password_prompt_polling` / `is_agent_driving_active_block`) was never
+      blocked by this gap. And the "Take over" affordance is moot for the specific block that
+      races `reinit_shell`: `status_bar.rs`'s warping indicator reads the *active* block, and
+      `reinit_shell` immediately replaces the active block with a fresh, non-agent one
+      (`create_warp_input_block`) — there is nothing left to "take over" on the block that just
+      finished. **Only the second symptom was real**: a prompt submitted while the command looked
+      pending gets filed `PendingLrcAutoQueue` (`input.rs`'s
+      `maybe_queue_input_for_in_progress_conversation`), and that lock's only production release
+      (`unlock_pending_lrc_rows`) was driven exclusively by a CLI subagent finishing
+      (`CLISubagentEvent::FinishedSubagent`) — which never happens for a block that never got one.
+      **First fix attempt, reverted for a real regression.** The first pass (superseded, not
+      preserved on this branch) tried to trigger the snapshot-fallback's upgrade a second way,
+      from the warpify bootstrap trigger points (`TerminalView::trigger_subshell_bootstrap` /
+      `continue_warpify_ssh_session`), while the about-to-be-replaced block was still active.
+      This did fix the queue lock (a subagent now existed for `BlockCompleted` to retire), but
+      `to_agent_monitored` sets `should_hide_block: false` and `CLISubagentEvent::SpawnedSubagent`
+      unconditionally creates a floating `CLISubagentView` ("Agent is monitoring command…"), so
+      *every* fast agent `ssh`/`docker run` started flashing that card for its bootstrap
+      round-trip and left a collapsed `RestoredReadOnly` history card behind once
+      `FinishedSubagent` fired moments later — a visible artifact that did not exist before, for
+      a command whose own life is already over by the time anyone could act on the card.
+      **Actual fix: unlock the queue directly, install nothing.** `TerminalView::
+      on_user_block_completed` (`app/src/terminal/view.rs`) now checks, on every completed block,
+      whether it carries agent metadata with `requested_command_action_id: Some` and
+      `long_running_control_state: None` — exactly "agent-requested, never upgraded" — and if so
+      calls `QueuedQueryModel::unlock_pending_lrc_rows` for its conversation. This creates no
+      subagent, sets no control state, and never touches `should_hide_block` — a block that *was*
+      upgraded (`long_running_control_state: Some`) fails the check and is left to the existing
+      `FinishedSubagent` path unchanged. `is_agent_driving_command` / `is_agent_monitoring` /
+      `new_hidden` are all untouched, matching the "no constructor tweak" constraint from the
+      first pass of this fix and its own predecessor reverts (`2633f931e` / `9a4daa681`).
+      `crates/warp_tui` has no warpify bootstrap trigger of its own (grep confirms zero matches),
+      so this fix — being purely in the completion path, not the warpify trigger path — needs no
+      TUI-specific wiring at all.
 
 - [x] **A queued prompt could lock permanently, with no production unlock.** A prompt
       submitted while an agent `run_shell_command` action was still pending queued as

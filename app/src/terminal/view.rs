@@ -9366,28 +9366,17 @@ impl TerminalView {
         // Record the active long-running block so we can hide it later once the remote
         // actually confirms subshell bootstrap is in progress.
         // If the remote never emits InitShell, the block stays visible.
-        let active_block_id = {
+        {
             let model = self.model.lock();
-            let active_block_id = model.block_list().active_block_id().clone();
             if model
                 .block_list()
                 .active_block()
                 .is_active_and_long_running()
             {
-                self.warpify_state.set_block_id(active_block_id.clone());
+                let block_id = model.block_list().active_block_id().clone();
+                self.warpify_state.set_block_id(block_id);
             }
-            active_block_id
-        };
-
-        // This block is about to be finished by `reinit_shell` once the remote/nested shell's
-        // `InitShell` DCS confirms it started -- well before an agent-requested command on this
-        // path would otherwise ever produce the `LongRunningCommandSnapshot` the BYOP LRC
-        // monitor fallback needs to run (see `CLISubagentController::
-        // upgrade_warpify_block_if_agent_driven`'s doc comment). No-ops for the user's own
-        // commands and for a block that already got a control state.
-        self.cli_subagent_controller.update(ctx, |controller, ctx| {
-            controller.upgrade_warpify_block_if_agent_driven(&active_block_id, ctx);
-        });
+        }
 
         self.write_init_subshell_bytes_to_pty(shell_type, ctx);
 
@@ -10940,6 +10929,44 @@ impl TerminalView {
                 _ => None,
             }
         };
+
+        // An agent-requested command that ends having never been upgraded to agent-monitored
+        // (`long_running_control_state` still `None`, exactly `is_agent_driving_command`'s
+        // fallback-arm condition) leaves any `PendingLrcAutoQueue` row filed while it was
+        // pending permanently locked: that lock's only other release, `unlock_pending_lrc_rows`,
+        // is otherwise driven exclusively by a CLI subagent finishing
+        // (`CLISubagentEvent::FinishedSubagent` / `deliver_queued_prompts_after_subagent_finished`),
+        // and no subagent is ever created for a block that never got a control state. The
+        // fast-finishing warpify path (`ssh`, `docker run`, ...) is the reliable way to hit
+        // this -- `TerminalModel::blocks::reinit_shell` finishes the block itself the instant
+        // the shell-integration DCS confirms the subshell/warpified session started, almost
+        // always inside the 2s window an async `RequestCommandOutput` waits before it would
+        // otherwise notice the command is still running and produce the snapshot the CLI
+        // subagent upgrade needs (jwp2987/phosphor#753) -- but any agent command finishing
+        // before that snapshot arrives hits the same gap. This is safe to check unconditionally:
+        // it does not touch `active_subagents_by_block`, install a control state, or create a
+        // subagent, so a block that *was* upgraded (or a user's own command, which has no agent
+        // metadata at all) is untouched and takes the existing `FinishedSubagent` path as before.
+        // Unlock, never remove: a row still deserves its normal restore-or-auto-fire treatment,
+        // not silent deletion (see the `FinishReason::Error`/`Cancelled` arm of
+        // `drain_queued_prompts` for the identical reasoning).
+        let conversation_id_to_unlock_pending_lrc = {
+            let model = self.model.lock();
+            model
+                .block_list()
+                .block_with_id(block_id)
+                .and_then(|block| block.agent_interaction_metadata())
+                .filter(|ai_metadata| {
+                    ai_metadata.requested_command_action_id().is_some()
+                        && ai_metadata.long_running_control_state().is_none()
+                })
+                .map(|ai_metadata| *ai_metadata.conversation_id())
+        };
+        if let Some(conversation_id) = conversation_id_to_unlock_pending_lrc {
+            QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+                model.unlock_pending_lrc_rows(conversation_id, ctx)
+            });
+        }
 
         if let Some(conversation_id) = conversation_id_to_resume {
             // Include the context of the block that just completed in the resume context.
@@ -25746,16 +25773,6 @@ impl TerminalView {
     ) {
         self.warpify_state.set_shell_type(&shell_type);
         self.model.lock().set_pending_warp_initiated_control_mode();
-
-        // See the matching call in `trigger_subshell_bootstrap`: this block is about to be
-        // finished by `reinit_shell` once the remote confirms the tmux-wrapped session started,
-        // so an agent-requested command on this path needs the same upgrade here -- it will
-        // never produce the snapshot the BYOP LRC monitor fallback normally waits for.
-        let active_block_id = self.model.lock().block_list().active_block_id().clone();
-        self.cli_subagent_controller.update(ctx, |controller, ctx| {
-            controller.upgrade_warpify_block_if_agent_driven(&active_block_id, ctx);
-        });
-
         // The warpify script emits `SshTmuxInstaller` and `RemoteWarpificationIsUnavailable` from
         // the remote host; both quote this ID.
         let session_id = self.mint_registered_session_id();

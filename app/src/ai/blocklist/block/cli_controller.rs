@@ -307,15 +307,102 @@ impl CLISubagentController {
                 // conversation task, the next round's query routing fails with
                 // "Could not find conversation for response stream".
                 //
-                // `try_upgrade_block_to_agent_monitored` (below) does the actual upgrade; this
-                // is the "agent read a snapshot of the still-running command" trigger for it.
-                // It is not the only one -- see that method's doc comment for the warpify path,
-                // which never produces a snapshot at all.
-                let emit_spawn_event_for = snapshot_block_id
-                    .as_ref()
-                    .and_then(|block_id| me.try_upgrade_block_to_agent_monitored(block_id, ctx));
+                // The implementation takes the silent path:
+                // `create_silent_cli_subagent_task_for_conversation` genuinely
+                // creates the subtask but doesn't emit `CreatedSubtask` (the original
+                // method's emit timing is controlled by the caller), letting this
+                // hook manually emit it after upgrading the block. This walks the
+                // full upstream upgrade chain and creates the SubagentView floating
+                // window, and combined with the root_task fallback in
+                // `cli.rs:431-446` — when the task has no exchange yet, the view is
+                // created with the root's last_exchange as a placeholder — a later
+                // user follow-up query routes to the subtask, triggering
+                // `AppendedExchange`, and the view's own subscription
+                // (`cli.rs:355-399`) automatically replaces the model with the real
+                // exchange.
+                //
+                // Side effect: the floating window renders with the root's
+                // last_exchange the instant it's created, so root content may briefly
+                // flash for one frame; but after
+                // `set_agent_interaction_mode_for_agent_monitored_command` upgrades
+                // it, SubagentView's filtering makes it show only task_id-associated
+                // content, matching the upstream experience.
+                let upgrade_target = snapshot_block_id.as_ref().and_then(|block_id| {
+                    let terminal_model = me.terminal_model.lock();
+                    let block = terminal_model.block_list().block_with_id(block_id)?;
+                    if !needs_byop_monitor_upgrade(block) {
+                        return None;
+                    }
+                    let conversation_id = block.ai_conversation_id()?;
+                    Some((block_id.clone(), conversation_id))
+                });
+
+                let upgraded_task_id =
+                    if let Some((block_id, conversation_id)) = upgrade_target.as_ref() {
+                        let history_model = BlocklistAIHistoryModel::handle(ctx);
+                        let block_id_for_create = block_id.clone();
+                        let conversation_id = *conversation_id;
+                        match history_model.update(ctx, |history_model, _| {
+                            history_model.create_silent_cli_subagent_task_for_conversation(
+                                block_id_for_create,
+                                conversation_id,
+                            )
+                        }) {
+                            Ok(task_id) => {
+                                log::info!(
+                                    "[byop] BYOP LRC monitor fallback: silent subtask created \
+                                 block={block_id:?} task={task_id:?} \
+                                 conversation={conversation_id:?}"
+                                );
+                                Some(task_id)
+                            }
+                            Err(e) => {
+                                log::error!(
+                                    "[byop] BYOP LRC monitor fallback create_silent_subagent_task \
+                                 failed: {e:?}"
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
 
                 let mut terminal_model = me.terminal_model.lock();
+                let mut emit_spawn_event_for: Option<(
+                    BlockId,
+                    TaskId,
+                    AIConversationId,
+                    Option<AIAgentActionId>,
+                )> = None;
+                if let (Some((block_id, conversation_id)), Some(task_id)) =
+                    (upgrade_target.as_ref(), upgraded_task_id.as_ref())
+                {
+                    if let Some(block) = terminal_model.block_list_mut().mut_block_from_id(block_id)
+                    {
+                        match block.set_agent_interaction_mode_for_agent_monitored_command(
+                            task_id,
+                            *conversation_id,
+                        ) {
+                            Ok(()) => {
+                                let action_id = block.requested_command_action_id().cloned();
+                                emit_spawn_event_for = Some((
+                                    block_id.clone(),
+                                    task_id.clone(),
+                                    *conversation_id,
+                                    action_id,
+                                ));
+                            }
+                            Err(e) => {
+                                log::error!(
+                                    "[byop] BYOP LRC monitor fallback: \
+                                     set_agent_interaction_mode_for_agent_monitored_command \
+                                     failed: {e:?}"
+                                );
+                            }
+                        }
+                    }
+                }
                 let active_block = terminal_model.block_list_mut().active_block_mut();
                 active_block.update_is_agent_blocked(false);
 
@@ -344,9 +431,8 @@ impl CLISubagentController {
                 // Zap BYOP: silent_create_for_byop doesn't emit CreatedSubtask, so
                 // this manually triggers SpawnedSubagent to have terminal_view create
                 // the CLISubagentView floating window.
-                // active_subagents_by_block.task_id was already updated by
-                // try_upgrade_block_to_agent_monitored, ensuring the BlockCompleted hook
-                // cleans up correctly when the LRC ends.
+                // active_subagents_by_block.task_id is updated in sync, ensuring the
+                // BlockCompleted hook cleans up correctly when the LRC ends.
                 //
                 // Note: the terminal_model lock was already dropped above, avoiding a
                 // previously reproduced deadlock (emit SpawnedSubagent →
@@ -355,6 +441,10 @@ impl CLISubagentController {
                 // causing FairMutex reentrancy).
                 if let Some((block_id, task_id, conversation_id, action_id)) = emit_spawn_event_for
                 {
+                    me.active_subagents_by_block
+                        .entry(block_id.clone())
+                        .or_default()
+                        .task_id = Some(task_id.clone());
                     log::info!(
                         "[byop] BYOP LRC monitor fallback: emit SpawnedSubagent \
                          block={block_id:?} task={task_id:?}"
@@ -462,170 +552,6 @@ impl CLISubagentController {
             terminal_view_id,
             active_subagents_by_block: HashMap::new(),
         }
-    }
-
-    /// Upgrades `block_id` from a bare agent-requested command to an agent-monitored one:
-    /// creates a silent CLI subagent task for its conversation, then installs the resulting
-    /// task id and `Agent` control state on the block via
-    /// `set_agent_interaction_mode_for_agent_monitored_command`.
-    ///
-    /// This is the install half of the BYOP LRC monitor fallback described on
-    /// `FinishedAction` above, extracted so it can be triggered by something other than the
-    /// agent reading a snapshot of the command. That trigger never arrives for a command on the
-    /// warpify path (`ssh`, `docker run`, ...): `TerminalModel::blocks::reinit_shell` finishes
-    /// the block via `active_block.finish(0)` the moment the remote/nested shell's DCS
-    /// confirms it started (`init_shell`), which -- for a normal SSH connection to a
-    /// known host, or a container that starts in well under a second -- wins the race
-    /// against the 2s `MAX_WAIT_DURATION` default delay `RequestCommandOutput`'s async future
-    /// waits before ever checking whether the block is still running
-    /// (`action_model/execute/shell_command.rs`'s `action_result_future`). The block is
-    /// therefore reported to the agent as `Completed` with exit code 0, never as a
-    /// `LongRunningCommandSnapshot`, so `snapshot_block_id_for_action_result` never yields a
-    /// block id and the fallback above never runs -- `long_running_control_state` stays
-    /// `None` for the life of the block. See TODO.md and the issue linked there.
-    ///
-    /// Called from the warpify bootstrap trigger points
-    /// (`TerminalView::trigger_subshell_bootstrap`, `TerminalView::continue_warpify_ssh_session`)
-    /// while the block about to be replaced is still the active one, i.e. after the block has
-    /// already started -- matching the pin's own timing, where the control state arrives
-    /// asynchronously (via a CLI-subagent event) some time after the command begins, not at
-    /// block creation. Installing it any earlier (at block creation, in `new_hidden`) was tried
-    /// and reverted: `is_agent_driving_command`'s fallback arm and `is_agent_monitoring()` are
-    /// defined in terms of the state being *absent*, and this call site does not change that --
-    /// it only adds a second place that can satisfy the same "no snapshot required" upgrade the
-    /// existing fallback already performs.
-    ///
-    /// No-ops (returns `None`, emits nothing) unless `needs_byop_monitor_upgrade` holds for the
-    /// block: it must be agent-requested (`requested_command_action_id` present), not already
-    /// upgraded or user-controlled, and not finished. That makes this safe to call
-    /// unconditionally on every warpify bootstrap trigger -- it is a no-op for the user's own
-    /// commands (no agent metadata at all) and fires at most once per block, since a successful
-    /// upgrade leaves `long_running_control_state` `Some`.
-    ///
-    /// Records the new subagent's task id in `active_subagents_by_block` on success, but leaves
-    /// emitting `SpawnedSubagent` / `UpdatedControl` to the caller, since callers differ in what
-    /// else they emit around it.
-    fn try_upgrade_block_to_agent_monitored(
-        &mut self,
-        block_id: &BlockId,
-        ctx: &mut ModelContext<Self>,
-    ) -> Option<(BlockId, TaskId, AIConversationId, Option<AIAgentActionId>)> {
-        let conversation_id = {
-            let terminal_model = self.terminal_model.lock();
-            let block = terminal_model.block_list().block_with_id(block_id)?;
-            if !needs_byop_monitor_upgrade(block) {
-                return None;
-            }
-            block.ai_conversation_id()?
-        };
-
-        let history_model = BlocklistAIHistoryModel::handle(ctx);
-        let block_id_for_create = block_id.clone();
-        let task_id = match history_model.update(ctx, |history_model, _| {
-            history_model.create_silent_cli_subagent_task_for_conversation(
-                block_id_for_create,
-                conversation_id,
-            )
-        }) {
-            Ok(task_id) => {
-                log::info!(
-                    "[byop] BYOP LRC monitor fallback: silent subtask created block={block_id:?} \
-                     task={task_id:?} conversation={conversation_id:?}"
-                );
-                task_id
-            }
-            Err(e) => {
-                log::error!(
-                    "[byop] BYOP LRC monitor fallback create_silent_subagent_task failed: {e:?}"
-                );
-                return None;
-            }
-        };
-
-        let mut terminal_model = self.terminal_model.lock();
-        let Some(block) = terminal_model.block_list_mut().mut_block_from_id(block_id) else {
-            drop(terminal_model);
-            return None;
-        };
-        let result = match block
-            .set_agent_interaction_mode_for_agent_monitored_command(&task_id, conversation_id)
-        {
-            Ok(()) => {
-                let action_id = block.requested_command_action_id().cloned();
-                Some((
-                    block_id.clone(),
-                    task_id.clone(),
-                    conversation_id,
-                    action_id,
-                ))
-            }
-            Err(e) => {
-                log::error!(
-                    "[byop] BYOP LRC monitor fallback: \
-                     set_agent_interaction_mode_for_agent_monitored_command failed: {e:?}"
-                );
-                None
-            }
-        };
-        drop(terminal_model);
-
-        if result.is_some() {
-            self.active_subagents_by_block
-                .entry(block_id.clone())
-                .or_default()
-                .task_id = Some(task_id);
-        }
-
-        result
-    }
-
-    /// Upgrades `block_id` to an agent-monitored command if it is an unfinished
-    /// agent-requested command about to be finished by the warpify/subshell bootstrap flow --
-    /// see `try_upgrade_block_to_agent_monitored`'s doc comment for why that flow otherwise
-    /// leaves such a block permanently stateless.
-    ///
-    /// Public entry point for `TerminalView`'s warpify bootstrap trigger points to call while
-    /// the block they are about to replace is still active. Emits the same
-    /// `UpdatedControl` / `SpawnedSubagent` events the `FinishedAction` fallback emits, so
-    /// every downstream consumer (the warping indicator and Take-over affordance in
-    /// `status_bar.rs`, the queued-follow-up unlock in `view.rs`, the password-prompt
-    /// hand-over in `view.rs`'s `should_start_password_prompt_polling`) sees the same shape of
-    /// update regardless of which trigger produced it.
-    pub fn upgrade_warpify_block_if_agent_driven(
-        &mut self,
-        block_id: &BlockId,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        let Some((block_id, task_id, conversation_id, action_id)) =
-            self.try_upgrade_block_to_agent_monitored(block_id, ctx)
-        else {
-            return;
-        };
-
-        let agent_has_control = {
-            let terminal_model = self.terminal_model.lock();
-            terminal_model
-                .block_list()
-                .block_with_id(&block_id)
-                .is_some_and(|block| block.is_agent_in_control())
-        };
-
-        ctx.emit(CLISubagentEvent::UpdatedControl {
-            block_id: block_id.clone(),
-            requested_command_action_id: action_id.clone(),
-            agent_has_control,
-        });
-
-        log::info!(
-            "[byop] BYOP LRC monitor fallback (warpify): emit SpawnedSubagent block={block_id:?} \
-             task={task_id:?}"
-        );
-        ctx.emit(CLISubagentEvent::SpawnedSubagent {
-            task_id,
-            conversation_id,
-            block_id,
-            initial_requested_command_action_id: action_id,
-        });
     }
 
     pub fn is_agent_in_control(&self) -> bool {
@@ -1056,11 +982,8 @@ fn snapshot_block_id_for_action_result(result: &AIAgentActionResultType) -> Opti
     }
 }
 
-/// Zap BYOP: whether `block` should be upgraded to an agent-monitored command (silent subtask
-/// + `SpawnedSubagent`) via `try_upgrade_block_to_agent_monitored`. That upgrade runs from two
-/// trigger points: the `FinishedAction` fallback above (the agent read a snapshot of the still-
-/// running command), and `CLISubagentController::upgrade_warpify_block_if_agent_driven` (the
-/// command took the warpify path and will never produce one).
+/// Zap BYOP: whether a snapshot of `block` should upgrade it to an agent-monitored command
+/// (silent subtask + `SpawnedSubagent`) in the `FinishedAction` fallback above.
 ///
 /// Only an agent-requested command that is still running and has no control state yet
 /// qualifies -- the original pre-snapshot window.
