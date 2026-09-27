@@ -25,6 +25,23 @@ impl ExecutionMode {
             ExecutionMode::Sdk => "warp-cli",
         }
     }
+
+    /// Whether a CLI-based MCP server can fall back to inheriting this process's PATH when
+    /// no explicit `mcp_execution_path` setting is available.
+    ///
+    /// The desktop app keeps requiring a shell-derived path, so a failed MCP spawn surfaces
+    /// as an actionable toast instead of silently launching with the wrong PATH. The SDK CLI
+    /// and the TUI receive an authoritative PATH from their own launcher (an interactive shell
+    /// or a CLI invocation) before Zap starts, so inheriting it is safe, and it is the only
+    /// PATH available to a fresh process before a GUI terminal bootstrap has ever populated
+    /// `mcp_execution_path` (its only writer). Inheritance only ever fills in a missing path;
+    /// a configured one still wins.
+    pub fn can_inherit_process_path_for_mcp(&self) -> bool {
+        match self {
+            ExecutionMode::App => false,
+            ExecutionMode::Tui | ExecutionMode::Sdk => true,
+        }
+    }
 }
 
 /// Model tracking the mode that Zap is running in.
@@ -108,6 +125,12 @@ impl AppExecutionMode {
         self.mode.client_id()
     }
 
+    /// Whether a CLI-based MCP server can fall back to inheriting this process's PATH when
+    /// no explicit `mcp_execution_path` setting is available.
+    pub fn can_inherit_process_path_for_mcp(&self) -> bool {
+        self.mode.can_inherit_process_path_for_mcp()
+    }
+
     /// If true, Zap is running in a sandbox like a Docker container or VM, rather than directly
     /// on a user machine.
     pub fn is_sandboxed(&self) -> bool {
@@ -127,3 +150,7 @@ impl SingletonEntity for AppExecutionMode {}
 pub fn current_client_id() -> Option<&'static str> {
     GLOBAL_EXECUTION_MODE.get().map(|mode| mode.client_id())
 }
+
+#[cfg(test)]
+#[path = "execution_mode_tests.rs"]
+mod tests;
