@@ -2705,6 +2705,29 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
 - [ ] `6a96a72d` — settings registration refactor. Compile-time only, no behaviour;
       fork's `macros.rs` already ~121 lines diverged, so a manual rewrite for an
       unmeasured build-speed win. Lowest value in the queue.
+      **Skipped 2026-09-27: verified the divergence is worse than "~121 lines" and
+      declined to port blind.** `crates/settings/src/macros.rs` (955 lines here vs.
+      968 at `6a96a72d~1`) has dropped the `surface: $surface:path` parameter
+      entirely — present in nearly every one of the ~15 macro arms
+      `define_setting!`/`implement_setting_for_enum!` expand to (confirmed via
+      `diff` against the pre-refactor upstream blob) — and uses `warpui::` where
+      upstream's new `registration.rs` uses `warpui_core::` directly (this fork's
+      `settings` crate depends on the `warpui` facade crate, not `warpui_core`).
+      Upstream's diff assumes neither divergence: it edits macro arms that still
+      carry `surface:` and writes a fresh `registration.rs` against
+      `warpui_core::{AddSingletonModel, Entity, GetSingletonModelHandle,
+      ModelContext, ModelHandle, SingletonEntity, UpdateModel}`. Applying it
+      mechanically would need every one of those ~15 arms re-derived by hand to
+      drop `surface:` consistently (a single missed arm silently reintroduces a
+      parameter mismatch across the ~300 call sites that use these macros) plus a
+      `warpui_core` -> `warpui` rename throughout the new file — exactly the
+      "generic/trait-heavy refactor too large to do confidently blind" case this
+      round's rules call out, for an unmeasured build-speed win the TODO entry
+      already ranks lowest in the queue. Left unstarted rather than half-applied.
+      A future attempt should budget for re-deriving each macro arm against this
+      fork's actual (surface-less) grammar rather than patching upstream's diff
+      onto it, and should have a compiler available to catch the ~300-site
+      expansion fanout.
 - [x] `5fb3144db` — vim keybindings in the rule content editor
       (`ai/facts/view/rule_editor.rs:112`, `supports_vim_mode: false`). One line.
       **Fixed #736.**
