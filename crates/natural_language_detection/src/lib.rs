@@ -30,9 +30,11 @@ pub fn is_word(word: &str, db: WordDb) -> bool {
     }
 }
 
-/// Calculate the NL score for a vector of words:
-/// It consists two components: # of natural language tokens and # of tokens with shell syntax.
-/// The total score is calculated by (# of natural language tokens - # of tokens with shell syntax).max(0)
+/// Calculate the NL score for a vector of words: the number of tokens recognized as English,
+/// StackOverflow, or command-dictionary words. An unrecognized token — including a bare shell
+/// metacharacter or a quoted string — is neutral and neither adds to nor subtracts from the
+/// score, since a metacharacter appearing anywhere in an otherwise-English sentence must not be
+/// treated as stronger evidence of Shell than an ordinary unrecognized word would be.
 pub fn natural_language_words_score(words: Vec<Cow<str>>, is_first_token_command: bool) -> usize {
     let en_stemmer = Stemmer::create(Algorithm::English);
     let mut natural_language_token_count: usize = 0;
@@ -59,10 +61,13 @@ pub fn natural_language_words_score(words: Vec<Cow<str>>, is_first_token_command
                 || is_word(&stemmed_word, WordDb::Command)
             {
                 natural_language_token_count += 1;
-            } else if !wrapped_in_quotes(&token) && check_if_token_has_shell_syntax(&token) {
-                // If the token is not a string (wrapped in quotes) and has shell syntax, consider this
-                // as a negative signal for NL word.
-                natural_language_token_count = natural_language_token_count.saturating_sub(1)
+            } else if wrapped_in_quotes(&token) || check_if_token_has_shell_syntax(&token) {
+                // A quoted string or a bare shell metacharacter (';', '>', '~', ...) is neither a
+                // natural-language nor a shell-command signal on its own, so it must not move the
+                // score in either direction. This used to subtract from the count, which meant an
+                // English sentence containing an unquoted redirect or path (e.g. "... > ~/file")
+                // was scored *more* shell-like than one containing an ordinary unrecognized word,
+                // letting a bare metacharacter alone flip the whole sentence to Shell.
             }
         }
     }

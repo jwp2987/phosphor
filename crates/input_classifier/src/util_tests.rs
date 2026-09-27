@@ -260,6 +260,44 @@ fn test_is_likely_shell_command_downloads_log_path_false_for_nld_heuristic_v2() 
     });
 }
 
+// Regression test for #696: `token.token_index` is relative to its own parsed command and
+// resets to 0 for every `;` / `&&` / `||` / newline-separated command in the buffer, so checking
+// only `token.token_index == 0` for the one-off keyword allowlist fired for a keyword like `echo`
+// landing at the start of a *later* command, classifying an entire English sentence as Shell
+// purely because of where the keyword happened to land (e.g. "Run exactly this: sleep 8; echo
+// hi" was sent to bash as two separate commands). Only the true first token of the whole buffer
+// may trigger that allowlist. This test is not feature-gated: the one-off keyword check runs
+// unconditionally, before the nld_heuristic_v1 / v2 split.
+async fn one_off_keyword_after_semicolon_does_not_short_circuit() -> bool {
+    let mut token = mock_parsed_input_token("Run exactly this: sleep 8; echo hi".to_string()).await;
+    let word_tokens_count = token.parsed_tokens.len();
+    clear_all_token_descriptions(&mut token);
+    is_likely_shell_command(&token, word_tokens_count).await
+}
+
+#[test]
+fn test_is_likely_shell_command_one_off_keyword_after_semicolon_is_not_shell() {
+    futures::executor::block_on(async move {
+        assert!(!one_off_keyword_after_semicolon_does_not_short_circuit().await);
+    });
+}
+
+// The allowlist must still fire when the keyword genuinely is the first token of the buffer,
+// even when other commands with their own token_index 0 follow it.
+async fn one_off_keyword_at_true_start_still_short_circuits() -> bool {
+    let mut token = mock_parsed_input_token("echo hi; ls -la".to_string()).await;
+    let word_tokens_count = token.parsed_tokens.len();
+    clear_all_token_descriptions(&mut token);
+    is_likely_shell_command(&token, word_tokens_count).await
+}
+
+#[test]
+fn test_is_likely_shell_command_one_off_keyword_at_true_start_is_shell() {
+    futures::executor::block_on(async move {
+        assert!(one_off_keyword_at_true_start_still_short_circuits().await);
+    });
+}
+
 #[test]
 fn test_is_agent_follow_up_input() {
     for input in ["yes", "continue", "do it", "approve"] {

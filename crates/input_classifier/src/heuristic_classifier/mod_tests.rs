@@ -55,19 +55,25 @@ fn test_input_detection() {
         // We have to override the first token description here given the mocked completion
         // parser will parse the first token always as commands.
         //
-        // Mock the case where cargo is not installed. We should still parse this as Shell input.
+        // Mock the case where cargo is not installed. Per #696's fix, Shell classification
+        // requires the first token to actually resolve to a real executable / builtin / alias /
+        // function known to this session: a described later token (`--version`) is not enough on
+        // its own, since that's exactly the kind of weak signal that let capitalized English
+        // filler words ("Run", "Then") get executed as shell commands. This now falls back to AI.
         let mut token = mock_parsed_input_token("cargo --version".to_string()).await;
         token.parsed_tokens[0].token_description = None;
         assert_eq!(
             classifier.detect_input_type(token, &context).await.input_type,
-            InputType::Shell
+            InputType::AI
         );
 
+        // Same as above: without a real first-token command match, a described later token isn't
+        // enough to justify Shell.
         let mut token = mock_parsed_input_token("rvm install 3.3".to_string()).await;
         token.parsed_tokens[0].token_description = None;
         assert_eq!(
             classifier.detect_input_type(token, &context).await.input_type,
-            InputType::Shell
+            InputType::AI
         );
 
         // Short queries with NL should be parsed as AI input when already in AI input.
@@ -212,5 +218,85 @@ fn test_input_detection_sources() {
                 InputClassifierDecisionSource::InputClassifierFallbackHeuristic,
             )
         );
+    });
+}
+
+/// Regression tests for #696: English agent prompts containing shell metacharacters (`;`, `>`)
+/// or a real command word past the first position were autodetected as Shell and executed.
+#[test]
+fn test_english_prompts_with_shell_metacharacters_are_not_shell() {
+    futures::executor::block_on(async move {
+        let classifier = HeuristicClassifier;
+        let context = Context {
+            current_input_type: InputType::AI,
+            is_agent_follow_up: false,
+        };
+
+        // Observed in the running app: sent to bash as "Command 'Run' not found", then the rest
+        // ran as separate commands. `echo` landing right after the `;` used to short-circuit the
+        // whole buffer to Shell via the one-off keyword allowlist.
+        let token =
+            mock_parsed_input_token("Run exactly this…: sleep 8; echo hi > ~/lrc.txt".to_string())
+                .await;
+        assert_eq!(
+            classifier
+                .detect_input_type(token, &context)
+                .await
+                .input_type,
+            InputType::AI
+        );
+
+        // Observed in the running app: created an empty file via the redirect. The bare `>`
+        // and `~/followup.txt` tokens used to count as negative "not natural language" evidence,
+        // dragging an otherwise-unremarkable English sentence down to Shell.
+        let token = mock_parsed_input_token("Then run: echo hi > ~/followup.txt".to_string()).await;
+        assert_eq!(
+            classifier
+                .detect_input_type(token, &context)
+                .await
+                .input_type,
+            InputType::AI
+        );
+
+        // Capitalized English words that aren't real commands must not count as commands.
+        let token = mock_parsed_input_token("Please delete the temp directory".to_string()).await;
+        assert_eq!(
+            classifier
+                .detect_input_type(token, &context)
+                .await
+                .input_type,
+            InputType::AI
+        );
+    });
+}
+
+/// Companion to the above: real shell usage, including the exact patterns named in #696
+/// (`ls -la`, `git status; make`), must keep classifying as Shell.
+#[test]
+fn test_real_shell_commands_still_classify_as_shell() {
+    futures::executor::block_on(async move {
+        let classifier = HeuristicClassifier;
+        let context = Context {
+            current_input_type: InputType::AI,
+            is_agent_follow_up: false,
+        };
+
+        for command in [
+            "ls -la",
+            "git status; make",
+            "echo hello world",
+            "sudo apt update",
+            "cd /tmp && ls",
+        ] {
+            let token = mock_parsed_input_token(command.to_string()).await;
+            assert_eq!(
+                classifier
+                    .detect_input_type(token, &context)
+                    .await
+                    .input_type,
+                InputType::Shell,
+                "expected {command:?} to classify as Shell"
+            );
+        }
     });
 }

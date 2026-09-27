@@ -37,6 +37,12 @@ pub enum InputClassifierDecisionSource {
     /// characters and was short-circuited straight to AI, since the
     /// dictionary and ML models are all English-only (see `util::contains_cjk`).
     CjkHeuristic,
+    /// Fork-original, not in the pin: the word-score heuristic scored the input as Shell, but the
+    /// very first token of the buffer isn't a real executable/builtin/alias/function known to this
+    /// session, so the result was overridden to AI. Shell metacharacters or a real command word
+    /// appearing anywhere other than the first position must never be enough on their own to
+    /// classify an English sentence as Shell (see `util::first_token_has_command_evidence`).
+    NoFirstTokenCommandEvidence,
 }
 
 /// The detected input type along with the decision source that produced it.

@@ -10,8 +10,8 @@ use crate::{
     InputClassifierDecisionSource, InputType,
     parser::parse_query_into_tokens,
     util::{
-        contains_cjk, is_installed_binary, is_likely_shell_command,
-        is_one_off_natural_language_word_or_prefix,
+        contains_cjk, first_token_has_command_evidence, is_installed_binary,
+        is_likely_shell_command, is_one_off_natural_language_word_or_prefix,
     },
 };
 
@@ -76,13 +76,31 @@ impl InputClassifier for HeuristicClassifier {
             );
         }
 
-        self.classify_input(input, context)
+        // The word-score heuristic below classifies by counting recognized-word ratios, which is
+        // an inherently fuzzy signal: it can still land on Shell for a buffer that is mostly
+        // English but happens to score low (e.g. capitalized filler words the dictionary doesn't
+        // recognize, or a trailing shell-looking path). Gate any Shell result it produces on the
+        // buffer's first token actually being a real command: never let that fuzzy scoring alone
+        // execute a sentence whose first word isn't even a real executable/builtin/alias/function.
+        let first_token_has_command_evidence = first_token_has_command_evidence(&input);
+
+        let result = self
+            .classify_input(input, context)
             .await
             .map(|result| InputClassificationResult::new(result.to_input_type(), result.source))
             .unwrap_or(InputClassificationResult::new(
                 context.current_input_type,
                 InputClassifierDecisionSource::InputClassifierFallbackHeuristic,
-            ))
+            ));
+
+        if matches!(result.input_type, InputType::Shell) && !first_token_has_command_evidence {
+            return InputClassificationResult::new(
+                InputType::AI,
+                InputClassifierDecisionSource::NoFirstTokenCommandEvidence,
+            );
+        }
+
+        result
     }
 
     async fn classify_input(

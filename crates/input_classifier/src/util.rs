@@ -80,9 +80,15 @@ pub async fn is_likely_shell_command(
         if idx % YIELD_BATCH_SIZE == 0 {
             futures_lite::future::yield_now().await;
         }
-        // Early return if we encounter a one-off command / keyword at the beginning of the line.
-        if token.token_index == 0 && ONE_OFF_SHELL_COMMAND_KEYWORDS.contains(&token.token.as_str())
-        {
+        // Early return if the very first token of the whole buffer is a one-off command /
+        // keyword. `token.token_index` is relative to *its own* parsed command and resets to 0
+        // for every `;` / `&&` / `||` / newline-separated command in the buffer, so checking it
+        // alone would fire this shortcut for a one-off keyword anywhere a later command starts
+        // (e.g. "Run exactly this: sleep 1; echo hi" hits it on "echo"), classifying an entire
+        // English sentence as Shell just because of where a keyword happened to land. `idx == 0`
+        // is the true first token of the buffer, which is the only position this allowlist is
+        // meant to gate on.
+        if idx == 0 && ONE_OFF_SHELL_COMMAND_KEYWORDS.contains(&token.token.as_str()) {
             return true;
         }
 
@@ -92,7 +98,7 @@ pub async fn is_likely_shell_command(
             likely_command_token_count += 1;
         }
 
-        if token.token_index == 0 {
+        if idx == 0 {
             is_first_token_command = token.token_description.is_some();
         }
     }
@@ -144,6 +150,22 @@ pub fn is_installed_binary(input: &ParsedTokensSnapshot) -> bool {
         .first()
         .map(|token| token.token_description.is_some())
         .unwrap_or(false)
+}
+
+/// Returns true if the very first token of the whole buffer resolves to a real
+/// executable, builtin, alias, or function the completer already knows about
+/// in this session (`token_description.is_some()`), or is one of the always-
+/// shell one-off keywords.
+///
+/// This is the hard gate for Shell classification: a shell metacharacter
+/// (';', '>', '~', ...) appearing anywhere in the buffer, or a real command
+/// word appearing anywhere *other* than the very first position, must never
+/// be enough on its own to classify an English sentence as Shell. Only the
+/// first word actually being a real command can do that.
+pub fn first_token_has_command_evidence(input: &ParsedTokensSnapshot) -> bool {
+    input.parsed_tokens.first().is_some_and(|token| {
+        token.token_description.is_some() || is_one_off_shell_command_keyword(token.token.as_str())
+    })
 }
 
 #[cfg(test)]
