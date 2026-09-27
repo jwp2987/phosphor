@@ -1503,24 +1503,16 @@ impl AgentDriver {
         let terminal_id = self.terminal_driver.as_ref(ctx).terminal_view().id();
 
         if let Some(profile) = profile {
-            // Accepts every ID `agent profile list` prints: a locally created profile's
-            // `Client-<uuid>`, a legacy 22-character server ID, or `default` (#637). This
-            // used to require a server ID, so no locally created profile was selectable.
-            use super::profiles::{ProfileSelector, parse_profile_selector};
-            let sync_id = match parse_profile_selector(&profile) {
-                Some(ProfileSelector::Default) => {
-                    // The default profile is what the session already runs with.
-                    return Ok(());
-                }
-                Some(ProfileSelector::Sync(sync_id)) => sync_id,
-                None => return Err(AgentDriverError::ProfileError(profile)),
-            };
+            // Accepts every ID `agent profile list` prints, including a locally created
+            // profile's `Client-<uuid>` and `default` (#637). This used to require a
+            // 22-character server ID, so no locally created profile was selectable.
             AIExecutionProfilesModel::handle(ctx).update(ctx, |model, ctx| {
-                if let Some(profile_id) = model.get_profile_id_by_sync_id(&sync_id) {
-                    model.set_active_profile(terminal_id, profile_id, ctx);
-                } else {
+                let Some(profile_id) =
+                    super::profiles::find_profile_by_cli_id(model, &profile, ctx)
+                else {
                     return Err(AgentDriverError::ProfileError(profile.clone()));
-                }
+                };
+                model.set_active_profile(terminal_id, profile_id, ctx);
                 Ok(())
             })?;
         }

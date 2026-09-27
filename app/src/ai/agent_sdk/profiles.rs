@@ -4,31 +4,24 @@ use warp_cli::{agent::AgentProfileCommand, GlobalOptions};
 use warpui::{AppContext, ModelContext, SingletonEntity};
 
 use crate::ai::agent_sdk::output::{self, TableFormat};
-use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
+use crate::ai::execution_profiles::profiles::{AIExecutionProfilesModel, ClientProfileId};
 use crate::cloud_object::model::generic_string_model::StringModel;
 use crate::cloud_object::model::persistence::ObjectStoreModel;
-use crate::server::ids::{ClientId, HashableId as _, ServerId, SyncId};
+use crate::server::ids::SyncId;
 
 /// The ID `agent profile list` prints for, and `--profile` accepts as, the default
 /// profile when it has no sync ID (the case for every CLI run's default profile).
+/// `--profile default` selects the default profile whatever it is listed as.
 pub(super) const DEFAULT_PROFILE_CLI_ID: &str = "default";
 
-/// The profile a `--profile <ID>` argument selects.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ProfileSelector {
-    /// The default profile, spelled [`DEFAULT_PROFILE_CLI_ID`].
-    Default,
-    /// A profile identified by its sync ID.
-    Sync(SyncId),
-}
-
-/// The ID `agent profile list` prints for a profile: its sync ID, or
+/// The ID `agent profile list` prints for a profile: its sync ID (`Client-<uuid>` for a
+/// locally created profile, a legacy 22-character server ID otherwise), or
 /// [`DEFAULT_PROFILE_CLI_ID`] for the unsynced default profile.
 ///
-/// Every value this returns is accepted by [`parse_profile_selector`] (#637). The list
-/// used to print `Unsynced` for any profile without a legacy 22-character server ID —
-/// with no server, every locally created profile — and `--profile` accepted only server
-/// IDs, so the command that lists profiles could not name one the flag would take.
+/// `--profile` resolves its argument by matching it against exactly these strings
+/// ([`find_profile_by_cli_id`]), so everything the list prints is selectable (#637). The
+/// list used to print `Unsynced` for any profile without a server ID — with no server,
+/// every locally created one — while `--profile` accepted only server IDs.
 pub(super) fn profile_cli_id(sync_id: Option<SyncId>) -> String {
     match sync_id {
         Some(sync_id) => sync_id.to_string(),
@@ -36,19 +29,26 @@ pub(super) fn profile_cli_id(sync_id: Option<SyncId>) -> String {
     }
 }
 
-/// Parse a `--profile` argument: `default`, a locally created profile's
-/// `Client-<uuid>`, or a legacy 22-character server ID.
-pub(super) fn parse_profile_selector(raw: &str) -> Option<ProfileSelector> {
+/// Whether a `--profile` argument names the profile listed as `listed_id`.
+fn cli_id_matches(listed_id: &str, raw: &str) -> bool {
     let raw = raw.trim();
-    if raw.eq_ignore_ascii_case(DEFAULT_PROFILE_CLI_ID) {
-        return Some(ProfileSelector::Default);
+    !raw.is_empty() && listed_id == raw
+}
+
+/// Resolve a `--profile` argument to the profile `agent profile list` printed it for.
+pub(super) fn find_profile_by_cli_id(
+    model: &AIExecutionProfilesModel,
+    raw: &str,
+    ctx: &AppContext,
+) -> Option<ClientProfileId> {
+    if raw.trim().eq_ignore_ascii_case(DEFAULT_PROFILE_CLI_ID) {
+        return Some(model.default_profile_id());
     }
-    if let Some(client_id) = ClientId::from_hash(raw) {
-        return Some(ProfileSelector::Sync(SyncId::ClientId(client_id)));
-    }
-    ServerId::try_from(raw)
-        .ok()
-        .map(|server_id| ProfileSelector::Sync(SyncId::ServerId(server_id)))
+    model.get_all_profile_ids().into_iter().find(|id| {
+        model
+            .get_profile_by_id(*id, ctx)
+            .is_some_and(|profile| cli_id_matches(&profile_cli_id(profile.sync_id()), raw))
+    })
 }
 
 /// Handle Agent Profile-related CLI commands.

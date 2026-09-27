@@ -44,8 +44,6 @@ app/src/ai/agent/task.rs crate::server::datetime_ext::DateTimeExt
 app/src/ai/agent/telemetry.rs crate::server::telemetry::AgentModeCitation
 app/src/ai/agent_sdk/common.rs crate::cloud_object::Owner
 app/src/ai/agent_sdk/common.rs crate::cloud_object::model::persistence::ObjectStoreModel
-app/src/ai/agent_sdk/driver.rs crate::server::ids::ServerId
-app/src/ai/agent_sdk/driver.rs crate::server::ids::SyncId
 app/src/ai/agent_sdk/mcp.rs crate::cloud_object::model::persistence::ObjectStoreModel
 app/src/ai/agent_sdk/mod.rs crate::cloud_object::model::persistence::ObjectStoreModel
 app/src/ai/agent_sdk/profiles.rs crate::cloud_object::model::generic_string_model::StringModel
