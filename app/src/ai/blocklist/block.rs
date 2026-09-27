@@ -98,7 +98,7 @@ use crate::settings::{InputSettings, SelectionSettings};
 use crate::terminal::view::{CodeDiffAction, TerminalAction};
 use crate::ui_components::icons::Icon;
 #[cfg(feature = "local_fs")]
-use crate::util::openable_file_type::{is_supported_image_file, FileTarget};
+use crate::util::openable_file_type::{FileTarget, is_supported_raster_image_file};
 use crate::view_components::action_button::ActionButton;
 use crate::view_components::action_button::ButtonSize;
 use crate::view_components::action_button::KeystrokeSource;
@@ -269,11 +269,15 @@ pub fn init(app: &mut AppContext) {
     cli::init(app);
 }
 
+/// The target to force for a file path detected in AI output, if any.
+///
+/// Raster images go straight to the system image viewer. SVG must NOT (#675): it is a scripting
+/// document whose default handler is normally a browser, and this path is named by the model. It
+/// gets no override, so `TerminalView::open_file_path` routes it through `resolve_file_target`,
+/// which picks the in-app image viewer or an editor -- never the OS default handler.
 #[cfg(feature = "local_fs")]
-impl AIBlock {
-    fn detected_file_path_target_override(&self, absolute_path: &Path) -> Option<FileTarget> {
-        is_supported_image_file(absolute_path).then_some(FileTarget::SystemGeneric)
-    }
+fn detected_file_path_target_override(absolute_path: &Path) -> Option<FileTarget> {
+    is_supported_raster_image_file(absolute_path).then_some(FileTarget::SystemGeneric)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4053,7 +4057,7 @@ impl AIBlock {
             } => RichContentLink::FilePath {
                 absolute_path: absolute_path.to_owned(),
                 line_and_column_num: *line_and_column_num,
-                target_override: self.detected_file_path_target_override(absolute_path),
+                target_override: detected_file_path_target_override(absolute_path),
             },
         };
         Some(rich_content_link)
@@ -4649,7 +4653,7 @@ impl AIBlock {
             }) => ctx.emit(AIBlockEvent::OpenDetectedFilePath {
                 absolute_path: absolute_path.clone(),
                 line_and_column_num: *line_and_column_num,
-                target_override: self.detected_file_path_target_override(absolute_path),
+                target_override: detected_file_path_target_override(absolute_path),
             }),
             None => (),
         }
@@ -4673,7 +4677,7 @@ impl AIBlock {
             } => RichContentLink::FilePath {
                 absolute_path: absolute_path.to_owned(),
                 line_and_column_num: *line_and_column_num,
-                target_override: self.detected_file_path_target_override(absolute_path),
+                target_override: detected_file_path_target_override(absolute_path),
             },
         };
         let position_id = rich_content_link_tooltip_position_id(&ctx.view_id());

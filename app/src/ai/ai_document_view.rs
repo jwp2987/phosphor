@@ -848,7 +848,7 @@ impl AIDocumentView {
             } => {
                 use crate::util::file::external_editor::EditorSettings;
                 use crate::util::openable_file_type::{
-                    is_supported_image_file, resolve_file_target,
+                    is_supported_raster_image_file, resolve_file_target,
                 };
 
                 if *force_open_in_warp {
@@ -865,7 +865,10 @@ impl AIDocumentView {
                     });
                 } else {
                     let settings = EditorSettings::as_ref(ctx);
-                    let target = if is_supported_image_file(path) {
+                    // Raster only (#675): an SVG link in a model-written document must not
+                    // reach the OS default handler (a browser, which runs its scripts). It
+                    // falls through to `resolve_file_target` -> in-app viewer or editor.
+                    let target = if is_supported_raster_image_file(path) {
                         FileTarget::SystemGeneric
                     } else {
                         resolve_file_target(path, settings, None)

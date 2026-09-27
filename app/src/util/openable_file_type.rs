@@ -82,6 +82,9 @@ pub fn renders_in_warp_notebook_viewer(path: impl AsRef<Path>) -> bool {
         || (FeatureFlag::JupyterNotebookRendering.is_enabled() && is_jupyter_notebook_file(path))
 }
 
+/// Whether `path` is an image Zap can display (in the in-app image viewer, as an inline image,
+/// etc.). This includes SVG. Do NOT use it to decide whether a file is safe to hand to the OS
+/// default handler -- use [`is_supported_raster_image_file`] for that.
 pub fn is_supported_image_file(path: impl AsRef<Path>) -> bool {
     path.as_ref()
         .extension()
@@ -93,6 +96,23 @@ pub fn is_supported_image_file(path: impl AsRef<Path>) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+/// Whether `path` is a supported *raster* image: [`is_supported_image_file`] minus SVG.
+///
+/// This is the predicate for "may this image be handed to the OS default handler". SVG may not:
+/// it is XML that can embed `<script>` and external references, and its registered handler on a
+/// normal desktop is a browser, which executes it. `jpg`/`jpeg`/`png`/`gif`/`webp` are decoded by
+/// their handler. Paths from model output, notebook links, and AI documents are attacker-namable,
+/// so every "open this image in the system viewer" shortcut must use this, and let SVG fall
+/// through to [`resolve_file_target`] (in-app image viewer or an editor, never the OS handler).
+pub fn is_supported_raster_image_file(path: impl AsRef<Path>) -> bool {
+    let path = path.as_ref();
+    is_supported_image_file(path)
+        && !path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
 }
 
 /// Returns true if `path` looks like a shell script the user intends to run when
@@ -662,5 +682,56 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("nope");
         assert!(!starts_with_shebang(&p));
+    }
+
+    /// #675: the raster predicate is exactly the display predicate minus SVG. If a format is
+    /// added to `is_supported_image_file`, decide deliberately whether it may reach the OS
+    /// handler -- this test fails until you do.
+    #[test]
+    fn raster_image_predicate_is_image_predicate_minus_svg() {
+        for raster in ["a.jpg", "a.JPEG", "a.png", "a.gif", "a.webp"] {
+            assert!(is_supported_image_file(raster), "{raster}");
+            assert!(is_supported_raster_image_file(raster), "{raster}");
+        }
+        for svg in ["a.svg", "a.SVG", "a.Svg", "/tmp/dir.png/evil.svg"] {
+            assert!(is_supported_image_file(svg), "{svg} is still displayable");
+            assert!(
+                !is_supported_raster_image_file(svg),
+                "{svg} must not be treated as a raster image"
+            );
+        }
+        for other in ["a.txt", "a", "a.svgz", "svg", "a.png.exe"] {
+            assert!(!is_supported_raster_image_file(other), "{other}");
+        }
+    }
+
+    /// #675: an SVG that falls through the raster shortcut must resolve to an in-app target
+    /// under every editor choice -- never the OS default handler.
+    #[test]
+    #[cfg(feature = "local_fs")]
+    fn svg_never_resolves_to_os_handler() {
+        for editor_choice in [
+            EditorChoice::Zap,
+            EditorChoice::EnvEditor,
+            EditorChoice::SystemDefault,
+            EditorChoice::ExternalEditor(Editor::VSCode),
+        ] {
+            for prefer_markdown_viewer in [false, true] {
+                let target = resolve_file_target_with_editor_choice(
+                    Path::new("/tmp/model-named.svg"),
+                    editor_choice,
+                    prefer_markdown_viewer,
+                    EditorLayout::SplitPane,
+                    None,
+                );
+                assert!(
+                    !matches!(
+                        target,
+                        FileTarget::SystemGeneric | FileTarget::SystemDefault
+                    ),
+                    "svg resolved to {target:?} under {editor_choice:?}"
+                );
+            }
+        }
     }
 }

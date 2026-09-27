@@ -373,3 +373,58 @@ fn received_message_collapsible_id_prefixes_row_ids() {
     assert_eq!(&*second, "received-message:message-2");
     assert_ne!(first, second);
 }
+
+// ── Model-named file paths and the OS default handler (#675) ──
+
+/// A raster image detected in AI output opens in the system image viewer, as before.
+#[test]
+#[cfg(feature = "local_fs")]
+fn detected_raster_image_path_opens_in_system_viewer() {
+    use crate::util::openable_file_type::FileTarget;
+
+    for path in [
+        "/tmp/photo.png",
+        "/tmp/photo.JPG",
+        "/tmp/anim.gif",
+        "/tmp/a.webp",
+    ] {
+        assert_eq!(
+            super::detected_file_path_target_override(std::path::Path::new(path)),
+            Some(FileTarget::SystemGeneric),
+            "{path}"
+        );
+    }
+}
+
+/// An SVG named by the model must NOT be forced to `SystemGeneric`: its default handler is
+/// normally a browser, which runs any `<script>` the file embeds. With no override it goes
+/// through `resolve_file_target`, which never picks the OS handler for SVG (see
+/// `openable_file_type::tests::svg_never_resolves_to_os_handler`).
+#[test]
+#[cfg(feature = "local_fs")]
+fn detected_svg_path_is_not_handed_to_os_handler() {
+    for path in [
+        "/tmp/model-named.svg",
+        "/tmp/model-named.SVG",
+        "/tmp/x.png/evil.Svg",
+    ] {
+        assert_eq!(
+            super::detected_file_path_target_override(std::path::Path::new(path)),
+            None,
+            "{path}"
+        );
+    }
+}
+
+/// Non-image paths keep their existing behaviour: no override.
+#[test]
+#[cfg(feature = "local_fs")]
+fn detected_non_image_path_has_no_override() {
+    for path in ["/tmp/main.rs", "/tmp/README.md", "/tmp/noext"] {
+        assert_eq!(
+            super::detected_file_path_target_override(std::path::Path::new(path)),
+            None,
+            "{path}"
+        );
+    }
+}

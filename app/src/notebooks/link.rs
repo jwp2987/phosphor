@@ -20,7 +20,9 @@ use warpui::{
 #[cfg(feature = "local_fs")]
 use crate::util::file::external_editor::EditorSettings;
 #[cfg(feature = "local_fs")]
-use crate::util::openable_file_type::{is_supported_image_file, resolve_file_target, FileTarget};
+use crate::util::openable_file_type::{
+    FileTarget, is_supported_raster_image_file, resolve_file_target,
+};
 use crate::{
     ChannelState,
     drive::ZapDriveObjectArgs,
@@ -901,19 +903,6 @@ impl NotebookLinks {
     }
 }
 
-/// Whether `path` is an image format that can carry executable content, and so must never be
-/// handed to the OS default handler.
-///
-/// SVG is the only such format in `is_supported_image_file`'s list: it is XML, it can embed
-/// `<script>` and external references, and its registered handler on a normal desktop is a
-/// browser. `jpg`/`jpeg`/`png`/`gif`/`webp` are raster formats that the handler decodes.
-#[cfg(feature = "local_fs")]
-fn is_scripting_image_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
-}
-
 /// Open a file respecting user's editor settings.
 ///
 /// For targets that would be handed to the OS default handler (`SystemGeneric` /
@@ -937,12 +926,11 @@ fn open_file(
         // routes it to `FileTarget::ImageViewer` (the in-app viewer, which decodes rather than
         // executes) or to the code editor, both of which are already treated as safe targets.
         //
-        // The exclusion lives here rather than in `is_supported_image_file` because that
-        // predicate has four other callers that mean "can we display this as an image", which is
-        // still true of SVG. The right shape is a separate `is_supported_raster_image_file` in
-        // `util::openable_file_type`; that file is outside this change and the split is recorded
-        // as a follow-up instead.
-        if is_supported_image_file(&path) && !is_scripting_image_file(&path) {
+        // The exclusion is `is_supported_raster_image_file` rather than a change to
+        // `is_supported_image_file` because the latter's other callers mean "can we display this
+        // as an image", which is still true of SVG. The AI block and AI document view share the
+        // same predicate for the same reason (#675).
+        if is_supported_raster_image_file(&path) {
             ctx.emit(LinkEvent::OpenFileWithTarget {
                 path,
                 target: FileTarget::SystemGeneric,
