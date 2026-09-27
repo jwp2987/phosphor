@@ -2344,8 +2344,14 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
 - [x] `213c9b32` — unbounded `SignatureCache` growth: append-only `MemoMap` keyed on
       the lowercased first token, retaining every **miss** forever with no length
       cap. Fork test file is `registry_test.rs` (singular) — a rename, not a gap.
-- [ ] `79a9cb72` — completer resolves an option's argument by value position; needs
+- [x] `79a9cb72` — completer resolves an option's argument by value position; needs
       a `name_span` field on `NamedArgument`.
+      **Fixed #731:** ported faithfully -- `name_span` added to `NamedArgument`
+      (`parsers/hir/mod.rs`), `option_value_index` + the by-position lookup in
+      `complete_option` (`completer/engine/argument/legacy.rs`), the
+      `enum_then_path_option_signature` fixture, and all 4 of upstream's new
+      tests. Legacy completer only, matching upstream's own scope (the v2 engine
+      already resolves by position).
 - [ ] `4e49d04f` — **two separable ports, both valid.** (a) `parse_ls_script_output`
       refactor + truncation/malformed-output guard: cross-platform, applies to every
       legacy-SSH listing, 8 new unit tests. (b) WSL guest enumeration: Windows-only.
