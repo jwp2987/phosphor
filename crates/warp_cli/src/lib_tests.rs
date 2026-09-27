@@ -925,3 +925,37 @@ fn agent_run_help_has_no_stale_command_references() {
         "`schedule` is removed; if it comes back, revisit the `--skill` help"
     );
 }
+
+fn parse_agent_run(extra: &[&str]) -> crate::agent::RunAgentArgs {
+    let mut argv = vec!["warp", "agent", "run", "--prompt", "hello"];
+    argv.extend_from_slice(extra);
+    let args = Args::try_parse_from(argv).expect("agent run should parse");
+    let Some(Command::CommandLine(boxed_cmd)) = args.command else {
+        panic!("Expected `agent run` command");
+    };
+    let CliCommand::Agent(AgentCommand::Run(run_args)) = *boxed_cmd else {
+        panic!("Expected `agent run` command");
+    };
+    *run_args
+}
+
+// #637: `--share` used to parse and then be silently ignored, so a run the user
+// asked to share ran unshared with no indication. It still parses (a script gets a
+// clear error rather than clap's "unexpected argument"), but is now refused.
+#[test]
+fn agent_run_share_is_refused_with_a_clear_error() {
+    for extra in [&["--share"][..], &["--share", "team:view"][..]] {
+        let run_args = parse_agent_run(extra);
+        let message = run_args
+            .share
+            .unsupported_error()
+            .unwrap_or_else(|| panic!("{extra:?} must be refused, not ignored"));
+        assert!(message.contains("--share"), "{message}");
+        assert!(message.contains("not supported"), "{message}");
+    }
+}
+
+#[test]
+fn agent_run_without_share_is_not_refused() {
+    assert_eq!(parse_agent_run(&[]).share.unsupported_error(), None);
+}

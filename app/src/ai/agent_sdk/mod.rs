@@ -151,6 +151,9 @@ fn run_agent(
             if args.harness != Harness::Oz && !FeatureFlag::AgentHarness.is_enabled() {
                 return Err(anyhow::anyhow!("unexpected argument '--harness' found"));
             }
+            if let Some(message) = args.share.unsupported_error() {
+                return Err(anyhow::anyhow!(message));
+            }
             if args.harness == Harness::OpenCode {
                 return Err(anyhow::anyhow!(
                     "The opencode harness is only supported for local child agent launches."
@@ -497,6 +500,7 @@ impl AgentDriverRunner {
                 let (merged_config, task) =
                     build_merged_config_and_task(&args, &resolved_skill, &prompt_clone, ctx)?;
 
+                // `--share` is rejected up front in `run_agent`; sharing is declined cloud.
                 let should_share = false;
 
                 let third_party_harness_model_config = merged_config
