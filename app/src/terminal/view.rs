@@ -16155,7 +16155,7 @@ impl TerminalView {
                 Some(highlighted_link),
                 _,
             ) => {
-                match highlighted_link {
+                let mut items = match highlighted_link {
                     GridHighlightedLink::Url(url) => {
                         let url_content =
                             Some(model.link_at_range(url, RespectObfuscatedSecrets::Yes));
@@ -16233,7 +16233,14 @@ impl TerminalView {
                                 .into_item(),
                         ]
                     }
+                };
+
+                if !items.is_empty() {
+                    items.push(MenuItem::Separator);
                 }
+                items.push(self.paste_menu_item(ctx));
+
+                items
             }
             (
                 BlockListMenuSource::RegularTextRightClick { .. }
@@ -16454,6 +16461,22 @@ impl TerminalView {
                     items.append(&mut prompt_items);
                 }
 
+                // Right-click menus also offer the general clipboard "Paste", closing out the
+                // copy section. The overflow-button and keybinding menus are scoped to the
+                // selected block(s), so they don't.
+                let is_right_click_source = matches!(
+                    menu_source,
+                    BlockListMenuSource::RegularBlockRightClick { .. }
+                        | BlockListMenuSource::RichContentBlockRightClick { .. }
+                        | BlockListMenuSource::OutsideBlockRightClick { .. }
+                );
+                if is_right_click_source {
+                    if !is_single_selection {
+                        items.push(MenuItem::Separator);
+                    }
+                    items.push(self.paste_menu_item(ctx));
+                }
+
                 items.append(&mut vec![
                     MenuItem::Separator,
                     MenuItemFields::new(find_str)
@@ -16647,6 +16670,18 @@ impl TerminalView {
         }
 
         items
+    }
+
+    /// The "Paste" entry for block-list right-click menus. Dispatches the same
+    /// `TerminalAction::Paste` as the `terminal:paste` keybinding, so it has the same
+    /// clipboard and target semantics, and is disabled while the clipboard is empty.
+    fn paste_menu_item(&self, ctx: &mut ViewContext<Self>) -> MenuItem<TerminalAction> {
+        let is_clipboard_empty = ctx.clipboard().read().is_empty();
+        MenuItemFields::new(crate::t!("common-paste"))
+            .with_on_select_action(TerminalAction::Paste)
+            .with_key_shortcut_label(keybinding_name_to_display_string("terminal:paste", ctx))
+            .with_disabled(is_clipboard_empty)
+            .into_item()
     }
 
     /// Builds the "Clear Blocks" entry for the terminal right-click context menu.

@@ -7069,6 +7069,59 @@ fn test_context_menu_omits_clear_for_text_right_click() {
     })
 }
 
+// ── Context menu "Paste" entry (upstream 0a0fd3ae1, #683) ───────────────────────
+
+fn paste_item_state(
+    view: &TerminalView,
+    menu_source: &BlockListMenuSource,
+    ctx: &mut ViewContext<TerminalView>,
+) -> Option<bool> {
+    view.context_menu_items(menu_source, ctx)
+        .iter()
+        .filter_map(|item| item.fields())
+        .find(|fields| fields.label() == "Paste")
+        .map(|fields| fields.is_disabled())
+}
+
+#[test]
+fn test_block_right_click_menu_offers_paste() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let block_index = {
+                let mut model = view.model.lock();
+                model.simulate_block("ls", "foo");
+                model.block_list().active_block_index()
+            };
+            view.selected_blocks.reset_to_single(block_index);
+
+            let right_click = BlockListMenuSource::OutsideBlockRightClick {
+                position_in_terminal_view: Vector2F::zero(),
+            };
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text(String::new()));
+            assert_eq!(
+                paste_item_state(view, &right_click, ctx),
+                Some(true),
+                "Paste is offered but disabled while the clipboard is empty"
+            );
+
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text("echo hi".to_owned()));
+            assert_eq!(paste_item_state(view, &right_click, ctx), Some(false));
+
+            // Text-selection menus already offer "Insert into input"; a second paste there
+            // would be a duplicate.
+            let text_right_click = BlockListMenuSource::RegularTextRightClick {
+                position_in_terminal_view: Vector2F::zero(),
+            };
+            assert_eq!(paste_item_state(view, &text_right_click, ctx), None);
+        });
+    })
+}
+
 // ── ControlMaster banner dismissal, ported from the pinned oracle ──────────────────
 
 #[test]
