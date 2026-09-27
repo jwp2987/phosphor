@@ -952,15 +952,13 @@ Per-model fields: `name`, `id`, `context_window` (0 = unknown),
 `phosphor-oss` accepts the agent CLI subcommands. Both the usage lines and the
 examples in `--help` are built from argv\[0\], so they say `phosphor-oss` (clap
 overwrites the internal `oz` command name with the invoked name; verified against
-the built binary via a renamed symlink). What *is* stale is a handful of help
-*strings*: `--model`'s help says "Use `warp model list`" and `completions`
-shows `path/to/warp completions bash`. Read those as `phosphor-oss`.
+the built binary via a renamed symlink). One help *string* is stale:
+`completions` shows `path/to/warp completions bash`. Read it as `phosphor-oss`.
 
 | command | what it does |
 |---|---|
 | `phosphor-oss agent run -p "<prompt>"` | Run a task with Phosphor's own agent |
 | `phosphor-oss agent run --harness claude -p "…"` | Run it under Claude Code instead (hidden flag; also `gemini`, `codex`) |
-| `phosphor-oss agent list` | List available agents |
 | `phosphor-oss agent profile …` | Manage agent profiles |
 | `phosphor-oss agent message send/list` | Local on-disk mailbox used by `/orchestrate` children |
 | `phosphor-oss model list` | Print every model ID the picker offers (BYOP entries look like `byop:<provider-uuid>:<model-id>`) |
@@ -1000,9 +998,10 @@ was recorded, `DECLINED.md` has the reasoning.
 - **Ambient agents.** The spawn API is present but returns
   `Agent spawning is disabled in Phosphor` on every call. Ambient agents needed
   a server to host the run and a shared session to watch it.
-- **Agent session sharing.** `--share` still parses (hidden, so old scripts do
-  not break) and does nothing; sharing needed Warp's backend to host the session
-  and resolve `team:` / `public:` / `user@host` recipients.
+- **Agent session sharing.** `--share` still parses (hidden) but the run is
+  refused with an error saying sharing is not supported; sharing needed Warp's
+  backend to host the session and resolve `team:` / `public:` / `user@host`
+  recipients.
 - **Teams, organisations and org policy.** `has_teams()` is permanently `false`
   and `current_team()` always returns `None`. The workspace-level agent denylist,
   sandboxed-agent policy and agent attribution settings therefore have nothing
@@ -1051,9 +1050,9 @@ tool** (per-profile flag with no way to set it).
 - The TUI's cargo target is `zap-tui-oss`; the binary you download and run is
   `phosphor-tui`.
 - `phosphor-oss --help` shows `phosphor-oss` in its usage lines (clap takes the
-  name from argv\[0\], not from the internal `oz` command name), but two help
-  *strings* were never rebranded: `--model`'s help refers to `warp model list`,
-  and `completions`' help shows `path/to/warp completions bash`.
+  name from argv\[0\], not from the internal `oz` command name), but one help
+  *string* was never rebranded: `completions`' help shows
+  `path/to/warp completions bash`.
 - Project skills are still read from `.warp/skills`, and files an agent-SDK
   session downloads land in `<working dir>/.warp/attachments`. The home skills
   directory, by contrast, is `~/.phosphor/skills`.
@@ -1158,7 +1157,7 @@ Context
 - app/src/ai/attachment_utils.rs:1-11 (<cwd>/.warp/attachments, agent-SDK downloads only)
 
 Third-party CLI agents (terminal detection)
-- app/src/terminal/cli_agent.rs:174-250 (CLIAgent variants and command prefixes; PhosphorTui prefixes list zap-tui-oss, not phosphor-tui)
+- app/src/terminal/cli_agent.rs:174-250 (CLIAgent variants and command prefixes; PhosphorTui prefixes include both zap-tui-oss and the shipped phosphor-tui, #637)
 - app/src/settings/ai.rs:2322-2400 (agents.third_party.* toolbar/composer settings), :1803-1830 (PerAgentSettings), :2774-2784 (agents.third_party.per_agent)
 - app/src/terminal/cli_agent_sessions/plugin_manager/claude.rs:21-26,61-63; .../codex.rs:17-26,86-88; .../gemini.rs:21,56-58 (plugin repos, minimum versions, auto-install)
 - app/i18n/en/warp.ftl:613,952 (Settings > AI > Third party CLI agents)
@@ -1171,7 +1170,7 @@ Harness driver
 - app/src/ai/harness_display.rs:16-25 (user-visible harness names)
 - crates/warp_cli/src/agent.rs:122-145 (Harness value names/aliases), :301-398 (RunAgentArgs incl. --harness hide=true), :53-70 (--prompt/-p)
 - crates/warp_cli/src/lib.rs:88-100 (clap name "oz", display_name "Phosphor"), :353-373 (CliCommand: Agent/MCP/Model/Whoami/Provider), :229-246 (AgentCommand)
-- crates/warp_cli/src/model.rs (ModelCommand::List only; its own help text says "warp model list"), crates/warp_cli/src/provider.rs:4-58 (ProviderCommand is Linear/Slack)
+- crates/warp_cli/src/model.rs (ModelCommand::List only; --model help points at the `model list` subcommand), crates/warp_cli/src/provider.rs:4-58 (ProviderCommand is Linear/Slack)
 - crates/warp_cli/src/lib.rs:168-175 (provider subcommand rejected when FeatureFlag::ProviderCommand is off), :217-220 (hidden from help), :224-238 (examples use the real binary name; usage still says "oz"); app/src/ai/agent_sdk/mod.rs:98-103 (same gate at dispatch); crates/warp_features/src/lib.rs:847 (ProviderCommand only in DOGFOOD_FLAGS, i.e. dark)
 - crates/warp_core/src/channel/mod.rs:38-47 (cli_command_name: Oss -> "phosphor-oss")
 - app/src/ai/agent_sdk/mod.rs:94-98 (dispatch), :151-157 (AgentHarness gate; opencode rejected), :512 (secrets empty on the agent-run path), :530-536 (task_id None so OZ_RUN_ID is not set)

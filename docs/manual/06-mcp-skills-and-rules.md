@@ -598,10 +598,9 @@ precedence above (home first, then the current repo, then repos beneath the
 working directory); a path containing a separator resolves directly. Absolute
 paths are rejected.
 
-> The help text for `--skill` points at `oz schedule create --skill …`. **There is
-> no `schedule` subcommand in Phosphor** — the CLI has `agent`, `mcp`, `model`,
-> `whoami`, and a `provider` subcommand that is hidden from `--help`. Ignore that
-> line.
+> There is no `schedule` subcommand in Phosphor, so a skill cannot be run on a
+> schedule from the CLI — the CLI has `agent`, `mcp`, `model`, `whoami`, and a
+> `provider` subcommand that is hidden from `--help`.
 
 ### Bundled skills
 
@@ -1274,7 +1273,7 @@ script/copy_conditional_skills:45-52                      oss channel matches no
 app/src/lib.rs:3429                                       ZAP_UNSTABLE_FEATURES=warp_control_cli
 crates/warp_cli/src/agent.rs:311-323                      --skill <SPEC>
 crates/warp_cli/src/skill.rs:33-49,79-98                  SPEC grammar
-crates/warp_cli/src/agent.rs:321                          stale reference to `oz schedule create --skill`
+crates/warp_cli/src/agent.rs                              --skill help (stale `oz schedule create` line removed, #637)
 app/src/ai/agent_sdk/mod.rs:147-150                       --skill rejected unless OzPlatformSkills
 DECLINED.md:88                                            global-spec skill filtering removed
 DECLINED.md:195-199                                       Oz platform plugins removed
