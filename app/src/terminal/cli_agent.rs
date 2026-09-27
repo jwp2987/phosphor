@@ -240,10 +240,14 @@ impl CLIAgent {
                 "warp-tui",
                 "warp-tui-oss",
                 "run-tui",
-                // This fork's actual shipped OSS TUI binary
+                // This fork's OSS TUI binary as cargo builds it
                 // (`crates/warp_tui`, `default-run = "zap-tui-oss"`). This is
                 // the concrete fix for #394.
                 "zap-tui-oss",
+                // The name users actually run: the release workflow renames
+                // `zap-tui-oss` to `phosphor-tui` in every published archive
+                // (`.github/workflows/phosphor_release.yml`). #637.
+                "phosphor-tui",
             ],
             CLIAgent::Unknown => &[],
         }

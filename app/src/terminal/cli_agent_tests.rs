@@ -269,6 +269,7 @@ fn test_detect_known_agents() {
                 ("warp", CLIAgent::PhosphorTui),
                 ("warp-dev", CLIAgent::PhosphorTui),
                 ("zap-tui-oss", CLIAgent::PhosphorTui),
+                ("phosphor-tui", CLIAgent::PhosphorTui),
             ] {
                 assert_eq!(
                     CLIAgent::detect(command, None, None, ctx),
@@ -615,8 +616,13 @@ fn test_phosphor_tui_matches_binaries_and_launchers() {
     assert!(CLIAgent::PhosphorTui.matches_command("warp-tui", None));
     assert!(CLIAgent::PhosphorTui.matches_command("warp-tui-oss", None));
     assert!(CLIAgent::PhosphorTui.matches_command("run-tui", None));
-    // This fork's actual shipped OSS TUI binary.
+    // This fork's OSS TUI binary as cargo builds it.
     assert!(CLIAgent::PhosphorTui.matches_command("zap-tui-oss", None));
+    // ...and as the release ships it (#637): archives rename it `phosphor-tui`.
+    assert!(CLIAgent::PhosphorTui.matches_command("phosphor-tui", None));
+    assert!(
+        CLIAgent::PhosphorTui.matches_command("/usr/local/bin/phosphor-tui --resume abc", None)
+    );
     // The dev launcher script.
     assert!(CLIAgent::PhosphorTui.matches_command("./script/run-tui", None));
     assert!(CLIAgent::PhosphorTui.matches_command("script/run-tui", None));
@@ -649,6 +655,7 @@ fn test_phosphor_tui_does_not_match_other_commands() {
     assert!(!CLIAgent::PhosphorTui.matches_command("mywarp-dev", None));
     assert!(!CLIAgent::PhosphorTui.matches_command("warp-tui-wrapper", None));
     assert!(!CLIAgent::PhosphorTui.matches_command("mywarp-tui", None));
+    assert!(!CLIAgent::PhosphorTui.matches_command("phosphor-tui-wrapper", None));
     assert!(!CLIAgent::PhosphorTui.matches_command("", None));
     // `cargo run` is a known non-match (the first token is `cargo`).
     assert!(!CLIAgent::PhosphorTui.matches_command("cargo run -p warp_tui", None));
@@ -668,6 +675,7 @@ fn test_phosphor_tui_variant_properties() {
             "warp-tui-oss",
             "run-tui",
             "zap-tui-oss",
+            "phosphor-tui",
         ]
     );
     assert_eq!(CLIAgent::PhosphorTui.display_name(), "Phosphor TUI");
