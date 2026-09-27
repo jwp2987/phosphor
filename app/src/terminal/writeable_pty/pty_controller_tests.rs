@@ -849,3 +849,73 @@ fn late_completions_finished_does_not_destroy_a_newer_awaiting_prompt_request() 
         drop(model_events_tx);
     });
 }
+
+/// Regression test for TODO.md's follow-up (2): the prompt-phase watchdog can abandon a request
+/// whose OSC reply was merely slow, not absent. When that late reply finally arrives, it must
+/// answer the shell with a bare EOT terminator (so the shell's `read -d $'\4'` returns) instead
+/// of being silently ignored -- which is what left the shell waiting in `read` forever before
+/// this fix, since nothing else was ever going to send it a terminator once the app had already
+/// dropped the request.
+#[test]
+fn late_send_completions_prompt_after_watchdog_abandons_it_answers_with_eot_only() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events.clone(),
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        // Simulate the prompt-phase watchdog having already fired and abandoned the request:
+        // the state is gone, but the "a late reply might still show up" flag is set, exactly as
+        // `arm_native_completions_watchdog`'s callback leaves it.
+        controller.update(&mut app, |controller, _ctx| {
+            controller.in_flight_native_completions_state = None;
+            controller.has_pending_late_completions_prompt_reply = true;
+        });
+
+        // The shell's OSC reply finally arrives, late.
+        model_events.update(&mut app, |_dispatcher, ctx| {
+            ctx.emit(ModelEvent::SendCompletionsPrompt);
+        });
+
+        let messages = sender.messages.lock();
+        assert_eq!(
+            messages.len(),
+            1,
+            "the late reply must be answered with exactly one write: the bare terminator, and \
+             nothing else -- no completion text, since the request that would have supplied it \
+             was already dropped."
+        );
+        assert_input_matches(&messages[0], vec![escape_sequences::C0::EOT]);
+        drop(messages);
+
+        controller.read(&app, |controller, _| {
+            assert!(
+                controller.in_flight_native_completions_state.is_none(),
+                "answering a late reply must not resurrect the abandoned request."
+            );
+            assert!(
+                !controller.has_pending_late_completions_prompt_reply,
+                "the late-reply flag must be consumed so a second, truly stray \
+                 SendCompletionsPrompt does not also get answered with an EOT."
+            );
+        });
+
+        drop(model_events_tx);
+    });
+}

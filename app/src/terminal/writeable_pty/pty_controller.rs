@@ -149,6 +149,14 @@ pub struct PtyController<T: EventLoopSender> {
     /// the life of the shell -- the un-phosphorized shell that causes this answers no Tab, ever,
     /// and a toast on every keystroke would be worse than the silence it replaces.
     has_reported_native_completions_unavailable: bool,
+    /// Set when the prompt-phase watchdog abandons an `AwaitingPrompt` handshake, meaning the
+    /// shell's OSC reply might still be on its way even though we gave up waiting for it. If that
+    /// late reply does arrive, `ModelEvent::SendCompletionsPrompt`'s handler answers it with a
+    /// bare terminator (see there) instead of leaving the shell stuck in `read -d $'\4'` with
+    /// nothing ever unblocking it. Cleared once that late reply is handled, or never, if it turns
+    /// out the shell genuinely never replies -- the common case, where `^Y` was just readline's
+    /// yank and no read is stuck at all, so the flag is harmless dead weight.
+    has_pending_late_completions_prompt_reply: bool,
 }
 
 impl<T: EventLoopSender> PtyController<T> {
@@ -247,11 +255,37 @@ impl<T: EventLoopSender> PtyController<T> {
                     me.in_flight_native_completions_state,
                     Some(NativeShellCompletionsState::AwaitingPrompt { .. })
                 ) {
-                    log::warn!(
-                        "Received SendCompletionsPrompt event but wasn't awaiting a prompt \
-                         (generation {}); ignoring it without touching the in-flight state.",
-                        me.native_completions_generation
-                    );
+                    // We aren't in the middle of a live prompt handshake. This can be a truly
+                    // unexpected OSC reply, or it can be the shell finally answering a request
+                    // whose prompt watchdog already fired and abandoned it (the OSC reply was
+                    // just slow, not absent). In the latter case the shell is sitting inside
+                    // `read -d $'\4'` right now waiting for *something* to terminate that read --
+                    // and since we already dropped the request, we cannot send it the completion
+                    // text, but we can still send the bare terminator so the shell's `read`
+                    // returns instead of hanging forever. This does not resurrect the request:
+                    // no text is sent, no `results_tx` exists to signal (it was already dropped
+                    // and closed by the watchdog), and `in_flight_native_completions_state` stays
+                    // `None`.
+                    if me.has_pending_late_completions_prompt_reply {
+                        me.has_pending_late_completions_prompt_reply = false;
+                        log::warn!(
+                            "Received a late SendCompletionsPrompt reply for an already-abandoned \
+                             completions request; answering with just the terminator so the \
+                             shell's read() returns, without resurrecting the request."
+                        );
+                        me.send_write_to_event_loop(
+                            PtyWrite::Bytes {
+                                bytes: vec![escape_sequences::C0::EOT].into(),
+                            },
+                            ctx,
+                        );
+                    } else {
+                        log::warn!(
+                            "Received SendCompletionsPrompt event but wasn't awaiting a prompt \
+                             (generation {}); ignoring it without touching the in-flight state.",
+                            me.native_completions_generation
+                        );
+                    }
                     return;
                 }
                 let Some(NativeShellCompletionsState::AwaitingPrompt {
@@ -340,6 +374,7 @@ impl<T: EventLoopSender> PtyController<T> {
             in_flight_native_completions_state: None,
             native_completions_generation: 0,
             has_reported_native_completions_unavailable: false,
+            has_pending_late_completions_prompt_reply: false,
         }
     }
 
@@ -500,6 +535,13 @@ impl<T: EventLoopSender> PtyController<T> {
                      abandoning the request so PTY writes can resume."
                 );
                 me.in_flight_native_completions_state = None;
+                // The OSC reply for this request may still be on its way even though we're done
+                // waiting for it; if it arrives, answer it safely instead of leaving the shell
+                // stuck in `read -d $'\4'` forever. See `has_pending_late_completions_prompt_reply`
+                // and the `SendCompletionsPrompt` handler.
+                if expect_awaiting_prompt {
+                    me.has_pending_late_completions_prompt_reply = true;
+                }
                 // Only the prompt phase gates writes, but draining unconditionally is harmless
                 // and keeps the recovery path identical for both.
                 me.execute_next_queued_write(ctx);
