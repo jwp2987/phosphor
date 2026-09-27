@@ -2937,7 +2937,9 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       **Ported 2026-09-27 (#711):** `DiffMatchFailure { block_number }` added to
       `DiffMatchFailures.fuzzy_match_failure_details` (`#[serde(skip)]`); the
       `RemoteFileOperationsUnsupported` arm and its comment are untouched.
-- [ ] `4cd1c77c4` — file-explorer chip in the native agent-view toolbelt; entirely local.
+- [x] `4cd1c77c4` — file-explorer chip in the native agent-view toolbelt; entirely local.
+      **Ported 2026-09-27 (`5f936f05a`)**; the telemetry source now derives inside
+      `toggle_file_tree` so no new cloud-boundary import (`b32f238cd`).
 - [x] `ff16a0b2a` — `hashbrown` raw-entry + `FxHashMap` in hot paths. `rustc-hash`
       is already a workspace dep; `app/Cargo.toml` needs both added.
       **Ported 2026-09-27 (`35fac964f`):** `Hashed<K>` added to `warp_util`;
@@ -2955,7 +2957,7 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       `output.rs:2964` documents why. The `search_codebase.rs` sub-hunk has no target.
       **Tooltip half ported 2026-09-26 (#677, `9353cb534`):** hover-reset repaint kept and
       dismiss events left unconditional on purpose — see `DECLINED.md` → IMPROVED.
-- [ ] `d68a638ef` — **5 of 26 sites apply**; the rest already differ because the fork
+- [x] `d68a638ef` — **Closed 2026-09-27: `hex_color.rs` ported, the remaining 4 sites declined (DECLINED.md's "Upstream `d68a638ef`" row).** **5 of 26 sites apply**; the rest already differ because the fork
       never took upstream's earlier `log::error!`->`report_error!` migration.
       `hex_color.rs` (`HexColorError` -> `thiserror::Error`) is the cleanest and is
       entirely local.
@@ -2965,7 +2967,7 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       typed chain preserved here). **Remaining 4 of the 5 applicable sites not
       done** — this pass did not verify them against the fork's current
       `report_error!` call shapes; still open.
-- [ ] `9d3f3e1ec` — clone-reduction micro-refactor. **Not mechanical**: relies on
+- [x] `9d3f3e1ec` — **DECLINED 2026-09-27, see DECLINED.md's "Upstream `9d3f3e1ec`" row.** Clone-reduction micro-refactor. **Not mechanical**: relies on
       `Revision` being `Copy`, and it is not here (`cloud_object/server_types.rs:177`).
       No behavioural delta. Lowest value in this group.
 
@@ -3033,7 +3035,7 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       ported; the hint is now suppressed when the setting is off.
       Re-homing the settings half from `warp_agent_page.rs` to `ai_page.rs` was correct.
       **Fifth ledger row this round found to state the opposite of the code (cf. #148).**
-- [ ] `fa2d43ce2` — widens `assert_eventually!` 20->100 ticks on two tests that exist
+- **Conditional, not open work:** `fa2d43ce2` — port only if either test below goes flaky here. Widens `assert_eventually!` 20->100 ticks on two tests that exist
       here verbatim. **Not a §5.6 weakening** (condition byte-identical, only the wait
       grows) but it is upstream compensating for UPSTREAM's CI. **Do not port
       speculatively** — only if these go flaky here.
@@ -3044,7 +3046,7 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       gone flaky in this fork's CI, so per this row's own instruction the margin widening
       is held off rather than ported speculatively. Re-check if either test is observed
       flaky in a future round.
-- [ ] `6a96a72d` — settings registration refactor. Compile-time only, no behaviour;
+- [x] `6a96a72d` — **DECLINED 2026-09-27, see DECLINED.md's "Upstream `6a96a72d`" row.** Settings registration refactor. Compile-time only, no behaviour;
       fork's `macros.rs` already ~121 lines diverged, so a manual rewrite for an
       unmeasured build-speed win. Lowest value in the queue.
       **Skipped 2026-09-27: verified the divergence is worse than "~121 lines" and
@@ -12807,7 +12809,9 @@ open findings that had no pre-existing row.
       after the active block metadata is replaced. **Still open (low):** a dead
       pane after `ModelEvent::Exit` keeps its last colour.
 
-- [ ] **Rewind batch never settles if a remote revert write never resolves.**
+- [x] **Rewind batch never settles if a remote revert write never resolves.**
+      **Fixed 2026-09-27 (#768, `17c3a4b10`, `9fafffc4d`):** a 20s per-write deadline with a
+      per-file generation guard; see the #688 entry's "Deadline follow-up" for detail.
       Found reviewing the revert chain (`6c60a4940`): the card stays `Reverting`
       and later rewinds of that file queue behind it, with no per-rewind timer to
       mark an in-flight write failed and abandon the lane.
