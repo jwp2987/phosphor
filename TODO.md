@@ -2527,10 +2527,38 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       **Fixed 2026-09-26 (#676, `1c2342ecd`):** ported as
       `ExecutionMode::can_inherit_process_path_for_mcp` (`App` false; `Tui`/`Sdk` true; no
       `RemoteServerDaemon` in this fork).
-- [ ] `092c1dce` — preserve scroll fraction across the markdown Rendered/Raw toggle.
+- [x] `092c1dce` — preserve scroll fraction across the markdown Rendered/Raw toggle.
       **Port requires EXTENDING a fork test, not weakening it**: add
       `scroll_fraction: None` to the exhaustive literal at `notebooks/file/mod_tests.rs:530`.
       Fork uses `BufferLocation` where upstream uses `LocalOrRemotePath`.
+      **Fixed 2026-09-27 (#758):** ported the full stack onto this fork's shapes --
+      `ScrollPosition::Fraction`/`RenderState::scroll_fraction`/`scroll_to_fraction`/
+      `ViewportState::scroll_fraction`/`scroll_to_fraction` verbatim; `PaneEvent`'s two
+      variants each grew a `scroll_fraction: Option<OrderedFloat<f32>>` field onto their
+      *existing* fork-specific path types (`BufferLocation` for `ReplaceWithCodePane`,
+      local `PathBuf` for `ReplaceWithFilePane`) rather than adopting upstream's unified
+      `LocalOrRemotePath`. `replace_code_pane_with_file_pane` restructured to "construct
+      empty, seed the pending fraction, then `open_local`" (matching upstream's own
+      ordering fix) since this fork's `FilePane::new` opens synchronously inside its own
+      constructor closure when given a path up front.
+      **The TODO's suggested literal was wrong, corrected using derived behavior**: traced
+      `FileNotebookView::scroll_fraction` and confirmed it can only return `Some` if
+      `pending_scroll_fraction`-worth content exists; the two regression tests at
+      `mod_tests.rs:530`/`582` toggle a freshly-opened, never-scrolled view, so the real
+      fraction is deterministically `0.0` regardless of content/viewport height (scroll_top
+      starts at zero and nothing scrolls it before the toggle). Rather than threading a
+      no-op `Some(0.0)` through the pane-replacement event (scrolling to fraction 0.0 is
+      byte-identical to the pane's untouched default), `scroll_fraction()` returns `None`
+      for that case -- behaviorally a no-op vs. upstream, and it is what makes
+      `scroll_fraction: None` in the existing exhaustive literals the *correct* value, not
+      a placeholder. Both tests updated with that field.
+      Ported upstream's unit test verbatim: `test_scroll_fraction`
+      (`crates/editor/src/render/model/viewport_tests.rs`), covering fraction<->scroll_top
+      midpoint mapping, clamping, and the no-scrollable-range case.
+      No `crates/warp_search_core`-style crate split applies here; everything landed in the
+      existing `app/src/code/*`, `app/src/notebooks/file/mod.rs`, `app/src/pane_group/*`,
+      and `crates/editor/src/render/model/*` files upstream also touches, following round
+      5's Home/End/PageUp and Mermaid-resync work in the same editor files.
 - [x] `46c0b513` — Windows DPC-watchdog: avoid a full process-table walk per session bootstrap.
       **Closed as declined 2026-09-26:** Windows-only. Out of scope.
 - [x] `eaf70a6a` — oversized-diff early return; fork has `MAX_DIFF_SIZE` and the exact

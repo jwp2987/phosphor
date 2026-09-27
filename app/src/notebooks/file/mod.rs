@@ -104,6 +104,9 @@ pub struct FileNotebookView {
     /// Set when the file was opened from a CodePane, and restored on a raw/rendered toggle.
     #[cfg(feature = "local_fs")]
     code_source: Option<CodeSource>,
+    /// Vertical scroll fraction (`0..=1`) to restore once the file content is first loaded,
+    /// captured before a markdown raw->rendered toggle. Consumed on the first `set_content`.
+    pending_scroll_fraction: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -318,12 +321,37 @@ impl FileNotebookView {
             display_mode_segmented_control,
             #[cfg(feature = "local_fs")]
             code_source: None,
+            pending_scroll_fraction: None,
         }
     }
 
     #[cfg(feature = "local_fs")]
     pub fn set_code_source(&mut self, source: Option<CodeSource>) {
         self.code_source = source;
+    }
+
+    /// Set the scroll fraction to restore once the file content is first loaded. Used to preserve
+    /// scroll position when toggling markdown from raw to rendered.
+    #[cfg_attr(not(feature = "local_fs"), expect(dead_code))]
+    pub(crate) fn set_pending_scroll_fraction(&mut self, scroll_fraction: Option<f32>) {
+        self.pending_scroll_fraction = scroll_fraction;
+    }
+
+    /// The current vertical scroll fraction of the rendered editor, in `0..=1`. `None` when the
+    /// view is already scrolled to the top: restoring a `0.0` fraction is exactly the pane's
+    /// default (scroll to top) anyway, so there is nothing to distinguish and nothing worth
+    /// carrying through the toggle.
+    #[cfg_attr(not(feature = "local_fs"), expect(dead_code))]
+    fn scroll_fraction(&self, ctx: &AppContext) -> Option<f32> {
+        let fraction = self
+            .editor
+            .as_ref(ctx)
+            .model()
+            .as_ref(ctx)
+            .render_state()
+            .as_ref(ctx)
+            .scroll_fraction();
+        (fraction != 0.0).then_some(fraction)
     }
 
     #[cfg(feature = "local_fs")]
@@ -355,6 +383,7 @@ impl FileNotebookView {
         let doc_path = self.file_state.local_path().map(|p| p.to_path_buf());
         let render_as_ipynb =
             FeatureFlag::JupyterNotebookRendering.is_enabled() && self.is_jupyter_notebook_file();
+        let scroll_fraction = self.pending_scroll_fraction.take();
         self.editor.update(ctx, |editor, ctx| {
             if render_as_ipynb {
                 editor.reset_with_ipynb(content, ctx);
@@ -364,6 +393,17 @@ impl FileNotebookView {
             // Relative image paths in the content resolve against this.
             editor.model().update(ctx, |model, ctx| {
                 model.set_document_path(doc_path, ctx);
+                // Restore scroll captured before a raw->rendered toggle. Deferred through the
+                // layout pipeline so it applies after the new content is laid out. The version is
+                // read here (after the reset above advanced it) rather than at dequeue: the reset's
+                // BufferEdit reaches the layout channel via a deferred subscription, so it can be
+                // enqueued after our ScrollToFraction.
+                if let Some(fraction) = scroll_fraction {
+                    let version = model.buffer_version(ctx);
+                    model.render_state().update(ctx, |render_state, _ctx| {
+                        render_state.scroll_to_fraction(fraction, version);
+                    });
+                }
             });
         });
     }
@@ -698,9 +738,11 @@ impl FileNotebookView {
         // `code_source` is `None`, `replace_file_pane_with_code_pane` builds
         // the right `CodeSource` (`Link` or `RemoteFileTree`) from it.
         if let Some(location) = self.file_state.buffer_location() {
+            let scroll_fraction = self.scroll_fraction(ctx).map(ordered_float::OrderedFloat);
             ctx.emit(FileNotebookEvent::Pane(PaneEvent::ReplaceWithCodePane {
                 path: location,
                 source: self.code_source.clone(),
+                scroll_fraction,
             }));
         }
     }
@@ -1109,9 +1151,12 @@ impl TypedActionView for FileNotebookView {
                         {
                             // Covers remote notebooks too -- see `open_as_code`.
                             if let Some(location) = self.file_state.buffer_location() {
+                                let scroll_fraction =
+                                    self.scroll_fraction(ctx).map(ordered_float::OrderedFloat);
                                 ctx.emit(FileNotebookEvent::Pane(PaneEvent::ReplaceWithCodePane {
                                     path: location,
                                     source: self.code_source.clone(),
+                                    scroll_fraction,
                                 }));
                             }
                         }
