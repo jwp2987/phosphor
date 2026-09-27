@@ -552,27 +552,39 @@ fn socket_path_fits_within_sun_path_worst_case() {
     );
 }
 
+/// Pins `stable_short_hash`'s actual algorithm (FNV-1a, 64-bit, offset basis
+/// `0xcbf2_9ce4_8422_2325`, prime `0x0000_0100_0000_01b3`, then the
+/// MurmurHash3 `fmix64` finalizer) against literals computed offline from
+/// that spec -- never by calling the function under test, which is exactly
+/// what let the previous version of this test (`version_hash_is_deterministic`)
+/// stay green while asserting nothing about this module.
+///
+/// That previous test re-implemented `std::collections::hash_map::DefaultHasher`
+/// inline and asserted the copy against itself: `version_hash` was never
+/// called, `stable_short_hash` was never called, and `DefaultHasher`'s
+/// algorithm is explicitly unspecified across releases (see
+/// `stable_short_hash`'s doc comment) -- the opposite of what production
+/// switched to on 2026-08-21 specifically to avoid a silent path change on a
+/// toolchain bump. It could not have caught that switch, or any future change
+/// to the real algorithm; a pinned literal is the only assertion that can.
+///
+/// Goes through the public `remote_server_identity_dir_name` rather than
+/// calling the private `stable_short_hash` directly, since both `version_hash`
+/// and `remote_server_identity_dir_name` share the same underlying hash --
+/// pinning one pins the other.
 #[test]
-fn version_hash_is_deterministic() {
-    // version_hash uses the compile-time GIT_RELEASE_TAG which is typically
-    // unset in test builds, so it returns None. We test the hashing logic
-    // directly instead.
-    use std::hash::{Hash, Hasher};
-
-    let version = "v0.2026.05.13.09.15.stable_01";
-    let hash = |v: &str| -> String {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        v.hash(&mut hasher);
-        format!("{:016x}", hasher.finish())[..8].to_string()
-    };
-
-    // Same input produces the same hash.
-    assert_eq!(hash(version), hash(version));
-    // Different inputs produce different hashes.
-    assert_ne!(hash(version), hash("v0.2026.05.14.09.15.stable_01"));
-    // Hash is exactly 8 hex chars.
-    assert_eq!(hash(version).len(), 8);
-    assert!(hash(version).chars().all(|c| c.is_ascii_hexdigit()));
+fn version_hash_algorithm_is_pinned() {
+    assert_eq!(
+        remote_server_identity_dir_name("v0.2026.05.13.09.15.stable_01"),
+        "725b7abd"
+    );
+    // A one-character change in the input must change the output -- guards
+    // against a degenerate "always returns a fixed string" regression that a
+    // single pinned literal alone would not catch.
+    assert_eq!(
+        remote_server_identity_dir_name("v0.2026.05.14.09.15.stable_01"),
+        "1b6881b6"
+    );
 }
 
 #[test]

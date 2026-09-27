@@ -263,11 +263,21 @@ fn persist_outcome(
     }
 }
 
+/// The outcome of reverting one applied diff, for the caller's footer hint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FileRevertOutcome {
+    /// Every write that undoes this diff completed.
+    Reverted,
+    /// A guard refused (the file no longer held what the diff expected) or a
+    /// write failed. Carries the path shown to the user.
+    Refused { path: String },
+}
+
 /// Restores the pre-edit state of each applied diff, undoing a file edit — the
 /// inverse of [`TuiDiffStorage::start_saving`]. For an `Update`/`Delete` it
 /// writes the diff's base (pre-edit) content back; for a `Create` it removes the
 /// file the edit added; for a rename it restores the original path and removes
-/// the renamed file. Best-effort: per-file failures are logged, not fatal.
+/// the renamed file.
 ///
 /// Used by `/rewind` (via [`crate::tui_revert_registry`]). The TUI surface is
 /// always local, so writes go through the local [`FileModel`] backend.
@@ -275,30 +285,51 @@ fn persist_outcome(
 /// Every write is guarded, including the delete limbs — see [`revert_plan`] for
 /// the pre-image each one asserts — and every write's outcome is observed
 /// rather than dropped, because a guard whose refusal nobody reads is a guard
-/// that is not there. What is *not* fixed here: `/rewind`'s caller
-/// (`terminal_session_view`) still reports "Rewound conversation and reverted
-/// file edits" unconditionally, because the outcomes arrive after it has
-/// returned and it owns the footer hint this function cannot reach. A refusal
-/// therefore lands in the log, not on screen.
-pub(crate) fn revert_file_diffs(diffs: &[FileDiff], app: &mut AppContext) {
+/// that is not there. Per-file failures are still logged, but they are also
+/// reported back through the returned future's [`FileRevertOutcome`]s so the
+/// caller (`terminal_session_view::rewind_to_exchange`) can show the real
+/// outcome instead of an unconditional "reverted" hint — that is the whole
+/// reason this returns a future rather than firing the writes and moving on.
+pub(crate) fn revert_file_diffs(
+    diffs: Vec<FileDiff>,
+    app: &mut AppContext,
+) -> BoxFuture<'static, Vec<FileRevertOutcome>> {
+    let mut outcome_futures: Vec<BoxFuture<'static, FileRevertOutcome>> =
+        Vec::with_capacity(diffs.len());
     for diff in diffs {
         let path = diff.file_path();
-        match revert_plan(diff, &path) {
+        match revert_plan(&diff, &path) {
             Ok(steps) => {
+                let mut step_futures = Vec::with_capacity(steps.len());
                 for step in steps {
-                    dispatch_revert(step, app);
+                    step_futures.push(dispatch_revert(step, app));
                 }
+                outcome_futures.push(
+                    async move {
+                        let results = futures::future::join_all(step_futures).await;
+                        if results.iter().all(Result::is_ok) {
+                            FileRevertOutcome::Reverted
+                        } else {
+                            FileRevertOutcome::Refused { path }
+                        }
+                    }
+                    .boxed(),
+                );
             }
             // The accept derives its content the same way, so a derivation that
             // fails now failed then: `start_saving` returned a failed future and
             // never wrote anything, and there is correspondingly nothing to
             // undo. Reverting anyway would write the base over a file this edit
-            // never touched.
+            // never touched. Reported as refused rather than silently dropped —
+            // the caller never claims a revert that did not happen.
             Err(error) => {
                 log::warn!("Not reverting the file edit at {path}: {error}");
+                outcome_futures
+                    .push(futures::future::ready(FileRevertOutcome::Refused { path }).boxed());
             }
         }
     }
+    async move { futures::future::join_all(outcome_futures).await }.boxed()
 }
 
 /// Completion of the most recently dispatched revert write, so that the next one
@@ -325,10 +356,15 @@ thread_local! {
 }
 
 /// Dispatches one guarded revert write behind the [`REVERT_CHAIN_TAIL`] chain,
-/// logging whatever it refuses or fails to do.
-fn dispatch_revert(step: RevertStep, app: &mut AppContext) {
+/// logging whatever it refuses or fails to do and resolving the returned
+/// future with the same outcome so the caller can report it too.
+fn dispatch_revert(
+    step: RevertStep,
+    app: &mut AppContext,
+) -> BoxFuture<'static, Result<(), String>> {
     let (finished, wait_for_this) = oneshot::channel::<()>();
     let wait_for_previous = REVERT_CHAIN_TAIL.with(|tail| tail.borrow_mut().replace(wait_for_this));
+    let (result_tx, result_rx) = oneshot::channel::<Result<(), String>>();
 
     FileModel::handle(app).update(app, |_file_model, ctx| {
         ctx.spawn(
@@ -358,20 +394,30 @@ fn dispatch_revert(step: RevertStep, app: &mut AppContext) {
                 ) {
                     Ok(completion) => {
                         ctx.spawn(completion, move |_file_model, outcome, _ctx| {
-                            if let Err(error) = outcome {
+                            let result = outcome.map_err(|error| {
                                 log::warn!("Did not revert the file edit at {path}: {error}");
-                            }
+                                error.to_string()
+                            });
                             let _ = finished.send(());
+                            let _ = result_tx.send(result);
                         });
                     }
                     Err(error) => {
                         log::warn!("Failed to revert the file edit at {path}: {error}");
                         let _ = finished.send(());
+                        let _ = result_tx.send(Err(error.to_string()));
                     }
                 }
             },
         );
     });
+
+    async move {
+        result_rx
+            .await
+            .unwrap_or_else(|_| Err("revert task was cancelled".to_owned()))
+    }
+    .boxed()
 }
 
 /// One write that undoes part of an applied diff, with the disk state it is

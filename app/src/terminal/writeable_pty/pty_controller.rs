@@ -630,6 +630,28 @@ impl<T: EventLoopSender> PtyController<T> {
                     self.write_terminating_bootstrap_bytes(ctx);
                 }
             }
+        } else if bootstrap::is_container_subshell(pending_session_info) {
+            // Write in 4KB chunks with 50ms gaps between them. A container
+            // subshell (`docker`/`podman exec -it`) sits behind a double-PTY
+            // proxy that drops data on large writes, so the single unchunked
+            // write below silently truncates the bootstrap and warpify never
+            // completes. Ported from the pin
+            // (`4111d08f9:app/src/terminal/writeable_pty/pty_controller.rs:444-454`),
+            // which is `is_container_subshell`'s second consumer — the first is
+            // `bootstrap::should_use_rc_file_bootstrap_method`.
+            const CONTAINER_BOOTSTRAP_CHUNK_SIZE: usize = 4096;
+            const CONTAINER_BOOTSTRAP_CHUNK_DELAY: Duration = Duration::from_millis(50);
+            let bytes: Vec<u8> = bootstrap.into_owned();
+            let chunks: Vec<Vec<u8>> = bytes
+                .chunks(CONTAINER_BOOTSTRAP_CHUNK_SIZE)
+                .map(<[u8]>::to_vec)
+                .collect();
+            for (index, chunk) in chunks.into_iter().enumerate() {
+                ctx.spawn(
+                    Timer::after(CONTAINER_BOOTSTRAP_CHUNK_DELAY * index as u32),
+                    move |me, _, ctx| me.write_bytes(chunk, ctx),
+                );
+            }
         } else {
             self.write_bytes(bootstrap, ctx);
         }

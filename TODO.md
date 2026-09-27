@@ -2330,9 +2330,19 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       updating — that is a real behaviour change to the command, NOT a §5.6 test
       weakening, and the PR must say so.** Keep upstream's `--null` long option:
       on BSD/macOS grep `-Z` silently means `--decompress`.
-- [ ] `294033bb` **P0 (pairs with `748b635c`)** — zsh `^P` bound to bare
+- [x] `294033bb` **P0 (pairs with `748b635c`)** — zsh `^P` bound to bare
       `kill-buffer` on `main` only; a user rc switching to vi mode makes the
       buffer-clear a no-op, leaking bootstrap residue into the next command.
+      **Fixed 2026-09-27 (#737):** ported `294033bb` verbatim to
+      `zsh_body.sh` — a dedicated `warp_kill_buffer_and_reset_insert_mode` widget
+      (clears the buffer and, on `vicmd`, switches back to `viins`) bound on all
+      four standard keymaps (`main`, `emacs`, `viins`, `vicmd`) instead of plain
+      `kill-buffer` on `main` only, each bind guarded with `2>/dev/null || :`.
+      Verified directly against a real zsh 5.9 binary in this sandbox (the pin's
+      own repro): pre-fix, `bindkey '^P' kill-buffer; bindkey -v; bindkey -M vicmd`
+      shows `^P` reverting to `up-history`; post-fix it stays on the warp widget.
+      **The `748b635c` pwsh half is NOT ported here** — out of scope for this
+      change (zsh-only); still open below.
 - [ ] `748b635c` **P0 (pairs with `294033bb`)** — same defect in `pwsh.ps1`.
       **Trap:** the fix ADDS a second `Warp-Configure-PSReadLine` call inside
       `Warp-Finish-Bootstrap`; the fork has exactly one call site (`:452`, precmd).
@@ -2691,10 +2701,16 @@ separately rather than inflating the queue count.
       `script/windows/install_build_deps.ps1:6,9`. All four fork sites
       coordinator-verified at the pre-fix state. Cosmetic/lint-driven, but a porter
       following the old entry lands one file of four and the commit reads as done.
-- [ ] **`0140af045`** — zsh `compadd` override drops descriptions whenever `-d` arrives
+- [x] **`0140af045`** — zsh `compadd` override drops descriptions whenever `-d` arrives
       **clustered** (`-ld`), which is exactly what `_describe` emits — i.e. most zsh
       completions that have descriptions. Fork still has the pre-fix `(I)-d` code at
       `zsh_body.sh:1330-1332`.
+      **Fixed 2026-09-27 (#737):** ported the pin's fix verbatim — match any flag token
+      `-[a-zA-Z]#d` (leading `-`, zero or more letters, trailing `d`) restricted to the
+      leading flags-only prefix (matching the neighboring `-O`/`-A`/`-D` check), using
+      `(I)` not `(i)`. Verified directly against a real zsh 5.9 binary: `${args[(I)-d]}`
+      on `(-J -V -ld __array_name ...)` returns 0 (old, misses the clustered flag) vs the
+      new match's `${flags[(I)-[a-zA-Z]#d]}` returning the correct index.
 - [ ] **`83b4c101e`** — move settings-schema generation out of a separate `[[bin]]` into
       the main binary, removing a whole extra compile from the release path. The fork's
       own release workflow already documents a `SKIP_SETTINGS_SCHEMA=1` escape hatch,
@@ -10301,22 +10317,52 @@ claim, which was wrong by four.
       there. The authoritative-looking in-source comment is still wrong.
       **Closed 2026-09-26:** the comment at `crates/warp_features/src/lib.rs:898-915` now gives the Cargo-feature reason and explicitly forbids re-adding the "no update feed" clause.
 
-- [ ] **TUI `/rewind` has zero revert tests.** `tui_diff_storage_tests.rs` covers only accept.
+- [x] **TUI `/rewind` has zero revert tests.** `tui_diff_storage_tests.rs` covers only accept.
       The four revert pre-images and the `REVERT_CHAIN_TAIL` ordering added 2026-08-21 are
       untested.
+      **Fixed 2026-09-27 (#723):** added `revert_plan_for_create_deletes_the_file` /
+      `_for_delete_recreates_the_file` / `_for_rename_restores_original_and_deletes_target` /
+      `_for_in_place_update_writes_the_base_back` (pure coverage of all four pre-images) and
+      `revert_undoes_an_accepted_create` / `_update` / `_delete` / `_rename`,
+      `revert_tolerates_a_crlf_checkout_of_the_accepted_content`,
+      `revert_is_refused_when_the_file_changed_since_accept`, and
+      `revert_reports_one_outcome_per_diff_mixing_success_and_refusal` (end-to-end through
+      `FileModel`, including the `REVERT_CHAIN_TAIL` sequencing and a genuine refusal).
 
-- [ ] **A refused `/rewind` is invisible to the user.** `terminal_session_view.rs:4151` shows
+- [x] **A refused `/rewind` is invisible to the user.** `terminal_session_view.rs:4151` shows
       "Rewound conversation and reverted file edits" unconditionally; refusals arrive after
       that function returns and land only in the log. `TransientHint` is view-owned, so
       `revert_file_diffs(&[FileDiff], &mut AppContext)` cannot reach it — closing this needs a
       call-site change, either handing it a way to raise the hint or returning the completions
       for the view to await.
+      **Fixed 2026-09-27 (#723):** took the second option named above. `revert_file_diffs` now
+      returns `BoxFuture<'static, Vec<FileRevertOutcome>>` instead of firing the writes and
+      returning nothing; `dispatch_revert` resolves its own `Result<(), String>` alongside the
+      existing `REVERT_CHAIN_TAIL` ordering. `rewind_to_exchange` awaits the future via
+      `ctx.spawn` and shows one of three real outcomes through the new `rewind_outcome_hint`:
+      nothing to revert ("Rewound conversation"), everything reverted ("...and reverted N file
+      edit(s)", success-colored), or some/all refused (named paths, error-colored). `REWOUND_HINT`
+      no longer claims a revert happened when there was nothing to revert.
 
-- [ ] **The pin's second consumer of `is_container_subshell` is still absent.**
+- [x] **The pin's second consumer of `is_container_subshell` is still absent.**
       `42effe840:writeable_pty/pty_controller.rs:444` writes the bootstrap in 4KB chunks with
       50ms gaps under a container subshell, because the double-PTY proxy in
       `docker/podman exec -it` drops data on large writes. The guard function was ported
       2026-08-21 but only its first consumer; this one needs `pty_controller.rs`.
+      **Fixed 2026-09-27 (#728):** ported the chunking branch to
+      `write_bootstrap_script_to_shell` from the current pin (`ORACLE.md`'s
+      `4111d08f9:app/src/terminal/writeable_pty/pty_controller.rs:444-454`, which is
+      byte-identical to `42effe840`'s here) — 4KB chunks, `ctx.spawn(Timer::after(50ms *
+      index), ...)` per chunk, same shape as upstream. `bootstrap::is_container_subshell`'s
+      doc comment updated (it previously said this consumer was deliberately not ported).
+      Tests: `container_subshell_bootstrap_is_written_in_bounded_chunks` (`local_fs`-gated,
+      asserts two separate messages that reassemble byte-for-byte) and
+      `non_container_bootstrap_is_written_as_a_single_unchunked_write` (unconditional,
+      pins that the decision is the container predicate, not bootstrap size). The
+      `local_fs`-gated test needs `--features local_fs` to run, which `script/precheck`
+      already documents as outside its default-feature and `--features gui` checks — a
+      pre-existing gate gap, not introduced here. A real `docker`/`podman exec -it`
+      container needs a live check this sandbox cannot perform.
 
 - [ ] **One stale "preprocessing" comment in `crates/warp_tui/`.** `test_fixtures.rs:43-45`
       says the helper enqueues "action preprocessing through `ctx.spawn`"; it emits synchronously,
@@ -10324,20 +10370,40 @@ claim, which was wrong by four.
       and its justification is wrong. (Rewritten 2026-09-26: the two "real preprocess pipeline"
       comments in `tui_permission_prompt_tests.rs` and `tui_generic_tool_call_view_tests.rs` are gone.)
 
-- [ ] 🟠 **Daemon sockets are not version-partitioned in practice, despite the docs and**
+- [x] 🟠 **Daemon sockets are not version-partitioned in practice, despite the docs and**
       **three tests saying they are.** `daemon_socket_name()` / `daemon_pid_name()` — and so
       `version_hash` — are **production-dead**: their only non-test callers are
       `ssh_transport.rs::remote_daemon_{socket,pid}_path`, which have **zero callers**
       repo-wide. The live path is `remote_server/unix/proxy.rs:23-33`, which hardcodes
       `"server.sock"` / `"server.pid"`. Either wire the versioned names or delete them with
       their tests and correct the doc comments.
+      **Fixed 2026-09-27 (#735):** wired the versioned names. `proxy.rs`'s `socket_path`/
+      `pid_path` now build the filename via `setup::daemon_socket_name()`/`daemon_pid_name()`
+      instead of hardcoding `"server.sock"`/`"server.pid"`; both the client (`proxy::run`)
+      and the daemon (`unix::run_daemon`, which binds the socket) go through these two
+      functions, so they can never disagree. Also added `cleanup_stale_unversioned_daemon`:
+      once this build is versioned, a dead old-format daemon's leftover `server.sock`/
+      `server.pid` are removed (a *live* one — e.g. a genuine unversioned dev-build peer — is
+      left alone). `unix::mod.rs`'s doc comment corrected to describe the versioned name.
+      Tests in new `app/src/remote_server/unix/proxy_tests.rs`:
+      `socket_and_pid_paths_use_the_versioned_names`,
+      `cleanup_is_a_no_op_for_an_unversioned_build`,
+      `cleanup_removes_a_dead_unversioned_daemons_files_once_versioned` (via
+      `ChannelState::set_app_version` under `test-util`), and
+      `cleanup_leaves_a_live_unversioned_daemons_files_alone`. Not independently
+      verifiable here: an actual two-version upgrade against a real remote host.
 
-- [ ] **`setup_tests.rs:554-575` `version_hash_is_deterministic` is vacuous.** It never calls
+- [x] **`setup_tests.rs:554-575` `version_hash_is_deterministic` is vacuous.** It never calls
       `version_hash`; it re-implements `DefaultHasher` inline and asserts the copy against
       itself, so it stayed green through the 2026-08-21 switch to a stable hash and now
       actively misinforms. Replace with a **pinned literal** through
       `remote_server_identity_dir_name` — that is the only assertion that can catch a silent
       algorithm change.
+      **Fixed 2026-09-27 (#735):** replaced with `version_hash_algorithm_is_pinned`, which
+      calls the real `remote_server_identity_dir_name` (sharing `version_hash`'s
+      `stable_short_hash`) and asserts against literals computed offline from the documented
+      FNV-1a + MurmurHash3-fmix64 algorithm, plus a second input to guard against a
+      degenerate constant-output regression.
 
 - [ ] **`AIAgentActionType::FileGlobV2` has no slot for a result limit, so a model's**
       **`limit` cannot be honoured.** The parameter is accepted and the schema says plainly
