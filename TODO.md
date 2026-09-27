@@ -2689,9 +2689,9 @@ move re-opens them. Invisible to the queue, the identity manifest, and every CI 
       which is false; corrected under #625.**
 - `winit` — **deliberate, leave alone.** Reason IS written at `Cargo.toml:432-437`
   (carries `rust-windowing/winit#4453`, Windows dark-mode registry detection). Upstream's
-  own winit rev did not move between the two pins. *Unverified:* whether
-  `jwp2987/winit@9a0788c3a` is still a descendant of `warpdotdev/winit@a4e0ecb5f` — needs
-  a fetch nobody has run.
+  own winit rev did not move between the two pins. Verified 2026-09-27:
+  `jwp2987/winit@9a0788c3a`'s parent is `warpdotdev/winit@a4e0ecb5f`; the pin now points
+  at its child `05e8c04d` (adds upstream `14db95a6`, #654).
 - `session-sharing-protocol` — correctly absent; declined, and the rev did not move.
 - 15 deps byte-identical: no action.
 
@@ -11663,10 +11663,12 @@ open findings that had no pre-existing row.
 
 ### Still open, unfixed this round
 
-- [ ] **#654 — winit repoint awaiting maintainer approval.** Not yet acted on;
-      no commit lands in this round. Verify against the current state of
-      `rust-windowing/winit#4453` before treating this as blocked — see the
-      2026-08-10 winit entry above (`jwp2987/winit`) for the last verified state.
+- [x] **#654 — X11 `request_user_attention` panic on a failed WM-hints set.**
+      Approved and done 2026-09-27: `jwp2987/winit` branch
+      `phosphor/x11-wm-hints-no-panic` = `9a0788c3` + upstream `14db95a6`
+      cherry-picked (`05e8c04d`, window.rs blob identical to upstream's); workspace
+      `winit` rev and `Cargo.lock` repointed. Distinct from the 2026-08-10 entry,
+      which only moved the fork to a repo this project controls.
 - [ ] **#640 — version display.** See the existing item above ("Nothing a user
       sees reports `0.1.2`") — decision still pending.
 - [ ] **#681 — open questions.** See the #681 item above for the fixed core

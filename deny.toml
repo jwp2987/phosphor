@@ -67,7 +67,7 @@ allow-wildcard-paths = true
 
 [sources]
 allow-git = [
-    # Our own fork of warpdotdev/winit, +1 commit (rust-windowing/winit#4453).
+    # Our own fork of warpdotdev/winit, +2 commits (rust-windowing/winit#4453; upstream 14db95a6, #654).
     "https://github.com/jwp2987/winit",
     # Allow git reference to Core Foundation crates until they publish an updated
     # version to crates.io.

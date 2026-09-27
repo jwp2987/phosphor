@@ -429,13 +429,18 @@ sha2 = "0.10"
 shell-escape = "0.1.5"
 shellexpand = "3.1.1"
 warp-command-signatures = { git = "https://github.com/warpdotdev/command-signatures.git", rev = "d3725aa42375cc229699c87be2b38f9d9f07080f", default-features = false }
-# Fork of warpdotdev/winit (which upstream Warp itself pins) carrying ONE extra
-# commit: rust-windowing/winit#4453, "fix(windows): use registry value to detect
-# dark mode". That PR has been open and unreviewed since 2025-12-27, so waiting
-# for upstream is not a strategy, and dropping it ships a known Windows
-# dark-mode bug. Previously pointed at a third party's personal fork, which
-# deny.toml's allow-git did not permit and which could vanish without notice.
-winit = { git = "https://github.com/jwp2987/winit.git", rev = "9a0788c3ae696a214fe026570e26701b78fb8b01" }
+# Fork of warpdotdev/winit@a4e0ecb5 (which upstream Warp pinned) carrying TWO
+# extra commits:
+# - 9a0788c3: rust-windowing/winit#4453, "fix(windows): use registry value to
+#   detect dark mode". That PR has been open and unreviewed since 2025-12-27, so
+#   waiting for upstream is not a strategy, and dropping it ships a known
+#   Windows dark-mode bug.
+# - 05e8c04d: warpdotdev/winit 14db95a6 cherry-picked (x11: don't panic when
+#   setting WM hints fails in request_user_attention; upstream Warp 83387d2ed),
+#   byte-identical to upstream's window.rs (#654).
+# Previously pointed at a third party's personal fork, which deny.toml's
+# allow-git did not permit and which could vanish without notice.
+winit = { git = "https://github.com/jwp2987/winit.git", rev = "05e8c04da47960d8a627b73cf729d38aac91f80d" }
 x11rb = "0.13.0"
 mockito = "1.7.0"
 sysinfo = { version = "0.37.0", default-features = false, features = [
