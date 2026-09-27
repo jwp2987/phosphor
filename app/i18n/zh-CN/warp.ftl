@@ -3337,6 +3337,7 @@ common-do-not-show-again = 不再显示
 common-dont-show-again-with-period = 不再显示。
 common-refresh = 刷新
 common-resource-not-found-or-access-denied = 资源不存在或无访问权限
+common-settings-write-failed = 无法保存您的设置更改。下次启动 Phosphor 时它可能会丢失。
 workspace-close-session = 关闭会话
 workspace-auto-reload = 自动重载
 workspace-add-new-repo = {" "}+ 添加新仓库

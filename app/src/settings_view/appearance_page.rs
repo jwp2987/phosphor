@@ -23,6 +23,7 @@ use crate::editor::{
 };
 use crate::gpu_state::{GPUState, GPUStateEvent};
 use crate::prompt::editor_modal::OpenSource as PromptEditorOpenSource;
+use crate::report_settings_write_error;
 use crate::server::telemetry::InputUXChangeOrigin;
 use crate::settings::{
     active_theme_kind,
@@ -752,7 +753,10 @@ impl TypedActionView for AppearanceSettingsPageView {
                         .directory_tab_colors
                         .value()
                         .with_color(&path, *color);
-                    let _ = settings.directory_tab_colors.set_value(new_value, ctx);
+                    report_settings_write_error!(
+                        settings.directory_tab_colors.set_value(new_value, ctx),
+                        ctx
+                    );
                 });
                 ctx.notify();
             }
@@ -763,7 +767,10 @@ impl TypedActionView for AppearanceSettingsPageView {
                         .directory_tab_colors
                         .value()
                         .with_color(&path, DirectoryTabColor::Suppressed);
-                    let _ = settings.directory_tab_colors.set_value(new_value, ctx);
+                    report_settings_write_error!(
+                        settings.directory_tab_colors.set_value(new_value, ctx),
+                        ctx
+                    );
                 });
                 ctx.notify();
             }
@@ -787,7 +794,10 @@ impl TypedActionView for AppearanceSettingsPageView {
                     if idx < new_rules.len() {
                         new_rules.remove(idx);
                     }
-                    let _ = settings.host_footer_color_rules.set_value(new_rules, ctx);
+                    report_settings_write_error!(
+                        settings.host_footer_color_rules.set_value(new_rules, ctx),
+                        ctx
+                    );
                 });
                 ctx.notify();
             }
@@ -800,7 +810,10 @@ impl TypedActionView for AppearanceSettingsPageView {
             SetUnknownHostColor(color) => {
                 let color = *color;
                 TabSettings::handle(ctx).update(ctx, |settings, ctx| {
-                    let _ = settings.unknown_host_color.set_value(color, ctx);
+                    report_settings_write_error!(
+                        settings.unknown_host_color.set_value(color, ctx),
+                        ctx
+                    );
                 });
                 ctx.notify();
             }
@@ -3334,7 +3347,10 @@ impl AppearanceSettingsPageView {
         TabSettings::handle(ctx).update(ctx, |settings, ctx| {
             let mut new_rules = settings.host_footer_color_rules.to_vec();
             new_rules.push(new_rule);
-            let _ = settings.host_footer_color_rules.set_value(new_rules, ctx);
+            report_settings_write_error!(
+                settings.host_footer_color_rules.set_value(new_rules, ctx),
+                ctx
+            );
         });
 
         let pattern_editor = self
@@ -3363,7 +3379,10 @@ impl AppearanceSettingsPageView {
             let mut new_rules = settings.host_footer_color_rules.to_vec();
             if a < new_rules.len() && b < new_rules.len() {
                 new_rules.swap(a, b);
-                let _ = settings.host_footer_color_rules.set_value(new_rules, ctx);
+                report_settings_write_error!(
+                    settings.host_footer_color_rules.set_value(new_rules, ctx),
+                    ctx
+                );
             }
         });
         ctx.notify();
@@ -6056,7 +6075,10 @@ fn add_directory_tab_color_path(path: PathBuf, ctx: &mut ViewContext<AppearanceS
             .is_some_and(|c| *c != DirectoryTabColor::Suppressed);
         if !dominated_by_existing {
             let new_value = current.with_color(&path, DirectoryTabColor::Unassigned);
-            let _ = settings.directory_tab_colors.set_value(new_value, ctx);
+            report_settings_write_error!(
+                settings.directory_tab_colors.set_value(new_value, ctx),
+                ctx
+            );
         }
     });
 }

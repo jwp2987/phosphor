@@ -14,6 +14,7 @@ use crate::auth::AuthStateProvider;
 use crate::auth::SyncedUserSettings;
 use crate::cloud_object::model::persistence::ObjectStoreModel;
 use crate::report_error;
+use crate::report_settings_write_error;
 // Zap Wave 3-1: the `AuthClient` trait + `MockAuthClient` were removed entirely along with
 // server_api/auth.rs; `SyncedUserSettings` moved to `crate::auth`.
 // Zap Wave 3-1: `ServerApiProvider` is no longer used by this file --
@@ -323,7 +324,10 @@ impl PrivacySettings {
             if !self.is_enterprise_secret_redaction_enabled {
                 let safe_mode_settings = SafeModeSettings::handle(ctx);
                 ctx.update_model(&safe_mode_settings, |safe_mode_settings, ctx| {
-                    let _ = safe_mode_settings.safe_mode_enabled.set_value(true, ctx);
+                    report_settings_write_error!(
+                        safe_mode_settings.safe_mode_enabled.set_value(true, ctx),
+                        ctx
+                    );
                 });
             }
 
@@ -512,7 +516,10 @@ impl PrivacySettings {
 
             WarpDrivePrivacySettings::handle(ctx).update(ctx, |settings, ctx| {
                 log::info!("Setting is_telemetry_enabled to {new_value}");
-                let _ = settings.is_telemetry_enabled.set_value(new_value, ctx);
+                report_settings_write_error!(
+                    settings.is_telemetry_enabled.set_value(new_value, ctx),
+                    ctx
+                );
             });
 
             if self.auth_state.is_logged_in() {

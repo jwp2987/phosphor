@@ -23,6 +23,7 @@ use pathfinder_color::ColorU;
 use warp_core::ui::theme::{phenomenon::PhenomenonStyle, Fill};
 
 use crate::appearance::Appearance;
+use crate::report_settings_write_error;
 use crate::settings::AISettings;
 use crate::tab_configs::session_config::{is_git_repo, SessionConfigSelection, SessionType};
 use crate::tab_configs::session_config_rendering;
@@ -667,7 +668,10 @@ impl TypedActionView for HoaOnboardingFlow {
                 ctx.emit(HoaOnboardingFlowEvent::TabLayoutToggled);
                 let current = *TabSettings::as_ref(ctx).use_vertical_tabs;
                 TabSettings::handle(ctx).update(ctx, |settings, ctx| {
-                    let _ = settings.use_vertical_tabs.set_value(!current, ctx);
+                    report_settings_write_error!(
+                        settings.use_vertical_tabs.set_value(!current, ctx),
+                        ctx
+                    );
                 });
                 ctx.notify();
             }

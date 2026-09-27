@@ -3661,6 +3661,11 @@ common-do-not-show-again = Do not show again
 common-dont-show-again-with-period = Don't show again.
 common-refresh = Refresh
 common-resource-not-found-or-access-denied = Resource not found or access denied
+# Toast shown when a settings write fails to persist (e.g. settings.toml is
+# unparseable, or the disk is full). Rate-limited app-wide so a persistently
+# broken settings file shows one toast, not one per keystroke.
+# (app/src/settings_write_failure.rs, notify_settings_write_failed)
+common-settings-write-failed = Couldn't save your settings change. It may be lost the next time Phosphor starts.
 workspace-close-session = Close session
 workspace-auto-reload = Auto-reload
 workspace-add-new-repo = {" "}+ Add new repo

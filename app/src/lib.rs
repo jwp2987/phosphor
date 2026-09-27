@@ -83,6 +83,7 @@ mod search_bar;
 mod server;
 mod server_time;
 mod session_management;
+mod settings_write_failure;
 mod shell_indicator;
 mod skill_manager;
 mod suggestions;
@@ -212,6 +213,7 @@ pub mod workspace;
 pub use persistence::testing as sqlite_testing;
 
 use ::settings::{Setting, ToggleableSetting};
+pub(crate) use settings_write_failure::report_settings_write_error;
 pub use warp_core::errors::{report_error, report_if_error};
 
 #[cfg(feature = "plugin_host")]

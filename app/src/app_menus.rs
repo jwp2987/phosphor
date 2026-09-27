@@ -6,6 +6,7 @@ use crate::ai::persisted_workspace::PersistedWorkspace;
 use crate::default_terminal::DefaultTerminal;
 use crate::features::{runtime_flags_menu_items, FeatureFlag};
 use crate::report_if_error;
+use crate::report_settings_write_error;
 use crate::root_view::OpenLaunchConfigArg;
 use crate::server::telemetry::LaunchConfigUiLocation;
 use crate::settings::{
@@ -729,7 +730,10 @@ fn debug_menu_items() -> Vec<MenuItem> {
             move |ctx| {
                 DebugSettings::handle(ctx).update(ctx, |debug_settings, ctx| {
                     let new_value = !debug_settings.recording_mode.value();
-                    let _ = debug_settings.recording_mode.set_value(new_value, ctx);
+                    report_settings_write_error!(
+                        debug_settings.recording_mode.set_value(new_value, ctx),
+                        ctx
+                    );
                 });
             },
             move |_props, ctx| {
