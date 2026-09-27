@@ -881,7 +881,6 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::RestorePromptOnInlineModelSelectorSearch,
     FeatureFlag::WarpControlCli,
     FeatureFlag::JupyterNotebookRendering,
-    FeatureFlag::CtrlCCancelsThirdPartyHarness,
 ];
 
 /// Features enabled for feature preview build users (e.g.: Friends of Zap).
@@ -940,11 +939,16 @@ pub const RELEASE_FLAGS: &[FeatureFlag] = &[
     // feature directly (`settings_view/privacy_page.rs`). That is belt and braces, not
     // duplication: this list decides what the flag says, those decide what is drawn, and
     // an explicit `--features crash_reporting` build needs both to agree.
-    // winit's IME path supports marked text on both macOS and Windows.
-    // Windows must have this flag enabled to render IME preedit / input
-    // composition text, otherwise only the OS candidate window is visible and
-    // Zap discards the marked text updates entirely.
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    // winit's IME path supports marked text on macOS, Windows, and Linux
+    // (X11 and Wayland). Without this flag enabled, the fork discards IME
+    // preedit / input-composition updates entirely, leaving only the OS's
+    // candidate window visible -- substantive breakage for CJK input.
+    // `146684ee7` (upstream) ported here: enabled on all platforms including
+    // Linux, this fork's own platform. Upstream's own Linux verification
+    // (X11 + Wayland, ibus) found the command/agent editor renders preedit
+    // distinctly (dashed underline) but the alt-screen/grid path (e.g. vim
+    // fullscreen) shows no visual distinction at all -- a gap in the grid's
+    // own rendering, not something this flag flip changes either way.
     FeatureFlag::ImeMarkedText,
     FeatureFlag::BlocklistMarkdownTableRendering,
     // Remote server binary is not yet supported on Windows.

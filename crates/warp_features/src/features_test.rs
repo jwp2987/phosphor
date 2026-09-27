@@ -81,3 +81,17 @@ fn computer_use_flag_is_no_longer_unconditionally_false() {
     FeatureFlag::ForceLogin.set_user_preference(true);
     assert!(!FeatureFlag::ForceLogin.is_enabled());
 }
+
+/// `146684ee7`: IME marked (preedit) text is enabled on all platforms,
+/// including Linux -- this fork's own platform. `RELEASE_FLAGS` used to gate
+/// `ImeMarkedText` behind `cfg(any(target_os = "macos", target_os =
+/// "windows"))`, which closed the only runtime enable path on Linux (see
+/// TODO.md). Membership here must not go back behind a target_os cfg.
+#[test]
+fn ime_marked_text_is_release_flagged_on_every_platform() {
+    assert!(
+        RELEASE_FLAGS.contains(&FeatureFlag::ImeMarkedText),
+        "ImeMarkedText must be unconditionally in RELEASE_FLAGS, not gated to a \
+         subset of platforms -- Linux needs it too"
+    );
+}

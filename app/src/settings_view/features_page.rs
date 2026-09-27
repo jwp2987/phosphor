@@ -5914,14 +5914,24 @@ impl SettingsWidget for RightClickBehaviorWidget {
         app: &AppContext,
     ) -> Box<dyn Element> {
         let mut column = Flex::column();
+        let selection_settings = SelectionSettings::as_ref(app);
+        // Once a bare right-click no longer opens the context menu, there is no other
+        // way to discover that Shift+right-click still does -- so this note only
+        // appears in the `Paste` state. `18179177a`: `secondary_text` is
+        // `render_dropdown_item`'s built-in mechanism for this, the same one
+        // `Osc52ClipboardAccessWidget` (this page) and `ZoomLevelWidget` (Appearance
+        // page) already use, rather than a hand-rolled sibling element below the row.
+        let paste_hint = selection_settings
+            .right_click_pastes()
+            .then(|| crate::t!("settings-features-right-click-behavior-paste-hint"));
         add_setting(
             &mut column,
-            &SelectionSettings::as_ref(app).right_click_behavior,
+            &selection_settings.right_click_behavior,
             || {
                 render_dropdown_item(
                     appearance,
                     &crate::t!("settings-features-right-click-behavior-label"),
-                    None,
+                    paste_hint.as_deref(),
                     None,
                     LocalOnlyIconState::for_setting(
                         RightClickBehaviorSetting::storage_key(),

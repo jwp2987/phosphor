@@ -44,11 +44,12 @@ fn main() -> Result<()> {
         state = state.with_additional_features(DEBUG_FLAGS);
     }
     // Always enable IME marked-text rendering: winit's IME path is supported
-    // on both macOS / Windows, but if not explicitly enabled here, Zap
-    // discards preedit / input-composition updates entirely, leaving only
-    // the OS's candidate window visible — on Windows this amounts to
-    // substantive breakage for Japanese / Chinese / Korean input.
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    // on macOS, Windows, and Linux (X11 and Wayland), but if not explicitly
+    // enabled here, Zap discards preedit / input-composition updates
+    // entirely, leaving only the OS's candidate window visible -- on
+    // Windows and Linux this amounts to substantive breakage for Japanese /
+    // Chinese / Korean input. `146684ee7` (upstream) enabled this on all
+    // platforms; ported here for Linux, this fork's own platform.
     {
         use warp_core::features::FeatureFlag;
         state = state.with_additional_features(&[FeatureFlag::ImeMarkedText]);

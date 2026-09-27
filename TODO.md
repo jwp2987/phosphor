@@ -757,10 +757,12 @@ before acting):
       starts; the flag still parses so a script gets that message rather than clap's
       generic parse failure. See `DECLINED.md` for the updated row.
       **In progress 2026-09-26:** branch `fix/cli-637`.
-- [ ] **The `?` shortcuts sheet lists "toggle auto-approve" twice**
+- [x] **The `?` shortcuts sheet lists "toggle auto-approve" twice**
       (`crates/warp_tui/src/terminal_session_view/state.rs:586-592` and `:598-604`, byte-identical).
       The test only asserts `contains`, so it cannot catch a duplicate.
-      **In progress 2026-09-26:** branch `fix/cli-637`.
+      **Fixed #709:** removed the duplicate block; added
+      `shortcut_sections_never_repeat_a_description` to assert no section repeats a
+      description.
 
 **Two of my own brief claims were wrong and are worth recording**, because both would have
 put falsehoods in a user manual: `provider` is **not** the BYOP surface (it is a Linear/Slack
@@ -1967,11 +1969,18 @@ its other files ship here **at the pre-fix state**:
 
 #### Newly added to the port queue by refutation (9)
 
-- [ ] `6696954c` — **fully refuted as CLOUD.** `CtrlCCancelsThirdPartyHarness` is
+- [x] `6696954c` — **fully refuted as CLOUD.** `CtrlCCancelsThirdPartyHarness` is
       "purely client-side status synthesis; the harness process/sandbox are never
       signaled" (its own doc), and its consumer `CLIAgentSessionsModel` is live
       here. **Sequence with `9921300b7`** (already queued) — it is that commit's
       stable-promotion, not a standalone change.
+      **Fixed #727:** promoted the way `RELEASE_FLAGS`'s own doc comment
+      prescribes -- `ctrl_c_cancels_third_party_harness` declared in
+      `app/Cargo.toml` and added to `default`, bridged in `app/src/lib.rs`'s
+      `extra_flags`, and dropped from `DOGFOOD_FLAGS`
+      (`crates/warp_features/src/lib.rs`), which reached no binary this fork
+      ships. Regression test:
+      `ctrl_c_cancels_third_party_harness_has_a_default_enable_path`.
 - [x] `b1731dde0` + `8936686f2` — **refuted as N/A.** Both touch
       `crates/warpui_core/`, which the fork ships, at the pre-fix state:
       unthrottled per-frame `log::error!` at `runtime/mod.rs:667`, `:895` and
@@ -2002,12 +2011,17 @@ its other files ship here **at the pre-fix state**:
 
 #### Not ports — ledger entries the refutation produced
 
-- [ ] `e054075b8` — **refuted as N/A, but do NOT port the commit.**
+- [x] `e054075b8` — **refuted as N/A, but do NOT port the commit.**
       `code_editor_line_number_mode` is registered (`app/src/settings/editor.rs:231`)
       and honoured by the editor (`app/src/code/editor/view.rs:1279`) but has **no
       settings UI anywhere** in the fork — and the old pin HAD one
       (`42effe840:app/src/settings_view/features_page.rs:1386`). Unfiled in both
       TODO.md and DECLINED.md. Destination if wanted is the fork's `code_page.rs`.
+      **Fixed #722:** added a `code_editor_line_number_mode_dropdown` to
+      `code_page.rs`, following the page's existing `render_body_item`
+      dropdown-in-a-row shape (`CodeEditorLineNumberModeWidget`), with en/ja/zh-CN
+      strings and tests covering discovery and the write-through to
+      `AppEditorSettings`.
 - [ ] `8cbb01d45` (partial) — the split itself is pure, but the pin-side path
       `app/src/workspaces/user_workspaces.rs` ceases to exist at `4111d08f9` and
       fork tooling keys on it (`docs/SWEEP-INVENTORY.md:944`). Confirm
@@ -2233,7 +2247,7 @@ Phase 6.5's whole point: a partially-ported commit passes review, passes CI, and
 passes its own upstream test, because the test came across too and cannot detect
 what was dropped.
 
-- [ ] **`146684ee` — IME marked text is dark on Linux, the fork's own platform.**
+- [x] **`146684ee` — IME marked text is dark on Linux, the fork's own platform.**
       The Windows half landed independently (with its own rationale comment); the
       Linux half never did. Every path is closed on Linux: `RELEASE_FLAGS`
       (`crates/warp_features/src/lib.rs:907`) is `cfg(any(macos, windows))`, so is
@@ -2244,6 +2258,18 @@ what was dropped.
       marked text "on macOS and Windows", so deleting the two cfgs needs runtime
       verification that winit delivers preedit on X11/Wayland at this fork's rev.
       Do NOT ship a cfg deletion on upstream's say-so.
+      **Fixed #724 (`146684ee7`):** removed both `cfg(any(macos, windows))` gates
+      and added `ime_marked_text` to `app/Cargo.toml`'s `default`. No separate
+      rendering fix exists upstream at the pin -- the winit `Ime::*` handling and
+      the terminal/editor marked-text plumbing were already platform-generic here
+      (not gated per-OS), so this is exactly upstream's 2-line diff. Added
+      `ime_marked_text_is_release_flagged_on_every_platform` so the cfg cannot
+      silently come back. **Not independently re-verified against real IME input
+      here** (no CJK input method configured in this environment) -- upstream's
+      own Linux verification (X11 + Wayland via ibus) found the command/agent
+      editor renders preedit distinctly, but the alt-screen/grid path shows no
+      visual distinction at all; that gap is pre-existing and untouched by this
+      change.
 - [x] **`1a29f680d` — shared recovery budget across MAA retries and resumes.
       PORTED 2026-08-29 (branch `port/t-S7-blocklist`), with its 6 tests.**
       Backoff already landed here independently by a *different* mechanism
@@ -2350,8 +2376,14 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
 - [x] `213c9b32` — unbounded `SignatureCache` growth: append-only `MemoMap` keyed on
       the lowercased first token, retaining every **miss** forever with no length
       cap. Fork test file is `registry_test.rs` (singular) — a rename, not a gap.
-- [ ] `79a9cb72` — completer resolves an option's argument by value position; needs
+- [x] `79a9cb72` — completer resolves an option's argument by value position; needs
       a `name_span` field on `NamedArgument`.
+      **Fixed #731:** ported faithfully -- `name_span` added to `NamedArgument`
+      (`parsers/hir/mod.rs`), `option_value_index` + the by-position lookup in
+      `complete_option` (`completer/engine/argument/legacy.rs`), the
+      `enum_then_path_option_signature` fixture, and all 4 of upstream's new
+      tests. Legacy completer only, matching upstream's own scope (the v2 engine
+      already resolves by position).
 - [ ] `4e49d04f` — **two separable ports, both valid.** (a) `parse_ls_script_output`
       refactor + truncation/malformed-output guard: cross-platform, applies to every
       legacy-SSH listing, 8 new unit tests. (b) WSL guest enumeration: Windows-only.
@@ -2436,12 +2468,21 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       `crates/warp_search_core/`. **Upstream's revision 1 design was wrong** — a naive
       side-slot coalescer reorders an insert issued between two rebuilds; ship the
       sequence-number + per-commit-chunking design.
-- [ ] `90c2484d` **P0 — non-remappable shadowed keybinding, present here with a
+- [x] `90c2484d` **P0 — non-remappable shadowed keybinding, present here with a
       DIFFERENT keystroke.** Fork's `CustomAction::ToggleProjectExplorer` is
       `ctrl-2`/`ctrl-shift-2` (`util/bindings.rs:419`) where upstream is `ctrl-1`/`alt-1`.
       The 11-line deletion is keystroke-independent. **Upstream never built or tested
       this revision, and its "editable beats fixed" claim was code-inspection only** —
       re-derive against `warpui_core/src/keymap/matcher.rs` before landing.
+      **Fixed #741:** re-derived and confirmed against `matcher.rs` --
+      `register_fixed_bindings`/`register_editable_bindings` each independently bake a
+      `Trigger::Custom` -> `Trigger::Keystrokes` conversion into that binding alone, so
+      clearing the editable one never reaches a fixed binding sharing the same tag.
+      Deleted the redundant `FixedBinding::custom(CustomAction::ToggleProjectExplorer,
+      ...)` in `app/src/workspace/mod.rs`. Regression test:
+      `shadowing_fixed_binding_outlives_clearing_the_editable_one`
+      (`crates/warpui_core/src/keymap/matcher_test.rs`), pinning both the defect shape
+      and that the fix (no shadowing fixed binding) actually makes clearing work.
 - [x] `b4a2a8fa` **P0 — stdio MCP servers cannot start in TUI/SDK on a fresh profile.**
       Fork is behind even upstream's pre-fix state: `native.rs:741` hard-requires
       `mcp_execution_path`, whose only writer is the GUI bootstrap.
@@ -2560,8 +2601,12 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       filters empty index lists, so **do not sell this as a live bug** — no
       configuration was found where it is user-visible today.
       **Closed 2026-09-26:** ported in `f7d506bb2`.
-- [ ] `25f07935` — MCP logo prefix-match (`"Sentry (OAuth)"`). Scope to the
+- [x] `25f07935` — MCP logo prefix-match (`"Sentry (OAuth)"`). Scope to the
       `starts_with` change; the fork also lacks 4 icon variants from out-of-range commits.
+      **Fixed #734:** ported the table-driven prefix match for the fork's 6
+      existing variants (Heroku, Notion, Linear, Figma, Github, Slack);
+      Composio/Resend/Sentry/YouDotCom stay out of scope (no icon assets).
+      Tests in `external_product_icon_tests.rs`.
 - [ ] `996babee` — two doc-comment URLs. Zero risk.
 - [x] `69254d73` — TUI focus-ownership hardening (13 files).
       **Closed 2026-09-26:** ported in `e287977f0`.
@@ -2584,10 +2629,17 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
 - [ ] `6a96a72d` — settings registration refactor. Compile-time only, no behaviour;
       fork's `macros.rs` already ~121 lines diverged, so a manual rewrite for an
       unmeasured build-speed win. Lowest value in the queue.
-- [ ] `5fb3144db` — vim keybindings in the rule content editor
+- [x] `5fb3144db` — vim keybindings in the rule content editor
       (`ai/facts/view/rule_editor.rs:112`, `supports_vim_mode: false`). One line.
-- [ ] `7795e6728` — vim-mode sweep across 6 multi-line editors; all 6 sites are at the
+      **Fixed #736.**
+- [x] `7795e6728` — vim-mode sweep across 6 multi-line editors; all 6 sites are at the
       pre-fix state here. Six lines.
+      **Fixed #736:** flipped/added `supports_vim_mode: true` on all 6 sites
+      (`suggested_rule_modal.rs`, `git_dialog/commit.rs`,
+      `command_dialog_view.rs`, `compact_agent_input.rs`,
+      `enum_creation_dialog.rs`, `queued_prompts_panel.rs`). The
+      `queued_prompts_panel.rs` change is the single flag line only, per the
+      note about `fix/round-followups` editing that file concurrently.
 
 ### Port tasks NOT counted in the 48 (2)
 
@@ -2630,8 +2682,13 @@ separately rather than inflating the queue count.
       `crates/integration/src/test/settings_navigation.rs` at all. Its position-id scheme
       is keyed on `SettingsSection` variants rather than display labels, which suits this
       fork better than upstream since the fork's `Display` is localized.
-- [ ] **`18179177a`** — the right-click behavior setting's follow-up copy. Its prerequisite
+- [x] **`18179177a`** — the right-click behavior setting's follow-up copy. Its prerequisite
       `c25ac4070` is ported (`182ee1449`); only this follow-up remains. (Rewritten 2026-09-26.)
+      **Fixed #738:** `RightClickBehaviorWidget::render` now passes
+      `settings-features-right-click-behavior-paste-hint` as `render_dropdown_item`'s
+      `secondary_text`, shown only when `right_click_pastes()` -- the same mechanism
+      `Osc52ClipboardAccessWidget`/`ZoomLevelWidget` already use. en/ja/zh-CN strings
+      added.
 - [x] **`def3fd0e3` — bump `warp_multi_agent_api`.** Real target is the pin's
       `f0028fa6d05db1ba63726eaf6f8d33ab17abe37b` (this commit is an intermediate).
       Compile-surface change; **sequence it BEFORE any port using new API types**, and

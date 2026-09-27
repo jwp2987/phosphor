@@ -228,6 +228,85 @@ fn test_bindings_for_context() {
     assert_eq!(ctx_b_bindings, vec!["c", "b"]);
 }
 
+/// Regression test for the defect shape fixed by `90c2484d`
+/// (`app/src/workspace/mod.rs`'s redundant `FixedBinding::custom(CustomAction::
+/// ToggleProjectExplorer, ...)`, registered alongside an `EditableBinding` exposing the very
+/// same custom tag): once a `custom_tag_to_keystroke` fn is installed,
+/// `register_fixed_bindings`/`register_editable_bindings` each independently convert any
+/// `Trigger::Custom(tag)` they see into the *same* `Trigger::Keystrokes`, at registration time,
+/// storing the result on that binding alone. Settings > Keyboard Shortcuts can only clear or
+/// remap an *editable* binding, so a fixed binding sharing the tag keeps its own converted
+/// keystroke forever -- the user's "removal" of the shortcut is invisible to it.
+#[test]
+fn shadowing_fixed_binding_outlives_clearing_the_editable_one() {
+    #[derive(Debug, PartialEq)]
+    enum Action {
+        ToggleExplorer,
+    }
+
+    const TOGGLE_EXPLORER_TAG: CustomTag = 1;
+    const BINDING_NAME: &str = "workspace:left_panel_project_explorer";
+    let to_keystroke =
+        |tag: CustomTag| (tag == TOGGLE_EXPLORER_TAG).then(|| Keystroke::parse("ctrl-2").unwrap());
+
+    let mut ctx = Context::default();
+    ctx.set.insert("Workspace");
+    let view_id = EntityId::new();
+
+    // Shape 1: the pre-fix registration -- both a FixedBinding (the macOS menu's hidden
+    // keyboard-equivalent hint) and an EditableBinding (what Settings actually shows) carry
+    // `Trigger::Custom(TOGGLE_EXPLORER_TAG)`.
+    let mut shadowed = Matcher::new(Keymap::default());
+    shadowed.convert_custom_triggers_to_keystroke_triggers(to_keystroke);
+    shadowed.register_fixed_bindings([FixedBinding::custom(
+        TOGGLE_EXPLORER_TAG,
+        Action::ToggleExplorer,
+        "Toggle project explorer",
+        id!("Workspace"),
+    )]);
+    shadowed.register_editable_bindings([EditableBinding::new(
+        BINDING_NAME,
+        "Left Panel: Project explorer",
+        Action::ToggleExplorer,
+    )
+    .with_context_predicate(id!("Workspace"))
+    .with_custom_action(TOGGLE_EXPLORER_TAG)]);
+
+    assert!(
+        shadowed.test_keystroke("ctrl-2", view_id, &ctx).is_some(),
+        "setup sanity check: the keystroke should work before any remap"
+    );
+
+    // The user clears the binding from Settings -- the only one they can see or edit.
+    shadowed.set_custom_trigger(BINDING_NAME.to_owned(), Trigger::Empty);
+    assert!(
+        shadowed.test_keystroke("ctrl-2", view_id, &ctx).is_some(),
+        "defect: a FixedBinding sharing a custom tag with an EditableBinding keeps firing \
+         even after the EditableBinding is cleared, because the FixedBinding's own \
+         converted keystroke was never touched"
+    );
+
+    // Shape 2: the fix -- only the EditableBinding is registered (`90c2484d` deletes the
+    // FixedBinding entirely). Clearing it now actually clears the shortcut.
+    let mut fixed = Matcher::new(Keymap::default());
+    fixed.convert_custom_triggers_to_keystroke_triggers(to_keystroke);
+    fixed.register_editable_bindings([EditableBinding::new(
+        BINDING_NAME,
+        "Left Panel: Project explorer",
+        Action::ToggleExplorer,
+    )
+    .with_context_predicate(id!("Workspace"))
+    .with_custom_action(TOGGLE_EXPLORER_TAG)]);
+
+    assert!(fixed.test_keystroke("ctrl-2", view_id, &ctx).is_some());
+    fixed.set_custom_trigger(BINDING_NAME.to_owned(), Trigger::Empty);
+    assert!(
+        fixed.test_keystroke("ctrl-2", view_id, &ctx).is_none(),
+        "with no shadowing FixedBinding, clearing the EditableBinding actually clears the \
+         shortcut"
+    );
+}
+
 impl Matcher {
     fn test_keystroke(
         &mut self,

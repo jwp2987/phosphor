@@ -671,6 +671,20 @@ default = [
     "remote_codebase_indexing",
     "terminal_lifecycle_recovery",
     "vertical_tabs_summary_mode",
+    # `146684ee7`: IME marked (preedit) text, on all platforms including Linux (the
+    # fork's own platform). Compiled in unconditionally; the runtime enable path is
+    # `RELEASE_FLAGS` in `crates/warp_features/src/lib.rs` and the explicit
+    # `with_additional_features` call in `app/src/bin/phosphor_oss.rs`, both of
+    # which used to stop at `cfg(any(macos, windows))`.
+    "ime_marked_text",
+    # `6696954c6`: stable-promotion of `CtrlCCancelsThirdPartyHarness` (landed
+    # dogfood-only via #9921300b7 / `182ee1449`, with tests in `e9f49cf94`).
+    # Purely local PTY-byte observation -- the harness process/sandbox is never
+    # signaled -- so there is nothing dogfood-only left to validate. Bridged to
+    # the flag in `app/src/lib.rs`'s `extra_flags`; `DOGFOOD_FLAGS`
+    # (`crates/warp_features/src/lib.rs`) no longer carries it, matching
+    # upstream's promotion (which drops the now-redundant `DOGFOOD_FLAGS` entry).
+    "ctrl_c_cancels_third_party_harness",
 ]
 # Enable this feature to automatically perform heap profiling.  NOTE: This will
 # substantially slow down program execution.
@@ -834,6 +848,7 @@ cycle_next_command_suggestion = []
 multi_workspace = []
 osc_hyperlinks = []
 ime_marked_text = []
+ctrl_c_cancels_third_party_harness = []
 partial_next_command_suggestions = []
 drive_objects_as_context = []
 iterm_images = []

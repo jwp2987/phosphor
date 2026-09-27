@@ -1068,6 +1068,7 @@ settings-features-use-wayland = 使用 Wayland 进行窗口管理
 settings-features-use-wayland-tooltip = 启用 Wayland 支持
 settings-features-ctrl-tab-behavior-label = Ctrl+Tab 行为：
 settings-features-right-click-behavior-label = 右键单击行为：
+settings-features-right-click-behavior-paste-hint = 按住 Shift 右键单击可打开上下文菜单。
 settings-features-extra-meta-key-left-mac = 左 Option 键作为 Meta
 settings-features-extra-meta-key-right-mac = 右 Option 键作为 Meta
 settings-features-extra-meta-key-left-other = 左 Alt 键作为 Meta
@@ -1192,6 +1193,8 @@ settings-code-remote-index-indexing-completed = 正在索引 - { $completed }
 settings-code-remote-index-synced = 已同步
 settings-code-remote-index-stale = 已过期
 settings-code-remote-index-failed = 失败
+settings-code-line-number-mode = 行号
+settings-code-line-number-mode-desc = 在代码编辑器中以绝对位置显示行号，或相对于当前行显示。
 
 # --- ANCHOR-SUB-EXEC-MODAL-BLOCKS (agent-settings-misc) ---
 # ---- execution_profile_view ----

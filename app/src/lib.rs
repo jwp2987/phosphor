@@ -3516,6 +3516,8 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::TrimTrailingBlankLines,
         #[cfg(feature = "configurable_context_window")]
         FeatureFlag::ConfigurableContextWindow,
+        #[cfg(feature = "ctrl_c_cancels_third_party_harness")]
+        FeatureFlag::CtrlCCancelsThirdPartyHarness,
     ];
     flags.extend(extra_flags.iter().copied());
 

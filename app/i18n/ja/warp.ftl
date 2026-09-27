@@ -1023,6 +1023,7 @@ settings-features-use-wayland = ウィンドウ管理に Wayland を使用
 settings-features-use-wayland-tooltip = Wayland の使用を有効化します
 settings-features-ctrl-tab-behavior-label = Ctrl+Tab の動作:
 settings-features-right-click-behavior-label = 右クリックの動作:
+settings-features-right-click-behavior-paste-hint = Shift+右クリックでコンテキストメニューを開けます。
 settings-features-extra-meta-key-left-mac = 左 Option キーを Meta にする
 settings-features-extra-meta-key-right-mac = 右 Option キーを Meta にする
 settings-features-extra-meta-key-left-other = 左 Alt キーを Meta にする
@@ -1149,6 +1150,8 @@ settings-code-remote-index-indexing-completed = インデックス作成中 - { 
 settings-code-remote-index-synced = 同期済み
 settings-code-remote-index-stale = 古い状態
 settings-code-remote-index-failed = 失敗
+settings-code-line-number-mode = 行番号
+settings-code-line-number-mode-desc = コードエディタの行番号を絶対位置で表示するか、現在の行からの相対位置で表示するかを選択します。
 
 # --- ANCHOR-SUB-EXEC-MODAL-BLOCKS (agent-settings-misc) ---
 # ---- execution_profile_view ----

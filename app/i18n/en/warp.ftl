@@ -1158,6 +1158,7 @@ settings-features-use-wayland = Use Wayland for window management
 settings-features-use-wayland-tooltip = Enables the use of Wayland
 settings-features-ctrl-tab-behavior-label = Ctrl+Tab behavior:
 settings-features-right-click-behavior-label = Right-click behavior:
+settings-features-right-click-behavior-paste-hint = Shift+right-click to open the context menu.
 settings-features-extra-meta-key-left-mac = Left Option key is Meta
 settings-features-extra-meta-key-right-mac = Right Option key is Meta
 settings-features-extra-meta-key-left-other = Left Alt key is Meta
@@ -1302,6 +1303,8 @@ settings-code-remote-index-indexing-completed = Indexing - { $completed }
 settings-code-remote-index-synced = Synced
 settings-code-remote-index-stale = Stale
 settings-code-remote-index-failed = Failed
+settings-code-line-number-mode = Line numbers
+settings-code-line-number-mode-desc = Show line numbers in code editors as absolute positions, or relative to the current line.
 
 # --- ANCHOR-SUB-EXEC-MODAL-BLOCKS (agent-settings-misc) ---
 # ---- execution_profile_view ----

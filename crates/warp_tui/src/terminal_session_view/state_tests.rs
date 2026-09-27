@@ -339,3 +339,32 @@ fn user_controlled_terminal_use_has_terminal_only_shortcuts() {
         });
     });
 }
+
+#[test]
+fn shortcut_sections_never_repeat_a_description() {
+    App::test((), |mut app| async move {
+        app.update(crate::keybindings::init);
+        app.read(|ctx| {
+            let mut state = agent_editor_state(TuiComposerMode::Shell, true);
+            let TuiTerminalSessionState::Block(block) = &mut state else {
+                unreachable!();
+            };
+            block.plan_available = true;
+            let mut context = Context::default();
+            context.set.insert(TuiTerminalSessionView::ui_name());
+            let sections = state.shortcut_sections(&context, ctx);
+
+            for section in &sections {
+                let mut seen = std::collections::HashSet::new();
+                for shortcut in &section.shortcuts {
+                    assert!(
+                        seen.insert(shortcut.description),
+                        "section {:?} lists {:?} more than once",
+                        section.title,
+                        shortcut.description
+                    );
+                }
+            }
+        });
+    });
+}
