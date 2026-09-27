@@ -528,7 +528,10 @@ pub fn init(app: &mut AppContext) {
             crate::t!("keybinding-desc-editor-home"),
             EditorViewAction::MoveToLineStart,
         )
-        .with_context_predicate(text_entry.clone())
+        // Not in a read-only view: there Home/End scroll the document (the fixed bindings
+        // above), and on Linux/Windows this editable binding would otherwise win and move a
+        // cursor that isn't shown (#698).
+        .with_context_predicate(text_entry.clone() & !id!("EditorSelectable"))
         .with_mac_key_binding("cmd-left")
         .with_linux_or_windows_key_binding("home"),
         EditableBinding::new(
@@ -543,7 +546,10 @@ pub fn init(app: &mut AppContext) {
             crate::t!("keybinding-desc-editor-end"),
             EditorViewAction::MoveToLineEnd,
         )
-        .with_context_predicate(text_entry.clone())
+        // Not in a read-only view: there Home/End scroll the document (the fixed bindings
+        // above), and on Linux/Windows this editable binding would otherwise win and move a
+        // cursor that isn't shown (#698).
+        .with_context_predicate(text_entry.clone() & !id!("EditorSelectable"))
         .with_mac_key_binding("cmd-right")
         .with_linux_or_windows_key_binding("end"),
     ]);
