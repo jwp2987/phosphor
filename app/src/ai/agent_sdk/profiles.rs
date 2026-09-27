@@ -30,6 +30,10 @@ pub(super) fn profile_cli_id(sync_id: Option<SyncId>) -> String {
 }
 
 /// Whether a `--profile` argument names the profile listed as `listed_id`.
+///
+/// One rule for every ID, `default` included: surrounding whitespace is ignored and the
+/// rest must match exactly, case included. Server IDs are case-sensitive, so a
+/// case-insensitive rule could not be applied uniformly.
 fn cli_id_matches(listed_id: &str, raw: &str) -> bool {
     let raw = raw.trim();
     !raw.is_empty() && listed_id == raw
@@ -41,7 +45,7 @@ pub(super) fn find_profile_by_cli_id(
     raw: &str,
     ctx: &AppContext,
 ) -> Option<ClientProfileId> {
-    if raw.trim().eq_ignore_ascii_case(DEFAULT_PROFILE_CLI_ID) {
+    if cli_id_matches(DEFAULT_PROFILE_CLI_ID, raw) {
         return Some(model.default_profile_id());
     }
     model.get_all_profile_ids().into_iter().find(|id| {

@@ -46,6 +46,20 @@ fn unsynced_default_profile_is_listed_as_default() {
     assert_eq!(printed, DEFAULT_PROFILE_CLI_ID);
     assert_ne!(printed, "Unsynced");
     assert!(cli_id_matches(&printed, "default"));
+    assert!(cli_id_matches(&printed, " default\n"));
+}
+
+#[test]
+fn matching_is_case_sensitive_for_default_and_listed_ids_alike() {
+    // One rule for every ID (#637 review): `default` is not special-cased to ignore case
+    // while listed IDs are exact.
+    assert!(!cli_id_matches(DEFAULT_PROFILE_CLI_ID, "Default"));
+    assert!(!cli_id_matches(DEFAULT_PROFILE_CLI_ID, "DEFAULT"));
+
+    let raw = format!("Client-{}", uuid::Uuid::new_v4());
+    let printed = profile_cli_id(Some(sync_id(&raw)));
+    assert!(!cli_id_matches(&printed, &raw.to_uppercase()));
+    assert!(!cli_id_matches(&printed, &raw.to_lowercase()));
 }
 
 #[test]
