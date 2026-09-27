@@ -283,6 +283,16 @@ impl SessionContext {
         }
     }
 
+    /// A local session with no shell data whose working directory is `cwd`.
+    #[cfg(test)]
+    pub fn new_local_with_cwd_for_test(cwd: &str) -> Self {
+        SessionContext {
+            session_type: Some(SessionType::Local),
+            current_working_directory: Some(cwd.to_owned()),
+            ..Self::new_for_test()
+        }
+    }
+
     /// A legacy-SSH session: the user typed `ssh host` into the PTY rather than using the
     /// remote-server extension.
     ///
