@@ -2016,10 +2016,9 @@ fn initialize_app(
             BlocklistAIHistoryModel::new(ai_queries, nld_prompts, conversations)
         });
     }
-    // Seed the orchestration pin set from persisted conversation data before
-    // `multi_agent_conversations` is consumed by `RestoredAgentConversations::new`
-    // below. Each conversation's `AgentConversationData.pinned` is the source of
-    // truth; the singleton mirrors them in memory for fast cross-pane lookups.
+    // Seed the orchestration pin set from persisted conversation data. Each
+    // conversation's `AgentConversationData.pinned` is the source of truth; the
+    // singleton mirrors them in memory for fast cross-pane lookups.
     let initial_pinned_conversations: HashSet<AIConversationId> = multi_agent_conversations
         .iter()
         .filter_map(|conv| {
@@ -2041,30 +2040,12 @@ fn initialize_app(
     // Per-conversation queued prompts. Registered after the history model since it subscribes to
     // history events for cleanup.
     ctx.add_singleton_model(ai::blocklist::QueuedQueryModel::new);
-    {
-        let (restored, failed_to_restore) =
-            RestoredAgentConversations::new(multi_agent_conversations);
-        // Clean up persisted conversations that can't be converted from sqlite, to avoid retrying and logging a warning on every startup.
-        if !failed_to_restore.is_empty() {
-            if let Some(sender) =
-                crate::global_resource_handles::GlobalResourceHandlesProvider::as_ref(ctx)
-                    .get()
-                    .model_event_sender
-                    .as_ref()
-            {
-                if let Err(e) = sender.send(
-                    crate::persistence::ModelEvent::DeleteMultiAgentConversations {
-                        conversation_ids: failed_to_restore,
-                    },
-                ) {
-                    log::error!(
-                        "Failed to purge unconvertible persisted conversations from sqlite: {e:?}"
-                    );
-                }
-            }
-        }
-        ctx.add_singleton_model(move |_| restored);
-    }
+    // Conversations restore lazily from the local DB on demand: startup only
+    // loads metadata (`read_agent_conversation_metadata` returns every record
+    // with an empty `tasks` list), so converting those records here would yield
+    // hollow conversations with no exchanges. Matches the pin
+    // (`4111d08f9:app/src/lib.rs:2239-2241`).
+    ctx.add_singleton_model(|_| RestoredAgentConversations::new());
     ctx.add_singleton_model(|_| CLIAgentSessionsModel::new());
     ctx.add_singleton_model(BlocklistAIPermissions::new);
     // Notification center singleton model: must be registered after BlocklistAIHistoryModel

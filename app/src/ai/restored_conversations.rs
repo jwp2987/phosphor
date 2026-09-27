@@ -1,65 +1,159 @@
-//! A singleton model for storing conversations by ID to enable restoration across terminal views.
+//! A singleton model for restoring conversations by ID across terminal views.
+//!
+//! Ported from the pin (`4111d08f9:app/src/ai/restored_conversations.rs`). #431
+//! (`c117c72da`) ported the pin's metadata-only startup read
+//! (`read_agent_conversation_metadata`, which returns every conversation with an
+//! EMPTY `tasks` list) but kept feeding those records into this store's old eager
+//! constructor. The lenient local-DB restore synthesizes a fresh optimistic root
+//! for an empty task list, so every conversation restored on startup came back
+//! hollow: the pane rebuilt zero AI blocks, and the hollow live copy shadowed the
+//! real entry in the conversation history list. The pin pairs the metadata-only
+//! read with this lazy store, which reads the full task payload on demand.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+#[cfg(feature = "local_fs")]
+use std::sync::{Arc, Mutex};
+
+#[cfg(feature = "local_fs")]
+use diesel::SqliteConnection;
 use warpui::{Entity, SingletonEntity};
 
-use crate::{
-    ai::{
-        agent::conversation::{AIConversation, AIConversationId},
-        blocklist::history_model::convert_persisted_conversation_to_ai_conversation_with_metadata,
-    },
-    persistence::model::AgentConversation,
-};
+use crate::ai::agent::conversation::{AIConversation, AIConversationId};
+#[cfg_attr(not(any(feature = "local_fs", test)), allow(unused_imports))]
+use crate::ai::blocklist::history_model::convert_persisted_conversation_to_ai_conversation_with_metadata;
+#[cfg(test)]
+use crate::persistence::model::AgentConversation;
+#[cfg(feature = "local_fs")]
+use crate::persistence::{database_file_path, establish_ro_connection};
 
-/// Singleton model that holds restored agent conversations on app startup.
+/// Singleton model that restores agent conversations on demand.
 ///
-/// Loading restored conversations into this model is a means of propagating restored data from
-/// sqlite (read at startup) to arbitrary consuming locations in the view/model hierarchy without
-/// piping it all the way from the root view to the terminal view(s) that require it.
+/// Startup only loads conversation metadata, so the full task payloads are
+/// loaded lazily from the local database the first time a consumer (e.g. pane
+/// restoration) asks for a conversation. Consuming restored data this way
+/// avoids piping it from the root view down to the terminal view(s) that
+/// require it.
+///
+/// `Default` builds a store with no backing database (used by test harnesses).
 #[derive(Default)]
 pub struct RestoredAgentConversations {
-    /// All conversations stored by their ID, available for restoration
+    /// Conversations already loaded (or test-seeded) but not yet taken.
     conversations: HashMap<AIConversationId, AIConversation>,
+    /// IDs already handed out via `take_conversation(s)`. Preserves the
+    /// historical take-once semantics now that the backing database can
+    /// otherwise serve the same conversation repeatedly.
+    taken: HashSet<AIConversationId>,
+    #[cfg(feature = "local_fs")]
+    db_connection: Option<Arc<Mutex<SqliteConnection>>>,
 }
 
 impl RestoredAgentConversations {
-    /// Converts persisted conversations; collects the conversation_ids that failed
-    /// to convert, and the caller is responsible for cleaning them out of sqlite —
-    /// otherwise the next startup will repeatedly retry the conversion and log a
-    /// warning, needlessly slowing down startup.
-    pub fn new(conversations: Vec<AgentConversation>) -> (Self, Vec<String>) {
+    pub fn new() -> Self {
+        #[cfg(feature = "local_fs")]
+        let db_connection = database_file_path().to_str().and_then(|db_url| {
+            establish_ro_connection(db_url)
+                .ok()
+                .map(|conn| Arc::new(Mutex::new(conn)))
+        });
+
+        Self {
+            conversations: HashMap::new(),
+            taken: HashSet::new(),
+            #[cfg(feature = "local_fs")]
+            db_connection,
+        }
+    }
+
+    /// Backs the store with an explicit connection instead of the on-disk
+    /// database. Only used by tests.
+    #[cfg(all(test, feature = "local_fs"))]
+    pub(crate) fn with_db_connection(conn: SqliteConnection) -> Self {
+        Self {
+            db_connection: Some(Arc::new(Mutex::new(conn))),
+            ..Self::default()
+        }
+    }
+
+    /// Seeds the store with already-loaded conversations instead of a backing
+    /// database. Only used by tests.
+    #[cfg(test)]
+    pub fn new_seeded(conversations: Vec<AgentConversation>) -> Self {
         let mut conversations_by_id = HashMap::new();
-        let mut failed_to_restore = Vec::new();
         for conversation in conversations.into_iter() {
             let conversation_id = conversation.conversation.conversation_id.clone();
             let Some(conversation) =
                 convert_persisted_conversation_to_ai_conversation_with_metadata(conversation)
             else {
                 log::warn!(
-                    "Failed to convert persisted conversation {conversation_id} to AIConversation; will purge from sqlite"
+                    "Failed to convert persisted conversation {conversation_id} to AIConversation"
                 );
-                failed_to_restore.push(conversation_id);
                 continue;
             };
             conversations_by_id.insert(conversation.id(), conversation);
         }
 
-        (
-            Self {
-                conversations: conversations_by_id,
-            },
-            failed_to_restore,
-        )
+        Self {
+            conversations: conversations_by_id,
+            ..Self::default()
+        }
     }
 
-    /// Gets a reference to a restored conversation without removing it.
-    pub fn get_conversation(&self, id: &AIConversationId) -> Option<&AIConversation> {
+    /// Loads and converts a conversation from the local database.
+    fn load_from_db(&self, id: &AIConversationId) -> Option<AIConversation> {
+        #[cfg(feature = "local_fs")]
+        {
+            let conn = self.db_connection.clone()?;
+            let mut conn = conn.lock().ok()?;
+            match crate::persistence::agent::read_agent_conversation_by_id(
+                &mut conn,
+                &id.to_string(),
+            ) {
+                Ok(Some(conversation)) => {
+                    convert_persisted_conversation_to_ai_conversation_with_metadata(conversation)
+                }
+                Ok(None) => None,
+                Err(e) => {
+                    log::warn!("Failed to read AgentConversation {id}: {e:?}");
+                    None
+                }
+            }
+        }
+        #[cfg(not(feature = "local_fs"))]
+        {
+            let _ = id;
+            None
+        }
+    }
+
+    /// Gets a reference to a restored conversation without taking it, loading
+    /// it from the local database when it isn't cached yet.
+    pub fn get_conversation(&mut self, id: &AIConversationId) -> Option<&AIConversation> {
+        if self.taken.contains(id) {
+            return None;
+        }
+        if !self.conversations.contains_key(id) {
+            let loaded = self.load_from_db(id)?;
+            self.conversations.insert(*id, loaded);
+        }
         self.conversations.get(id)
     }
 
-    /// Removes the restored conversation and returns it, if any.
+    /// Takes the restored conversation and returns it, if any. Each
+    /// conversation is handed out at most once.
+    ///
+    /// The ID is only marked as taken once a conversation was actually
+    /// handed out, so a failed load (e.g. a transient read error) doesn't
+    /// permanently consume the restore opportunity for this session.
     pub fn take_conversation(&mut self, id: &AIConversationId) -> Option<AIConversation> {
-        self.conversations.remove(id)
+        if self.taken.contains(id) {
+            return None;
+        }
+        let conversation = self
+            .conversations
+            .remove(id)
+            .or_else(|| self.load_from_db(id))?;
+        self.taken.insert(*id);
+        Some(conversation)
     }
 
     /// Takes and returns the `AIConversation`s for the given IDs, sorted by first exchange

@@ -59,7 +59,7 @@ struct NewAgentTask {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(super) enum UpsertConversationError {
+pub(crate) enum UpsertConversationError {
     #[error("Failed to serialize conversation data: {0:?}")]
     Serialization(#[from] serde_json::Error),
     #[error("Failed to upsert conversation to sqlite: {0:?}")]
@@ -72,7 +72,7 @@ pub(super) enum UpsertConversationError {
 /// active orchestration session is never split even if it pushes past the cap.
 pub(super) const MAX_PERSISTED_CONVERSATION_COUNT: usize = 200;
 
-pub(super) fn upsert_agent_conversation<'a>(
+pub(crate) fn upsert_agent_conversation<'a>(
     conn: &mut SqliteConnection,
     conversation_id_param: &str,
     tasks: impl IntoIterator<Item = &'a api::Task>,
@@ -302,7 +302,7 @@ pub(super) fn select_conversations_to_evict(
 /// the previous `read_agent_conversations`, which unconditionally loaded and decoded every
 /// `agent_tasks` blob for every conversation on every startup just to compute a possibly-already-
 /// valid summary.
-pub(super) fn read_agent_conversation_metadata(
+pub(crate) fn read_agent_conversation_metadata(
     conn: &mut SqliteConnection,
 ) -> Result<(Vec<AgentConversation>, Vec<ConversationSummaryBackfill>), diesel::result::Error> {
     use schema::agent_conversations::dsl::*;
