@@ -1,7 +1,9 @@
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use crate::settings::{AISettings, AISettingsChangedEvent};
-use crate::terminal::event::{AfterBlockCompletedEvent, BlockType, UserBlockCompleted};
+use crate::terminal::event::{AfterBlockCompletedEvent, BlockType};
+use crate::terminal::model::terminal_model::TerminalModel;
 use crate::terminal::model_events::{ModelEvent, ModelEventDispatcher};
 use crate::workspaces::user_workspaces::{UserWorkspaces, UserWorkspacesEvent};
 pub use ai::api_keys::AwsCredentials;
@@ -11,6 +13,7 @@ use aws_credential_types::provider::error::CredentialsError;
 use aws_credential_types::provider::ProvideCredentials;
 use futures::channel::oneshot::channel;
 use futures::future::BoxFuture;
+use parking_lot::FairMutex;
 use tokio::sync::OnceCell;
 use vec1::vec1;
 use warp_managed_secrets::{client::IdentityTokenOptions, ManagedSecretManager};
@@ -166,6 +169,7 @@ pub trait AwsCredentialRefresher {
     fn register_model_event_dispatcher(
         &mut self,
         model_events: &ModelHandle<ModelEventDispatcher>,
+        terminal_model: Arc<FairMutex<TerminalModel>>,
         ctx: &mut ModelContext<Self>,
     ) where
         Self: Sized;
@@ -181,14 +185,25 @@ impl AwsCredentialRefresher for ApiKeyManager {
     fn register_model_event_dispatcher(
         &mut self,
         model_events: &ModelHandle<ModelEventDispatcher>,
+        terminal_model: Arc<FairMutex<TerminalModel>>,
         ctx: &mut ModelContext<Self>,
     ) {
-        ctx.subscribe_to_model(model_events, |manager, event, ctx| {
+        // we cannot simply capture the strong reference, or we risk having a reference cycle.
+        let terminal_model_weak = Arc::downgrade(&terminal_model);
+        ctx.subscribe_to_model(model_events, move |manager, event, ctx| {
+            let Some(terminal_model) = terminal_model_weak.upgrade() else {
+                return;
+            };
+
             if let ModelEvent::AfterBlockCompleted(AfterBlockCompletedEvent {
-                block_type: BlockType::User(UserBlockCompleted { command, .. }),
+                block_type: BlockType::User(user_block_completed),
                 ..
             }) = event
             {
+                let command = user_block_completed.command.get_with(|compute| {
+                    let model = terminal_model.lock();
+                    compute(model.block_list())
+                });
                 let auth_command = &AISettings::as_ref(ctx).aws_bedrock_auth_refresh_command;
                 if command.trim().starts_with(auth_command.trim()) {
                     log::debug!("Detected AWS auth command completion, refreshing credentials");
