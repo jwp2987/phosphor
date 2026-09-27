@@ -132,6 +132,80 @@ async fn reset_editor_with_markdown(
         .await;
 }
 
+/// Opens `markdown` in `editor_view` as a read-only rendered-Markdown document (Selectable, with
+/// Mermaid blocks Rendered) and waits for its layout to settle.
+async fn open_rendered_markdown(
+    app: &mut App,
+    editor_view: &ViewHandle<RichTextEditorView>,
+    markdown: &str,
+) {
+    reset_editor_with_markdown(app, editor_view, markdown).await;
+    editor_view.update(app, |editor, ctx| {
+        editor.set_interaction_state(InteractionState::Selectable, ctx);
+        editor.model.update(ctx, |model, ctx| {
+            model.set_default_mermaid_display_mode(MarkdownDisplayMode::Rendered, ctx);
+        });
+    });
+    let render_state = editor_view.read(app, |editor, ctx| {
+        editor.model.as_ref(ctx).render_state().clone()
+    });
+    // If `RichTextEditorView`'s asset-load rebuild dedup regresses, these awaits hang forever:
+    // every `render_state` notification before a queued rebuild lands would re-observe the same
+    // stale Mermaid config and re-queue another rebuild (100% CPU, `layout_complete()` never
+    // resolves).
+    for _ in 0..8 {
+        app.read(|ctx| render_state.as_ref(ctx).layout_complete())
+            .await;
+    }
+}
+
+/// Loads every rendered Mermaid diagram asset the editor's current layout references and waits
+/// for each, so the next document containing the same diagrams finds them already cached.
+///
+/// `relaidout_mermaid_asset_sources` only fills on that cache-hit path: a freshly laid-out block
+/// still carries its placeholder size while its asset is already loaded (`LoadedNeedsRelayout`).
+/// On a cold cache the asset is `Loading` instead, and the `when_loaded` callback rebuilds the
+/// layout directly without touching the dedup set, so a test that wants to exercise the dedup
+/// has to warm the cache and open the document again.
+async fn warm_mermaid_asset_cache(app: &mut App, editor_view: &ViewHandle<RichTextEditorView>) {
+    let (diagram_count, pending) = editor_view.read(app, |editor, ctx| {
+        let render_state = editor.model.as_ref(ctx).render_state().clone();
+        let render_state = render_state.as_ref(ctx);
+        let asset_cache = warpui::assets::asset_cache::AssetCache::as_ref(ctx);
+        let mut diagram_count = 0;
+        let mut pending = Vec::new();
+        for block in render_state.content().block_items() {
+            if let warp_editor::render::model::BlockItem::MermaidDiagram { asset_source, .. } =
+                block
+            {
+                diagram_count += 1;
+                match asset_cache
+                    .load_asset::<warpui::image_cache::ImageType>(asset_source.clone())
+                {
+                    warpui::assets::asset_cache::AssetState::Loading { handle } => {
+                        pending.extend(handle.when_loaded(asset_cache));
+                    }
+                    warpui::assets::asset_cache::AssetState::Loaded { .. } => {}
+                    warpui::assets::asset_cache::AssetState::Evicted => {
+                        panic!("Mermaid asset should not be evicted during test")
+                    }
+                    warpui::assets::asset_cache::AssetState::FailedToLoad(err) => {
+                        panic!("Mermaid asset should load successfully: {err}")
+                    }
+                }
+            }
+        }
+        (diagram_count, pending)
+    });
+    assert!(
+        diagram_count > 0,
+        "expected at least one rendered Mermaid diagram in the layout"
+    );
+    for future in pending {
+        future.await;
+    }
+}
+
 fn link_offset(
     editor: &RichTextEditorView,
     link_url: &str,
@@ -1026,27 +1100,11 @@ fn test_rendered_markdown_view_with_code_block_and_trailing_mermaid_converges() 
         }
         markdown.push_str("```mermaid\nflowchart LR\n  A --> B\n```\n");
 
-        reset_editor_with_markdown(&mut app, &editor_view, &markdown).await;
-        editor_view.update(&mut app, |editor, ctx| {
-            editor.set_interaction_state(InteractionState::Selectable, ctx);
-            editor.model.update(ctx, |model, ctx| {
-                model.set_default_mermaid_display_mode(MarkdownDisplayMode::Rendered, ctx);
-            });
-        });
-
-        let render_state = editor_view.read(&app, |editor, ctx| {
-            editor.model.as_ref(ctx).render_state().clone()
-        });
-
-        // If `RichTextEditorView`'s asset-load rebuild dedup regresses, these awaits hang
-        // forever: the loaded Mermaid SVG's cached layout config won't match its real aspect
-        // ratio until a queued rebuild lands, and every `render_state` notification arriving
-        // before that lands would otherwise re-observe the same stale config and re-queue
-        // another rebuild forever (100% CPU, `layout_complete()` never resolves).
-        for _ in 0..8 {
-            app.read(|ctx| render_state.as_ref(ctx).layout_complete())
-                .await;
-        }
+        open_rendered_markdown(&mut app, &editor_view, &markdown).await;
+        // Open the same document again on a warm cache: the diagram's block is laid out at its
+        // placeholder size while its asset is already loaded, which is the path the dedup guards.
+        warm_mermaid_asset_cache(&mut app, &editor_view).await;
+        open_rendered_markdown(&mut app, &editor_view, &markdown).await;
 
         assert_eq!(
             editor_view.read(&app, |editor, _ctx| editor
@@ -1075,20 +1133,11 @@ fn test_reset_with_markdown_clears_relaidout_mermaid_asset_sources() {
 
         let markdown = "Before\n\n```mermaid\nflowchart LR\n  A --> B\n```\n\nAfter";
 
-        reset_editor_with_markdown(&mut app, &editor_view, markdown).await;
-        editor_view.update(&mut app, |editor, ctx| {
-            editor.set_interaction_state(InteractionState::Selectable, ctx);
-            editor.model.update(ctx, |model, ctx| {
-                model.set_default_mermaid_display_mode(MarkdownDisplayMode::Rendered, ctx);
-            });
-        });
-        let render_state = editor_view.read(&app, |editor, ctx| {
-            editor.model.as_ref(ctx).render_state().clone()
-        });
-        for _ in 0..8 {
-            app.read(|ctx| render_state.as_ref(ctx).layout_complete())
-                .await;
-        }
+        open_rendered_markdown(&mut app, &editor_view, markdown).await;
+        // Warm the cache and reopen so the first document's diagram takes the dedup'd path (see
+        // `warm_mermaid_asset_cache`).
+        warm_mermaid_asset_cache(&mut app, &editor_view).await;
+        open_rendered_markdown(&mut app, &editor_view, markdown).await;
         assert_eq!(
             editor_view.read(&app, |editor, _ctx| editor
                 .relaidout_mermaid_asset_sources
