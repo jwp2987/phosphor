@@ -72,3 +72,135 @@ fn toast_message_wraps_io_errors_with_file_and_cause() {
         "Failed to save file /work/src/main.rs: permission denied"
     );
 }
+
+// ── Revert settlement (#684) ─────────────────────────────────────────────
+//
+// `revert_changes` builds a `RevertingDiffs` from what each file's
+// `restore_diff_base` returned, `handle_save_completed` feeds each write's
+// outcome to `CodeDiffState::record_revert_write`, and both then call
+// `CodeDiffState::settle_revert`, marking the action reverted in the
+// conversation if and only if it returns `true`. These tests drive exactly
+// those calls; the view around them is glue.
+
+/// A revert whose pending diffs `dispatched` each have a write in flight.
+fn reverting(dispatched: &[usize]) -> CodeDiffState {
+    let mut reverting = RevertingDiffs::default();
+    for &idx in dispatched {
+        reverting.write_dispatched(idx);
+    }
+    CodeDiffState::Reverting(reverting)
+}
+
+fn is_accepted(state: &CodeDiffState) -> bool {
+    matches!(state, CodeDiffState::Accepted(None))
+}
+
+/// The defect: the card entered `Reverted`, and the action was marked
+/// reverted, before the guarded write resolved — so a write the guard refused
+/// (the file changed after the accept) was recorded as a revert.
+#[test]
+fn a_revert_refused_at_write_time_leaves_the_card_accepted_and_the_action_unmarked() {
+    let mut state = reverting(&[0]);
+    assert!(
+        !state.settle_revert(),
+        "must not settle while the write is in flight"
+    );
+    assert!(matches!(state, CodeDiffState::Reverting(_)));
+
+    assert!(state.record_revert_write(0, false));
+    assert!(
+        !state.settle_revert(),
+        "a refused revert must not mark the action reverted"
+    );
+    assert!(is_accepted(&state), "got {state:?}");
+}
+
+#[test]
+fn a_revert_whose_write_lands_reverts_the_card_and_marks_the_action() {
+    let mut state = reverting(&[0]);
+    assert!(state.record_revert_write(0, true));
+    assert!(state.settle_revert());
+    assert!(matches!(state, CodeDiffState::Reverted), "got {state:?}");
+}
+
+/// A refusal decided before any write (no record of the accept, no base) or
+/// a diff with no backing file: nothing is in flight, so it settles at once —
+/// and not as a revert. The latter used to count as success.
+#[test]
+fn a_revert_with_no_write_dispatched_settles_immediately_as_not_reverted() {
+    let mut reverting = RevertingDiffs::default();
+    reverting.file_not_reverted();
+    let mut state = CodeDiffState::Reverting(reverting);
+    assert!(!state.settle_revert());
+    assert!(is_accepted(&state), "got {state:?}");
+}
+
+/// Every file must be reverted for the action to be. One refused file keeps
+/// the whole card accepted, whichever order the outcomes arrive in.
+#[test]
+fn one_refused_file_keeps_a_multi_file_revert_from_being_recorded() {
+    for (first, second) in [((0, true), (1, false)), ((1, false), (0, true))] {
+        let mut state = reverting(&[0, 1]);
+        assert!(state.record_revert_write(first.0, first.1));
+        assert!(!state.settle_revert());
+        assert!(matches!(state, CodeDiffState::Reverting(_)));
+        assert!(state.record_revert_write(second.0, second.1));
+        assert!(!state.settle_revert());
+        assert!(is_accepted(&state), "got {state:?}");
+    }
+
+    let mut state = reverting(&[0, 1]);
+    assert!(state.record_revert_write(1, true));
+    assert!(!state.settle_revert());
+    assert!(state.record_revert_write(0, true));
+    assert!(state.settle_revert());
+    assert!(matches!(state, CodeDiffState::Reverted));
+}
+
+/// A write outcome this revert is not waiting on — a duplicate, or an index it
+/// never dispatched — must not resolve the revert or be counted as a success.
+#[test]
+fn an_outcome_for_a_write_not_in_flight_is_ignored() {
+    let mut state = reverting(&[0]);
+    assert!(!state.record_revert_write(1, true));
+    assert!(!state.settle_revert());
+    assert!(matches!(state, CodeDiffState::Reverting(_)));
+
+    assert!(state.record_revert_write(0, false));
+    assert!(!state.record_revert_write(0, true), "already resolved");
+    assert!(!state.settle_revert());
+    assert!(is_accepted(&state));
+}
+
+/// Outside `Reverting` a write outcome is not a revert's, and settling is a
+/// no-op: an accepted card is not turned into a reverted one, nor a reverted
+/// one back.
+#[test]
+fn outside_a_revert_nothing_settles() {
+    let mut accepted = CodeDiffState::Accepted(None);
+    assert!(!accepted.record_revert_write(0, true));
+    assert!(!accepted.settle_revert());
+    assert!(is_accepted(&accepted));
+
+    let mut reverted = CodeDiffState::Reverted;
+    assert!(!reverted.record_revert_write(0, false));
+    assert!(!reverted.settle_revert());
+    assert!(matches!(reverted, CodeDiffState::Reverted));
+}
+
+/// A retry skips the files an earlier, partly refused attempt already
+/// reverted. If those were all of them, nothing is dispatched and nothing
+/// was refused: the card is reverted.
+#[test]
+fn a_retry_with_nothing_left_to_write_is_a_revert() {
+    let mut state = CodeDiffState::Reverting(RevertingDiffs::default());
+    assert!(state.settle_revert());
+    assert!(matches!(state, CodeDiffState::Reverted));
+}
+
+/// A revert in flight is still a finished action (so a late
+/// `FinishedAction` does not reopen it), and has not undone anything yet.
+#[test]
+fn a_revert_in_flight_is_complete() {
+    assert!(reverting(&[0]).is_complete());
+}
