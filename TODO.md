@@ -482,10 +482,22 @@ should not be left implying otherwise.
       writes — that ordering is pin-verbatim (see the doc comment on `maybe_copy_on_select`) and
       was explicitly NOT touched by this fix; it needs its own maintainer sign-off (AGENTS.md
       §5.10) and tracking issue before reordering.
-- [ ] **The literal-`#` escape hatch is fragile** — Escape immediately keeps the `#`, but
+- [x] **The literal-`#` escape hatch is fragile** — Escape immediately keeps the `#`, but
       Backspace-then-Escape deletes it, because clearing the filter chip makes the panel look
       empty. Worth a UX look **specifically because this release ships the setting that
       exists to address that complaint**.
+      **Fixed, #767 (`3e1e45568`):** confirmed by tracing `handle_command_search_closed`
+      (`app/src/terminal/input.rs`) against `SearchBar`'s `EditorEvent::BackspaceOnEmptyBuffer`
+      arm — the `#` is never in the panel's own editor to backspace out of; it is consumed
+      into the filter chip the instant the panel opens, so "empty query, no chip" can only be
+      reached by the user clearing the chip, not by erasing the `#`. The old
+      `is_command_search_empty` branch treated that identically to "never asked anything" and
+      cleared the buffer anyway. Removed that branch — clearing now happens only for a real,
+      non-empty natural-language query (`was_non_empty_ai_command_search`) — so
+      Backspace-then-Escape now behaves exactly like Escape-immediately. Decision logic
+      extracted into pure `should_clear_hashtag_buffer_on_command_search_close` and unit
+      tested directly (`input_test.rs`); the surrounding `was_triggered_by_hashtag` check and
+      the actual buffer clear remain GUI-only.
 - [x] **Empty "Learn more" links** — `SSH_DOCS_URL` and `SUBSHELL_DOCS_URL` are empty
       strings; clicking does nothing.
       **Closed 2026-09-26:** `SSH_DOCS_URL`/`SUBSHELL_DOCS_URL` were removed in `3337759b8`; the links point at the in-repo manual or the control is hidden.
@@ -546,7 +558,7 @@ in front of a user. **All of these are in the `v2026.08.29.1-beta` build.**
       referenced by nothing, and **added by `ab8ff5787`** — a commit about making "Fetch from
       API" work for Ollama. Accidental `git add`. **DELETED 2026-09-04 (#639)**, after
       confirming by grep that nothing in the tree referenced it.
-- [ ] **Residue of #634, not part of that change.** Three orphans, all verified by grep,
+- [x] **Residue of #634, not part of that change.** Three orphans, all verified by grep,
       all left in place deliberately — each removal reaches further than that fix's diff:
       - `TerminalAction::DismissCodeToolbeltTooltip` has **no dispatcher**. The variant, its
         `Display` arm (`terminal/view/action.rs`) and its handler (`terminal/view.rs`) are
@@ -566,6 +578,23 @@ in front of a user. **All of these are in the `v2026.08.29.1-beta` build.**
       `crates/integration/src/test/settings_private.rs`;
       `PrivacySettings::disable_default_regex_trigger` lost its only caller but is kept on
       purpose, with the reason at its definition.
+
+      **Fixed, all three removed (`17c3a4b10`/`4a015a07d`):** the `DismissCodeToolbeltTooltip` variant, its `Display`
+      arm and its handler are gone (the handler's only effect,
+      `dismissed_code_toolbelt_new_feature_popup.set_value(true, ...)`, keeps its real writer
+      in `one_time_modal_model.rs` untouched, confirmed by grep before removal); `CodeSettings`
+      import in `terminal/view.rs` dropped with it, now unused. `FeatureFlag::CodeLaunchModal`
+      and `FeatureFlag::DefaultAdeberryTheme` removed — enum variants
+      (`warp_features/src/lib.rs`), their `#[cfg(feature = "...")]` registrations in
+      `enabled_features()` (`app/src/lib.rs`), and the `code_launch_modal`/
+      `default_adeberry_theme` Cargo features (`app/Cargo.toml`, including `code_launch_modal`
+      out of `default`) — re-grepped the whole tree afterward to confirm nothing else named
+      either flag or the removed action. `theme.rs`'s comment about
+      `FeatureFlag::DefaultAdeberryTheme` having "no reader at all" updated to say the flag
+      itself is gone. No test: this is pure dead-code deletion with no independently testable
+      behavior change; the one live behavior it touches
+      (`dismissed_code_toolbelt_new_feature_popup`) already has coverage, untouched, in
+      `settings_private.rs`.
 
 **Agent-reported, not yet coordinator-verified** (recorded so they are not lost; verify
 before acting):
@@ -10318,6 +10347,27 @@ claim, which was wrong by four.
       reverts. See `DECLINED.md` → IMPROVED.
       **Revert-chain review fixes (`6c60a4940`):** the GUI revert restores the raw
       original text (CRLF/mixed endings preserved) and skips files the accept never wrote.
+      **Deadline follow-up, #768 (`17c3a4b10`):** a revert write that never resolves (most plausibly a
+      remote host gone unreachable mid-write) left the card stuck `Reverting` and every
+      later rewind of the same file queued behind it forever, because `RevertSequence`'s
+      lane only advances on a settle and nothing but a settle ever produced one.
+      `TerminalView::dispatch_file_revert_with_deadline` now arms a 20s
+      `REWIND_REVERT_WRITE_TIMEOUT`; `CodeDiffView::timeout_file_revert` marks a write that
+      outlives it failed, toasts distinctly, and settles the card through the same
+      `RevertWriteSettled` path a real outcome uses. Finishing the in-progress fix (WIP
+      already on this branch) surfaced two real defects in it, both fixed: (1) the timeout
+      path called `rewind_revert_write_settled` directly **in addition to** emitting the
+      event its own subscription turns into that same call, advancing the lane twice per
+      timed-out write; (2) a timer armed for one write could fire after a *later* write to
+      the same `(view, file_idx)` was already in flight (a second rewind, after the first
+      attempt failed or timed out) and resolve the wrong one, because a fresh `Reverting`
+      attempt's `in_flight` set can't distinguish attempts — fixed with a monotonically
+      increasing per-index generation (`RevertWriteGenerations`) held across attempts. A
+      late real outcome after a recorded timeout was already a no-op via
+      `record_revert_write`'s existing idempotence. `RevertWriteGenerations`'s guard logic
+      is unit tested (`code_diff_view_tests.rs`); the double-settle fix and the timer
+      actually firing are GUI/event-loop-only and unverified by this change (nothing here
+      was compiled — see #768).
 
 - [x] **`warp_tui/src/tui_diff_storage.rs:147` is the TUI counterpart of the lost-update**
       **defect.** Same AI-diff persistence, same `register_file_path(..., false, ...)`, same
@@ -10491,11 +10541,19 @@ claim, which was wrong by four.
       pre-existing gate gap, not introduced here. A real `docker`/`podman exec -it`
       container needs a live check this sandbox cannot perform.
 
-- [ ] **One stale "preprocessing" comment in `crates/warp_tui/`.** `test_fixtures.rs:43-45`
+- [x] **One stale "preprocessing" comment in `crates/warp_tui/`.** `test_fixtures.rs:43-45`
       says the helper enqueues "action preprocessing through `ctx.spawn`"; it emits synchronously,
       so `settle()` is still needed but for the effect flush, not preprocessing — the code is right
       and its justification is wrong. (Rewritten 2026-09-26: the two "real preprocess pipeline"
       comments in `tui_permission_prompt_tests.rs` and `tui_generic_tool_call_view_tests.rs` are gone.)
+      **Fixed (`ad9e438c9`):** confirmed `queue_tui_permission_action` → `BlocklistAIActionModel::queue_confirmation_action`
+      (`app/src/ai/blocklist/action_model.rs`) has no `ctx.spawn` and pushes + `ctx.emit`s
+      synchronously (its own doc comment already says it exists precisely to skip
+      preprocessing). Traced `ctx.emit`/`ctx.notify` to `ModelContext`: both only push an
+      `Effect` onto `AppContext::pending_effects`, drained by `flush_effects` — that queue,
+      not preprocessing, is why a synchronous test body still needs `settle()`'s yields.
+      Rewrote `settle()`'s doc comment to say so, and to still cover the real, `ctx.spawn`-based
+      preprocessing path the wider action pipeline uses.
 
 - [x] 🟠 **Daemon sockets are not version-partitioned in practice, despite the docs and**
       **three tests saying they are.** `daemon_socket_name()` / `daemon_pid_name()` — and so
