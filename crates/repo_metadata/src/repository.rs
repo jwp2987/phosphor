@@ -86,7 +86,7 @@ pub struct Repository {
     next_subscriber_id: SubscriberId,
     /// Cached gitignore patterns for this repository.
     #[cfg(feature = "local_fs")]
-    gitignores: Vec<Gitignore>,
+    gitignores: Vec<Arc<Gitignore>>,
     /// Cached loose remote-tracking ref tracked by the active branch.
     #[cfg(feature = "local_fs")]
     tracked_remote_ref: Option<TrackedRemoteRef>,
@@ -619,7 +619,7 @@ impl Repository {
     /// prunes gitignored subtrees without re-reading `.gitignore` from disk,
     /// and stays consistent with [`Self::check_gitignore_status`].
     #[cfg(feature = "local_fs")]
-    pub(crate) fn watch_filter_gitignores(&self) -> Vec<Gitignore> {
+    pub(crate) fn watch_filter_gitignores(&self) -> Vec<Arc<Gitignore>> {
         self.gitignores.clone()
     }
 

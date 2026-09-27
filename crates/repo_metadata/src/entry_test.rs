@@ -1,5 +1,6 @@
 use std::fs;
 use std::future::Future;
+use std::sync::Arc;
 
 use ignore::gitignore::Gitignore;
 
@@ -181,13 +182,13 @@ fn test_git_path_filtering_allowlist() {
     }
 }
 
-/// Writes a `.gitignore` with `content` at `root` and returns a [`Gitignore`]
-/// rooted there. Uses only the repo-root gitignore (not the machine's global
-/// gitignore) so tests are deterministic.
-fn gitignore_rooted(root: &std::path::Path, content: &str) -> Gitignore {
+/// Writes a `.gitignore` with `content` at `root` and returns an
+/// [`Arc<Gitignore>`] rooted there. Uses only the repo-root gitignore (not
+/// the machine's global gitignore) so tests are deterministic.
+fn gitignore_rooted(root: &std::path::Path, content: &str) -> Arc<Gitignore> {
     fs::write(root.join(".gitignore"), content).unwrap();
     let (gitignore, _) = Gitignore::new(root.join(".gitignore"));
-    gitignore
+    Arc::new(gitignore)
 }
 
 #[test]
@@ -842,7 +843,7 @@ fn build_tree_marks_descendants_of_ignored_directory_as_ignored() {
     fs::write(root_path.join("ignored-dir").join("ignored-file.txt"), "").unwrap();
 
     let mut files = Vec::new();
-    let mut gitignores = Vec::<Gitignore>::new();
+    let mut gitignores = Vec::<Arc<Gitignore>>::new();
     let tree = run(Entry::build_tree(
         &root_path,
         &mut files,
@@ -885,7 +886,7 @@ fn lazy_loaded_ignored_directory_marks_loaded_children_as_ignored() {
     fs::write(root_path.join("ignored-dir").join("ignored-file.txt"), "").unwrap();
 
     let mut files = Vec::new();
-    let mut gitignores = Vec::<Gitignore>::new();
+    let mut gitignores = Vec::<Arc<Gitignore>>::new();
     let mut tree = run(Entry::build_tree(
         &root_path,
         &mut files,
@@ -1356,7 +1357,7 @@ fn test_path_passes_filters_unix() {
         sandbox.with_files(vec![Stub::FileWithContent("my_repo/.gitignore", "target")]);
 
         let test_gitignore_entry = dirs.tests().join("my_repo/.gitignore");
-        let gitignores = vec![Gitignore::new(test_gitignore_entry).0];
+        let gitignores = vec![Arc::new(Gitignore::new(test_gitignore_entry).0)];
 
         // Do NOT ignore a file that does not exist (for deletions)
         assert!(path_passes_filters(
@@ -1480,7 +1481,7 @@ fn test_path_passes_filters_windows() {
         sandbox.with_files(vec![Stub::FileWithContent(r"my_repo\.gitignore", "target")]);
 
         let test_gitignore_entry = dirs.tests().join(r"my_repo\.gitignore");
-        let gitignores = vec![Gitignore::new(test_gitignore_entry).0];
+        let gitignores = vec![Arc::new(Gitignore::new(test_gitignore_entry).0)];
 
         assert!(path_passes_filters(
             dirs.tests().join(r"my_repo\src").as_path(),

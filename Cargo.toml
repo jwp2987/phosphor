@@ -148,6 +148,7 @@ gloo = { version = "0.11.0", default-features = false, features = [
   "futures",
   "utils",
 ] }
+hashbrown = { version = "0.17.1", features = ["raw-entry"] }
 hex = "0.4.3"
 # This matches the version of hyper used by reqwest.
 hyper = "1.6.0"
