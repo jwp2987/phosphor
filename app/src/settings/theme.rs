@@ -23,7 +23,8 @@ define_settings_group!(ThemeSettings, settings: [
         // sat in the `is_onboarded() == Some(false)` block, which never ran because
         // the local placeholder user hardcodes `is_onboarded: true`. That block has
         // been removed -- this fork has no first-run state -- and
-        // `FeatureFlag::DefaultAdeberryTheme` now has no reader at all.
+        // `FeatureFlag::DefaultAdeberryTheme` had no reader left at all, so the flag
+        // itself has since been removed (residue of #634, see `TODO.md`).
         default: ThemeKind::default(),
         supported_platforms: SupportedPlatforms::ALL,
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
