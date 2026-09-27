@@ -35,6 +35,7 @@ mod codex;
 pub(crate) mod codex_transcript;
 mod gemini;
 mod json_utils;
+mod skill_dirs_publish;
 
 pub(crate) use claude_code::ClaudeHarness;
 use codex::CodexHarness;

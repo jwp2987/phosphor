@@ -11,6 +11,7 @@ use serde_json::{Map, Value};
 use tempfile::NamedTempFile;
 use uuid::Uuid;
 use warp_cli::agent::Harness;
+use warp_core::safe_info;
 use warpui::{ModelHandle, ModelSpawner};
 
 use crate::ai::agent::conversation::AIConversationId;
@@ -502,7 +503,45 @@ fn prepare_claude_environment_config(
     let api_key_suffix = resolve_anthropic_api_key_suffix(secrets);
     prepare_claude_config(&claude_json_path, working_dir, api_key_suffix.as_deref())?;
     prepare_claude_settings(&claude_settings_path)?;
+    publish_warp_skill_dirs_for_claude(working_dir);
     Ok(())
+}
+
+/// Publish the skills listed in `WARP_SKILL_DIRS`, under their own names, as
+/// symlinks under `<working_dir>/.claude/skills`, so an agent running on
+/// Claude Code sees the same skills the Oz harness loads from
+/// `WARP_SKILL_DIRS`.
+///
+/// Published into the task's own working directory rather than the Claude
+/// home skill root: Claude Code discovers `.claude/skills` by walking up from
+/// its starting directory to the repository root (or, absent a repository,
+/// just the starting directory itself), so a task's own working directory is
+/// a skill root Claude Code already searches on its own. This keeps
+/// concurrent tasks (e.g. on a self-hosted direct-backend worker sharing one
+/// host) from publishing into the same shared home directory. A published
+/// skill overrides any existing entry with the same name (see
+/// `skill_dirs_publish::publish_skill`), with the conflict-resolution
+/// behavior depending on whether this run is sandboxed (see
+/// `warp_isolation_platform::detect`). A no-op when `WARP_SKILL_DIRS` is not
+/// configured for this run.
+fn publish_warp_skill_dirs_for_claude(working_dir: &Path) {
+    let source_dirs = super::skill_dirs_publish::warp_skill_source_dirs(working_dir);
+    if source_dirs.is_empty() {
+        return;
+    }
+    let skill_root = working_dir.join(".claude").join("skills");
+    let is_sandbox = warp_isolation_platform::detect().is_some();
+    let published =
+        super::skill_dirs_publish::publish_skill_dirs(&skill_root, &source_dirs, is_sandbox);
+    if published > 0 {
+        safe_info!(
+            safe: ("Published {published} WARP_SKILL_DIRS skill(s) to the Claude Code skill root"),
+            full: (
+                "Published {published} WARP_SKILL_DIRS skill(s) to Claude Code skill root {}",
+                skill_root.display()
+            )
+        );
+    }
 }
 
 /// Where `.claude.json` lands. Claude Code reads it from `$CLAUDE_CONFIG_DIR`
