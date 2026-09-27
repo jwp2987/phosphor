@@ -12130,6 +12130,37 @@ open findings that had no pre-existing row.
       need the same plus a `FileModel` singleton and `register_file`. Worth
       building once a round has a build available to verify it compiles and
       passes before committing to it blind.
+      **Attempted 2026-09-27, left unticked (#751).** Built the fixture and two
+      live-view tests in `app/src/code/inline_diff.rs`:
+      `deleting_through_the_view_removes_the_file_and_revert_restores_it` and
+      `renaming_through_the_view_moves_the_file_and_revert_restores_it`. Both
+      construct a real `InlineDiffView` wrapping a real `CodeEditorView` (the
+      `initialize_editor` shape, plus a `FileModel` singleton and
+      `register_file`, matching how `CodeDiffView::set_candidate_diffs` builds
+      the same pair in production), register against a real temp file, and
+      drive `DiffViewer::accept_and_save_diff` / `InlineDiffView::restore_diff_base`
+      -- the real public entry points, not the private dispatch methods
+      directly -- asserting on disk state. The rename-revert case's second step
+      (`finish_rename_revert`'s destination cleanup, dispatched via `ctx.spawn`
+      against a transient `FileId` internal to that function) has no completion
+      future this test can obtain, so it is confirmed by a bounded disk-state
+      poll instead of an awaited future -- a real, failing-if-wrong check, but
+      a different mechanism than the rest of the file uses.
+      **Left `[ ]` on purpose: this was written by reading source with no
+      `cargo`/`nextest` available this round, not compiled or run.** No new
+      GitHub issue was needed for the item itself (this row already tracks it);
+      opened #751 to hold the "needs a real test run" follow-up. `rustfmt
+      --check`, `check_cloud_boundary`, `check_stub_coverage`, and
+      `check_declined_collisions` are all clean, and the addition introduces no
+      new formatting drift (verified against a stock rustfmt run of the
+      pre-change file: the same four pre-existing drift sites, all far above
+      this addition, are unchanged). Whoever gets a build next: run
+      `cargo nextest run -p warp --lib -E 'test(inline_diff)'` and tick this on
+      green; if it does not compile, the likely failure points are the exact
+      `warp_editor`/`warpui` import paths and the `ViewHandle::read`/`update`
+      closure signatures used in the new `build_live_diff_view` helper and its
+      two tests -- all copied from working call sites elsewhere in this file
+      and in `code_diff_view.rs`, but never compiled together in this shape.
 
 - [ ] **Cargo.lock: `signal-hook` was hand-added to `warpui`'s deps for #685**
       (SIGTERM/SIGHUP handling) rather than regenerated through `cargo`, since
