@@ -23,7 +23,7 @@ pub use config::{LanguageId, LspServerConfig, default_init_params};
 pub use jsonrpc::{JsonRpcService, ServerNotificationEvent, Transport};
 pub use lsp_types::notification::{self};
 pub use lsp_types::{Position, Range};
-pub use manager::{LspManagerModel, LspManagerModelEvent};
+pub use manager::{LspAppExitShutdown, LspManagerModel, LspManagerModelEvent};
 pub use model::{
     BackgroundTaskInfo, DocumentDiagnostics, LanguageServerId, LspEvent, LspServerModel, LspState,
 };

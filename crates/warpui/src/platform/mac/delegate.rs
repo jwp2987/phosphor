@@ -399,25 +399,7 @@ impl platform::Delegate for AppDelegate {
     }
 
     fn terminate_app(&self, termination_mode: TerminationMode) {
-        // Execute `[NSApp terminate]` asynchronously on the main thread to
-        // ensure we don't accidentally run into any double-borrow errors.
-        dispatch::Queue::main().exec_async(move || {
-            // SAFETY: the closure runs on the main dispatch queue.
-            let mtm = unsafe { MainThreadMarker::new_unchecked() };
-            let app = NSApplication::sharedApplication(mtm);
-            match termination_mode {
-                // ContentTransferred windows have already moved their content to another
-                // window (e.g. during tab drag), so they can close immediately without
-                // prompting the user for confirmation.
-                TerminationMode::ForceTerminate | TerminationMode::ContentTransferred => {
-                    // `setForceTermination` is a custom warp NSApplication selector.
-                    // SAFETY: messaging the shared application.
-                    let _: () = unsafe { msg_send![&*app, setForceTermination] };
-                }
-                TerminationMode::Cancellable => {}
-            }
-            app.terminate(None);
-        });
+        terminate_app_on_main_queue(termination_mode);
     }
 
     fn is_screen_reader_enabled(&self) -> Option<bool> {
@@ -486,4 +468,28 @@ impl platform::DispatchDelegate for DispatchDelegate {
             task.run();
         });
     }
+}
+
+/// Runs `[NSApp terminate]` asynchronously on the main dispatch queue. Safe to
+/// call from any thread, which is what lets the termination-signal thread request
+/// a graceful quit (jwp2987/phosphor#685); also avoids double-borrow errors when
+/// called from the main thread.
+pub(super) fn terminate_app_on_main_queue(termination_mode: TerminationMode) {
+    dispatch::Queue::main().exec_async(move || {
+        // SAFETY: the closure runs on the main dispatch queue.
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let app = NSApplication::sharedApplication(mtm);
+        match termination_mode {
+            // ContentTransferred windows have already moved their content to another
+            // window (e.g. during tab drag), so they can close immediately without
+            // prompting the user for confirmation.
+            TerminationMode::ForceTerminate | TerminationMode::ContentTransferred => {
+                // `setForceTermination` is a custom warp NSApplication selector.
+                // SAFETY: messaging the shared application.
+                let _: () = unsafe { msg_send![&*app, setForceTermination] };
+            }
+            TerminationMode::Cancellable => {}
+        }
+        app.terminate(None);
+    });
 }

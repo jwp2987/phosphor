@@ -73,6 +73,28 @@ impl std::ops::Drop for Children {
     }
 }
 
+/// Signals the terminal server survives (jwp2987/phosphor#685 review).
+///
+/// The server shares the host's process group and session, so closing the launching
+/// terminal SIGHUPs it and stopping the login session or systemd scope SIGTERMs it,
+/// at the same moment the host starts its graceful quit. Dying then would close every
+/// pty under the host's feet, and its shells could be persisted as exited before the
+/// host's persistence writer drains. The server needs no signal to stop: it exits when
+/// the host's socket closes or the host dies (the `Pid::parent` check), which is what
+/// the host's graceful quit does last.
+///
+/// These are *caught* (through `signals`), not set to `SIG_IGN`: caught signals revert
+/// to their default disposition across `exec`, so the shells the server spawns still
+/// die of `SIGHUP`, which is how [`Children`]' drop hangs them up.
+const SURVIVED_SIGNALS: [i32; 2] = [signal_hook::consts::SIGHUP, signal_hook::consts::SIGTERM];
+
+/// Every signal the terminal server event loop handles.
+const TERMINAL_SERVER_SIGNALS: [i32; 3] = [
+    signal_hook::consts::SIGCHLD,
+    signal_hook::consts::SIGHUP,
+    signal_hook::consts::SIGTERM,
+];
+
 /// A structure to hold state for and manage the terminal server event loop.
 pub struct EventLoop {
     /// Information about the terminal server's child processes, including
@@ -159,7 +181,7 @@ impl EventLoop {
             .expect("should not fail to register for socket events");
 
         let mut signals =
-            Signals::new([signal_hook::consts::SIGCHLD]).expect("error preparing signal handling");
+            Signals::new(TERMINAL_SERVER_SIGNALS).expect("error preparing signal handling");
 
         poll.registry()
             .register(&mut signals, SIGNALS_TOKEN, Interest::READABLE)
@@ -193,6 +215,13 @@ impl EventLoop {
                     }
                     SIGNALS_TOKEN => {
                         for signal in signals.pending() {
+                            if SURVIVED_SIGNALS.contains(&signal) {
+                                log::info!(
+                                    "Terminal server ignoring signal {signal}; it exits when the \
+                                     host process does"
+                                );
+                                continue;
+                            }
                             if signal == signal_hook::consts::SIGCHLD {
                                 let terminated_children_pids = self.children.terminated_children();
                                 if let Err(err) = protocol::send_message(
@@ -322,3 +351,7 @@ impl EventLoop {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "event_loop_tests.rs"]
+mod tests;

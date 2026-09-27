@@ -1,9 +1,10 @@
+use crate::ai::mcp::FileBasedMCPManager;
+use crate::ai::mcp::app_exit::{ChildKillHandle, ChildProcessSlot, McpAppExitShutdown};
 use crate::ai::mcp::file_based_manager::FileBasedMCPManagerEvent;
 use crate::ai::mcp::templatable_manager::oauth::{
     load_credentials_from_secure_storage, write_to_secure_storage, FILE_BASED_MCP_CREDENTIALS_KEY,
     TEMPLATABLE_MCP_CREDENTIALS_KEY,
 };
-use crate::ai::mcp::FileBasedMCPManager;
 use core::fmt;
 use itertools::Itertools;
 use std::collections::HashSet;
@@ -738,11 +739,15 @@ impl TemplatableMCPServerManager {
         // If we're executing a CLI MCP server, ensure that the environment variables includes
         // PATH.
         if let TransportType::CLIServer(cli_server) = &mut server.transport_type {
-            let Some(execution_path) = AISettings::as_ref(ctx).mcp_execution_path.value().clone()
-            else {
+            let execution_path = AISettings::as_ref(ctx).mcp_execution_path.value().clone();
+            let can_inherit_process_path =
+                AppExecutionMode::as_ref(ctx).can_inherit_process_path_for_mcp();
+            if execution_path.is_none() && !can_inherit_process_path {
                 // This can only happen if the user is trying to launch an MCP server
-                // without ever having had a successfully bootstrapped session, which
-                // should basically never happen.
+                // from the desktop app without ever having had a successfully
+                // bootstrapped session, which should basically never happen. (The TUI
+                // and SDK inherit their launcher's PATH instead; the setting's only
+                // writer is the GUI terminal bootstrap.)
                 log::warn!("Unknown PATH when trying to launch MCP command.");
 
                 self.change_server_state(installation_uuid, MCPServerState::FailedToStart, ctx);
@@ -767,17 +772,21 @@ impl TemplatableMCPServerManager {
                     );
                 }
                 return;
-            };
+            }
 
-            // Prepend our PATH to the static env vars, in case the user has
-            // specified a custom PATH in the MCP server settings.
-            cli_server.static_env_vars.insert(
-                0,
-                StaticEnvVar {
-                    name: "PATH".to_string(),
-                    value: execution_path,
-                },
-            );
+            // Prepend our PATH to the static env vars, in case the user has specified a
+            // custom PATH in the MCP server settings. Execution modes that can inherit the
+            // process PATH (`AppExecutionMode::can_inherit_process_path_for_mcp`) instead pick
+            // it up from their own launching environment when the setting is unset.
+            if let Some(execution_path) = execution_path {
+                cli_server.static_env_vars.insert(
+                    0,
+                    StaticEnvVar {
+                        name: "PATH".to_string(),
+                        value: execution_path,
+                    },
+                );
+            }
 
             // For file-based MCP installations without an explicit `working_directory`,
             // default the spawn cwd to the directory the config was discovered in
@@ -860,6 +869,7 @@ impl TemplatableMCPServerManager {
         let is_reconnect = mode.is_reconnect();
 
         self.change_server_state(installation_uuid, MCPServerState::Starting, ctx);
+        let child = Arc::new(ChildProcessSlot::default());
         let task = ctx.spawn(
             spawn_server(
                 server_name,
@@ -868,6 +878,7 @@ impl TemplatableMCPServerManager {
                 server.transport_type.clone(),
                 logger.clone(),
                 auth_context,
+                child.clone(),
             )
             .compat(),
             move |me, server_info: Result<_, rmcp::RmcpError>, ctx| {
@@ -945,6 +956,7 @@ impl TemplatableMCPServerManager {
             SpawnedServerInfo {
                 abort_handle: task.abort_handle(),
                 oauth_result_tx,
+                child,
             },
         );
 
@@ -986,6 +998,59 @@ impl TemplatableMCPServerManager {
         }}
 
         log::debug!("Successfully shut down server with installation uuid {installation_uuid}");
+    }
+
+    /// Starts stopping every MCP server this process spawned, for app exit
+    /// (jwp2987/phosphor#687). Finish with [`McpAppExitShutdown::finish`], which waits
+    /// up to a deadline and then kills any stdio child still running.
+    ///
+    /// Unlike [`Self::shutdown_server`] this persists nothing and emits no state changes:
+    /// the servers were running when the user quit, so they must restore next launch.
+    ///
+    /// - A running server has its rmcp service cancelled here, synchronously, so its
+    ///   service loop (on async-compat's tokio runtime) closes the transport right away:
+    ///   stdin EOF for a stdio server, a transport close for HTTP/SSE. A background task
+    ///   reports each close's completion; the main thread is about to block in `finish`,
+    ///   so it cannot be a foreground task.
+    /// - A server still starting has no session to close, so its child (if spawned yet)
+    ///   is killed now through its kill handle, then the spawn is aborted.
+    /// - Kills go through the [`ChildKillHandle`] opened at spawn, never a bare pid, and
+    ///   a server whose service loop already ended (it crashed and rmcp reaped it) has
+    ///   released its handle, so a reused pid is never signalled.
+    pub fn begin_shutdown_for_app_exit(
+        &mut self,
+        ctx: &mut ModelContext<'_, Self>,
+    ) -> McpAppExitShutdown {
+        for (installation_uuid, spawned) in self.spawned_servers.drain() {
+            if spawned.child.kill() == Some(true) {
+                log::info!("Killed still-starting MCP server {installation_uuid} for app exit");
+            }
+            spawned.abort_handle.abort();
+        }
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let mut pending = HashMap::new();
+        let executor = ctx.background_executor();
+        for (installation_uuid, server_info) in self.active_servers.drain() {
+            let child = server_info.child;
+            let service = server_info.service;
+            service.cancellation_token().cancel();
+            let done = done_tx.clone();
+            executor
+                .spawn(async move {
+                    let _ = service.cancel().await;
+                    let _ = done.send(installation_uuid);
+                })
+                .detach();
+            pending.insert(installation_uuid, child);
+        }
+        if !pending.is_empty() {
+            log::info!(
+                "Stopping {} running MCP server(s) for app exit",
+                pending.len()
+            );
+        }
+        McpAppExitShutdown::new(done_rx, pending)
     }
 
     pub fn get_installation_by_template_uuid(
@@ -1751,6 +1816,7 @@ async fn spawn_server(
     transport_type: TransportType,
     logger: SimpleLogger,
     auth_context: AuthContext,
+    child: Arc<ChildProcessSlot>,
 ) -> Result<TemplatableMCPServerInfo, rmcp::RmcpError> {
     logger.log("[note] Attention! There may be sensitive information (such as API keys) in these logs. Make sure to redact any secrets before sharing with others.".to_string());
 
@@ -1826,6 +1892,18 @@ async fn spawn_server(
                 rmcp::RmcpError::transport_creation::<rmcp::transport::TokioChildProcess>(err)
             })?;
 
+            // Open the kill handle now, while the child cannot have been reaped, and
+            // before the handshake, so app exit can kill a server that is still
+            // starting (jwp2987/phosphor#687).
+            if let Some(id) = transport.id() {
+                match ChildKillHandle::open(id) {
+                    Some(handle) => child.fill(handle),
+                    None => logger.log(format!(
+                        "[warn] MCP: no kill handle for pid {id}; if the server ignores stdin \
+                         EOF it will outlive Phosphor"
+                    )),
+                }
+            }
             let pid = transport
                 .id()
                 .map(|pid| pid.to_string())
@@ -1854,14 +1932,23 @@ async fn spawn_server(
                 });
             }
 
-            // Wrap the transport in a logging wrapper.
+            // Wrap the transport in a logging wrapper, and release the kill handle once
+            // the service loop has closed the transport (rmcp has reaped the child).
             let transport = TransportLoggingWrapper {
-                transport,
+                transport: ReleaseChildOnClose {
+                    transport,
+                    child: child.clone(),
+                },
                 logger: logger.clone(),
             };
 
             // Create the MCP client and connect to the server.
-            Ok::<_, rmcp::RmcpError>(make_client_info().into_dyn().serve(transport).await?)
+            let service = make_client_info().into_dyn().serve(transport).await;
+            if service.is_err() {
+                // rmcp dropped the transport, and is killing and reaping the child.
+                child.release();
+            }
+            Ok::<_, rmcp::RmcpError>(service?)
         }
         TransportType::ServerSentEvents(sse_server) => {
             let headers: std::collections::HashMap<String, String> = sse_server
@@ -1985,6 +2072,7 @@ async fn spawn_server(
         installation_id: uuid,
         description,
         is_authenticated_transport,
+        child,
     })
 }
 
@@ -2244,6 +2332,44 @@ impl<T: rmcp::transport::Transport<R>, R: rmcp::service::ServiceRole> rmcp::tran
 
     fn close(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send {
         self.transport.close()
+    }
+}
+
+/// Releases a stdio server's [`ChildKillHandle`] once the service loop has closed the
+/// transport. For a `TokioChildProcess` the close waits for (reaps) the child, so from
+/// then on its pid may belong to another process; a server that crashed long before
+/// quit must not be "killed" at app exit (jwp2987/phosphor#687).
+struct ReleaseChildOnClose<T> {
+    transport: T,
+    child: Arc<ChildProcessSlot>,
+}
+
+impl<T: rmcp::transport::Transport<R>, R: rmcp::service::ServiceRole> rmcp::transport::Transport<R>
+    for ReleaseChildOnClose<T>
+{
+    type Error = T::Error;
+
+    fn send(
+        &mut self,
+        item: rmcp::service::TxJsonRpcMessage<R>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
+        self.transport.send(item)
+    }
+
+    fn receive(
+        &mut self,
+    ) -> impl Future<Output = Option<rmcp::service::RxJsonRpcMessage<R>>> + Send {
+        self.transport.receive()
+    }
+
+    fn close(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        let child = self.child.clone();
+        let close = self.transport.close();
+        async move {
+            let result = close.await;
+            child.release();
+            result
+        }
     }
 }
 

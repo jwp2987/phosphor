@@ -75,6 +75,7 @@ pub struct App {
     menu_bar_builder: Option<MenuBarBuilderFn>,
     dock_menu_builder: Option<DockMenuBuilderFn>,
     init_fn: Option<platform::app::AppInitCallbackFn>,
+    is_integration_test: bool,
 }
 
 impl App {
@@ -116,6 +117,7 @@ impl App {
             menu_bar_builder: None,
             dock_menu_builder: None,
             init_fn: None,
+            is_integration_test: test_driver.is_some(),
         }
     }
 
@@ -124,6 +126,27 @@ impl App {
         init_fn: impl FnOnce(&mut AppContext, LocalBoxFuture<'static, crate::App>) + 'static,
     ) {
         self.init_fn = Some(Box::new(init_fn));
+
+        // SIGTERM / SIGHUP (kill, `launchctl stop`, the launching terminal
+        // closing) run the normal graceful quit instead of killing the process
+        // outright (jwp2987/phosphor#685). The handler thread only enqueues a
+        // force-terminate on the main dispatch queue; `applicationWillTerminate`
+        // then runs `app_will_terminate` as for any other quit. Integration tests
+        // keep default dispositions: their driver owns signal handling.
+        if !self.is_integration_test {
+            use crate::platform::termination_signals;
+
+            let result =
+                termination_signals::install(termination_signals::GUI_TERMINATION_SIGNALS, || {
+                    super::delegate::terminate_app_on_main_queue(
+                        platform::TerminationMode::ForceTerminate,
+                    );
+                    true
+                });
+            if let Err(err) = result {
+                log::warn!("Failed to set up termination signal handling: {err}");
+            }
+        }
 
         // The autorelease pool stays open for the whole app lifetime (`run` blocks
         // until termination).
@@ -432,6 +455,9 @@ extern "C-unwind" fn warp_app_did_resign_active(this: &mut Object, _: Sel, _: id
 extern "C-unwind" fn warp_app_will_terminate(this: &mut Object, _: Sel, _: id) {
     let app = unsafe { get_app(this) };
     app.callbacks.app_will_terminate();
+    // Cocoa exits with status 0 once this returns; a signal-initiated quit should
+    // end the way the signal would have (jwp2987/phosphor#685).
+    crate::platform::termination_signals::exit_after_signal_shutdown();
 }
 
 #[unsafe(no_mangle)]

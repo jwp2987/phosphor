@@ -9,6 +9,8 @@ pub mod wasm;
 pub mod windows;
 
 pub mod headless;
+#[cfg(not(target_family = "wasm"))]
+pub(crate) mod termination_signals;
 
 pub mod current {
     cfg_if::cfg_if! {

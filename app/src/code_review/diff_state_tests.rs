@@ -705,6 +705,63 @@ async fn untracked_directory_diff_is_empty_and_non_binary() {
     assert_eq!(diff.status, GitFileStatus::Untracked);
 }
 
+/// Regression for jwp2987/phosphor#679 (upstream `eaf70a6af`): a diff whose raw
+/// patch already exceeds `MAX_DIFF_SIZE` must be classified `DiffTooLarge`
+/// *without* being parsed. Parsing first materialised every line of e.g. an
+/// untracked, non-gitignored `node_modules` bundle as `DiffLine`s, then threw
+/// the result away as unrenderable. Empty `hunks` and `max_line_number == 0`
+/// are what prove the parse was skipped — the pre-fix code returned the same
+/// `size` but with every line materialised.
+#[cfg(feature = "local_fs")]
+#[tokio::test]
+async fn oversized_untracked_diff_is_unrenderable_without_parsing() {
+    use crate::code_review::diff_size_limits::{MAX_DIFF_SIZE, UnrenderableReason};
+
+    let repo_dir = tempfile::tempdir().expect("create temp repo dir");
+    // 80-byte lines, enough of them that the patch (each line gains a `+`)
+    // is comfortably over the limit.
+    let line = format!("{}\n", "x".repeat(79));
+    let contents = line.repeat(MAX_DIFF_SIZE / line.len() + 1_000);
+    std::fs::write(repo_dir.path().join("bundle.js"), &contents).expect("write big file");
+
+    let diff = LocalDiffStateModel::get_file_diff(
+        repo_dir.path(),
+        &PathBuf::from("bundle.js"),
+        &GitFileStatus::Untracked,
+        Some(FileStagedState::Unstaged),
+        false,
+        None,
+    )
+    .await
+    .expect("get_file_diff should succeed for an oversized untracked file");
+
+    assert_eq!(
+        diff.size,
+        DiffSize::Unrenderable(UnrenderableReason::DiffTooLarge)
+    );
+    assert!(!diff.is_binary, "an oversized text diff is not binary");
+    assert!(diff.hunks.is_empty(), "oversized diff must not be parsed");
+    assert_eq!(diff.max_line_number, 0);
+    assert_eq!(diff.staged, Some(FileStagedState::Unstaged));
+
+    // Control: a small untracked file on the same path is still parsed, so the
+    // guard is a size gate and not a blanket skip for untracked files.
+    std::fs::write(repo_dir.path().join("bundle.js"), "a\nb\n").expect("write small file");
+    let diff = LocalDiffStateModel::get_file_diff(
+        repo_dir.path(),
+        &PathBuf::from("bundle.js"),
+        &GitFileStatus::Untracked,
+        Some(FileStagedState::Unstaged),
+        false,
+        None,
+    )
+    .await
+    .expect("get_file_diff should succeed for a small untracked file");
+    assert_eq!(diff.size, DiffSize::Normal);
+    assert_eq!(diff.hunks.len(), 1);
+    assert_eq!(diff.max_line_number, 2);
+}
+
 #[tokio::test]
 async fn untracked_directory_has_no_baseline_content() {
     let repo_dir = tempfile::tempdir().expect("create temp repo dir");

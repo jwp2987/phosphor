@@ -101,6 +101,10 @@ struct SpawnedServerInfo {
     abort_handle: AbortHandle,
     #[cfg(not(target_family = "wasm"))]
     oauth_result_tx: async_channel::Sender<oauth::CallbackResult>,
+    /// The stdio child's kill handle, filled once `spawn_server` has started it (empty
+    /// for HTTP/SSE servers). Lets app exit kill a server that is still starting.
+    #[cfg(not(target_family = "wasm"))]
+    child: Arc<crate::ai::mcp::app_exit::ChildProcessSlot>,
 }
 
 /// Information about a single connected MCP server.
@@ -119,6 +123,10 @@ pub struct TemplatableMCPServerInfo {
     ///
     /// TODO(vorporeal): Use this to display a toast when server authentication and connection is complete.
     is_authenticated_transport: bool,
+    /// A stdio server's child kill handle, released when the service loop closes the
+    /// transport; always empty for HTTP/SSE servers.
+    #[cfg(not(target_family = "wasm"))]
+    child: Arc<crate::ai::mcp::app_exit::ChildProcessSlot>,
 }
 
 impl TemplatableMCPServerInfo {

@@ -15914,6 +15914,7 @@ dependencies = [
  "resvg",
  "rust-embed 8.11.0",
  "serde",
+ "signal-hook",
  "sum_tree",
  "takecell",
  "tauri-winrt-notification",

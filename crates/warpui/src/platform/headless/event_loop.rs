@@ -2,12 +2,11 @@ use std::mem::ManuallyDrop;
 use std::sync::mpsc::{Receiver, Sender};
 
 use crate::{
-    platform::{
-        self,
-        app::{AppCallbackDispatcher, ApproveTerminateResult, TerminationResult},
-        TerminationMode,
-    },
     AppContext, WindowId,
+    platform::{
+        self, TerminationMode,
+        app::{AppCallbackDispatcher, TerminationResult, approve_termination},
+    },
 };
 
 /// Application events handled on the headless platform's main thread.
@@ -32,7 +31,7 @@ pub(super) fn run(
     receiver: Receiver<AppEvent>,
     sender: Sender<AppEvent>,
 ) -> TerminationResult {
-    // Set up Ctrl-C handler to gracefully terminate the app
+    // Turn Ctrl-C / SIGTERM / SIGHUP into a graceful, non-cancellable quit.
     setup_signal_handler(sender);
 
     // First, initialize the app.
@@ -48,16 +47,7 @@ pub(super) fn run(
                 task.run();
             }
             AppEvent::Terminate(termination_mode) => {
-                let should_terminate = match termination_mode {
-                    TerminationMode::Cancellable => {
-                        matches!(
-                            callbacks.should_terminate_app(),
-                            ApproveTerminateResult::Terminate
-                        )
-                    }
-                    TerminationMode::ForceTerminate | TerminationMode::ContentTransferred => true,
-                };
-                if should_terminate {
+                if approve_termination(termination_mode, || callbacks.should_terminate_app()) {
                     break;
                 }
             }
@@ -72,10 +62,9 @@ pub(super) fn run(
         }
     }
 
-    // Drop the receiver so the Ctrl+C signal handler's channel send will fail,
-    // causing it to fall through to `process::exit(130)`. Without this, the
-    // send succeeds (since the receiver is still in scope) but nobody is reading
-    // from the channel, making Ctrl+C ineffective during shutdown.
+    // Drop the receiver so a signal that arrives during shutdown cannot queue a
+    // terminate nobody will read. (The first signal armed a deadline, and an
+    // insistent repeat exits immediately; see `termination_signals`.)
     drop(receiver);
 
     callbacks.app_will_terminate();
@@ -83,27 +72,58 @@ pub(super) fn run(
     ui_app.termination_result().unwrap_or(Ok(()))
 }
 
-/// Set up a signal handler for Ctrl-C (SIGINT) to gracefully terminate the app.
+/// Turns termination signals into a graceful, non-cancellable quit.
 ///
-/// When Ctrl-C is received, this will send a Terminate event to the event loop,
-/// allowing the app to shut down gracefully via the existing termination logic.
-#[cfg(not(target_family = "wasm"))]
+/// The first signal posts [`TerminationMode::ForceTerminate`] to this loop (the
+/// same request the TUI's own exit actions send) and arms the shutdown deadline;
+/// only a repeat of the same signal (not `SIGHUP`) at least a second later exits
+/// immediately. No app work runs in the signal handler: it
+/// only wakes a thread that sends on the loop's channel. See
+/// [`platform::termination_signals`].
+///
+/// Unix handles `SIGINT`, `SIGTERM` and `SIGHUP` through `signal-hook`. Windows
+/// keeps `ctrlc` for Ctrl-C / Ctrl-Break.
+// TODO(#685): Windows `CTRL_CLOSE_EVENT` (console window closed) still kills the
+// process without a graceful shutdown; `ctrlc`'s `termination` feature would add
+// it, but it is workspace-wide and would also redirect SIGTERM in the
+// integration-test driver's `ctrlc` handler.
+#[cfg(unix)]
 fn setup_signal_handler(sender: Sender<AppEvent>) {
-    let result = ctrlc::set_handler(move || {
-        log::info!("Received Ctrl-C signal in headless mode, terminating application");
-        // Send a ForceTerminate event to ensure the app exits cleanly.
-        // We use ForceTerminate rather than Cancellable to ensure the app exits
-        // even if there are unsaved changes or other conditions that might prevent shutdown.
-        if sender
-            .send(AppEvent::Terminate(TerminationMode::ForceTerminate))
-            .is_err()
-        {
-            log::warn!("Failed to send termination event - event loop may have already stopped");
-            // If we can't send the event, force exit
-            std::process::exit(130); // 128 + SIGINT (2) = 130
-        }
-    });
+    use platform::termination_signals;
 
+    let result = termination_signals::install(
+        termination_signals::HEADLESS_TERMINATION_SIGNALS,
+        move || {
+            sender
+                .send(AppEvent::Terminate(TerminationMode::ForceTerminate))
+                .is_ok()
+        },
+    );
+    if let Err(e) = result {
+        log::warn!("Failed to set up termination signal handling: {e}");
+    }
+}
+
+#[cfg(all(not(unix), not(target_family = "wasm")))]
+fn setup_signal_handler(sender: Sender<AppEvent>) {
+    use platform::termination_signals::{ProcessHooks, ShutdownState, handle_signal};
+    use std::sync::Mutex;
+
+    /// Ctrl-C is reported as SIGINT (2), preserving the historical exit status 130.
+    const SIGINT: i32 = 2;
+
+    let hooks = ProcessHooks::new(move || {
+        sender
+            .send(AppEvent::Terminate(TerminationMode::ForceTerminate))
+            .is_ok()
+    });
+    let state = Mutex::new(ShutdownState::default());
+    let result = ctrlc::set_handler(move || {
+        let mut state = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        handle_signal(&mut state, SIGINT, instant::Instant::now(), &hooks);
+    });
     if let Err(e) = result {
         log::warn!("Failed to set up Ctrl-C handler: {e}");
     }

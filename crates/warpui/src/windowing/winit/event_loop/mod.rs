@@ -981,6 +981,11 @@ impl EventLoop {
 
                 self.callbacks.app_will_terminate();
 
+                // A signal-initiated quit ends the way the signal would have
+                // (jwp2987/phosphor#685); otherwise this returns.
+                #[cfg(not(target_family = "wasm"))]
+                crate::platform::termination_signals::exit_after_signal_shutdown();
+
                 // On non-web platforms, immediately terminate the process instead of returning
                 // from the event loop.  This matches the behavior of
                 // `[NSApp terminate]` on macOS, and may avoid some at-exit
@@ -1544,16 +1549,13 @@ impl EventLoop {
         &mut self,
         termination_mode: TerminationMode,
     ) -> ApproveTerminateResult {
-        if matches!(
-            termination_mode,
-            TerminationMode::ForceTerminate | TerminationMode::ContentTransferred
-        ) {
-            return ApproveTerminateResult::Terminate;
+        if platform::app::approve_termination(termination_mode, || {
+            self.callbacks.should_terminate_app()
+        }) {
+            ApproveTerminateResult::Terminate
+        } else {
+            ApproveTerminateResult::Cancel
         }
-
-        let approve_terminate_result = self.callbacks.should_terminate_app();
-        if let ApproveTerminateResult::Terminate = approve_terminate_result {}
-        approve_terminate_result
     }
 
     fn handle_ime_event(&mut self, winit_window_id: WinitWindowId, event: ImeEvent) {
