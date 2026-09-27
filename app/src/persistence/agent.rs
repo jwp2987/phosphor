@@ -114,6 +114,11 @@ fn stored_summary_names_initial_query(stored_summary: &str) -> bool {
 /// Whether a message's content may be replaced by [`prune_oversized_messages`].
 ///
 /// `UserQuery` is the user's own input and must never be silently discarded.
+/// `InvokeSkill` is excluded for the same reason: BYOP replays it as the
+/// user's turn (see chat_stream's `compose_persisted_invoke_skill_text`), and
+/// pruning it to a `DebugOutput` placeholder would make it invisible to that
+/// replay -- same failure shape as #778, but triggered by this write-side
+/// size cap instead of history never having persisted it at all.
 /// `SystemQuery` is excluded too: its `AutoCodeDiff` variant is what
 /// [`AgentConversationSummary::from_tasks`] checks to set
 /// `is_unlisted_auto_code_diff`, so pruning it would change that classification
@@ -124,6 +129,7 @@ fn message_content_is_prunable(message: &api::Message) -> bool {
     !matches!(
         message.message,
         Some(api::message::Message::UserQuery(_))
+            | Some(api::message::Message::InvokeSkill(_))
             | Some(api::message::Message::SystemQuery(_))
             // Already a placeholder from a previous prune pass -- nothing left to shrink.
             | Some(api::message::Message::DebugOutput(_))

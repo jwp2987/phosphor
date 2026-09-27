@@ -3329,7 +3329,11 @@ fn byop_result_message_ids_by_tool_call_key(
                         .insert(message.id.clone());
                     active_saw_tool_result = true;
                 }
+                // A skill invocation is a user turn boundary too (BYOP now persists it as a
+                // `Message::InvokeSkill` task message — see #778), so it must reset the
+                // active-turn tracking the same way `UserQuery` does.
                 Some(warp_multi_agent_api::message::Message::UserQuery(_))
+                | Some(warp_multi_agent_api::message::Message::InvokeSkill(_))
                 | Some(warp_multi_agent_api::message::Message::AgentOutput(_)) => {
                     active_task_id = None;
                     active_assistant_message_id = None;
@@ -3347,7 +3351,6 @@ fn byop_result_message_ids_by_tool_call_key(
                 | Some(warp_multi_agent_api::message::Message::WebFetch(_))
                 | Some(warp_multi_agent_api::message::Message::DebugOutput(_))
                 | Some(warp_multi_agent_api::message::Message::ArtifactEvent(_))
-                | Some(warp_multi_agent_api::message::Message::InvokeSkill(_))
                 | Some(warp_multi_agent_api::message::Message::MessagesReceivedFromAgents(_))
                 | Some(warp_multi_agent_api::message::Message::ModelUsed(_))
                 | Some(warp_multi_agent_api::message::Message::EventsFromAgents(_))
@@ -3395,7 +3398,9 @@ fn byop_tool_call_keys_by_message_id(
                         ),
                     );
                 }
+                // See the identical `InvokeSkill` note in `byop_result_message_ids_by_tool_call_key` above.
                 Some(warp_multi_agent_api::message::Message::UserQuery(_))
+                | Some(warp_multi_agent_api::message::Message::InvokeSkill(_))
                 | Some(warp_multi_agent_api::message::Message::AgentOutput(_))
                 | Some(warp_multi_agent_api::message::Message::ToolCallResult(_)) => {
                     pending_task_id = None;
@@ -3412,7 +3417,6 @@ fn byop_tool_call_keys_by_message_id(
                 | Some(warp_multi_agent_api::message::Message::WebFetch(_))
                 | Some(warp_multi_agent_api::message::Message::DebugOutput(_))
                 | Some(warp_multi_agent_api::message::Message::ArtifactEvent(_))
-                | Some(warp_multi_agent_api::message::Message::InvokeSkill(_))
                 | Some(warp_multi_agent_api::message::Message::MessagesReceivedFromAgents(_))
                 | Some(warp_multi_agent_api::message::Message::ModelUsed(_))
                 | Some(warp_multi_agent_api::message::Message::EventsFromAgents(_))

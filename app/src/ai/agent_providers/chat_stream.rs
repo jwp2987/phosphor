@@ -76,6 +76,7 @@ use crate::ai::byop_readiness::{
 };
 use crate::settings::AgentProviderApiType;
 use ai::agent::convert::ConvertToAPITypeError;
+use ai::skills::{ParsedSkill, SkillScope};
 
 use super::openai_compatible::OpenAiCompatibleError;
 use super::tools;
@@ -1532,7 +1533,9 @@ fn build_serializer_readiness_projection(
         };
 
         match inner {
-            api::message::Message::UserQuery(_) => {
+            // A skill invocation is replayed to the model as the user's turn, so a
+            // persisted `InvokeSkill` must be a user-turn boundary here too — see #778.
+            api::message::Message::UserQuery(_) | api::message::Message::InvokeSkill(_) => {
                 builder.push_user_boundary(msg.task_id.clone(), msg.id.clone());
             }
             api::message::Message::AgentOutput(_) => {
@@ -1567,7 +1570,6 @@ fn build_serializer_readiness_projection(
             | api::message::Message::WebFetch(_)
             | api::message::Message::DebugOutput(_)
             | api::message::Message::ArtifactEvent(_)
-            | api::message::Message::InvokeSkill(_)
             | api::message::Message::MessagesReceivedFromAgents(_)
             | api::message::Message::ModelUsed(_)
             | api::message::Message::EventsFromAgents(_)
@@ -1700,7 +1702,9 @@ fn build_controller_readiness_projection(
         };
 
         match inner {
-            api::message::Message::UserQuery(_) => {
+            // A skill invocation is replayed to the model as the user's turn, so a
+            // persisted `InvokeSkill` must be a user-turn boundary here too — see #778.
+            api::message::Message::UserQuery(_) | api::message::Message::InvokeSkill(_) => {
                 builder.push_user_boundary(msg.task_id.clone(), msg.id.clone());
             }
             api::message::Message::AgentOutput(_) => {
@@ -1735,7 +1739,6 @@ fn build_controller_readiness_projection(
             | api::message::Message::WebFetch(_)
             | api::message::Message::DebugOutput(_)
             | api::message::Message::ArtifactEvent(_)
-            | api::message::Message::InvokeSkill(_)
             | api::message::Message::MessagesReceivedFromAgents(_)
             | api::message::Message::ModelUsed(_)
             | api::message::Message::EventsFromAgents(_)
@@ -2241,6 +2244,12 @@ fn build_chat_request(
             continue;
         };
         match inner {
+            api::message::Message::InvokeSkill(invoke_skill) => {
+                flush_assistant_buffer(&mut buf, &mut messages, &mut outbound_tool_groups);
+                messages.push(ChatMessage::user(compose_persisted_invoke_skill_text(
+                    invoke_skill,
+                )));
+            }
             api::message::Message::UserQuery(u) => {
                 flush_assistant_buffer(&mut buf, &mut messages, &mut outbound_tool_groups);
                 // Zap: keeps historical-turn multimodal content alive. Warp's own path relies
@@ -2605,14 +2614,14 @@ fn build_chat_request(
             AIAgentInput::InvokeSkill {
                 skill, user_query, ..
             } => {
-                let mut composed = format!(
-                    "Execute the task following the skill \"{}\" guide below:\n\n{}\n\n---\n",
-                    skill.name, skill.content,
-                );
-                if let Some(uq) = user_query {
-                    composed.push_str(&format!("Additional instruction from the user: {}", uq.query));
-                }
-                messages.push(ChatMessage::user(composed));
+                let skill_path =
+                    (skill.scope != SkillScope::Bundled).then(|| skill.path.display_path());
+                messages.push(ChatMessage::user(compose_invoke_skill_text(
+                    &skill.name,
+                    &skill.content,
+                    skill_path.as_deref(),
+                    user_query.as_ref().map(|uq| uq.query.as_str()),
+                )));
             }
             AIAgentInput::ResumeConversation { context } => {
                 // BYOP has no server-side resume-prompt injection layer. On LRC auto-resume
@@ -6114,6 +6123,26 @@ pub async fn generate_byop_output(
                         content,
                     ));
                 }
+                AIAgentInput::InvokeSkill {
+                    skill, user_query, ..
+                } => {
+                    log::info!(
+                        "[byop-diag] persistence input[{input_idx}]: task_id={} \
+                         kind=InvokeSkill skill={}",
+                        persistence_task_id,
+                        skill.name,
+                    );
+                    persistence_order.push(format!(
+                        "{input_idx}:InvokeSkill(name={})",
+                        skill.name
+                    ));
+                    persistence_messages.push(make_invoke_skill_message(
+                        persistence_task_id,
+                        &request_id,
+                        skill,
+                        user_query.as_ref().map(|user_query| user_query.query.as_str()),
+                    ));
+                }
                 _ => {}
             }
         }
@@ -8387,6 +8416,86 @@ fn make_user_query_message(
         request_id: request_id.to_owned(),
         timestamp: None,
     }
+}
+
+/// BYOP counterpart of the server persisting a skill invocation into the task. Without this,
+/// every later request in the conversation (starting with the turn after the skill's first tool
+/// call) would drop the skill's instructions and the user's accompanying query from history —
+/// see #778.
+fn make_invoke_skill_message(
+    task_id: &str,
+    request_id: &str,
+    skill: &ParsedSkill,
+    user_query: Option<&str>,
+) -> api::Message {
+    api::Message {
+        id: Uuid::new_v4().to_string(),
+        task_id: task_id.to_owned(),
+        server_message_data: String::new(),
+        citations: vec![],
+        fetched_memories: vec![],
+        message: Some(api::message::Message::InvokeSkill(
+            api::message::InvokeSkill {
+                skill: Some(skill.clone().into()),
+                user_query: user_query.map(|query| api::message::UserQuery {
+                    query: query.to_owned(),
+                    ..Default::default()
+                }),
+            },
+        )),
+        request_id: request_id.to_owned(),
+        timestamp: None,
+    }
+}
+
+/// The user turn a skill invocation stands for. Live inputs and their persisted copies share
+/// this so every request replays the same instructions. `skill_path` lets the model resolve
+/// files the skill references; bundled skills have no file on disk to point at.
+fn compose_invoke_skill_text(
+    skill_name: &str,
+    skill_content: &str,
+    skill_path: Option<&str>,
+    user_query: Option<&str>,
+) -> String {
+    let mut composed = format!(
+        "Execute the task following the skill \"{skill_name}\" guide below:\n\n{skill_content}\n\n---\n",
+    );
+    if let Some(skill_path) = skill_path {
+        composed.push_str(&format!(
+            "The skill is defined in {skill_path}; resolve files it references relative to that \
+             file's directory.\n"
+        ));
+    }
+    if let Some(user_query) = user_query {
+        composed.push_str(&format!(
+            "Additional instruction from the user: {user_query}"
+        ));
+    }
+    composed
+}
+
+/// Renders a persisted `Message::InvokeSkill` the same way [`compose_invoke_skill_text`] renders
+/// the live input, so a request rebuilt from history matches the request that carried the
+/// invocation live (see `live_and_persisted_skill_invocations_render_identically` in the tests).
+fn compose_persisted_invoke_skill_text(invoke_skill: &api::message::InvokeSkill) -> String {
+    let skill = invoke_skill.skill.as_ref();
+    let descriptor = skill.and_then(|skill| skill.descriptor.as_ref());
+    let content = skill.and_then(|skill| skill.content.as_ref());
+    let is_bundled = descriptor
+        .and_then(|descriptor| descriptor.scope.as_ref())
+        .and_then(|scope| scope.r#type.as_ref())
+        .is_some_and(|scope| matches!(scope, api::skill_descriptor::scope::Type::Bundled(())));
+    compose_invoke_skill_text(
+        descriptor.map_or("", |descriptor| descriptor.name.as_str()),
+        content.map_or("", |content| content.content.as_str()),
+        content
+            .map(|content| content.file_path.as_str())
+            .filter(|path| !is_bundled && !path.is_empty()),
+        invoke_skill
+            .user_query
+            .as_ref()
+            .map(|user_query| user_query.query.as_str()),
+    )
 }
 
 /// When BYOP intercepts websearch, emits `Message::WebSearch(Searching{query})`, which the
@@ -11169,6 +11278,81 @@ mod serializer_readiness_tests {
         params.compaction_state = Some(compaction_state);
 
         assert_build_request_blocked(params, "MissingResultWithoutRepairSource");
+    }
+
+    /// Issue #777: a conversation that starts with a skill invocation (no `UserQuery` at
+    /// all) must still get a real anchor for its compaction summary, and that summary must
+    /// be re-inserted into later requests instead of the skill invocation vanishing along
+    /// with the (correctly) hidden history it heads.
+    #[test]
+    fn build_chat_request_reinserts_summary_anchored_on_skill_invocation() {
+        let skill = ParsedSkill {
+            name: "deploy".to_owned(),
+            description: "Deploy the app".to_owned(),
+            path: warp_util::local_or_remote_path::LocalOrRemotePath::Local(
+                std::path::PathBuf::from("/repo/.agents/skills/deploy/SKILL.md"),
+            ),
+            content: "Run scripts/deploy.sh from the skill directory.".to_owned(),
+            line_range: None,
+            provider: ai::skills::SkillProvider::Agents,
+            scope: SkillScope::Project,
+        };
+        let skill_invocation =
+            make_invoke_skill_message("task-1", "req-1", &skill, Some("ship it"));
+        let summary_assistant =
+            make_agent_output_message("task-1", "req-1", "redacted summary".to_owned());
+        let visible_user = make_user_query_message("task-1", "req-2", "visible".to_owned(), &[]);
+
+        let mut compaction_state = CompactionState::default();
+        compaction_state.push_completed(CompletedCompaction {
+            user_msg_id: skill_invocation.id.clone(),
+            assistant_msg_id: summary_assistant.id.clone(),
+            head_message_ids: vec![skill_invocation.id.clone()],
+            tail_start_id: Some(visible_user.id.clone()),
+            summary_text: Some("redacted summary".to_owned()),
+            auto: false,
+            overflow: false,
+        });
+
+        let mut params = request_params(
+            vec![
+                skill_invocation.clone(),
+                summary_assistant.clone(),
+                visible_user.clone(),
+            ],
+            vec![],
+        );
+        params.compaction_state = Some(compaction_state);
+
+        let request =
+            build_openai_request(&params).expect("skill-anchored compaction should serialize");
+        let errors = strict_chat_completions_ordering_errors(&request.messages);
+        assert!(
+            errors.is_empty(),
+            "request body ordering errors: {errors:?}"
+        );
+
+        let texts: Vec<String> = request
+            .messages
+            .iter()
+            .flat_map(|m| m.content.texts().into_iter().map(str::to_owned))
+            .collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("Conversation history was compacted")),
+            "summary was not re-inserted: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t == "redacted summary"),
+            "summary text missing: {texts:?}"
+        );
+        // The skill invocation's own content is hidden — it's covered by the summary, not
+        // sent upstream a second time.
+        assert!(
+            !texts.iter().any(|t| t.contains("deploy.sh")),
+            "hidden skill invocation leaked into the request: {texts:?}"
+        );
     }
 
     #[test]
