@@ -426,6 +426,17 @@ fn run_command_is_removed() {
     assert!(result.is_err());
 }
 
+// #637: `agent list` existed only to fail ("Agent skill listing is disabled in
+// Phosphor") -- its sources were Warp's hosted environments and GitHub repos. It is
+// removed rather than left as a command that parses and then always errors.
+#[test]
+fn agent_list_is_removed() {
+    assert!(Args::try_parse_from(["warp", "agent", "list"]).is_err());
+    assert!(Args::try_parse_from(["warp", "agent", "list", "--repo", "owner/repo"]).is_err());
+    // The local mailbox's `list` is unaffected.
+    assert!(Args::try_parse_from(["warp", "agent", "message", "list", "run-1"]).is_ok());
+}
+
 // `oz agent message *` is the local, filesystem-backed replacement for the
 // removed `oz run message *` mailbox -- see `crate::agent_mailbox`'s doc
 // comment for why `oz run` (a client for Warp's server-side hosted-CLI-task

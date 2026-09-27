@@ -182,9 +182,6 @@ fn run_agent(
             Ok(())
         }
         AgentCommand::Profile(sub) => profiles::run(ctx, global_options, sub),
-        AgentCommand::List(_) => Err(anyhow::anyhow!(
-            "Agent skill listing is disabled in Phosphor"
-        )),
         AgentCommand::Message(sub) => agent_message::run(global_options.output_format, sub),
     }
 }
@@ -583,7 +580,6 @@ fn command_requires_auth(command: &CliCommand) -> bool {
             AgentCommand::Profile(sub) => match sub {
                 AgentProfileCommand::List => true,
             },
-            AgentCommand::List(_) => true,
             // The local mailbox is plain filesystem I/O with no BYOP/provider
             // dependency, and local children invoke it unattended -- it must
             // work regardless of auth state.
