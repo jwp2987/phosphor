@@ -2156,6 +2156,33 @@ mod tests {
         }
     }
 
+    /// `/plan` must always produce a plan document: the plan pane, its versions and the
+    /// restore path are built around one. The old wording made saving optional and told
+    /// the model to skip it for short plans, so `/plan` usually answered inline only.
+    #[test]
+    fn plan_mode_requires_saving_the_plan_as_a_document() {
+        let out = render_system(
+            AgentProviderApiType::OpenAi,
+            &LLMId::from("byop:p:claude-sonnet-4-5"),
+            &[],
+            &["create_documents".to_string(), "read_files".to_string()],
+            true,
+            &[],
+        );
+        assert!(
+            out.contains("always finish by calling `create_documents"),
+            "Plan Mode must require create_documents: {out}"
+        );
+        assert!(
+            !out.contains("(Optional) Persist the plan"),
+            "saving the plan must not be optional: {out}"
+        );
+        assert!(
+            !out.contains("has not asked you to save it"),
+            "the prompt must not tell the model to skip saving: {out}"
+        );
+    }
+
     // Issue #116: global Rules (created by the user in Settings -> Agents -> Rules) must be injected into the system prompt.
     // The three cases below cover the key branches of `partials/user_rules.j2`.
 
