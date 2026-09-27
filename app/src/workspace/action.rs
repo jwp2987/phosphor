@@ -182,6 +182,10 @@ pub enum WorkspaceAction {
     /// new name. Dispatched when clicking on the vtab panel background while a
     /// rename editor is open.
     CancelActiveRename,
+    /// Returns focus to the active tab after the tab context menu closed, unless
+    /// something else has claimed it in the meantime. Deferred from the menu's Close
+    /// handler: see `Workspace::restore_focus_after_tab_menu_close`.
+    RestoreFocusAfterTabMenuClose,
     /// Creates a new tab group containing the tab at the given index.
     NewTabGroupFromTab(usize),
     /// Moves the tab at `tab_index` into `group_id`, appending it to the
@@ -910,6 +914,7 @@ impl WorkspaceAction {
             | OpenLaunchConfigSaveModal
             | ClearTabMultiSelection
             | CancelActiveRename
+            | RestoreFocusAfterTabMenuClose
             | ShiftSelectTabRange { .. }
             | ToggleTabMultiSelection { .. }
             | ToggleTabRightClickMenu { .. }
