@@ -6968,7 +6968,7 @@ impl SettingsWidget for OtherAIWidget {
 }
 
 #[cfg(not(target_family = "wasm"))]
-pub(crate) fn cli_agent_settings_widget_id() -> &'static str {
+pub fn cli_agent_settings_widget_id() -> &'static str {
     CLIAgentWidget::static_widget_id()
 }
 

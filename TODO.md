@@ -2696,13 +2696,60 @@ separately rather than inflating the queue count.
       **Unverified: no cargo build/test in this round** — see the port's commit message and
       handoff report for compile-risk hotspots (mainly: the many collapsed `if`/`else` branches
       across onboarding slide files, none individually re-typechecked).
-- [ ] **`c9e5622943` — the settings-nav/search integration harness half only.** The
+- [x] **`c9e5622943` — the settings-nav/search integration harness half only.** The
       Code-page IA split is declined below with the rest of that program. The harness is
       independently valuable: the fork has 5 helpers in
       `integration_testing/settings/step.rs` against 20 at the pin, and no
       `crates/integration/src/test/settings_navigation.rs` at all. Its position-id scheme
       is keyed on `SettingsSection` variants rather than display labels, which suits this
       fork better than upstream since the fork's `Display` is localized.
+      **Fixed 2026-09-27:** ported the harness half only — production changes are the
+      `SavePosition` ids (`SEARCH_EDITOR_POSITION_ID`, `nav_page_position_id`,
+      `nav_umbrella_position_id`, `nav_subpage_position_id`, all new in
+      `app/src/settings_view/mod.rs`) wrapping the search editor and the three sidebar
+      row renderers, plus a `#[cfg(feature = "integration_tests")] impl SettingsView`
+      with `is_umbrella_expanded`/`search_query`, and widening
+      `cli_agent_settings_widget_id` from `pub(crate)` to `pub` so the new test crate
+      can reach it. `app/src/integration_testing/settings/step.rs` grew from 5 helpers
+      to 20 (`open_settings_page`, `click_settings_nav_page/_umbrella/_nav_subpage`,
+      `type_settings_search`, `clear_settings_search`, `press_settings_nav_up/_down`,
+      `assert_settings_section`, `assert_settings_nav_page/_subpage/_umbrella_visible`,
+      `assert_settings_widget_rendered`, `assert_umbrella_expanded`, plus the 5
+      pre-existing ones), matching the pin's 20. New
+      `crates/integration/src/test/settings_navigation.rs` (10 tests, 1 `#[ignore]`d,
+      matching the pin's 9 real + 1 ignored), registered in `crates/integration/src/test.rs`,
+      `crates/integration/src/bin/integration.rs`, and
+      `crates/integration/tests/integration/ui_tests.rs`.
+      **Adapted, not copied, because this fork's settings architecture differs from
+      upstream's in two structural ways the pin's tests assume don't exist:** (1) no
+      `SettingsSection::Account` — the decentralized fork drops the cloud account
+      surface entirely, and the default page is `WarpAgent` (itself an Agents-umbrella
+      subpage) — so every test that used `Account` as a neutral, non-umbrella starting
+      page now uses `SettingsSection::Code`, the fork's actual first non-umbrella nav
+      item; (2) no `SettingsSection::BillingAndUsage` (dropped the same way) — the
+      pin's two collapsed-umbrella keyboard-nav tests pin the adjacency between the
+      Agents umbrella and whatever page sits directly below/above it in nav order,
+      which in this fork is `Code`, not `BillingAndUsage`, so both tests target `Code`
+      instead. The "down into a collapsed umbrella" test additionally needed a
+      different anchor entirely: in this fork the Agents umbrella is the very FIRST
+      nav item (nothing precedes it to press Down from), so that test opens `About`
+      (the last page) instead and relies on `next_stop_index`'s documented wraparound
+      at the ends of the nav list (`app/src/settings_view/mod.rs`) to land on the
+      umbrella's first subpage — same mechanism the pin's test exercises, different
+      anchor page. Verified against the code (not run): `set_and_refresh_current_page_internal`
+      auto-expands the containing umbrella on navigation to any subpage, `About` is
+      unconditionally the last nav item regardless of the `Network`/`Scripting`
+      feature flags, and `ai_subpages()` orders `ThirdPartyCLIAgents` last — all load-bearing
+      assumptions behind the adapted assertions.
+      Gates: `check_cloud_boundary`, `check_stub_coverage`, `check_declined_collisions`
+      all green; `rustfmt --check` clean on every changed/new file (verified against
+      HEAD that unrelated flagged lines elsewhere in the same files are pre-existing
+      baseline drift, not new). **Not verified by compilation** (no cargo in this
+      task) — highest compile-risk spots: the exact `SettingsSection` variant names
+      used in the new test file (cross-checked by reading the enum definition
+      directly, not from memory) and the `App`/`AppContext` type distinctions in
+      `step.rs`'s new helpers (matched against existing call-site patterns in the
+      same file, e.g. `editor.as_ref(ctx).buffer_text(ctx)` at line ~1485).
 - [x] **`18179177a`** — the right-click behavior setting's follow-up copy. Its prerequisite
       `c25ac4070` is ported (`182ee1449`); only this follow-up remains. (Rewritten 2026-09-26.)
       **Fixed #738:** `RightClickBehaviorWidget::render` now passes
