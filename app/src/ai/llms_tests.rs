@@ -194,6 +194,45 @@ fn preferences_for_profile_model_tests(custom_model_id: &LLMId) -> LLMPreference
     }
 }
 
+/// Preferences whose `cli_agent` model pool deliberately differs from `agent_mode`'s: it
+/// shares one model id with `agent_mode` (`SHARED_MODEL_ID`) and has its own distinct
+/// default (`"cli-default"`), which is not present in `agent_mode` at all. This lets a test
+/// tell apart "the CLI agent's own default" from "whatever the base model resolves to".
+fn preferences_for_cli_agent_model_tests() -> LLMPreferences {
+    const SHARED_MODEL_ID: &str = "claude-opus";
+
+    let agent_mode = AvailableLLMs::new(
+        "auto".into(),
+        vec![
+            agent_llm("auto", "auto (cost-efficient)"),
+            agent_llm(SHARED_MODEL_ID, "Opus"),
+        ],
+        None,
+    )
+    .expect("choices are non-empty");
+    let cli_agent = AvailableLLMs::new(
+        "cli-default".into(),
+        vec![
+            agent_llm("cli-default", "CLI Agent Default"),
+            agent_llm(SHARED_MODEL_ID, "Opus"),
+        ],
+        None,
+    )
+    .expect("choices are non-empty");
+    LLMPreferences {
+        models_by_feature: ModelsByFeature {
+            agent_mode,
+            cli_agent: Some(cli_agent),
+            ..Default::default()
+        },
+        last_update: None,
+        base_llm_for_terminal_view: HashMap::new(),
+        reasoning_effort_per_terminal: HashMap::new(),
+        last_used_reasoning: HashMap::new(),
+        agent_mode_models_unavailable: false,
+    }
+}
+
 fn install_profile_model_singletons(app: &mut App) {
     initialize_settings_for_tests(app);
     app.add_singleton_model(|_| AuthStateProvider::new_logged_out_for_test());
@@ -377,6 +416,77 @@ fn copying_an_absent_override_clears_a_stale_override_on_the_target() {
                 preferences.base_llm_for_terminal_view.get(&forked_id),
                 None,
                 "a fork of a profile-tracking pane must track the profile too"
+            );
+        });
+    });
+}
+
+/// #701: with no explicit `cli_agent_model` configured ("Auto"), the model actually used
+/// once the agent takes control of the terminal must agree with the profile's base model
+/// when that model is also a valid CLI-agent choice -- not silently fall back to whichever
+/// provider happens to be first in the CLI-agent choice list, which can be a completely
+/// unrelated provider from the one shown (and configured) as the base model.
+#[test]
+fn auto_cli_agent_model_matches_the_base_model_when_available() {
+    App::test((), |mut app| async move {
+        install_profile_model_singletons(&mut app);
+        let profiles = app.add_singleton_model(|ctx| {
+            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+        });
+        let preferences = app.add_singleton_model(|_| preferences_for_cli_agent_model_tests());
+        let surface_id = EntityId::new();
+        let profile_id =
+            profiles.read(&app, |profiles, ctx| *profiles.active_profile(Some(surface_id), ctx).id());
+
+        // Base model is the id shared by both `agent_mode` and `cli_agent`; `cli_agent_model`
+        // is left unset ("Auto").
+        profiles.update(&mut app, |profiles, ctx| {
+            profiles.set_base_model(profile_id, Some(LLMId::from("claude-opus")), ctx);
+        });
+
+        preferences.read(&app, |preferences, ctx| {
+            assert_eq!(
+                preferences
+                    .get_active_cli_agent_model(ctx, Some(surface_id))
+                    .id
+                    .as_str(),
+                "claude-opus",
+                "Auto should follow the base model, not the CLI agent pool's own default"
+            );
+        });
+    });
+}
+
+/// #701, the other half: when the base model isn't a valid CLI-agent choice at all (e.g. it's
+/// only available for ordinary agent-mode replies), "Auto" still has to resolve to *something*
+/// usable for CLI agent use, so it falls back to the CLI-agent pool's own default rather than
+/// failing to resolve.
+#[test]
+fn auto_cli_agent_model_falls_back_to_cli_agent_default_when_base_model_is_not_a_choice() {
+    App::test((), |mut app| async move {
+        install_profile_model_singletons(&mut app);
+        let profiles = app.add_singleton_model(|ctx| {
+            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+        });
+        let preferences = app.add_singleton_model(|_| preferences_for_cli_agent_model_tests());
+        let surface_id = EntityId::new();
+        let profile_id =
+            profiles.read(&app, |profiles, ctx| *profiles.active_profile(Some(surface_id), ctx).id());
+
+        // "auto" is a valid `agent_mode` choice but is absent from `cli_agent`'s choices.
+        profiles.update(&mut app, |profiles, ctx| {
+            profiles.set_base_model(profile_id, Some(LLMId::from("auto")), ctx);
+        });
+
+        preferences.read(&app, |preferences, ctx| {
+            assert_eq!(
+                preferences
+                    .get_active_cli_agent_model(ctx, Some(surface_id))
+                    .id
+                    .as_str(),
+                "cli-default",
+                "Auto must still fall back to the CLI agent pool's own default when the base \
+                 model isn't a usable CLI-agent choice"
             );
         });
     });

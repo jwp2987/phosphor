@@ -897,11 +897,27 @@ impl LLMPreferences {
         let profile = AIExecutionProfilesModel::as_ref(app).active_profile(terminal_view_id, app);
 
         let available = self.get_cli_agent_available();
-        profile
+        if let Some(info) = profile
             .data()
             .cli_agent_model
             .clone()
             .and_then(|id| available.info_for_id(&id))
+        {
+            return info;
+        }
+
+        // "Auto" (no `cli_agent_model` configured): prefer the same model the
+        // profile's base model resolves to, if it's also a valid choice for
+        // CLI agent use, so the model that actually drives a full-terminal-use
+        // turn agrees with the model shown elsewhere as the profile's base
+        // model. Previously this fell straight through to
+        // `available.default_llm_info()` -- whichever provider happens to be
+        // first in the user's configured provider list -- which could be a
+        // completely unrelated provider/model from the one configured (and
+        // displayed) as the base model (#701).
+        let base_model = self.get_active_base_model(app, terminal_view_id);
+        available
+            .info_for_id(&base_model.id)
             .unwrap_or_else(|| available.default_llm_info())
     }
 
