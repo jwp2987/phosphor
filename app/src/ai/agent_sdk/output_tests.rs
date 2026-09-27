@@ -34,7 +34,12 @@ fn write_list_emits_json_for_json_output_format() {
     write_list(items, OutputFormat::Json, &mut output).unwrap();
 
     let rendered = String::from_utf8(output).unwrap();
-    assert_eq!(rendered, r#"[{"id":"message-1","subject":"Build update"}]"#);
+    // Trailing newline like every other format (#637): without it the shell prompt
+    // was printed on the same line as the closing bracket.
+    assert_eq!(
+        rendered,
+        "[{\"id\":\"message-1\",\"subject\":\"Build update\"}]\n"
+    );
 }
 
 #[test]

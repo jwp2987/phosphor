@@ -554,12 +554,17 @@ impl AgentDriverRunner {
             driver.set_output_format(output_format);
             let agent_future = driver.run(task, ctx);
 
-            ctx.spawn(agent_future, |_, result, ctx| match result {
-                Ok(()) => {
-                    ctx.terminate_app(TerminationMode::ForceTerminate, None);
-                }
-                Err(err) => {
-                    report_fatal_error(err.into(), ctx);
+            ctx.spawn(agent_future, |driver, result, ctx| {
+                // `--output-format json` buffers the run's records; print the single
+                // document before exiting, including on failure (#637).
+                driver.finish_json_document();
+                match result {
+                    Ok(()) => {
+                        ctx.terminate_app(TerminationMode::ForceTerminate, None);
+                    }
+                    Err(err) => {
+                        report_fatal_error(err.into(), ctx);
+                    }
                 }
             });
         });

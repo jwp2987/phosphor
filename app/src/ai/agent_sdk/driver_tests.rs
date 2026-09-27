@@ -1029,3 +1029,43 @@ async fn notification_plugin_setup_touches_nothing_when_the_plugin_is_current() 
 
     assert_eq!(manager.calls(), (0, 0));
 }
+
+// ── `--output-format json` document (#637) ───────────────────────────────────
+//
+// `json` used to share the `ndjson` writer, so `agent run --output-format json`
+// printed one record per line — not a JSON document. The driver now collects the
+// same records and prints them once, as a single array, when the run ends.
+
+#[test]
+fn json_document_collects_ndjson_records_into_one_array() {
+    let mut ndjson = Vec::new();
+    super::output::json::conversation_started("conv-1", &mut ndjson).unwrap();
+    super::output::json::run_started("run-1", &mut ndjson).unwrap();
+
+    let mut records = Vec::new();
+    super::output::collect_json_records(&ndjson, &mut records).unwrap();
+    assert_eq!(records.len(), 2);
+
+    let mut document = Vec::new();
+    super::output::write_json_document(&records, &mut document).unwrap();
+    let rendered = String::from_utf8(document).unwrap();
+    assert!(rendered.ends_with('\n'), "document must end with a newline");
+
+    // The whole output parses as ONE value — the defect was that it did not.
+    let value: serde_json::Value =
+        serde_json::from_str(&rendered).expect("json output must be a single document");
+    let array = value.as_array().expect("json output must be an array");
+    assert_eq!(array.len(), 2);
+    assert_eq!(array[0]["conversation_id"], "conv-1");
+    assert_eq!(array[1]["run_id"], "run-1");
+}
+
+#[test]
+fn json_document_for_a_run_with_no_records_is_an_empty_array() {
+    let mut records = Vec::new();
+    super::output::collect_json_records(b"", &mut records).unwrap();
+
+    let mut document = Vec::new();
+    super::output::write_json_document(&records, &mut document).unwrap();
+    assert_eq!(String::from_utf8(document).unwrap(), "[]\n");
+}

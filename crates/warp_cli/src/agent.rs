@@ -9,7 +9,8 @@ use crate::{
 /// Output format for agent results.
 #[derive(Debug, Copy, Clone, ValueEnum, Eq, PartialEq, Default)]
 pub enum OutputFormat {
-    /// Output as JSON.
+    /// Output as a single JSON document. `agent run` prints it when the run ends; use
+    /// `ndjson` to stream records as they arrive.
     #[value(name = "json")]
     Json,
     /// Output as newline-delimited JSON.
