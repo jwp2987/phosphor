@@ -228,8 +228,11 @@ impl App {
                 log::warn!("Failed to set up termination signal handling: {err}");
             }
         }
-        // TODO(#685): Windows `WM_ENDSESSION` / `WM_QUERYENDSESSION` (logoff,
-        // shutdown) still end the process without `app_will_terminate`.
+        // Windows `WM_QUERYENDSESSION` / `WM_ENDSESSION` (logoff, shutdown) are
+        // caught separately, once the first window opens (they're sent to a
+        // window, not posted to this event loop) -- see
+        // `windowing::winit::windows::end_session` (jwp2987/phosphor#685
+        // follow-up).
 
         let ui_app = Self::construct_ui_app(assets, is_integration_test, &event_loop);
         let inner_event_loop = super::EventLoop::new(

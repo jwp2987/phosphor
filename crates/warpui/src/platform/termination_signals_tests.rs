@@ -244,6 +244,70 @@ fn signal_sets_cover_sigterm_and_sighup() {
     );
 }
 
+mod shutdown_gate {
+    use std::sync::mpsc;
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use super::super::ShutdownGate;
+
+    #[test]
+    fn signal_before_wait_is_not_lost() {
+        let gate = ShutdownGate::new();
+        gate.signal();
+
+        let woken = gate.wait(Duration::from_secs(5));
+        assert!(woken, "a signal delivered before wait() must still count");
+    }
+
+    #[test]
+    fn wait_without_a_signal_times_out() {
+        let gate = ShutdownGate::new();
+        let start = Instant::now();
+
+        let woken = gate.wait(Duration::from_millis(50));
+
+        assert!(!woken);
+        assert!(
+            start.elapsed() >= Duration::from_millis(50),
+            "must actually wait out the deadline, not return early"
+        );
+    }
+
+    #[test]
+    fn signal_wakes_a_blocked_waiter_before_the_deadline() {
+        let gate = Arc::new(ShutdownGate::new());
+        let (ready_tx, ready_rx) = mpsc::channel::<()>();
+
+        let waiter_gate = gate.clone();
+        let waiter = thread::spawn(move || {
+            // No exact synchronization point exists for "now inside wait()";
+            // signal a best-effort readiness right before entering it and give
+            // the main thread a moment to act on it. The real assertion is
+            // that `join` below returns `true` well under the 10s deadline
+            // it's racing, not the timing of this handoff.
+            let _ = ready_tx.send(());
+            waiter_gate.wait(Duration::from_secs(10))
+        });
+
+        ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("waiter thread should have started");
+        thread::sleep(Duration::from_millis(50));
+
+        let start = Instant::now();
+        gate.signal();
+
+        let woken = waiter.join().unwrap();
+        assert!(woken, "signal() must wake the waiter, not the 10s deadline");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "the waiter should return promptly after signal(), not sleep out the deadline"
+        );
+    }
+}
+
 mod approve_termination {
     use std::cell::Cell;
 

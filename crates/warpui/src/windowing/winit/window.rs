@@ -772,6 +772,23 @@ impl Window {
         self.titlebar_height.get()
     }
 
+    /// This window's raw `HWND`, if it has been opened. Used to catch
+    /// logoff/shutdown (jwp2987/phosphor#685 follow-up); see
+    /// `windowing::winit::windows::end_session`.
+    #[cfg(windows)]
+    pub(super) fn hwnd(&self) -> Option<windows::Win32::Foundation::HWND> {
+        use wgpu::rwh::HasWindowHandle;
+
+        let inner = self.inner.borrow();
+        let window = &inner.as_ref()?.window;
+        match window.window_handle().ok()?.as_raw() {
+            wgpu::rwh::RawWindowHandle::Win32(handle) => {
+                Some(windows::Win32::Foundation::HWND(handle.hwnd.get() as _))
+            }
+            _ => None,
+        }
+    }
+
     pub fn open_window(
         &self,
         window_target: &ActiveEventLoop,

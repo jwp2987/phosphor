@@ -1,4 +1,5 @@
 pub mod clipboard;
+pub(crate) mod end_session;
 mod network;
 mod registry;
 mod system_caption_buttons;

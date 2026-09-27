@@ -3,6 +3,8 @@
 //! This provides enough functionality to run an app, but no GUI or visible output.
 
 mod app;
+#[cfg(windows)]
+mod console_close;
 mod delegate;
 mod event_loop;
 mod windowing;

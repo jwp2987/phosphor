@@ -562,6 +562,15 @@ impl EventLoop {
 
         match evt {
             Event::NewEvents(StartCause::Init) => {
+                // Record how to reach this event loop from a Windows
+                // `WM_ENDSESSION` subclass, which can't wait for the ordinary
+                // event dispatch to run the shutdown body (jwp2987/phosphor#685
+                // follow-up); see `windowing::winit::windows::end_session`.
+                // Safe to record on every (re-)init: `self` is the same,
+                // stable address winit boxed this closure's environment at.
+                #[cfg(windows)]
+                super::windows::end_session::set_event_loop(self as *mut Self);
+
                 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
                 {
                     let windowing_system =
@@ -643,6 +652,16 @@ impl EventLoop {
                         // actual size, notify the framework that the window
                         // size may have (almost certainly) changed.
                         self.callbacks.for_window(window).window_resized(window);
+
+                        // Catch logoff/shutdown (`WM_QUERYENDSESSION`/
+                        // `WM_ENDSESSION`) on this window, so it still runs
+                        // `app_will_terminate` (jwp2987/phosphor#685
+                        // follow-up). Idempotent: only the first window
+                        // opened actually gets subclassed.
+                        #[cfg(windows)]
+                        if let Some(hwnd) = window.hwnd() {
+                            super::windows::end_session::install(hwnd);
+                        }
                     }
                     Err(err) => {
                         log::error!("Failed to open window: {err:#}");
@@ -961,25 +980,7 @@ impl EventLoop {
             }
             Event::WindowEvent { window_id, event } => self.handle_window_event(window_id, event),
             Event::LoopExiting => {
-                // Hide all open windows such that, if the application takes a
-                // second or two to clean up before exiting, this isn't visible
-                // to the end user.
-                self.ui_app.update(|ctx| {
-                    use crate::SingletonEntity as _;
-                    crate::windowing::WindowManager::handle(ctx).update(
-                        ctx,
-                        |window_manager, _| {
-                            window_manager.hide_app();
-                        },
-                    );
-                });
-
-                #[cfg(windows)]
-                if let Some(network_listener) = self.state.network_connection_listener.take() {
-                    network_listener.clean_up();
-                }
-
-                self.callbacks.app_will_terminate();
+                self.run_shutdown_body();
 
                 // A signal-initiated quit ends the way the signal would have
                 // (jwp2987/phosphor#685); otherwise this returns.
@@ -1543,6 +1544,32 @@ impl EventLoop {
         }
 
         self.callbacks.window_will_close(window_id)
+    }
+
+    /// Hides all open windows (so a second or two of cleanup before exiting
+    /// isn't visible to the end user), tears down the Windows
+    /// network-connection listener, and calls `app_will_terminate` (LSP/MCP
+    /// shutdown, terminal-server teardown, the persistence flush).
+    ///
+    /// Shared by the ordinary `Event::LoopExiting` path and, on Windows, by
+    /// `WM_ENDSESSION` (jwp2987/phosphor#685 follow-up), which must run this
+    /// synchronously in-line rather than through the normal event dispatch --
+    /// see `windowing::winit::windows::end_session` for why, and for the
+    /// safety argument for calling this through a raw pointer from there.
+    pub(super) fn run_shutdown_body(&mut self) {
+        self.ui_app.update(|ctx| {
+            use crate::SingletonEntity as _;
+            crate::windowing::WindowManager::handle(ctx).update(ctx, |window_manager, _| {
+                window_manager.hide_app();
+            });
+        });
+
+        #[cfg(windows)]
+        if let Some(network_listener) = self.state.network_connection_listener.take() {
+            network_listener.clean_up();
+        }
+
+        self.callbacks.app_will_terminate();
     }
 
     fn terminate_app_requested(

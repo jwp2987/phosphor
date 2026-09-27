@@ -39,6 +39,7 @@
 //! by SIGTERM" status rather than a clean exit.
 
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 use instant::Instant;
@@ -173,6 +174,58 @@ pub(crate) fn run_deadline_watchdog(
         deadline.as_secs()
     );
     exit(exit_code);
+}
+
+/// A one-shot completion gate: one side [`wait`](ShutdownGate::wait)s, bounded
+/// by a deadline, while another [`signal`](ShutdownGate::signal)s once the
+/// work it's waiting on has finished.
+///
+/// Exists for a platform shutdown path where the OS kills the process shortly
+/// after some handler *returns*, so that handler must block until graceful
+/// shutdown has actually finished (or the deadline elapses) rather than
+/// return immediately -- unlike a plain signal handler, which can post a
+/// request and return right away because nothing then kills the process. A
+/// Windows console-control handler (`CTRL_CLOSE_EVENT` and friends) is
+/// exactly this case; see `platform::headless::console_close`, the only
+/// current user. Kept here, and covered by tests that run on every platform,
+/// because the wait/notify coordination itself has nothing Windows-specific
+/// about it -- only the caller that blocks on it does.
+pub(crate) struct ShutdownGate {
+    done: Mutex<bool>,
+    cond: Condvar,
+}
+
+impl ShutdownGate {
+    pub(crate) const fn new() -> Self {
+        Self {
+            done: Mutex::new(false),
+            cond: Condvar::new(),
+        }
+    }
+
+    /// Blocks until [`signal`](Self::signal) is called or `deadline` elapses,
+    /// whichever comes first. Returns `true` if woken by `signal`, `false` if
+    /// the deadline elapsed first. A poisoned lock (the signalling side
+    /// panicked while holding it) is treated as "already done": there is
+    /// nothing left to wait for either way.
+    pub(crate) fn wait(&self, deadline: Duration) -> bool {
+        let done = match self.done.lock() {
+            Ok(done) => done,
+            Err(_) => return true,
+        };
+        match self.cond.wait_timeout_while(done, deadline, |done| !*done) {
+            Ok((_done, result)) => !result.timed_out(),
+            Err(_) => true,
+        }
+    }
+
+    /// Marks the gate as done and wakes every waiter.
+    pub(crate) fn signal(&self) {
+        if let Ok(mut done) = self.done.lock() {
+            *done = true;
+            self.cond.notify_all();
+        }
+    }
 }
 
 /// Ends the process now with `exit_code`, without running `atexit` handlers or

@@ -12934,13 +12934,66 @@ open findings that had no pre-existing row.
       invocation — no build was run to confirm this session.
 
 - [ ] **Windows graceful shutdown on console close / logoff is still incomplete
-      (#685 follow-up).** Headless `CTRL_CLOSE_EVENT`
-      (`crates/warpui/src/platform/headless/event_loop.rs`) and GUI
-      `WM_QUERYENDSESSION`/`WM_ENDSESSION`
-      (`crates/warpui/src/windowing/winit/app.rs`) both still skip
-      `app_will_terminate` entirely, so LSP/MCP shutdown, the terminal-server
-      teardown and the persistence flush all get skipped on a Windows console
-      close or logoff.
+      (#685 follow-up, #773).** **Implemented this round, but left unticked:
+      Windows-only code, written and read carefully on a Linux host with no
+      `cargo`/Windows build available (see the branch's hard rules), so none of
+      it has actually compiled or run.** Whoever gets a Windows build next
+      should tick this once it's verified.
+
+      **Headless/TUI (`crates/warpui/src/platform/headless/console_close.rs`,
+      new file):** a second `SetConsoleCtrlHandler` registration (alongside the
+      existing `ctrlc` Ctrl-C handler) for `CTRL_CLOSE_EVENT`,
+      `CTRL_LOGOFF_EVENT` and `CTRL_SHUTDOWN_EVENT`. Unlike a signal handler,
+      this one must *block* (Windows kills the process shortly after every
+      registered handler returns): it posts `AppEvent::Terminate` to the
+      headless loop, arms the same deadline watchdog `termination_signals`
+      uses, and blocks on a new `termination_signals::ShutdownGate` until
+      `headless::event_loop::run` signals completion (right after
+      `app_will_terminate`) or the deadline elapses.
+
+      **GUI (`crates/warpui/src/windowing/winit/windows/end_session.rs`, new
+      file):** subclasses the first opened window's `WNDPROC` (via
+      `SetWindowLongPtrW`/`GWLP_WNDPROC`, chaining unhandled messages to
+      winit's own procedure via `CallWindowProcW`) to catch
+      `WM_QUERYENDSESSION` (answered immediately) and `WM_ENDSESSION` with
+      `wParam != 0`. Because these are *sent*, not posted, messages —
+      dispatched synchronously inside the same thread's own
+      `PeekMessageW`/`GetMessageW` call, never reaching winit's
+      `DispatchMessageW` — posting `CustomEvent::Terminate` and waiting for
+      the ordinary `Event::LoopExiting` path was not an option (see the file's
+      module doc for the full argument). Instead `Event::LoopExiting`'s body
+      was extracted into `EventLoop::run_shutdown_body` (shared, unchanged
+      behavior on the existing Unix/macOS paths) and the `WM_ENDSESSION`
+      handler calls it directly and synchronously, through a raw pointer to
+      the running `EventLoop` recorded once at `NewEvents(StartCause::Init)`
+      — safe because a sent message can't arrive while `handle_event` is
+      itself running (both are main-thread-only; see the module doc for the
+      full safety argument) — then ends the process itself, bounded by the
+      same deadline-watchdog pattern.
+
+      **Extracted and unit-tested on Linux:** `termination_signals::ShutdownGate`,
+      the wait/notify primitive both of the above block on (`wait`/`signal`,
+      covered by `termination_signals_tests.rs::shutdown_gate`); this piece is
+      genuinely verified, including by a standalone `rustc --test` run outside
+      the workspace during this round (this file's own repo has no `cargo`
+      available here). Everything touching the real Win32 APIs
+      (`SetConsoleCtrlHandler`, the `WNDPROC` subclass, the `isize`↔`WNDPROC`
+      transmute, the raw `EventLoop` pointer) is unverified: it was written by
+      reading the exact `windows`/`winit` crate source at the pinned versions
+      (`windows` 0.62.2 downloaded from crates.io and inspected directly; the
+      `jwp2987/winit` fork at the rev in `Cargo.lock`) rather than compiled.
+      Also added the `Win32_System_Console` feature to `warpui`'s `windows`
+      dependency in `Cargo.toml` (needed for `SetConsoleCtrlHandler`/
+      `CTRL_CLOSE_EVENT`/etc.); this is a Cargo feature, not a lockfile entry,
+      so it needed no `Cargo.lock` change.
+
+      **What a Windows build must confirm:** the crate actually compiles
+      (feature gating, exact `windows`/`winit` API signatures); a closed
+      console window, a logoff, and a shutdown each still run
+      `app_will_terminate` and exit promptly, on both the TUI and the GUI
+      build; the GUI path doesn't regress ordinary window close, resize, or
+      any other message the subclass forwards; and that the deadline watchdog
+      doesn't fire spuriously on a normal, fast shutdown.
 
 - [x] **#707 — MCP stdio servers are not spawned in their own process group**, so on
       exit only the direct child is killed by handle (`be564eeaf`); a grandchild
