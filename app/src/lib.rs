@@ -2340,48 +2340,201 @@ fn initialize_app(
 
 /// Hard upper bound on how long quitting waits for the servers it spawned (language
 /// servers and MCP servers) to shut down. They all shut down concurrently against one
-/// deadline, so this is the whole budget, not a per-server or per-kind one. It sits well
-/// inside the 5s hard cap the SIGTERM/SIGHUP quit path arms (jwp2987/phosphor#685).
+/// deadline, counted from when their shutdowns start, so this is the whole budget, not a
+/// per-server or per-kind one. It sits well inside the 5s hard cap the SIGTERM/SIGHUP
+/// quit path arms (jwp2987/phosphor#685).
 const APP_EXIT_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// Stops every language server and MCP server the app spawned, as the app terminates
-/// (jwp2987/phosphor#680, #687). Returns within [`APP_EXIT_SHUTDOWN_GRACE`] (plus the
-/// time to send a few kill signals), so a wedged server cannot hang quit.
+/// The steps of `on_will_terminate`, in order. They are behind a trait so the order,
+/// which several quit bugs depend on, is testable: the real steps reach for a dozen
+/// app singletons.
+trait WillTerminateSteps {
+    /// Start shutting down language and MCP servers, without waiting.
+    fn begin_server_shutdown(&mut self);
+    /// Send unsaved notebook changes to the persistence writer.
+    fn flush_notebooks(&mut self);
+    /// Drain and stop the SQLite writer thread (an unbounded join).
+    fn terminate_persistence_writer(&mut self);
+    /// Tear down the terminal server and pty event loops.
+    fn tear_down_terminal_server(&mut self);
+    /// Release app services, including Linux's single-instance D-Bus name.
+    fn tear_down_app_services(&mut self);
+    /// Wait for the server shutdowns until their shared deadline; kill leftovers.
+    fn finish_server_shutdown(&mut self);
+    /// Relaunch for an autoupdate, if one is pending.
+    fn relaunch_for_autoupdate(&mut self);
+    /// Tear down profiling, crash recovery and crash reporting.
+    fn tear_down_diagnostics(&mut self);
+}
+
+/// Runs the `on_will_terminate` steps. The order matters:
 ///
-/// The MCP shutdown is started first so it runs while the language-server shutdown
-/// waits; both then share the one deadline.
-fn shut_down_servers_for_app_exit(ctx: &mut AppContext) {
-    let deadline = instant::Instant::now() + APP_EXIT_SHUTDOWN_GRACE;
+/// - Server shutdowns start first, so they progress while the persistence writer
+///   drains (an unbounded join), instead of queueing behind it and eating the
+///   SIGTERM deadline.
+/// - The terminal server is torn down after the writer, so the shells' exits are not
+///   persisted as sessions that ended.
+/// - The bounded wait for the servers comes after the terminal server and app-services
+///   teardown: releasing the single-instance name first means a relaunch during the
+///   wait starts a new instance instead of being routed to this hidden, exiting one.
+/// - App services are torn down before the autoupdate relaunch, so the new process
+///   doesn't find this one.
+fn run_will_terminate_steps(steps: &mut impl WillTerminateSteps) {
+    steps.begin_server_shutdown();
+    steps.flush_notebooks();
+    steps.terminate_persistence_writer();
+    steps.tear_down_terminal_server();
+    steps.tear_down_app_services();
+    steps.finish_server_shutdown();
+    steps.relaunch_for_autoupdate();
+    steps.tear_down_diagnostics();
+}
 
-    #[cfg(not(target_family = "wasm"))]
-    let mcp_shutdown = begin_mcp_servers_shutdown_for_app_exit(ctx);
+/// The real [`WillTerminateSteps`].
+struct AppWillTerminate<'a> {
+    ctx: &'a mut AppContext,
+    servers: Option<AppExitServerShutdown>,
+}
 
-    terminate_language_servers_for_app_exit(
-        deadline.saturating_duration_since(instant::Instant::now()),
-        ctx,
-    );
+impl WillTerminateSteps for AppWillTerminate<'_> {
+    fn begin_server_shutdown(&mut self) {
+        self.servers = Some(begin_servers_shutdown_for_app_exit(self.ctx));
+    }
 
-    #[cfg(not(target_family = "wasm"))]
-    if let Some(mcp_shutdown) = mcp_shutdown {
-        let outcome = mcp_shutdown.finish(deadline);
-        log::info!("MCP servers at app exit: {outcome:?}");
+    fn flush_notebooks(&mut self) {
+        NotebookManager::handle(self.ctx).update(self.ctx, |manager, ctx| {
+            // Notebooks are only saved periodically, so ensure that any pending changes have
+            // been sent to the writer thread before terminating.
+            manager.close_notebooks(ctx);
+        });
+    }
+
+    fn terminate_persistence_writer(&mut self) {
+        // Unbounded on purpose: this drains queued writes and checkpoints the WAL, and
+        // abandoning it loses the last app state. The SIGTERM path's 5s watchdog still
+        // bounds it there.
+        PersistenceWriter::handle(self.ctx).update(self.ctx, |writer, _ctx| {
+            writer.terminate();
+        });
+    }
+
+    fn tear_down_terminal_server(&mut self) {
+        // We want to tear down the terminal server before relaunching for
+        // autoupdate, to ensure we're not running any extra Zap processes
+        // when we bring up the new process.  Additionally, this must occur
+        // after terminating the persistence writer, so we don't keep track
+        // of the fact that the shell sessions terminated.
+        #[cfg(feature = "local_tty")]
+        terminal::local_tty::spawner::PtySpawner::handle(self.ctx).update(
+            self.ctx,
+            |pty_spawner, _| {
+                pty_spawner.prepare_for_app_termination();
+            },
+        );
+
+        #[cfg(all(feature = "local_tty", windows))]
+        terminal::local_tty::shutdown_all_pty_event_loops(self.ctx);
+    }
+
+    fn tear_down_app_services(&mut self) {
+        // Tear down app services before spawning the new process, to
+        // ensure that the new process doesn't find the old process while
+        // attempting to enforce our single-instance policy on Linux.
+        app_services::teardown(self.ctx);
+    }
+
+    fn finish_server_shutdown(&mut self) {
+        if let Some(servers) = self.servers.take() {
+            servers.finish();
+        }
+    }
+
+    fn relaunch_for_autoupdate(&mut self) {
+        autoupdate::spawn_child_if_necessary(self.ctx);
+    }
+
+    fn tear_down_diagnostics(&mut self) {
+        // Tear down any application profilers that are running, writing
+        // results to disk.
+        profiling::teardown();
+
+        #[cfg(enable_crash_recovery)]
+        crash_recovery::CrashRecovery::handle(self.ctx).update(self.ctx, |crash_recovery, _ctx| {
+            crash_recovery.teardown();
+        });
+
+        // Tear down crash reporting as the last thing we do before the application
+        // terminates.
+        #[cfg(feature = "crash_reporting")]
+        crash_reporting::uninit_crash_reporting();
     }
 }
 
-/// Gracefully shuts down every language server as the app terminates (jwp2987/phosphor#680;
-/// the pin does the same from `on_will_terminate`). Waits at most `grace`, so a wedged
-/// server cannot hang quit.
-///
-/// A no-op when `LspManagerModel` was never registered: `lsp::init` runs only on the client
-/// app's `workspace::init` path, the remote-server daemon shares these callbacks without it,
-/// and `LspManagerModel::handle` panics on an unregistered singleton.
-fn terminate_language_servers_for_app_exit(grace: std::time::Duration, ctx: &mut AppContext) {
-    if !ctx.has_singleton_model::<lsp::LspManagerModel>() {
-        return;
+/// Language-server and MCP-server shutdowns in flight for app exit
+/// (jwp2987/phosphor#680, #687), sharing one deadline.
+struct AppExitServerShutdown {
+    deadline: instant::Instant,
+    lsp: Option<lsp::LspAppExitShutdown>,
+    #[cfg(not(target_family = "wasm"))]
+    mcp: Option<crate::ai::mcp::app_exit::McpAppExitShutdown>,
+}
+
+/// Starts stopping every language server and MCP server the app spawned, without
+/// waiting. [`AppExitServerShutdown::finish`] then waits until
+/// [`APP_EXIT_SHUTDOWN_GRACE`] after this call at most.
+fn begin_servers_shutdown_for_app_exit(ctx: &mut AppContext) -> AppExitServerShutdown {
+    let deadline = instant::Instant::now() + APP_EXIT_SHUTDOWN_GRACE;
+    AppExitServerShutdown {
+        deadline,
+        #[cfg(not(target_family = "wasm"))]
+        mcp: begin_mcp_servers_shutdown_for_app_exit(ctx),
+        lsp: begin_language_servers_shutdown_for_app_exit(ctx),
     }
-    lsp::LspManagerModel::handle(ctx).update(ctx, |manager, ctx| {
-        manager.terminate_for_app_exit(grace, ctx);
-    });
+}
+
+impl AppExitServerShutdown {
+    /// Waits for the shutdowns until the shared deadline, then kills any stdio MCP
+    /// child still running. Returns within the deadline (plus a few kill calls), so a
+    /// wedged server cannot hang quit.
+    fn finish(self) {
+        if let Some(lsp) = self.lsp {
+            lsp.wait(
+                self.deadline
+                    .saturating_duration_since(instant::Instant::now()),
+            );
+        }
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(mcp) = self.mcp {
+            let outcome = mcp.finish(self.deadline);
+            log::info!("MCP servers at app exit: {outcome:?}");
+        }
+    }
+}
+
+/// [`begin_servers_shutdown_for_app_exit`] then [`AppExitServerShutdown::finish`].
+#[cfg(test)]
+fn shut_down_servers_for_app_exit(ctx: &mut AppContext) {
+    begin_servers_shutdown_for_app_exit(ctx).finish();
+}
+
+/// Starts shutting down every language server as the app terminates
+/// (jwp2987/phosphor#680; the pin terminates them from `on_will_terminate` too).
+///
+/// Returns `None`, doing nothing, when `LspManagerModel` was never registered:
+/// `lsp::init` runs only on the client app's `workspace::init` path, the remote-server
+/// daemon shares these callbacks without it, and `LspManagerModel::handle` panics on an
+/// unregistered singleton.
+fn begin_language_servers_shutdown_for_app_exit(
+    ctx: &mut AppContext,
+) -> Option<lsp::LspAppExitShutdown> {
+    if !ctx.has_singleton_model::<lsp::LspManagerModel>() {
+        return None;
+    }
+    Some(
+        lsp::LspManagerModel::handle(ctx).update(ctx, |manager, ctx| {
+            manager.begin_terminate_for_app_exit(ctx)
+        }),
+    )
 }
 
 /// Starts stopping every MCP server the app spawned, for app exit (jwp2987/phosphor#687).
@@ -2460,53 +2613,11 @@ fn app_callbacks(is_integration_test: bool) -> warpui::platform::AppCallbacks {
             ctx.dispatch_global_action("root_view:update_quake_mode_state", &update_quake_mode_arg);
         })),
         on_will_terminate: Some(Box::new(move |ctx| {
-            NotebookManager::handle(ctx).update(ctx, |manager, ctx| {
-                // Notebooks are only saved periodically, so ensure that any pending changes have
-                // been sent to the writer thread before terminating.
-                manager.close_notebooks(ctx);
-            });
-
-            PersistenceWriter::handle(ctx).update(ctx, |writer, _ctx| {
-                writer.terminate();
-            });
-
-            // Shut down all LSP and MCP servers before app termination. Every quit path
-            // (last-window close, `workspace:terminate_app` / Ctrl+Shift+Q, menu Quit,
-            // SIGTERM/SIGHUP, the headless/TUI/agent-SDK loop exit) converges on this hook.
-            shut_down_servers_for_app_exit(ctx);
-
-            // We want to tear down the terminal server before relaunching for
-            // autoupdate, to ensure we're not running any extra Zap processes
-            // when we bring up the new process.  Additionally, this must occur
-            // after terminating the persistence writer, so we don't keep track
-            // of the fact that the shell sessions terminated.
-            #[cfg(feature = "local_tty")]
-            terminal::local_tty::spawner::PtySpawner::handle(ctx).update(ctx, |pty_spawner, _| {
-                pty_spawner.prepare_for_app_termination();
-            });
-
-            #[cfg(all(feature = "local_tty", windows))]
-            terminal::local_tty::shutdown_all_pty_event_loops(ctx);
-
-            // Tear down app services before spawning the new process, to
-            // ensure that the new process doesn't find the old process while
-            // attempting to enforce our single-instance policy on Linux.
-            app_services::teardown(ctx);
-            autoupdate::spawn_child_if_necessary(ctx);
-
-            // Tear down any application profilers that are running, writing
-            // results to disk.
-            profiling::teardown();
-
-            #[cfg(enable_crash_recovery)]
-            crash_recovery::CrashRecovery::handle(ctx).update(ctx, |crash_recovery, _ctx| {
-                crash_recovery.teardown();
-            });
-
-            // Tear down crash reporting as the last thing we do before the application
-            // terminates.
-            #[cfg(feature = "crash_reporting")]
-            crash_reporting::uninit_crash_reporting();
+            // Every quit path (last-window close, `workspace:terminate_app` /
+            // Ctrl+Shift+Q, menu Quit, SIGTERM/SIGHUP, the headless/TUI/agent-SDK loop
+            // exit) converges on this hook. See `run_will_terminate_steps` for why the
+            // steps run in this order.
+            run_will_terminate_steps(&mut AppWillTerminate { ctx, servers: None });
         })),
         on_should_close_window: Some(Box::new(move |window_id, ctx| {
             let general_settings = GeneralSettings::as_ref(ctx);

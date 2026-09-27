@@ -332,12 +332,23 @@ impl LspManagerModel {
     /// is left to notice stdin EOF when this process exits. The shutdowns run on the
     /// background executor, so blocking the main thread here cannot deadlock them.
     ///
-    /// Returns how many servers finished shutting down within `grace`.
+    /// Returns how many servers finished shutting down within `grace`. This is
+    /// [`Self::begin_terminate_for_app_exit`] followed by [`LspAppExitShutdown::wait`].
     pub fn terminate_for_app_exit(
         &mut self,
         grace: Duration,
         ctx: &mut ModelContext<Self>,
     ) -> usize {
+        self.begin_terminate_for_app_exit(ctx).wait(grace)
+    }
+
+    /// Starts shutting down every LSP server for app exit, without waiting; wait with
+    /// [`LspAppExitShutdown::wait`]. Lets the app start these shutdowns early and wait
+    /// for them later, after its other teardown, against one shared deadline.
+    pub fn begin_terminate_for_app_exit(
+        &mut self,
+        ctx: &mut ModelContext<Self>,
+    ) -> LspAppExitShutdown {
         self.terminated_for_app_exit = true;
 
         let (done_tx, done_rx) = std::sync::mpsc::channel();
@@ -354,29 +365,12 @@ impl LspManagerModel {
         }
         drop(done_tx);
 
-        if pending == 0 {
-            return 0;
+        if pending > 0 {
+            log::info!("Terminating {pending} running LSP server(s) for app exit");
         }
-        log::info!("Terminating {pending} running LSP server(s) for app exit");
-
-        // wasm has no LSP processes (starting one fails there) and cannot block its
-        // main thread, so it never waits.
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let finished = wait_for_shutdowns(&done_rx, pending, grace);
-            if finished < pending {
-                log::warn!(
-                    "{} of {pending} LSP server(s) did not finish shutting down within {grace:?}; \
-                     exiting anyway",
-                    pending - finished
-                );
-            }
-            finished
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = (grace, done_rx);
-            0
+        LspAppExitShutdown {
+            done: done_rx,
+            pending,
         }
     }
 
@@ -398,6 +392,49 @@ impl LspManagerModel {
     #[cfg(target_arch = "wasm32")]
     pub fn repo_path_for_path(_path: &Path, _ctx: &AppContext) -> Option<PathBuf> {
         None
+    }
+}
+
+/// LSP shutdowns started by [`LspManagerModel::begin_terminate_for_app_exit`].
+#[must_use = "call `wait` to give the servers time to shut down"]
+pub struct LspAppExitShutdown {
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    done: std::sync::mpsc::Receiver<()>,
+    pending: usize,
+}
+
+impl LspAppExitShutdown {
+    /// How many shutdowns were started.
+    pub fn pending(&self) -> usize {
+        self.pending
+    }
+
+    /// Blocks until every shutdown has finished or `grace` has elapsed, whichever is
+    /// first, and returns how many finished.
+    pub fn wait(self, grace: Duration) -> usize {
+        if self.pending == 0 {
+            return 0;
+        }
+        // wasm has no LSP processes (starting one fails there) and cannot block its
+        // main thread, so it never waits.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let finished = wait_for_shutdowns(&self.done, self.pending, grace);
+            if finished < self.pending {
+                log::warn!(
+                    "{} of {} LSP server(s) did not finish shutting down within {grace:?}; \
+                     exiting anyway",
+                    self.pending - finished,
+                    self.pending
+                );
+            }
+            finished
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = grace;
+            0
+        }
     }
 }
 
