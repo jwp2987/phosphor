@@ -695,14 +695,21 @@ upstream's behavior is actually a defect rather than a preference.
   The default, `DeleteMissing`, keeps replace semantics for a non-empty snapshot (so
   rewound or pruned subtasks are still deleted) but an empty snapshot deletes nothing
   and never replaces a stored summary that names a real query. A rewind past the first
-  exchange — the one deliberate empty snapshot — asks for `DeleteMissingEvenIfEmpty`. A
-  conversation restored with a synthesized root saves with `KeepMissing` for its whole
-  in-memory life: it only adds rows and keeps the stored summary, because it does not
-  know what is on disk. And `read_agent_conversation_by_id` refuses a conversation with
-  any undecodable task row instead of handing out an editable copy that lacks it; the
-  rows stay on disk for a build that can read them. **Known residual:** a hollow
-  conversation whose rows *were* readable (only the pre-`4b0d1300f` eager restore produced
-  one) would persist its follow-up as a second parentless root beside the original; restore
-  prefers a root with messages but does not otherwise pick deterministically between
-  two — preferable to deletion, not a finished answer. See `TODO.md`.
-  <!-- markers: keep:PersistedTaskRetention keep:upsert_agent_conversation_with_retention keep:restored_with_synthesized_root -->
+  exchange — the one deliberate empty snapshot — asks for `DeleteMissingEvenIfEmpty`.
+  `read_agent_conversation_by_id` refuses a conversation with any undecodable task row
+  instead of handing out an editable copy that lacks it, and restore refuses a
+  conversation with more than one parentless task carrying messages
+  (`RestoreConversationError::AmbiguousRootTask`) instead of picking one in `HashMap`
+  order and letting the next save delete the others; a choice among empty stubs is by
+  id. In both refusals the rows stay on disk. **Rejected alternative:** a first cut
+  (`489771261`) also made a conversation restored with a synthesized root save with a
+  `KeepMissing` retention for its whole in-memory life. Once reads are lazy and refuse
+  undecodable rows, a synthesized root only exists when there are *no* rows to protect,
+  so the override protected nothing — and it silently disabled that conversation's
+  legitimate deletes (a rewind to empty left its root row; a pruned sub-agent came back
+  after restart), while in the old shape it was built for it only delayed the loss to
+  the next restart. **Known residual:** a synthesized root whose rows *were* readable
+  (only the pre-`4b0d1300f` eager restore produced one) would still lose the original
+  root when its follow-up's new server root is saved — a non-empty snapshot cannot tell
+  that apart from a legitimate root replacement. See `TODO.md`.
+  <!-- markers: keep:PersistedTaskRetention keep:upsert_agent_conversation_with_retention keep:AmbiguousRootTask -->

@@ -325,10 +325,6 @@ pub enum PersistedTaskRetention {
     /// leaves the conversation with no persisted tasks: a rewind that removes every exchange
     /// (`AIConversation::truncate_from_exchange` resetting the root to optimistic).
     DeleteMissingEvenIfEmpty,
-    /// Delete nothing, and never replace a stored summary that names a real initial query.
-    /// For a conversation that knows it does not hold its persisted task set — one whose root
-    /// was synthesized on restore because no task could be read — so it can only add rows.
-    KeepMissing,
 }
 
 #[derive(Debug)]

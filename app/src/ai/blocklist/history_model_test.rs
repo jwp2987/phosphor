@@ -4332,6 +4332,7 @@ fn test_optimistic_root_restore_round_trip_yields_in_progress_optimistic_root() 
             conversation_id: child_id_str,
             updated_tasks,
             conversation_data,
+            ..
         } = first_event
         else {
             panic!("expected UpdateMultiAgentConversation event");

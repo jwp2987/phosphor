@@ -129,6 +129,10 @@ struct AddedExchange {
 pub enum RestoreConversationError {
     #[error("Restored conversation has no root task")]
     NoRootTask,
+    /// More than one parentless task carries messages, so there is no single root to
+    /// restore. See `new_restored_synthesizing_on_empty`.
+    #[error("Restored conversation has {candidates} candidate root tasks with messages")]
+    AmbiguousRootTask { candidates: usize },
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -358,14 +362,6 @@ pub struct AIConversation {
     /// truncated/summarized output, so this is needed to restore SSH and other
     /// interactive terminal content after the tab is closed.
     cli_subagent_block_snapshots: HashMap<BlockId, CliSubagentBlockSnapshot>,
-
-    /// True when this conversation was restored with no tasks, so its root was synthesized
-    /// (`new_restored_synthesizing_on_empty`) rather than read. Such a conversation does not
-    /// know what is persisted for it: the task rows may be absent, or present and unread.
-    /// Its saves therefore use [`PersistedTaskRetention::KeepMissing`] for its whole
-    /// lifetime — a synthesized root must never decide which persisted rows get deleted.
-    /// Not persisted: it describes this in-memory copy, not the conversation.
-    restored_with_synthesized_root: bool,
 }
 
 fn parse_orchestration_harness_type(value: &str) -> Harness {
@@ -430,8 +426,6 @@ impl AIConversation {
             compaction_state: Default::default(),
             byop_repair_state: RepairStateStatus::default(),
             cli_subagent_block_snapshots: Default::default(),
-            // A new conversation has nothing persisted to protect.
-            restored_with_synthesized_root: false,
         }
     }
 
@@ -508,8 +502,7 @@ impl AIConversation {
         tasks: Vec<api::Task>,
         conversation_data: Option<AgentConversationData>,
     ) -> Result<Self, RestoreConversationError> {
-        let restored_with_synthesized_root = tasks.is_empty();
-        let (task_store, todo_lists, status) = if restored_with_synthesized_root {
+        let (task_store, todo_lists, status) = if tasks.is_empty() {
             // Bypass `derive_status_from_root_task`: it would return `Success`
             // for a root with no exchanges, silently misclassifying a restored
             // "child waiting on server response" as done.
@@ -572,8 +565,30 @@ impl AIConversation {
             }
 
             // Prefer the parentless candidate with non-empty messages (the real server root)
-            // over an empty stub. If multiple have messages or none have messages, fall back
-            // to the first-encountered candidate.
+            // over an empty stub. If none has messages, take the lowest id: `task_ids` above is
+            // in `HashMap` order, so "first encountered" would pick a different stub on each
+            // restore.
+            //
+            // More than one candidate WITH messages is refused instead of picked. Whichever
+            // root were chosen, the others would be absent from the next save's snapshot and
+            // `DeleteMissing` would delete their rows — conversation history lost on the
+            // restart after the one that produced the ambiguity, and which history depended
+            // on `HashMap` order. Refusing leaves every row on disk, like an undecodable row
+            // does (`read_agent_conversation_by_id`).
+            parentless_candidates.sort_by(|(a, _), (b, _)| a.id.cmp(&b.id));
+            let roots_with_messages = parentless_candidates
+                .iter()
+                .filter(|(task, _)| !task.messages.is_empty())
+                .count();
+            if roots_with_messages > 1 {
+                log::error!(
+                    "Restored conversation {id} has {roots_with_messages} parentless tasks with \
+                     messages; not restoring it, so none of their persisted rows is pruned",
+                );
+                return Err(RestoreConversationError::AmbiguousRootTask {
+                    candidates: roots_with_messages,
+                });
+            }
             let root_task_pick = parentless_candidates
                 .iter()
                 .position(|(task, _)| !task.messages.is_empty())
@@ -767,7 +782,6 @@ impl AIConversation {
             compaction_state,
             byop_repair_state,
             cli_subagent_block_snapshots,
-            restored_with_synthesized_root,
         })
     }
 
@@ -3569,23 +3583,9 @@ impl AIConversation {
         self.updated_conversation_state_event_with_retention(PersistedTaskRetention::DeleteMissing)
     }
 
-    /// The retention this conversation's saves actually use: whatever the caller asked for,
-    /// unless the root was synthesized on restore, in which case nothing persisted may be
-    /// deleted or have its summary replaced (see `restored_with_synthesized_root`).
-    fn effective_task_retention(
-        &self,
-        requested: PersistedTaskRetention,
-    ) -> PersistedTaskRetention {
-        if self.restored_with_synthesized_root {
-            PersistedTaskRetention::KeepMissing
-        } else {
-            requested
-        }
-    }
-
     fn updated_conversation_state_event_with_retention(
         &self,
-        requested_retention: PersistedTaskRetention,
+        task_retention: PersistedTaskRetention,
     ) -> ModelEvent {
         let reverted_action_ids = if self.reverted_action_ids.is_empty() {
             None
@@ -3666,7 +3666,7 @@ impl AIConversation {
                 byop_repair_state_json: self.byop_repair_state.to_sidecar_json(),
                 cli_subagent_block_snapshots_json: self.cli_subagent_block_snapshots_json(),
             },
-            task_retention: self.effective_task_retention(requested_retention),
+            task_retention,
         }
     }
 
@@ -4596,8 +4596,7 @@ impl AIConversation {
         // A rewind past the first exchange leaves a sourceless optimistic root, so the
         // snapshot is empty. That empty snapshot is deliberate here — the user removed every
         // exchange — so ask for the persisted rows to be cleared; an ordinary empty save
-        // deletes nothing. (A conversation restored with a synthesized root still keeps its
-        // rows: `effective_task_retention` overrides this.)
+        // deletes nothing.
         let retention = if root_task_is_empty {
             PersistedTaskRetention::DeleteMissingEvenIfEmpty
         } else {

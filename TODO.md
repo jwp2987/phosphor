@@ -11247,10 +11247,13 @@ claim, which was wrong by four.
       **UNVERIFIED — nothing was compiled.** Guard landed 2026-09-26 on
       `port/guard-conversation-history` (see `DECLINED.md` → `IMPROVED`, "A save can no
       longer shrink a conversation's persisted history"): saves carry a
-      `PersistedTaskRetention`, an empty snapshot deletes nothing, a conversation restored
-      with a synthesized root only ever adds rows, and `read_agent_conversation_by_id`
-      now fails on any undecodable task row instead of returning a conversation that
-      lacks it. **Decision:** such a conversation is *not* restored as an editable pane.
+      `PersistedTaskRetention`, an empty snapshot deletes nothing unless it is a rewind past
+      the first exchange, `read_agent_conversation_by_id` fails on any undecodable task
+      row, and restore refuses more than one parentless root with messages
+      (`AmbiguousRootTask`). The first cut's lifetime `KeepMissing` override for
+      synthesized roots was removed in review: it protected nothing and disabled
+      legitimate deletes. **Decision:** a conversation whose tasks cannot be read, or whose
+      root is ambiguous, is *not* restored as an editable pane.
       An editable copy that is missing tasks is the one shape that destroys data (its
       next save used to prune what it could not read), and a pane with nothing in it is
       no use to the user either; refusing keeps every row on disk for a build that can
@@ -11261,14 +11264,12 @@ claim, which was wrong by four.
       be read; it was left untouched"), which needs a new error variant threaded from
       `read_agent_conversation_by_id` through `RestoredAgentConversations::load_from_db`
       and `load_conversation_from_db` to a UI surface — a UI change, not a guard.
-      (2) **Two roots after a 0.1.0–0.1.7 hollow follow-up.** A hollow conversation whose
-      rows *were* readable now saves its follow-up as a second parentless root beside the
-      original; restore prefers a root with messages but does not choose between two
-      such roots deterministically (`new_restored_synthesizing_on_empty`, parentless
-      candidates). Only converting a metadata-only record produces a hollow conversation
-      with readable rows, and `4b0d1300f` (which this guard sits on) removed the one path
-      that did — so this is defence against a future regression, not a live case. A merge
-      or "prefer the older root" rule would close it.
+      (2) **A synthesized root with readable rows still loses the original root** once its
+      follow-up's new server root is saved: a non-empty snapshot cannot tell that apart
+      from a legitimate root replacement. Only converting a metadata-only record produces
+      that shape, and `4b0d1300f` (which this guard sits on) removed the one path that did —
+      so it is a regression risk, not a live case. Closing it needs the snapshot to carry
+      which persisted ids the conversation actually loaded.
       (3) **History already lost on 0.1.0–0.1.7 is not recoverable** from this database:
       the rows were deleted. Say so in release notes.
       (4) The pane filter (`pane_group/mod.rs`, `all_tasks().next().is_none()`) still

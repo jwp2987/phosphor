@@ -119,25 +119,21 @@ pub(crate) fn upsert_agent_conversation_with_retention<'a>(
     // lingering as orphan rows and being resurrected on restore — reads load
     // every row for the conversation, unfiltered.
     //
-    // Except when the snapshot cannot be trusted to be complete (see
-    // `PersistedTaskRetention`): an empty snapshot under the default retention, or any
-    // snapshot under `KeepMissing`, deletes nothing. `ne_all` with an empty set matches
+    // Except for an empty snapshot under the default retention (see
+    // `PersistedTaskRetention`), which deletes nothing: `ne_all` with an empty set matches
     // every row, so without this an in-memory conversation that merely failed to load its
-    // tasks erased all of them on its next save.
+    // tasks erased all of them on its next save. Only a rewind past the first exchange
+    // asks for an empty snapshot to be honoured.
     let tasks: Vec<&api::Task> = tasks.into_iter().collect();
-    let delete_missing_rows = match retention {
-        PersistedTaskRetention::DeleteMissing => !tasks.is_empty(),
+    let empty_snapshot_is_authoritative = match retention {
+        PersistedTaskRetention::DeleteMissing => false,
         PersistedTaskRetention::DeleteMissingEvenIfEmpty => true,
-        PersistedTaskRetention::KeepMissing => false,
     };
-    // Same rule for the summary: a snapshot that may not hold the stored conversation must
-    // not replace a summary that names a real initial query, or the history list (which
-    // reads only this column at startup) drops or mislabels the conversation.
-    let may_keep_stored_summary = match retention {
-        PersistedTaskRetention::DeleteMissing => tasks.is_empty(),
-        PersistedTaskRetention::DeleteMissingEvenIfEmpty => false,
-        PersistedTaskRetention::KeepMissing => true,
-    };
+    let delete_missing_rows = !tasks.is_empty() || empty_snapshot_is_authoritative;
+    // Same rule for the summary: an empty snapshot that is not authoritative must not
+    // replace a summary that names a real initial query, or the history list (which reads
+    // only this column at startup) drops the conversation.
+    let may_keep_stored_summary = tasks.is_empty() && !empty_snapshot_is_authoritative;
     // Every id in the snapshot is kept, including one whose blob is skipped as
     // oversized below: we could not write its new version, so deleting the row
     // we already have would throw away the last copy of that task.

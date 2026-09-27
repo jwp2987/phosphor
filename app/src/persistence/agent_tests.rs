@@ -522,69 +522,6 @@ fn explicit_empty_snapshot_clears_task_rows() {
     );
 }
 
-/// A conversation restored with a synthesized root saves with `KeepMissing`: after a
-/// follow-up its snapshot holds only a NEW root, which must be added next to the persisted
-/// rows rather than replace them, and the stored summary must keep the original query.
-#[test]
-fn keep_missing_adds_rows_without_deleting_or_relabelling() {
-    let mut conn = test_connection();
-    let root = task_with_user_query("root", "Initial query", "Root title");
-    let sub = subtask_of("root", "sub");
-    upsert_agent_conversation(
-        &mut conn,
-        "conv-1",
-        [&root, &sub],
-        empty_conversation_data(),
-    )
-    .expect("first upsert should succeed");
-
-    let fresh_root = task_with_user_query("fresh-root", "Follow-up", "Follow-up title");
-    upsert_agent_conversation_with_retention(
-        &mut conn,
-        "conv-1",
-        [&fresh_root],
-        empty_conversation_data(),
-        PersistedTaskRetention::KeepMissing,
-    )
-    .expect("keep-missing upsert should succeed");
-
-    assert_eq!(
-        task_ids_column(&mut conn, "conv-1"),
-        vec![
-            "fresh-root".to_string(),
-            "root".to_string(),
-            "sub".to_string()
-        ],
-    );
-    assert_eq!(stored_initial_query(&mut conn, "conv-1"), "Initial query");
-}
-
-/// `KeepMissing` only protects a summary that describes something: a conversation whose
-/// stored summary has no initial query (e.g. a child persisted before its first response)
-/// still gets its summary written once real content arrives, or it would never be listed.
-#[test]
-fn keep_missing_writes_summary_when_none_names_a_query() {
-    let mut conn = test_connection();
-    upsert_agent_conversation(&mut conn, "conv-1", no_tasks(), empty_conversation_data())
-        .expect("empty upsert should succeed");
-    assert_eq!(stored_initial_query(&mut conn, "conv-1"), "");
-
-    let root = task_with_user_query("root", "First real query", "Root title");
-    upsert_agent_conversation_with_retention(
-        &mut conn,
-        "conv-1",
-        [&root],
-        empty_conversation_data(),
-        PersistedTaskRetention::KeepMissing,
-    )
-    .expect("keep-missing upsert should succeed");
-
-    assert_eq!(
-        stored_initial_query(&mut conn, "conv-1"),
-        "First real query"
-    );
-}
-
 /// Explicit deletion is a separate path and must still remove everything, whatever
 /// retention earlier saves used.
 #[test]
