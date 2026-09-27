@@ -21,7 +21,7 @@ use warp_core::HostId;
 use warp_util::standardized_path::StandardizedPath;
 
 use futures::channel::oneshot;
-use futures::io::{AsyncBufReadExt, BufReader};
+use futures::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use futures::{FutureExt, StreamExt};
 
 use async_channel::Sender;
@@ -1486,13 +1486,41 @@ impl FileModel {
     /// exist when the change was proposed — and the file somebody created there
     /// in the meantime survives.
     ///
-    /// Both checks run before either mutation, so a refusal leaves both files
-    /// exactly as it found them (bar an empty parent directory; see
-    /// [`FileModel::save_if_unchanged`] for why that is created first). The
-    /// residual window on the destination is wider than on the source by the
-    /// duration of the source write, because `async_fs::rename` has no portable
-    /// no-clobber mode to close it with — `renameat2(RENAME_NOREPLACE)` is
-    /// Linux-only and not exposed here.
+    /// # Non-lossy by construction, not just by probing first
+    ///
+    /// The two probes above narrow the window (see [`FileModel::save_if_unchanged`]
+    /// for why that is all probing can ever do); what actually keeps this
+    /// operation from losing data is the *order* of the mutations, which no
+    /// longer matches [`FileModel::rename_and_save`]'s "write the old path,
+    /// then rename":
+    ///
+    /// 1. `content` is written to `new_path` with create-new semantics
+    ///    (`O_EXCL`, via [`async_fs::OpenOptions::create_new`]): the write
+    ///    itself fails, atomically, if anything now occupies `new_path` — the
+    ///    TOCTOU window the destination probe above leaves open (something
+    ///    could appear between that probe and this write) is closed here, not
+    ///    narrowed. This is also why `async_fs::rename`, which silently
+    ///    replaces an existing destination on every platform this runs on, no
+    ///    longer appears in this function at all: there is nothing left for it
+    ///    to do that a create-new write does more safely.
+    /// 2. Only once that write has landed — so `new_path` already holds the
+    ///    only up-to-date copy of the file, and nothing has been lost even if
+    ///    everything past this point is refused — is the source probed once
+    ///    more (freshly; the check above is now stale by however long the
+    ///    write took) and removed, guarded the same way
+    ///    [`FileModel::delete_if_unchanged`] guards a deletion.
+    ///
+    /// Compare the old order: writing the new content over the *old* path
+    /// first, then renaming, meant a rename that failed between those two
+    /// steps (`EXDEV` across filesystems, a permissions error, anything)
+    /// stranded the *new* content at the *old* path with nothing at the
+    /// destination — and reported it as an ordinary IO error, saying nothing
+    /// about the fact that the old path's contents were already gone. Here,
+    /// a refused or failed final removal instead leaves both files present —
+    /// the destination with the accepted content, the source with whatever it
+    /// held — and says exactly that, because the alternative (silently
+    /// deleting the source anyway) risks losing the destination's write if it
+    /// turns out this call was wrong to make it.
     ///
     /// Local only, like [`FileModel::rename_and_save`]: remote sessions have no
     /// rename primitive, and their callers fall back to an in-place write.
@@ -1533,7 +1561,10 @@ impl FileModel {
                 }
 
                 // The destination, checked before anything is written so a
-                // refusal here has still changed nothing.
+                // refusal here has still changed nothing. `create_new` below
+                // is what actually closes the window this leaves open; this
+                // probe only produces the friendlier "created by something
+                // else" message when it can.
                 let destination_probe = probe_disk(&new_path, &expected_destination).await;
                 if let PreWriteVerdict::Refuse(message) = check_pre_image(
                     &new_path,
@@ -1544,20 +1575,81 @@ impl FileModel {
                     return Err(FileSaveError::Other(message));
                 }
 
-                // Write the updated contents to the old path first, then rename.
-                async_fs::write(&file_path, content).await.map_err(|err| {
-                    FileSaveError::IOError {
-                        error: err,
-                        path: file_path.clone(),
-                    }
-                })?;
-
-                async_fs::rename(&file_path, &new_path)
+                // Write the new content at the destination FIRST, with
+                // create-new semantics: refuses atomically, rather than
+                // replacing, if anything appeared at `new_path` since the
+                // probe above — closing the TOCTOU window `async_fs::rename`
+                // cannot close portably. Nothing has touched the source yet.
+                let mut destination_file = match async_fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&new_path)
                     .await
-                    .map_err(|err| FileSaveError::IOError {
+                {
+                    Ok(file) => file,
+                    Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                        return Err(FileSaveError::Other(format!(
+                            "{} was created by something else after this change was proposed, \
+                             so {} was not renamed onto it. Re-run the request to work from \
+                             the current file.",
+                            new_path.display(),
+                            file_path.display(),
+                        )));
+                    }
+                    Err(err) => {
+                        return Err(FileSaveError::IOError {
+                            error: err,
+                            path: new_path,
+                        });
+                    }
+                };
+                if let Err(err) = destination_file.write_all(content.as_bytes()).await {
+                    return Err(FileSaveError::IOError {
                         error: err,
-                        path: file_path.clone(),
-                    })
+                        path: new_path,
+                    });
+                }
+                if let Err(err) = destination_file.flush().await {
+                    return Err(FileSaveError::IOError {
+                        error: err,
+                        path: new_path,
+                    });
+                }
+                drop(destination_file);
+
+                // The destination now holds the only up-to-date copy, so
+                // nothing has been lost even if what follows is refused or
+                // fails. Guard the source's removal freshly — not against the
+                // probe taken above, which is now stale by however long the
+                // destination write took — and if it no longer holds
+                // `expected`, say plainly that both files now exist rather
+                // than reusing `check_pre_image`'s wording, which claims
+                // nothing was changed.
+                let source_probe = probe_disk(&file_path, &expected).await;
+                if matches!(source_probe, DiskProbe::Missing) {
+                    // Already gone: the state a successful rename would have
+                    // left is the state already on disk. Nothing to remove,
+                    // and refusing here would be noise, not data.
+                    return Ok(());
+                }
+                if let PreWriteVerdict::Refuse(_) =
+                    check_pre_image(&file_path, &expected, source_probe, None)
+                {
+                    return Err(FileSaveError::Other(format!(
+                        "{} now holds the renamed file's contents, but {} changed after the \
+                         rename was proposed, so it was left as-is: both files now exist.",
+                        new_path.display(),
+                        file_path.display(),
+                    )));
+                }
+                async_fs::remove_file(&file_path).await.map_err(|err| {
+                    FileSaveError::Other(format!(
+                        "{} now holds the renamed file's contents, but the original at {} \
+                         could not be removed ({err}): both files now exist.",
+                        new_path.display(),
+                        file_path.display(),
+                    ))
+                })
             },
             move |me, write_result: Result<(), FileSaveError>, ctx| {
                 me.report_save_outcome(file_id, version, write_result, ctx);

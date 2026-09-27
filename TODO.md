@@ -12022,10 +12022,82 @@ open findings that had no pre-existing row.
       and later rewinds of that file queue behind it, with no per-rewind timer to
       mark an in-flight write failed and abandon the lane.
 
-- [ ] **#688 — GUI accept never applies an agent's rename (`move_to`) or delete**,
+- [x] **#688 — GUI accept never applies an agent's rename (`move_to`) or delete**,
       and reports them to the model as done. Same behaviour at the pin
       (`4111d08f9`), so this is pin-parity, not a regression — recorded because it
       surfaced repeatedly during the revert-chain and rename-guard work this round.
+      **Fixed:** `InlineDiffView::write_action` (`app/src/code/inline_diff.rs`)
+      decides `Write`/`Rename(to)`/`Delete` from the diff's `DiffType` and the
+      session backend, mirroring `tui_diff_storage::PersistAction::resolve` —
+      including the remote fallback (no rename primitive there, so a remote
+      rename resolves to an in-place write). `save_content` dispatches through
+      the matching guarded `FileModel` call
+      (`rename_and_save_if_unchanged`/`delete_if_unchanged`/`save_if_unchanged`)
+      instead of always saving the editor buffer over the original path.
+      `CodeDiffView::try_emit_diffs_saved` now builds `updated_files`/
+      `deleted_files` from `write_action()` (via the new `rename_report` helper)
+      rather than the raw `DiffType`, so a remote rename is reported as the
+      in-place write it actually was, and a refused/failed write is reported in
+      neither list (it already went to `save_errors`). The accept records what
+      it did as an `AcceptedAction` (`Wrote`/`Deleted`/`Renamed`), and the GUI
+      revert (`InlineDiffView::revert_plan`) gained the matching inverse steps:
+      undoing a delete re-creates the file from `original_content`; undoing a
+      rename restores `original_content` at the registered path and then — only
+      if that guarded write lands — removes whatever the accept left at the
+      destination (`finish_rename_revert`), so a refused restore never triggers
+      the destination's removal. Confirmed the protected-path guard (#682) is
+      unaffected: the rename destination `PathBuf` reaching `dispatch_accept_rename`
+      is the same one `apply_v4a_update` already resolved and the guard already
+      checked; nothing here re-resolves or re-derives it.
+
+      **2026-09-27, adversarial review of the above, six findings fixed** (see
+      DECLINED.md's IMPROVED entry for the full detail): (1) a rename revert
+      whose first step landed and second was refused reported only the second
+      step's guard message and made a retry unrunnable -- fixed with
+      `AcceptedAction::PartiallyRevertedRename`, an honest combined message,
+      and a `RevertPlan::FinishRename` retry path that touches only the
+      destination; (2) a rename card's rewind lane was keyed by its source
+      path only, so a later edit to the destination could revert concurrently
+      with the rename's own undo -- `RevertSequence` now supports a job
+      belonging to a set of lanes, and `begin_revert` gives a local rename
+      both; (3) `file_contents` keyed by the pre-rename path while
+      `updated_files` reported the destination, so the model got no content
+      for a renamed file -- both now key by the same `rename_report` output;
+      (4) the remote-session UI (tab label, "renamed without changes"
+      placeholder) still showed a move driven by the raw diff instead of
+      `write_action`; (5) `rename_and_save_if_unchanged`
+      (`crates/warp_files/src/lib.rs`, also used by the TUI) wrote the new
+      content over the OLD path before renaming -- a failure in between
+      stranded it there with nothing at the destination and no honest error --
+      rewritten to write the destination first with create-new (`O_EXCL`)
+      semantics (closing a POSIX rename TOCTOU gap too) and only then remove
+      the source, guarded fresh, reporting plainly if both now exist; (6) the
+      new glue (`dispatch_accept_delete`/`rename`, the `UndoRename`/
+      `FinishRename` branches, `finish_rename_revert`,
+      `suppress_next_backing_file_event`) still has no *live-view* test --
+      building one was judged too much unverified risk for a round with no
+      local build available; every decision function is unit-tested and the
+      disk-level writes are pushed through the same real `FileModel` calls,
+      matching this file's existing testing philosophy, but end-to-end
+      sequencing through an actual `InlineDiffView` remains open (see the new
+      entry below).
+
+- [ ] **No live-view test harness for `InlineDiffView`'s accept/revert glue**
+      (found during the 2026-09-27 #688 review). `dispatch_accept_delete`/
+      `dispatch_accept_rename`, the `UndoRename`/`FinishRename` dispatch
+      branches in `dispatch_guarded_revert`, `finish_rename_revert`, and the
+      `suppress_next_backing_file_event` cell (`app/src/code/inline_diff.rs`)
+      have no test that drives them through a real, live `InlineDiffView` end
+      to end -- every existing test either checks a pure decision function
+      (`revert_plan`, `resolve_write_action`, `pre_image_for_diff`) or pushes
+      the disk-level writes those decisions dispatch through the same guarded
+      `FileModel` calls directly, bypassing the view. The nearest precedent in
+      this codebase, `app/src/code/editor/view/view_tests.rs`'s
+      `initialize_editor`, builds a live `CodeEditorView` inside `App::test`
+      with a handful of singleton mocks; an `InlineDiffView` fixture would
+      need the same plus a `FileModel` singleton and `register_file`. Worth
+      building once a round has a build available to verify it compiles and
+      passes before committing to it blind.
 
 - [ ] **Cargo.lock: `signal-hook` was hand-added to `warpui`'s deps for #685**
       (SIGTERM/SIGHUP handling) rather than regenerated through `cargo`, since

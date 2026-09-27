@@ -379,6 +379,111 @@ fn the_sequence_keeps_every_revert_alive_until_it_settles() {
     assert!(sequence.is_settled());
 }
 
+// ── A rename card belongs to two lanes (#686 follow-up) ───────────────────
+//
+// Finding #2 of the #688 review: a rename card was only ever keyed by its
+// registered (pre-rename) path, so a later edit to the *destination* got its
+// own, independent lane and could revert concurrently with the rename's own
+// undo -- both touching the same physical file, after the rename, at once.
+// `RevertSequence` now lets one job belong to more than one lane (see the
+// type's "Rename identity" doc); this is the scenario that motivated it,
+// driven purely through the scheduler (no views, no filesystem), the same
+// way the rest of this file tests ordering.
+
+/// `foo.rs` is edited, then renamed to `bar.rs`, then `bar.rs` is edited
+/// again. Rewinding all three must undo them strictly newest to oldest --
+/// the edit to `bar.rs`, then the rename, then the original edit to
+/// `foo.rs` -- and never two of them in flight together: after the rename,
+/// `foo.rs`'s and `bar.rs`'s histories are one and the same card.
+#[test]
+fn a_rename_card_serializes_against_both_its_source_and_destination_lanes() {
+    const EDIT_FOO: &str = "edit-foo";
+    const RENAME: &str = "rename-foo-to-bar";
+    const EDIT_BAR: &str = "edit-bar";
+
+    // Newest first, as a rewind collects them. `edit-bar`'s lane is
+    // `bar.rs`; `rename`'s lanes are BOTH `foo.rs` and `bar.rs`; `edit-foo`'s
+    // lane is `foo.rs`.
+    let mut sequence = RevertSequence::new([
+        (vec!["bar.rs"], EDIT_BAR),
+        (vec!["foo.rs", "bar.rs"], RENAME),
+        (vec!["foo.rs"], EDIT_FOO),
+    ]);
+
+    let mut dispatched = Vec::new();
+    let abandoned = sequence.start(|name| {
+        dispatched.push(*name);
+        RevertStart::InFlight
+    });
+    assert!(abandoned.is_empty());
+    assert_eq!(
+        dispatched,
+        [EDIT_BAR],
+        "only the newest revert (bar.rs's edit) may start; the rename is held \
+         back by bar.rs's lane even though foo.rs's lane is free"
+    );
+
+    let abandoned = sequence
+        .settled(
+            |name| *name == EDIT_BAR,
+            true,
+            |name| {
+                dispatched.push(*name);
+                RevertStart::InFlight
+            },
+        )
+        .expect("edit-bar was in flight");
+    assert!(abandoned.is_empty());
+    assert_eq!(
+        dispatched,
+        [EDIT_BAR, RENAME],
+        "the rename dispatches only once BOTH its lanes are free"
+    );
+
+    let abandoned = sequence
+        .settled(
+            |name| *name == RENAME,
+            true,
+            |name| {
+                dispatched.push(*name);
+                RevertStart::InFlight
+            },
+        )
+        .expect("the rename was in flight");
+    assert!(abandoned.is_empty());
+    assert_eq!(
+        dispatched,
+        [EDIT_BAR, RENAME, EDIT_FOO],
+        "only once the rename has settled does the older edit to foo.rs run"
+    );
+
+    let abandoned = sequence
+        .settled(|name| *name == EDIT_FOO, true, |_| unreachable!())
+        .expect("edit-foo was in flight");
+    assert!(abandoned.is_empty());
+    assert!(sequence.is_settled());
+}
+
+/// If the rename's own undo is refused, the older edit to `foo.rs` -- reached
+/// only through the rename's source lane -- must be abandoned too: `foo.rs`
+/// never comes back if the rename that would have restored it did not land.
+#[test]
+fn a_refused_rename_undo_abandons_the_older_edit_behind_it_in_the_source_lane() {
+    const RENAME: &str = "rename-foo-to-bar";
+    const EDIT_FOO: &str = "edit-foo";
+
+    let mut sequence =
+        RevertSequence::new([(vec!["foo.rs", "bar.rs"], RENAME), (vec!["foo.rs"], EDIT_FOO)]);
+
+    assert!(sequence.start(|_| RevertStart::InFlight).is_empty());
+    let abandoned = sequence
+        .settled(|name| *name == RENAME, false, |_| unreachable!())
+        .expect("the rename was in flight");
+
+    assert_eq!(abandoned, [EDIT_FOO]);
+    assert!(sequence.is_settled());
+}
+
 // ── Across rewinds, and across spellings of one file ─────────────────────
 
 /// A second rewind while the first one's revert of a file is still in
