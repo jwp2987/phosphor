@@ -344,14 +344,16 @@ Two platform notes:
 
 | Setting | TOML path | Default |
 |---|---|---|
-| Middle-click pastes | `terminal.input.middle_click_paste_enabled` | `true` *(macOS and Windows only)* |
+| Middle-click pastes | `terminal.input.middle_click_paste_enabled` | `true` |
 | Use the Linux primary selection | `system.linux_selection_clipboard` | `true` *(Linux only)* |
 
 - **On Linux/FreeBSD**, middle-click pastes the **primary selection**, as X11
-  and Wayland users expect. `middle_click_paste_enabled` is *not consulted at
-  all* on Linux — to turn middle-click paste off there you must set
-  `system.linux_selection_clipboard = false`, which also stops selections being
-  copied to the primary selection.
+  and Wayland users expect. `middle_click_paste_enabled` now gates it there too
+  (#708) — turning it off disables middle-click paste specifically, without
+  touching whether a selection is copied to the primary selection.
+  `system.linux_selection_clipboard = false` is still a second, independent
+  switch: it stops the primary selection from being written to *and* read from,
+  so either setting alone is enough to disable middle-click paste.
 - **On macOS and Windows**, middle-click pastes the ordinary system clipboard,
   and `middle_click_paste_enabled` is the switch.
 - If the pointer is over a detected link, middle-click **opens the link**
@@ -406,7 +408,7 @@ when mouse reporting is off. Note that scroll forwarding does **not** honour the
 |---|---|---|---|
 | Copy on select | Selecting text copies it to the clipboard immediately | `terminal.copy_on_select` | `true` |
 | Linux primary selection | Selections are also written to the X/Wayland primary selection | `system.linux_selection_clipboard` | `true` *(Linux only)* |
-| Middle-click paste | See above | `terminal.input.middle_click_paste_enabled` | `true` *(macOS/Windows)* |
+| Middle-click paste | See above | `terminal.input.middle_click_paste_enabled` | `true` |
 | Right-click behaviour | See above | `terminal.input.right_click_behavior` | `context_menu` |
 
 Copy-on-select fires at the end of a drag selection, when you extend a selection
@@ -838,7 +840,7 @@ contexts, so changing it changes both.
 | `terminal.input.extra_meta_keys` | Which Alt keys act as Meta | both off |
 | `terminal.input.honor_ps1` | Use your shell's `PS1` | `false` |
 | `terminal.input.input_box_type_setting` | `classic` or `universal` input | `classic` |
-| `terminal.input.middle_click_paste_enabled` | Middle-click paste *(macOS/Windows)* | `true` |
+| `terminal.input.middle_click_paste_enabled` | Middle-click paste | `true` |
 | `terminal.input.right_click_behavior` | `context_menu` or `paste` | `context_menu` |
 | `terminal.input.show_hint_text` | Placeholder hint in the input | `true` |
 | `terminal.input.syntax_highlighting` | Highlight the command line | `true` |
@@ -946,11 +948,13 @@ app/src/settings/editor.rs:24-56,100-131,183-277 CursorBlink default Enabled; Cu
                                                  show_autosuggestion_ignore_button=false
 app/src/settings/select.rs:10-88,95-156          RightClickBehavior{ContextMenu(default),Paste}; copy_on_select=true;
                                                  linux_selection_clipboard=true (LINUX only);
-                                                 middle_click_paste_enabled=true, SupportedPlatforms::OR(WINDOWS,MAC);
-                                                 read_for_middle_click_paste: Linux/FreeBSD early-returns to primary
-                                                 selection and never consults middle_click_paste_enabled (:145-156);
-                                                 maybe_copy_on_select writes primary selection before the copy_on_select
-                                                 check (:109-114)
+                                                 middle_click_paste_enabled=true, SupportedPlatforms::DESKTOP (was
+                                                 OR(WINDOWS,MAC); widened #708); read_for_middle_click_paste now
+                                                 gates Linux/FreeBSD on middle_click_paste_enabled too, ANDed with
+                                                 linux_selection_clipboard via maybe_read_from_linux_selection_clipboard;
+                                                 maybe_copy_on_select still writes primary selection before the
+                                                 copy_on_select check (:109-114) and does not read
+                                                 middle_click_paste_enabled — unchanged by #708
 app/src/settings/scroll.rs:3-13                  mouse_scroll_multiplier=3.0; toml general.mouse_scroll_multiplier
 app/src/settings/pane.rs:5-24                    should_dim_inactive_panes=false; focus_panes_on_hover=false
 app/src/settings/gpu.rs:5-29                     prefer_low_power_gpu = cfg!(linux|freebsd)

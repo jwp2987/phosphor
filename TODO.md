@@ -469,11 +469,19 @@ should not be left implying otherwise.
       command palette lists unbound bindings too, so every `CustomAction` menu item is already
       reachable on Linux. The complete menu-only residue is six items, three of them
       debug-build-only, none losing a capability. See `DECLINED.md` for the full trace.
-- [ ] **Middle-click paste asymmetry on Linux** — `middle_click_paste_enabled` is
-      `OR(WINDOWS, MAC)` and the read early-returns on Linux, so the only way to disable it
-      there is `system.linux_selection_clipboard = false`, which also kills copy-to-primary.
-      Separately, `maybe_copy_on_select` writes the primary selection *before* checking
-      `copy_on_select`, so disabling that setting does not stop primary-selection writes.
+- [x] **Middle-click paste asymmetry on Linux** — `middle_click_paste_enabled` was
+      `OR(WINDOWS, MAC)` and the read early-returned on Linux, so the only way to disable it
+      there was `system.linux_selection_clipboard = false`, which also killed copy-to-primary.
+      **Fixed 2026-09-27 (#708, this commit):** `middle_click_paste_enabled` widened to
+      `SupportedPlatforms::DESKTOP`; `read_for_middle_click_paste` now gates Linux/FreeBSD on it
+      too (ANDed with `linux_selection_clipboard`), while `maybe_copy_on_select` /
+      `maybe_write_to_linux_selection_clipboard` are untouched. Recorded in `DECLINED.md`
+      (`IMPROVED`). Tests in `app/src/settings/select_tests.rs`.
+      **Still open, separately:** `maybe_copy_on_select` writes the primary selection *before*
+      checking `copy_on_select`, so disabling that setting does not stop primary-selection
+      writes — that ordering is pin-verbatim (see the doc comment on `maybe_copy_on_select`) and
+      was explicitly NOT touched by this fix; it needs its own maintainer sign-off (AGENTS.md
+      §5.10) and tracking issue before reordering.
 - [ ] **The literal-`#` escape hatch is fragile** — Escape immediately keeps the `#`, but
       Backspace-then-Escape deletes it, because clearing the filter chip makes the panel look
       empty. Worth a UX look **specifically because this release ships the setting that

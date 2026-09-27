@@ -60,13 +60,16 @@ define_settings_group!(SelectionSettings, settings: [
         toml_path: "system.linux_selection_clipboard",
         description: "Whether the Linux primary selection clipboard is used.",
     },
+    // Widened from the pin's `OR(WINDOWS, MAC)` to `DESKTOP` (#708, sub-item of the closed #638):
+    // on Linux/FreeBSD this now actually gates `read_for_middle_click_paste` instead of being
+    // ignored outright.
+    // See that function's doc comment and `DECLINED.md`'s `IMPROVED` section for why this is a
+    // deliberate divergence from the pin rather than an oversight, and for what stays unchanged
+    // (copy-to-primary-on-select is NOT gated on this setting, on Linux or anywhere else).
     middle_click_paste_enabled: MiddleClickPasteEnabled {
         type: bool,
         default: true,
-        supported_platforms: SupportedPlatforms::OR(
-            SupportedPlatforms::WINDOWS.into(),
-            SupportedPlatforms::MAC.into()
-        ),
+        supported_platforms: SupportedPlatforms::DESKTOP,
         sync_to_cloud: SyncToCloud::PerPlatform(RespectUserSyncSetting::Yes),
         private: false,
         toml_path: "terminal.input.middle_click_paste_enabled",
@@ -157,23 +160,42 @@ impl SelectionSettings {
     /// lack this separate clipboard, and so we map middle-click to the normal clipboard on those
     /// platforms.
     ///
-    /// `middle_click_paste_enabled` is therefore *not* consulted on Linux/FreeBSD, and its
-    /// `SupportedPlatforms::OR(WINDOWS, MAC)` declaration above says so explicitly: the setting
-    /// exists to switch off an *emulation* of the Linux convention on platforms that lack the
-    /// primary selection, not to switch off the convention itself. The consequence, filed as #638,
-    /// is that Linux has no way to disable middle-click paste while keeping copy-to-primary —
-    /// `system.linux_selection_clipboard` is one switch for both directions. That is the pin's
-    /// behavior verbatim (`4111d08f9:app/src/settings/select.rs:144-154`); widening the setting to
-    /// Linux is a Warp divergence under AGENTS.md §5.10 and needs maintainer sign-off.
+    /// **Deliberate divergence from the pin (#708, maintainer-approved, see `DECLINED.md`'s
+    /// `IMPROVED` section).** The pin (`4111d08f9:app/src/settings/select.rs:144-154`) declares
+    /// `middle_click_paste_enabled` as `SupportedPlatforms::OR(WINDOWS, MAC)` and never consults it
+    /// on Linux/FreeBSD at all, so the only way to disable middle-click paste there was
+    /// `system.linux_selection_clipboard = false` — which also disables copy-to-primary-on-select,
+    /// since that is the same setting. `middle_click_paste_enabled` now applies on Linux/FreeBSD
+    /// too (`supported_platforms: SupportedPlatforms::DESKTOP` above): a middle-click paste is
+    /// gated on BOTH settings there (this one, and `linux_selection_clipboard` via
+    /// `maybe_read_from_linux_selection_clipboard`), so either one alone can suppress it.
+    ///
+    /// **What this does NOT change:** copy-to-primary-on-select. `maybe_copy_on_select` and
+    /// `maybe_write_to_linux_selection_clipboard` above call
+    /// `linux_selection_clipboard_enabled()` directly and never read `middle_click_paste_enabled`
+    /// — turning middle-click paste off does not stop text you select from being written to the
+    /// primary selection, exactly as before this change.
     pub fn read_for_middle_click_paste(&self, ctx: &mut AppContext) -> Option<ClipboardContent> {
-        if cfg!(any(target_os = "linux", target_os = "freebsd")) {
-            return self.maybe_read_from_linux_selection_clipboard(ctx);
+        if !self.middle_click_paste_gate() {
+            return None;
         }
-        (self
-            .middle_click_paste_enabled
+        if cfg!(any(target_os = "linux", target_os = "freebsd")) {
+            self.maybe_read_from_linux_selection_clipboard(ctx)
+        } else {
+            Some(ctx.clipboard().read()).filter(|content| content.is_empty().not())
+        }
+    }
+
+    /// Whether `middle_click_paste_enabled` currently permits a middle-click paste at all, on
+    /// any platform — split out from `read_for_middle_click_paste` so the gating decision is
+    /// testable without an `AppContext` (see `select_tests.rs`).
+    fn middle_click_paste_gate(&self) -> bool {
+        self.middle_click_paste_enabled
             .is_supported_on_current_platform()
-            && *self.middle_click_paste_enabled.value())
-        .then(|| ctx.clipboard().read())
-        .filter(|content| content.is_empty().not())
+            && *self.middle_click_paste_enabled.value()
     }
 }
+
+#[cfg(test)]
+#[path = "select_tests.rs"]
+mod tests;

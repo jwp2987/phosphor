@@ -896,3 +896,31 @@ upstream's behavior is actually a defect rather than a preference.
   dictionary membership alone is trusted. **Residue:** an *uninstalled* command that also
   happens to be an ordinary English word still overrides to AI once the command index is
   loaded — the fail-safe direction, but a real (documented) false positive.
+
+- **`middle_click_paste_enabled` applies on Linux/FreeBSD too** (#708, 2026-09-27,
+  `app/src/settings/select.rs`). **Upstream:** declares
+  `supported_platforms: SupportedPlatforms::OR(WINDOWS, MAC)` and
+  `read_for_middle_click_paste` early-returns into the primary-selection path on
+  Linux/FreeBSD without ever reading the setting (`4111d08f9:app/src/settings/select.rs:144-154`,
+  byte-identical to what the fork carried until this change). **The defect, for a
+  Linux-first fork:** the setting exists in the schema, has a settings-page toggle, and
+  claims (both by its name and its description, "Whether middle-click pastes from the
+  clipboard") to control middle-click paste generally — but on this fork's primary
+  platform it silently does nothing. The only way to disable middle-click paste on Linux
+  was `system.linux_selection_clipboard = false`, which also stops copy-to-primary on
+  selection, a second and unrelated behavior sharing the one switch by accident of
+  implementation, not by design (nothing in either setting's name or description says
+  so). Upstream's choice is defensible as *upstream's* product decision — Warp is not
+  Linux-first and the two settings' overlap on Linux may simply never have been a
+  reported problem there — but it is not one this fork inherits for free, since Linux is
+  this fork's primary target. **We do:** widen `middle_click_paste_enabled` to
+  `SupportedPlatforms::DESKTOP` and have `read_for_middle_click_paste` consult it on
+  Linux/FreeBSD before falling into the primary-selection read, so a middle-click paste
+  now requires BOTH `middle_click_paste_enabled` and `linux_selection_clipboard` to be
+  on, and either alone can turn it off. **What is deliberately unchanged:**
+  copy-to-primary-on-select (`maybe_copy_on_select` /
+  `maybe_write_to_linux_selection_clipboard`) still reads only
+  `linux_selection_clipboard`, never `middle_click_paste_enabled` — this fix does not
+  touch the copy side, only closes the read-side gap. A re-pin must not revert
+  `middle_click_paste_enabled`'s `supported_platforms` back to `OR(WINDOWS, MAC)`.
+  <!-- markers: keep:middle_click_paste_gate -->
