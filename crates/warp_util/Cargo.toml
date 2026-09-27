@@ -19,6 +19,7 @@ itertools.workspace = true
 lazy_static.workspace = true
 log.workspace = true
 mime_guess.workspace = true
+parking_lot.workspace = true
 regex.workspace = true
 thiserror.workspace = true
 typed-path.workspace = true
