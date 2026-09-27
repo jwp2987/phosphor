@@ -29,6 +29,8 @@ pub mod network_secrets;
 mod onboarding;
 mod pane;
 mod privacy;
+#[cfg(not(target_family = "wasm"))]
+pub(crate) mod schema_generation;
 mod scroll;
 mod select;
 mod settings_file_diagnostics;
@@ -70,6 +72,8 @@ pub use native_preference::*;
 pub use onboarding::*;
 pub use pane::*;
 pub use privacy::*;
+#[cfg(not(target_family = "wasm"))]
+pub use schema_generation::dump_settings_schema;
 pub use scroll::*;
 pub use select::*;
 pub use settings_file_diagnostics::*;

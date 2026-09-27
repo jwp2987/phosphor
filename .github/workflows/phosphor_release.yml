@@ -656,7 +656,7 @@ jobs:
       # Why run it in a container: `makepkg` is Arch-only, and the Ubuntu
       # runner doesn't have it.
       # The container only has Arch's own `rust` and `cargo-about` installed:
-      #   - With SKIP_SETTINGS_SCHEMA=1, `cargo run --bin generate_settings_schema`
+      #   - With SKIP_SETTINGS_SCHEMA=1, `cargo run --bin phosphor-oss -- dump-settings-schema`
       #     is no longer run, so it doesn't matter that the container's rustc
       #     version doesn't match the project's pinned version (1.92.x).
       #   - `cargo about generate` only reads Cargo.lock metadata to generate

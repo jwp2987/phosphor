@@ -221,7 +221,11 @@ if ($env:SKIP_SETTINGS_SCHEMA -ne '1') {
     if ($CargoTarget) {
         $SchemaCmd += @('--target', $CargoTarget)
     }
-    $SchemaCmd += @('--bin', 'generate_settings_schema', '--')
+    # `dump-settings-schema` is a subcommand of the main `phosphor-oss`
+    # binary (moved out of a separate `generate_settings_schema` build
+    # target so that this no longer compiles and links a second copy of
+    # the whole `warp` dependency graph just to emit this file).
+    $SchemaCmd += @('--bin', 'phosphor-oss', '--', 'dump-settings-schema')
     if ($Channel) {
         $SchemaCmd += @('--channel', $Channel)
     }

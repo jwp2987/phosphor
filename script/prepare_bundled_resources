@@ -175,7 +175,11 @@ if [ "${SKIP_SETTINGS_SCHEMA:-}" != "1" ]; then
   if [ -n "$CARGO_TARGET" ]; then
     SCHEMA_CMD+=(--target "$CARGO_TARGET")
   fi
-  SCHEMA_CMD+=(--bin generate_settings_schema --)
+  # `dump-settings-schema` is a subcommand of the main `phosphor-oss` binary
+  # (moved out of a separate `generate_settings_schema` build target so that
+  # this no longer compiles and links a second copy of the whole `warp`
+  # dependency graph just to emit this file).
+  SCHEMA_CMD+=(--bin phosphor-oss -- dump-settings-schema)
   if [ -n "$CHANNEL" ]; then
     SCHEMA_CMD+=(--channel "$CHANNEL")
   fi

@@ -782,6 +782,16 @@ pub fn run() -> Result<()> {
             warp_cli::Command::DumpDebugInfo => {
                 return debug_dump::run();
             }
+            #[cfg(not(target_family = "wasm"))]
+            warp_cli::Command::DumpSettingsSchema {
+                channel,
+                output_path,
+            } => {
+                return settings::schema_generation::dump_settings_schema(
+                    channel.as_deref(),
+                    output_path.as_deref(),
+                );
+            }
         }
     }
 

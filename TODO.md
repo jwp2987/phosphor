@@ -2818,11 +2818,64 @@ separately rather than inflating the queue count.
       `(I)` not `(i)`. Verified directly against a real zsh 5.9 binary: `${args[(I)-d]}`
       on `(-J -V -ld __array_name ...)` returns 0 (old, misses the clustered flag) vs the
       new match's `${flags[(I)-[a-zA-Z]#d]}` returning the correct index.
-- [ ] **`83b4c101e`** — move settings-schema generation out of a separate `[[bin]]` into
+- [x] **`83b4c101e`** — move settings-schema generation out of a separate `[[bin]]` into
       the main binary, removing a whole extra compile from the release path. The fork's
       own release workflow already documents a `SKIP_SETTINGS_SCHEMA=1` escape hatch,
       i.e. it is already paying and working around this. Touches the three diverged
       `script/{linux,macos,windows}` bundle scripts — a real port, not a cherry-pick.
+      **Fixed 2026-09-27:** ported upstream's core idea (drop the separate build
+      target, generate the schema from inside the shipped binary) but NOT its full
+      release-workflow rewrite (887 lines of `create_release.yml`, multi-arch
+      byte-for-byte comparison, `SETTINGS_SCHEMA_EXECUTABLE`/`_SOURCE` artifact
+      passing) — this fork's release pipeline is a single `phosphor_release.yml`
+      job, not upstream's per-arch matrix, so that machinery doesn't apply.
+      Concretely: removed the `generate_settings_schema` `[[bin]]` from
+      `app/Cargo.toml` and deleted `app/src/bin/generate_settings_schema.rs`;
+      moved its logic into `app/src/settings/schema_generation.rs` (new,
+      `pub(crate)`, with `dump_settings_schema`/`settings_schema_json` plus unit
+      tests in `schema_generation_tests.rs`); added
+      `Command::DumpSettingsSchema { channel, output_path }` to
+      `crates/warp_cli/src/lib.rs`, dispatched from `app/src/lib.rs::run()`.
+      Kept an explicit `--channel` override that upstream's redesign dropped
+      (upstream always reflects "the executable's initialized channel and
+      feature flags"): `script/prepare_bundled_resources` and
+      `script/windows/prepare_bundled_resources.ps1` both still pass a channel
+      independent of the invoking binary's own compiled channel, and dropping
+      the override would have silently changed what schema those scripts
+      produce. Also improved on the old binary's design: `settings_schema_json`
+      now takes a feature-flag predicate closure instead of mutating global
+      `FeatureFlag` state via `set_enabled` — the old bin could get away with
+      global mutation because it was a fresh, one-shot process, but this code
+      now runs inside the same long-lived process as the real app, which has
+      already called `init_feature_flags()` for its actual channel by the time
+      `dump-settings-schema` is dispatched (`set_enabled` only ever turns a
+      flag on, so mutating global state here could have leaked the real
+      channel's flags into a schema requested for a different `--channel`).
+      Updated every caller found by grepping `.github` and `script/`:
+      `script/prepare_bundled_resources` (bash) and
+      `script/windows/prepare_bundled_resources.ps1`, both now
+      `--bin phosphor-oss -- dump-settings-schema`; a documentation comment in
+      `.github/workflows/phosphor_release.yml`; the bin-count comment in
+      `script/test_warpctrl_early_dispatch` (two bins → one); and a stale
+      reference to the old binary's name in
+      `app/src/ai/skills/bundled.rs`'s `tui-migrate-setup` doc comment.
+      Confirmed `script/{linux,macos,windows}/bundle{,.ps1}` need no changes
+      of their own — they only forward args to `prepare_bundled_resources`/
+      `.ps1`, which is where the actual bin reference lived.
+      Gates: `check_cloud_boundary`, `check_stub_coverage`,
+      `check_declined_collisions` all green; `rustfmt --check` clean on every
+      changed/new `.rs` file (verified line-by-line against pre-existing
+      baseline drift elsewhere in the same files, e.g.
+      `app/src/settings/mod.rs:182-189`, confirmed identical to HEAD and thus
+      not new); `bash -n` clean on both changed bash scripts. **Not verified by
+      compilation** (no cargo in this task) — the highest compile-risk spots
+      are `settings::schema_generation::dump_settings_schema`'s path resolution
+      from `app/src/lib.rs` (this crate has both a `settings` extern crate
+      dependency and a local `pub mod settings`; bare `settings::` resolves to
+      the local module by existing convention — confirmed against several
+      other call sites in the same file, e.g. `settings::init(...)` — but never
+      compiled in this exact spot) and the `#[cfg(not(target_family = "wasm"))]`
+      gating added to the new `Command` variant and its two match arms.
 - [x] **`b1bcc3564`** — add `rust-analyzer` to `rust-toolchain.toml` components. One word.
       **Closed via #714.**
 - [x] **`1e4b86a81`** — `release-cli` `codegen-units` 1 -> 4; roughly halves that

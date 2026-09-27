@@ -622,9 +622,10 @@ pub(crate) fn icon_for_bundled_skill(skill_id: &str) -> Icon {
 /// TUI (`DECLINED.md`, "TUI/GUI shared app id"), so both sides of every pair
 /// would render to the same file. It also treats the schema's `x-warp-surfaces`
 /// annotation as its source of truth for which settings are migratable, and this
-/// fork dropped `SettingSurfaces` / `SettingsMode` (`DECLINED.md`), so
-/// `generate_settings_schema` emits no such annotation. Shipping it would point
-/// an agent at a migration that cannot be performed. See #370.
+/// fork dropped `SettingSurfaces` / `SettingsMode` (`DECLINED.md`), so the
+/// settings schema generator (`app/src/settings/schema_generation.rs`, the
+/// `dump-settings-schema` subcommand) emits no such annotation. Shipping it
+/// would point an agent at a migration that cannot be performed. See #370.
 ///
 /// `tui-settings` replaces it: the same subject (a GUI setup and a TUI reading
 /// it) answered for this fork's architecture — which settings actually drive the
