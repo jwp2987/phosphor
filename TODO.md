@@ -376,7 +376,7 @@ should not be left implying otherwise.
 
 #### Settings-layer defects (coordinator-verified)
 
-- [ ] **`enable_legacy_ssh_wrapper` is declared TWICE** — `app/src/settings/ssh.rs:7-14` and
+- [x] **`enable_legacy_ssh_wrapper` is declared TWICE** — `app/src/settings/ssh.rs:7-14` and
       `app/src/terminal/warpify/settings.rs:80-81` — with the **same `toml_path`** *and* the
       **same `storage_key`** (`EnableSSHWrapper`), differing only in `sync_to_cloud`.
       **`script/check_settings_registry` does not catch this**: it validates settings *group*
@@ -384,6 +384,7 @@ should not be left implying otherwise.
       (cf. the unreachable-code gap `check_stub_coverage` cannot see).
       It sits on a trapdoor: setting it `false` triggers a one-time migration that disables
       SSH Phosphorization entirely.
+      **Closed 2026-09-26:** the duplicate in `app/src/settings/ssh.rs` was removed (#635); only `app/src/terminal/warpify/settings.rs:105` declares `EnableSSHWrapper` now, and `settings/init_tests.rs:579` guards it.
 
 #### Agent-reported, plausible, NOT fully traced
 
@@ -477,12 +478,14 @@ should not be left implying otherwise.
       Backspace-then-Escape deletes it, because clearing the filter chip makes the panel look
       empty. Worth a UX look **specifically because this release ships the setting that
       exists to address that complaint**.
-- [ ] **Empty "Learn more" links** — `SSH_DOCS_URL` and `SUBSHELL_DOCS_URL` are empty
+- [x] **Empty "Learn more" links** — `SSH_DOCS_URL` and `SUBSHELL_DOCS_URL` are empty
       strings; clicking does nothing.
-- [ ] **`accessibility.accessibility_verbosity` schema/parser mismatch** — the parser honours
+      **Closed 2026-09-26:** `SSH_DOCS_URL`/`SUBSHELL_DOCS_URL` were removed in `3337759b8`; the links point at the in-repo manual or the control is hidden.
+- [x] **`accessibility.accessibility_verbosity` schema/parser mismatch** — the parser honours
       `VERBOSE`/`CONCISE` (serde rename) while the generated schema advertises
       `verbose`/`concise`. Also inert on Linux: announcements are gated on
       `is_screen_reader_enabled()`, and the winit delegate returns `None`.
+      **Closed as wrong 2026-09-26:** WRONG — refuted in `98d4fd78b`; the file values match the schema, guarded by `accessibility_verbosity_file_values_match_schema` (`app/src/settings/schema_validation_tests.rs:104`).
 
 #### More brand leaks in user-visible surfaces (agent-reported)
 
@@ -510,7 +513,7 @@ in front of a user. **All of these are in the `v2026.08.29.1-beta` build.**
       read `path\to\warp | Out-String | Invoke-Expression`, omitting `completions powershell`
       entirely, so pasting it could not work. The sibling at `local_control/mod.rs:207` has it
       right. Now correct, and uses the real binary name.
-- [ ] **`/api-keys` is offered in the GUI palette and silently does nothing.** It is in
+- [x] **`/api-keys` is offered in the GUI palette and silently does nothing.** It is in
       `supports_tui()` (`static_commands/mod.rs:386`) and absent from `is_tui_only()`
       (`:344-361`), so `supports_gui()` is true — but `app/src/terminal/input/slash_commands/mod.rs`
       has **no `ApiKeys` arm**, so it falls to the catch-all at `:1224`: `debug_assert!(false)`
@@ -521,7 +524,8 @@ in front of a user. **All of these are in the `v2026.08.29.1-beta` build.**
       Fix is a product call: either add it to `is_tui_only()` (GUI users set keys in Settings)
       or give it a GUI arm that opens that settings page. `/vim-mode` has the identical shape,
       but there the GUI equivalent is deliberately in Settings.
-- [ ] **Warp/Zap mark on the first-run screen.** `app/src/pane_group/pane/welcome_view.rs:247`
+      **Closed 2026-09-26:** `883e6a8b6` added a GUI arm for `commands::API_KEYS` (`app/src/terminal/input/slash_commands/mod.rs:887`).
+- [x] **Warp/Zap mark on the first-run screen.** `app/src/pane_group/pane/welcome_view.rs:247`
       and `get_started_view.rs:223` render `bundled/svg/warp-logo-neutral.svg`; About uses
       `phosphor-logo.svg`. `welcome_tab` is default-on, so this is the first thing a user sees.
       **Mitigating, and checked rather than assumed:** that asset's internal `id` is `"zap"` and
@@ -529,6 +533,7 @@ in front of a user. **All of these are in the `v2026.08.29.1-beta` build.**
       **The fix is not a path swap:** `phosphor-logo.svg` carries four linear gradients and must
       go through `Image`; routed through `Icon` as those two call sites do, it renders as a white
       silhouette (the reason is already written at `ui_components/icon_with_status.rs:56`).
+      **Closed 2026-09-26:** `3337759b8` (#636): `welcome_view.rs` and `get_started_view.rs` both call `render_phosphor_logo`.
 - [x] **`installer.sh` in the repo root is an AnythingLLM AppImage installer.** Tracked,
       referenced by nothing, and **added by `ab8ff5787`** — a commit about making "Fetch from
       API" work for Ollama. Accidental `git add`. **DELETED 2026-09-04 (#639)**, after
@@ -573,6 +578,7 @@ before acting):
       fixed; it would matter again to anyone building `--features autoupdate`.
 - [ ] **Nothing a user sees reports `0.1.2`.** Cargo says `0.1.2`, About and `--version` show
       the dated git tag, and the embedded macOS `Info.plist` still carries `0.1.0`.
+      **In progress 2026-09-26:** #640, decision pending.
 - [x] **Three places decided "is this a remote session the file tools cannot reach", and
       only one of them was right — FIXED 2026-09-03.** The runtime guard in
       `app/src/ai/blocklist/action_model/execute/read_files.rs:129` refuses when the session
@@ -645,7 +651,7 @@ before acting):
       but it requires redefining those two predicates first, so that "the agent is driving
       this" stops meaning "no state yet". That is a design change, not a constructor tweak.
 
-- [ ] **A queued prompt could lock permanently, with no production unlock.** A prompt
+- [x] **A queued prompt could lock permanently, with no production unlock.** A prompt
       submitted while an agent `run_shell_command` action was still pending queued as
       `QueuedQueryOrigin::PendingLrcAutoQueue` (`app/src/terminal/input.rs:12856`), which
       `QueuedQuery::is_locked()` treats as locked — gating delete, edit, reorder and
@@ -686,22 +692,29 @@ before acting):
       The tests pass either way because they call the unlock function directly — the unit was
       always correct and the wiring was what was missing, so a test that exercises the drain
       is the real gap.
+      **Closed 2026-09-26:** fixed by `184e16d27`…`00a93cd91` (unlock at `drain_queued_prompts`, `FinishedSubagent`, and the LRC tag-in), shipped in 0.1.6/0.1.7. Only residue: the action-scoped unlock in `handle_action_result` described above — low value, not tracked separately.
 
 - [ ] **`whoami` prints hard-coded placeholders** — `TEST_USER_EMAIL = "test_user@warp.dev"`,
       `TEST_USER_UID = "test_user_uid"` (`app/src/auth/mod.rs:31-32`) with no indication it is
       not a real identity. (Constants verified; the print path was not traced.)
+      **In progress 2026-09-26:** branch `fix/cli-637`.
 - [ ] **`agent list` exists only to fail** — parses fully, including `--repo`, then always
       errors "Agent skill listing is disabled in Phosphor".
+      **In progress 2026-09-26:** branch `fix/cli-637`.
 - [ ] **`--profile <ID>` is unusable.** `agent profile list` prints `Unsynced` for any locally
       created profile, but the flag requires a 22-character `ServerId`. The command that lists
       profiles cannot emit an ID the flag accepts.
+      **In progress 2026-09-26:** branch `fix/cli-637`.
 - [ ] **`--output-format json` emits NDJSON for `agent run`**, not a JSON document; list
       commands under it emit no trailing newline.
+      **In progress 2026-09-26:** branch `fix/cli-637`.
 - [ ] **Stale help strings** — `--model` says "Use `warp model list`"; `--skill` points at
       `oz schedule create`, a subcommand this fork removed.
+      **In progress 2026-09-26:** branch `fix/cli-637`.
 - [ ] **The `?` shortcuts sheet lists "toggle auto-approve" twice**
       (`crates/warp_tui/src/terminal_session_view/state.rs:586-592` and `:598-604`, byte-identical).
       The test only asserts `contains`, so it cannot catch a duplicate.
+      **In progress 2026-09-26:** branch `fix/cli-637`.
 
 **Two of my own brief claims were wrong and are worth recording**, because both would have
 put falsehoods in a user manual: `provider` is **not** the BYOP surface (it is a Linear/Slack
@@ -1884,7 +1897,7 @@ refuter's word. Nothing was compiled.
 `27f8ee6c` was bucketed ALREADY-PRESENT because its GEAP file is absent. Two of
 its other files ship here **at the pre-fix state**:
 
-- [ ] **`crates/ai/src/index/file_outline/native.rs:88` — dumps the entire
+- [x] **`crates/ai/src/index/file_outline/native.rs:88` — dumps the entire
       repository's parsed outline into the log.** The code is
       `if let Err(e) = sender.send(result) { log::error!("... {e:?}") }`. The
       channel is a `futures::oneshot` (`:67`), and `oneshot::Sender::send`
@@ -1893,7 +1906,8 @@ its other files ship here **at the pre-fix state**:
       in the repo, Debug-formatted into the log file. Coordinator-verified by
       reading both the channel construction and the call site.
       Fix: `if sender.send(result).is_err() { log::error!("<static message>") }`.
-- [ ] **`crates/warpui/src/windowing/winit/event_loop/mod.rs:2007` — logs the
+      **Closed 2026-09-26:** fixed by `cdd57dd28` (send failure tested with `is_err()`, static message).
+- [x] **`crates/warpui/src/windowing/winit/event_loop/mod.rs:2007` — logs the
       user's typed keystrokes.** `{:?}` on `EventLoopClosed<CustomEvent>` includes
       the wrapped `SoftKeyboardInput` payload. Fix: format with `Display`
       (`anyhow::Error::new(e)` or `{e}`), not `{:?}`.
@@ -1903,6 +1917,7 @@ its other files ship here **at the pre-fix state**:
       logs the same payload unconditionally on the success path at debug level.
       Upstream's commit does not touch it. Porting `27f8ee6c` alone leaves the
       larger hole open. Fix both lines or neither.
+      **Closed 2026-09-26:** fixed by `cdd57dd28` (both the error and the success-path debug line; `SoftKeyboardInput::log_shape()`).
 
 #### Newly added to the port queue by refutation (9)
 
@@ -1911,13 +1926,14 @@ its other files ship here **at the pre-fix state**:
       signaled" (its own doc), and its consumer `CLIAgentSessionsModel` is live
       here. **Sequence with `9921300b7`** (already queued) — it is that commit's
       stable-promotion, not a standalone change.
-- [ ] `b1731dde0` + `8936686f2` — **refuted as N/A.** Both touch
+- [x] `b1731dde0` + `8936686f2` — **refuted as N/A.** Both touch
       `crates/warpui_core/`, which the fork ships, at the pre-fix state:
       unthrottled per-frame `log::error!` at `runtime/mod.rs:667`, `:895` and
       `elements/flex/mod.rs:277`. `8936686f2` read as absent only because the fork
       flattened `elements/gui/*` -> `elements/*` — a rename. **Same shape as the
       already-queued P0 `8ba01aa1a`; land all three together**, same
       `warp_errors::` -> `warp_core::errors::` adaptation.
+      **Closed 2026-09-26:** throttled in `cdd57dd28` (warpui_core runtime, 2 sites; elements/flex).
 - [x] `98b1f5af8` — **refuted as N/A.** Fork ships both touched files at the exact
       pre-fix state; the U+21E7 fallback mismatch is live. 3-line port plus the
       generator hunk so it is not regenerated away.
@@ -1928,13 +1944,15 @@ its other files ship here **at the pre-fix state**:
 - [ ] `d13a30f4` (part) — the `TuiLink::render` signature refactor only. Honest
       caveat from the refuter: no behaviour change, no new coverage; value is
       purely reduced re-pin conflict surface. Droppable on triage — but not CLOUD.
-- [ ] `b870d25d7` (part) — `script/windows/prepare_bundled_resources.ps1:51`
+- [x] `b870d25d7` (part) — `script/windows/prepare_bundled_resources.ps1:51`
       `Split-Path` argument-binding fix, byte-identical to the pin's pre-image. The
       commit message never mentions it, which is why the bucketer missed it.
-- [ ] `da434eb6e` (part) — the `archive_for_platform()` / `archive_sha256()` hunks
+      **Closed as declined 2026-09-26:** Windows-only dev script; this fork does not build on Windows. Out of scope.
+- [x] `da434eb6e` (part) — the `archive_for_platform()` / `archive_sha256()` hunks
       of `script/install_cargo_binstall` only. On native Windows arm64 `uname -m`
       returns `unknown` -> empty SHA -> hard exit; under WOW64 it silently
       installs the x86_64 build. Only bites an arm64 Windows dev box.
+      **Closed as declined 2026-09-26:** native-Windows-arm64 dev-script path; this fork does not build on Windows. Out of scope.
 
 #### Not ports — ledger entries the refutation produced
 
@@ -2312,18 +2330,21 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       One hunk targets `local_tty/terminal_view_adaptor.rs`, dropped by the fork.
 - [ ] `0a0fd3ae1` **(ordered pair, land before `c25ac4070`)** — Paste entry in the
       block-list context menu; introduces the `paste_menu_item` helper the other needs.
-- [ ] `c25ac4070` — right-click behavior setting. **Costs 21 call sites across 14
+      **In progress 2026-09-26:** branch `fix/agent-prompt-hangs`.
+- [x] `c25ac4070` — right-click behavior setting. **Costs 21 call sites across 14
       files** (`on_right_mouse_down` gains `&ModifiersState`), two of which upstream
       does not touch. Carries an unadvertised fix: right-click over an app that owns
       the mouse forwards a raw event instead of opening Warp's menu.
+      **Closed 2026-09-26:** ported in `182ee1449`.
 
 **Editor / UI framework (5)**
 
-- [ ] `ee351a0e7` **P0 — TUI never terminates on host-terminal disconnect.** Reader
+- [x] `ee351a0e7` **P0 — TUI never terminates on host-terminal disconnect.** Reader
       thread logs (`runtime/mod.rs:842`) and breaks; nothing calls `terminate_app`.
       Also adds an `ErrorKind::Interrupted` retry — today an `EINTR` kills the reader
       loop permanently. `thiserror` and `libc` are already deps. **Port this instead
       of `b1731dde0`, which it rewrites.**
+      **Closed 2026-09-26:** ported in `e287977f0`.
 - [ ] `d89e78385` **(land before `1c925e333`)** — `Arc` the layout delta; upstream
       measured multi-GB transient allocation when two editors share one `Buffer`.
 - [ ] `1c925e333` — layout chunking + line-length cap. **`730a4acc0`-shaped risk:
@@ -2331,9 +2352,10 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       safety argument is an assertion about UPSTREAM's offset invariants.** Trace this
       fork's frame-offset clamping and `BlockMarker` 1-indexing first. The chunking
       half is coordinate-free and can be ported alone.
-- [ ] `12e455c56` — macOS Core Text style-run coalescing (~36 lines + 3 tests).
+- [x] `12e455c56` — macOS Core Text style-run coalescing (~36 lines + 3 tests).
       Upstream attributes an ~11.98 GB spike to it. **Upstream never built or ran
       this** (no macOS CI) — needs a real macOS build here, not a rubber stamp.
+      **Closed as declined 2026-09-26:** macOS Core Text only; no macOS build target here. Out of scope.
 - [ ] `dc1077845` — monomorphization bloat in `warpui_core` spawn/update. Compile-time
       only. Preserve the `pending_flushes` reorder if ported.
 
@@ -2354,13 +2376,16 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
 - [ ] `b4a2a8fa` **P0 — stdio MCP servers cannot start in TUI/SDK on a fresh profile.**
       Fork is behind even upstream's pre-fix state: `native.rs:741` hard-requires
       `mcp_execution_path`, whose only writer is the GUI bootstrap.
+      **In progress 2026-09-26:** branch `fix/mcp-review-lsp`.
 - [ ] `092c1dce` — preserve scroll fraction across the markdown Rendered/Raw toggle.
       **Port requires EXTENDING a fork test, not weakening it**: add
       `scroll_fraction: None` to the exhaustive literal at `notebooks/file/mod_tests.rs:530`.
       Fork uses `BufferLocation` where upstream uses `LocalOrRemotePath`.
-- [ ] `46c0b513` — Windows DPC-watchdog: avoid a full process-table walk per session bootstrap.
+- [x] `46c0b513` — Windows DPC-watchdog: avoid a full process-table walk per session bootstrap.
+      **Closed as declined 2026-09-26:** Windows-only. Out of scope.
 - [ ] `eaf70a6a` — oversized-diff early return; fork has `MAX_DIFF_SIZE` and the exact
       insertion point but parses the diff first.
+      **In progress 2026-09-26:** branch `fix/mcp-review-lsp`.
 - [ ] `e0d01fff` — **port the `system/info.rs` half only.** It gates a real local
       `MemoryUsageHigh` emit + jemalloc dump that latch for the process lifetime. The
       `telemetry/events.rs` half is dead weight: `send_telemetry_sync_from_ctx!` is a
@@ -2368,7 +2393,8 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
 - [ ] `8b88df98` **(land before `40e39717`)** — tab shortcut hints.
 - [ ] `40e39717` — follow-up to the above; **impossible to land alone**, every symbol
       it edits is introduced by `8b88df98`.
-- [ ] `56921910` — 6-line wasm cfg split of `WORKSPACE_PADDING`.
+- [x] `56921910` — 6-line wasm cfg split of `WORKSPACE_PADDING`.
+      **Closed as declined 2026-09-26:** wasm-only; this fork ships no wasm target. Out of scope.
 
 **Agent / AI (8)**
 
@@ -2376,9 +2402,10 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       ships both harnesses and supports `WARP_SKILL_DIRS`, but carries the pre-fix
       gate at `driver.rs:1083` ("Skill loading is Oz-only"). Upstream publishes them
       as symlinks into `.claude/skills` and `.agents/skills`. All deps present.
-- [ ] `9921300b7` **P0 — Ctrl-C on a third-party harness reports nothing.**
+- [x] `9921300b7` **P0 — Ctrl-C on a third-party harness reports nothing.**
       `CLIAgentSessionStatus` has no `Cancelled` variant. ~1000 lines incl. tests;
       fully local (PTY byte observation), the harness is never signaled.
+      **Closed 2026-09-26:** ported in `182ee1449`, tests in `e9f49cf94`.
 - [ ] `bc0f17ce` — structured per-block diff-match failures for agent retry.
       **Preserve** the `RemoteFileOperationsUnsupported` arm's deliberate-divergence
       comment; the commit does not touch it. Its message over-describes the diff.
@@ -2389,6 +2416,7 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       fires an unconditional `ctx.notify()` on every focus change. The recording-span
       cache is dead on arrival (session recording declined, #350) and
       `output.rs:2964` documents why. The `search_codebase.rs` sub-hunk has no target.
+      **In progress 2026-09-26:** branch `fix/svg-open-handler`.
 - [ ] `d68a638ef` — **5 of 26 sites apply**; the rest already differ because the fork
       never took upstream's earlier `log::error!`->`report_error!` migration.
       `hex_color.rs` (`HexColorError` -> `thiserror::Error`) is the cleanest and is
@@ -2410,13 +2438,15 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       a BYOP fork, not an edge case. Reshape onto `ai_page.rs` and **keep the fork's
       gate** — a byte-faithful port reintroduces `UsageBasedPricing`. The Code
       Indexing half does not apply (fork's `code_page.rs` builds 11 discrete widgets).
-- [ ] `3a7a4a5b3` — suppress empty category headers. Cheap hardening; the fork already
+- [x] `3a7a4a5b3` — suppress empty category headers. Cheap hardening; the fork already
       filters empty index lists, so **do not sell this as a live bug** — no
       configuration was found where it is user-visible today.
+      **Closed 2026-09-26:** ported in `f7d506bb2`.
 - [ ] `25f07935` — MCP logo prefix-match (`"Sentry (OAuth)"`). Scope to the
       `starts_with` change; the fork also lacks 4 icon variants from out-of-range commits.
 - [ ] `996babee` — two doc-comment URLs. Zero risk.
-- [ ] `69254d73` — TUI focus-ownership hardening (13 files).
+- [x] `69254d73` — TUI focus-ownership hardening (13 files).
+      **Closed 2026-09-26:** ported in `e287977f0`.
 - [x] `94daf47f3` — **PORTED 2026-08-29** (`56a86a7d7`), with its 3 tests.
       **~~one hunk must be DROPPED~~ — THAT INSTRUCTION WAS FALSE, and the port proved
       it.** This row said the `set_zero_state_hint_text` hunk "has no fork counterpart —
@@ -2482,12 +2512,13 @@ separately rather than inflating the queue count.
       `crates/integration/src/test/settings_navigation.rs` at all. Its position-id scheme
       is keyed on `SettingsSection` variants rather than display labels, which suits this
       fork better than upstream since the fork's `Display` is localized.
-- [ ] **`18179177a` + its prerequisite `c25ac4070`** — right-click behavior setting and
-      its follow-up copy. `c25ac4070` is in the port queue above with its 21-call-site cost.
-- [ ] **`def3fd0e3` — bump `warp_multi_agent_api`.** Real target is the pin's
+- [ ] **`18179177a`** — the right-click behavior setting's follow-up copy. Its prerequisite
+      `c25ac4070` is ported (`182ee1449`); only this follow-up remains. (Rewritten 2026-09-26.)
+- [x] **`def3fd0e3` — bump `warp_multi_agent_api`.** Real target is the pin's
       `f0028fa6d05db1ba63726eaf6f8d33ab17abe37b` (this commit is an intermediate).
       Compile-surface change; **sequence it BEFORE any port using new API types**, and
       sweep the queue for proto-dependent commits when ordering.
+      **Closed 2026-09-26:** bumped to `f0028fa6d` in `4a6c07d83` (`Cargo.toml:384`).
 - [ ] **`60d602df6` — MAA teardown race guard (QUALITY-1801). BLOCKED, not schedulable
       yet. Re-verified 2026-08-29; the blocker is real and WIDER than this row said.**
       Its host function `conversation_ready_for_pending_events` does not exist here, and
@@ -2609,13 +2640,15 @@ Each wants a `DECLINED.md` row so the next re-pin does not re-propose it.
 Both were byte-identical to the OLD pin, i.e. the fork was correctly aligned and this
 move re-opens them. Invisible to the queue, the identity manifest, and every CI gate.
 
-- [ ] `warp-command-signatures` `fe3526693` -> **`d3725aa42375cc229699c87be2b38f9d9f07080f`**.
+- [x] `warp-command-signatures` `fe3526693` -> **`d3725aa42375cc229699c87be2b38f9d9f07080f`**.
       This is the completion-spec data compiled into the binary — the same dep that was
       found two pins stale last round. **One bump; do NOT replay the 7 intermediate bump
       commits** (`2861a6e43`, `3535362d7`, `59bda8db0`, `5bd9b8e15`, `33bb01256`,
       `e326a774a`, `e83d07d8b`) — data-repo revs do not apply as diffs.
-- [ ] `warp_multi_agent_api` `b0886a952` -> **`f0028fa6d05db1ba63726eaf6f8d33ab17abe37b`**.
+      **Closed 2026-09-26:** bumped to `d3725aa42` in `4a6c07d83` (`Cargo.toml:431`).
+- [x] `warp_multi_agent_api` `b0886a952` -> **`f0028fa6d05db1ba63726eaf6f8d33ab17abe37b`**.
       See `def3fd0e3` above. Compile-surface change; sequence with the code shards.
+      **Closed 2026-09-26:** bumped to `f0028fa6d` in `4a6c07d83` (`Cargo.toml:384`).
 - [ ] **`tink-core` / `tink-proto` / `tink-hybrid` — pre-existing, NOT introduced by this
       move, and worse than drift.** The fork pins them to a floating
       `branch = "warpdotdev/main"` (`Cargo.toml:593-595`) where both pins use
@@ -2705,12 +2738,14 @@ flags already covered by `DECLINED.md`. **Do not touch the 49.**
       (ECHO off, ICANON on), which is the password shape specifically. An agent command that
       blocks on an ordinary `read -p` or a `[y/N]` confirmation leaves echo on and is still
       invisible; it hangs the same way and still relies on the 30-minute backstop.
+      **In progress 2026-09-26:** branch `fix/agent-prompt-hangs`.
 
 - [ ] **Not done: `would_emit_block_started_for_password_prompt_polling`
       (`view.rs:15361`) still suppresses warpify-compatible subshell commands** — `ssh`,
       `docker run`, and friends — so an agent-run `ssh` that prompts is not detected. That
       suppression exists to stop spurious notifications on the *user* path; whether it should
       apply to the agent path is a separate judgement and was left alone deliberately.
+      **In progress 2026-09-26:** branch `fix/agent-prompt-hangs`.
 
 - [ ] **Not done: the TUI gets none of this.** `impl TerminalSurface for TuiTerminalSessionView`
       (`crates/warp_tui/src/terminal_session_view.rs:5775`) overrides only `on_shell_determined`
@@ -2937,13 +2972,12 @@ are `GlobalBufferModel::resolve_conflict`, same method name, different type.
 false negative were caught this way in a single session — including three where
 the "missing" symbol appeared only inside a doc comment describing its absence.
 
-## IN FLIGHT RIGHT NOW (2026-08-11)
+## Genai 0.7 bump and the 2026-08-11 hold (historical)
 
-**`main` is held by the build agent. Do not commit to it.** Standing maintainer
-instruction: no commits to `main` until the genai bump builds and the suite is
-green. Baseline to beat: **6,846 passing**.
+The hold on `main` recorded here ended long ago: the genai bump built, the suite
+went green, and 0.1.x releases have shipped from `main` since. (Header corrected 2026-09-26.)
 
-- [>] **Vendored genai 0.6.0-beta.18 → 0.7.0-beta.18 — COMPILES, SUITE
+- [x] **Vendored genai 0.6.0-beta.18 → 0.7.0-beta.18 — COMPILES, SUITE
       RUNNING.** `13603ac0f` re-ported the vendor tree, `02024ceaf` merged it.
       **The merge landed before the app-side call sites were updated, which
       broke `main` for ~40 minutes** — a sequencing error; it should have been
@@ -2951,6 +2985,7 @@ green. Baseline to beat: **6,846 passing**.
       `cargo check --workspace --all-targets --features warp/gui` returns
       **0 errors**. The suite has not yet reported; the bar is the 6,846
       baseline. The four call-site fixes were: 
+      **Closed 2026-09-26:** `genai = "=0.7.0-beta.18"` is on main (`Cargo.toml:261`) and has shipped in every release since.
 
       | file | change | why |
       |---|---|---|
@@ -3218,34 +3253,40 @@ Three packages are **verdict-first, not port-first** — `execution_profiles`
 `orchestration_model` (cut as future work per its own doc comment). Porting
 those without re-adjudicating would manufacture debt from decisions.
 
-- [>] **`app/src/ai/agent_events/driver_tests.rs` — 11 tests.** Needs
+- [x] **`app/src/ai/agent_events/driver_tests.rs` — 11 tests.** Needs
       `AgentEventDriverConfig::{auth_error_give_up_failures, max_retry_duration,
       permanent_error_backoff_steps}`, `HttpStatusError::is_actionable()`,
       `agent_event_failure_should_log_error()`. **Largest single cluster and the
       best value-per-effort in the set** — two config fields plus an
       error-classification fn, on the BYOP error path.
-- [>] **`crates/ai/src/project_context/model_tests.rs` — 6 tests.**
+      **Closed 2026-09-26:** all 12 tests PORTED per `docs/sweep-verdict-ledger.tsv`; STATE shows MISSING-SUBSYSTEM = 0.
+- [x] **`crates/ai/src/project_context/model_tests.rs` — 6 tests.**
       `path_to_rules`/`ProjectRule::path` have no `HostId` dimension.
       **A working in-tree pattern already exists** — `global_rules.rs` (#575)
       solved the identical host-keying problem and `HostId` is already imported
       at `model.rs:5`. Cleanest port in the set; start here.
-- [>] **`app/src/ai/agent_sdk/driver/harness/claude_code_tests.rs` — 5 tests.**
+      **Closed 2026-09-26:** all 6 PORTED per `docs/sweep-verdict-ledger.tsv`.
+- [x] **`app/src/ai/agent_sdk/driver/harness/claude_code_tests.rs` — 5 tests.**
       `--resume` flag, `MessageBridgeCleanupDisposition`, parent-bridge event
       cursor persistence.
-- [>] **`crates/warp_tui/src/terminal_session_view_tests.rs` — 3 tests.**
+      **Closed 2026-09-26:** 5 PORTED, the rest CLOUD/DECLINED/COVERED-ELSEWHERE per `docs/sweep-verdict-ledger.tsv`.
+- [x] **`crates/warp_tui/src/terminal_session_view_tests.rs` — 3 tests.**
       `InputTypeAutoDetectionSource::AgentTerminalControl` + the "attach" hint
       string (mirrors `RUNNING_COMMAND_DETACH_HINT`).
-- [>] **`app/src/ai/execution_profiles/config_tests.rs` — 3 tests.**
+      **Closed 2026-09-26:** PORTED per `docs/sweep-verdict-ledger.tsv` (no test in the file is MISSING-SUBSYSTEM).
+- [x] **`app/src/ai/execution_profiles/config_tests.rs` — 3 tests.**
       **RE-ADJUDICATE BEFORE PORTING.** The fork persists profiles via
       `GenericStoredObject`/`StringModel`, not a settings.toml-embeddable file
       collection. That is a deliberate architectural difference, which under
       this file's definition of done is **`DIVERGENT`, not missing**. Porting
       these would mean adopting the pin's persistence model — a product
       decision, not a test port.
-- [>] **`app/src/ai/agent_sdk/driver/harness/mod_test.rs` — 4 tests.**
+      **Closed as declined 2026-09-26:** adjudicated DECLINED (all 3) in `docs/sweep-verdict-ledger.tsv`.
+- [x] **`app/src/ai/agent_sdk/driver/harness/mod_test.rs` — 4 tests.**
       `auth_check_command`/`auth_check_command_for`, **deliberately deferred
       under #289** — the fork's own test header says so. Do not port without
       reopening #289.
+      **Closed as declined 2026-09-26:** the 4 `auth_check_command` tests are DECLINED (#289) in `docs/sweep-verdict-ledger.tsv`; the other 3 are PORTED.
 - [x] **`app/src/terminal/model/terminal_model_test.rs` — 2 tests. DONE, and the
       old text here was wrong in three separate ways (corrected 2026-08-20).**
       (a) The file is `terminal_model_test.rs`, singular — `terminal_model_tests.rs`
@@ -3255,23 +3296,29 @@ those without re-adjudicating would manufacture debt from decisions.
       are live and un-`#[ignore]`d — `viewer_processes_dcs_hook_with_unregistered_session_id`
       (`terminal_model_test.rs:2257`) and `sharer_rejects_dcs_hook_with_unregistered_session_id`
       (`:2311`). #419 and #532 are both CLOSED; neither blocks anything.
-- [>] **`crates/warp_tui/src/orchestration_model_tests.rs` — 2 tests.**
+- [x] **`crates/warp_tui/src/orchestration_model_tests.rs` — 2 tests.**
       `cleanup_failed_child`/`begin_local_oz_child_launch` — explicitly deferred
       per the module's own doc comment (`:1-23`).
-- [>] **`app/src/terminal/view/ambient_agent/block/setup_command_text_tests.rs` — 2 tests.**
+      **Closed 2026-09-26:** 14 PORTED, the rest CLOUD/DECLINED/COVERED-ELSEWHERE per `docs/sweep-verdict-ledger.tsv`.
+- [x] **`app/src/terminal/view/ambient_agent/block/setup_command_text_tests.rs` — 2 tests.**
       `setup_command_text.rs` does not exist; nor does its sole consumer
       `AmbientAgentViewModel`.
-- [>] **`app/src/terminal/shared_session/network/heartbeat_tests.rs` — 2 tests.**
+      **Closed 2026-09-26:** both PORTED per `docs/sweep-verdict-ledger.tsv`.
+- [x] **`app/src/terminal/shared_session/network/heartbeat_tests.rs` — 2 tests.**
       No `network/` directory under `shared_session/`; `heartbeat.rs` absent.
-- [>] **`app/src/ai/conversation_details_panel_tests.rs` — 2 tests.**
+      **Closed as declined 2026-09-26:** DECLINED — `DECLINED.md` "Shared-session heartbeat" (no consumer; both pin tests `#[ignore]`d).
+- [x] **`app/src/ai/conversation_details_panel_tests.rs` — 2 tests.**
       `conversation_details_panel` does not exist — **this is the same absence
       as the wasm latent break** recorded further down this file. Resolve them
       together: whichever way that decision goes settles these two.
-- [>] **`app/src/pane_group/pane/local_harness_launch_tests.rs` — 1 test.**
+      **Closed as declined 2026-09-26:** adjudicated CLOUD (all 11 rows) in `docs/sweep-verdict-ledger.tsv`.
+- [x] **`app/src/pane_group/pane/local_harness_launch_tests.rs` — 1 test.**
       Shell-validation/codex-precondition ordering is reversed vs. the pin.
       Product-scope question, not a mechanical port.
-- [>] **Remaining 7 — one test each**, see `docs/sweep-verdict-ledger.tsv` for
+      **Closed 2026-09-26:** 4 PORTED, the rest CLOUD/COVERED-ELSEWHERE per `docs/sweep-verdict-ledger.tsv`.
+- [x] **Remaining 7 — one test each**, see `docs/sweep-verdict-ledger.tsv` for
       exact names and cited symbols.
+      **Closed 2026-09-26:** every row in `docs/sweep-verdict-ledger.tsv` is now adjudicated; STATE shows MISSING-SUBSYSTEM = 0.
 
 **Sizing, honestly: this is ~36 tests of subsystem-building, not test-porting.**
 Only the `project_context` six and one `remote_search` test are ports in the
@@ -3409,6 +3456,7 @@ measurement.**
       a different type, which merely detaches an async shutdown and is not a
       substitute for the graceful all-workspaces teardown. Consequence: language
       servers are left to be reaped by the OS on quit rather than shut down.
+      **In progress 2026-09-26:** branch `fix/mcp-review-lsp`.
 - [x] `workspace_language_server` migration, re-applied onto current main (`5f2f5d103`)
 - [x] PersistedWorkspace LSP **state** layer — `EnablementState`,
       `language_servers`, the seven enable/disable/query methods, `ModelEvent`
@@ -5956,37 +6004,10 @@ moving the pin:
       which branch of `build()` each tab takes during the test. That is a cheap, direct
       question and the previous three suspects were all resolved by looking rather than
       reasoning.
-
-- [ ] **The Windows usage suite is FLAKY, and that is the real problem.** The two specific
-      failures are fixed (`9c6eb1621`) and both now pass — but the failure COUNT swings wildly
-      run to run with a different set each time:
-      **13 failures (08-18) → 2 (08-19 nightly) → 6 (on `9c6eb1621`)**, drawn from a shared
-      pool including tests tagged `reliable-here` (`usage_tabs_add_switch_close`,
-      `usage_agent_block_render`) which by definition should not be flaky.
-      So the suite has never been a trustworthy signal on Windows, and chasing individual
-      scenarios will not fix it. Needs its own investigation: all failures report a bare
-      `exit code 1` alongside `warp::completer` path-conversion warnings, which is the thread
-      to pull. **Do not treat a green Windows usage run as meaningful until this is understood.**
-      Original entry:
-      **The nightly `Usage Test Suite` has failed EIGHT NIGHTS RUNNING (2026-08-12 → 08-19),
-      Windows only.** Linux and macOS pass every night. Nobody is watching it.
-      **This corrects a framing error in this file:** `usage_tui_transcript_render` was recorded
-      as needing "a Windows machine" to verify. It does not — **CI is a Windows machine and has
-      been reporting this failure nightly for over a week.** Anything gated on "we have no
-      Windows box" should be re-checked against this workflow before being deferred again.
-      Two failures, from run `32228845452`:
-      1. **`usage_tui_transcript_render`** — panics at
-         `app/src/terminal/model/grid/ansi_handler.rs:189`: *"Grid received input but did not
-         receive Reset Grid OSC"*. Tagged **`reliable-here`**, i.e. explicitly not expected to
-         be flaky, and it still fails all 3 retries. This is the real one.
-      2. **`usage_secret_redaction`** — expected `"Phone: … abcdef."`, got
-         `"Phone: … abcdef\n."`. A newline where the assertion wants none: line-wrap or CRLF
-         handling on Windows. Tagged `needs-real-shell`, so lower confidence, but the diff is
-         one character and looks genuine rather than environmental.
-      Reproduce without hardware: `gh run view <id> --log-failed` on the nightly, or dispatch
-      `usage-test.yml` manually.
-
-- [ ] **Collapsed-group drag: fixed and confirmed by hand; the hop STILL has no regression
+      **Merged 2026-09-26:** the collapsed-group drag entry, formerly separate, has the same
+      root cause (drag helpers can only aim at the one tab the stale bar painted), so it is
+      closed by the same harness fix. Its text, unchanged:
+      **Collapsed-group drag: fixed and confirmed by hand; the hop STILL has no regression
       test, and an attempt to write one proved vacuous.** 2026-08-19: added
       `test_drag_over_collapsed_group_keeps_it_contiguous`, then disabled the collapsed-group
       hop in `on_tab_drag` and re-ran it — **it still passed**, so it does not pin the hop.
@@ -6030,6 +6051,36 @@ moving the pin:
       first. So the exact path that produced the reported duplicate for a collapsed group has a
       fix and no regression test. Add one: collapse a group, drag a non-member over it, assert
       one header and one contiguous run.
+
+- [x] **The Windows usage suite is FLAKY, and that is the real problem.** The two specific
+      failures are fixed (`9c6eb1621`) and both now pass — but the failure COUNT swings wildly
+      run to run with a different set each time:
+      **13 failures (08-18) → 2 (08-19 nightly) → 6 (on `9c6eb1621`)**, drawn from a shared
+      pool including tests tagged `reliable-here` (`usage_tabs_add_switch_close`,
+      `usage_agent_block_render`) which by definition should not be flaky.
+      So the suite has never been a trustworthy signal on Windows, and chasing individual
+      scenarios will not fix it. Needs its own investigation: all failures report a bare
+      `exit code 1` alongside `warp::completer` path-conversion warnings, which is the thread
+      to pull. **Do not treat a green Windows usage run as meaningful until this is understood.**
+      Original entry:
+      **The nightly `Usage Test Suite` has failed EIGHT NIGHTS RUNNING (2026-08-12 → 08-19),
+      Windows only.** Linux and macOS pass every night. Nobody is watching it.
+      **This corrects a framing error in this file:** `usage_tui_transcript_render` was recorded
+      as needing "a Windows machine" to verify. It does not — **CI is a Windows machine and has
+      been reporting this failure nightly for over a week.** Anything gated on "we have no
+      Windows box" should be re-checked against this workflow before being deferred again.
+      Two failures, from run `32228845452`:
+      1. **`usage_tui_transcript_render`** — panics at
+         `app/src/terminal/model/grid/ansi_handler.rs:189`: *"Grid received input but did not
+         receive Reset Grid OSC"*. Tagged **`reliable-here`**, i.e. explicitly not expected to
+         be flaky, and it still fails all 3 retries. This is the real one.
+      2. **`usage_secret_redaction`** — expected `"Phone: … abcdef."`, got
+         `"Phone: … abcdef\n."`. A newline where the assertion wants none: line-wrap or CRLF
+         handling on Windows. Tagged `needs-real-shell`, so lower confidence, but the diff is
+         one character and looks genuine rather than environmental.
+      Reproduce without hardware: `gh run view <id> --log-failed` on the nightly, or dispatch
+      `usage-test.yml` manually.
+      **Closed as declined 2026-09-26:** Windows is not a platform this fork builds or ships. Out of scope.
 
 - [x] **DONE 2026-08-19 (`fb5f325fe`, CI-verified in run 32247666723).** Ported together with
       its caller `index_for_restored_tab`, plus the group-rejoin / pinned-clamp / expand steps
@@ -9740,11 +9791,12 @@ Ordered by severity, not by area.
 
       **FIXED at the model layer 2026-08-21 — path corrections, and the divergence is WIDER than stated.** The flag lives in `app/src/terminal/model/block.rs`, not `ai/blocklist/block.rs`, and the pin's setter is `terminal/view/ambient_agent/view_impl.rs`. **The fork dropped three of the pin's four honouring sites**, leaving only the TUI painter — so the answer is split: the TUI shows a **blank gap** the height of the hidden command (`is_visible()` true for a block with no content rows), while the **desktop** painter has the reverse, drawing a grid that should be hidden. Both model-layer sites restored verbatim from the pin. **Neither is user-visible today** — nothing in the fork sets the flag in production, since the pin's only setter is in an unported path — and both bodies were otherwise byte-identical to the pin, so this was a two-line restoration rather than a structural gap. `block_list_element.rs:2627` left alone and flagged in-source: that branch was rewired around `snackbar_header` and draws unconditionally, a separate port.
 
-- [ ] **Orchestration rollup total is computed and thrown away.**
+- [x] **Orchestration rollup total is computed and thrown away.**
       `conversation_usage_view.rs:240` computes `rollup`, `:266-275` passes
       `usage_info.credits_spent` instead. "Credits spent (total)" omits every child
       agent's spend while the drill-down beneath lists children summing to more.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `rollup.total_credits` (`usage/rollup.rs:55`) has **zero non-test readers repo-wide**; `conversation_usage_view.rs:266,273` pass `usage_info.credits_spent`, and `render_total_credits_value_row:551-576` uses the rollup only to decide whether to add the "View details" toggle. `terminal/view.rs:6441-6446` feeds the footer that same single conversation's usage while `append_per_agent_rows:604` lists orchestrator plus descendants.
+      **Closed 2026-09-26:** fixed in `c0260f45e`.
 
       **FIXED 2026-08-21:** new `headline_total_credits` (`conversation_usage_view.rs:171-191`) returns the rollup total when present, else `usage_info.credits_spent`; both call sites (`:289`, `:296`) use it. **The pin settles which end was wrong** — `42effe840:...:329-332` reads `rollup.total_credits` for the headline, citing "PRODUCT invariants 2a, 11" — so the headline was the defect and the drill-down was correct. Test at `:1300-1414` builds a real orchestrator plus two children and asserts the headline equals the **sum of the rendered drill-down rows** (derived from `rollup.per_agent`, not hardcoded); against the old code that was 1.0 vs 8.0. `rollup.rs` needed no change — the defect was entirely consumer-side. (No `platform_credits_spent` term: that field does not exist in this BYOP fork.)
 
@@ -9761,18 +9813,20 @@ Ordered by severity, not by area.
       out of that change deliberately and needs its own decision: redact to scheme+host,
       digest it, or accept it. Flagged by the agent that fixed the content leak.
 
-- [ ] **`[byop] stream chunk error:` prints the provider's error body verbatim.**
+- [x] **`[byop] stream chunk error:` prints the provider's error body verbatim.**
       `chat_stream.rs:5794`. Some providers echo a fragment of the request in a 400
       body, so this can carry request content. **Deliberately kept** — suppressing it
       leaves a failed turn with no diagnosis at all — and documented in-source as a
       known residual. Recorded here so the trade is visible rather than implicit.
+      **Closed as residual 2026-09-26:** recorded as a documented residual in the in-source list at `chat_stream.rs:3235-3253`.
 
-- [ ] 🔴 **Terminal OSC-8 hyperlinks reach the OS handler with no scheme check.**
+- [x] 🔴 **Terminal OSC-8 hyperlinks reach the OS handler with no scheme check.**
       `terminal/view/link_detection.rs:529,565` call `ctx.open_url` on hyperlinks
       emitted by whatever is running in the terminal — including a remote host over
       SSH. Same hole as the notebook markdown links fixed 2026-08-21, but the content
       is arguably *less* trusted. The scheme allow-list now lives in `notebooks::link`
       (`is_openable_url_scheme`); this call site does not consult it.
+      **Closed 2026-09-26:** scheme allow-list in `4f5e38690`, local `file://` restored in `6eab094e1`.
 
       **CORRECTION 2026-08-21 — the first fix was OVER-BROAD and broke a real feature.** `4f5e38690` refused `file:` outright for terminal content. **`crates/integration/src/test/osc8_hyperlinks.rs::test_osc8_file_scheme_opens_url` went red** — and it is right: `file:///tmp/osc8-test.txt` is a **local, hostname-less** URL, and a build tool or linter printing a clickable path to a local file is the feature OSC 8 exists for and why this fork ported it (`ccc1e3c84`, #11). **`precheck` does not run `-p integration`**, so this was invisible to every local run; only the separate 3-shard suite catches it. Now `file:` is allowed when the authority is local and refused when it is not — `file://host/share/x` is a UNC path on Windows, so the OS opens an SMB connection to a host the *link* chose, and terminal output can arrive from a remote machine over SSH. Same rule and same reasoning as `notebooks::link::file_url_is_local`. Two unit tests added on both sides of the line, one of them naming the integration test that caught this.
 
@@ -9818,8 +9872,9 @@ Ordered by severity, not by area.
       `util::openable_file_type` (current list minus `svg`) and have both call it —
       `is_supported_image_file` itself must NOT change, because its four other callers mean
       "can we display this as an image", which stays true of SVG.
+      **In progress 2026-09-26:** branch `fix/svg-open-handler`.
 
-- [ ] **CORRECTION to the 2026-08-21 notebook link-scheme entry — it was wrong twice.**
+- [x] **CORRECTION to the 2026-08-21 notebook link-scheme entry — it was wrong twice.**
       (i) Its claim that `WebIntent::try_from_url`'s `ALLOWED_ACTIONS` acted as "a second
       gate" on the app's own scheme was **false**. `try_from_url` is reached only from
       `maybe_rewrite_web_url_to_intent` (web→intent); an own-scheme URL returns through
@@ -9833,6 +9888,7 @@ Ordered by severity, not by area.
       site. **The justification was doubly wrong:** `set_before_open_url` runs *after*
       `ctx.open_url`, so the rewriter never needed the own scheme in the notebook
       allow-list at all.
+      **Closed 2026-09-26:** historical correction; the underlying defect was closed by `55bd7b4c4`.
 
 - [ ] **The usage footer is still frozen at open time for everything except credits.**
       `terminal/view.rs:6438-6448` builds a `ConversationUsageInfo` snapshot when the
@@ -9857,20 +9913,25 @@ through the tier boundary, 44 are structural (counts, ids, offsets, enum variant
 the 10 below are deliberate residuals. This list supersedes the earlier "two residuals"
 claim, which was wrong by four.
 
-- [ ] **`scan_suspicious_backslash` prints up to 5 x 10 bytes of the request body**
+- [x] **`scan_suspicious_backslash` prints up to 5 x 10 bytes of the request body**
       (`chat_stream.rs:5616,5619`) on a `\u`/`\x` hit. **Not fixed on purpose** — those ten
       bytes *are* the finding. Documented in-source; it was missing from the ledger.
-- [ ] **`[byop][webfetch] error` (`:7553`) leaks the fetched URL.** `web_runtime` builds
+      **Closed as residual 2026-09-26:** recorded as a documented residual in the in-source list at `chat_stream.rs:3235-3253`.
+- [x] **`[byop][webfetch] error` (`:7553`) leaks the fetched URL.** `web_runtime` builds
       `HTTP GET {url}` into its context chain, so the URL reaches `warn` ungated. Websearch
       (`:7570`) carries the Exa endpoint, not the query.
+      **Closed as residual 2026-09-26:** recorded as a documented residual in the in-source list at `chat_stream.rs:3235-3253`.
 - [ ] **`[byop] open stream failed` (`:5887`)** — same class as the recorded `stream chunk
       error`, not previously recorded.
-- [ ] **Parser error text** (`:6587`, `:7804`, `:7826`) — serde_json is normally
+      **Rewritten 2026-09-26:** the one residual of this class NOT yet in the in-source list at `chat_stream.rs:3235-3253`. Action: add it to that list (source change), then close as a residual.
+- [x] **Parser error text** (`:6587`, `:7804`, `:7826`) — serde_json is normally
       position-only, but `unknown field` / `invalid value` renderings can quote a field name
       or a short value.
-- [ ] **`RUST_LOG=debug` widens the tier** — `:6512` prints raw tool arguments. Off by
+      **Closed as residual 2026-09-26:** recorded as a documented residual in the in-source list at `chat_stream.rs:3235-3253`.
+- [x] **`RUST_LOG=debug` widens the tier** — `:6512` prints raw tool arguments. Off by
       default, but a verbosity switch is **not** a privacy opt-in, so it is a residual
       rather than a gate.
+      **Closed as residual 2026-09-26:** recorded as a documented residual in the in-source list at `chat_stream.rs:3235-3253`.
 - [ ] **Proxy URL host** (`:4858`) still logged after userinfo redaction — same class as the
       already-recorded `endpoint_url`.
 
@@ -9879,6 +9940,13 @@ claim, which was wrong by four.
       its correct pre-image is the content the *accept* wrote, which the view does not retain,
       so guarding it against the diff *base* would refuse every revert following a
       format-on-save. Fix: retain the accepted bytes at accept time and guard with those.
+      **Merged 2026-09-26** with the later duplicate entry, whose text follows:
+      **`InlineDiffView::restore_diff_base` (GUI revert) is still unguarded, on a premise now**
+      **refuted.** `0219e06c3` deferred both reverts saying the accepted bytes are not
+      retained. For the TUI that was shown false on 2026-08-21 — the content is a pure
+      function of the diff the caller already holds — and the TUI revert is now guarded.
+      The GUI path carries the same shape and the same stale note.
+      **In progress 2026-09-26:** branch `fix/guard-diff-revert`.
 
 - [x] **`warp_tui/src/tui_diff_storage.rs:147` is the TUI counterpart of the lost-update**
       **defect.** Same AI-diff persistence, same `register_file_path(..., false, ...)`, same
@@ -9886,11 +9954,12 @@ claim, which was wrong by four.
 
       **FIXED 2026-08-21 — and it was THREE write modes, not one.** `dispatch_write` routes `Write`, **`Delete`** and **`Rename`** through the guarded API, with both rename endpoints checked before any mutation. `rename_and_save` ended in `async_fs::rename`, which **silently destroys whatever is at the destination** — rename succeeds, so there was no error path at all — and `diff_application.rs` rewrites the rename-onto-existing case into deletion+update, so a `PersistAction::Rename` only ever targets a path absent at proposal time, i.e. the destination pre-image genuinely is `Absent`. `FileModel::delete` had no guarded variant and `ExpectedDiskState` could not express a delete's pre-image at all; both now exist.
 
-- [ ] **The save-conflict toast drops the reason.** `code_diff_view.rs:655` hardcodes
+- [x] **The save-conflict toast drops the reason.** `code_diff_view.rs:655` hardcodes
       "Failed to save file {path}" and ignores the error's message, so *why* the write was
       refused reaches the log and the agent but not the user. One-line fix: use the error's
       `Display` for `FileSaveError::Other`. Un-localised today; key would be
       `code-diff-save-conflict` with a `$file` variable.
+      **Closed 2026-09-26:** fixed in `461af5a39` (regression test in `inline_action/code_diff_view_tests.rs`).
 
 - [ ] **`tab.move` over local control acks moves it did not perform.**
       `local_control/handlers/app_state.rs:453-474` dispatches `MoveTabLeft/Right` and
@@ -9915,6 +9984,7 @@ claim, which was wrong by four.
       underlining and the allowlist. **Deliberately not half-fixed:** closing the glued form
       while leaving the leading form open is the false-confidence failure the residue list exists
       to prevent. Pin-parity.
+      **In progress 2026-09-26:** branch `fix/denylist-bypass`.
 
 - [ ] 🟠 **Brace expansion and shell control-flow keywords hide the command name from the denylist.**
       `{rm,-rf,~}` decomposes to `rm,-rf,~`; `{r,}m -rf ~` to `r,` + `m -rf ~`;
@@ -9925,6 +9995,7 @@ claim, which was wrong by four.
       inconsistent rather than deliberate. The existing advice to "carry denylist entries for the
       prefixes" is sound for `sudo` and useless for `then`/`do`. Repair is a parser change.
       Pin-parity.
+      **In progress 2026-09-26:** branch `fix/denylist-bypass`.
 
 - [ ] **Zero-command input makes both the denylist and the allowlist vacuous.** `;`, `{}`, `()`
       and whitespace-only input decompose to zero commands, so the denylist `.any()` is false and
@@ -9952,18 +10023,13 @@ claim, which was wrong by four.
       *preferred* model's endpoint. The per-model endpoint table (`set_endpoints`) is available
       to it; wiring it needs that file.
 
-- [ ] **`crates/warp_features/src/lib.rs:888` still states the opposite of the code.**
+- [x] **`crates/warp_features/src/lib.rs:888` still states the opposite of the code.**
       It says *"This fork does not ship autoupdate: … the release workflow publishes no
       update feed."* `DECLINED.md:179` records that exact sentence as corrected on
       2026-08-20 **and** says the rationale is duplicated at the removal site "because that
       is where someone restoring parity will be standing" — but the correction never landed
       there. The authoritative-looking in-source comment is still wrong.
-
-- [ ] **`InlineDiffView::restore_diff_base` (GUI revert) is still unguarded, on a premise now**
-      **refuted.** `0219e06c3` deferred both reverts saying the accepted bytes are not
-      retained. For the TUI that was shown false on 2026-08-21 — the content is a pure
-      function of the diff the caller already holds — and the TUI revert is now guarded.
-      The GUI path carries the same shape and the same stale note.
+      **Closed 2026-09-26:** the comment at `crates/warp_features/src/lib.rs:898-915` now gives the Cargo-feature reason and explicitly forbids re-adding the "no update feed" clause.
 
 - [ ] **TUI `/rewind` has zero revert tests.** `tui_diff_storage_tests.rs` covers only accept.
       The four revert pre-images and the `REVERT_CHAIN_TAIL` ordering added 2026-08-21 are
@@ -9982,13 +10048,11 @@ claim, which was wrong by four.
       `docker/podman exec -it` drops data on large writes. The guard function was ported
       2026-08-21 but only its first consumer; this one needs `pty_controller.rs`.
 
-- [ ] **Three stale "real preprocess pipeline" comments in `crates/warp_tui/`.**
-      `tui_permission_prompt_tests.rs:333` and `tui_generic_tool_call_view_tests.rs:21` say the
-      action "blocks on confirmation through the real preprocess pipeline" — it does not, the
-      fixture installs it already blocked. `test_fixtures.rs:43-45` says the helper enqueues
-      "action preprocessing through `ctx.spawn`"; it emits synchronously, so `settle()` is
-      still needed but for the effect flush, not preprocessing — the code is right and its
-      justification is wrong.
+- [ ] **One stale "preprocessing" comment in `crates/warp_tui/`.** `test_fixtures.rs:43-45`
+      says the helper enqueues "action preprocessing through `ctx.spawn`"; it emits synchronously,
+      so `settle()` is still needed but for the effect flush, not preprocessing — the code is right
+      and its justification is wrong. (Rewritten 2026-09-26: the two "real preprocess pipeline"
+      comments in `tui_permission_prompt_tests.rs` and `tui_generic_tool_call_view_tests.rs` are gone.)
 
 - [ ] 🟠 **Daemon sockets are not version-partitioned in practice, despite the docs and**
       **three tests saying they are.** `daemon_socket_name()` / `daemon_pid_name()` — and so
@@ -10337,7 +10401,7 @@ claim, which was wrong by four.
 
       **REFUTED THEN REPAIRED AGAIN 2026-08-21 — this entry's earlier text is now STALE on two counts** (the `{2,4,5,6}` skip-list and the code-2 numbering both changed). The refutation found the contract itself could mint a false verdict: `compute_sha256` ended every branch in a pipeline and the script never set `pipefail`, so a digest tool that **exists but fails** (unreadable file, SELinux denial, OOM, FIPS-restricted openssl) returned the last pipeline element's status — 0 — with empty stdout, the `EXIT_NO_DIGEST_TOOL` guard never fired, and the empty comparison fell through to **`EXIT_DIGEST_MISMATCH`**. The "couldn't check" → "check failed" fusion, one layer below where it was fixed, raising a **false tampering alarm** on the one code the whole design turns on. **Reproduced by execution before fixing** (a `sha256sum` shim exiting 1, and one exiting 0 with empty output, both yielded exit 6), and re-verified after. Fixed at `install_remote_server.sh:152`: each branch captures the tool's own status via a **locally scoped** `set -o pipefail` and rejects a result that is empty or not bare hex. **`pipefail` is deliberately NOT global** — measured: `set -e; set -o pipefail; x=$(find … | head -n1)` exits **141** (SIGPIPE), which the ERR trap would convert to exit 9, breaking both staging-tarball paths. **Second finding — a regression the previous repair introduced:** OpenSSH reports *its own* failures (connection closed, dead ControlMaster, host-key change) as **exit 255**, and `run_ssh_script` returns `Ok(output)` whenever the ssh *process* ran, so 255 arrived as `ScriptFailed{255}` → `_ => Fatal` → **no fallback**, for a script that never executed — while the doc claimed `TransportFailed` covered exactly that. Verified with real ssh against a nonexistent host and a dead ControlPath. Now `255 => TransportFailed` (`ssh_transport.rs:294`); the fallback is still reachable only on 3, 7, 255 and `Other`, so it was not widened. **Third:** `EXIT_UNSUPPORTED_PLATFORM` moved 2 → **10**, because bash exits 2 on a *parse* error, which precedes trap installation and so cannot be remapped; 2 now belongs to no contract code and fails closed as unrecognised. New test `install_script_exit_codes_avoid_bash_reserved_statuses` bars 0/1/2/126/127/255 and 128-192. **Caveat:** no Rust test was executed (build gate); one 255 shape — a remote command killed by a signal — could not be executed without a real host.
 
-- [ ] 🔴 **The BYOP API key is sent to every SSH host, ungated and undisclosed.**
+- [x] 🔴 **The BYOP API key is sent to every SSH host, ungated and undisclosed.**
       `ai/codebase_embeddings.rs:441-448` puts the keychain key into
       `EmbeddingProviderConfig`; `client/mod.rs:332` ships it in every `Initialize`, and
       `:356` re-ships to every connected daemon on a settings change. Neither side has a
@@ -10347,6 +10411,7 @@ claim, which was wrong by four.
       host harvests both.
       **VERDICT PARTIAL — not every host (independent verifier, 2026-08-21):** The chain holds: keychain → `secrets.rs:22-37` → `embeddings.rs:112-117` → `codebase_embeddings.rs:441-448` → every `Initialize` (`client/mod.rs:330-333`) and every settings change (`manager.rs:818-827`), with no flag check at `lib.rs:2229-2245`. **But "every SSH host" is wrong** — transmission requires the per-host install choice (`ssh_remote_server_choice_view.rs:78-91`). The undisclosed limb stands (`warp.ftl:260`).
       **FIXED 2026-08-21:** the `embedding_provider` carrying the keychain key is populated only when `FeatureFlag::RemoteCodebaseIndexing.is_enabled()` — the same flag the daemon requires (`server_model.rs:1663`), so a daemon that could not use the key never receives one. Failure is loud rather than silent: the daemon reports `Unavailable` with a user-visible reason.
+      **Closed 2026-09-26:** gated on user consent in `b18a81603` (`codebase_embeddings.rs:843-856`).
 
       **REFUTATION 2026-08-21 — FIX DEFEATED, REOPENED.** The gate is a constant. `remote_codebase_indexing` is in `app/Cargo.toml:660`'s **default** feature set (independently confirmed by the coordinator) and is force-enabled at `lib.rs:2821,3234`, so `is_enabled()` is always true and the key still ships. A compile-time feature that is on by default cannot express user consent; the real runtime predicate is `should_use_codebase_indexing` (`codebase_auto_indexing.rs:32,56-59`). The user-facing disclosure at `i18n/en/warp.ftl:260` was never updated despite this being ticked. Repair dispatched.
 
@@ -10428,6 +10493,7 @@ claim, which was wrong by four.
       stuck in AI mode with an empty buffer — **the next shell command goes to the
       agent.**
       **VERDICT PARTIAL — 'blocks unlock' wrong (independent verifier, 2026-08-21):** `context_model.rs:745-749` does include the at-context attachments, gating `should_run_input_autodetection`, and pruning runs only at `input.rs:9779` and `:12923`. But it is NOT a parity gap — `42effe840:context_model.rs:269-271` has no at-context machinery at all — and "blocks unlock" is wrong: Esc reaches `set_input_mode_terminal` (`input.rs:7881`, `:13102-13114`), an unconditional manual override.
+      **In progress 2026-09-26:** branch `fix/agent-prompt-hangs`.
 
       **PARTIAL CONFIRMED, NOT FIXED 2026-08-21 — doc corrected, behaviour needs a file outside this round.** "Blocks unlock" is **wrong**: Escape clears attached context, a second Escape reaches `set_input_mode_terminal` (`input.rs:13111`, an unconditional manual override), and a send resets via `reset_context_to_default`. So it is a **stale** lock, not a stuck one. **But the headline stands:** the submit-time prune (`input.rs:12933`) runs *inside* the AI submit path, so it removes the stale attachment **after** routing — the next shell command does go to the agent. No phantom attachment is ever *sent*. `retain_at_context_attachments_in_query` runs from exactly two places and **nothing runs it on a buffer edit**. **Deliberately not fixed by dropping the at-context clause** — while the `@ref` is in the buffer the lock is exactly right, and removing it would let the classifier flip a genuine `@`-reference query to shell. The predicate's doc did not even name the third source; rewritten to name all three, distinguish the two this model owns from the one that is a cache of a buffer fact, and cite the missing invalidation. **Proposed fix for the `input.rs` owner:** prune on the buffer-edited editor event, so the predicate reconciles per keystroke.
 
@@ -10651,11 +10717,12 @@ claim, which was wrong by four.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `script/macos/bundle:351` and `bundle.ps1:118` add `autoupdate` to `FEATURES`, consumed by `cargo build --features` (`bundle.ps1:162`), and the workflow's `softprops/action-gh-release` step (`phosphor_release.yml:952-963`) publishes exactly the Release `github.rs:84` polls. Only the "not in Cargo.toml default" half is true.
       **FIXED 2026-08-21:** Row rewritten. The agent also caught a nuance I had missed: `autoupdate_ui_revamp` IS in `app/Cargo.toml` default but is a DIFFERENT feature from `autoupdate`, which is not — so the row's first clause was true and only the feed claim was false.
 
-- [ ] **Linux OSS ships with autoupdate compiled out.** `script/linux/bundle:203` sets
+- [x] **Linux OSS ships with autoupdate compiled out.** `script/linux/bundle:203` sets
       `FEATURES="release_bundle"` only, so all 523 lines of `autoupdate/linux.rs` are dead
       in shipped AppImages. Linux users receive no updates while mac and Windows do, and
       nothing tells them.
       **VERDICT PARTIAL — outcome right, mechanism wrong (independent verifier, 2026-08-21):** `autoupdate/linux.rs` is **not** feature-gated — `mod.rs:4-5` gates on `cfg(target_os = "linux")` only, so it compiles. What is off is `FeatureFlag::Autoupdate`: absent from `RELEASE_FLAGS` (`warp_features/src/lib.rs:864`) and added only under `#[cfg(feature = "autoupdate")]` (`lib.rs:2872`), so the runtime guards never fire. Linux gets no updates; the code is dead at runtime, not absent from the binary.
+      **Closed as declined 2026-09-26:** autoupdate is off on every platform since #630 (`crates/warp_features/src/lib.rs:898-915`), so Linux is no longer the odd one out.
 
       **VERIFIED OPEN 2026-08-21 — accidental, NOT the recorded decision, and this entry's mechanism is wrong.** It is **not** covered by `DECLINED.md:215`, which is about `warp_tui/src/bin/oss.rs:42` hardcoding `autoupdate_config: None` plus the `192.0.2.0:9` sentinel — a different mechanism, and `DECLINED.md:179` explicitly warns not to conflate them. There is **no** row for the Linux **GUI** path. **Evidence it is an omission:** `160cfca59`, the commit that turned the feature on, touches `script/macos/bundle` and `script/windows/bundle.ps1` and **not** `script/linux/bundle`; the latter's `FEATURES="release_bundle"` (`:203`) was simply never revisited, while `macos/bundle:358` and `windows/bundle.ps1:125` both append `autoupdate`. **Mechanism correction:** `autoupdate/linux.rs` compiles fine (`mod.rs:4-5` gates on `cfg(target_os)` only) — what is off is `FeatureFlag::Autoupdate`, absent from `RELEASE_FLAGS` and added only under `#[cfg(feature = "autoupdate")]`. **Dead at runtime, not absent from the binary**, so "all 523 lines are dead in shipped AppImages" is wrong. **The Linux path is the strongest of the three:** it resolves the real asset URL from the cached release, verifies SHA-256 and `mv`s the verified bytes into place **with no await between**, so unlike mac and Windows it has no TOCTOU to re-check, and it detects AppImage vs package manager with a manual-install bail. Re-enabling is one change — `FEATURES="release_bundle,autoupdate"` — after confirming the published asset name against a real release, since `linux.rs:84` hardcodes it and a mismatch falls back to a constructed URL rather than failing loudly.
 
@@ -10699,13 +10766,14 @@ claim, which was wrong by four.
 
       **CORRECTION + FIXED 2026-08-21 — and `0219e06c3`'s stated reason for deferring this was WRONG.** That commit recorded that the correct pre-image "needs it retained at accept time" and "the view does not retain it". **Nothing needed retaining:** `start_saving` wrote exactly `final_content_from_op(&diff.base.content, &diff.diff_type)`, a **pure function of the diff `revert_file_diffs` is already holding** — the accepted bytes were re-derivable all along. That mistaken premise is precisely why the delete limb went unguarded. `revert_plan` now returns a per-step `ExpectedDiskState` derived from the accept: `Create` → delete guarded on `Content(insertion)`; `Delete` → write base guarded on `Absent`; rename → write base at the source guarded on `Absent` **plus** delete the target guarded on `Content(accepted)`; in-place → write base guarded on `Content(accepted)`. **The delete limb is guarded** — an agent-created file the user has since built on now refuses instead of vanishing. `dispatch_write`'s `Option<ExpectedDiskState>` is **removed**, so there is no longer any way to ask this module for an unguarded write. **The dropped `SaveFuture` was load-bearing, not cosmetic:** guard refusals arrive *asynchronously*, so keeping only the sync `Result` would have made every refusal invisible and the whole guard inert. **`REVERT_CHAIN_TAIL` is necessary, not gold-plating:** the caller reverts newest-first and depends on that order, but `FileModel` writes run on spawned tasks so dispatch order ≠ execution order — unguarded that was a silent coin-flip between original and intermediate state, and **guarded it would have been a near-certain spurious refusal**, i.e. exactly the "refuse the common case" failure the old comment feared. **"Fork-only" is false** (the verifier was right: the pin reverts identically via `local_code_editor.rs:2235-2277`). **Not closed:** the GUI's `InlineDiffView::restore_diff_base` carries the same unguarded shape and the same now-refuted note.
 
-- [ ] **Notebook load dead-ends on a `ServerId` that never exists (#609 sibling).**
+- [x] **Notebook load dead-ends on a `ServerId` that never exists (#609 sibling).**
       `notebooks/notebook.rs:1541-1560` — `fetch_needed` calls
       `notebook_id.into_server()`, but `set_server_id` (`cloud_object/mod.rs:172,673`)
       has zero callers, so ids stay `ClientId` and the arm is a `log::warn`.
       `fetch_needed` is also true when `focused_folder_id` does not resolve, so an
       in-memory notebook computed one line earlier is discarded with no toast.
       **VERDICT PARTIAL — impact overstated (independent verifier, 2026-08-21):** Confirmed: `cloud_object/mod.rs:172,673` has zero call sites (the fork's own `update_manager.rs:1229` says so) and `notebooks/notebook.rs:1542-1557` dead-ends in `log::warn` with no toast. But `focused_folder_id` is parsed ONLY from warp.dev Drive URLs (`uri/mod.rs:205`) and never set for local notebooks — territory DECLINED.md:200 (#267) deliberately keeps as dead code.
+      **Closed 2026-09-26:** fixed by `325f02045` (`NotebookLoadRoute`).
 
       **CORRECTION + FIXED 2026-08-21 — the reported mechanism was wrong.** There is no wait and no hang: `into_server()` returning `None` was already handled by an `else` arm, and `fetch_single_cloud_object` (`cloud_object/update_manager.rs:255-266`) is a gutted stub that fires its oneshot immediately, so even the `ServerId` branch cannot hang. **The real defect was that `else` arm**, in a fork where `SyncId::ClientId` is the only id kind objects ever get (`set_server_id` has zero call sites; `update_manager.rs:1229` already documents this and already collapsed two other `ServerId` guards for the same reason). Two failures behind it: (1) a notebook absent from the store with a `ClientId` — reachable with no link involved via `notebooks/manager.rs:189-199` on session restore — produced an empty pane with **no toast at all**, where every other terminal branch toasts; (2) a notebook already fetched from the store one line earlier was **discarded** because `fetch_needed` is also true when `focused_folder_id` fails to resolve, which it never can here. Fixed at `notebook.rs:1555-1581` via a new `NotebookLoadRoute::resolve` (`:2429-2465`); absent → `StoredObjectNotFound` toast, present → load. **`focused_folder_id` itself was left alone: `DECLINED.md:200` (#267) deliberately keeps that Drive-URL path dead** — no cloud behaviour was restored, the fix only stops it discarding a purely local object. The fork's port is byte-faithful to the pin (`42effe840:notebooks/notebook.rs:1502-1538`), and the pin's toast arm is unreachable even at the pin, so this is de-clouding breaking an already-vestigial shape, not a botched port. `cloud_object/mod.rs:171-183,686-688` now record that `set_server_id` has zero callers and that `#![allow(dead_code)]` is why nothing flagged it.
 
@@ -10724,6 +10792,7 @@ claim, which was wrong by four.
       `ParsedDiff::file()` returns the SOURCE, never `move_to`
       (`diff_application.rs:325-335`) — so a V4A rename auto-writes `~/.mcp.json`.
       **VERDICT PARTIAL — one limb refuted (independent verifier, 2026-08-21):** Rename limb confirmed: `ParsedDiff::file()` (`crates/ai/src/diff_validation/mod.rs:39-45`) never returns `move_to`, so `check_protected_write_paths` never sees the destination and `rename_and_save` writes it. Pin-parity. **The "unresolved paths" limb breaks:** `mcp/mod.rs:135-143` suffix-matches components, so a raw `~/.mcp.json` string IS caught. Only `~/.claude.json` escapes.
+      **In progress 2026-09-26:** branch `fix/move-to-protected-path`.
 
       **HALF FIXED 2026-08-21 — and the verifier's refutation of the paths limb was too NARROW.** It tested only `~/.mcp.json`. The mechanism is real and provable at the call site: `request_file_edits.rs:127-130` feeds the guard **raw model strings** while the writer resolves via `host_native_absolute_path` — the same module, six lines away, already importing it. The verifier was right about *scale*: it bites for exactly one provider, because `mcp_provider_from_file_path` matches **project** configs by suffix but **home** configs by absolute equality, and Claude is the only provider whose home name differs from its project name. Evasions confirmed by emulating `Path::components`/`ends_with` semantics: `~/.claude.json`, `.claude.json`, `../.claude.json`, `/home/u/tmp/../.claude.json` all escaped — while `/home/u/./.claude.json` did **not**, since Rust folds mid-path `.`. Fixed with tilde expansion plus lexical `.`/`..` folding (never `canonicalize` — it blocks, and fails on a not-yet-created file) and a home-config suffix match. **Renames limb still OPEN, same shape as the file-write rename hole found this morning:** `ParsedDiff::file()` returns the source for both variants and never `move_to`, and **the rename path consults no guard at all**. The fix belongs in `request_file_edits.rs` (add `move_to` to `paths`, resolved) or a `ParsedDiff::written_paths()`.
 
