@@ -667,6 +667,12 @@ default = [
     "remote_codebase_indexing",
     "terminal_lifecycle_recovery",
     "vertical_tabs_summary_mode",
+    # `146684ee7`: IME marked (preedit) text, on all platforms including Linux (the
+    # fork's own platform). Compiled in unconditionally; the runtime enable path is
+    # `RELEASE_FLAGS` in `crates/warp_features/src/lib.rs` and the explicit
+    # `with_additional_features` call in `app/src/bin/phosphor_oss.rs`, both of
+    # which used to stop at `cfg(any(macos, windows))`.
+    "ime_marked_text",
 ]
 # Enable this feature to automatically perform heap profiling.  NOTE: This will
 # substantially slow down program execution.

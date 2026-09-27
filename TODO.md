@@ -2218,7 +2218,7 @@ Phase 6.5's whole point: a partially-ported commit passes review, passes CI, and
 passes its own upstream test, because the test came across too and cannot detect
 what was dropped.
 
-- [ ] **`146684ee` — IME marked text is dark on Linux, the fork's own platform.**
+- [x] **`146684ee` — IME marked text is dark on Linux, the fork's own platform.**
       The Windows half landed independently (with its own rationale comment); the
       Linux half never did. Every path is closed on Linux: `RELEASE_FLAGS`
       (`crates/warp_features/src/lib.rs:907`) is `cfg(any(macos, windows))`, so is
@@ -2229,6 +2229,18 @@ what was dropped.
       marked text "on macOS and Windows", so deleting the two cfgs needs runtime
       verification that winit delivers preedit on X11/Wayland at this fork's rev.
       Do NOT ship a cfg deletion on upstream's say-so.
+      **Fixed #724 (`146684ee7`):** removed both `cfg(any(macos, windows))` gates
+      and added `ime_marked_text` to `app/Cargo.toml`'s `default`. No separate
+      rendering fix exists upstream at the pin -- the winit `Ime::*` handling and
+      the terminal/editor marked-text plumbing were already platform-generic here
+      (not gated per-OS), so this is exactly upstream's 2-line diff. Added
+      `ime_marked_text_is_release_flagged_on_every_platform` so the cfg cannot
+      silently come back. **Not independently re-verified against real IME input
+      here** (no CJK input method configured in this environment) -- upstream's
+      own Linux verification (X11 + Wayland via ibus) found the command/agent
+      editor renders preedit distinctly, but the alt-screen/grid path shows no
+      visual distinction at all; that gap is pre-existing and untouched by this
+      change.
 - [x] **`1a29f680d` — shared recovery budget across MAA retries and resumes.
       PORTED 2026-08-29 (branch `port/t-S7-blocklist`), with its 6 tests.**
       Backoff already landed here independently by a *different* mechanism
