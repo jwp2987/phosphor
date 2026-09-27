@@ -11637,9 +11637,20 @@ open findings that had no pre-existing row.
       submitting a follow-up while the conversation is `Blocked` is refused with
       a toast hint rather than silently cancelling the pending confirmation
       (buffer kept) (`a70bac5b1`, localized `685740947`).
-      **TODO new:** queue the follow-up instead of refusing it —
-      `QueuedQueryModel` has no unlock trigger for "blocked on confirmation", so
-      the refused text has to be resent by hand once the card resolves.
+      **#725 — queue the follow-up instead of refusing it, fixed:** a new
+      locked `QueuedQueryOrigin::PendingApprovalFollowUp`/`ApprovalFollowUp`
+      pair (`app/src/ai/blocklist/queued_query.rs`) mirrors the
+      `PendingLrcAutoQueue`/`LrcAutoQueue` forced-queue pattern.
+      `submit_ai_query` queues instead of refusing; `unlock_pending_approval_rows`
+      is called from the same `drain_queued_prompts` sites (`terminal/view.rs`)
+      that already unlock `PendingLrcAutoQueue` — the `Complete` arm unlocks and
+      auto-fires (covers "approved and finished" and "rejected, conversation
+      continued to completion"), the `Error`/`Cancelled` arm unlocks but only
+      restores to input or leaves queued, never auto-firing, so a genuinely
+      cancelled conversation never sends the row silently. Panel: Send Now
+      disabled with a tooltip and a "(queued until the pending action resolves)"
+      suffix while locked. Model-level tests cover lock semantics, the unlock
+      transition, the two locked origins not interfering, and the cancel path.
 
 - [x] **#691 — generated conversation titles read as a live status, and the
       sidebar/history list went stale.** Fixed: stop titles from reading as
