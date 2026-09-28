@@ -12,6 +12,7 @@ fn unreachable_config() -> OneshotConfig {
         model_id: "test-model".to_owned(),
         api_type: AgentProviderApiType::OpenAi,
         reasoning_effort: ReasoningEffortSetting::Auto,
+        extra_headers: Vec::new(),
     }
 }
 

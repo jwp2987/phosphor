@@ -295,6 +295,11 @@ pub(crate) struct TitleGenParams {
     pub model_id: String,
     pub api_type: crate::settings::AgentProviderApiType,
     pub reasoning_effort: crate::settings::ReasoningEffortSetting,
+    /// The title model's own provider's configured custom headers -- may differ from the
+    /// main request's provider, since the user can pick an independent title_model. See
+    /// `ByopDispatch::extra_headers` for why this is needed; values may contain secrets:
+    /// never logged.
+    pub extra_headers: Vec<(String, String)>,
     /// UI language name substituted for the `{{ language }}` placeholder in
     /// title_system.md (the title-language fallback when the input language is
     /// ambiguous; aligns with the #277 prompt-language injection).
@@ -372,6 +377,7 @@ fn byop_dispatch_info(
                     model_id: t_model_id,
                     api_type: t_provider.api_type,
                     reasoning_effort: t_effort,
+                    extra_headers: t_provider.extra_headers.clone(),
                     ui_language: (*crate::settings::language::LanguageSettings::as_ref(ctx)
                         .language)
                         .prompt_language_name(),
@@ -460,6 +466,7 @@ fn pending_title_generation_from_byop(
             model_id: title_gen.model_id.clone(),
             api_type: title_gen.api_type,
             reasoning_effort: title_gen.reasoning_effort,
+            extra_headers: title_gen.extra_headers.clone(),
             ui_language: title_gen.ui_language,
             prompt_override: title_gen.prompt_override.clone(),
         },

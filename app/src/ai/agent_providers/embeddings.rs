@@ -98,6 +98,11 @@ pub struct EmbeddingEndpoint {
     /// Empty means "send no `Authorization` header", which is how a local
     /// runtime with no auth is supported — the same tolerance the chat path has.
     pub api_key: String,
+    /// The provider's configured custom headers (`AgentProvider::extra_headers`),
+    /// forwarded verbatim on every `/embeddings` and `/rerank` request the same way the
+    /// chat path forwards them -- some self-hosted gateways reject a request that lacks
+    /// a custom auth header. Values may contain secrets: never logged.
+    pub extra_headers: Vec<(String, String)>,
 }
 
 /// Whether `provider` is usable and offers `model_id`.
@@ -150,7 +155,11 @@ pub fn resolve_embedding_endpoint(
         .map(str::to_owned)
         .unwrap_or_default();
 
-    Some(EmbeddingEndpoint { base_url, api_key })
+    Some(EmbeddingEndpoint {
+        base_url,
+        api_key,
+        extra_headers: provider.extra_headers.clone(),
+    })
 }
 
 /// Every embedding model the user has a usable provider for, and where each
@@ -282,7 +291,14 @@ pub fn resolve_embedding_endpoints(app: &AppContext) -> EmbeddingEndpoints {
                 .map(str::to_owned)
                 .unwrap_or_default();
 
-            Some((embedding_config, EmbeddingEndpoint { base_url, api_key }))
+            Some((
+                embedding_config,
+                EmbeddingEndpoint {
+                    base_url,
+                    api_key,
+                    extra_headers: provider.extra_headers.clone(),
+                },
+            ))
         })
         .collect();
 
@@ -513,6 +529,70 @@ fn plaintext_payload_refusal(base_url: &str) -> IndexError {
     ))
 }
 
+/// Resolves the bearer token (if any) and the provider's `extra_headers` into
+/// the header set an embedding/rerank request actually sends, shared by the
+/// embedding and rerank paths so the two cannot drift. Pure and easy to test
+/// directly (`embeddings_tests.rs`) without a real request.
+///
+/// **Precedence: `extra_headers` wins.** This matches the main streaming path's
+/// `genai::client::Headers::merge_with` (a later value replaces an earlier one
+/// by name), so a provider that configures its own `Authorization` header
+/// overrides the bearer token derived from `api_key` rather than sending both.
+/// It matters mechanically, not just semantically: `RequestBuilder::header`
+/// (both `reqwest`'s and this crate's `http_client` wrapper around it) *appends*
+/// a same-named header rather than replacing it, so calling `bearer_auth` and
+/// then `.header("Authorization", ...)` for an extra header would have put two
+/// `Authorization` headers on the wire, not one. Building the `http::HeaderMap`
+/// here and using `HeaderMap::insert` (case-insensitive by construction, since
+/// `HeaderName` normalizes to lowercase) collapses same-named entries — from
+/// `extra_headers` itself, and against the bearer token — down to one value
+/// each before anything reaches the request builder.
+///
+/// A header name or value that fails to parse as a valid HTTP header is
+/// dropped silently rather than failing the request outright (unlike the
+/// previous per-header `.header()` calls, whose invalid input instead surfaced
+/// as a deferred error at `send()` time) — configured header text comes from
+/// the provider settings UI, not the request path, so a malformed entry there
+/// is a settings-time problem, not one this call site should turn into a
+/// request failure.
+fn resolved_auth_and_extra_headers(
+    api_key: &str,
+    extra_headers: &[(String, String)],
+) -> http::HeaderMap {
+    let mut headers = http::HeaderMap::new();
+    if !api_key.trim().is_empty()
+        && let Ok(value) = http::HeaderValue::from_str(&format!("Bearer {api_key}"))
+    {
+        headers.insert(http::header::AUTHORIZATION, value);
+    }
+    for (name, value) in extra_headers {
+        if let (Ok(header_name), Ok(value)) = (
+            http::HeaderName::from_bytes(name.as_bytes()),
+            http::HeaderValue::from_str(value),
+        ) {
+            headers.insert(header_name, value);
+        } else {
+            // Dropped rather than failing the whole request, but never silently: a gateway
+            // that needs this header will reject the call, and this is the only clue why.
+            // The name only -- a value may be a secret.
+            log::warn!("Skipping provider extra header {name:?}: not a valid HTTP header");
+        }
+    }
+    headers
+}
+
+/// Applies [`resolved_auth_and_extra_headers`] to a request builder.
+fn apply_auth_and_extra_headers<'a>(
+    mut request: http_client::RequestBuilder<'a>,
+    api_key: &str,
+    extra_headers: &[(String, String)],
+) -> http_client::RequestBuilder<'a> {
+    for (name, value) in &resolved_auth_and_extra_headers(api_key, extra_headers) {
+        request = request.header(name.clone(), value.clone());
+    }
+    request
+}
+
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl EmbeddingProvider for HttpEmbeddingProvider {
@@ -555,10 +635,9 @@ impl EmbeddingProvider for HttpEmbeddingProvider {
         }
 
         let url = format!("{}/embeddings", endpoint.base_url);
-        let mut request = self.client.post(&url).json(&body);
-        if has_key {
-            request = request.bearer_auth(&endpoint.api_key);
-        }
+        let request = self.client.post(&url).json(&body);
+        let request =
+            apply_auth_and_extra_headers(request, &endpoint.api_key, &endpoint.extra_headers);
 
         let response = request.send().await.map_err(|error| {
             IndexError::Other(anyhow::anyhow!(error).context("embedding request failed"))
@@ -653,7 +732,14 @@ pub fn resolve_rerank_endpoint(app: &AppContext) -> Option<(EmbeddingEndpoint, &
             .map(str::to_owned)
             .unwrap_or_default();
 
-        return Some((EmbeddingEndpoint { base_url, api_key }, model_id));
+        return Some((
+            EmbeddingEndpoint {
+                base_url,
+                api_key,
+                extra_headers: provider.extra_headers.clone(),
+            },
+            model_id,
+        ));
     }
 
     None
@@ -753,10 +839,12 @@ impl RerankProvider for HttpRerankProvider {
         }
 
         let url = format!("{}/rerank", self.endpoint.base_url);
-        let mut request = self.client.post(&url).json(&body);
-        if has_key {
-            request = request.bearer_auth(&self.endpoint.api_key);
-        }
+        let request = self.client.post(&url).json(&body);
+        let request = apply_auth_and_extra_headers(
+            request,
+            &self.endpoint.api_key,
+            &self.endpoint.extra_headers,
+        );
 
         let response = request.send().await.map_err(|error| {
             IndexError::Other(anyhow::anyhow!(error).context("rerank request failed"))

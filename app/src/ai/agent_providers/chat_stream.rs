@@ -5469,13 +5469,48 @@ fn map_genai_error(err: genai::Error) -> OpenAiCompatibleError {
         | G::JsonValueExt(_)
         | G::InvalidJsonResponseElement { .. } => OpenAiCompatibleError::Decode(format!("{err}")),
 
-        // Failures during the network/streaming-send stage (reqwest connection, TLS, DNS,
-        // timeout, stream interruption, etc.)
-        G::WebStream { .. } | G::WebAdapterCall { .. } | G::WebModelCall { .. } => {
+        // `exec_chat_stream` is synchronous setup only (see genai's `Client::exec_chat_stream`
+        // -- it builds the request and constructs the stream, but never sends it); the actual
+        // HTTP request/response and status check happen lazily, on the *first* poll of the
+        // stream (`WebStream::poll_next`). So a provider rejection (bad key, unknown model)
+        // never reaches `G::HttpError` at this top level -- it arrives boxed inside
+        // `G::WebStream`'s `error` field, itself a `genai::Error::HttpError`, because every
+        // streamer (`openai/streamer.rs`, `ollama/streamer.rs`, `gemini/streamer.rs`, ...) wraps
+        // whatever the stream yielded as `Error::WebStream { error: err, .. }` without
+        // unwrapping it first. Downcasting here is what actually lets a rejected request fail
+        // fast instead of retrying -- without it, every BYOP chat turn (all of which stream)
+        // hits this every time, and `OpenAiCompatibleError::Status` is never produced at all.
+        G::WebStream { ref error, .. } => match error.downcast_ref::<genai::Error>() {
+            Some(G::HttpError {
+                status,
+                canonical_reason,
+                body,
+            }) => OpenAiCompatibleError::Status {
+                status: status.as_u16(),
+                body: if canonical_reason.is_empty() {
+                    body.clone()
+                } else {
+                    format!("{canonical_reason}: {body}")
+                },
+            },
+            _ => OpenAiCompatibleError::Stream(format!("{err}")),
+        },
+
+        // Failures during the network/streaming-send stage that never got a reply: reqwest
+        // connection, TLS, DNS, timeout, stream interruption, etc.
+        G::WebAdapterCall { .. } | G::WebModelCall { .. } => {
             OpenAiCompatibleError::Stream(format!("{err}"))
         }
 
-        // An HTTP error status returned by the server
+        // A top-level HTTP error status. In this genai version every live constructor of
+        // `Error::HttpError` (`web_stream.rs`, `bedrock/shared.rs`) boxes it straight into
+        // `Error::WebStream` (handled above) before it can reach here, and `exec_chat`'s own
+        // non-streaming status check raises `Error::ResponseFailedStatus` instead -- so this
+        // arm is not reachable through any call site in this file today. Kept rather than
+        // folded into the `other` catch-all below: it is the correct home for a status error
+        // if the arm ever becomes reachable (a future genai version, or a call site this file
+        // does not yet have), and no test asserts it is dead, so nothing here can bit-rot into
+        // a false claim.
         G::HttpError {
             status,
             body,
@@ -5492,6 +5527,177 @@ fn map_genai_error(err: genai::Error) -> OpenAiCompatibleError {
         // Everything else (request construction, auth, unsupported capability, etc.) is
         // classified as a generic error, to avoid being misleadingly labeled "parse failure"
         other => OpenAiCompatibleError::Other(format!("{other}")),
+    }
+}
+
+/// Converts a BYOP stream-chunk error (already mapped from `genai::Error` by
+/// [`map_genai_error`]) into the `AIApiError` yielded to the recovery/retry layer.
+///
+/// A status the provider itself returned (bad key, unknown model, ...) carries an HTTP
+/// status code -- this routes it through `AIApiError::ErrorStatus` so
+/// `AIApiError::is_retryable()` applies the real client/server-error split (4xx fails
+/// fast except 408/429; 5xx/408/429/timeouts/connection errors stay retryable) instead of
+/// the `Other` variant's "retryable unless BlockedByopReadinessError" default, which
+/// otherwise made a rejected-key or unknown-model response get retried twice before the
+/// user saw it. Everything else (decode/stream/other transport failures, none of which
+/// carry a status) keeps going through `Other`, unchanged and still retryable.
+fn byop_stream_error_to_api_error(mapped: OpenAiCompatibleError) -> AIApiError {
+    let message = format!("BYOP stream error: {mapped}");
+    byop_error_to_api_error(&mapped, message)
+}
+
+/// Shared conversion used by both the open-stream failure (`exec_chat_stream` itself
+/// returning `Err`, e.g. an immediate 401/404 before any SSE byte arrives) and mid-stream
+/// chunk failures: `message` is the already-composed, user-facing text (built by the
+/// caller, e.g. [`describe_byop_open_stream_failure`], so it keeps whatever
+/// hint/formatting that call site adds), and only the resulting `AIApiError` *variant* --
+/// which drives `is_retryable()` -- depends on whether `mapped` carries an HTTP status.
+fn byop_error_to_api_error(mapped: &OpenAiCompatibleError, message: String) -> AIApiError {
+    match mapped {
+        OpenAiCompatibleError::Status { status, .. } => AIApiError::ErrorStatus(
+            http::StatusCode::from_u16(*status).unwrap_or(http::StatusCode::INTERNAL_SERVER_ERROR),
+            message,
+        ),
+        _ => AIApiError::Other(anyhow::anyhow!(message)),
+    }
+}
+
+#[cfg(test)]
+mod byop_stream_error_retry_tests {
+    use super::*;
+
+    // The real-world shape of the bug: `exec_chat_stream` never sends the request eagerly
+    // (see the comment on `map_genai_error`'s `G::WebStream` arm), so a provider rejection
+    // arrives as `genai::Error::WebStream` with the actual `HttpError` boxed inside its
+    // `error` field, not as a top-level `G::HttpError`. Before the fix, `map_genai_error`
+    // never downcast that field, so this exact case -- the one hit by a bad key or an
+    // unknown model on every streaming provider -- silently fell through to
+    // `OpenAiCompatibleError::Stream`, and from there to the still-retryable `Other`.
+    #[test]
+    fn websteam_wrapped_http_error_unwraps_to_a_status() {
+        let model_iden = genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "gpt-test");
+        let inner = genai::Error::HttpError {
+            status: http::StatusCode::UNAUTHORIZED,
+            canonical_reason: "Unauthorized".to_string(),
+            body: "invalid api key".to_string(),
+        };
+        let wrapped = genai::Error::WebStream {
+            model_iden,
+            cause: "stream error".to_string(),
+            error: Box::new(inner),
+        };
+
+        let mapped = map_genai_error(wrapped);
+        match mapped {
+            OpenAiCompatibleError::Status { status, body } => {
+                assert_eq!(status, 401);
+                assert!(body.contains("invalid api key"));
+            }
+            other => panic!("expected a Status carrying the wrapped HttpError, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn websteam_non_http_error_stays_a_stream_error() {
+        let model_iden = genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "gpt-test");
+        let wrapped = genai::Error::WebStream {
+            model_iden,
+            cause: "connection reset".to_string(),
+            error: Box::new(std::io::Error::other("connection reset")),
+        };
+
+        assert!(matches!(
+            map_genai_error(wrapped),
+            OpenAiCompatibleError::Stream(_)
+        ));
+    }
+
+    // Client-side rejections (bad key, unknown model, ...) must fail fast: a 401/403/404
+    // from the provider should not be retried. Before the fix, every BYOP stream-chunk
+    // error -- status or not -- was wrapped as `AIApiError::Other`, which `is_retryable()`
+    // treats as retryable by default, so a bad key or unknown model got retried twice
+    // before the user ever saw the error.
+    #[test]
+    fn status_401_is_not_retryable() {
+        let err = byop_stream_error_to_api_error(OpenAiCompatibleError::Status {
+            status: 401,
+            body: "invalid api key".to_string(),
+        });
+        assert!(
+            matches!(err, AIApiError::ErrorStatus(status, _) if status == http::StatusCode::UNAUTHORIZED)
+        );
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn status_404_unknown_model_is_not_retryable() {
+        let err = byop_stream_error_to_api_error(OpenAiCompatibleError::Status {
+            status: 404,
+            body: "model 'gpt-nonexistent' not found".to_string(),
+        });
+        assert!(!err.is_retryable());
+        // The provider's own error text must survive the remap.
+        assert!(format!("{err}").contains("model 'gpt-nonexistent' not found"));
+    }
+
+    #[test]
+    fn status_429_is_still_retryable() {
+        let err = byop_stream_error_to_api_error(OpenAiCompatibleError::Status {
+            status: 429,
+            body: "rate limited".to_string(),
+        });
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn status_408_is_still_retryable() {
+        let err = byop_stream_error_to_api_error(OpenAiCompatibleError::Status {
+            status: 408,
+            body: "request timeout".to_string(),
+        });
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn status_500_is_still_retryable() {
+        let err = byop_stream_error_to_api_error(OpenAiCompatibleError::Status {
+            status: 500,
+            body: "internal server error".to_string(),
+        });
+        assert!(err.is_retryable());
+    }
+
+    // Non-status failures (connection drop, decode failure mid-stream, etc.) keep going
+    // through `Other`, which stays retryable -- this fix must not change that.
+    #[test]
+    fn non_status_stream_error_is_still_retryable() {
+        let err = byop_stream_error_to_api_error(OpenAiCompatibleError::Stream(
+            "connection reset by peer".to_string(),
+        ));
+        assert!(err.is_retryable());
+    }
+
+    // The same bug existed on the open-stream-failure path (`exec_chat_stream` itself
+    // returning `Err`, which is the branch actually hit by a bad key or unknown model --
+    // most providers reject those on the initial request, before any SSE chunk arrives).
+    #[test]
+    fn open_stream_status_401_is_not_retryable() {
+        let mapped = OpenAiCompatibleError::Status {
+            status: 401,
+            body: "invalid api key".to_string(),
+        };
+        let message = describe_byop_open_stream_failure(&mapped, None);
+        let err = byop_error_to_api_error(&mapped, message);
+        assert!(!err.is_retryable());
+        assert!(format!("{err}").contains("invalid api key"));
+    }
+
+    #[test]
+    fn open_stream_non_status_error_is_still_retryable() {
+        let mapped = OpenAiCompatibleError::Stream("connection refused".to_string());
+        let message = describe_byop_open_stream_failure(&mapped, None);
+        let err = byop_error_to_api_error(&mapped, message);
+        assert!(err.is_retryable());
     }
 }
 
@@ -5615,6 +5821,10 @@ pub struct TitleGenInput {
     pub model_id: String,
     pub api_type: AgentProviderApiType,
     pub reasoning_effort: crate::settings::ReasoningEffortSetting,
+    /// The provider's configured custom headers, forwarded the same way the main
+    /// streaming path forwards `ByopDispatch::extra_headers` -- see `OneshotConfig::extra_headers`
+    /// for why title generation needs this too. Values may contain secrets: never logged.
+    pub extra_headers: Vec<(String, String)>,
     /// UI language name ("English" / "Simplified Chinese" / …) substituted for the
     /// `{{ language }}` placeholder in title_system.md; the title-language fallback
     /// when the input language is ambiguous.
@@ -6280,7 +6490,7 @@ pub async fn generate_byop_output(
                 evict_vertex_token_on_auth_failure(vertex_credential.as_ref(), &mapped);
                 let message =
                     describe_byop_open_stream_failure(&mapped, other_provider_hint.as_ref());
-                yield Err(Arc::new(AIApiError::Other(anyhow::anyhow!(message))));
+                yield Err(Arc::new(byop_error_to_api_error(&mapped, message)));
                 return;
             }
         };
@@ -6411,9 +6621,7 @@ pub async fn generate_byop_output(
                             diag_body_json.len()
                         );
                     }
-                    yield Err(Arc::new(AIApiError::Other(anyhow::anyhow!(
-                        "BYOP stream error: {mapped}"
-                    ))));
+                    yield Err(Arc::new(byop_stream_error_to_api_error(mapped)));
                     return;
                 }
             };
@@ -7628,6 +7836,7 @@ pub(crate) async fn generate_title_via_byop(
         model_id: tg.model_id.clone(),
         api_type: tg.api_type,
         reasoning_effort: tg.reasoning_effort,
+        extra_headers: tg.extra_headers.clone(),
     };
     // Static template with only the `{{ language }}` placeholder substituted (no
     // minijinja — not worth a template engine for a single variable). A profile

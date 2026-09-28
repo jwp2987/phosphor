@@ -612,6 +612,7 @@ mod configure_tests {
         EmbeddingEndpoint {
             base_url: format!("http://{host}/v1"),
             api_key: "sk-secret".to_owned(),
+            extra_headers: Vec::new(),
         }
     }
 

@@ -145,6 +145,7 @@ fn set_endpoint_replaces_a_missing_one() {
     provider.set_endpoint(Some(EmbeddingEndpoint {
         base_url: "https://api.voyageai.com/v1".to_owned(),
         api_key: "k".to_owned(),
+        extra_headers: Vec::new(),
     }));
 
     let endpoint = provider
@@ -239,6 +240,7 @@ fn a_rerank_provider_reports_the_model_it_will_call() {
         EmbeddingEndpoint {
             base_url: "https://api.voyageai.com/v1".to_owned(),
             api_key: "k".to_owned(),
+            extra_headers: Vec::new(),
         },
         "rerank-2.5",
     );
@@ -257,6 +259,7 @@ fn a_rerank_provider_refuses_to_send_a_key_over_plaintext() {
             EmbeddingEndpoint {
                 base_url: "http://example.com/v1".to_owned(),
                 api_key: "secret".to_owned(),
+                extra_headers: Vec::new(),
             },
             "rerank-2.5",
         );
@@ -280,6 +283,7 @@ fn an_empty_rerank_costs_no_request() {
             EmbeddingEndpoint {
                 base_url: "https://api.voyageai.com/v1".to_owned(),
                 api_key: "k".to_owned(),
+                extra_headers: Vec::new(),
             },
             "rerank-2.5",
         );
@@ -307,6 +311,7 @@ fn a_keyless_endpoint(base_url: &str) -> EmbeddingEndpoint {
     EmbeddingEndpoint {
         base_url: base_url.to_owned(),
         api_key: String::new(),
+        extra_headers: Vec::new(),
     }
 }
 
@@ -443,6 +448,7 @@ fn a_keyed_private_network_endpoint_is_still_refused_for_its_key() {
             Some(EmbeddingEndpoint {
                 base_url: "http://192.168.1.50:11434/v1".to_owned(),
                 api_key: "sk-secret".to_owned(),
+                extra_headers: Vec::new(),
             }),
         );
 
@@ -465,6 +471,7 @@ fn dummy_endpoint() -> EmbeddingEndpoint {
     EmbeddingEndpoint {
         base_url: "https://example.test".to_owned(),
         api_key: String::new(),
+        extra_headers: Vec::new(),
     }
 }
 
@@ -552,4 +559,125 @@ fn preferred_model_favoring_existing_ignores_rows_under_an_unconfigured_model() 
 fn preferred_model_favoring_existing_is_none_for_an_empty_table() {
     let endpoints = endpoints_for(&[]);
     assert_eq!(endpoints.preferred_model_favoring_existing(|_| true), None);
+}
+
+// ---------------------------------------------------------------------------
+// `resolved_auth_and_extra_headers`: the bearer token and the provider's
+// `extra_headers` must reach the wire as one header per name, with
+// `extra_headers` winning a collision -- the bug this closes is
+// `RequestBuilder::header` *appending* rather than replacing a same-named
+// header, which would have put two `Authorization` headers on the wire for a
+// provider whose custom headers include one.
+
+#[test]
+fn extra_headers_are_present_alongside_the_bearer_token() {
+    let headers = resolved_auth_and_extra_headers(
+        "sk-secret",
+        &[("X-Gateway-Auth".to_owned(), "gateway-token".to_owned())],
+    );
+    assert_eq!(
+        headers
+            .get("authorization")
+            .expect("bearer token must still be set"),
+        "Bearer sk-secret"
+    );
+    assert_eq!(
+        headers
+            .get("x-gateway-auth")
+            .expect("the extra header must be present"),
+        "gateway-token"
+    );
+    // Exactly one value per name -- not two entries for the same header.
+    assert_eq!(headers.len(), 2);
+}
+
+#[test]
+fn an_extra_authorization_header_replaces_the_bearer_token_rather_than_duplicating_it() {
+    let headers = resolved_auth_and_extra_headers(
+        "sk-secret",
+        &[(
+            "Authorization".to_owned(),
+            "Bearer gateway-token".to_owned(),
+        )],
+    );
+    // Only the provider's own value must reach the wire under this name -- not
+    // the bearer token derived from `api_key`, and not both.
+    assert_eq!(
+        headers.get_all("authorization").iter().count(),
+        1,
+        "must be exactly one Authorization header, not one appended to the other"
+    );
+    assert_eq!(
+        headers.get("authorization").expect("must still be set"),
+        "Bearer gateway-token"
+    );
+}
+
+#[test]
+fn an_extra_header_matches_the_bearer_token_case_insensitively() {
+    // HTTP header names are case-insensitive on the wire; a provider spelling
+    // it "authorization" (lowercase) must still replace the bearer token, not
+    // sit alongside it as a second, differently-cased header.
+    let headers = resolved_auth_and_extra_headers(
+        "sk-secret",
+        &[(
+            "authorization".to_owned(),
+            "Bearer gateway-token".to_owned(),
+        )],
+    );
+    assert_eq!(headers.get_all("Authorization").iter().count(), 1);
+    assert_eq!(
+        headers.get("Authorization").expect("must still be set"),
+        "Bearer gateway-token"
+    );
+}
+
+#[test]
+fn two_extra_headers_with_the_same_name_collapse_to_the_later_value() {
+    // A provider's own header list could itself list the same name twice
+    // (a copy-paste in the settings UI, or a header the fork adds internally
+    // colliding with one the user typed) -- the later entry must win, not
+    // both reach the wire.
+    let headers = resolved_auth_and_extra_headers(
+        "",
+        &[
+            ("X-Custom".to_owned(), "first".to_owned()),
+            ("X-Custom".to_owned(), "second".to_owned()),
+        ],
+    );
+    assert_eq!(headers.get_all("x-custom").iter().count(), 1);
+    assert_eq!(headers.get("x-custom").expect("must be present"), "second");
+}
+
+#[test]
+fn no_api_key_and_no_extra_headers_sends_no_headers() {
+    let headers = resolved_auth_and_extra_headers("", &[]);
+    assert!(
+        headers.is_empty(),
+        "an empty key/extra_headers pair must not synthesize any header on the wire"
+    );
+}
+
+#[test]
+fn a_malformed_extra_header_is_dropped_rather_than_failing_the_request() {
+    // Header text comes from the provider settings UI, not the request path;
+    // a value containing a bare newline is not a valid HTTP header value, and
+    // must be dropped here rather than reaching `.header()` and deferring an
+    // error to `send()`.
+    let headers = resolved_auth_and_extra_headers(
+        "sk-secret",
+        &[("X-Bad".to_owned(), "line one\nline two".to_owned())],
+    );
+    assert!(
+        headers.get("x-bad").is_none(),
+        "the malformed header must be dropped"
+    );
+    // The valid bearer token must still go through -- one bad extra header
+    // must not take down the whole header set.
+    assert_eq!(
+        headers
+            .get("authorization")
+            .expect("bearer token must still be set"),
+        "Bearer sk-secret"
+    );
 }

@@ -802,6 +802,81 @@ pub fn active_embedding_config(app: &AppContext) -> EmbeddingConfig {
     resolve_configured_embedding_model(app).unwrap_or_default()
 }
 
+/// The header *names* (never values -- see the caller) to mention in the
+/// one-time warning below, or `None` when there is nothing to warn about.
+/// Split out from [`warn_once_if_remote_indexing_drops_extra_headers`] so the
+/// interesting part -- names only, values never even reachable from the
+/// return type -- is testable without going through `log` or the process-wide
+/// `Once`.
+#[cfg(not(target_family = "wasm"))]
+fn extra_header_names_to_warn_about(extra_headers: &[(String, String)]) -> Option<Vec<&str>> {
+    if extra_headers.is_empty() {
+        return None;
+    }
+    Some(
+        extra_headers
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect(),
+    )
+}
+
+/// Logs once, ever, per process — never on every settings recompute, since
+/// [`remote_client_preferences`] below re-runs on every `AISettings`/`CodeSettings`
+/// change — that the configured embedding provider's `extra_headers` cannot be
+/// forwarded to a remote-indexing daemon, because `EmbeddingProviderConfig` (the
+/// wire message) has no field for them. Logs header **names** and a count only;
+/// never values, which may contain secrets.
+#[cfg(not(target_family = "wasm"))]
+fn warn_once_if_remote_indexing_drops_extra_headers(extra_headers: &[(String, String)]) {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    let Some(names) = extra_header_names_to_warn_about(extra_headers) else {
+        return;
+    };
+    WARNED.call_once(|| {
+        let count = names.len();
+        log::warn!(
+            "[Remote codebase indexing] The configured embedding provider sets {count} custom \
+             header(s) ({names:?}) that remote codebase indexing cannot forward yet -- the \
+             daemon's /embeddings and /rerank requests will go out without them. If this \
+             provider requires them, use local (non-remote) codebase indexing instead."
+        );
+    });
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod remote_indexing_extra_headers_warning_tests {
+    use super::*;
+
+    #[test]
+    fn no_extra_headers_means_nothing_to_warn_about() {
+        assert_eq!(extra_header_names_to_warn_about(&[]), None);
+    }
+
+    #[test]
+    fn extra_headers_surface_as_names_only_never_values() {
+        // The property this closes: server_model.rs can only ever pass an empty
+        // Vec (the wire message has no extra-headers field), so the warning must
+        // come from here, where the real endpoint -- names AND secret values --
+        // is still in hand. The return type only ever carries names, so a value
+        // (here a token that would fail the test if it leaked into the output)
+        // structurally cannot reach the log line through this function.
+        let extra_headers = vec![
+            ("X-Gateway-Auth".to_owned(), "super-secret-token".to_owned()),
+            ("X-Org-Id".to_owned(), "org-42".to_owned()),
+        ];
+        let names = extra_header_names_to_warn_about(&extra_headers)
+            .expect("non-empty extra_headers must produce something to warn about");
+        assert_eq!(names, vec!["X-Gateway-Auth", "X-Org-Id"]);
+        assert!(
+            !names
+                .iter()
+                .any(|name| name.contains("secret") || name.contains("org-42")),
+            "no header value must appear anywhere in the warned-about names: {names:?}"
+        );
+    }
+}
+
 /// What a remote-server daemon needs to index a repository on its own host:
 /// the same limits the local index obeys, plus the user's embedding endpoint.
 ///
@@ -890,6 +965,14 @@ pub fn remote_client_preferences(
                 })
                 .and_then(|config| {
                     resolve_embedding_endpoint(app, config).map(|endpoint| {
+                        // `EmbeddingProviderConfig` (the wire message below) has no
+                        // extra_headers field -- adding one is a proto change, out of
+                        // scope here (see `remote_server::server_model::apply_embedding_provider`,
+                        // which receives this same message on the daemon side and can
+                        // only ever pass an empty Vec for the same reason). This is the
+                        // one place the drop is visible with the real endpoint in hand,
+                        // so it is where the hint belongs.
+                        warn_once_if_remote_indexing_drops_extra_headers(&endpoint.extra_headers);
                         remote_server::proto::EmbeddingProviderConfig {
                             base_url: endpoint.base_url,
                             api_key: endpoint.api_key,
@@ -1016,6 +1099,7 @@ mod endpoint_refresh_tests {
         EmbeddingEndpoint {
             base_url: format!("http://{host}/v1"),
             api_key: "sk-secret".to_owned(),
+            extra_headers: Vec::new(),
         }
     }
 
@@ -1034,6 +1118,7 @@ mod endpoint_refresh_tests {
                 EmbeddingEndpoint {
                     base_url: "http://embeddings.example.invalid/v1".to_owned(),
                     api_key: "sk-configured-after-launch".to_owned(),
+                    extra_headers: Vec::new(),
                 },
             ),
             None,
@@ -1116,6 +1201,7 @@ mod endpoint_refresh_tests {
                 EmbeddingEndpoint {
                     base_url: "http://openai.example.invalid/v1".to_owned(),
                     api_key: String::new(),
+                    extra_headers: Vec::new(),
                 },
             ),
             None,
