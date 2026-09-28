@@ -545,12 +545,12 @@ impl QueuedQueryModel {
     /// genuinely cancelled conversation.
     ///
     /// Also called directly from `BlocklistAIController`'s `FinishedAction` subscriber
-    /// (jwp2987/phosphor#725) for a rejection (or any other blocked-action resolution) that
-    /// does not trigger a follow-up request: that path writes the conversation's terminal
-    /// status without ever producing a `FinishedReceivingOutput` event, so none of the
-    /// `drain_queued_prompts` call sites above would otherwise run for it and the row would
-    /// stay locked forever. That call site unlocks only -- the row gets ordinary queued-prompt
-    /// treatment afterward, never an automatic send.
+    /// (jwp2987/phosphor#790, a #725 follow-up) for a rejection (or any other blocked-action
+    /// resolution) that does not trigger a follow-up request: that path writes the
+    /// conversation's terminal status without ever producing a `FinishedReceivingOutput` event,
+    /// so none of the `drain_queued_prompts` call sites above would otherwise run for it and
+    /// the row would stay locked forever. That call site unlocks only -- the row gets ordinary
+    /// queued-prompt treatment afterward, never an automatic send.
     pub fn unlock_pending_approval_rows(
         &mut self,
         conversation_id: AIConversationId,
