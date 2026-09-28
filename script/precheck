@@ -389,7 +389,10 @@ command -v xvfb-run >/dev/null 2>&1 || _integ_missing+=("xvfb-run (package xvfb)
 compgen -G "/usr/share/vulkan/icd.d/lvp_icd*.json" >/dev/null \
     || compgen -G "/etc/vulkan/icd.d/*.json" >/dev/null \
     || _integ_missing+=("a Vulkan driver, e.g. Mesa lavapipe (package mesa-vulkan-drivers)")
-ldconfig -p 2>/dev/null | grep -q 'libxkbcommon-x11\.so' \
+# Not `grep -q`: under `set -o pipefail` it exits at the first match, ldconfig
+# gets SIGPIPE and the pipeline reports failure on a box that HAS the library
+# (same trap as the rustfmt check above).
+ldconfig -p 2>/dev/null | grep 'libxkbcommon-x11\.so' >/dev/null \
     || _integ_missing+=("libxkbcommon-x11 (package libxkbcommon-x11-0)")
 if ((${#_integ_missing[@]})); then
     fail "integration suite cannot run here -- missing: ${_integ_missing[*]}. Run ./script/linux/install_test_deps and re-run."
