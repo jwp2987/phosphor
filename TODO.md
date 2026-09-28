@@ -13522,3 +13522,64 @@ open findings that had no pre-existing row.
       `rustfmt --check` on touched lines only; a real build should confirm no other call
       site constructs `CommandCallInfo` or matches on `TokenAction` exhaustively without
       the new variant/field.
+
+## Upstream post-pin ports (2026-09-28)
+
+Both items below were assigned to this round as new ports. Verification found
+they were **already ported** on this branch's history, on 2026-09-26 — landed
+between the FIX ROUND 2026-09-26/27 entries above and this round starting, and
+never given a ledger row here. Recorded now so the row exists; no new commits
+were needed.
+
+- [x] **Upstream `6f575836c` "fix(workspace): keep a new tab group's terminal
+      from eating its name" (warpdotdev/warp#14895, upstream issue
+      warpdotdev/warp#14241) — newer than pin `4111d08f9`.** Issue **#665**,
+      fixed by `3cd0e5a6c2` (2026-09-26). Verified present: `TerminalView`'s
+      `ModelEvent::VisibleBootstrapBlock` handler
+      (`app/src/terminal/view.rs:11605-11621`) skips `focus_terminal` while
+      `Workspace::is_inline_rename_editor_focused` (via `WorkspaceRegistry`)
+      is true, and `Workspace::handle_tab_group_rename_editor_event`
+      (`app/src/workspace/view.rs:1387-1411`) treats `EditorEvent::Blurred`
+      as cancel (`cancel_tab_group_rename`), not commit — only `Enter`
+      commits. Both of upstream's regression tests are ported and pass by
+      inspection: `test_tab_group_rename_blur_does_not_commit_unfinished_name`
+      (`app/src/workspace/view_test.rs:6376`) and
+      `visible_bootstrap_block_leaves_focus_on_tab_group_rename_editor`
+      (`app/src/terminal/view_test.rs:10773`), alongside the analogous
+      tab-rename test upstream also added.
+
+- [x] **Upstream `43eae5e08` "Restore focus after closing tab context menus"
+      (warpdotdev/warp#16138) — newer than pin `4111d08f9`.** Issue **#664**,
+      fixed by `b3ff0a3ae` (2026-09-26): `Workspace::handle_tab_right_click_menu_event`'s
+      `MenuEvent::Close` arm (`app/src/workspace/view.rs:9005-9027`) refocuses
+      the active tab, and `save_current_tab_as_new_config`
+      (`:6858`) guards its `tab_index` with `self.tabs.get(...)` instead of
+      indexing unchecked — both of upstream's regression tests ported
+      (`test_save_current_tab_as_new_config_ignores_stale_tab_index`,
+      `test_closing_tab_context_menu_restores_active_tab_focus`,
+      `app/src/workspace/view_test.rs:1709`/`1729`). Only one `Menu` view
+      (`tab_right_click_menu`) backs every tab-context-menu variant this fork
+      has — single tab, tab group, multi-tab selection, and the vertical-tabs
+      kebab anchor (`TabContextMenuAnchor::VerticalTabsKebab`) — so this one
+      `Close` handler covers all of them; there is no separate variant that
+      needed its own fix.
+      **Diverges from upstream on purpose (recorded in DECLINED.md), and this
+      is why it took three follow-on commits, not one:** upstream's port
+      calls `focus_active_tab` unconditionally in the `Close` handler
+      (`warp/master` `view.rs:10234`), which this fork found broke a
+      menu-item action that itself wants focus — mouse "Rename" on a
+      tab-group header opened nothing, keyboard "Rename pane" committed the
+      auto title as a permanent custom name, and Enter on "New group with
+      tab" cancelled the new group's just-opened rename. Issue **#666**
+      (`0c697d7b4`, then `052ef5af3c`) replaced the unconditional refocus with
+      a deferred `RestoreFocusAfterTabMenuClose` action that skips refocusing
+      while a tab/pane/group rename is in progress or anything but the menu
+      holds focus (`restore_focus_after_tab_menu_close`,
+      `app/src/workspace/view.rs:11852-11868`); `0c697d7b4`'s first attempt
+      used a synchronous check and still broke the mouse path, which is why
+      there's a second commit. Issue **#667** (`079c51bf5`) was a related bug
+      found while confirming this fix in the running app: tab-group creation
+      never dispatched the deferred `RenameTabGroup` the pin does, so no
+      rename editor opened at all for a new group — unrelated to focus
+      restore itself, fixed alongside it. All four issues (#664, #665, #666,
+      #667) are closed.
