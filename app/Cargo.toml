@@ -9,7 +9,7 @@ name = "warp"
 # `--version`/the About page fall back to `v{this}-dev` when untagged, and
 # `crates/warp_cli/build.rs` parses this exact line at build time so its own
 # `--version` fallback stays in sync without duplicating the number.
-version = "0.1.7"
+version = "0.1.8"
 publish.workspace = true
 license.workspace = true
 
