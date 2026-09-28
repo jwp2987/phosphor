@@ -539,10 +539,18 @@ impl QueuedQueryModel {
     /// Called from the same `drain_queued_prompts` sites that already call
     /// [`Self::unlock_pending_lrc_rows`] (jwp2987/phosphor#690 follow-up): a turn `Complete`
     /// auto-fires the now-unlocked head through the ordinary path, matching "approved and
-    /// finished" and "rejected" (the conversation continues to some other terminal status); a
-    /// turn `Error`/`Cancelled` unlocks but only restores the head into the input when the user
-    /// is looking at the conversation, otherwise leaving it queued -- never a silent send for a
+    /// finished" (the conversation continues to some other terminal status); a turn
+    /// `Error`/`Cancelled` unlocks but only restores the head into the input when the user is
+    /// looking at the conversation, otherwise leaving it queued -- never a silent send for a
     /// genuinely cancelled conversation.
+    ///
+    /// Also called directly from `BlocklistAIController`'s `FinishedAction` subscriber
+    /// (jwp2987/phosphor#790, a #725 follow-up) for a rejection (or any other blocked-action
+    /// resolution) that does not trigger a follow-up request: that path writes the
+    /// conversation's terminal status without ever producing a `FinishedReceivingOutput` event,
+    /// so none of the `drain_queued_prompts` call sites above would otherwise run for it and
+    /// the row would stay locked forever. That call site unlocks only -- the row gets ordinary
+    /// queued-prompt treatment afterward, never an automatic send.
     pub fn unlock_pending_approval_rows(
         &mut self,
         conversation_id: AIConversationId,

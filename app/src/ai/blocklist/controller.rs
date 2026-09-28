@@ -755,6 +755,21 @@ impl BlocklistAIController {
                             ctx,
                         );
                     });
+
+                    // This is the only terminal outcome for a rejected (or otherwise
+                    // resolved-without-a-follow-up) blocked action: no new request is being
+                    // sent, so no future `FinishedReceivingOutput` will arrive to drive
+                    // `drain_queued_prompts`' `unlock_pending_approval_rows` call
+                    // (jwp2987/phosphor#790, a #725 follow-up). Unlock here too, so a
+                    // `PendingApprovalFollowUp` row does not stay locked forever when the
+                    // blocked action resolves this way.
+                    // Unlock only, never auto-fire -- the row still gets the ordinary
+                    // restore-or-stay-queued treatment the ambient queue panel already gives
+                    // unlocked rows, matching the cancelled/errored turn behavior rather than
+                    // silently sending on the user's behalf.
+                    QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+                        model.unlock_pending_approval_rows(*conversation_id, ctx)
+                    });
                 }
                 return;
             }

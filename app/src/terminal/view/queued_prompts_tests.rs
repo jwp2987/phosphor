@@ -560,6 +560,67 @@ fn cancelled_drain_unlocks_pending_lrc_rows_even_outside_agent_view() {
     });
 }
 
+/// jwp2987/phosphor#725: a `PendingApprovalFollowUp` row must not autofire while the blocked
+/// action it is waiting on is still unresolved, but must fire like any other queued prompt the
+/// moment it is unlocked (to `ApprovalFollowUp`) and a turn later completes. Model-level
+/// counterpart to `unlock_pending_approval_rows_transitions_origin_and_enables_autofire` in
+/// `queued_query_tests.rs`, driven through the actual `Complete` drain rather than asserting the
+/// unlocked state directly -- this is the "sends on the next completed turn" half of the fix;
+/// the "unlocks even when the reject itself sends no follow-up" half is covered in
+/// `controller_tests.rs`, where `BlocklistAIController`'s `FinishedAction` subscriber (the only
+/// other caller of `unlock_pending_approval_rows`) can actually be exercised end to end.
+#[test]
+fn approval_follow_up_row_stays_queued_until_unlocked_then_fires_on_the_next_complete() {
+    with_singleton(|mut app, model, conv| {
+        let pending_id = model.update(&mut app, |m, ctx| {
+            m.append(
+                conv,
+                QueuedQuery::new(
+                    "finish this once the command resolves".to_owned(),
+                    QueuedQueryOrigin::PendingApprovalFollowUp,
+                ),
+                ctx,
+            )
+        });
+
+        // Still locked: nothing to drain while the command awaits the user (approval, rejection,
+        // or a cancel all resolve it the same way from here).
+        assert!(drain_one(&model, &mut app, conv).is_none());
+        model.read(&app, |m, _| {
+            assert_eq!(m.queue(conv).len(), 1, "the locked row must not be dropped");
+        });
+
+        // The blocked action resolves. A reject with no follow-up request reaches this call
+        // directly from `BlocklistAIController`'s `FinishedAction` subscriber; every other
+        // resolution reaches it from `TerminalView::drain_queued_prompts`'s Complete/Error/
+        // Cancelled arms.
+        model.update(&mut app, |m, ctx| m.unlock_pending_approval_rows(conv, ctx));
+
+        // Unlocked, but not auto-sent -- only the *next* turn completion may fire it.
+        model.read(&app, |m, _| {
+            assert_eq!(
+                m.queue(conv).len(),
+                1,
+                "unlocking must not itself send the row"
+            );
+            assert_eq!(
+                m.queue(conv)[0].origin(),
+                QueuedQueryOrigin::ApprovalFollowUp
+            );
+        });
+
+        // A real turn later completes: the now-unlocked row fires like any other queued prompt.
+        match drain_one(&model, &mut app, conv) {
+            Some(AutofireAction::Submit { query_id, text }) => {
+                assert_eq!(query_id, pending_id);
+                assert_eq!(text, "finish this once the command resolves");
+            }
+            other => panic!("expected Submit, got {other:?}"),
+        }
+        model.read(&app, |m, _| assert!(m.queue(conv).is_empty()));
+    });
+}
+
 #[test]
 fn on_queued_command_finished_clears_in_flight_and_drains_next() {
     // When a dispatched queued command's block completes, the in-flight marker is cleared and

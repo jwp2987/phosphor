@@ -5,17 +5,21 @@ use std::collections::HashMap;
 use uuid::Uuid;
 use warpui::{App, SingletonEntity};
 
+use crate::ai::agent::conversation::ConversationStatus;
 use crate::ai::agent::task::TaskId;
 use crate::ai::agent::{
-    AIAgentAttachment, AIAgentContext, AIAgentExchange, AIAgentExchangeId, AIAgentInput,
-    AIAgentOutputStatus, CancellationReason, ImageContext, PassiveSuggestionTrigger,
-    UserQueryMode,
+    AIAgentAction, AIAgentActionId, AIAgentActionType, AIAgentAttachment, AIAgentContext,
+    AIAgentExchange, AIAgentExchangeId, AIAgentInput, AIAgentOutputStatus, CancellationReason,
+    ImageContext, PassiveSuggestionTrigger, UserQueryMode,
 };
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::blocklist::controller::response_stream::{
     PendingResume, RecoveryBudget, ResponseStream, ResponseStreamId,
 };
-use crate::ai::blocklist::{BlocklistAIHistoryModel, PendingAttachment, PendingFile};
+use crate::ai::blocklist::{
+    BlocklistAIHistoryModel, PendingAttachment, PendingFile, QueuedQuery, QueuedQueryModel,
+    QueuedQueryOrigin,
+};
 use crate::ai::llms::LLMId;
 use crate::test_util::terminal::{add_window_with_terminal, initialize_app_for_terminal_view};
 
@@ -524,4 +528,163 @@ fn only_a_real_cancellation_switches_input_to_shell() {
 
     // A passive request never changes the input mode.
     assert!(!switches(true, CancellationReason::ManuallyCancelled));
+}
+
+/// A generic, non-autoexecutable shell command -- mirrors `action_model_tests.rs`'s helper of
+/// the same name (private to that module, so duplicated here rather than shared).
+fn shell_command() -> AIAgentActionType {
+    AIAgentActionType::RequestCommandOutput {
+        command: "free -h".to_owned(),
+        is_read_only: None,
+        is_risky: None,
+        rationale: None,
+        uses_pager: None,
+        wait_until_completion: true,
+        citations: vec![],
+    }
+}
+
+/// jwp2987/phosphor#725: rejecting a blocked command must not leave a `PendingApprovalFollowUp`
+/// queued row locked forever.
+///
+/// A command action needing confirmation blocks the conversation
+/// (`ConversationStatus::Blocked`) and a follow-up submitted while blocked queues as
+/// `PendingApprovalFollowUp` (locked for submission until the blocked action resolves). Clicking
+/// Reject reaches `BlocklistAIActionModel::cancel_action_with_id`, which resolves the action as
+/// `RequestCommandOutputResult::CancelledBeforeExecution` -- a result `should_trigger_request_
+/// upon_completion` reports `false` for. With this the only pending action, no follow-up request
+/// is sent, so `BlocklistAIController`'s `FinishedAction` subscriber (`controller.rs`) finalizes
+/// the conversation status directly instead: no new request means no future
+/// `FinishedReceivingOutput` ever arrives to run `TerminalView::drain_queued_prompts`, which is
+/// the only other place that calls `unlock_pending_approval_rows`. Before the fix, that left the
+/// row `PendingApprovalFollowUp` (locked) for the life of the process -- Send Now inert, not
+/// deletable via the ordinary unlocked path, exactly the symptom reported in X11 testing.
+#[test]
+fn reject_of_a_blocked_command_with_no_follow_up_unlocks_the_queued_row() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let terminal_view_id = terminal.read(&app, |view, _| view.id());
+
+        let conversation_id = BlocklistAIHistoryModel::handle(&app)
+            .update(&mut app, |history, ctx| {
+                history.start_new_conversation(terminal_view_id, false, false, ctx)
+            });
+
+        let pending_id = QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(
+                conversation_id,
+                QueuedQuery::new(
+                    "finish this once the command resolves".to_owned(),
+                    QueuedQueryOrigin::PendingApprovalFollowUp,
+                ),
+                ctx,
+            )
+        });
+
+        let action_model = terminal.read(&app, |view, _| view.ai_controller().clone());
+        let action_model = action_model.read(&app, |controller, _| controller.action_model.clone());
+
+        let action_id = AIAgentActionId::from("reject-me".to_owned());
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model.queue_action_for_test(
+                AIAgentAction {
+                    id: action_id.clone(),
+                    task_id: TaskId::new("task".to_owned()),
+                    action: shell_command(),
+                    requires_result: false,
+                },
+                conversation_id,
+                ctx,
+            );
+        });
+
+        // `queue_action_for_test` preprocesses via `ctx.spawn`; pump the foreground executor
+        // until the action lands, unexecuted, at the head of the pending queue.
+        for _ in 0..64 {
+            let is_blocked = action_model.read(&app, |action_model, _| {
+                action_model
+                    .get_action_status(&action_id)
+                    .is_some_and(|status| status.is_blocked())
+            });
+            if is_blocked {
+                break;
+            }
+            futures_lite::future::yield_now().await;
+        }
+        action_model.read(&app, |action_model, _| {
+            assert!(
+                action_model
+                    .get_action_status(&action_id)
+                    .is_some_and(|status| status.is_blocked()),
+                "the command must be blocked on confirmation before the reject under test"
+            );
+        });
+        BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
+            assert!(
+                matches!(
+                    history.conversation(&conversation_id).map(|c| c.status()),
+                    Some(&ConversationStatus::Blocked { .. })
+                ),
+                "precondition: the conversation must be Blocked on the command"
+            );
+        });
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert_eq!(
+                model.queue(conversation_id)[0].origin(),
+                QueuedQueryOrigin::PendingApprovalFollowUp,
+                "precondition: the follow-up is still locked while the command is blocked"
+            );
+        });
+
+        // Reject: what `RequestedCommandView`'s Reject button does
+        // (`RequestedCommandViewEvent::Rejected` -> `BlockView::cancel_action` ->
+        // `cancel_action_with_id`).
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model.cancel_action_with_id(
+                conversation_id,
+                &action_id,
+                CancellationReason::ManuallyCancelled,
+                ctx,
+            );
+        });
+
+        // Wait for `FinishedAction`'s effect to be delivered and handled: the conversation
+        // status write and (with the fix) the queue unlock both happen inside that subscriber.
+        for _ in 0..64 {
+            let unlocked = QueuedQueryModel::handle(&app).read(&app, |model, _| {
+                model
+                    .queue(conversation_id)
+                    .first()
+                    .is_some_and(|row| row.origin() == QueuedQueryOrigin::ApprovalFollowUp)
+            });
+            if unlocked {
+                break;
+            }
+            futures_lite::future::yield_now().await;
+        }
+
+        BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
+            assert_eq!(
+                history.conversation(&conversation_id).map(|c| c.status()),
+                Some(&ConversationStatus::Cancelled),
+                "the rejected-and-only action leaves the conversation Cancelled, not Blocked"
+            );
+        });
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            let queue = model.queue(conversation_id);
+            assert_eq!(
+                queue.len(),
+                1,
+                "unlocking must not itself send the row -- no turn has completed yet"
+            );
+            assert_eq!(queue[0].id(), pending_id);
+            assert_eq!(
+                queue[0].origin(),
+                QueuedQueryOrigin::ApprovalFollowUp,
+                "the row must unlock even though rejecting sent no follow-up request"
+            );
+            assert!(!queue[0].is_locked());
+        });
+    });
 }
