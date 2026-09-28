@@ -254,8 +254,18 @@ pub fn test_open_launch_config_with_custom_size() -> Builder {
                     // This doesn't correspond clearly to the given rows and columns due to line
                     // height and padding. There's also some platform-specific variance and room
                     // for floating-point error.
+                    //
+                    // The y target was 644 before `4203a0573` ("Long-running block padding
+                    // collapses at the top as well as the bottom", see `DECLINED.md`) widened
+                    // `TOTAL_LONG_RUNNING_VERTICAL_PADDING_LINES` from
+                    // `LONG_RUNNING_BOTTOM_PADDING_LINES` alone (0.2 lines) to
+                    // `3 * LONG_RUNNING_TOP_PADDING_LINES + LONG_RUNNING_BOTTOM_PADDING_LINES`
+                    // (0.8 lines) -- a deliberate +0.6-line change to
+                    // `bounds_for_opening_at_custom_window_size`'s window-height formula
+                    // (`app/src/root_view.rs`), which this constant was never updated to match.
+                    // (#784)
                     assert_approx_eq!(f32, size.x(), 192., epsilon = 2.);
-                    assert_approx_eq!(f32, size.y(), 644., epsilon = 2.);
+                    assert_approx_eq!(f32, size.y(), 653., epsilon = 2.);
                     AssertionOutcome::Success
                 }),
         )
