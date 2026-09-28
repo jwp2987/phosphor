@@ -5493,13 +5493,24 @@ fn map_genai_error(err: genai::Error) -> OpenAiCompatibleError {
                     format!("{canonical_reason}: {body}")
                 },
             },
-            _ => OpenAiCompatibleError::Stream(format!("{err}")),
+            // Not a status the provider returned -- a connection/TLS/DNS/timeout failure
+            // (or any other transport error) boxed inside `WebStream`. Its `Display`
+            // (via `{err}` below, genai's own `WebStream` rendering) embeds the request
+            // URL in prose the way reqwest's own error does (see
+            // `redact_urls_in_error_text`'s doc comment) -- redact it here, at the one
+            // place this variant is constructed, so every downstream consumer (the
+            // `[byop]` log line, `describe_byop_open_stream_failure`, the mid-stream
+            // hint site in `generate_byop_output`) gets the redacted text for free
+            // instead of each having to remember to redact it again (#719 item 7 / #718).
+            _ => OpenAiCompatibleError::Stream(redact_urls_in_error_text(&format!("{err}"))),
         },
 
         // Failures during the network/streaming-send stage that never got a reply: reqwest
-        // connection, TLS, DNS, timeout, stream interruption, etc.
+        // connection, TLS, DNS, timeout, stream interruption, etc. Redacted for the same
+        // reason as the `WebStream` arm above -- reqwest's own `Display` embeds the request
+        // URL in prose.
         G::WebAdapterCall { .. } | G::WebModelCall { .. } => {
-            OpenAiCompatibleError::Stream(format!("{err}"))
+            OpenAiCompatibleError::Stream(redact_urls_in_error_text(&format!("{err}")))
         }
 
         // A top-level HTTP error status. In this genai version every live constructor of
@@ -5541,8 +5552,18 @@ fn map_genai_error(err: genai::Error) -> OpenAiCompatibleError {
 /// otherwise made a rejected-key or unknown-model response get retried twice before the
 /// user saw it. Everything else (decode/stream/other transport failures, none of which
 /// carry a status) keeps going through `Other`, unchanged and still retryable.
-fn byop_stream_error_to_api_error(mapped: OpenAiCompatibleError) -> AIApiError {
-    let message = format!("BYOP stream error: {mapped}");
+///
+/// `other_provider_hint` is the same "another usable provider is configured" hint
+/// [`describe_byop_open_stream_failure`] appends -- see the comment at this function's
+/// sole call site in `generate_byop_output` for why a connection failure can reach *this*
+/// function (the mid-stream-loop path) instead of the open-stream one, and why the caller
+/// only passes `Some` when no real content has been received yet.
+fn byop_stream_error_to_api_error(
+    mapped: OpenAiCompatibleError,
+    other_provider_hint: Option<&UnreachableProviderHint>,
+) -> AIApiError {
+    let base = format!("BYOP stream error: {mapped}");
+    let message = append_unreachable_provider_hint(base, &mapped, other_provider_hint);
     byop_error_to_api_error(&mapped, message)
 }
 
@@ -5605,28 +5626,35 @@ pub(crate) fn scheme_host_port(base_url: &str) -> String {
     }
 }
 
-/// Builds the message for a failed *open-stream* BYOP request (before any response byte
-/// has arrived -- see the sole call site in `generate_byop_output`), appending an "other
-/// providers are configured" hint when the failure looks like the endpoint could not be
-/// reached at all.
+/// Appends the "you have other providers configured" hint to `base` when `mapped` is a
+/// `Stream` failure and a hint is available -- otherwise returns `base` unchanged.
 ///
 /// Deliberately keyed on `OpenAiCompatibleError::Stream` specifically, not `Other`/
-/// `Status`/`Decode`: `map_genai_error` maps `genai::Error::WebStream` /
-/// `WebAdapterCall` / `WebModelCall` -- reqwest connection, TLS, DNS, and timeout
-/// failures -- to `Stream`, and this function is only ever called at the open-stream site
-/// (before any response has been received), so a `Stream` error reaching it always means
-/// the connection attempt itself failed, never a genuine mid-response interruption. An
-/// HTTP error status, auth failure, or decode failure is a *reachable* provider that
+/// `Status`/`Decode`: `map_genai_error` maps `genai::Error::WebStream` / `WebAdapterCall`
+/// / `WebModelCall` -- reqwest connection, TLS, DNS, and timeout failures -- to `Stream`.
+/// An HTTP error status, auth failure, or decode failure is a *reachable* provider that
 /// refused or mishandled the request -- suggesting another provider there would be
 /// actively misleading (#719 item 7: "when an agent request fails with a connection error
 /// (connection refused / DNS / timeout) ... make the existing error say so").
 ///
+/// Shared by [`describe_byop_open_stream_failure`] (the eager `exec_chat_stream(...).await`
+/// failure site) and `generate_byop_output`'s mid-stream-loop failure site: genai's
+/// streaming setup is lazy -- `exec_chat_stream` only builds the request and constructs the
+/// stream, it never sends it (see the comment on `map_genai_error`'s `G::WebStream` arm) --
+/// so for every adapter that streams over `EventSourceStream`/`WebStream` (all of them),
+/// the actual connection attempt happens on the stream's *first real* poll, which surfaces
+/// as a mid-stream-loop error, not an `exec_chat_stream(...).await` `Err`. A connection
+/// failure therefore reaches the mid-stream site far more often in practice than the
+/// open-stream one; both need this same hint logic, gated at their respective call sites on
+/// whether any real content had already arrived (a stream that delivered content was
+/// reachable, so the hint would be misleading there even for a `Stream`-classified error).
+///
 /// Pure formatting, no I/O -- unit-tested directly in this file's test module below.
-fn describe_byop_open_stream_failure(
+fn append_unreachable_provider_hint(
+    base: String,
     mapped: &OpenAiCompatibleError,
     other_provider_hint: Option<&UnreachableProviderHint>,
 ) -> String {
-    let base = format!("BYOP open stream failed: {mapped}");
     let (OpenAiCompatibleError::Stream(_), Some(hint)) = (mapped, other_provider_hint) else {
         return base;
     };
@@ -5635,6 +5663,40 @@ fn describe_byop_open_stream_failure(
          with /model",
         hint.provider_name, hint.redacted_endpoint
     )
+}
+
+/// Builds the message for a failed *open-stream* BYOP request: `exec_chat_stream(...).await`
+/// itself returning `Err`, before the stream object even exists -- see the sole call site in
+/// `generate_byop_output`. In practice this fires only for failures genai can detect
+/// synchronously (model-spec resolution, request-building) since the HTTP send itself is
+/// lazy; see [`append_unreachable_provider_hint`]'s doc comment for where a connection
+/// failure actually surfaces instead.
+fn describe_byop_open_stream_failure(
+    mapped: &OpenAiCompatibleError,
+    other_provider_hint: Option<&UnreachableProviderHint>,
+) -> String {
+    let base = format!("BYOP open stream failed: {mapped}");
+    append_unreachable_provider_hint(base, mapped, other_provider_hint)
+}
+
+/// Whether `generate_byop_output`'s mid-stream-loop failure site should offer the
+/// "other providers configured" hint at all -- `received_real_event` mirrors that
+/// function's own flag of the same name (true once any event other than the synthetic
+/// `Start` has been observed). A stream that already delivered real content came from a
+/// reachable provider, so suggesting another one at that point would be misleading even
+/// for a `Stream`-classified error (see `append_unreachable_provider_hint`'s doc comment
+/// for why a connection failure reaches the mid-stream site at all).
+///
+/// Pure decision logic, no I/O -- unit-tested directly in this file's test module below.
+fn mid_stream_hint_for_error(
+    received_real_event: bool,
+    other_provider_hint: Option<&UnreachableProviderHint>,
+) -> Option<&UnreachableProviderHint> {
+    if received_real_event {
+        None
+    } else {
+        other_provider_hint
+    }
 }
 
 /// Drops the cached Vertex bearer when the provider rejects it as an auth failure.
@@ -6431,10 +6493,26 @@ pub async fn generate_byop_output(
         // When present it is the true "context used" — Ollama's `prompt_tokens`
         // only counts the newly-evaluated (KV-cache-excluded) tokens.
         let mut captured_active_kv_tokens: Option<i32> = None;
+        // #719 item 7: whether any event carrying real content (as opposed to the
+        // synthetic `Start`) has been seen yet. `Start` fires with zero I/O -- it is
+        // `EventSourceStream`'s locally-generated `Event::Open`, emitted before the
+        // request is even sent (see `append_unreachable_provider_hint`'s doc comment) --
+        // so it does not mean the provider was reached. Used at the `Err(e)` arm below to
+        // decide whether a `Stream`-classified failure there should get the same
+        // "other providers configured" hint as an open-stream failure: a connection that
+        // never delivered real content looks exactly like one that never connected, while
+        // a stream that already delivered content was reachable, so suggesting another
+        // provider at that point would be misleading.
+        let mut received_real_event = false;
 
         while let Some(item) = sdk_stream.next().await {
             let event = match item {
-                Ok(ev) => ev,
+                Ok(ev) => {
+                    if !matches!(ev, ChatStreamEvent::Start) {
+                        received_real_event = true;
+                    }
+                    ev
+                }
                 Err(e) => {
                     let mapped = map_genai_error(e);
                     let err_text = format!("{mapped:#}");
@@ -6482,7 +6560,10 @@ pub async fn generate_byop_output(
                             diag_body_json.len()
                         );
                     }
-                    yield Err(Arc::new(byop_stream_error_to_api_error(mapped)));
+                    yield Err(Arc::new(byop_stream_error_to_api_error(
+                        mapped,
+                        mid_stream_hint_for_error(received_real_event, other_provider_hint.as_ref()),
+                    )));
                     return;
                 }
             };
@@ -9004,10 +9085,13 @@ mod byop_stream_error_retry_tests {
     // before the user ever saw the error.
     #[test]
     fn status_401_is_not_retryable() {
-        let err = byop_stream_error_to_api_error(OpenAiCompatibleError::Status {
-            status: 401,
-            body: "invalid api key".to_string(),
-        });
+        let err = byop_stream_error_to_api_error(
+            OpenAiCompatibleError::Status {
+                status: 401,
+                body: "invalid api key".to_string(),
+            },
+            None,
+        );
         assert!(
             matches!(err, AIApiError::ErrorStatus(status, _) if status == http::StatusCode::UNAUTHORIZED)
         );
@@ -9016,10 +9100,13 @@ mod byop_stream_error_retry_tests {
 
     #[test]
     fn status_404_unknown_model_is_not_retryable() {
-        let err = byop_stream_error_to_api_error(OpenAiCompatibleError::Status {
-            status: 404,
-            body: "model 'gpt-nonexistent' not found".to_string(),
-        });
+        let err = byop_stream_error_to_api_error(
+            OpenAiCompatibleError::Status {
+                status: 404,
+                body: "model 'gpt-nonexistent' not found".to_string(),
+            },
+            None,
+        );
         assert!(!err.is_retryable());
         // The provider's own error text must survive the remap.
         assert!(format!("{err}").contains("model 'gpt-nonexistent' not found"));
@@ -9027,28 +9114,37 @@ mod byop_stream_error_retry_tests {
 
     #[test]
     fn status_429_is_still_retryable() {
-        let err = byop_stream_error_to_api_error(OpenAiCompatibleError::Status {
-            status: 429,
-            body: "rate limited".to_string(),
-        });
+        let err = byop_stream_error_to_api_error(
+            OpenAiCompatibleError::Status {
+                status: 429,
+                body: "rate limited".to_string(),
+            },
+            None,
+        );
         assert!(err.is_retryable());
     }
 
     #[test]
     fn status_408_is_still_retryable() {
-        let err = byop_stream_error_to_api_error(OpenAiCompatibleError::Status {
-            status: 408,
-            body: "request timeout".to_string(),
-        });
+        let err = byop_stream_error_to_api_error(
+            OpenAiCompatibleError::Status {
+                status: 408,
+                body: "request timeout".to_string(),
+            },
+            None,
+        );
         assert!(err.is_retryable());
     }
 
     #[test]
     fn status_500_is_still_retryable() {
-        let err = byop_stream_error_to_api_error(OpenAiCompatibleError::Status {
-            status: 500,
-            body: "internal server error".to_string(),
-        });
+        let err = byop_stream_error_to_api_error(
+            OpenAiCompatibleError::Status {
+                status: 500,
+                body: "internal server error".to_string(),
+            },
+            None,
+        );
         assert!(err.is_retryable());
     }
 
@@ -9056,9 +9152,10 @@ mod byop_stream_error_retry_tests {
     // through `Other`, which stays retryable -- this fix must not change that.
     #[test]
     fn non_status_stream_error_is_still_retryable() {
-        let err = byop_stream_error_to_api_error(OpenAiCompatibleError::Stream(
-            "connection reset by peer".to_string(),
-        ));
+        let err = byop_stream_error_to_api_error(
+            OpenAiCompatibleError::Stream("connection reset by peer".to_string()),
+            None,
+        );
         assert!(err.is_retryable());
     }
 
@@ -9083,6 +9180,81 @@ mod byop_stream_error_retry_tests {
         let message = describe_byop_open_stream_failure(&mapped, None);
         let err = byop_error_to_api_error(&mapped, message);
         assert!(err.is_retryable());
+    }
+
+    fn hint() -> UnreachableProviderHint {
+        UnreachableProviderHint {
+            provider_name: "Ollama".to_string(),
+            redacted_endpoint: "http://127.0.0.1:11434".to_string(),
+        }
+    }
+
+    /// #719 item 7 x #779: the mid-stream-loop failure site (this module's own
+    /// `byop_stream_error_to_api_error`) is where a connection-refused/DNS/timeout
+    /// failure actually surfaces in practice (see `append_unreachable_provider_hint`'s
+    /// doc comment) -- so it, not just `describe_byop_open_stream_failure`, has to carry
+    /// the hint and stay non-retryable-status-aware at the same time. This is the X11
+    /// regression: before `byop_stream_error_to_api_error` grew the hint parameter, this
+    /// path only ever produced the bare "BYOP stream error: ..." text.
+    #[test]
+    fn mid_stream_connection_failure_with_a_hint_names_the_other_provider() {
+        let mapped = OpenAiCompatibleError::Stream(
+            "Web stream error for model 'gpt-test'.\nCause: error sending request for url \
+             (http://127.0.0.1:8799/v1/chat/completions)"
+                .to_string(),
+        );
+        let err = byop_stream_error_to_api_error(mapped, Some(&hint()));
+        assert!(
+            err.is_retryable(),
+            "a connection failure must stay retryable"
+        );
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("Ollama"),
+            "must name the other configured provider, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("http://127.0.0.1:11434"),
+            "must name its redacted endpoint, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("pick one with /model"),
+            "must point at how to switch providers, got: {rendered}"
+        );
+    }
+
+    /// A provider status error (bad key, unknown model, ...) reached the provider -- the
+    /// hint must never attach to it even when one is passed in, or a reachable-but-refusing
+    /// provider would be misleadingly called unreachable.
+    #[test]
+    fn mid_stream_status_error_never_gets_the_hint_even_when_one_is_passed() {
+        let err = byop_stream_error_to_api_error(
+            OpenAiCompatibleError::Status {
+                status: 401,
+                body: "invalid api key".to_string(),
+            },
+            Some(&hint()),
+        );
+        let rendered = format!("{err}");
+        assert!(
+            !rendered.contains("Ollama"),
+            "a reachable-but-refusing provider must not suggest another one, got: {rendered}"
+        );
+    }
+
+    /// `mid_stream_hint_for_error` is the gate `generate_byop_output`'s loop applies before
+    /// ever calling `byop_stream_error_to_api_error`: once real content has been observed,
+    /// the provider was reachable, so a later `Stream`-classified failure (e.g. the
+    /// connection dropping mid-response) must not suggest another provider even though the
+    /// error variant looks identical to a never-connected failure.
+    #[test]
+    fn mid_stream_hint_is_suppressed_once_real_content_was_seen() {
+        assert_eq!(
+            mid_stream_hint_for_error(false, Some(&hint())),
+            Some(&hint())
+        );
+        assert_eq!(mid_stream_hint_for_error(true, Some(&hint())), None);
+        assert_eq!(mid_stream_hint_for_error(false, None), None);
     }
 }
 
@@ -13154,6 +13326,111 @@ mod byop_unreachable_provider_hint_tests {
         let redacted = scheme_host_port("not a url at all");
         // Must not echo the raw, unvalidated input back to the user.
         assert!(!redacted.contains("not a url"));
+    }
+
+    /// The X11 regression, reproduced with a real transport failure rather than a
+    /// hand-built `OpenAiCompatibleError::Stream` string: binds a local port, drops the
+    /// listener so nothing answers it, and lets a genuine `reqwest` request fail exactly
+    /// the way BYOP's HTTP client does against a dead `base_url`. Boxes the resulting
+    /// `reqwest::Error` into `genai::Error::WebStream` the same way every real streamer
+    /// does (`openai/streamer.rs` etc: `error: err` where `err` is the raw boxed transport
+    /// error, not a `genai::Error`) -- confirming `map_genai_error`'s `WebStream` downcast
+    /// falls through to `Stream` for a non-HTTP-error cause, and that the resulting message
+    /// carries the hint with the request path redacted away.
+    #[tokio::test]
+    async fn real_connection_refused_error_gets_the_hint_with_the_path_redacted() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+        let port = listener.local_addr().expect("local_addr").port();
+        drop(listener); // nothing listens on `port` from here on
+
+        let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
+        let reqwest_err = reqwest::Client::new()
+            .post(&url)
+            .send()
+            .await
+            .expect_err("nothing is listening on this port, the request must fail");
+
+        let model_iden = genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "gpt-test");
+        let wrapped = genai::Error::WebStream {
+            model_iden,
+            cause: reqwest_err.to_string(),
+            error: Box::new(reqwest_err),
+        };
+
+        let mapped = map_genai_error(wrapped);
+        assert!(
+            matches!(mapped, OpenAiCompatibleError::Stream(_)),
+            "a connection-refused transport error must classify as Stream, got: {mapped:?}"
+        );
+
+        let message = describe_byop_open_stream_failure(&mapped, Some(&hint()));
+        assert!(
+            !message.contains("/v1/chat/completions"),
+            "the request path must not reach the user, got: {message}"
+        );
+        assert!(
+            message.contains(&format!("127.0.0.1:{port}")),
+            "the redacted host:port should still be visible for diagnosis, got: {message}"
+        );
+        assert!(
+            message.contains("DeepSeek Official"),
+            "must still append the other-provider hint for a real connection failure, \
+             got: {message}"
+        );
+    }
+
+    /// Same real transport failure, but through the mid-stream-loop conversion
+    /// (`byop_stream_error_to_api_error`) instead of the open-stream one -- this is the path
+    /// the failure actually takes in practice (see `append_unreachable_provider_hint`'s doc
+    /// comment: `exec_chat_stream` never sends the request, so a connection-refused failure
+    /// surfaces on the stream's first real poll, inside `generate_byop_output`'s loop, not
+    /// from the `exec_chat_stream(...).await` call itself). This is the exact shape of the
+    /// #719 item 7 X11 regression: a dead Local provider port with Ollama also configured
+    /// showed the raw "BYOP stream error: ... (http://127.0.0.1:8799/...)" with no hint.
+    #[tokio::test]
+    async fn real_connection_refused_error_gets_the_hint_on_the_mid_stream_path_too() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+        let port = listener.local_addr().expect("local_addr").port();
+        drop(listener);
+
+        let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
+        let reqwest_err = reqwest::Client::new()
+            .post(&url)
+            .send()
+            .await
+            .expect_err("nothing is listening on this port, the request must fail");
+
+        let model_iden = genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "gpt-test");
+        let wrapped = genai::Error::WebStream {
+            model_iden,
+            cause: reqwest_err.to_string(),
+            error: Box::new(reqwest_err),
+        };
+
+        let mapped = map_genai_error(wrapped);
+        // `received_real_event` is false here: no chunk arrived before this error, which is
+        // exactly what `generate_byop_output`'s loop observes when the very first poll of the
+        // stream is the one that fails.
+        let hint_for_message = mid_stream_hint_for_error(false, Some(&hint()));
+        let err = byop_stream_error_to_api_error(mapped, hint_for_message);
+
+        assert!(
+            err.is_retryable(),
+            "a connection failure must stay retryable"
+        );
+        let rendered = format!("{err}");
+        assert!(
+            !rendered.contains("/v1/chat/completions"),
+            "the request path must not reach the user, got: {rendered}"
+        );
+        assert!(
+            rendered.contains(&format!("127.0.0.1:{port}")),
+            "the redacted host:port should still be visible for diagnosis, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("DeepSeek Official"),
+            "must append the other-provider hint on the mid-stream path, got: {rendered}"
+        );
     }
 }
 
