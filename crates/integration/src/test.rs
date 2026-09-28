@@ -154,7 +154,7 @@ use warp::{
             assert_selected_block_index_is_first_renderable,
             assert_selected_block_index_is_last_renderable,
             assert_single_terminal_in_tab_bootstrapped, assert_snackbar_is_not_visible,
-            assert_snackbar_is_visible, assert_view_has_text_selection,
+            assert_view_has_text_selection,
             assert_waterfall_gap_empty_background_rendered,
             execute_command_for_single_terminal_in_tab, execute_echo, execute_long_running_command,
             execute_python_interpreter_in_tab, performance_test, run_alt_grid_program,
@@ -3036,8 +3036,19 @@ pub fn test_block_based_snackbar_scroll_to_top() -> Builder {
         )
 }
 
-/// Ensure that the block-based-snackbar appears when a command is running when input at bottom mode
-/// is enabled.
+/// Ensure that the block-based-snackbar does NOT appear over a command that is still running,
+/// when input at bottom mode is enabled.
+///
+/// Pre-`ec2e2d227` this asserted the opposite (a pinned header while the command ran). That
+/// matched upstream's `should_hide_snackbar_during_long_running_command`, which only hid the
+/// header for a strict inequality on grid height and left full-screen programs like `top` and
+/// `watch` with their first rows painted over — see `DECLINED.md`'s "A pinned block header is
+/// never drawn over a running command" entry. `ec2e2d227` (2026-09-05, signed off per AGENTS.md
+/// 5.10) fixed that by never pinning a header while `Block::is_active_and_long_running()`, full
+/// stop: the header returns only once the command finishes, since the snackbar exists to keep a
+/// *scrolled-away* block identifiable, not to label a running one. This test's `python3` never
+/// exits during the test, so the block is active-and-long-running for the whole assertion window
+/// and the snackbar must stay hidden throughout. (#783)
 pub fn test_block_based_snackbar_appears_for_running_command_input_at_bottom() -> Builder {
     new_builder()
         .with_user_defaults(user_defaults::input_mode(InputMode::PinnedToBottom))
@@ -3053,7 +3064,7 @@ pub fn test_block_based_snackbar_appears_for_running_command_input_at_bottom() -
                     ScrollPosition::FollowsBottomOfMostRecentBlock,
                 ))
                 .add_assertion(assert_no_pending_model_events())
-                .add_assertion(assert_snackbar_is_visible(0)),
+                .add_assertion(assert_snackbar_is_not_visible(0)),
         )
 }
 
@@ -3081,8 +3092,13 @@ pub fn test_block_based_snackbar_not_visible_for_pager_command_input_at_bottom()
         )
 }
 
-/// Ensure that the block-based-snackbar appears when a command is running when input pinned to top
-/// mode is enabled.
+/// Ensure that the block-based-snackbar does NOT appear over a command that is still running,
+/// when input pinned to top mode is enabled.
+///
+/// See the doc comment on `test_block_based_snackbar_appears_for_running_command_input_at_bottom`
+/// above: pre-`ec2e2d227` this asserted the opposite. `ec2e2d227` never pins a header while
+/// `Block::is_active_and_long_running()`, and this test's `python3` never exits, so the block
+/// stays active-and-long-running for the whole assertion window. (#783)
 pub fn test_block_based_snackbar_appears_for_running_command_pinned_to_top() -> Builder {
     new_builder()
         .with_user_defaults(user_defaults::input_mode(InputMode::PinnedToTop))
@@ -3098,7 +3114,7 @@ pub fn test_block_based_snackbar_appears_for_running_command_pinned_to_top() -> 
                     ScrollPosition::FollowsBottomOfMostRecentBlock,
                 ))
                 .add_assertion(assert_no_pending_model_events())
-                .add_assertion(assert_snackbar_is_visible(0)),
+                .add_assertion(assert_snackbar_is_not_visible(0)),
         )
 }
 
@@ -3126,8 +3142,13 @@ pub fn test_block_based_snackbar_not_visible_for_pager_command_pinned_to_top() -
         )
 }
 
-/// Ensure that the block-based-snackbar appears when a command is running when input waterfall
-/// mode is enabled.
+/// Ensure that the block-based-snackbar does NOT appear over a command that is still running,
+/// when input waterfall mode is enabled.
+///
+/// See the doc comment on `test_block_based_snackbar_appears_for_running_command_input_at_bottom`
+/// above: pre-`ec2e2d227` this asserted the opposite. `ec2e2d227` never pins a header while
+/// `Block::is_active_and_long_running()`, and this test's `python3` never exits, so the block
+/// stays active-and-long-running for the whole assertion window. (#783)
 pub fn test_block_based_snackbar_appears_for_running_command_waterfall_mode() -> Builder {
     new_builder()
         .with_user_defaults(user_defaults::input_mode(InputMode::Waterfall))
@@ -3143,7 +3164,7 @@ pub fn test_block_based_snackbar_appears_for_running_command_waterfall_mode() ->
                     ScrollPosition::FollowsBottomOfMostRecentBlock,
                 ))
                 .add_assertion(assert_no_pending_model_events())
-                .add_assertion(assert_snackbar_is_visible(0)),
+                .add_assertion(assert_snackbar_is_not_visible(0)),
         )
 }
 
@@ -6794,8 +6815,18 @@ pub fn test_agent_mode_pane_minimum_size() -> Builder {
                         // This doesn't correspond clearly to the given rows and columns due to line
                         // height and padding. There's also some platform-specific variance and room
                         // for floating-point error.
+                        //
+                        // The y target was 644 before `4203a0573` ("Long-running block padding
+                        // collapses at the top as well as the bottom", see `DECLINED.md`)
+                        // widened `TOTAL_LONG_RUNNING_VERTICAL_PADDING_LINES` from
+                        // `LONG_RUNNING_BOTTOM_PADDING_LINES` alone (0.2 lines) to
+                        // `3 * LONG_RUNNING_TOP_PADDING_LINES + LONG_RUNNING_BOTTOM_PADDING_LINES`
+                        // (0.8 lines) -- a deliberate +0.6-line change to
+                        // `bounds_for_opening_at_custom_window_size`'s window-height formula
+                        // (`app/src/root_view.rs`), which this constant was never updated to
+                        // match. (#784)
                         assert_approx_eq!(f32, size.x(), 992., epsilon = 2.);
-                        assert_approx_eq!(f32, size.y(), 644., epsilon = 2.);
+                        assert_approx_eq!(f32, size.y(), 653., epsilon = 2.);
                         AssertionOutcome::Success
                     },
                 ),

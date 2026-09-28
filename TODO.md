@@ -13383,3 +13383,18 @@ open findings that had no pre-existing row.
       diff-against-baseline approach for the rest of the suite), promote this step from
       `warn` to `fail` in `script/precheck` and drop the "not yet gated" language from its
       header comment.
+      **2026-09-28 update: the round-6 baseline run (`c47f682ca`, GUI scenarios under Xvfb
+      + Mesa lavapipe, no window manager) came back 238/248 — not the environment gap this
+      item anticipated.** All 10 failures were triaged and none were environment-only; no
+      `known_integration_failures.txt` was created because there is nothing to put in it:
+      - 5 were a real product bug in the settings sidebar (Agents umbrella pre-expanded
+        before any real navigation — #782, fixed `f756dd7ff`).
+      - 3 were `ec2e2d227`'s already-declined snackbar-over-running-command behavior change
+        never propagated to its own tests (#783, fixed `d826a11f7`).
+      - 2 were `4203a0573`'s already-declined long-running-padding widening never
+        propagated to two hardcoded window-size pixel targets (#784, fixed `d826a11f7`).
+        Confirmed not a WM artifact: reproduced identically under a real window manager
+        (`openbox`) before concluding the constants, not the formula, were stale.
+      With those five fixed, the suite should be clean at `fix/r7-integration-baseline`
+      modulo whatever `main` has moved on independently — re-run the full suite once this
+      lands and gate on *that* result rather than re-deriving the same investigation.

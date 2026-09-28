@@ -1391,8 +1391,23 @@ impl SettingsView {
             other => other.unwrap_or_default(),
         };
 
-        // Auto-expand the umbrella if the initial page is one of its subpages.
-        if initial_page.is_subpage() {
+        // Auto-expand the umbrella if the caller explicitly asked for one of its
+        // subpages. `page` is `None` for the singleton `SettingsView` every window
+        // creates eagerly at startup (`SettingsView::new(None, ctx)` in
+        // `workspace/view.rs`), before the user has ever opened the settings pane —
+        // `initial_page` still resolves to `SettingsSection::default()`
+        // (`WarpAgent`, a subpage) for that call so the pane has *something* to
+        // show, but that resolution reflects no actual user navigation and must
+        // not pre-expand Agents. Real navigation to a subpage — including the
+        // genuine "open settings with no page" flow (Cmd+,), which lands here on
+        // the same `WarpAgent` default — goes through
+        // `set_and_refresh_current_page_internal`, which has its own equivalent
+        // auto-expand for the subpage it is actually asked to show. Gating this
+        // one on `page.is_some()` leaves that path as the single source of truth
+        // instead of pre-seeding a state the general path already produces
+        // correctly, which used to make every settings umbrella look expanded to
+        // an observer who had never navigated into it (#782).
+        if page.is_some() && initial_page.is_subpage() {
             for item in &mut nav_items {
                 if let SettingsNavItem::Umbrella(umbrella) = item {
                     if umbrella.contains(initial_page) {
