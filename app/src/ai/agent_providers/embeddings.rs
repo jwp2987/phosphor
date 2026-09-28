@@ -566,11 +566,16 @@ fn resolved_auth_and_extra_headers(
         headers.insert(http::header::AUTHORIZATION, value);
     }
     for (name, value) in extra_headers {
-        if let (Ok(name), Ok(value)) = (
+        if let (Ok(header_name), Ok(value)) = (
             http::HeaderName::from_bytes(name.as_bytes()),
             http::HeaderValue::from_str(value),
         ) {
-            headers.insert(name, value);
+            headers.insert(header_name, value);
+        } else {
+            // Dropped rather than failing the whole request, but never silently: a gateway
+            // that needs this header will reject the call, and this is the only clue why.
+            // The name only -- a value may be a secret.
+            log::warn!("Skipping provider extra header {name:?}: not a valid HTTP header");
         }
     }
     headers
