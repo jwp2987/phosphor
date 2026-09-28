@@ -13372,7 +13372,7 @@ open findings that had no pre-existing row.
       Test: `test_open_file_with_target_global_search_origin_reveals_launchable_paths`
       added to `app/src/workspace/view_test.rs`, alongside the existing #706 sink test.
       `DECLINED.md`'s #681/#706 entry updated with the conflation and its fix.
-- [ ] **Make `script/precheck`'s integration step a hard gate once a clean baseline is
+- [x] **Make `script/precheck`'s integration step a hard gate once a clean baseline is
       recorded (#721 follow-up).** #721 added the integration-suite step but left it
       deliberately advisory (`warn`, not `fail`) on scenario failures, matching
       `pr-check.yml`'s `integration-linux` job not being a required status check — nobody
@@ -13398,3 +13398,26 @@ open findings that had no pre-existing row.
       With those five fixed, the suite should be clean at `fix/r7-integration-baseline`
       modulo whatever `main` has moved on independently — re-run the full suite once this
       lands and gate on *that* result rather than re-deriving the same investigation.
+      **Promoted to a hard gate 2026-09-27 (`8f79e840c`):** `script/precheck` now fails on
+      any integration failure, after first checking for xvfb-run, a Vulkan ICD and
+      libxkbcommon-x11. First run under the gate, on `integ/round6` at `26f740925`:
+      "no failures".
+- [ ] **#774 — build the missing remote project-rules pipeline (WARP.md/AGENTS.md/CLAUDE.md
+      never reach the agent for an SSH session).** `crates/repo_metadata/src/standing_queries.rs`'s
+      `StandingQueryDefinitions::default()` now recognizes `CLAUDE.md` alongside `WARP.md`/
+      `AGENTS.md` (single-sourced from `warp_util::project_rules::RULES_FILE_PATTERN`,
+      `dc6b974ff`), so the indexer's standing-query results include a remote repo's rule
+      files by name. But nothing turns that into agent context for a remote session:
+      `ai::project_context::model::standing_project_rule_paths` and
+      `ProjectContextModel::reconcile_project_rules` — the functions that would bridge
+      `repo_metadata`'s results into `ProjectContextModel`'s `remote_path_to_rules` — have no
+      non-test caller, and `remote_path_to_rules` itself has no production writer at all.
+      Remote project-rule *discovery and content-reading* (the pin's
+      `app/src/ai/metadata_project_rules.rs`) does not exist on this fork. The adjacent,
+      already-solved case — remote project *skills* — is wired end-to-end via
+      `app/src/ai/remote_context_files.rs`'s `read_remote_text_file_contents` (called from
+      `SkillWatcher::refresh_project_skills_for_repo`); building the rules pipeline likely
+      means an analogous `RepoMetadataModel`-subscribed reconciler for rule files, calling
+      `reconcile_project_rules` per remote host/root and populating `remote_path_to_rules`
+      via that same RPC. Not scoped further here (AGENTS.md §5.6) — sizing it needs reading
+      `SkillWatcher`'s subscription wiring first.

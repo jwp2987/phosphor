@@ -16066,11 +16066,13 @@ impl Workspace {
 
                 let window_id = ctx.window_id();
                 let path_if_local_clone = path_if_local.clone();
+                let pwd_clone = pwd.clone();
                 ActiveSession::handle(ctx).update(ctx, |active_session, ctx| {
                     active_session.set_session_state(
                         window_id,
                         session,
                         path_if_local_clone.clone(),
+                        pwd_clone.clone(),
                         Some(terminal_handle.id()),
                         ctx,
                     );
