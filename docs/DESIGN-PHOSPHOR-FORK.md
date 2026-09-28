@@ -15,6 +15,34 @@ the way it is and where it is heading, before making architectural changes.
     Zap merged four PRs on 2026-09-27/28 (see the "UPSTREAM ZAP PRS" triage in
     `TODO.md`). Re-check its PR/issue activity before repeating "dormant".
   - `origin` → this personal fork (`jwp2987/phosphor`, previously `jwp2987/zap`).
+- **Sibling forks worth watching** (surveyed 2026-09-27/28; none share git history
+  with this repo, so anything taken is ported by content and cites its source):
+  - `mehmetbaykar/zap` — **closest to our direction.** English-language BYOP
+    agent fixes, SSH agent parity, host-aware skills, rules-file handling, BYOP
+    compaction; merges upstream Warp regularly (`merge/upstream-*` branches).
+    Three of the six fork-sourced fixes this round came from here (#774/#775,
+    #777/#778). Re-check first.
+  - `TranscriptionFactory/warp` — ships releases; BYOP header plumbing (#780 came
+    from here), security hardening (SSRF / webfetch — already done more
+    thoroughly here), and a pane-to-own-tab action (#781). Its
+    `security-and-remote-code-review` branch appears to be the source of Zap #317.
+  - `jpg0/zap` (`warp-local` branch) — BYOP added directly onto stock Warp, keeping
+    Warp's server for everything else. The mirror image of this fork: it confirmed
+    Phosphor's BYOP layer already covers its features; one fix taken (#779).
+    Useful mainly as a cross-check, not a source.
+  - `byte5ai/zaplex` — very active, German-language; a macOS cockpit for
+    CLI agents on remote hosts (daemon-owned persistent sessions with
+    sequence-numbered replay, idle/orphan session GC, Host▸Project▸Session tree,
+    SFTP file manager — the last is a DECLINED feature here). **Relevant to Moth's
+    remote-session half**, not to parity work; AGPL/MIT like this repo, so code is
+    portable. A comparison against the Moth design was written 2026-09-28 (ask the
+    maintainer for `zaplex-vs-moth.md`).
+  - Low relevance: `chenchangzhong/zap` (embedded Chromium/CEF browser, plus
+    code-review panel perf work), `Infinimesh-ai/InfiniShell-Desktop`
+    (commercial Windows/macOS sandboxing), `IceFog72/warp-cpu` (software
+    rendering). Measure activity by each fork's own commits (`git log --no-merges
+    <fork-refs> --not zap/main warp/master`), not GitHub's "updated" date, which
+    only means something was pushed.
 - **What this fork is:** a **BYOP** (Bring-Your-Own-Provider) terminal/agent. The
   cloud half of Warp (orchestration, Drive sync, auth/billing, remote agents) is
   stripped; the agent talks **directly to a user-configured OpenAI-compatible /
