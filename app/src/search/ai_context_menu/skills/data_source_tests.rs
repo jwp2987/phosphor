@@ -6,6 +6,7 @@ use warp_core::features::FeatureFlag;
 use warp_util::host_id::HostId;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warp_util::remote_path::RemotePath;
+use warpui::windowing::WindowManager;
 use warpui::{App, SingletonEntity};
 
 use super::SkillsDataSource;
@@ -88,6 +89,14 @@ fn resolved_remote_session_lists_remote_skills_not_local() {
         });
 
         let (window_id, terminal_view) = add_window_with_id_and_terminal(&mut app, None);
+        // `run_query` reads the *active* window (`app.windows().state().active_window`)
+        // to find which tab's session to resolve a host from; a freshly-added test
+        // window is not automatically the active one (no platform focus event ever
+        // fires in `App::test`), so without this the lookup short-circuits to `None`
+        // and silently falls back to local skills regardless of the session below.
+        WindowManager::handle(&app).update(&mut app, |windowing_state, _ctx| {
+            windowing_state.overwrite_for_test(windowing_state.stage(), Some(window_id));
+        });
 
         let session = Session::test_remote();
         session.set_remote_host_id(Some(warp_core::HostId::new(host_id.as_str().to_string())));
@@ -150,6 +159,12 @@ fn legacy_ssh_session_lists_local_skills() {
         });
 
         let (window_id, terminal_view) = add_window_with_id_and_terminal(&mut app, None);
+        // See the comment above the equivalent call in
+        // `resolved_remote_session_lists_remote_skills_not_local`: a freshly-added
+        // test window isn't the active window until this is set explicitly.
+        WindowManager::handle(&app).update(&mut app, |windowing_state, _ctx| {
+            windowing_state.overwrite_for_test(windowing_state.stage(), Some(window_id));
+        });
 
         let session = Session::new(
             SessionInfo::new_for_test()
