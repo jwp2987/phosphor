@@ -12,6 +12,9 @@ use crate::signatures::testing::{create_test_command_registry, test_signature};
 use crate::signatures::CommandRegistry;
 use string_offset::ByteOffset;
 
+#[cfg(not(feature = "v2"))]
+use crate::signatures::testing::{add_content_signature, git_signature};
+
 fn location(line: &str, registry: CommandRegistry, pos: usize) -> Vec<LocationType> {
     let ctx = FakeCompletionContext::new(registry);
     let line = &line[..pos];
@@ -211,6 +214,76 @@ fn completes_flags_having_one_hyphen() {
             LocationType::Flag {
                 command_name: "clang".to_owned().spanned(Span::new(12, 17)),
                 flag_name: Some("-".to_owned().spanned(Span::new(18, 19)))
+            },
+        ]
+    );
+}
+
+#[cfg(not(feature = "v2"))] // The POSIX `--` handling lives in the legacy parser only.
+#[test]
+fn completes_only_arguments_after_end_of_options() {
+    let command = "git".to_owned().spanned(Span::new(0, 3));
+    let registry = create_test_command_registry([git_signature()]);
+
+    assert_eq!(
+        location("git -- ", registry, 7),
+        vec![LocationType::Argument {
+            command_name: command,
+            argument_name: None,
+            parsed_token: ParsedToken::empty(),
+        }]
+    );
+}
+
+#[cfg(not(feature = "v2"))] // The POSIX `--` handling lives in the legacy parser only.
+#[test]
+fn treats_dash_prefixed_tokens_after_end_of_options_as_arguments() {
+    let command = "git".to_owned().spanned(Span::new(0, 3));
+    let registry = create_test_command_registry([git_signature()]);
+
+    assert_eq!(
+        location("git -- -operand", registry, 15),
+        vec![LocationType::Argument {
+            command_name: command,
+            argument_name: None,
+            parsed_token: ParsedToken::new("-operand"),
+        }]
+    );
+}
+
+#[cfg(not(feature = "v2"))] // The POSIX `--` handling lives in the legacy parser only.
+#[test]
+fn treats_single_dash_after_end_of_options_as_an_argument() {
+    let command = "git".to_owned().spanned(Span::new(0, 3));
+    let registry = create_test_command_registry([git_signature()]);
+
+    assert_eq!(
+        location("git -- -", registry, 8),
+        vec![LocationType::Argument {
+            command_name: command,
+            argument_name: None,
+            parsed_token: ParsedToken::new("-"),
+        }]
+    );
+}
+
+#[cfg(not(feature = "v2"))] // The POSIX `--` handling lives in the legacy parser only.
+#[test]
+fn completes_flags_after_double_dash_for_posix_noncompliant_commands() {
+    let command = "Add-Content".to_owned().spanned(Span::new(0, 11));
+    let registry = create_test_command_registry([add_content_signature()]);
+
+    assert_eq!(
+        location("Add-Content -- ", registry, 15),
+        vec![
+            LocationType::Argument {
+                command_name: command.clone(),
+                argument_name: None,
+                parsed_token: ParsedToken::empty(),
+            },
+            LocationType::Flag {
+                command_name: command,
+                flag_name: None,
             },
         ]
     );

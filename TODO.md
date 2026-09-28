@@ -13421,3 +13421,42 @@ open findings that had no pre-existing row.
       `reconcile_project_rules` per remote host/root and populating `remote_path_to_rules`
       via that same RPC. Not scoped further here (AGENTS.md §5.6) — sizing it needs reading
       `SkillWatcher`'s subscription wiring first.
+
+## Upstream post-pin ports (2026-09-28)
+
+- [x] **#785 — completer: flag completions leaked past a POSIX `--` end-of-options
+      marker.** Port of upstream `d5fdbff50` ("Fix flag completions after POSIX double
+      dash", warpdotdev/warp#16124, fixing warpdotdev/warp#16121) — post-pin (pin is
+      `4111d08f9`), ported for a real bug hit while tracing `git -- <tab>` /
+      `git -- branch -` through the legacy completer. Verified the bug first: before this
+      fix, `parse_internal_command` (`crates/warp_completer/src/parsers/legacy.rs`) never
+      tracked whether a standalone `--` had been seen, so a dash-prefixed token after it
+      (e.g. `-file`) was still classified `Expression::Unknown` and offered as a flag, and
+      `classify_token` (`crates/warp_completer/src/signatures/legacy/registry.rs`) walked
+      straight past `--` into nested subcommand resolution (`git -- branch -` still
+      resolved `branch`'s own flags instead of stopping at `git`). Fixed by threading a
+      new `options_terminated: bool` through `CommandCallInfo`
+      (`crates/warp_completer/src/parsers/hir/mod.rs`), setting it once a *completed*
+      standalone `--` is seen (not while it's still the last, unfinished token) in
+      `parse_internal_command`, a new `TokenAction::EndOfOptions` /
+      `is_completed_options_terminator` helper in `registry.rs` used by both
+      `signature_from_tokens` and `signature_with_alias_expansion`, and consulting
+      `options_terminated` in `Flatten::command` and `completion_location`
+      (`crates/warp_completer/src/completer/engine/mod.rs`) so a dash-prefixed positional
+      after `--` is no longer offered as a flag and the trailing bare-`-` flag heuristic
+      is suppressed. Signatures with `parser_directives.flags_are_posix_noncompliant` set
+      (PowerShell's `Add-Content` fixture) are explicitly excluded and keep parsing flags
+      after `--`, matching existing behavior — checked against this fork's own #731 port
+      (`option_value_index`-by-cursor-position resolution in
+      `crates/warp_completer/src/completer/engine/argument/legacy.rs`), which is untouched
+      by this change and doesn't run for `--` tokens. Ported upstream's 9 new/changed
+      tests across `parsers/test.rs`, `completer/engine/test.rs`,
+      `completer/suggest/test.rs`, and `signatures/legacy/registry_test.rs` (renamed
+      singular in this fork), adapted to this file's existing import style; the fork's
+      pre-existing suite already covers the "`--` still being typed" (last token, no
+      trailing whitespace) case staying a flag-completion candidate, which this change
+      preserves. **Unverified: no `cargo`/`nextest` run in this sandbox** (hard rule for
+      this round) — checked by tracing every call site by hand and running
+      `rustfmt --check` on touched lines only; a real build should confirm no other call
+      site constructs `CommandCallInfo` or matches on `TokenAction` exhaustively without
+      the new variant/field.
