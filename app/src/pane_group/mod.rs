@@ -184,6 +184,10 @@ use self::pane::{DetachType, PaneViewEvent};
 /// the pane header menu item can surface the same shortcut the binding resolves to.
 pub const TOGGLE_MAXIMIZE_PANE_BINDING_NAME: &str = "pane_group:toggle_maximize_pane";
 
+/// Binding name for the action that moves the focused pane out of its split
+/// and into its own tab, right after the current one.
+pub const MOVE_PANE_TO_OWN_TAB_BINDING_NAME: &str = "pane_group:move_pane_to_own_tab";
+
 lazy_static! {
     // The value to use as the initial window bounds if we are unable to
     // determine them for any reason.
@@ -268,6 +272,7 @@ pub enum PaneGroupAction {
     NavigateUp,
     NavigateDown,
     ToggleMaximizePane,
+    MoveFocusedPaneToOwnTab,
     HandleFocusChange,
     FocusTerminalView(EntityId),
 }
@@ -438,6 +443,13 @@ pub fn init(app: &mut AppContext) {
         )
         .with_context_predicate(id!("PaneGroup") & !id!("PaneGroup_PaneDragging"))
         .with_custom_action(CustomAction::ToggleMaximizePane),
+        EditableBinding::new(
+            MOVE_PANE_TO_OWN_TAB_BINDING_NAME,
+            crate::t!("keybinding-desc-pane-group-move-pane-to-own-tab"),
+            PaneGroupAction::MoveFocusedPaneToOwnTab,
+        )
+        .with_context_predicate(id!("PaneGroup") & !id!("PaneGroup_PaneDragging"))
+        .with_custom_action(CustomAction::MovePaneToOwnTab),
     ]);
 
     if ChannelState::channel() == Channel::Integration {
@@ -552,6 +564,12 @@ pub enum Event {
         space: Space,
     },
     PaneFocused,
+    /// Pull `pane_id` out of this pane group and promote it to its own tab,
+    /// right after the current one. Handled by the workspace, since pane <->
+    /// tab ownership lives there, not in `PaneGroup`.
+    MovePaneToOwnTab {
+        pane_id: PaneId,
+    },
     DroppedOnTabBar {
         origin: ActionOrigin,
         pane_id: PaneId,
@@ -4756,6 +4774,9 @@ impl PaneGroup {
                 self.focus_pane_by_id(pane_id, ctx);
                 self.toggle_maximize_pane(ctx);
             }
+            PaneEvent::MoveToOwnTab => {
+                ctx.emit(Event::MovePaneToOwnTab { pane_id });
+            }
             PaneEvent::FocusSelf => self.focus_pane_by_id(pane_id, ctx),
             PaneEvent::FocusActiveSession => self.focus_active_session(ctx),
             PaneEvent::AppStateChanged => {
@@ -5256,6 +5277,18 @@ impl PaneGroup {
             });
             ctx.notify();
             ctx.emit(Event::MaximizePaneToggled);
+        }
+    }
+
+    /// Keybinding-driven counterpart to the pane header overflow menu's "Move
+    /// pane to its own tab" item: pulls the *focused* pane out of this group and
+    /// promotes it to its own tab, right after the current one. Mirrors
+    /// `toggle_maximize_pane`'s "only when actually split" guard, matching the
+    /// menu item's own precondition (only offered while the pane is split).
+    fn move_focused_pane_to_own_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.pane_count() > 1 {
+            let pane_id = self.focused_pane_id(ctx);
+            ctx.emit(Event::MovePaneToOwnTab { pane_id });
         }
     }
 
@@ -6958,6 +6991,7 @@ impl TypedActionView for PaneGroup {
             NavigateUp => self.navigate_pane_by_direction(Direction::Up, ctx),
             NavigateDown => self.navigate_pane_by_direction(Direction::Down, ctx),
             ToggleMaximizePane => self.toggle_maximize_pane(ctx),
+            MoveFocusedPaneToOwnTab => self.move_focused_pane_to_own_tab(ctx),
             Move {
                 id,
                 target_pane_id,

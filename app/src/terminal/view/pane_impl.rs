@@ -453,6 +453,17 @@ impl BackingView for TerminalView {
                     .with_on_select_action(TerminalAction::ToggleMaximizePane)
                     .into_item(),
             );
+
+            // A pane merged into this tab's group can be pulled back out into its
+            // own tab, right after the current one -- the same destination a
+            // tab-bar "drop pane after tab" drag would produce. Only offered
+            // while the pane is actually split (checked above), matching the
+            // tab-bar drop path's own precondition.
+            items.push(
+                MenuItemFields::new(crate::t!("menu-pane-move-to-own-tab"))
+                    .with_on_select_action(TerminalAction::MovePaneToOwnTab)
+                    .into_item(),
+            );
         }
 
         items

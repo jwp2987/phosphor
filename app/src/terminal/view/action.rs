@@ -207,6 +207,9 @@ pub enum TerminalAction {
     ClearSelectionsWhenShellMode,
     Close,
     ToggleMaximizePane,
+    /// Pull this pane out of its tab's pane group and promote it to its own
+    /// tab, right after the current one (pane header overflow menu).
+    MovePaneToOwnTab,
     SplitRight(Option<AvailableShell>),
     SplitLeft(Option<AvailableShell>),
     SplitDown(Option<AvailableShell>),
@@ -555,6 +558,7 @@ impl fmt::Debug for TerminalAction {
             SplitDown(_) => f.write_str("SplitDown"),
             SplitUp(_) => f.write_str("SplitUp"),
             ToggleMaximizePane => f.write_str("ToggleMaximizeActivePane"),
+            MovePaneToOwnTab => f.write_str("MovePaneToOwnTab"),
             PromptContextMenu {
                 position_offset_from_prompt,
             } => write!(

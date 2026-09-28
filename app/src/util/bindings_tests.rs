@@ -141,6 +141,54 @@ fn test_toggle_maximize_pane_binding_is_editable() {
     });
 }
 
+/// The pane header overflow menu's "Move pane to its own tab" item
+/// (`PaneGroupAction::MoveFocusedPaneToOwnTab`) is unbound by default -- no
+/// existing default keystroke was free on either platform (see
+/// `CustomAction::ToggleMaximizePane`'s module comment above for the
+/// Linux/Windows keys that are already spoken for) -- but it is registered as
+/// an editable binding so a shortcut can still be assigned in Settings ->
+/// Keyboard shortcuts, same as every other pane-header-overflow-menu item that
+/// is bindable at all.
+#[test]
+fn test_move_pane_to_own_tab_binding_is_editable() {
+    App::test((), |mut app| async move {
+        app.update(crate::pane_group::init);
+
+        app.update(|ctx| {
+            use crate::pane_group::MOVE_PANE_TO_OWN_TAB_BINDING_NAME;
+
+            assert!(
+                ctx.editable_bindings()
+                    .any(|binding| binding.name == MOVE_PANE_TO_OWN_TAB_BINDING_NAME),
+                "{MOVE_PANE_TO_OWN_TAB_BINDING_NAME} should be registered as an editable binding"
+            );
+
+            assert_eq!(
+                None,
+                keybinding_name_to_display_string(MOVE_PANE_TO_OWN_TAB_BINDING_NAME, ctx),
+                "should ship unbound by default"
+            );
+
+            // A reassigned shortcut resolves to its display string on every platform.
+            ctx.set_custom_trigger(
+                MOVE_PANE_TO_OWN_TAB_BINDING_NAME.to_owned(),
+                Trigger::Keystrokes(vec![Keystroke::parse("cmd-shift-O").unwrap()]),
+            );
+
+            let displayed_keybinding = if OperatingSystem::get().is_mac() {
+                "⇧⌘O"
+            } else {
+                "Shift Logo O"
+            };
+            assert_eq!(
+                Some(displayed_keybinding),
+                keybinding_name_to_display_string(MOVE_PANE_TO_OWN_TAB_BINDING_NAME, ctx)
+                    .as_deref()
+            );
+        });
+    });
+}
+
 #[test]
 fn test_terminal_page_scroll_bindings_are_editable() {
     App::test((), |mut app| async move {
