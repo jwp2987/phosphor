@@ -13411,7 +13411,8 @@ mod byop_unreachable_provider_hint_tests {
         // `received_real_event` is false here: no chunk arrived before this error, which is
         // exactly what `generate_byop_output`'s loop observes when the very first poll of the
         // stream is the one that fails.
-        let hint_for_message = mid_stream_hint_for_error(false, Some(&hint()));
+        let hint = hint();
+        let hint_for_message = mid_stream_hint_for_error(false, Some(&hint));
         let err = byop_stream_error_to_api_error(mapped, hint_for_message);
 
         assert!(
