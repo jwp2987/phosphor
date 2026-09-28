@@ -11814,30 +11814,42 @@ impl Workspace {
     ///   there is always a way to open a top-level tab even when every tab is
     ///   grouped.
     fn new_tab_index_and_group(&self, ctx: &AppContext) -> (usize, Option<TabGroupId>) {
-        let active_group_id = if FeatureFlag::GroupedTabs.is_enabled() {
-            self.tabs
-                .get(self.active_tab_index)
-                .and_then(|tab| tab.group_id)
-        } else {
-            None
-        };
-
         match TabSettings::as_ref(ctx).new_tab_placement {
             // End of the bar, outside any group.
             NewTabPlacement::AfterAllTabs => (self.tab_count(), None),
             NewTabPlacement::AfterCurrentTab => {
-                let insert_idx = self.active_tab_index + 1;
-                // A standalone (ungrouped) new tab must not land inside the
-                // pinned region; a tab joining a group already sits wherever its
-                // group lives.
-                let insert_idx = if active_group_id.is_none() {
-                    self.clamp_to_unpinned_region(&self.tabs, insert_idx)
-                } else {
-                    insert_idx
-                };
-                (insert_idx, active_group_id)
+                self.tab_index_and_group_after(self.active_tab_index)
             }
         }
+    }
+
+    /// Returns where a tab inserted right after `source_idx` should land and
+    /// the group it should inherit from the tab at `source_idx`: joining that
+    /// tab's group (if any) keeps the insertion contiguous with it, since group
+    /// members are always stored as a contiguous run; a standalone (ungrouped)
+    /// insertion must not land inside the pinned region, so it is clamped past
+    /// it, mirroring the drag-and-drop "drop pane after tab" path's own
+    /// pinned-region and group-inheritance handling in
+    /// `refine_hovered_tab_index` (which additionally resolves the group from
+    /// the drag cursor position, not applicable here since there is no drag).
+    /// Shared by `new_tab_index_and_group`'s `AfterCurrentTab` placement and
+    /// the pane header overflow menu's "Move pane to its own tab" action.
+    fn tab_index_and_group_after(&self, source_idx: usize) -> (usize, Option<TabGroupId>) {
+        let group_id = if FeatureFlag::GroupedTabs.is_enabled() {
+            self.tabs.get(source_idx).and_then(|tab| tab.group_id)
+        } else {
+            None
+        };
+
+        let insert_idx = source_idx + 1;
+        // A standalone (ungrouped) new tab must not land inside the pinned
+        // region; a tab joining a group already sits wherever its group lives.
+        let insert_idx = if group_id.is_none() {
+            self.clamp_to_unpinned_region(&self.tabs, insert_idx)
+        } else {
+            insert_idx
+        };
+        (insert_idx, group_id)
     }
 
     /// Ensures the group is expanded (not collapsed). No-op if the group does
@@ -15320,16 +15332,37 @@ impl Workspace {
                 }
             }
             pane_group::Event::MovePaneToOwnTab { pane_id } => {
-                // Pull the pane out of the current tab and insert it as its own
-                // tab right after the current one -- the same primitives the
+                // Pull the pane out of its (possibly non-active) tab and insert it
+                // as its own tab right after that tab -- the same primitives the
                 // tab-bar "drop pane after tab" drag path uses
                 // (`remove_pane_for_move` + `add_tab_from_existing_pane`), just
                 // triggered from the pane header overflow menu instead of a drag.
-                let new_idx = self.active_tab_index + 1;
-                if let Some(pane) = pane_group.update(ctx, |pane_group, ctx| {
-                    pane_group.remove_pane_for_move(pane_id, ctx)
-                }) {
-                    self.add_tab_from_existing_pane(pane, new_idx, None, ctx);
+                //
+                // The source tab is found by matching `pane_group`'s id (as
+                // `Exited` and `DroppedOnTabBar` do above), not assumed to be
+                // `self.active_tab_index`: the emitting pane group is whichever
+                // tab the pane actually lives in.
+                let source_idx = self.tabs.iter().position(|t| {
+                    t.pane_group.id() == pane_group.id()
+                        && t.pane_group.window_id(ctx) == pane_group.window_id(ctx)
+                });
+                if let Some(source_idx) = source_idx {
+                    // Landing index + inherited group mirror the drag-and-drop
+                    // "drop pane after tab" path's own pinned-region clamping and
+                    // group inheritance (see `tab_index_and_group_after`) so a
+                    // move started from a pinned or grouped tab can't unpin an
+                    // unpinned tab into the pinned prefix or split a group.
+                    let (new_idx, group_id) = self.tab_index_and_group_after(source_idx);
+                    if let Some(pane) = pane_group.update(ctx, |pane_group, ctx| {
+                        pane_group.remove_pane_for_move(pane_id, ctx)
+                    }) {
+                        self.add_tab_from_existing_pane(pane, new_idx, group_id, ctx);
+                    }
+                } else {
+                    log::error!(
+                        "MovePaneToOwnTab: could not find the source tab for pane group {:?}",
+                        pane_group.id()
+                    );
                 }
             }
             pane_group::Event::SwitchTabFocusAndMovePane {

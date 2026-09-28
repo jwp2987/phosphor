@@ -6915,3 +6915,287 @@ fn test_move_pane_to_own_tab_splits_off_a_new_focused_tab_without_restarting_the
         });
     });
 }
+
+/// Regression test for a bug where the handler inserted the new tab at a
+/// literal `source_tab_index + 1` with no clamping: with two pinned tabs and
+/// the move started from the (pinned, split) first one, the unpinned new tab
+/// landed *between* the two pinned tabs, breaking the pinned prefix.
+/// `Workspace::tab_index_and_group_after` (shared with
+/// `new_tab_index_and_group`'s `AfterCurrentTab` placement) clamps an
+/// ungrouped insertion past the pinned region instead, exactly like the
+/// drag-and-drop "drop pane after tab" path's own `clamp_to_unpinned_region`
+/// call in `refine_hovered_tab_index`.
+#[test]
+fn test_move_pane_to_own_tab_lands_after_pinned_prefix_when_source_tab_is_pinned() {
+    let _pinned_guard = FeatureFlag::PinnedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+
+        // Split tab 0 (soon to be pinned) so it has 2 panes -- the
+        // precondition for "move pane to its own tab".
+        let pane_group_0 = workspace.read(&app, |workspace, _ctx| {
+            workspace
+                .get_pane_group_view(0)
+                .expect("should have pane group for tab 0")
+                .clone()
+        });
+        let first_terminal_id = pane_group_0.read(&app, |panes, _ctx| {
+            get_newly_created_pane_id(panes, &[])
+                .as_terminal_pane_id()
+                .expect("should be a terminal pane")
+        });
+        pane_group_0.update(&mut app, |panes, ctx| {
+            panes.add_terminal_pane(Direction::Right, None, ctx)
+        });
+
+        workspace.update(&mut app, |workspace, ctx| {
+            // Pin tab 0 (the split tab), then add and pin a second tab, so the
+            // pinned prefix is tabs [0, 1] -- two pinned tabs, contiguous.
+            workspace.handle_action(&WorkspaceAction::PinTab(0), ctx);
+            workspace.add_terminal_tab(false, ctx);
+            let second_tab_idx = workspace.tab_count() - 1;
+            workspace.handle_action(&WorkspaceAction::PinTab(second_tab_idx), ctx);
+        });
+
+        let (pinned_id_0, pinned_id_1) = workspace.read(&app, |workspace, _ctx| {
+            assert_eq!(workspace.tab_count(), 2);
+            assert!(
+                workspace.tabs[0].pinned && workspace.tabs[1].pinned,
+                "both tabs should be pinned before the move"
+            );
+            (
+                workspace.tabs[0].pane_group.id(),
+                workspace.tabs[1].pane_group.id(),
+            )
+        });
+
+        // Move the pane out of the (pinned) tab 0's split.
+        workspace.update(&mut app, |workspace, ctx| {
+            let pane_group = workspace
+                .get_pane_group_view(0)
+                .expect("tab 0 should still exist")
+                .clone();
+            workspace.handle_file_tree_event(
+                pane_group,
+                &pane_group::Event::MovePaneToOwnTab {
+                    pane_id: first_terminal_id.into(),
+                },
+                ctx,
+            );
+        });
+
+        workspace.read(&app, |workspace, _ctx| {
+            assert_eq!(
+                workspace.tab_count(),
+                3,
+                "moving the pane should add a third tab"
+            );
+            // The pinned prefix -- both tabs, in the same order -- is untouched:
+            // the new tab did not land between them.
+            assert_eq!(workspace.tabs[0].pane_group.id(), pinned_id_0);
+            assert_eq!(workspace.tabs[1].pane_group.id(), pinned_id_1);
+            assert!(
+                workspace.tabs[0].pinned && workspace.tabs[1].pinned,
+                "the pinned prefix should remain pinned and intact"
+            );
+            // The new tab lands right after the pinned prefix (the first
+            // unpinned slot), not between the two pinned tabs.
+            assert!(
+                !workspace.tabs[2].pinned,
+                "the new tab holding the moved pane should not be pinned"
+            );
+            assert_eq!(
+                workspace.active_tab_index(),
+                2,
+                "the new tab should be focused"
+            );
+        });
+    });
+}
+
+/// Moving a pane out of a tab that belongs to a tab group must keep the
+/// group's run contiguous: the new tab is inserted immediately after the
+/// source tab and inherits *that tab's* `group_id` (mirroring the
+/// drag-and-drop path's group inheritance in `refine_hovered_tab_index`,
+/// which inherits whichever group the cursor resolves to) rather than being
+/// left group-less, which would otherwise split the group's contiguous run
+/// even though it's parked right in the middle of it.
+#[test]
+fn test_move_pane_to_own_tab_from_grouped_tab_keeps_group_contiguous() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+
+        let group_id = workspace.update(&mut app, |workspace, ctx| {
+            // Group tab 0, then add a second tab -- with the default
+            // `AfterCurrentTab` placement it inherits tab 0's group, giving a
+            // 2-member contiguous group at indices [0, 1].
+            workspace.handle_action(
+                &WorkspaceAction::SelectNewSessionMenuItem(NewSessionMenuItem::CreateNewTabGroup),
+                ctx,
+            );
+            let group_id = workspace.tabs[0]
+                .group_id
+                .expect("tab 0 should be in a group");
+            workspace.add_terminal_tab(false, ctx);
+            group_id
+        });
+
+        // Split tab 0 (the first grouped tab, not the group's last member) so
+        // it has 2 panes.
+        let pane_group_0 = workspace.read(&app, |workspace, _ctx| {
+            assert_eq!(workspace.tabs[0].group_id, Some(group_id));
+            assert_eq!(workspace.tabs[1].group_id, Some(group_id));
+            workspace
+                .get_pane_group_view(0)
+                .expect("should have pane group for tab 0")
+                .clone()
+        });
+        let first_terminal_id = pane_group_0.read(&app, |panes, _ctx| {
+            get_newly_created_pane_id(panes, &[])
+                .as_terminal_pane_id()
+                .expect("should be a terminal pane")
+        });
+        pane_group_0.update(&mut app, |panes, ctx| {
+            panes.add_terminal_pane(Direction::Right, None, ctx)
+        });
+
+        workspace.update(&mut app, |workspace, ctx| {
+            let pane_group = workspace
+                .get_pane_group_view(0)
+                .expect("tab 0 should still exist")
+                .clone();
+            workspace.handle_file_tree_event(
+                pane_group,
+                &pane_group::Event::MovePaneToOwnTab {
+                    pane_id: first_terminal_id.into(),
+                },
+                ctx,
+            );
+        });
+
+        workspace.read(&app, |workspace, _ctx| {
+            assert_eq!(workspace.tab_count(), 3);
+            // The new tab landed immediately after tab 0 (its source),
+            // inheriting tab 0's group_id -- not left ungrouped, which would
+            // have split the group's run in two.
+            assert_eq!(
+                workspace.tabs[1].group_id,
+                Some(group_id),
+                "the new tab should inherit the source tab's group_id"
+            );
+            let group_indices: Vec<usize> = workspace
+                .tabs
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.group_id == Some(group_id))
+                .map(|(idx, _)| idx)
+                .collect();
+            assert_eq!(
+                group_indices.len(),
+                3,
+                "the group should have grown to three members"
+            );
+            assert!(
+                group_indices.windows(2).all(|w| w[1] == w[0] + 1),
+                "the group's tab indices should stay contiguous, got {group_indices:?}"
+            );
+        });
+    });
+}
+
+/// Regression test for a bug where the handler assumed the pane being moved
+/// always lived in `self.active_tab_index`. It must instead resolve the
+/// source tab by matching the emitting `pane_group`'s id against `self.tabs`
+/// (the same lookup `Exited` and `DroppedOnTabBar` use above), so a move
+/// still lands right after the *actual* source tab even when a different tab
+/// is focused.
+#[test]
+fn test_move_pane_to_own_tab_uses_source_tab_not_active_tab() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+
+        // Tab 0 (default), tab 1 (to be split), tab 2 (left active at the end).
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+        });
+        assert_eq!(
+            workspace.read(&app, |workspace, _ctx| workspace.tab_count()),
+            3
+        );
+
+        let pane_group_1 = workspace.read(&app, |workspace, _ctx| {
+            workspace
+                .get_pane_group_view(1)
+                .expect("should have pane group for tab 1")
+                .clone()
+        });
+        let first_terminal_id = pane_group_1.read(&app, |panes, _ctx| {
+            get_newly_created_pane_id(panes, &[])
+                .as_terminal_pane_id()
+                .expect("should be a terminal pane")
+        });
+        pane_group_1.update(&mut app, |panes, ctx| {
+            panes.add_terminal_pane(Direction::Right, None, ctx)
+        });
+
+        let (tab0_id, tab2_id) = workspace.read(&app, |workspace, _ctx| {
+            // Tab 2 (not tab 1, the source of the move) is focused.
+            assert_eq!(workspace.active_tab_index(), 2);
+            (
+                workspace.tabs[0].pane_group.id(),
+                workspace.tabs[2].pane_group.id(),
+            )
+        });
+
+        // Move the pane out of tab 1's split, passing tab 1's own pane group
+        // handle -- exactly what the pane header overflow menu does, and
+        // deliberately not the (different) active tab.
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.handle_file_tree_event(
+                pane_group_1.clone(),
+                &pane_group::Event::MovePaneToOwnTab {
+                    pane_id: first_terminal_id.into(),
+                },
+                ctx,
+            );
+        });
+
+        let new_pane_group = workspace.read(&app, |workspace, _ctx| {
+            assert_eq!(workspace.tab_count(), 4);
+            // Tab 0 is untouched.
+            assert_eq!(workspace.tabs[0].pane_group.id(), tab0_id);
+            // The new tab landed right after tab 1 (its source) rather than
+            // after whichever tab was active: index 2 held tab 2 before the
+            // move, so the old, buggy `active_tab_index + 1` would have
+            // landed at index 3 instead.
+            assert_eq!(
+                workspace.active_tab_index(),
+                2,
+                "the new tab should be focused, right after source tab 1"
+            );
+            // The tab that was active before the move (tab 2) was pushed back
+            // to index 3, unaffected in every other way.
+            assert_eq!(workspace.tabs[3].pane_group.id(), tab2_id);
+            workspace
+                .get_pane_group_view(2)
+                .expect("new tab should exist")
+                .clone()
+        });
+        new_pane_group.read(&app, |panes, ctx| {
+            assert_eq!(panes.pane_ids().count(), 1);
+            assert_eq!(panes.pane_ids().next(), Some(first_terminal_id.into()));
+            assert_eq!(
+                panes.focused_pane_id(ctx),
+                first_terminal_id.into(),
+                "the moved pane should be focused in its new tab"
+            );
+        });
+    });
+}

@@ -488,7 +488,8 @@ pub fn custom_tag_to_keystroke(custom: CustomTag) -> Option<Keystroke> {
         | CustomAction::OpenAIFactCollection
         | CustomAction::OpenMCPServerCollection
         | CustomAction::NewPersonalAIPrompt
-        | CustomAction::NewAgentTab => None,
+        | CustomAction::NewAgentTab
+        | CustomAction::MovePaneToOwnTab => None,
     }
 }
 
