@@ -721,8 +721,10 @@ impl BlocklistAIController {
                     // (It would otherwise remain `InProgress`, which would be correct, since we'd be
                     // immediately triggering a follow-up request).
                     //
-                    // In practice, the only time where this codepath gets triggered is upon completion
-                    // of a passive code diff action, where we don't autosend the next request.
+                    // This codepath is reached whenever the batch produced no follow-up request:
+                    // completion of a passive code diff action (no autosend), and any cancelled
+                    // result -- notably the user rejecting a blocked command (#790), which is
+                    // why the queued approval follow-up is unlocked below.
                     //
                     // With passive code diffs, its most appropriate to mark the conversation
                     // successful if the passive diff was accepted. In practice, there's only ever

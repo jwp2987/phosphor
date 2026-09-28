@@ -13395,6 +13395,15 @@ open findings that had no pre-existing row.
 
 ### Still open, unfixed this round
 
+- [ ] **#791 follow-up: macOS and headless still re-raise a termination signal from the
+      process-wide latch.** `87dd50ff3` scoped the re-raise per request on winit only
+      (`exit_after_signal_shutdown_for`); `crates/warpui/src/platform/mac/app.rs` and
+      `platform/headless/app.rs` still call the unscoped `exit_after_signal_shutdown()`
+      through a single terminate entry point that cannot tell a Cmd+Q from a signal. Same
+      race, untestable here (nothing from rounds 5–7 has been built on macOS). Also: the
+      X11-observed "quit completes teardown but never exits" hang (2026-09-27) was not
+      reproduced in five attempts and its log shows a signal-driven quit, not the key —
+      capture `gdb -p <pid> -batch -ex "thread apply all bt"` if it recurs.
 - [x] **#654 — X11 `request_user_attention` panic on a failed WM-hints set.**
       Approved and done 2026-09-27: `jwp2987/winit` branch
       `phosphor/x11-wm-hints-no-panic` = `9a0788c3` + upstream `14db95a6`
