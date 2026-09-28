@@ -215,6 +215,14 @@ impl TestSetupUtils {
                 .test_dir()
                 .canonicalize()
                 .unwrap_or_else(|_| self.test_dir());
+            // Every shell bootstrap prints the host's message-of-the-day at startup
+            // unless `$HOME/.hushlogin` exists. Scenarios assert on the shell's first
+            // output, so a host with a MOTD (a stock Ubuntu box prints "Welcome to
+            // Ubuntu ... N updates can be applied") would fail them for reasons that
+            // have nothing to do with the code under test.
+            if let Err(err) = fs::write(canonical_test_dir.join(".hushlogin"), "") {
+                log::warn!("Could not create .hushlogin in the test home directory: {err:?}");
+            }
             self.set_env("HOME", Some(canonical_test_dir));
         } else if cfg!(windows) {
             self.set_env("ORIGINAL_USERPROFILE", dirs::home_dir());
