@@ -8,13 +8,13 @@ use crate::{
         simple::parse_for_completions,
         ClassifiedCommand,
     },
-    signatures::testing::{
-        add_content_signature, create_test_command_registry, git_signature, test_signature,
-    },
+    signatures::testing::{create_test_command_registry, test_signature},
 };
 
 #[cfg(not(feature = "v2"))]
 use crate::parsers::hir::{Flag, FlagType};
+#[cfg(not(feature = "v2"))]
+use crate::signatures::testing::{add_content_signature, git_signature};
 
 use super::*;
 
@@ -59,6 +59,7 @@ pub fn test_classify_command_classifies_known_command() {
     )
 }
 
+#[cfg(not(feature = "v2"))] // The POSIX `--` handling lives in the legacy parser only.
 #[test]
 fn classifies_dash_prefixed_tokens_after_end_of_options_as_positionals() {
     let registry = create_test_command_registry([git_signature()]);
@@ -88,6 +89,7 @@ fn classifies_dash_prefixed_tokens_after_end_of_options_as_positionals() {
     );
 }
 
+#[cfg(not(feature = "v2"))]
 #[test]
 fn posix_noncompliant_commands_continue_parsing_flags_after_double_dash() {
     let registry = create_test_command_registry([add_content_signature()]);

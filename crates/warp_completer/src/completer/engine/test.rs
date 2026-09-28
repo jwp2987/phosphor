@@ -8,11 +8,12 @@ use crate::meta::{Span, SpannedItem};
 use crate::parsers::simple::command_at_cursor_position;
 use crate::parsers::ParsedToken;
 use crate::parsers::{classify_command, simple::parse_for_completions};
-use crate::signatures::testing::{
-    add_content_signature, create_test_command_registry, git_signature, test_signature,
-};
+use crate::signatures::testing::{create_test_command_registry, test_signature};
 use crate::signatures::CommandRegistry;
 use string_offset::ByteOffset;
+
+#[cfg(not(feature = "v2"))]
+use crate::signatures::testing::{add_content_signature, git_signature};
 
 fn location(line: &str, registry: CommandRegistry, pos: usize) -> Vec<LocationType> {
     let ctx = FakeCompletionContext::new(registry);
@@ -218,6 +219,7 @@ fn completes_flags_having_one_hyphen() {
     );
 }
 
+#[cfg(not(feature = "v2"))] // The POSIX `--` handling lives in the legacy parser only.
 #[test]
 fn completes_only_arguments_after_end_of_options() {
     let command = "git".to_owned().spanned(Span::new(0, 3));
@@ -233,6 +235,7 @@ fn completes_only_arguments_after_end_of_options() {
     );
 }
 
+#[cfg(not(feature = "v2"))] // The POSIX `--` handling lives in the legacy parser only.
 #[test]
 fn treats_dash_prefixed_tokens_after_end_of_options_as_arguments() {
     let command = "git".to_owned().spanned(Span::new(0, 3));
@@ -248,6 +251,7 @@ fn treats_dash_prefixed_tokens_after_end_of_options_as_arguments() {
     );
 }
 
+#[cfg(not(feature = "v2"))] // The POSIX `--` handling lives in the legacy parser only.
 #[test]
 fn treats_single_dash_after_end_of_options_as_an_argument() {
     let command = "git".to_owned().spanned(Span::new(0, 3));
@@ -263,6 +267,7 @@ fn treats_single_dash_after_end_of_options_as_an_argument() {
     );
 }
 
+#[cfg(not(feature = "v2"))] // The POSIX `--` handling lives in the legacy parser only.
 #[test]
 fn completes_flags_after_double_dash_for_posix_noncompliant_commands() {
     let command = "Add-Content".to_owned().spanned(Span::new(0, 11));

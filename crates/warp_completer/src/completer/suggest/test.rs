@@ -1913,22 +1913,26 @@ fn test_completes_flags() {
         vec!["--bare", "--help", "--version",]
     );
 
-    assert_eq!(
-        complete_at_end_of_line_with_options(
-            "ls -la; git -- ",
-            MatchStrategy::CaseInsensitive,
-            &ctx
-        ),
-        vec!["add", "branch", "checkout", "clone"]
-    );
-    assert_eq!(
-        complete_at_end_of_line_with_options(
-            "ls -la; git -- branch -",
-            MatchStrategy::CaseInsensitive,
-            &ctx
-        ),
-        Vec::<String>::new()
-    );
+    // POSIX `--` ends option parsing only in the legacy parser (#785).
+    #[cfg(not(feature = "v2"))]
+    {
+        assert_eq!(
+            complete_at_end_of_line_with_options(
+                "ls -la; git -- ",
+                MatchStrategy::CaseInsensitive,
+                &ctx
+            ),
+            vec!["add", "branch", "checkout", "clone"]
+        );
+        assert_eq!(
+            complete_at_end_of_line_with_options(
+                "ls -la; git -- branch -",
+                MatchStrategy::CaseInsensitive,
+                &ctx
+            ),
+            Vec::<String>::new()
+        );
+    }
 
     // Should complete long hand flags only (that begin with "v")
     assert_eq!(
@@ -2366,14 +2370,18 @@ fn test_powershell_parser_directives_for_flags() {
         ),
         vec!["-Encoding"]
     );
-    assert_eq!(
-        complete_at_end_of_line_with_options(
-            "Add-Content -- ",
-            MatchStrategy::CaseInsensitive,
-            &ctx
-        ),
-        vec!["bar", "foo/", "-Encoding", "-Exclude", "-Force"]
-    );
+    // POSIX `--` ends option parsing only in the legacy parser (#785).
+    #[cfg(not(feature = "v2"))]
+    {
+        assert_eq!(
+            complete_at_end_of_line_with_options(
+                "Add-Content -- ",
+                MatchStrategy::CaseInsensitive,
+                &ctx
+            ),
+            vec!["bar", "foo/", "-Encoding", "-Exclude", "-Force"]
+        );
+    }
     assert_eq!(
         complete_at_end_of_line("Add-Content -Force -Encoding ", &ctx),
         vec!["ASCII", "UTF8"]
