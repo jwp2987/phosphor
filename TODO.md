@@ -13517,13 +13517,10 @@ open findings that had no pre-existing row.
       singular in this fork), adapted to this file's existing import style; the fork's
       pre-existing suite already covers the "`--` still being typed" (last token, no
       trailing whitespace) case staying a flag-completion candidate, which this change
-      preserves. **Unverified: no `cargo`/`nextest` run in this sandbox** (hard rule for
-      this round) — checked by tracing every call site by hand and running
-      `rustfmt --check` on touched lines only; a real build should confirm no other call
-      site constructs `CommandCallInfo` or matches on `TokenAction` exhaustively without
-      the new variant/field.
-
-## Upstream post-pin ports (2026-09-28)
+      preserves. **Tested by the coordinator (2026-09-28):** `cargo test -p warp_completer`
+      219 pass, and with `--features v2` (which `script/presubmit` runs) 153 pass, the
+      same as the base. The v2 build first broke — new tests and assertions used
+      legacy-only items — and was fixed by gating them to the legacy parser (`b9ce1c425`).
 
 Both items below were assigned to this round as new ports. Verification found
 they were **already ported** on this branch's history, on 2026-09-26 — landed
