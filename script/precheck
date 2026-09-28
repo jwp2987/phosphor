@@ -31,10 +31,10 @@
 # Only what cannot run on this host: the macOS and Windows jobs. Everything
 # Linux-native compiles and its test suites run here first, `crates/integration`
 # included (previously only type-checked, never executed -- see the
-# "integration suite" step). That one step is exercised-but-advisory rather
-# than a blocking gate, matching CI's own `integration-linux` job, which is
-# deliberately not a required status check until a known-failures baseline
-# exists for it; everything else below is a real, blocking gate.
+# "integration suite" step). Every step below is a real, blocking gate,
+# the integration suite included since 2026-09-27: its baseline is empty, so
+# any scenario failure is a regression (see that step's comment). CI's own
+# `integration-linux` job is still not a required status check; this is.
 #
 # USAGE
 #     script/precheck            # everything: gates + compile + full suite
@@ -367,27 +367,42 @@ fi
 # what makes `.config/nextest.toml`'s `[profile.ci]` overrides (retries = 2 for
 # this package) apply at all.
 #
-# NOT gated through check_test_failures, deliberately, matching CI's own
-# stance recorded at pr-check.yml's integration-linux job: nobody has ever run
-# this suite to completion long enough to hand-triage a known_test_failures.txt
-# baseline for it (many scenarios need a real shell, SSH, or display flag a
-# given host may not satisfy), and building a hard gate on an EMPTY baseline
-# would fail on the first environment gap rather than on an actual regression
-# -- exactly the "always red -> ignored" failure mode check_test_failures
-# itself exists to prevent (see its header). So: this step actually RUNS the
-# suite and prints failures loudly, but only fails the whole precheck run
-# (blocking a push) when the tool it depends on is missing, not when a
-# scenario fails. Promote it to check_test_failures once a baseline exists.
+# HARD GATE since 2026-09-27 (#721 follow-up). It used to warn only: nobody had
+# run the suite to completion, and gating on an empty baseline would have failed
+# on the first environment gap rather than on a regression. That baseline now
+# exists and is EMPTY: on integ/round6 all 248 runnable scenarios pass (63 are
+# skipped by the suite itself), once the environment is right. The 10 that
+# failed on the first full run were all real -- a product bug (#782) and stale
+# test expectations (#783, #784) -- not environment noise. So any failure here
+# is a regression and blocks the push, same as the unit suites.
+#
+# What "the environment is right" means turned out to be the whole story, so it
+# is checked FIRST and reported as its own failure. Without a software Vulkan
+# driver every scenario dies at window creation ("Failed to create surface for
+# any enabled backend"); without libxkbcommon-x11 every scenario panics in winit
+# before a window exists. Both looked like 248 test failures on 2026-09-27.
+# script/linux/install_test_deps installs all of it (via install_runtime_deps:
+# mesa-vulkan-drivers, libxkbcommon-x11-0; plus xvfb).
 step "integration suite (crates/integration, headless via Xvfb)"
-if ! command -v xvfb-run >/dev/null 2>&1; then
-    fail "xvfb-run is not installed -- crates/integration needs a real X connection on Linux (no headless winit backend, #208). Install it via ./script/linux/install_test_deps (the xvfb package) and re-run."
+_integ_missing=()
+command -v xvfb-run >/dev/null 2>&1 || _integ_missing+=("xvfb-run (package xvfb)")
+compgen -G "/usr/share/vulkan/icd.d/lvp_icd*.json" >/dev/null \
+    || compgen -G "/etc/vulkan/icd.d/*.json" >/dev/null \
+    || _integ_missing+=("a Vulkan driver, e.g. Mesa lavapipe (package mesa-vulkan-drivers)")
+ldconfig -p 2>/dev/null | grep -q 'libxkbcommon-x11\.so' \
+    || _integ_missing+=("libxkbcommon-x11 (package libxkbcommon-x11-0)")
+if ((${#_integ_missing[@]})); then
+    fail "integration suite cannot run here -- missing: ${_integ_missing[*]}. Run ./script/linux/install_test_deps and re-run."
 elif xvfb-run -a -s "-screen 0 1280x1024x24" \
         "${CARGO_RUN[@]}" nextest run -p integration --profile ci \
         >/tmp/precheck-integration.$$ 2>&1; then
     ok "no failures"
 else
-    warn "integration suite has failing/flaky scenarios (see below) -- not yet gated pending a triaged known_test_failures.txt baseline, same as pr-check.yml's integration-linux job (see step comment above)"
-    tail -40 /tmp/precheck-integration.$$ >&2
+    fail "integration suite has failing scenarios (each already retried per --profile ci):"
+    sed 's/\x1b\[[0-9;]*m//g' /tmp/precheck-integration.$$ \
+        | grep -E '^[[:space:]]+(TRY [0-9]+ )?(FAIL|SIGSEGV|SIGABRT|TIMEOUT) \[' \
+        | sed -E 's/.*integration::integration /       /' | sort -u >&2
+    tail -15 /tmp/precheck-integration.$$ >&2
 fi
 
 # ---------------------------------------------------------------- full suite
