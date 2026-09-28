@@ -91,11 +91,18 @@ fn resolved_remote_session_lists_remote_skills_not_local() {
 
         let session = Session::test_remote();
         session.set_remote_host_id(Some(warp_core::HostId::new(host_id.as_str().to_string())));
+        // `ActiveSession` only keeps a `Weak<Session>` (so it doesn't keep a closed
+        // session alive) -- in production the real session registry holds the strong
+        // reference, but a test has to hold one itself or the session is dropped
+        // (and every `Weak::upgrade()` in `current_working_directory_location` fails)
+        // before `run_query` below ever reads it. See `notebooks/link_tests.rs`'s
+        // `TEST_SESSION` for the same requirement.
+        let session = Arc::new(session);
 
         ActiveSession::handle(&app).update(&mut app, |active_session, ctx| {
             active_session.set_session_for_test(
                 window_id,
-                Arc::new(session),
+                session.clone(),
                 None::<std::path::PathBuf>,
                 Some("/repo".to_string()),
                 Some(terminal_view.id()),
@@ -151,11 +158,17 @@ fn legacy_ssh_session_lists_local_skills() {
                 .with_ssh_socket_path(PathBuf::from("~/.ssh/12345")),
             Arc::new(TestCommandExecutor::default()),
         );
+        // See the comment above the equivalent binding in
+        // `resolved_remote_session_lists_remote_skills_not_local`: `ActiveSession` only
+        // holds a `Weak<Session>`, so this strong reference must outlive the
+        // `run_query` call below or `current_working_directory_location`'s
+        // `Weak::upgrade()` fails and the session is silently treated as absent.
+        let session = Arc::new(session);
 
         ActiveSession::handle(&app).update(&mut app, |active_session, ctx| {
             active_session.set_session_for_test(
                 window_id,
-                Arc::new(session),
+                session.clone(),
                 None::<std::path::PathBuf>,
                 Some("/repo".to_string()),
                 Some(terminal_view.id()),
