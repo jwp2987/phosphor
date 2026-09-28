@@ -7124,6 +7124,176 @@ fn test_move_pane_to_own_tab_from_grouped_tab_keeps_group_contiguous() {
     });
 }
 
+/// Covers the source tab being BOTH pinned and grouped. `PinTab` (the
+/// individual-tab pin action) always extracts a tab from its group first --
+/// see `test_pin_tab_on_grouped_tab_extracts_then_pins` -- so it can never
+/// leave a tab with both `group_id: Some(_)` and `tab.pinned == true`. The
+/// only way a grouped tab is ever pinned in practice is through its
+/// *group's* own `pinned` flag (`PinTabGroup`): `is_tab_effectively_pinned`
+/// treats every member of a pinned group as pinned even though each
+/// member's own `tab.pinned` stays `false` -- see
+/// `test_pin_unpin_tab_group_moves_block_without_syncing_members` ("the
+/// group's own `pinned` flag is the sole source of truth for grouped tabs").
+///
+/// `tab_index_and_group_after` takes the grouped branch (inherit
+/// `group_id`, no pinned-region clamp) whenever the source tab has a
+/// `group_id`, regardless of whether that group is pinned. That is still
+/// correct here: the new tab inherits the source's `group_id`, so it
+/// inherits the group's effectively-pinned status too, and because it's
+/// inserted immediately next to its source -- already inside the pinned
+/// group's contiguous block -- both the group's run and the pinned prefix
+/// grow together and stay contiguous.
+#[test]
+fn test_move_pane_to_own_tab_from_pinned_grouped_tab() {
+    let _pinned_guard = FeatureFlag::PinnedTabs.override_enabled(true);
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+
+        let group_id = workspace.update(&mut app, |workspace, ctx| {
+            // Same recipe as `test_move_pane_to_own_tab_from_grouped_tab_keeps_group_contiguous`:
+            // `CreateNewTabGroup` adds a new grouped tab at index 0 (pushing
+            // the original ungrouped tab to index 1), then `add_terminal_tab`
+            // adds a second grouped tab right after it (the default
+            // `AfterCurrentTab` placement inherits tab 0's group), giving a
+            // 2-member contiguous group at indices [0, 1] and leaving the
+            // original ungrouped tab at index 2.
+            workspace.handle_action(
+                &WorkspaceAction::SelectNewSessionMenuItem(NewSessionMenuItem::CreateNewTabGroup),
+                ctx,
+            );
+            let group_id = workspace.tabs[0]
+                .group_id
+                .expect("tab 0 should be in a group");
+            workspace.add_terminal_tab(false, ctx);
+
+            // Pin the *group*, not the tab: `PinTab` on a grouped tab would
+            // extract it from the group first (see
+            // `test_pin_tab_on_grouped_tab_extracts_then_pins`), which can't
+            // produce a tab that is both pinned and grouped. `PinTabGroup` is
+            // the action that actually leaves a tab with `group_id: Some(_)`
+            // and an effectively-pinned status, via the group's own `pinned`
+            // flag rather than `tab.pinned`.
+            workspace.handle_action(&WorkspaceAction::PinTabGroup(group_id), ctx);
+            group_id
+        });
+
+        // Split tab 0 (the first grouped tab, not the group's last member) so
+        // it has 2 panes -- the precondition for "move pane to its own tab".
+        let (pane_group_0, source_tab_id, group_second_member_id, trailing_ungrouped_id) =
+            workspace.read(&app, |workspace, _ctx| {
+                assert_eq!(workspace.tab_count(), 3);
+                assert_eq!(workspace.tabs[0].group_id, Some(group_id));
+                assert_eq!(workspace.tabs[1].group_id, Some(group_id));
+                assert!(
+                    workspace.tab_groups[&group_id].pinned,
+                    "the group should be pinned before the move"
+                );
+                // The group's flag is the sole source of truth: individual
+                // `tab.pinned` stays false on both members...
+                assert!(!workspace.tabs[0].pinned && !workspace.tabs[1].pinned);
+                // ...but both are *effectively* pinned via the group, and the
+                // pinned prefix (tabs [0, 1]) is contiguous and excludes the
+                // trailing ungrouped tab.
+                assert!(workspace.is_tab_effectively_pinned(&workspace.tabs[0]));
+                assert!(workspace.is_tab_effectively_pinned(&workspace.tabs[1]));
+                assert!(!workspace.is_tab_effectively_pinned(&workspace.tabs[2]));
+                assert_eq!(workspace.pinned_boundary_index(&workspace.tabs), 2);
+                (
+                    workspace
+                        .get_pane_group_view(0)
+                        .expect("should have pane group for tab 0")
+                        .clone(),
+                    workspace.tabs[0].pane_group.id(),
+                    workspace.tabs[1].pane_group.id(),
+                    workspace.tabs[2].pane_group.id(),
+                )
+            });
+        let first_terminal_id = pane_group_0.read(&app, |panes, _ctx| {
+            get_newly_created_pane_id(panes, &[])
+                .as_terminal_pane_id()
+                .expect("should be a terminal pane")
+        });
+        pane_group_0.update(&mut app, |panes, ctx| {
+            panes.add_terminal_pane(Direction::Right, None, ctx)
+        });
+
+        workspace.update(&mut app, |workspace, ctx| {
+            let pane_group = workspace
+                .get_pane_group_view(0)
+                .expect("tab 0 should still exist")
+                .clone();
+            workspace.handle_file_tree_event(
+                pane_group,
+                &pane_group::Event::MovePaneToOwnTab {
+                    pane_id: first_terminal_id.into(),
+                },
+                ctx,
+            );
+        });
+
+        workspace.read(&app, |workspace, _ctx| {
+            assert_eq!(workspace.tab_count(), 4);
+
+            // The source tab (holding the pane that stayed behind) keeps its
+            // slot; the previously-second group member and the trailing
+            // ungrouped tab were each pushed back by one.
+            assert_eq!(workspace.tabs[0].pane_group.id(), source_tab_id);
+            assert_eq!(workspace.tabs[2].pane_group.id(), group_second_member_id);
+            assert_eq!(workspace.tabs[3].pane_group.id(), trailing_ungrouped_id);
+
+            // The new tab landed immediately after tab 0 (its source),
+            // inheriting tab 0's group_id -- same placement as the plain
+            // grouped-tab case.
+            assert_eq!(
+                workspace.tabs[1].group_id,
+                Some(group_id),
+                "the new tab should inherit the source tab's group_id"
+            );
+
+            // The group grew to three members and stayed contiguous.
+            let group_indices: Vec<usize> = workspace
+                .tabs
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.group_id == Some(group_id))
+                .map(|(idx, _)| idx)
+                .collect();
+            assert_eq!(
+                group_indices,
+                vec![0, 1, 2],
+                "the group's tab indices should stay contiguous"
+            );
+
+            // The group itself is still pinned, and the new tab -- despite
+            // `tab.pinned` staying `false` on it, exactly like every other
+            // member -- is effectively pinned via the inherited group_id, so
+            // the pinned prefix grew from 2 to 3 tabs and stayed contiguous:
+            // no gap, and no unpinned tab smuggled inside it.
+            assert!(workspace.tab_groups[&group_id].pinned);
+            assert!(!workspace.tabs[1].pinned);
+            assert!(workspace.is_tab_effectively_pinned(&workspace.tabs[1]));
+            assert_eq!(
+                workspace.pinned_boundary_index(&workspace.tabs),
+                3,
+                "the pinned prefix should have grown to include the new tab, staying contiguous"
+            );
+            assert!(
+                !workspace.is_tab_effectively_pinned(&workspace.tabs[3]),
+                "the pre-existing ungrouped tab must stay outside the pinned prefix"
+            );
+
+            assert_eq!(
+                workspace.active_tab_index(),
+                1,
+                "the new tab should be focused"
+            );
+        });
+    });
+}
+
 /// Regression test for a bug where the handler assumed the pane being moved
 /// always lived in `self.active_tab_index`. It must instead resolve the
 /// source tab by matching the emitting `pane_group`'s id against `self.tabs`
