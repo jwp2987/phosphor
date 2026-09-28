@@ -4,10 +4,13 @@ Continuity doc. The durable state is git + GitHub issues/PRs + `TODO.md`; this
 file ties it together and records the operational lessons a fresh session will
 not otherwise have.
 
-Last rewritten: 2026-08-06 evening, after the migration to the `/cache/git/zap`
-host. **That host is gone.** The checkout is now `/home/winters/git/phosphor`
-(verified 2026-08-17: `/cache/git/zap` does not exist). Paths below were written
-for the old host; read them for the lesson, not the literal path.
+Last rewritten: 2026-09-27 evening, after rounds 5, 6 and 7 landed on `main`
+(`0695371a9`) — see the new top of **"Where main is"** below for that state.
+Everything under the `### The single most important finding of 2026-08-07`
+heading is retained history from the previous rewrite (2026-08-06 evening,
+after the migration to the `/cache/git/zap` host — **that host is gone**, the
+checkout is now `/home/winters/git/phosphor`, verified 2026-08-17): read it for
+the lessons, not as a current status report, and not for the literal paths.
 
 ## App identity (read first)
 - The app is **Phosphor** (`jwp2987/phosphor`). "Zap" is only the **upstream
@@ -16,11 +19,15 @@ for the old host; read them for the lesson, not the literal path.
   `SkillProvider::Zap`) stay. See `docs/DESIGN-PHOSPHOR-FORK.md`.
 - **English only** in code/comments/tests/docs (`CLAUDE.local.md`). Exception:
   `app/i18n/zh-CN|ja/*.ftl` are intentional translations — never edit them.
-- The behavioral oracle is the **PINNED** Warp stable `42effe840`, never
-  `warp/master` — read `ORACLE.md`. `warp/master` is a fetched remote and is
-  useful only for archaeology (finding *why* a pin behaviour exists); measuring
-  against it produces a gap that never shrinks. Never weaken a test to go green
-  — fix the code (AGENTS §5.10). Every defect → issue → branch → PR (§5.11).
+- The behavioral oracle is **PINNED**, never `warp/master` — read `ORACLE.md`
+  for the current commit (`4111d08f9` as of this writing; it has already moved
+  twice, most recently 2026-08-29, so **take it from `ORACLE.md`, not from
+  here** — this file has a documented history of naming a superseded pin).
+  `warp/master` is a fetched remote and is useful only for archaeology (finding
+  *why* a pin behaviour exists); measuring against it produces a gap that never
+  shrinks. As of 2026-09-05 the pin is evidence, not a spec — see `ORACLE.md`'s
+  "What the pin is for". Never weaken a test to go green — fix the code (AGENTS
+  §5.10). Every defect → issue → branch → PR (§5.11).
 - **The repo is PUBLIC.** Issue comments and PR bodies are indexed. The
   maintainer has accepted this for engineering detail including security
   findings (decision made 2026-08-06); do not re-litigate it, but be aware.
@@ -29,11 +36,362 @@ for the old host; read them for the lesson, not the literal path.
 
 ## Where main is
 
-`2e7d6eb2f` or later — **16+ PRs merged on 2026-08-07**, across two phases: the
-OOM recovery in the morning, then a large parallel round (up to 28 concurrent
-Sonnet agents) in the evening. The board went **208 → ~137 open**.
+`main` is at **`0695371a9`** (2026-09-27), the tip of `integ/round6` after
+rounds 5, 6 and 7 (216 commits over `3cf6d688b..0695371a9`, ~113 of them merge
+commits from stacked `fix/r5-*`/`fix/g*`/`fix/r6-*`/`fix/r7-*` lane branches).
+`docs/STATE.md` (generated — trust it over any number below) currently reads:
+pin `4111d08f9`, 8700/9908 non-cloud pin tests present (~87.8%), last fully
+green `script/precheck` at `63091930f` with **0 commits since**.
 
-### The single most important finding of 2026-08-07
+### What landed — round 5 (`fix/r5-*` / `fix/g*-*`, merged into `integ/round5-0927`)
+
+Grouped by lane branch; issue numbers verified against `git log` and `TODO.md`
+(a handful, e.g. `#726`/`#732`, are referenced only in TODO.md prose, not in a
+commit subject — checked before including them here):
+
+- **`fix/version-single-source` (#640):** `e9a1eb744` — single-source the
+  display version from `app/Cargo.toml` instead of a hardcoded `0.1.2`.
+- **`fix/filetree-open-launchable` (#681/#706, plus its #757 follow-up):**
+  `dd232629f` — a file-tree double-click/Enter on a launchable path now opens
+  it with its normal target instead of revealing it. Follow-up `c9211b995`
+  (#757) fixed a conflation where a Global Search result inherited the same
+  file-tree-only exception via a shared `CodeSource::FileTree` — added
+  `CodeSource::GlobalSearch`.
+- **`fix/g2-url-refuse` (#716):** `93e3f4efa` + `047ff826d` — `set_before_open_url`
+  can refuse a URL outright, not just rewrite it, and the backstop still
+  passes local `file:` URLs.
+- **`fix/g3-ci-toolchain` (#712–#715):** `c3d57d542`/`5d48ef6f3` — stop
+  trusting the third-party `cargo-binstall` action's metadata, verify the
+  installed binary and retry the download; `4c0888c98` — add `rust-analyzer`
+  to `rust-toolchain.toml`'s components.
+- **`fix/decisions-small` — decisions 1–4:** `1ba57232e` (#708) —
+  `middle_click_paste_enabled` now applies on Linux/FreeBSD, not just macOS;
+  `cedda2465` (#718) — redact BYOP provider endpoints (`scheme://host[:port]`)
+  from log lines; `7775caffb` (#720) — bump `release-cli`'s `codegen-units`
+  1→4; `64d52dc9c` (#721) — `script/precheck`'s integration step now actually
+  runs `crates/integration` instead of only type-checking it (advisory at
+  first — see the verification-state note below for its promotion to a hard
+  gate).
+- **`fix/skills-port` (dff0d13fe):** `ab48bd376` — publish `WARP_SKILL_DIRS`
+  skills to Claude Code and Codex, plus `c39d1eeca` — never rename aside a
+  conflicting entry.
+- **`fix/blink-repaint-cost` (#703, #689 follow-up):** `e0127fcba` — skip
+  layout on a paint-only blink repaint (a *focused* idle editor was repainting
+  the whole element tree every blink); `891a4592b` follow-up fix.
+- **`fix/remote-notice` (#713-ish security hardening):** `113e56e1d` — surface
+  the legacy-SSH fallback and a dev-build checksum refusal instead of failing
+  silently; `b672f42b2` — surface the previously fully-silent legacy-SSH
+  fallback as a dismissible banner (see `DECLINED.md` IMPROVED: "A
+  silently-degraded remote SSH session gets a dismissible banner...").
+- **`fix/round-followups` (#740, #725, #733):** `6fd544d39` (#740a) — @-mention
+  top-level search now finds files outside a git repo (missing
+  `CurrentFolderFiles` match arm); `1f169cd60` (#740b) — invalid-regex error
+  text now shows on Enter, not just the border; `9c30a53e6` (#725) — queue an
+  AI follow-up submitted while blocked instead of refusing it; `652e1b1be`
+  (#733) — implement the agent-driven password-prompt hand-over (`BlockedOnInput`).
+- **`fix/g4-terminal-robustness` (#723/#728/#735/#737):** shell/terminal
+  hardening — chunked bootstrap writes for docker/podman exec subshells,
+  Arc-wrapped `FileTreeState.gitignores` and `EditDelta.new_lines` to stop
+  per-event/large-file deep clones, bounded rayon fan-out in `layout_delta`,
+  zsh `compadd -ld` + vicmd kill-buffer port (#737).
+- **`fix/g5-editor-internals` (#710/#711/#729/#730):** structured per-block
+  diff-match failures for agent retry, version-partitioned daemon socket/PID
+  names, vim mode enabled on 7 multi-line editors, a Shift+right-click paste
+  hint.
+- **`fix/g6-settings-cosmetics` (#709/#722/#724/#727/#731/#734/#736/#738/#741):**
+  nine small settings/MCP/completer fixes — MCP server logos matched by title
+  prefix, an unreachable BYOP provider named its live alternative, `tab.move`
+  refused when the workspace can't perform it, completer option-argument
+  resolution by cursor position, the "Profiles (1)" mislabel under BYOK, and
+  the hidden non-remappable Project Explorer keybinding removed.
+- **`fix/gui-accept-rename-delete` (#688):** the big one this round —
+  `InlineDiffView::write_action` now resolves `Write`/`Rename`/`Delete` from
+  the diff instead of always saving in place; a non-lossy
+  `rename_and_save_if_unchanged` primitive (write-destination-first,
+  `O_EXCL`, closes a POSIX rename TOCTOU gap); a multi-lane
+  `RevertSequence`/rewind scheduler so a rename's own undo and a concurrent
+  edit to its destination don't race. Six adversarial-review follow-ups
+  landed the same day (`40057d594`, `3038575c0`, `78279ad50`) — see
+  `DECLINED.md`'s IMPROVED entry for the full list. **No live-view test for
+  this yet** — see #751 below.
+- **`fix/g1-silent-failures` (#726/#732/#739/#742/#749):** oversized-task
+  pruning made honest instead of silently dropping, PowerShell linting fixed
+  to check every source not just the first with findings, `AsyncSearcher`'s
+  rebuild channel bounded to one pending rebuild, a tab-drag test race fixed
+  by forcing a repaint, zero-command Agent Mode input made fail-closed instead
+  of vacuously auto-approving (also in `DECLINED.md` IMPROVED, #746 revisits
+  this same mechanism in round 6).
+- Also this round: `f0186ed3c`/`c82eab67e` — delete the unreachable project
+  onboarding step and retire `ZapNewSettingsModes` (accepted scope `c5e4a02e3`);
+  `b05714bab` — move settings-schema generation into the main binary;
+  `84716b51b` — integration coverage for sidebar navigation/search;
+  `79a5064f5`/`127615b51` — attempted an `InlineDiffView` live-view test
+  harness for #688's glue, **left unticked as #751** (written with no
+  `cargo` available this round — see the verification-state note).
+
+### What landed — round 6 (`fix/r6-*`, merged into `integ/round6`)
+
+- **Ledger / re-pin tooling (#743, #747, #752):** `bd2546ae7`/`f7f221770` —
+  `generate_repin_queue` detects renames and anchors `marker_pattern` matches
+  to identifier/word-character boundaries; `8a0a4465a` — fixed two broken
+  re-pin tripwires and resolved open refutation-pass entries; recounted the
+  `FeatureFlag` divergence against the current pin (`9bd322637`, 230 fork vs
+  291 pin variants, 16 fork-only, all individually accounted for).
+- **Accepted scope ports:** `f0186ed3c` (`c5e4a02e3`, carried from round 5),
+  `35fac964f`/`d8622b8b3` (`ff16a0b2a` — FxHashMap/hashbrown in hot paths),
+  `6ebf9758f`/`a67f1b4af` (`c6609ef2` — cache/share gitignore matchers in
+  file-tree traversal), `412acfd8d` (`d68a638ef`, partial — `HexColorError`
+  as a typed `thiserror::Error`), `4a015a07d` — remove #634 orphans
+  (`DismissCodeToolbeltTooltip`, two dead `FeatureFlag`s).
+- **`#775` — `SkillsDataSource` resolved the wrong (local) skills for a
+  remote SSH tab in tests, not production:** two-step fix, both instructive.
+  `0bcdce37d` fixed a `Weak<Session>` lifetime bug (`ActiveSession` holds only
+  a `Weak<Session>`; a test's temporary `Arc` dropped to zero before the query
+  ran). That was necessary but not sufficient — `9854eceac` found the real
+  gate: `active_window` is only set by real focus events or
+  `WindowManager::overwrite_for_test`, never by `App::test`, so a fresh test
+  window is never "active" and the whole lookup short-circuited to `None`
+  regardless of the session fix. **Both are now standing lessons — see below.**
+- **`#781` — "Move pane to its own tab"**, a new pane-overflow-menu action
+  (`cccb08d1c`), fixed for pinned/grouped tab placement and a source-tab
+  lookup bug (`aa1b4659f`), with discriminating regression tests
+  (`87de017d7`, `aca84bb89`, `3a5325282`).
+- **`#776` — port upstream `f42c4ab6c`'s `Lazy` field deferral** for
+  `UserBlockCompleted` (`serialized_block`, `command`, and three more fields
+  become `Lazy<T, BlockList>`, keyed by stable `BlockId` not `BlockIndex`) —
+  five commits (`46faa28f7` through `ff83f1877`) rewiring every consumer
+  across terminal/input/view/AI, plus a `maa.rs` deadlock fix found along the
+  way (`0eba8c56a`).
+- **User-visible bugs (#744, #746, #748, #755, #759, #761, #767, #768, plus
+  #770/#771/#772 which continued into round 7):** `2768`-area — upstream's
+  final-revision design for a display bug ported verbatim (#744); `#746` —
+  the same zero-command-input fail-closed fix as #749 above, applied to a
+  second call site (see `DECLINED.md` IMPROVED); `#755` — usage-footer stats
+  now derive live and re-render on updates; `#759` — `DaemonStoreClient`
+  routed through per-model endpoints; `#761` — `FileGlobV2` gained a
+  `result_limit` field so a model's requested limit is honoured instead of
+  silently discarded (200-row hardcode) — see `DECLINED.md` IMPROVED; `#767`/
+  `#634` orphans and a stale `settle()` doc comment fixed same-day
+  (`3e1e45568`, `4a015a07d`, `ad9e438c9`); `#768` — a rewind batch that never
+  settles if a remote revert write never resolves, fixed with a 20s per-write
+  deadline and a per-file generation guard (`17c3a4b10`, `9fafffc4d`).
+- **Ports (#750, #758, #760, #762, #763, #764, #765):** PSReadLine reset to
+  Emacs mode before Warp's chords register (#750, carried into round 5's
+  list above as `68f42b3da`), codebase-index embedding-model selection no
+  longer order-dependent by provider (#758, `8657186cb`), native-completions
+  watchdog timeout/recovery test coverage (#748/#760, `afb7b59e9`),
+  `report_error!` no longer used for an expected `AmbientAgentSource` case
+  (#763, `b7fb03956`), wasm/web guard hunks from `0a7d5380e` (#764,
+  `da973fc33`).
+- **`#753` — warpify-path agent commands** — `fdfad3d70` gives a warpify-path
+  command its control state before `reinit_shell` finishes it, and
+  `d76d8dcff` unlocks the queue directly instead of upgrading a
+  warpify-path block.
+
+### What landed — round 7 (`fix/r7-*`, merged into `integ/round6`)
+
+- **"The shell lockup" — a stalled native-completions handshake could wedge
+  the PTY read loop (#770, plus #771/#772):** the biggest investigation this
+  round, spanning `7ceb583ce` through `f563cb46d`. Fixes: stop a late
+  completions event from destroying a newer handshake, never start a new
+  native-completions request while one is in flight, mark foreground-image
+  layers click-through, bound `warp_read_completion_buffer`'s shell-side read
+  so it can't wedge the shell, diagnostics (`453cde9eb`, `9f00db036`) that
+  arm a one-shot timer and throttle-log a stalled PTY write gate. One attempt
+  (`03d3b9955`, answer a late completions-prompt reply) was **reverted the
+  same day** (`57e9d24fe`) after adversarial review — the shell-side timeout
+  fix was judged safer. `#771` — a third-party tool's env var was leaking
+  into every spawned shell (`b04c653bf`-adjacent). `#772` — BYOP model names
+  no longer get their `reasoning_effort` suffix stripped, and effort
+  inference is gated on the first-party host rather than the adapter kind
+  (`cd2b319bc`, `89a2c569b`). **The originally-reported field lockup is still
+  unexplained** — everything above closes real bugs found along the way, not
+  a confirmed root cause.
+- **BYOP compaction/skill-history (#777, #778):** `4aa3a4fdb` (#777) — anchor
+  BYOP compaction summaries on the nearest skill invocation;
+  `69e26e888`/`f9ce22f44` (#778) — keep `/skill` invocations in BYOP
+  conversation history, with a test pinning that persisted and live replay
+  render identically.
+- **BYOP provider-header handling (#779, #780):** `a47ecda72` (#779) — don't
+  retry a BYOP request the provider already rejected; `9ca6dab20`/`5bd654d71`/
+  `6f615aa42` (#780) — forward a BYOP provider's `extra_headers` on
+  title-gen/one-shot/embeddings requests too (previously only the main
+  request got them), stop embeddings/rerank sending a duplicate
+  `Authorization` header, and warn (never log the value) when a header is
+  dropped as invalid.
+- **`#774` — remote project-rules pipeline, prep only, still open:**
+  `dc6b974ff` single-sources the rule-file list (`CLAUDE.md` now recognized
+  alongside `WARP.md`/`AGENTS.md`) from `warp_util::project_rules`, so the
+  indexer sees a remote repo's rule files by name — but nothing yet turns
+  that into agent context for a remote session; `reconcile_project_rules`
+  and `remote_path_to_rules` still have no production caller/writer. Left
+  open on purpose; sizing the rest needs reading `SkillWatcher`'s
+  subscription wiring first (the adjacent, already-solved case for remote
+  project *skills*).
+- **Round-6 integration baseline triage (#721 follow-up, #782/#783/#784):**
+  the first full `-p integration` run under Xvfb + Mesa lavapipe came back
+  238/248. All 10 failures triaged, none environment-only: 5 were a real bug
+  (settings sidebar's Agents umbrella pre-expanded before any navigation,
+  #782, fixed `f756dd7ff`); 3 were `ec2e2d227`'s already-declined
+  snackbar-over-running-command change never propagated to its own tests
+  (#783); 2 were `4203a0573`'s already-declined long-running-padding
+  widening never propagated to two hardcoded pixel targets (#784) — both
+  fixed in `d826a11f7`, confirmed not a window-manager artifact by
+  reproducing under real `openbox` first. This is what let `#721` promote
+  the integration step from advisory to a hard gate (`8f79e840c`) — see
+  below.
+- **`#781` follow-up and post-pin upstream ports (#785):** `d5fdbff50`
+  ported — completer flag completions leaked past a POSIX `--`
+  end-of-options marker (`ce99c0a95`); the `--features v2` completer build
+  broke on the new tests and was fixed by gating them to the legacy parser
+  (`b9ce1c425`).
+- **`fix/r6-fix-775` / `fix/r6-fix-781`:** the #775 and #781 fixes above were
+  actually finished in round 6 but merged in via these two branches at the
+  round-6/7 boundary; listed under round 6 above for where the work
+  happened, noted here for where the merge commit sits in `git log`.
+
+### Verification state (2026-09-27)
+
+- **Green `script/precheck` at `63091930f`** (2026-09-27 22:26), 0 commits
+  since as of `0695371a9` — see `docs/STATE.md`, which generated that line.
+  All four guards (`check_cloud_boundary`, `check_stub_coverage`,
+  `check_declined_collisions`, `check_sweep_ledger`) pass.
+- **The integration suite (`-p integration`) is now a HARD gate in
+  `script/precheck`** (`8f79e840c`), not advisory — the round-6 baseline run
+  under Xvfb + Mesa lavapipe came back clean (238/248, then 248/248 once the
+  10 triaged failures above were fixed) rather than the environment-gap the
+  #721 item anticipated, so there was no reason to keep it advisory. The gate
+  checks for `xvfb-run`, a Vulkan ICD and `libxkbcommon-x11` first. This was
+  possible only after `#786` made the harness stop assuming a silent shell —
+  see the operational lessons below.
+- **`#751` (`InlineDiffView` live-view test harness) is deliberately
+  unticked, not broken.** Its test — `deleting_through_the_view_removes_the_file_and_revert_restores_it`
+  and `renaming_through_the_view_moves_the_file_and_revert_restores_it`
+  (`app/src/code/inline_diff.rs`) — **is on `main`** and **passed in the
+  green precheck above**, since the integration/lib suite ran as part of it.
+  What's still open is a real `cargo nextest` confirmation from a session
+  with a build, because the test was written without one (no `cargo`
+  available in the agent round that wrote it) — the author's own note asks
+  the next build to re-verify it and named the exact failure points to check
+  first if it doesn't compile clean. Treat it as "written and now proven to
+  pass in CI," not "unverified."
+- **`#769` — `warp_tui` tests do not build/run standalone.** Always run
+  `cargo nextest -p warp -p warp_tui --lib --features warp/gui`; `-p
+  warp_tui` alone fails to compile. Not a regression, a standing fact about
+  this workspace's feature wiring.
+- **Not verified anywhere in rounds 5–7:** Windows and macOS. Nothing from
+  these three rounds has been built on either platform. In particular
+  **`#773` (Windows graceful shutdown on console close/logoff)** has a fix on
+  `fix/r7-windows-shutdown` (`565e6403e`, `f176fa806`, `57fd9f163`,
+  **not yet merged**) that needs a real Windows build before it lands — left
+  open on purpose, not forgotten.
+- **X11 results (2026-09-27/28, dev build of `0695371a9` on Xvfb, isolated
+  profiles, compared with installed 0.1.7):** 17 of 21 checks passed outright —
+  #688 accept rename/delete + byte-exact rewind, #697/#698/#758 rendered
+  Markdown (0.25% CPU, Home/End/PageUp/PageDown, scroll kept across
+  Rendered/Raw), #708 middle-click on Linux, #722/#738/#740b/#699 settings
+  controls, #741/#760 shortcuts, #716/#706 links (OSC 8 `file:` opens,
+  `javascript:`/unknown schemes refused, file-tree `.docx` opens), #781 move
+  pane to tab incl. pinned tab and pinned group, #771 inline-image
+  click-through, #770 zsh Tab completion, #685/#707 SIGTERM kills the MCP
+  grandchild, #696 English-as-shell, #725 approve/cancel paths, #753 warpify
+  fast path (no floating card), #740a `@notes`, conversation restore, #756/#717
+  TUI version + signal exit codes. Found and fixed in round 8: #789 (unreachable-
+  provider hint never fired), #790 (queued follow-up stayed locked after Reject).
+  Found and filed: #787 (blink still ~17% CPU under software rendering; #703
+  skipped layout only), #788 (global-search `.docx` lands in the in-app editor,
+  not revealed). Unexplained: one instance finished teardown and never exited
+  (#791; its log shows a signal-driven quit, not the key; not reproduced).
+  Not GUI-verified: #709 TUI `?` sheet (needs a real terminal; unit-tested),
+  #782 Agents umbrella (expanded on gear-open by design, since the landing page
+  is an Agents subpage), #775 remote Skills (the `@` picker is disabled in SSH
+  sessions by design since 0.1.0, so only the CLI-agent rich input reaches it).
+
+### Open decisions (current, 2026-09-27)
+
+Add to the "Decisions only the maintainer can make" section below; called out
+here because they're new this round:
+
+- **Decision 8 — `21f413b7` terminal-crate/tmux move** (147 files,
+  `app/src/terminal/**` → `crates/warp_terminal/**`). Accepted in scope
+  2026-08-29 but **held**: not landed this round, awaiting the maintainer's
+  release of it. The fzf/atuin port below is explicitly sequenced *after* it
+  (porting the fzf/atuin DCS-hook half into `app/src/terminal` first would
+  mean porting it twice once decision 8 reshapes that tree into
+  `crates/warp_terminal`).
+- **fzf/atuin handoff** (`bf2364bc9` + `7c360f772`/`f2b401aed`/`2120e3794`/
+  `b42435622`, upstream CORE-3807, post-pin) — hand Ctrl-R/Ctrl-T/Alt-C to
+  fzf/atuin when installed. Real local feature, not cloud/BYOP debt; large
+  (base commit alone: 22 files, +1152/-42 across all three shell bootstraps).
+  Queued behind decision 8, above.
+- **`511b952c2` — `create_file` gains `allow_overwrite`** (upstream #15380,
+  post-pin). Blocked on a `warp_multi_agent_api` proto bump
+  (`f0028fa6d0` → `0ca49ce589`, `Cargo.toml:385`) — check every other
+  consumer of that crate before taking the bump. Port only the client
+  behaviour: there's no server here to negotiate `supports_create_file_overwrite`
+  with, so the BYOP tool schema should just offer the field.
+
+### Operational lessons learned this round (2026-09-27)
+
+- **The integration harness must not assume a silent shell (`#786`).** This
+  is what unblocked promoting the integration suite to a hard gate — the
+  harness previously choked on host output it didn't expect (MOTD-style
+  banners); made MOTD-independent, then the `ldconfig` pipefail trap below
+  was found and fixed the same day.
+- **`grep -q` under `set -o pipefail` breaks gate checks.** `ldconfig -p |
+  grep -q ...` fails when `grep -q` exits at its first match and `ldconfig`
+  gets `SIGPIPE` — the integration suite silently refused to run on a box
+  that actually had `libxkbcommon-x11`. Fixed by dropping `-q` (`4e2ba37e1`).
+- **A mid-file `#[cfg(test)]` module blinds the `chat_stream` log-privacy
+  scanner.** `#779` added `mod byop_stream_error_retry_tests` in the middle
+  of `chat_stream.rs`, and the scanner — which checks real production log
+  sites, not test code — stopped seeing 33 of 60+ sites past that point and
+  failed. Fixed by moving the module to the bottom with the file's other
+  test modules (`4e2ba37e1`). **Keep test modules at the bottom of the
+  file, always**, not just in this one.
+- **Tests that need a window active must call
+  `WindowManager::overwrite_for_test`** — `App::test` never fires a real
+  platform focus event, so `windows().state().active_window` stays `None`
+  forever otherwise, and any lookup gated on it (`ActiveSession::current_working_directory_location`,
+  etc.) silently takes its no-window default. **And `ActiveSession` holds
+  only a `Weak<Session>`**, by design (production sessions are kept alive by
+  the real session registry) — a test must keep its own `Arc<Session>` alive
+  for the test's duration, not just pass a temporary `Arc::new(session)`
+  straight into `set_session_for_test`, or the session silently disappears
+  before the query runs. Both bit the same test (#775) on the same day, in
+  that order — fixing the `Weak` issue alone was not sufficient.
+- **`CreateNewTabGroup` appends a tab rather than converting the current
+  one.** Tripped up the `#781` move-pane-to-own-tab tests before the
+  discriminating pinned/grouped assertions landed (`87de017d7`) — know this
+  before writing a test that assumes a tab-group action replaces the active
+  tab in place.
+- **Never kill by pattern over ssh on the build box.** Standing rule,
+  reaffirmed this round; no incident this round, but worth keeping next to
+  the other build-box rules below since a `pgrep -f <pattern>`-style kill has
+  already caused false "still running" readings before (see the 2026-08-07
+  section).
+- **The maintainer must approve any build-box environment change.** Same
+  status — reaffirmed, not exercised this round.
+
+### Branch hygiene (2026-09-27)
+
+Many round 5/6/7 branches are merged and safe to prune:
+`fix/r5-*`/`fix/g[1-6]-*` (round 5), `fix/r6-*` (round 6, including both
+local and `-2` follow-up variants), `fix/r7-*` **except `fix/r7-windows-shutdown`**
+(unmerged, holds #773, needs a Windows build first), and older `port/*`
+branches (`port/bash-bootstrap-fixes`, `port/completer-cache`, `port/cursor`,
+`port/editor-*`, `port/glyph-crash-fixes`, `port/grep-parse`,
+`port/guard-conversation-history`, `port/leaks-logs`, `port/linux-quit-binding`,
+`port/move-terminal-crate`, `port/objc2`, `port/plan-mode-document`,
+`port/rmcp-cve-2026-64684`, `port/shell-bugs`, `port/tab-*`, `port/tests-*`,
+`port/t-S1` through `port/t-S9`, `port/view-try-update-model-panic`,
+`port/widechar-eol-crash`, `port/winit-cosmic-text-pins`) and superseded
+`integ/round2-0926` through `integ/round4-0926`. **Do not touch
+`moth-parliament`** — the maintainer's separate workstream.
+
+---
+
+### The single most important finding of 2026-08-07 (history — see the current state above)
 
 **The issue tracker had drifted from the codebase in both directions**, and that
 drift was the dominant cost of the day — larger than any individual port.
@@ -364,6 +722,13 @@ arm is the same story. Nothing to file.
 
 ## The oracle is PINNED — read `ORACLE.md` before any parity work
 
+**Stale below: the pin has since moved again**, to `4111d08f9` (`2026.08.26`
+stable, moved 2026-08-29) — `docs/STATE.md` and `ORACLE.md` are current;
+this section is kept for the *mechanism* (why re-pins grow the gap, how the
+scripts read the pin) which is still accurate, not for the commit hash. Also,
+as of 2026-09-05 the pin is evidence/suggestions, not a spec — read
+`ORACLE.md`'s "What the pin is for" before treating any gap below as debt.
+
 `warp/master` is unreleased trunk moving **50-80 tests/day**; measuring against it
 produces a gap that never shrinks no matter how much lands. That is why sustained
 porting felt like no progress.
@@ -389,6 +754,13 @@ and exit non-zero if it is missing (`.github/workflows/pr-check.yml` already
 did). If you add a fourth reader, do the same; do not add a default.
 
 ## The scope is measured, not estimated — `SCOPE-*.md`
+
+**The numbers below are measured at the OLD pin `02b53fcd8` and have not been
+re-derived at the current pin** (`ORACLE.md` says so explicitly) — quote them
+for the shape, not the count, and take current numbers from `docs/STATE.md`
+(generated; as of `0695371a9` it reports 8700/9908 non-cloud pin tests present,
+~87.8%, with 0 open in the `MISSING-SUBSYSTEM` ledger bucket and 8 open
+`TODO.md` checkboxes).
 
 All 854 test-bearing files at the pin were classified per file by reading source
 imports (not paths). Do not re-derive this badly:
@@ -458,9 +830,28 @@ instructive ways.
 - **#11** — the standing ledger: AI global skills, skill remote-path,
   `local_control` app-side.
 
+New this round (2026-09-27), full detail in "Open decisions" above:
+
+- **Decision 8 — `21f413b7` terminal-crate/tmux move** (147 files). Accepted
+  in scope 2026-08-29, held pending the maintainer's release of it.
+- **fzf/atuin handoff** (`bf2364bc9` + 4 follow-ups, CORE-3807) — queued
+  behind decision 8.
+- **`511b952c2` — `create_file` gains `allow_overwrite`** — blocked on a
+  `warp_multi_agent_api` proto bump.
+
 ---
 
 ## Highest-value open issues
+
+**Stale as of 2026-09-27 — verify before acting on any item below.** A quick
+check found `#171` already closed (PR #224) and `#164`/`#151`/`#143`/`#165`
+no longer appear anywhere in `TODO.md`, which is what "resolved and never
+reconciled here" looks like (see the "already merged, never closed" pattern
+in the 2026-08-07 section below — this list is itself an instance of it).
+Current open work is `TODO.md`'s 8 remaining checkboxes
+(`docs/STATE.md`'s `MISSING-SUBSYSTEM` ledger bucket is at 0) — see the
+"Where main is" section above for the live ones: `#751`, `#769`, `#773`,
+`#774`.
 
 Security / correctness first:
 
