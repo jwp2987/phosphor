@@ -10,15 +10,17 @@ use super::*;
 struct FakeHooks {
     main_loop_gone: bool,
     terminate_requests: Cell<usize>,
+    terminate_request_signals: RefCell<Vec<i32>>,
     deadlines: RefCell<Vec<(Duration, i32)>>,
     exits: RefCell<Vec<i32>>,
     initiating_signals: RefCell<Vec<i32>>,
 }
 
 impl ShutdownHooks for FakeHooks {
-    fn request_terminate(&self) -> bool {
+    fn request_terminate(&self, signal: i32) -> bool {
         self.terminate_requests
             .set(self.terminate_requests.get() + 1);
+        self.terminate_request_signals.borrow_mut().push(signal);
         !self.main_loop_gone
     }
 
@@ -46,6 +48,7 @@ fn first_signal_requests_graceful_shutdown_and_arms_deadline() {
     handle_signal(&mut state, SIGTERM, Instant::now(), &hooks);
 
     assert_eq!(hooks.terminate_requests.get(), 1);
+    assert_eq!(*hooks.terminate_request_signals.borrow(), vec![SIGTERM]);
     assert_eq!(*hooks.deadlines.borrow(), vec![(SHUTDOWN_DEADLINE, 143)]);
     assert_eq!(*hooks.initiating_signals.borrow(), vec![SIGTERM]);
     assert!(
@@ -178,7 +181,7 @@ fn process_hooks_end_the_process_with_hard_exit() {
     // The watchdog and an escalated exit fire while the main thread is
     // mid-shutdown; `std::process::exit` would run atexit handlers and static
     // destructors concurrently with it.
-    let hooks = ProcessHooks::new(|| true);
+    let hooks = ProcessHooks::new(|_signal| true);
     assert!(std::ptr::fn_addr_eq(hooks.exit, hard_exit as fn(i32)));
 }
 
@@ -197,7 +200,7 @@ fn the_armed_watchdog_exits_through_the_hooks_exit_seam() {
     let (sender, receiver) = mpsc::channel();
     *EXITS.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(sender);
     let hooks = ProcessHooks {
-        request_terminate: || true,
+        request_terminate: |_signal| true,
         exit: record_exit,
     };
 
@@ -214,6 +217,42 @@ fn a_completed_signal_shutdown_ends_as_the_signal_would() {
     } else {
         assert_eq!(final_exit(Some(SIGINT)), FinalExit::Status(130));
     }
+}
+
+// jwp2987/phosphor#726: `exit_after_signal_shutdown` (used by macOS and, before this
+// fix, winit) reads the process-wide `INITIATING_SIGNAL` latch, which
+// `record_initiating_signal` sets the moment *any* termination signal is first
+// received -- regardless of whether that signal is what actually drove *this*
+// particular quit to completion. A key binding or menu quit (`TerminationMode::
+// Cancellable`/`ForceTerminate` from something other than the signal thread) can
+// reach the very same `LoopExiting` handler while a concurrent, unrelated SIGTERM/
+// SIGHUP is also being processed (e.g. a desktop session ending at the same moment
+// the user quits by hand); the latch cannot tell the two apart, so the key-initiated
+// quit would incorrectly re-raise a signal it had nothing to do with. winit now
+// tracks, per its own termination request, whether *that* request came from the
+// signal thread (`CustomEvent::TerminateFromSignal`) and calls
+// `exit_after_signal_shutdown_for` with that explicit, request-scoped value instead
+// of trusting the latch.
+#[test]
+fn a_request_not_attributed_to_a_signal_never_reraises_even_if_one_was_received() {
+    // Simulate the latch already being poisoned by an unrelated signal (as it would
+    // be after any earlier `record_initiating_signal` call in this process).
+    INITIATING_SIGNAL.store(SIGTERM, Ordering::Release);
+
+    // A caller (winit's `LoopExiting`, for a key/menu-initiated quit) that knows its
+    // own request was not the signal's must pass that explicitly, rather than calling
+    // the latch-reading `exit_after_signal_shutdown`.
+    assert_eq!(final_exit(None), FinalExit::Status(0));
+
+    // The pure decision function agreeing is not enough by itself: the entry point
+    // winit actually calls must also treat `None` as the ordinary, non-reraising
+    // no-op. If it instead consulted the (still-poisoned) latch, this call would
+    // reset SIGTERM's disposition and raise it on this very test process.
+    exit_after_signal_shutdown_for(None);
+
+    // Restore the latch so this test cannot affect any test that runs after it in
+    // the same process.
+    INITIATING_SIGNAL.store(0, Ordering::Release);
 }
 
 #[test]

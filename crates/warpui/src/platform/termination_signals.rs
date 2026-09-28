@@ -106,9 +106,16 @@ impl ShutdownState {
 /// tests can drive [`handle_signal`] without delivering real signals, spawning
 /// watchdogs, or exiting the test process.
 pub(crate) trait ShutdownHooks {
-    /// Posts a non-cancellable terminate request to the main loop. Returns
-    /// `false` if the main loop is gone and the request could not be delivered.
-    fn request_terminate(&self) -> bool;
+    /// Posts a non-cancellable terminate request, carrying which signal asked for
+    /// it, to the main loop. Returns `false` if the main loop is gone and the
+    /// request could not be delivered.
+    ///
+    /// A loop that can also reach its exit path for a reason other than this
+    /// specific request (winit: a key binding or menu quit can race a concurrent
+    /// signal) should record `signal` itself, scoped to *this* request, rather than
+    /// relying solely on [`Self::record_initiating_signal`]'s process-wide latch --
+    /// see [`exit_after_signal_shutdown_for`] (jwp2987/phosphor#726).
+    fn request_terminate(&self, signal: i32) -> bool;
     /// Arms a watchdog that exits the process with `exit_code` after `deadline`.
     fn arm_deadline(&self, deadline: Duration, exit_code: i32);
     /// Exits the process immediately.
@@ -140,7 +147,7 @@ pub(crate) fn handle_signal(
             );
             hooks.record_initiating_signal(signal);
             hooks.arm_deadline(SHUTDOWN_DEADLINE, exit_code);
-            if !hooks.request_terminate() {
+            if !hooks.request_terminate(signal) {
                 log::warn!("Main loop is gone; exiting without a graceful shutdown");
                 hooks.exit(exit_code);
             }
@@ -238,8 +245,27 @@ fn initiating_signal() -> Option<i32> {
 /// to restore the terminal (the TUI) or otherwise wind down first; that caller
 /// (`headless::app::App::run`) calls this once `event_loop::run` returns
 /// (jwp2987/phosphor#717).
+///
+/// Consults [`INITIATING_SIGNAL`], which [`ProcessHooks::record_initiating_signal`]
+/// sets the moment *any* termination signal is first received -- regardless of
+/// whether that signal is what actually ends up driving the app to quit. A caller
+/// that can end up here for a reason other than that specific signal (winit: a key
+/// binding or menu quit can race a concurrent SIGTERM/SIGHUP and still reach this
+/// same `LoopExiting` handler) must not use this global-state version, or it will
+/// re-raise a signal that had nothing to do with its own quit (jwp2987/phosphor#726).
+/// Such callers should track their own request's signal, if any, and call
+/// [`exit_after_signal_shutdown_for`] with it instead.
 pub(crate) fn exit_after_signal_shutdown() {
-    match final_exit(initiating_signal()) {
+    exit_after_signal_shutdown_for(initiating_signal());
+}
+
+/// [`exit_after_signal_shutdown`], but told explicitly which signal (if any) is
+/// responsible for the quit that just finished, instead of reading the process-wide
+/// [`INITIATING_SIGNAL`] latch. Use this whenever the caller can distinguish "this
+/// exact quit was that signal's" from "some signal was received at some point" --
+/// the latch alone conflates the two (jwp2987/phosphor#726).
+pub(crate) fn exit_after_signal_shutdown_for(initiating_signal: Option<i32>) {
+    match final_exit(initiating_signal) {
         FinalExit::Status(0) => {}
         FinalExit::Status(code) => hard_exit(code),
         FinalExit::Reraise(signal) => {
@@ -265,7 +291,7 @@ pub(crate) struct ProcessHooks<F> {
     exit: fn(i32),
 }
 
-impl<F: Fn() -> bool> ProcessHooks<F> {
+impl<F: Fn(i32) -> bool> ProcessHooks<F> {
     pub(crate) fn new(request_terminate: F) -> Self {
         Self {
             request_terminate,
@@ -274,9 +300,9 @@ impl<F: Fn() -> bool> ProcessHooks<F> {
     }
 }
 
-impl<F: Fn() -> bool> ShutdownHooks for ProcessHooks<F> {
-    fn request_terminate(&self) -> bool {
-        (self.request_terminate)()
+impl<F: Fn(i32) -> bool> ShutdownHooks for ProcessHooks<F> {
+    fn request_terminate(&self, signal: i32) -> bool {
+        (self.request_terminate)(signal)
     }
 
     fn arm_deadline(&self, deadline: Duration, exit_code: i32) {
@@ -337,11 +363,14 @@ fn is_ignored(signal: i32) -> bool {
 
 /// Installs handlers for `signals` that request a graceful, non-cancellable
 /// shutdown through `request_terminate`, which must be safe to call from a
-/// background thread and must only enqueue work for the main loop.
+/// background thread and must only enqueue work for the main loop. It is called
+/// with the specific signal that is asking for termination, so the main loop can
+/// track which of its termination requests (if any) came from a signal, rather
+/// than only a process-wide "some signal arrived" latch (jwp2987/phosphor#726).
 #[cfg(unix)]
 pub(crate) fn install(
     signals: &[i32],
-    request_terminate: impl Fn() -> bool + Send + 'static,
+    request_terminate: impl Fn(i32) -> bool + Send + 'static,
 ) -> std::io::Result<()> {
     let signals = signals_not_ignored(signals);
     if signals.is_empty() {
