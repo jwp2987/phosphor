@@ -529,6 +529,65 @@ fn plaintext_payload_refusal(base_url: &str) -> IndexError {
     ))
 }
 
+/// Resolves the bearer token (if any) and the provider's `extra_headers` into
+/// the header set an embedding/rerank request actually sends, shared by the
+/// embedding and rerank paths so the two cannot drift. Pure and easy to test
+/// directly (`embeddings_tests.rs`) without a real request.
+///
+/// **Precedence: `extra_headers` wins.** This matches the main streaming path's
+/// `genai::client::Headers::merge_with` (a later value replaces an earlier one
+/// by name), so a provider that configures its own `Authorization` header
+/// overrides the bearer token derived from `api_key` rather than sending both.
+/// It matters mechanically, not just semantically: `RequestBuilder::header`
+/// (both `reqwest`'s and this crate's `http_client` wrapper around it) *appends*
+/// a same-named header rather than replacing it, so calling `bearer_auth` and
+/// then `.header("Authorization", ...)` for an extra header would have put two
+/// `Authorization` headers on the wire, not one. Building the `http::HeaderMap`
+/// here and using `HeaderMap::insert` (case-insensitive by construction, since
+/// `HeaderName` normalizes to lowercase) collapses same-named entries — from
+/// `extra_headers` itself, and against the bearer token — down to one value
+/// each before anything reaches the request builder.
+///
+/// A header name or value that fails to parse as a valid HTTP header is
+/// dropped silently rather than failing the request outright (unlike the
+/// previous per-header `.header()` calls, whose invalid input instead surfaced
+/// as a deferred error at `send()` time) — configured header text comes from
+/// the provider settings UI, not the request path, so a malformed entry there
+/// is a settings-time problem, not one this call site should turn into a
+/// request failure.
+fn resolved_auth_and_extra_headers(
+    api_key: &str,
+    extra_headers: &[(String, String)],
+) -> http::HeaderMap {
+    let mut headers = http::HeaderMap::new();
+    if !api_key.trim().is_empty()
+        && let Ok(value) = http::HeaderValue::from_str(&format!("Bearer {api_key}"))
+    {
+        headers.insert(http::header::AUTHORIZATION, value);
+    }
+    for (name, value) in extra_headers {
+        if let (Ok(name), Ok(value)) = (
+            http::HeaderName::from_bytes(name.as_bytes()),
+            http::HeaderValue::from_str(value),
+        ) {
+            headers.insert(name, value);
+        }
+    }
+    headers
+}
+
+/// Applies [`resolved_auth_and_extra_headers`] to a request builder.
+fn apply_auth_and_extra_headers<'a>(
+    mut request: http_client::RequestBuilder<'a>,
+    api_key: &str,
+    extra_headers: &[(String, String)],
+) -> http_client::RequestBuilder<'a> {
+    for (name, value) in &resolved_auth_and_extra_headers(api_key, extra_headers) {
+        request = request.header(name.clone(), value.clone());
+    }
+    request
+}
+
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl EmbeddingProvider for HttpEmbeddingProvider {
@@ -571,13 +630,9 @@ impl EmbeddingProvider for HttpEmbeddingProvider {
         }
 
         let url = format!("{}/embeddings", endpoint.base_url);
-        let mut request = self.client.post(&url).json(&body);
-        if has_key {
-            request = request.bearer_auth(&endpoint.api_key);
-        }
-        for (name, value) in &endpoint.extra_headers {
-            request = request.header(name.clone(), value.clone());
-        }
+        let request = self.client.post(&url).json(&body);
+        let request =
+            apply_auth_and_extra_headers(request, &endpoint.api_key, &endpoint.extra_headers);
 
         let response = request.send().await.map_err(|error| {
             IndexError::Other(anyhow::anyhow!(error).context("embedding request failed"))
@@ -779,13 +834,12 @@ impl RerankProvider for HttpRerankProvider {
         }
 
         let url = format!("{}/rerank", self.endpoint.base_url);
-        let mut request = self.client.post(&url).json(&body);
-        if has_key {
-            request = request.bearer_auth(&self.endpoint.api_key);
-        }
-        for (name, value) in &self.endpoint.extra_headers {
-            request = request.header(name.clone(), value.clone());
-        }
+        let request = self.client.post(&url).json(&body);
+        let request = apply_auth_and_extra_headers(
+            request,
+            &self.endpoint.api_key,
+            &self.endpoint.extra_headers,
+        );
 
         let response = request.send().await.map_err(|error| {
             IndexError::Other(anyhow::anyhow!(error).context("rerank request failed"))

@@ -1715,6 +1715,10 @@ impl ServerModel {
                 // extra-headers field yet -- adding one is a proto change, out of scope
                 // here. Local (non-remote) embedding/rerank calls get the provider's
                 // headers via `resolve_embedding_endpoint(s)`/`resolve_rerank_endpoint`.
+                // By the time `config` reaches this side of the wire the headers are
+                // already gone, so the one-time hint about this drop is logged on the
+                // client side instead, where the real endpoint is still in hand -- see
+                // `codebase_embeddings::warn_once_if_remote_indexing_drops_extra_headers`.
                 extra_headers: Vec::new(),
             }),
             Some(embedding_config),
