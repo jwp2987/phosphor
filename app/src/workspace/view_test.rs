@@ -6957,10 +6957,20 @@ fn test_move_pane_to_own_tab_lands_after_pinned_prefix_when_source_tab_is_pinned
             workspace.add_terminal_tab(false, ctx);
             let second_tab_idx = workspace.tab_count() - 1;
             workspace.handle_action(&WorkspaceAction::PinTab(second_tab_idx), ctx);
+            // Make the source tab the active one. Adding the second tab left it
+            // active, and with tab 1 active the old `active_tab_index + 1`
+            // placement also yields index 2, so this test would pass on the bug
+            // it exists to catch. From tab 0 the old code lands at index 1,
+            // between the two pinned tabs.
+            workspace.activate_tab(0, ctx);
         });
 
         let (pinned_id_0, pinned_id_1) = workspace.read(&app, |workspace, _ctx| {
             assert_eq!(workspace.tab_count(), 2);
+            assert_eq!(
+                workspace.active_tab_index, 0,
+                "the source tab must be active for this test to discriminate"
+            );
             assert!(
                 workspace.tabs[0].pinned && workspace.tabs[1].pinned,
                 "both tabs should be pinned before the move"
