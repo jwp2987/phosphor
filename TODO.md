@@ -6954,10 +6954,17 @@ cloud GraphQL tooling; `200153270` ("CVE-2026-84375") is an empty commit; the wi
 `1e45ef773` (custom inference endpoints — a second provider store that DECLINED.md
 rules out) or the multi-team `REV-2383` series (skip as a block).
 
-Ported this round (see "Upstream post-pin ports (2026-09-28)" for commits/issues):
-`6f575836c` (tab-group name truncated by the new terminal stealing focus),
-`43eae5e08` (tab context menu leaves a hidden focused Menu), `d5fdbff50` (flag
-completions after POSIX `--`).
+**Already here, missed by the triage:** `6f575836c` (tab-group name truncated by the
+new terminal stealing focus) and `43eae5e08` (tab context menu leaves a hidden focused
+Menu) were ported on 2026-09-26 — `3cd0e5a6c` (#665), `b3ff0a3ae` (#664), with the
+fork's own follow-ups `0c697d7b4`/`052ef5af3` (#666, deliberately deferred refocus; see
+DECLINED.md) and `079c51bf5` (#667) — and are on `main` with their regression tests.
+The triage flagged them as missing because those commits never cite the upstream hash,
+so a hash grep over the tree and ledger finds nothing. **Lesson for the next triage:**
+also search by subject/behaviour, and cite the upstream hash in every port's commit
+message (`Port of upstream <hash>`), which is what makes this check mechanical.
+Ported this round: `d5fdbff50` (flag completions after POSIX `--`) — see "Upstream
+post-pin ports (2026-09-28)".
 
 - [ ] **`511b952c2` — `create_file` gains `allow_overwrite` (upstream #15380, post-pin).**
       Today the agent's `create_file` refuses an existing path
