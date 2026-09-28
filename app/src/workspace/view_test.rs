@@ -7089,7 +7089,13 @@ fn test_move_pane_to_own_tab_from_grouped_tab_keeps_group_contiguous() {
         });
 
         workspace.read(&app, |workspace, _ctx| {
-            assert_eq!(workspace.tab_count(), 3);
+            // `mock_workspace` starts with one (ungrouped) tab; `CreateNewTabGroup`
+            // adds a *new* grouped tab rather than converting that one (see
+            // `test_move_tab_to_group_expands_collapsed_group`, which likewise
+            // finds the original tab still present and ungrouped), and
+            // `add_terminal_tab` adds a second grouped tab -- three tabs before
+            // the move. The move adds a fourth.
+            assert_eq!(workspace.tab_count(), 4);
             // The new tab landed immediately after tab 0 (its source),
             // inheriting tab 0's group_id -- not left ungrouped, which would
             // have split the group's run in two.
