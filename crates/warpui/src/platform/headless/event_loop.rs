@@ -93,7 +93,7 @@ fn setup_signal_handler(sender: Sender<AppEvent>) {
 
     let result = termination_signals::install(
         termination_signals::HEADLESS_TERMINATION_SIGNALS,
-        move || {
+        move |_signal| {
             sender
                 .send(AppEvent::Terminate(TerminationMode::ForceTerminate))
                 .is_ok()
@@ -112,7 +112,7 @@ fn setup_signal_handler(sender: Sender<AppEvent>) {
     /// Ctrl-C is reported as SIGINT (2), preserving the historical exit status 130.
     const SIGINT: i32 = 2;
 
-    let hooks = ProcessHooks::new(move || {
+    let hooks = ProcessHooks::new(move |_signal| {
         sender
             .send(AppEvent::Terminate(TerminationMode::ForceTerminate))
             .is_ok()

@@ -136,13 +136,15 @@ impl App {
         if !self.is_integration_test {
             use crate::platform::termination_signals;
 
-            let result =
-                termination_signals::install(termination_signals::GUI_TERMINATION_SIGNALS, || {
+            let result = termination_signals::install(
+                termination_signals::GUI_TERMINATION_SIGNALS,
+                |_signal| {
                     super::delegate::terminate_app_on_main_queue(
                         platform::TerminationMode::ForceTerminate,
                     );
                     true
-                });
+                },
+            );
             if let Err(err) = result {
                 log::warn!("Failed to set up termination signal handling: {err}");
             }

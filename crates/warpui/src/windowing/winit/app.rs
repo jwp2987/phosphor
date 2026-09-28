@@ -36,6 +36,16 @@ pub enum CustomEvent {
     RunTask(ManuallyDrop<async_task::Runnable>),
     /// Exit the event loop, terminating the application.
     Terminate(TerminationMode),
+    /// Exit the event loop because a termination signal (`SIGTERM`/`SIGHUP`) was
+    /// received, carrying which one. Handled like `Terminate(ForceTerminate)`, but
+    /// kept distinct so `LoopExiting` can tell a signal-initiated quit apart from one
+    /// a key binding, menu, or dialog also requested around the same moment: only a
+    /// quit that reaches `LoopExiting` because of *this* event may re-raise the
+    /// signal afterward (jwp2987/phosphor#726). Never posted by anything other than
+    /// the termination-signal handler thread installed in `App::run`, which only
+    /// exists on Unix (`#[cfg(unix)]`): not constructed on Windows or wasm.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    TerminateFromSignal(i32),
     /// Close the specified window.
     CloseWindow {
         window_id: crate::WindowId,
@@ -218,9 +228,9 @@ impl App {
             let proxy = event_loop.create_proxy();
             let result = termination_signals::install(
                 termination_signals::GUI_TERMINATION_SIGNALS,
-                move || {
+                move |signal| {
                     proxy
-                        .send_event(CustomEvent::Terminate(TerminationMode::ForceTerminate))
+                        .send_event(CustomEvent::TerminateFromSignal(signal))
                         .is_ok()
                 },
             );
