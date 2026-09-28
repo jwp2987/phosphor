@@ -49,15 +49,13 @@ impl SyncDataSource for SkillsDataSource {
         let skills = {
             #[cfg(not(target_family = "wasm"))]
             {
-                app.windows()
-                    .state()
-                    .active_window
-                    .map_or_else(Vec::new, |window_id| {
-                        let cwd = ActiveSession::as_ref(app)
-                            .current_working_directory_location(window_id);
-                        SkillManager::as_ref(app)
-                            .get_skills_for_working_directory(cwd.as_ref(), app)
-                    })
+                // With no active window there is no tab to read a host from; fall back to
+                // the same no-working-directory lookup (local + bundled skills) every other
+                // skill menu uses, rather than listing nothing.
+                let cwd = app.windows().state().active_window.and_then(|window_id| {
+                    ActiveSession::as_ref(app).current_working_directory_location(window_id)
+                });
+                SkillManager::as_ref(app).get_skills_for_working_directory(cwd.as_ref(), app)
             }
             // wasm has no `ActiveSession`/window concept; preserve the previous
             // behavior of resolving skills with no known working directory.
