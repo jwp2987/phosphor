@@ -6940,6 +6940,61 @@ above: is the defect/gap present *here*? Not whether Zap should merge it.
       `crates/persistence/migrations/2026-07-20-000000_add_cli_subagent_window_sizes`.
       Checked by the coordinator 2026-09-27.
 
+## UPSTREAM WARP POST-PIN TRIAGE — 2026-09-28 (`4111d08f9..warp/master`, 204 commits)
+
+The re-pin rounds covered upstream up to the pin; this is the first pass over what
+landed AFTER it (2026-08-26 → 2026-09-27, tip `cb2416204`). Porting past the pin is
+allowed for a real bug, a security fix, or clear user value (`ORACLE.md`), and each
+port is recorded. Buckets (approximate): ~95-105 cloud/account (≈50%, matching
+`ORACLE.md`'s "~50% and rising"), ~15 macOS/Windows-only, ~10 already here or decided,
+~40-50 low value. Security: nothing affects this fork — the rmcp CVE-2026-64684 fix
+(`114bacea6`) is already in (rmcp 2.2.0); `a9520c97d` (js-yaml) only touches upstream's
+cloud GraphQL tooling; `200153270` ("CVE-2026-84375") is an empty commit; the winit X11
+`WmHints` panic fix (`83387d2ed`) is already on `main` via `3b55a30`. **Do not port**
+`1e45ef773` (custom inference endpoints — a second provider store that DECLINED.md
+rules out) or the multi-team `REV-2383` series (skip as a block).
+
+Ported this round (see "Upstream post-pin ports (2026-09-28)" for commits/issues):
+`6f575836c` (tab-group name truncated by the new terminal stealing focus),
+`43eae5e08` (tab context menu leaves a hidden focused Menu), `d5fdbff50` (flag
+completions after POSIX `--`).
+
+- [ ] **`511b952c2` — `create_file` gains `allow_overwrite` (upstream #15380, post-pin).**
+      Today the agent's `create_file` refuses an existing path
+      (`app/src/ai/blocklist/action_model/execute/request_file_edits/diff_application.rs:130`,
+      "Could not create {file} because it already exists."), so a full rewrite costs a
+      delete + recreate round trip. Upstream: 7 files, +178/-36, mostly
+      `diff_application.rs` + tests, plus `crates/ai/src/agent/action/{mod,convert}.rs`.
+      **Blocked on a proto bump:** it needs `warp_multi_agent_api`
+      `f0028fa6d05db1ba63726eaf6f8d33ab17abe37b` → `0ca49ce589580a211e4bdf84c1b1721424fabdc8`
+      (`Cargo.toml:385`); check every other consumer of that crate for changes the bump
+      drags in before taking it. **Port only the client behaviour**: upstream gates the
+      field on a capability negotiated with warp-server (`supports_create_file_overwrite`);
+      there is no server here, so the BYOP tool schema should simply offer it — do not
+      bring the negotiation machinery. Also expose `allow_overwrite` in this fork's own
+      BYOP tool description (`app/src/ai/agent_providers/`), which upstream's
+      server-side schema never needed. Medium size, medium risk (the proto bump).
+- [ ] **`bf2364bc9` + `7c360f772`, `f2b401aed`, `2120e3794`, `b42435622` — hand Ctrl-R /
+      Ctrl-T (and Alt-C) to fzf / atuin when installed (upstream CORE-3807, post-pin).**
+      A real local feature this fork lacks: `app/assets/bundled/bootstrap/{bash_body,
+      zsh_body,fish}.sh` have no fzf/atuin handling at all. The base commit alone is 22
+      files, +1152/-42 (bootstrap scripts for all three shells, a new DCS hook in
+      `crates/warp_terminal/src/model/ansi/`, `terminal/{input,view,event}.rs`, a
+      feature flag, workspace actions, tests); the four follow-ups depend on it and on
+      each other in this order: fish (`7c360f772`), Alt-C (`f2b401aed`, 10 files), zsh
+      typed-query forwarding (`2120e3794`), picker layout (`b42435622`). **Sequence after
+      decision 8** (the `21f413b7` terminal-crate move): the DCS-hook half lands in
+      `crates/warp_terminal`, which decision 8 reshapes, so porting first means porting
+      twice. Check the fork's own bootstrap changes (#737 zsh compadd, #750 PSReadLine,
+      the #770 completion-read timeout) for conflicts. Large, medium risk; a
+      feature-add, not debt — do it when shell-integration parity is the priority.
+- Not ported, noted: `9c870be87` (fallback to file paths after empty native
+  completions) only matters with `FeatureFlag::NativeShellCompletions`, which has no
+  enabler in this fork (see "The shell lockup" entry) — revisit if that flag ships.
+  Unverified small leads from the same pass: `0efd26e70` (Neovim 0.13 text objects),
+  `4143c09ff` (du --time signature), `4fa1a3c66` (history search ranking),
+  `83ddbefff` (git merge-base completion).
+
 ## OPEN ISSUES FROM THE FIRST RE-PIN (2026-08-15) — `02b53fcd8` -> `42effe840`
 
 Filed during the re-pin round and its refutation pass. **Open only** — defects
