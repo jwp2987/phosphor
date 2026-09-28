@@ -18,7 +18,8 @@ use super::state::CompletedCompaction;
 /// Walks the conversation's root task backwards to find the last
 /// `Message::AgentOutput` — that's the summary text the model just emitted.
 ///
-/// `user_msg_id` picks the id of the nearest real UserQuery before that last
+/// `user_msg_id` picks the id of the nearest user turn (`UserQuery` or `InvokeSkill` —
+/// a conversation started with `/skill` has no `UserQuery` at all) before that last
 /// AgentOutput; if there is none, a standalone uuid is synthesized (used only as a
 /// marker key — build_chat_request's hidden projection won't match it against a
 /// real message).
@@ -59,7 +60,9 @@ pub fn commit_summarization(
                 .iter()
                 .rev()
                 .find_map(|m| match m.message.as_ref() {
-                    Some(api::message::Message::UserQuery(_)) => Some(m.id.clone()),
+                    Some(
+                        api::message::Message::UserQuery(_) | api::message::Message::InvokeSkill(_),
+                    ) => Some(m.id.clone()),
                     _ => None,
                 })
         })

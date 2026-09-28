@@ -621,6 +621,26 @@ fn user_query_message(message_id: &str, task_id: &str, query: &str) -> api::Mess
     }
 }
 
+fn invoke_skill_message(message_id: &str, task_id: &str, skill_content: &str) -> api::Message {
+    api::Message {
+        id: message_id.to_string(),
+        task_id: task_id.to_string(),
+        message: Some(api::message::Message::InvokeSkill(
+            api::message::InvokeSkill {
+                skill: Some(api::Skill {
+                    content: Some(api::FileContent {
+                        content: skill_content.to_string(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                user_query: None,
+            },
+        )),
+        ..Default::default()
+    }
+}
+
 fn task_with_messages(task_id: &str, description: &str, messages: Vec<api::Message>) -> api::Task {
     api::Task {
         id: task_id.to_string(),
@@ -662,6 +682,31 @@ fn prune_oversized_messages_never_touches_a_user_query_even_when_it_is_largest()
             Some(api::message::Message::UserQuery(_))
         ),
         "a UserQuery must never be replaced, even when it's the only oversized message"
+    );
+}
+
+/// #778: `InvokeSkill` is replayed to the model as the user's turn, so it must be as
+/// protected from this write-side size cap as `UserQuery` is -- pruning it to a
+/// `DebugOutput` placeholder would make a `/skill` invocation vanish from every later
+/// request rebuilt from this persisted task.
+#[test]
+fn prune_oversized_messages_never_touches_an_invoke_skill_even_when_it_is_largest() {
+    let mut task = task_with_messages(
+        "t",
+        "d",
+        vec![invoke_skill_message("m1", "t", &"s".repeat(500))],
+    );
+    let pruned_ids = prune_oversized_messages(&mut task, 100);
+    assert!(
+        pruned_ids.is_empty(),
+        "nothing prunable exists, so nothing should be reported as pruned"
+    );
+    assert!(
+        matches!(
+            task.messages[0].message,
+            Some(api::message::Message::InvokeSkill(_))
+        ),
+        "an InvokeSkill must never be replaced, even when it's the only oversized message"
     );
 }
 
