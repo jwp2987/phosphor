@@ -1272,7 +1272,14 @@ impl View for AIBlock {
         })
         .on_selection_updated(|ctx, _| {
             ctx.dispatch_typed_action(AIBlockAction::SelectText);
-        });
+        })
+        // A fenced code block embeds its own interactive editor view, which captures its own
+        // clicks directly and never depends on this area's bookkeeping to do so. Prose text has
+        // no capture of its own -- it relies entirely on this SelectableArea starting a
+        // selection -- so if that ever fails for a click genuinely inside this block (nothing
+        // selectable under the exact point, stale bounds, etc.), the click must not be allowed
+        // to leak through to the terminal's own grid selection underneath. See issue #793.
+        .capture_clicks_within_bounds();
 
         if FeatureFlag::RectSelection.is_enabled() {
             selectable = selectable.should_support_rect_select();

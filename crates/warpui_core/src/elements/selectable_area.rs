@@ -43,6 +43,20 @@ pub struct SelectableArea {
     smart_select_fn: Option<SmartSelectFn>,
 
     should_support_rect_select: bool,
+
+    /// When true, a `LeftMouseDown`/`LeftMouseUp` that lands within this area's last-painted
+    /// bounds is always reported as handled, even if no text selection could actually be
+    /// started (e.g. the child has nothing selectable under the click, or bookkeeping about
+    /// this area's visible bounds is momentarily stale). Without this, such a click silently
+    /// falls through this `SelectableArea` to whatever sits beneath it in the element tree --
+    /// for a rich-content block embedded in the terminal's blocklist, that is the terminal's
+    /// own grid-based selection, which will happily start a selection of its own at the same
+    /// screen position. See issue #793: a fenced code block embeds its own interactive editor
+    /// view, which captures its clicks directly and never depends on this area's bookkeeping,
+    /// so only prose text (which has no capture of its own) is affected. Opt-in because the
+    /// "let it propagate when genuinely outside our bounds" behavior below is relied upon
+    /// elsewhere for legitimate cross-element/cross-block selection.
+    capture_clicks_within_bounds: bool,
 }
 
 /// Stores the selection start and end points. We include the option to store
@@ -234,11 +248,20 @@ impl SelectableArea {
             word_boundaries_policy: WordBoundariesPolicy::Default,
             smart_select_fn: None,
             should_support_rect_select: false,
+            capture_clicks_within_bounds: false,
         }
     }
 
     pub fn should_support_rect_select(mut self) -> Self {
         self.should_support_rect_select = true;
+        self
+    }
+
+    /// Opts this area into swallowing any `LeftMouseDown`/`LeftMouseUp` that lands within its
+    /// last-painted bounds, instead of letting it propagate to whatever sits beneath it when
+    /// no selection could be started. See the field doc comment on `capture_clicks_within_bounds`.
+    pub fn capture_clicks_within_bounds(mut self) -> Self {
+        self.capture_clicks_within_bounds = true;
         self
     }
 
@@ -577,6 +600,21 @@ impl SelectableArea {
             .is_empty()
     }
 
+    /// Whether `position` falls within this area's last-painted `origin`/`size`, ignoring the
+    /// current clip/visible-rect stack. Unlike `is_mouse_in`, this does not consult
+    /// `ctx.visible_rect`, so it stays correct even if this area's clip bookkeeping is stale
+    /// relative to where it was actually painted (see `capture_clicks_within_bounds`).
+    fn contains_point_ignoring_clip(&self, position: Vector2F) -> bool {
+        let (Some(origin), Some(size)) = (self.origin, self.size) else {
+            return false;
+        };
+        let origin = origin.xy();
+        position.x() >= origin.x()
+            && position.x() <= origin.x() + size.x()
+            && position.y() >= origin.y()
+            && position.y() <= origin.y() + size.y()
+    }
+
     fn invoke_selection_handler(&mut self, ctx: &mut EventContext, app: &AppContext) {
         let text_fragments = self.get_current_selection_text_fragments();
         let update_args = SelectionUpdateArgs {
@@ -687,6 +725,8 @@ impl Element for SelectableArea {
                 // cleared the internal selection state of the `SelectableArea`.
                 self.invoke_selection_handler(ctx, app);
                 selection_started
+                    || (self.capture_clicks_within_bounds
+                        && self.contains_point_ignoring_clip(*position))
             }
             Event::LeftMouseDragged { position, .. } => {
                 if !self.selectable_area_state.is_selecting() {
@@ -733,6 +773,8 @@ impl Element for SelectableArea {
                 // as well. We need to handle `LeftMouseUp` in either case to support selections
                 // across elements. Note that this behavior may need to change in the future.
                 is_mouse_in(self.origin, self.size, ctx, *position)
+                    || (self.capture_clicks_within_bounds
+                        && self.contains_point_ignoring_clip(*position))
             }
             Event::RightMouseDown { position, .. } => self.on_right_mouse_down(*position, ctx),
             _ => false,
@@ -747,3 +789,7 @@ impl Element for SelectableArea {
         self.origin
     }
 }
+
+#[cfg(test)]
+#[path = "selectable_area_test.rs"]
+mod tests;
