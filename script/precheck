@@ -408,6 +408,49 @@ else
     tail -15 /tmp/precheck-integration.$$ >&2
 fi
 
+# --------------------------------------------------- pwsh integration scenarios
+# The step above just ran the whole integration suite "cleanly" while silently
+# never touching its two PowerShell-only scenarios (#796):
+#   test_input_reporting_powershell        (crates/integration/src/test/typeahead.rs)
+#   test_pwsh_vi_edit_mode_does_not_corrupt_commands (.../test/bootstrapping.rs)
+# Both are gated with `set_should_run_test(|| starter.shell_type() == ShellType::PowerShell)`,
+# and `current_shell_starter_and_version` resolves that shell from the RUNNER's
+# own default shell -- nothing here (or in CI) sets pwsh as the default shell, so
+# these scenarios have structurally never executed anywhere. That is exactly the
+# "fully green precheck asserting nothing" failure mode this script's header
+# warns about, just for two scenarios instead of the whole suite.
+#
+# PHOSPHOR_TEST_SHELL (honoured by
+# app/src/integration_testing/terminal/util.rs::current_shell_starter_and_version,
+# only compiled behind the `integration_tests` feature) lets us pin the shell
+# explicitly instead of relying on the runner's default. When pwsh is available
+# -- on PATH, or pointed to directly via PHOSPHOR_TEST_SHELL -- run exactly those
+# two scenarios under it as a real, blocking gate. pwsh is NOT a hard requirement
+# of this script (most dev/agent boxes won't have it installed), so its absence
+# is reported plainly rather than failing the run -- the whole point of #796 is
+# to make the gap visible instead of silent.
+step "pwsh integration scenarios (#796)"
+PWSH_OVERRIDE="${PHOSPHOR_TEST_SHELL:-}"
+if [[ -z "$PWSH_OVERRIDE" ]]; then
+    PWSH_OVERRIDE="$(command -v pwsh 2>/dev/null || true)"
+fi
+if [[ -z "$PWSH_OVERRIDE" ]]; then
+    warn "pwsh scenarios skipped (pwsh not installed)"
+elif ((${#_integ_missing[@]})); then
+    warn "pwsh scenarios skipped (integration suite environment incomplete, see above)"
+elif PHOSPHOR_TEST_SHELL="$PWSH_OVERRIDE" xvfb-run -a -s "-screen 0 1280x1024x24" \
+        "${CARGO_RUN[@]}" nextest run -p integration --profile ci \
+        -E 'test(test_input_reporting_powershell) or test(test_pwsh_vi_edit_mode_does_not_corrupt_commands)' \
+        >/tmp/precheck-integration-pwsh.$$ 2>&1; then
+    ok "no failures (PHOSPHOR_TEST_SHELL=$PWSH_OVERRIDE)"
+else
+    fail "pwsh integration scenarios failed under PHOSPHOR_TEST_SHELL=$PWSH_OVERRIDE:"
+    sed 's/\x1b\[[0-9;]*m//g' /tmp/precheck-integration-pwsh.$$ \
+        | grep -E '^[[:space:]]+(TRY [0-9]+ )?(FAIL|SIGSEGV|SIGABRT|TIMEOUT) \[' \
+        | sed -E 's/.*integration::integration /       /' | sort -u >&2
+    tail -15 /tmp/precheck-integration-pwsh.$$ >&2
+fi
+
 # ---------------------------------------------------------------- full suite
 # The expensive gate, and the only one that catches a regression. Delegated to
 # check_test_failures, which fails on CHANGE against known_test_failures.txt

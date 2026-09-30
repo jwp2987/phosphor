@@ -618,6 +618,72 @@ jobs:
         # stack, not contention. See #611.
         run: xvfb-run -a -s "-screen 0 1280x1024x24" cargo nextest run -p integration --profile ci --partition count:${{ matrix.shard }}/3
 
+  # The two scenarios below are gated with
+  # `set_should_run_test(|| starter.shell_type() == ShellType::PowerShell)`
+  # (test_input_reporting_powershell in crates/integration/src/test/typeahead.rs,
+  # test_pwsh_vi_edit_mode_does_not_corrupt_commands in
+  # crates/integration/src/test/bootstrapping.rs), and `current_shell_starter_and_version`
+  # resolves that shell from the RUNNER's own default shell. The `integration-linux`
+  # job above runs on Ubuntu with bash as the default shell, and nothing in
+  # check-windows runs `-p integration` either, so these two scenarios have
+  # structurally never executed in CI (#796).
+  #
+  # PHOSPHOR_TEST_SHELL (see app/src/integration_testing/terminal/util.rs,
+  # only compiled behind the `integration_tests` feature) lets us pin the
+  # shell explicitly instead of waiting for a runner whose default happens to
+  # be pwsh. This job installs a pinned pwsh (script/linux/install_pwsh,
+  # mirroring how install_build_deps pins protoc) and runs just the two
+  # PowerShell-gated scenarios under it.
+  #
+  # NOT a required status check yet, same reasoning as `integration-linux`
+  # above: this is the first time these scenarios have ever run anywhere, so
+  # there is no known-good baseline to gate on. Promote it once it has run
+  # green for a while.
+  integration-linux-pwsh:
+    name: cargo nextest -p integration (Linux, pwsh-gated scenarios)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Free up disk space
+        shell: bash
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift || true
+          df -h /
+
+      # Same install_test_deps path as integration-linux, for the same
+      # reason: shells, mesa-vulkan-drivers, the X11/Wayland runtime libs,
+      # and xvfb that any crates/integration scenario needs to open even an
+      # off-screen window (#208).
+      - uses: ./.github/actions/prepare_environment
+        with:
+          target_os: linux
+          is_self_hosted: false
+          install_test_deps: true
+
+      - name: Install pwsh
+        shell: bash
+        run: ./script/linux/install_pwsh
+
+      - name: Install cargo-nextest
+        shell: bash
+        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+
+      # `--profile ci` for the same `[profile.ci]` retry behavior as
+      # integration-linux. The `-E` filter selects only the two
+      # PowerShell-gated scenarios; PHOSPHOR_TEST_SHELL=pwsh is what makes
+      # `current_shell_starter_and_version` actually pick pwsh instead of
+      # bash, so `set_should_run_test` lets them proceed instead of skipping.
+      - name: cargo nextest -p integration (pwsh-gated scenarios, headless via Xvfb)
+        shell: bash
+        env:
+          PHOSPHOR_TEST_SHELL: pwsh
+        run: |
+          xvfb-run -a -s "-screen 0 1280x1024x24" cargo nextest run -p integration --profile ci \
+            -E 'test(test_input_reporting_powershell) or test(test_pwsh_vi_edit_mode_does_not_corrupt_commands)'
+
   check-windows:
     name: cargo check (Windows)
     runs-on: windows-latest

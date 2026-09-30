@@ -11,16 +11,51 @@ use rand::Rng;
 use rand::{distributions::Alphanumeric, thread_rng};
 use regex::Regex;
 
+use crate::terminal::available_shells::AvailableShell;
 use crate::terminal::shell::ShellType;
 use crate::terminal::{
     local_tty::shell::{DirectShellStarter, ShellStarter, ShellStarterSource},
     shell,
 };
 
+/// Environment variable that lets integration-test scenarios pin the shell
+/// used for the session under test, instead of inheriting whatever shell
+/// `ShellStarter::init`'s normal resolution (`$WARP_SHELL_PATH`, then the
+/// runner's own default shell) would otherwise pick.
+///
+/// This exists because scenarios gated on a specific `ShellType` (e.g. the
+/// PowerShell-only cases under `crates/integration/src/test`) only run when
+/// the *runner's* default shell happens to match — which no CI job
+/// currently arranges for PowerShell, so those scenarios have never
+/// executed (see #796). Set it to a shell name resolvable on `PATH` (e.g.
+/// `pwsh`) or an absolute path to the shell executable.
+///
+/// This function is only compiled when the `integration_tests` feature is
+/// enabled (the whole `integration_testing` module is gated on it, see
+/// `app/src/lib.rs`), so this override can never affect a production build.
+pub const TEST_SHELL_OVERRIDE_ENV_VAR: &str = "PHOSPHOR_TEST_SHELL";
+
+/// Resolves [`TEST_SHELL_OVERRIDE_ENV_VAR`] to an [`AvailableShell`], if set.
+///
+/// Panics if the variable is set but does not resolve to a supported,
+/// executable shell, so a typo'd override fails loudly rather than
+/// silently falling back to the runner's default shell.
+fn test_shell_override() -> Option<AvailableShell> {
+    let requested = std::env::var(TEST_SHELL_OVERRIDE_ENV_VAR).ok()?;
+    match AvailableShell::try_from(requested.as_str()) {
+        Ok(shell) => Some(shell),
+        Err(()) => panic!(
+            "{TEST_SHELL_OVERRIDE_ENV_VAR}={requested:?} does not resolve to a supported, \
+             executable shell (checked as an absolute path and looked up on $PATH)"
+        ),
+    }
+}
+
 /// Returns the shell starter along with the version of the shell about to be run.
 pub fn current_shell_starter_and_version() -> (DirectShellStarter, String) {
-    let shell_starter_or_wsl_name = ShellStarter::init(Default::default())
-        .expect("Could not create a shell starter or wsl name");
+    let preferred_shell = test_shell_override().unwrap_or_default();
+    let shell_starter_or_wsl_name =
+        ShellStarter::init(preferred_shell).expect("Could not create a shell starter or wsl name");
     let shell_starter_source =
         block_on(async { shell_starter_or_wsl_name.to_shell_starter_source().await })
             .expect("Could not create a shell starter source");
