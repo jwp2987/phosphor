@@ -7,7 +7,7 @@
 //! its own clicks directly; only prose text depends on this `SelectableArea` at all.
 use super::*;
 use crate::{
-    elements::{ConstrainedBox, DispatchEventResult, EventHandler, Rect},
+    elements::{DispatchEventResult, EventHandler, Rect},
     platform::WindowStyle,
     App, Entity, Presenter, TypedActionView, WindowInvalidation,
 };
@@ -38,11 +38,16 @@ impl crate::core::View for Scene {
     }
 
     fn render(&self, _: &AppContext) -> Box<dyn Element> {
-        // Not a `SelectableElement`, so the area's own `on_mouse_down` can never succeed.
-        let non_selectable_child = ConstrainedBox::new(Rect::new().finish())
-            .with_width(100.)
-            .with_height(100.)
-            .finish();
+        // A bare `Rect` fills the incoming constraint (100x100, from the window built below)
+        // on its own, so it doesn't need a `ConstrainedBox` wrapper to get a real size -- which
+        // matters here because `ConstrainedBox::as_selectable_element` unconditionally returns
+        // `Some(self)` (it delegates to its child the same way `Container`/`Flex` do), so wrapping
+        // this `Rect` in one would have made `self.child.as_selectable_element()` succeed in
+        // `SelectableArea::on_mouse_down` regardless of what's inside. `Rect` itself has no
+        // `as_selectable_element` override (it uses the trait's default `None`), so it's the
+        // only way to make `on_mouse_down`'s early `as_selectable_element` check -- not just
+        // `expand_selection` further down -- actually fail, which is what this test needs.
+        let non_selectable_child = Rect::new().finish();
 
         let mut area = SelectableArea::new(
             self.selection_handle.clone(),
