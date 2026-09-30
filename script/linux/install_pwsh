@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+#
+# Install a pinned PowerShell (pwsh) on Linux, for the PowerShell-gated
+# scenarios in crates/integration (see #796 and
+# app/src/integration_testing/terminal/util.rs's PHOSPHOR_TEST_SHELL).
+#
+# Not part of install_build_deps or install_test_deps: pwsh is only needed by
+# the small set of scenarios gated on ShellType::PowerShell, not by the rest
+# of the build or test suite, and it's a large-ish download most dev/agent
+# boxes have no other reason to carry. Callers that want it (the CI lane
+# added for #796, or a human replicating that lane locally) run this
+# explicitly instead.
+#
+# Installed from the official GitHub release tarball rather than the apt
+# repo (packages-microsoft-prod.deb), to get a pinned version the same way
+# install_build_deps pins protoc above: apt's package version tracks
+# whatever is newest when the job runs, which is exactly the kind of
+# unpinned drift that made this project stop trusting "CI passed" at face
+# value elsewhere.
+
+set -e
+
+red="\033[0;31m"
+reset="\033[0m"
+
+# Update this together with any test expectations that assume a specific pwsh
+# behavior or version string (see current_shell_starter_and_version's
+# `-Version` probe in app/src/integration_testing/terminal/util.rs).
+PWSH_VERSION="7.4.6"
+
+case "$(uname -m)" in
+  x86_64)  PWSH_ARCH="x64" ;;
+  aarch64) PWSH_ARCH="arm64" ;;
+  *)       echo "Unsupported architecture for pwsh: $(uname -m)"; exit 1 ;;
+esac
+
+if command -v pwsh >/dev/null 2>&1 && [[ "$(pwsh -Version 2>/dev/null)" == *"$PWSH_VERSION"* ]]; then
+  echo "✅ pwsh $PWSH_VERSION already installed."
+  exit 0
+fi
+
+echo "⬇️  Installing pwsh $PWSH_VERSION ($PWSH_ARCH)..."
+PWSH_TARBALL="powershell-${PWSH_VERSION}-linux-${PWSH_ARCH}.tar.gz"
+curl -fsSL -o /tmp/pwsh.tar.gz \
+  "https://github.com/PowerShell/PowerShell/releases/download/v${PWSH_VERSION}/${PWSH_TARBALL}"
+sudo mkdir -p /opt/microsoft/powershell/7
+sudo tar zxf /tmp/pwsh.tar.gz -C /opt/microsoft/powershell/7
+rm /tmp/pwsh.tar.gz
+sudo chmod +x /opt/microsoft/powershell/7/pwsh
+sudo ln -sf /opt/microsoft/powershell/7/pwsh /usr/bin/pwsh
+
+if ! command -v pwsh >/dev/null 2>&1; then
+  echo -e "⚠️  ${red}pwsh not reachable after install${reset}"
+  echo "   Check that /usr/bin is on PATH, then re-run this script."
+  exit 1
+fi
+echo "✅ pwsh installed: $(pwsh -Version)"
