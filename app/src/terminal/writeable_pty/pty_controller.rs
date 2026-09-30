@@ -710,10 +710,10 @@ impl<T: EventLoopSender> PtyController<T> {
     ///
     /// Submits with CR on every platform, as the Enter key does (see
     /// `escape_sequences.rs`'s `"enter" => Some(vec![C0::CR])` key mapping). This used to write
-    /// LF on unix, which only runs the line when the tty is cooked and ICRNL translates it to
-    /// CR; a raw-mode line editor reads the byte as-is, and PSReadLine treats LF as Ctrl+J, so
-    /// `pwsh`'s rc-file bootstrap (the `. '<tmp>.ps1'` line this terminates) sat unsubmitted at
-    /// the prompt on Linux/macOS. Same defect and same fix as #792. See #794.
+    /// LF on unix, which only runs the line when the tty is cooked (or the line editor accepts
+    /// it): PSReadLine 2.3.x reads LF as Ctrl+J and leaves the line unsubmitted, so `pwsh`'s
+    /// rc-file bootstrap (the `. '<tmp>.ps1'` line this terminates) depended on being consumed
+    /// before PSReadLine went raw. CR works in both modes. Same fix as #792. See #794.
     #[cfg(feature = "local_fs")]
     fn write_terminating_bootstrap_bytes(&mut self, ctx: &mut ModelContext<PtyController<T>>) {
         self.write_bytes(&[escape_sequences::C0::CR][..], ctx);
