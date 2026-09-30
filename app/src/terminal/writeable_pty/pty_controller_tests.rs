@@ -620,6 +620,72 @@ fn non_container_bootstrap_is_written_as_a_single_unchunked_write() {
     });
 }
 
+/// The rc-file bootstrap method sources a temp script with a line like ` . '<path>'`
+/// (PowerShell) or ` source '<path>'` (other shells) and then submits it with
+/// `write_terminating_bootstrap_bytes`. Submitting with LF only runs the line when the tty is
+/// cooked and ICRNL translates LF to CR for the line discipline; a raw-mode line editor
+/// (PSReadLine, for `pwsh`) reads the byte as-is and treats LF as Ctrl+J, so the sourced line
+/// never ran on Linux/macOS even though `should_use_rc_file_bootstrap_method` picks this path for
+/// PowerShell on every platform. See #794.
+///
+/// Not gated by target platform: `write_terminating_bootstrap_bytes` no longer has a
+/// `cfg(unix)`/`cfg(windows)` branch to select between, so there is nothing left to run this test
+/// under besides the one path -- which is the fix.
+#[cfg(feature = "local_fs")]
+#[test]
+fn rc_file_bootstrap_line_is_terminated_with_carriage_return() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        controller.update(&mut app, |controller, ctx| {
+            controller.source_bootstrap_script(
+                b"/tmp/phosphor-bootstrap.ps1".to_vec(),
+                ShellType::PowerShell,
+                ctx,
+            );
+        });
+
+        let messages = sender.messages.lock();
+        let mut written = Vec::new();
+        for message in messages.iter() {
+            match message {
+                Message::Input(bytes) => written.extend_from_slice(bytes),
+                other => panic!("unexpected message on the rc-file bootstrap path: {other:?}"),
+            }
+        }
+        assert!(
+            written.ends_with(&[escape_sequences::C0::CR]),
+            "the rc-file bootstrap's source line must be submitted with CR, not LF: {written:?}"
+        );
+        assert!(
+            !written.ends_with(&[escape_sequences::C0::LF]),
+            "a trailing LF is Ctrl+J to a raw-mode line editor (PSReadLine), not a submit: \
+             {written:?}"
+        );
+
+        drop(model_events_tx);
+    });
+}
+
 /// The native-completions watchdog is what stands between an unanswered `^Y` handshake and a
 /// permanently wedged pane (see `arm_native_completions_watchdog`'s doc comment): if the shell
 /// never replies, `in_flight_native_completions_state` stays `AwaitingPrompt` forever, which
