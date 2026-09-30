@@ -770,21 +770,45 @@ impl<T: EventLoopSender> PtyController<T> {
                 }
             }
         } else if bootstrap::is_container_subshell(pending_session_info) {
-            // Write in 4KB chunks with 50ms gaps between them. A container
-            // subshell (`docker`/`podman exec -it`) sits behind a double-PTY
-            // proxy that drops data on large writes, so the single unchunked
-            // write below silently truncates the bootstrap and warpify never
-            // completes. Ported from the pin
-            // (`4111d08f9:app/src/terminal/writeable_pty/pty_controller.rs:444-454`),
-            // which is `is_container_subshell`'s second consumer — the first is
+            // Write in 4KB chunks with 50ms gaps between them, wrapped in bracketed paste and
+            // submitted with CR -- the same wrapping the non-container fallback above uses
+            // (~764-768). Without it, the raw multi-line script's embedded newlines are just
+            // keystrokes to a raw-mode line editor (PSReadLine): the script accumulates into one
+            // unsubmitted buffer instead of running. See #795.
+            //
+            // The chunking itself, and the 50ms delay between chunks, stay as they are: a
+            // container subshell (`docker`/`podman exec -it`) sits behind a double-PTY proxy that
+            // drops data on large writes or bursts, so the single unchunked write below silently
+            // truncates the bootstrap and warpify never completes. Ported from the pin
+            // (`4111d08f9:app/src/terminal/writeable_pty/pty_controller.rs:444-454`), which is
+            // `is_container_subshell`'s second consumer — the first is
             // `bootstrap::should_use_rc_file_bootstrap_method`.
+            //
+            // The open marker goes on the front of the first chunk and the close marker plus the
+            // submit CR go on the back of the last chunk, rather than out as their own writes, so
+            // they ride the same paced cadence as the rest of the script and are never split
+            // across a chunk boundary. They're only a handful of bytes, so this doesn't change the
+            // chunking's purpose of keeping each write small.
             const CONTAINER_BOOTSTRAP_CHUNK_SIZE: usize = 4096;
             const CONTAINER_BOOTSTRAP_CHUNK_DELAY: Duration = Duration::from_millis(50);
             let bytes: Vec<u8> = bootstrap.into_owned();
-            let chunks: Vec<Vec<u8>> = bytes
+            let mut chunks: Vec<Vec<u8>> = bytes
                 .chunks(CONTAINER_BOOTSTRAP_CHUNK_SIZE)
                 .map(<[u8]>::to_vec)
                 .collect();
+            if chunks.is_empty() {
+                chunks.push(Vec::new());
+            }
+            if let Some(first) = chunks.first_mut() {
+                first.splice(
+                    0..0,
+                    escape_sequences::BRACKETED_PASTE_START.iter().copied(),
+                );
+            }
+            if let Some(last) = chunks.last_mut() {
+                last.extend_from_slice(escape_sequences::BRACKETED_PASTE_END);
+                last.push(escape_sequences::C0::CR);
+            }
             for (index, chunk) in chunks.into_iter().enumerate() {
                 ctx.spawn(
                     Timer::after(CONTAINER_BOOTSTRAP_CHUNK_DELAY * index as u32),

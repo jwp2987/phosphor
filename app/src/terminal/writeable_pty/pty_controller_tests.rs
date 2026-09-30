@@ -487,6 +487,10 @@ fn docker_exec_session_info() -> SessionInfo {
 /// `bootstrap::is_container_subshell`'s doc comment and the pin
 /// (`4111d08f9:app/src/terminal/writeable_pty/pty_controller.rs:444-454`).
 ///
+/// The write is also wrapped in bracketed paste and submitted with CR (see #795): a raw
+/// multi-line write with no submit byte just accumulates as keystrokes in a raw-mode line editor
+/// (PSReadLine) instead of running.
+///
 /// This drives a bootstrap sized to span two 4KB chunks (a full first chunk
 /// plus a short remainder) through the real `PtyController` -> event-loop path
 /// and asserts on what actually reached `TestEventLoopSender`: exactly two
@@ -494,8 +498,10 @@ fn docker_exec_session_info() -> SessionInfo {
 /// write the non-container path would produce -- see
 /// `non_container_bootstrap_is_written_as_a_single_unchunked_write` below),
 /// which is what a proxy that drops large single writes needs. The chunks'
-/// bytes are also asserted to reassemble the original bootstrap exactly, so a
-/// chunk-boundary bug would fail here even if the write count matched.
+/// bytes are also asserted to reassemble
+/// `BRACKETED_PASTE_START + bootstrap + BRACKETED_PASTE_END + CR` exactly, so a
+/// chunk-boundary bug -- including one that splits a marker across chunks --
+/// would fail here even if the write count matched.
 #[cfg(feature = "local_fs")]
 #[test]
 fn container_subshell_bootstrap_is_written_in_bounded_chunks() {
@@ -555,9 +561,44 @@ fn container_subshell_bootstrap_is_written_in_bounded_chunks() {
                 other => panic!("unexpected message on the container bootstrap path: {other:?}"),
             }
         }
+        let mut expected = escape_sequences::BRACKETED_PASTE_START.to_vec();
+        expected.extend_from_slice(&bootstrap);
+        expected.extend_from_slice(escape_sequences::BRACKETED_PASTE_END);
+        expected.push(escape_sequences::C0::CR);
         assert_eq!(
-            reassembled, bootstrap,
-            "the chunks must reassemble the original bootstrap byte-for-byte"
+            reassembled, expected,
+            "the chunks must reassemble to the bootstrap wrapped in bracketed paste and \
+             submitted with CR, byte-for-byte"
+        );
+
+        // The open marker must ride in the first chunk (not arrive as a write of its own ahead
+        // of the bootstrap), and the close marker plus the submit CR must ride in the last
+        // chunk, so #795's fix can never be defeated by something upstream of the PTY treating
+        // an early or late fragment as a separate, differently-timed write.
+        let Message::Input(first_message) = &messages[0] else {
+            panic!(
+                "unexpected message on the container bootstrap path: {:?}",
+                messages[0]
+            );
+        };
+        assert!(
+            first_message.starts_with(escape_sequences::BRACKETED_PASTE_START),
+            "the bracketed-paste open marker must be the front of the first chunk: {first_message:?}"
+        );
+        let Message::Input(last_message) = &messages[1] else {
+            panic!(
+                "unexpected message on the container bootstrap path: {:?}",
+                messages[1]
+            );
+        };
+        let last_bytes: &[u8] = last_message.as_ref();
+        assert!(
+            last_bytes.ends_with(&[escape_sequences::C0::CR]),
+            "the submit CR must be the back of the last chunk: {last_bytes:?}"
+        );
+        assert!(
+            last_bytes[..last_bytes.len() - 1].ends_with(escape_sequences::BRACKETED_PASTE_END),
+            "the bracketed-paste close marker must immediately precede the submit CR: {last_bytes:?}"
         );
 
         drop(model_events_tx);
@@ -615,6 +656,73 @@ fn non_container_bootstrap_is_written_as_a_single_unchunked_write() {
             "a non-container bootstrap must not be chunked even when it exceeds the chunk size"
         );
         assert_input_matches(&messages[0], bootstrap);
+
+        drop(model_events_tx);
+    });
+}
+
+/// A container-subshell bootstrap short enough to fit in a single 4KB chunk must still come out
+/// wrapped in bracketed paste and submitted with CR, all within that one chunk: the open marker,
+/// the bootstrap, the close marker, then the CR, in that order.
+///
+/// `container_subshell_bootstrap_is_written_in_bounded_chunks` above cannot exercise this case --
+/// it uses a bootstrap sized to span two chunks specifically so the open marker (chunk 0) and the
+/// close marker plus CR (chunk 1) land in different writes. Here they all land in the same `Vec`,
+/// which is the case where prepending the open marker and then appending the close marker and CR
+/// could clobber each other if done in the wrong order or against the wrong end. See #795.
+#[cfg(feature = "local_fs")]
+#[test]
+fn container_subshell_bootstrap_smaller_than_a_chunk_is_wrapped_and_submitted_with_cr() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        let bootstrap: Vec<u8> = b"echo hi".to_vec();
+        let session_info = docker_exec_session_info();
+
+        controller.update(&mut app, |controller, ctx| {
+            controller.write_bootstrap_script_to_shell(
+                &session_info,
+                ctx,
+                ShellType::Bash,
+                bootstrap.clone().into(),
+            );
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while sender.messages.lock().is_empty() && Instant::now() < deadline {
+            Timer::after(Duration::from_millis(10)).await;
+        }
+
+        let messages = sender.messages.lock();
+        assert_eq!(
+            messages.len(),
+            1,
+            "a bootstrap smaller than the chunk size must still be a single write"
+        );
+        let mut expected = escape_sequences::BRACKETED_PASTE_START.to_vec();
+        expected.extend_from_slice(&bootstrap);
+        expected.extend_from_slice(escape_sequences::BRACKETED_PASTE_END);
+        expected.push(escape_sequences::C0::CR);
+        assert_input_matches(&messages[0], expected);
 
         drop(model_events_tx);
     });
