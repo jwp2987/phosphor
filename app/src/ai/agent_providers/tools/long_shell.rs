@@ -106,7 +106,10 @@ fn expand_raw_input_tokens(input: &str) -> Vec<u8> {
 fn control_token_byte(token: &str) -> Option<u8> {
     match token {
         "<ESC>" | "<Esc>" | "<escape>" | "<Escape>" => Some(0x1b),
-        "<ENTER>" | "<Enter>" | "<CR>" | "<LF>" => Some(b'\n'),
+        // Enter sends CR, as a real keypress does; raw-mode line editors such as
+        // PSReadLine do not accept LF as submit.
+        "<ENTER>" | "<Enter>" | "<CR>" => Some(b'\r'),
+        "<LF>" => Some(b'\n'),
         "<TAB>" | "<Tab>" => Some(b'\t'),
         "<BACKSPACE>" | "<Backspace>" => Some(0x7f),
         "<CTRL-C>" | "<Ctrl-C>" | "<C-c>" => Some(0x03),
@@ -239,3 +242,7 @@ pub static READ_SHELL_COMMAND_OUTPUT: OpenAiTool = OpenAiTool {
     from_args: read_from_args,
     result_to_json: read_result_to_json,
 };
+
+#[cfg(test)]
+#[path = "long_shell_tests.rs"]
+mod tests;

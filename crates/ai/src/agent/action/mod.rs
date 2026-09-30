@@ -681,15 +681,10 @@ impl AIAgentPtyWriteMode {
                 // ^A (SOH) is "beginning of line" for readline/prompt-toolkit style editors.
                 v.push(escape_sequences::C0::SOH);
                 v.extend_from_slice(&bytes);
-                cfg_if::cfg_if! {
-                    if #[cfg(target_os = "windows")] {
-                        // Use CR to submit on Windows hosts.
-                        v.push(escape_sequences::C0::CR);
-                    } else {
-                        // Use LF to submit on POSIX.
-                        v.push(escape_sequences::C0::LF);
-                    }
-                }
+                // Submit with CR, which is what the Enter key sends on every platform. A
+                // cooked-mode tty maps it to LF (ICRNL), but raw-mode line editors do not:
+                // PSReadLine reads LF as Ctrl+J and leaves the line unsubmitted.
+                v.push(escape_sequences::C0::CR);
                 v
             }
             AIAgentPtyWriteMode::Block => {
@@ -925,5 +920,28 @@ mod written_paths_tests {
             hunks: Vec::new(),
         });
         assert_eq!(edit.written_paths().collect::<Vec<_>>(), vec![".mcp.json"]);
+    }
+}
+
+#[cfg(test)]
+mod pty_write_mode_tests {
+    use super::*;
+    use warp_terminal::model::escape_sequences::C0;
+
+    /// Line mode must submit with CR, the byte the Enter key sends. LF only works when the
+    /// tty translates it; pwsh's PSReadLine runs the tty raw and treats LF as Ctrl+J, so the
+    /// agent's command sat unsubmitted at the prompt and the turn waited on it forever.
+    #[test]
+    fn line_mode_submits_with_carriage_return() {
+        let bytes = AIAgentPtyWriteMode::Line.decorate_bytes(b"'hi'".to_vec(), false);
+        assert_eq!(bytes, [&[C0::SOH][..], b"'hi'", &[C0::CR]].concat());
+    }
+
+    #[test]
+    fn raw_mode_writes_bytes_unchanged() {
+        assert_eq!(
+            AIAgentPtyWriteMode::Raw.decorate_bytes(b"abc\n".to_vec(), true),
+            b"abc\n"
+        );
     }
 }
