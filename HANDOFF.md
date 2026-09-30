@@ -5,7 +5,8 @@ file ties it together and records the operational lessons a fresh session will
 not otherwise have.
 
 Last rewritten: 2026-09-27 evening, after rounds 5, 6 and 7 landed on `main`
-(`0695371a9`) — see the new top of **"Where main is"** below for that state.
+(`0695371a9`); amended 2026-09-30 for round 8 (v0.1.8, `2f2dbf694`) and the
+pwsh round (`38ba43d0b`) — see **"Where main is"** below for that state.
 Everything under the `### The single most important finding of 2026-08-07`
 heading is retained history from the previous rewrite (2026-08-06 evening,
 after the migration to the `/cache/git/zap` host — **that host is gone**, the
@@ -36,12 +37,13 @@ the lessons, not as a current status report, and not for the literal paths.
 
 ## Where main is
 
-`main` is at **`0695371a9`** (2026-09-27), the tip of `integ/round6` after
-rounds 5, 6 and 7 (216 commits over `3cf6d688b..0695371a9`, ~113 of them merge
-commits from stacked `fix/r5-*`/`fix/g*`/`fix/r6-*`/`fix/r7-*` lane branches).
+`main` is at **`38ba43d0b`** (2026-09-30), the tip of `integ/pwsh` on top of
+the v0.1.8 release (`2f2dbf694`, round 8) and `0695371a9` (rounds 5–7: 216
+commits over `3cf6d688b..0695371a9`, ~113 of them merge commits from stacked
+`fix/r5-*`/`fix/g*`/`fix/r6-*`/`fix/r7-*` lane branches).
 `docs/STATE.md` (generated — trust it over any number below) currently reads:
-pin `4111d08f9`, 8700/9908 non-cloud pin tests present (~87.8%), last fully
-green `script/precheck` at `63091930f` with **0 commits since**.
+pin `4111d08f9`, last fully green `script/precheck` at `5348a52c0` with
+**0 commits since** (the `38ba43d0b` commit on top is the STATE record itself).
 
 ### What landed — round 5 (`fix/r5-*` / `fix/g*-*`, merged into `integ/round5-0927`)
 
@@ -249,6 +251,58 @@ commit subject — checked before including them here):
   actually finished in round 6 but merged in via these two branches at the
   round-6/7 boundary; listed under round 6 above for where the work
   happened, noted here for where the merge commit sits in `git log`.
+
+### What landed — round 8 (`integ/round8`, released as v0.1.8 `8d7bad0fa`)
+
+- `9b04e2ad3` (#789) — the unreachable-BYOP-provider hint is applied on the
+  path a refused connection actually takes (`map_genai_error`), with the
+  provider URL redacted to `scheme://host[:port]`.
+- `415c3711b` + `e9c8675cd` (#790) — rejecting a blocked command unlocks the
+  queued approval follow-up rows instead of leaving the queue stuck.
+- `87dd50ff3` + `cce25370a` (Refs #791) — a re-raised termination signal is
+  attributed to the request that caused it (winit/X11); the mac/headless
+  paths still use the INITIATING_SIGNAL latch, and the "Ctrl+Shift+Q hang"
+  that prompted it was **not reproduced** — #791 stays open as residue.
+- `b3771fc02` — E0716 test fix (`Some(&hint())` temporary) found by precheck.
+- X11 usage tests on the dev build were green; v0.1.8 tagged and built by
+  `phosphor_release.yml` (13 assets). 76 issues auto-closed by the push.
+
+### What landed — pwsh round (`integ/pwsh`, 2026-09-29/30)
+
+Started from a maintainer patch (`git am`, authorship kept):
+
+- `ad2cf609c` (#792, maintainer) — agent PTY writes submit with **CR**, not
+  LF: `<ENTER>`/`<CR>` → `\r`, line mode appends `C0::CR` on every platform.
+  PSReadLine 2.3.x reads LF as Ctrl+J and leaves the line unsubmitted.
+- `eb1b7cb54` + `d3d05e567` (#794) — `write_terminating_bootstrap_bytes`
+  sends CR too. **Hardening, not a reproduced hang**: the pre-fix build
+  bootstrapped pwsh 7.5.2 on Linux in <1s (the rc line is consumed before
+  PSReadLine goes raw); the comment was softened to say so.
+- `13eb44e53` (#795) — the container-subshell (docker/podman exec pwsh)
+  bootstrap is wrapped in bracketed paste and submitted with CR. Residue
+  (chunk boundaries inside the paste) is in `TODO.md`.
+- `98d82cee7` + `9f6a33a54` (#796) — `PHOSPHOR_TEST_SHELL` lets integration
+  tests pin the shell; new `integration-linux-pwsh` CI job installs pwsh
+  7.6.6 (`script/linux/install_pwsh`, CI-only) and runs the two pwsh
+  scenarios; `script/precheck` runs them too when pwsh is on PATH and warns
+  otherwise (it warns on the box — pwsh is not installed there).
+- **Evidence** (Xvfb :98, portable pwsh 7.5.2, `phosphor-oss-r8` as the
+  BEFORE control): raw-PTY probe — `\n` does not submit at the PSReadLine
+  prompt on 7.5.2, `\r` does; on 7.6.6 both do. GUI: agent writing
+  `Write-Output PROBE-OK` into a nested `pwsh` sat unsubmitted 3+ min on
+  BEFORE, ran first try on NEW. `Read-Host` is the WRONG probe — it reads
+  cooked-mode and passes on both.
+- **#793 (mac: highlighting agent-pane text selects the pwsh prompt) does not
+  reproduce on Linux** in split-pane or inline tag-in, idle or running. Still
+  open; needs a mac repro or the maintainer's answers.
+- **Because this repo merges without PRs, `pr-check.yml` never runs on a
+  `main` push** (`pull_request` + `workflow_dispatch` only). The pwsh lane was
+  run by hand: `gh workflow run pr-check.yml --ref main` → run 36667702665,
+  `2 tests run: 2 passed` on pwsh 7.6.6. Do this after any shell-bootstrap
+  change, or add a `push: [main]` trigger (maintainer decision).
+- Filed during verification: #797 — the "Full Terminal Agent" sub-session
+  for a long-running command defaults its model chip to Ollama instead of
+  inheriting the parent conversation's provider (pre-existing).
 
 ### Verification state (2026-09-27)
 
