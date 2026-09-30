@@ -259,7 +259,9 @@ impl SelectableArea {
 
     /// Opts this area into swallowing any `LeftMouseDown`/`LeftMouseUp` that lands within its
     /// last-painted bounds, instead of letting it propagate to whatever sits beneath it when
-    /// no selection could be started. See the field doc comment on `capture_clicks_within_bounds`.
+    /// no selection could be started -- and into starting its selection on those same painted
+    /// bounds rather than the clip stack. See the field doc comment on
+    /// `capture_clicks_within_bounds`.
     pub fn capture_clicks_within_bounds(mut self) -> Self {
         self.capture_clicks_within_bounds = true;
         self
@@ -323,8 +325,17 @@ impl SelectableArea {
             .expect("Should not be poisoned.");
         selection_state.clear();
 
-        // Only if this click was in the element, start a new selection.
-        if !is_mouse_in(self.origin, self.size, ctx, position) {
+        // Only if this click was in the element, start a new selection. An area that captures
+        // clicks within its painted bounds also *selects* within them: `is_mouse_in` consults
+        // the clip stack, and when that disagrees with where the area was last painted (#793)
+        // swallowing the click without starting a selection would leave the prose
+        // unselectable rather than merely stop the click reaching the terminal underneath.
+        let mouse_in = if self.capture_clicks_within_bounds {
+            self.contains_point_ignoring_clip(position)
+        } else {
+            is_mouse_in(self.origin, self.size, ctx, position)
+        };
+        if !mouse_in {
             return false;
         }
         let Some(origin) = self.origin else {
