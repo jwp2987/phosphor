@@ -26,7 +26,7 @@ reset="\033[0m"
 # Update this together with any test expectations that assume a specific pwsh
 # behavior or version string (see current_shell_starter_and_version's
 # `-Version` probe in app/src/integration_testing/terminal/util.rs).
-PWSH_VERSION="7.4.6"
+PWSH_VERSION="7.6.6"
 
 case "$(uname -m)" in
   x86_64)  PWSH_ARCH="x64" ;;

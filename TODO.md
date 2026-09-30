@@ -13395,6 +13395,14 @@ open findings that had no pre-existing row.
 
 ### Still open, unfixed this round
 
+- [ ] **#795 residue: the container-subshell bootstrap is bracketed-paste-wrapped for every
+      shell that reaches it.** By default only `docker run/exec ... bash|zsh|fish` is warpified
+      (`warpify/settings.rs` `SUBSHELL_COMMAND_REGEXES`), but a bash older than 5.1 inside the
+      container (readline < 8.1 has bracketed paste off by default) or a user-added subshell
+      regex matching a shell without bracketed-paste support would receive the raw
+      `\e[200~`/`\e[201~` markers as input -- a garbled first line, not data loss. Same
+      exposure the pre-existing rc-file fallback (`pty_controller.rs` ~764) always had, now on
+      the main container path. Not reproduced; needs an old-bash container to confirm.
 - [ ] **#791 follow-up: macOS and headless still re-raise a termination signal from the
       process-wide latch.** `87dd50ff3` scoped the re-raise per request on winit only
       (`exit_after_signal_shutdown_for`); `crates/warpui/src/platform/mac/app.rs` and
