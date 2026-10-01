@@ -6,7 +6,8 @@ not otherwise have.
 
 Last rewritten: 2026-09-27 evening, after rounds 5, 6 and 7 landed on `main`
 (`0695371a9`); amended 2026-09-30 for round 8 (v0.1.8, `2f2dbf694`) and the
-pwsh round (`38ba43d0b`) — see **"Where main is"** below for that state.
+pwsh round (`38ba43d0b`), and 2026-10-01 for #793/v0.1.10 and round 9
+(`1028fe4ef`) — see **"Where main is"** below for that state.
 Everything under the `### The single most important finding of 2026-08-07`
 heading is retained history from the previous rewrite (2026-08-06 evening,
 after the migration to the `/cache/git/zap` host — **that host is gone**, the
@@ -37,13 +38,13 @@ the lessons, not as a current status report, and not for the literal paths.
 
 ## Where main is
 
-`main` is at **`38ba43d0b`** (2026-09-30), the tip of `integ/pwsh` on top of
-the v0.1.8 release (`2f2dbf694`, round 8) and `0695371a9` (rounds 5–7: 216
-commits over `3cf6d688b..0695371a9`, ~113 of them merge commits from stacked
-`fix/r5-*`/`fix/g*`/`fix/r6-*`/`fix/r7-*` lane branches).
+`main` is at **`1028fe4ef`** (2026-10-01), the tip of `integ/r9` (round 9) on
+top of v0.1.10 (`a000dff3c`: #793 + the pwsh round), v0.1.8 (`2f2dbf694`,
+round 8) and `0695371a9` (rounds 5–7: 216 commits over `3cf6d688b..0695371a9`,
+~113 of them merge commits from stacked lane branches).
 `docs/STATE.md` (generated — trust it over any number below) currently reads:
-pin `4111d08f9`, last fully green `script/precheck` at `5348a52c0` with
-**0 commits since** (the `38ba43d0b` commit on top is the STATE record itself).
+pin `4111d08f9`, last fully green `script/precheck` at `d13443ebc` with
+**0 commits since** (the `1028fe4ef` commit on top is the STATE record itself).
 
 ### What landed — round 5 (`fix/r5-*` / `fix/g*-*`, merged into `integ/round5-0927`)
 
@@ -303,6 +304,72 @@ Started from a maintainer patch (`git am`, authorship kept):
 - Filed during verification: #797 — the "Full Terminal Agent" sub-session
   for a long-running command defaults its model chip to Ollama instead of
   inheriting the parent conversation's provider (pre-existing).
+
+### What landed — #793 lane and round 9 (`integ/r9`, 2026-09-30 → 10-01)
+
+- **#793** (`fix/793-chip-prose-selection`, on main since `44718bdf5`, shipped in
+  v0.1.10): the agent-response `SelectableArea` (AIBlockView + the three
+  CLISubagentView bubbles) opts into capturing `LeftMouseDown/Up` within its
+  painted bounds and starting its selection on those bounds instead of the clip
+  stack, so a prose drag can no longer fall through to the terminal grid.
+  **Fix by analysis** — the maintainer's layout (pwsh at its prompt, ⌘I, chip in
+  the blocklist) never rendered that way on Linux; #793 stays open for a Mac test.
+- **Round 9** — seven lanes from `a000dff3c`, each refuted by a second agent,
+  one box build + precheck per integration tip, X11 before/after on every
+  GUI-visible fix:
+  - `#769` one-line feature forward (`app/Cargo.toml` `test-util` →
+    `warpui/test-util`), so `cargo check -p warp_tui --tests` compiles alone.
+  - `#791` (Refs) per-request signal attribution ported to headless and mac;
+    refutation found the mac Quit menu bypasses the chokepoint and the
+    two-phase `applicationShouldTerminate:` makes attribution last-write-wins
+    — recorded on the issue, needs a mac build.
+  - `#773` (Refs) Windows console `CTRL_CLOSE/LOGOFF/SHUTDOWN` handler reusing
+    the #685 machinery; GUI `WM_ENDSESSION` documented as a TODO. API shapes
+    verified against the vendored `windows` 0.62.2 source; never run on Windows.
+  - `#788` the command palette's Quick Open (not the Global Search panel) called
+    `open_code` directly, bypassing the launch policy; now routed through
+    `open_file_with_target`. Side effect: Quick Open honours
+    `prefer_markdown_viewer`. X11: `.docx` revealed, `.md` → Markdown viewer.
+  - `#797` the Full Terminal Agent sub-session resolved its model via
+    `get_active_cli_agent_model` → "first BYOP provider that sorts" (Ollama);
+    now falls back to the Base resolution chain. The first-pass fix
+    (per-view override on the sub-session's own view id) was **ineffective** —
+    nothing reads that id — and was dropped before landing. X11: chip Local.
+  - `#798` two mechanisms: the live bubble was capped to the anchor block's
+    height because the cap keyed on "agent blocked" rather than "command
+    running" (sliver); and the collapsed `RestoredReadOnly` bubble was still laid
+    out at ~45px next to its summary card, painting one row (the "bash" header).
+    Now: full height while running; an inactive bubble whose conversation has a
+    card is not laid out at all. Three X11 passes to get here.
+  - `#799` CLI-subagent tasks are deliberately excluded from the rich-content
+    list the FullScreen view renders, so the pane was blank; the live
+    `FinishedSubagent` arm now backfills AI blocks. Cross-session restore still
+    blank → `#802`. The first-pass "anchor block association" was necessary but
+    not sufficient, and its test needed two fixture fixes (missing exchange,
+    missing `GlobalResourceHandlesProvider`) that only the box precheck found.
+  - `#800` pwsh subshell warpification: `pwsh_init_subshell.ps1`, the
+    `ShellType::PowerShell` arm replacing upstream's `todo!()`, `$env:` setup,
+    `if (-not $global:WARP_BOOTSTRAPPED)` wrapper, `pwsh`/`powershell` + docker
+    regexes, shell-type resolution from the warpify banner so the POSIX probe is
+    never sent to pwsh, success-block text. Refutation ran the payload in the
+    portable pwsh and found the two profile commands were concatenated without a
+    separator (fixed). X11: hint → Ctrl+I → clean bootstrap → blocks inside
+    pwsh → `exit` back to bash; one-shot `-c` ignored.
+  - `#804` found by that X11 run: `ShellType::rc_file_paths` had the PowerShell
+    arms swapped (Windows got `.config/powershell`, Unix got `Documents\…`);
+    byte-identical at the pin. Fixed on the integration branch.
+  - `#787` **parked**: the lane built a `WindowDamage::{Full, Region}` model but
+    the wgpu backend has no persistent framebuffer, so a scissored present would
+    expose stale pixels; branch `fix/r9-blink` kept, nothing merged, CPU unchanged.
+- Filed this round: `#801` per-view LLM-preference maps never pruned, `#802`
+  restored CLI-subagent conversation blank, `#803` collapsed bubble keeps a stale
+  hit-box in `dispatch_event` (LeftMouseDown now guarded; drag-end case open),
+  `#804` (fixed, above).
+- Lessons: (1) a refute that can *execute* the artefact (pwsh payloads, the
+  windows crate source) finds what reading cannot; (2) "fixed" means a
+  before/after delta in the GUI — #797 and #799 both passed review and failed
+  X11 the first time; (3) test fixtures written without a compiler need the box
+  precheck as their first run — budget one round trip per new `App::test` test.
 
 ### Verification state (2026-09-27)
 
