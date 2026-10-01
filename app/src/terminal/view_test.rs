@@ -950,6 +950,14 @@ fn spawned_cli_subagent_associates_anchor_block_with_conversation() {
     // Ctrl-Shift-Enter tag-in does for the selected block.
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        // `create_cli_subagent_view`'s live-spawn association code reads
+        // `GlobalResourceHandlesProvider` (for the persistence sender it forwards
+        // `UpdateBlockAgentViewVisibility` to); same idiom as the other
+        // CLI-subagent tests in this file.
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
 
         let conversation_id = AIConversationId::new();
         let task_id = TaskId::new("cli-task-live".to_string());
