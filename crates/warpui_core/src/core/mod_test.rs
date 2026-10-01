@@ -27,6 +27,9 @@ mod ref_count_tests;
 #[path = "try_update_view_tests.rs"]
 mod try_update_view_tests;
 
+#[path = "window_damage_tests.rs"]
+mod window_damage_tests;
+
 #[test]
 fn test_subscribe_and_emit_from_model() {
     #[derive(Default)]

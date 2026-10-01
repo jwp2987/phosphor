@@ -505,3 +505,201 @@ fn test_pending_paint_only_timer_upgrades_when_a_layout_required_repaint_joins_i
         );
     })
 }
+
+/// An element like [`PaintOnlyBlinker`], but using the region-aware variant —
+/// mirroring what the editor's cursor blink does since issue #787: every
+/// paint, it requests a paint-only repaint scoped to a fixed rect, instead of
+/// the whole window.
+struct RegionBlinker {
+    region: RectF,
+    delay: Duration,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl Element for RegionBlinker {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        _ctx: &mut LayoutContext,
+        _app: &AppContext,
+    ) -> Vector2F {
+        let size = constraint.max;
+        self.size = Some(size);
+        size
+    }
+
+    fn after_layout(&mut self, _ctx: &mut AfterLayoutContext, _app: &AppContext) {}
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, _app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, ctx.scene.z_index()));
+        ctx.repaint_after_paint_only_in_region(self.delay, self.region);
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        _event: &DispatchedEvent,
+        _ctx: &mut EventContext,
+        _app: &AppContext,
+    ) -> bool {
+        false
+    }
+}
+
+/// A root view with two [`RegionBlinker`]s as siblings, each damaging a
+/// different (overlapping) rect — like two blinking cursors in split panes of
+/// the same window.
+struct TwoRegionBlinkersRootView;
+
+impl Entity for TwoRegionBlinkersRootView {
+    type Event = ();
+}
+
+impl crate::core::View for TwoRegionBlinkersRootView {
+    fn render(&self, _app: &AppContext) -> Box<dyn Element> {
+        let mut stack = Stack::new();
+        stack.add_child(Box::new(RegionBlinker {
+            region: RectF::new(Vector2F::new(0., 0.), Vector2F::new(10., 10.)),
+            delay: PAINT_ONLY_DELAY,
+            size: None,
+            origin: None,
+        }));
+        stack.add_child(Box::new(RegionBlinker {
+            region: RectF::new(Vector2F::new(5., 5.), Vector2F::new(10., 10.)),
+            delay: PAINT_ONLY_DELAY,
+            size: None,
+            origin: None,
+        }));
+        stack.finish()
+    }
+
+    fn ui_name() -> &'static str {
+        "TwoRegionBlinkersRootView"
+    }
+}
+
+impl TypedActionView for TwoRegionBlinkersRootView {
+    type Action = ();
+}
+
+/// The editor's blink repaint (after issue #787, `RichTextElement::paint`
+/// schedules it via `repaint_after_paint_only_in_region` rather than the
+/// regionless `repaint_after_paint_only`) must reach `Presenter::paint`'s own
+/// return value as a `Region`, not get lost or widened to the whole window.
+/// Two independent region requests (e.g. two blinking cursors in split panes)
+/// must union into the bounding rect of both, exactly as `WindowDamage::union`
+/// describes in its own pure unit tests (`core::window_damage_tests`) — this
+/// test exercises the same semantics through the real `PaintContext`/`Element`
+/// plumbing instead of calling `WindowDamage` directly.
+#[test]
+fn test_presenter_paint_accumulates_paint_only_region_across_elements() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, _view) =
+            app.add_window(WindowStyle::NotStealFocus, |_| TwoRegionBlinkersRootView);
+
+        // Establish layout via a real frame first: calling `Presenter::paint`
+        // directly below assumes the view tree has already been rendered and
+        // laid out (what `AppContext::build_scene` normally does before it).
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+
+        app.update(|ctx| {
+            let presenter = ctx.presenter(window_id).unwrap();
+            let (_, _, repaint_needs_layout, repaint_region, _) =
+                presenter
+                    .borrow_mut()
+                    .paint(1., Vector2F::new(800., 600.), None, ctx);
+
+            assert!(
+                !repaint_needs_layout,
+                "two paint-only-with-region requests must not require layout"
+            );
+            assert_eq!(
+                repaint_region,
+                Some(RectF::new(Vector2F::new(0., 0.), Vector2F::new(15., 15.))),
+                "two blink regions must union into their bounding rect"
+            );
+        });
+    })
+}
+
+/// A root view with a regionless [`PaintOnlyBlinker`] and a [`RegionBlinker`]
+/// as siblings — like one editor whose blink couldn't determine a cursor rect
+/// (shouldn't happen in practice, but the fallback must be safe) alongside one
+/// that could.
+#[derive(Default)]
+struct MixedBlinkersRootView {
+    paint_only_counts: Rc<RepaintCounts>,
+}
+
+impl Entity for MixedBlinkersRootView {
+    type Event = ();
+}
+
+impl crate::core::View for MixedBlinkersRootView {
+    fn render(&self, _app: &AppContext) -> Box<dyn Element> {
+        let mut stack = Stack::new();
+        stack.add_child(Box::new(PaintOnlyBlinker {
+            counts: self.paint_only_counts.clone(),
+            delay: PAINT_ONLY_DELAY,
+            size: None,
+            origin: None,
+        }));
+        stack.add_child(Box::new(RegionBlinker {
+            region: RectF::new(Vector2F::new(0., 0.), Vector2F::new(10., 10.)),
+            delay: PAINT_ONLY_DELAY,
+            size: None,
+            origin: None,
+        }));
+        stack.finish()
+    }
+
+    fn ui_name() -> &'static str {
+        "MixedBlinkersRootView"
+    }
+}
+
+impl TypedActionView for MixedBlinkersRootView {
+    type Action = ();
+}
+
+/// A paint-only repaint that doesn't know its own damage rect (the regionless
+/// `PaintContext::repaint_after_paint_only`) must poison the region for the
+/// *whole* frame, even if another element in the same window did supply one —
+/// "this known rect, plus some unknown other area" isn't representable as a
+/// single rect, so the only safe outcome is `None` (which
+/// `WindowInvalidation::damage` then treats as `Full`, never under-painting).
+/// See `PaintContext::repaint_region_unknown`.
+#[test]
+fn test_presenter_paint_region_is_unknown_if_any_paint_only_request_omits_it() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, _view) = app.add_window(WindowStyle::NotStealFocus, |_| {
+            MixedBlinkersRootView::default()
+        });
+
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+
+        app.update(|ctx| {
+            let presenter = ctx.presenter(window_id).unwrap();
+            let (_, _, repaint_needs_layout, repaint_region, _) =
+                presenter
+                    .borrow_mut()
+                    .paint(1., Vector2F::new(800., 600.), None, ctx);
+
+            assert!(!repaint_needs_layout);
+            assert_eq!(
+                repaint_region, None,
+                "a regionless paint-only request must poison the region for the whole frame"
+            );
+        });
+    })
+}

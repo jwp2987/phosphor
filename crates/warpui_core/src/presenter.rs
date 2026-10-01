@@ -78,6 +78,20 @@ pub struct PaintContext<'a> {
     /// (e.g. a blinking cursor), which is what lets `AppContext::build_scene`
     /// skip layout for that wake. See issue #703.
     repaint_needs_layout: bool,
+    /// The accumulated damage region for this frame's scheduled repaint — the
+    /// union of every `repaint_after_paint_only_in_region`/
+    /// `repaint_at_paint_only_in_region` call this paint pass. Meaningless
+    /// (ignored) once `repaint_needs_layout` is true, or once
+    /// `repaint_region_unknown` is true. See issue #787.
+    repaint_region: Option<RectF>,
+    /// Set by the regionless `repaint_after_paint_only`/`repaint_at_paint_only`
+    /// — a paint-only repaint request that didn't supply a rect. Once true,
+    /// `repaint_region` can't be trusted as *the whole* damage for this
+    /// frame's paint-only wake even if some other call did supply one (the
+    /// true damage would be "known rect, plus some unknown other area" —
+    /// not representable as a single rect), so the caller must fall back to
+    /// treating the wake as `Full`. See issue #787.
+    repaint_region_unknown: bool,
     pending_assets: HashSet<AssetHandle>,
     /// Keep track of all the views that were actually painted in this scene.
     views_painted: EntityIdSet,
@@ -418,7 +432,7 @@ impl Presenter {
             // * Extend the AfterLayoutContext API to allow state updates, but not other effects
             self.after_layout(ctx);
         }
-        let (scene, repaint_at, repaint_needs_layout, pending_assets) = self.paint(
+        let (scene, repaint_at, repaint_needs_layout, repaint_region, pending_assets) = self.paint(
             zoomed_scale_factor,
             zoomed_window_size,
             max_texture_dimension_2d,
@@ -426,7 +440,21 @@ impl Presenter {
         );
         // After paint, collect a delayed repaint if it exists and start the timer.
         if let Some(repaint_at) = repaint_at {
-            ctx.manage_delayed_repaint_timers(self.window_id, repaint_at, repaint_needs_layout);
+            // Only a region recorded by every paint-only repaint call this frame
+            // (and no layout-required call, which would make this wake `Full`
+            // anyway) is trustworthy enough to hand to `manage_delayed_repaint_timers`.
+            // See `PaintContext::repaint_region_unknown` and issue #787.
+            let repaint_region = if repaint_needs_layout {
+                None
+            } else {
+                repaint_region
+            };
+            ctx.manage_delayed_repaint_timers(
+                self.window_id,
+                repaint_at,
+                repaint_needs_layout,
+                repaint_region,
+            );
         }
         ctx.manage_pending_assets(self.window_id, pending_assets);
         let scene = Rc::new(scene);
@@ -481,10 +509,11 @@ impl Presenter {
         window_size: Vector2F,
         max_texture_dimension_2d: Option<u32>,
         ctx: &mut AppContext,
-    ) -> (Scene, Option<Instant>, bool, HashSet<AssetHandle>) {
+    ) -> (Scene, Option<Instant>, bool, Option<RectF>, HashSet<AssetHandle>) {
         let mut scene = Scene::new(scale_factor, ctx.rendering_config());
         let mut repaint_at = None;
         let mut repaint_needs_layout = false;
+        let mut repaint_region = None;
         let mut pending_assets = HashSet::new();
 
         if let Some(root_view_id) = ctx.root_view_id(self.window_id) {
@@ -500,6 +529,8 @@ impl Presenter {
                 current_selection: None,
                 repaint_at: None,
                 repaint_needs_layout: false,
+                repaint_region: None,
+                repaint_region_unknown: false,
                 pending_assets: HashSet::new(),
                 views_painted: EntityIdSet::default(),
             };
@@ -507,6 +538,15 @@ impl Presenter {
 
             repaint_at = paint_ctx.repaint_at;
             repaint_needs_layout = paint_ctx.repaint_needs_layout;
+            // A paint-only repaint that didn't supply a region makes the region
+            // untrustworthy as the frame's whole damage — see
+            // `repaint_region_unknown`'s doc. Fall back to `None` (treated as
+            // `Full` downstream) rather than handing back a partial rect.
+            repaint_region = if paint_ctx.repaint_region_unknown {
+                None
+            } else {
+                paint_ctx.repaint_region
+            };
             pending_assets.extend(paint_ctx.pending_assets);
 
             // If the cursor shape had been changed by a view and that view is no longer being
@@ -536,7 +576,13 @@ impl Presenter {
             }
         }
 
-        (scene, repaint_at, repaint_needs_layout, pending_assets)
+        (
+            scene,
+            repaint_at,
+            repaint_needs_layout,
+            repaint_region,
+            pending_assets,
+        )
     }
 
     pub fn ancestors(&self, mut view_id: EntityId) -> Vec<EntityId> {
@@ -749,6 +795,37 @@ impl PaintContext<'_> {
     /// Like [`Self::repaint_at`], but see [`Self::repaint_after_paint_only`] for
     /// why this doesn't mark the next repaint as layout-required.
     pub fn repaint_at_paint_only(&mut self, new_repaint_at: Instant) {
+        // This call doesn't say what's being damaged, so the frame this timer
+        // fires can't be trusted to a partial region — see
+        // `repaint_region_unknown`'s doc. Callers that know their damage rect
+        // should use `repaint_at_paint_only_in_region` instead.
+        self.repaint_region_unknown = true;
+        self.set_nearest_repaint_at(new_repaint_at);
+    }
+
+    /// Like [`Self::repaint_after_paint_only`], but also records the window-local
+    /// rect that will need repainting when this timer fires — e.g. a blinking
+    /// cursor's on-screen bounds. Multiple calls union their regions, the same
+    /// way multiple paint-only repaints targeting the same window accumulate.
+    ///
+    /// This is plumbing only so far: `AppContext::build_scene` still paints the
+    /// whole window on every wake, region or not. What this feeds is
+    /// `WindowInvalidation::paint_only_redraw_region`, for a future renderer
+    /// change to act on. See issue #787.
+    pub fn repaint_after_paint_only_in_region(&mut self, delay: Duration, region: RectF) {
+        let start_time = Instant::now();
+        let new_repaint_at = start_time + delay;
+        self.repaint_at_paint_only_in_region(new_repaint_at, region);
+    }
+
+    /// Like [`Self::repaint_at_paint_only`], but see
+    /// [`Self::repaint_after_paint_only_in_region`] for why this also records a
+    /// damage rect.
+    pub fn repaint_at_paint_only_in_region(&mut self, new_repaint_at: Instant, region: RectF) {
+        self.repaint_region = Some(match self.repaint_region {
+            Some(existing) => existing.union_rect(region),
+            None => region,
+        });
         self.set_nearest_repaint_at(new_repaint_at);
     }
 

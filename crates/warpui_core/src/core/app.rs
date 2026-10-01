@@ -618,6 +618,14 @@ pub enum RepaintTrigger {
         /// spawned task's closure reads this cell when it fires, not a value
         /// captured at spawn time, so the upgrade is visible to it.
         layout_required: Rc<Cell<bool>>,
+        /// The accumulated paint-only damage region for this timer, if every
+        /// request covered by it has supplied one. `None` means either no
+        /// region is known yet, or `layout_required` is (or became) `true` —
+        /// at that point the region is moot, since the wake is `Full`
+        /// regardless. Shared for the same reason `layout_required` is: a
+        /// later request covered by this timer's deadline can still union in
+        /// its own region after this timer is spawned. See issue #787.
+        region: Rc<Cell<Option<RectF>>>,
     },
     AssetLoaded {
         asset_handle: AssetHandle,
@@ -4031,11 +4039,19 @@ impl AppContext {
     /// sets `WindowInvalidation::paint_only_redraw_requested` instead of
     /// `redraw_requested`, so `AppContext::build_scene` can skip layout for that
     /// wake if nothing else invalidated the window in the meantime.
+    ///
+    /// `region`, when `Some`, is the damage rect recorded for a paint-only
+    /// request (see `PaintContext::repaint_after_paint_only_in_region`); always
+    /// `None` when `layout_required` is true, since that wake is `Full`
+    /// regardless of any rect. It's unioned into
+    /// `WindowInvalidation::paint_only_redraw_region` when this timer fires.
+    /// See issue #787.
     pub fn manage_delayed_repaint_timers(
         &mut self,
         window_id: WindowId,
         repaint_at: Instant,
         layout_required: bool,
+        region: Option<RectF>,
     ) {
         // Reuse an existing timer with an earlier-or-equal deadline for the same
         // window instead of spawning a new one — it'll fire in time regardless.
@@ -4066,6 +4082,7 @@ impl AppContext {
             let RepaintTrigger::Timer {
                 instant,
                 layout_required: existing_layout_required,
+                region: existing_region,
             } = &task.repaint_trigger
             else {
                 continue;
@@ -4077,6 +4094,20 @@ impl AppContext {
             if layout_required && !existing_layout_required.get() {
                 existing_layout_required.set(true);
             }
+            // Union this request's region into the covering timer's, same as
+            // `WindowInvalidation::merge_paint_only_region` does once the timer
+            // actually fires. Harmless to do even if `existing_layout_required`
+            // is (or just became) true: the region is simply ignored at
+            // fire-time in that case. `region` is `None` whenever
+            // `layout_required` is true (the caller's invariant), so this never
+            // records a region for a layout-required request.
+            if let Some(new_region) = region {
+                let merged = match existing_region.get() {
+                    Some(existing) => existing.union_rect(new_region),
+                    None => new_region,
+                };
+                existing_region.set(Some(merged));
+            }
         }
         if covered_by_existing {
             return;
@@ -4085,6 +4116,8 @@ impl AppContext {
         let weak_app = self.weak_self.clone();
         let layout_required = Rc::new(Cell::new(layout_required));
         let layout_required_for_task = layout_required.clone();
+        let region = Rc::new(Cell::new(region));
+        let region_for_task = region.clone();
 
         let task_id = TaskId::new();
         let task = self.foreground.spawn(async move {
@@ -4099,6 +4132,14 @@ impl AppContext {
                         invalidation.redraw_requested = true;
                     } else {
                         invalidation.paint_only_redraw_requested = true;
+                        // No region recorded (the regionless
+                        // `repaint_at_paint_only` path, or none yet) leaves
+                        // `paint_only_redraw_region` as `None`, which
+                        // `WindowInvalidation::damage` treats as `Full` — the
+                        // safe fallback, never under-painting.
+                        if let Some(region) = region.get() {
+                            invalidation.merge_paint_only_region(region);
+                        }
                     }
                     app.update_windows();
                 }
@@ -4113,6 +4154,7 @@ impl AppContext {
                 repaint_trigger: RepaintTrigger::Timer {
                     instant: repaint_at,
                     layout_required: layout_required_for_task,
+                    region: region_for_task,
                 },
             },
         );

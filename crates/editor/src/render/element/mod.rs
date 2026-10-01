@@ -154,6 +154,42 @@ impl DisplayState {
         *self.next_blink_update.lock() = Some(Instant::now() + CURSOR_BLINK_INTERVAL);
         self.blink_cursor_visible.store(true, Ordering::Relaxed);
     }
+
+    /// Updates the cursor-blink toggle state and returns the delay until the
+    /// next toggle is due, or `None` if `blink_cursors` is false.
+    ///
+    /// Pulled out of `RichTextElement::update_blink_state` so the toggle logic
+    /// can be unit-tested without constructing a full element — see
+    /// `mod_tests.rs`. This only toggles state; it doesn't schedule a repaint
+    /// (see issue #787 and the `RichTextElement::paint` call site, which
+    /// schedules one once the cursor's on-screen rect for this frame is known).
+    fn update_blink_state(&self, blink_cursors: bool) -> Option<Duration> {
+        if !blink_cursors {
+            // Short-circuit if cursor blinking is disabled, since we won't use the blink state.
+            return None;
+        }
+
+        let now = Instant::now();
+        let mut timer_guard = self.next_blink_update.lock();
+        let update_deadline = timer_guard.unwrap_or(now);
+
+        let next_update = if now >= update_deadline {
+            // Every update interval, toggle the blink flag.
+            self.blink_cursor_visible.fetch_xor(true, Ordering::Relaxed);
+            now + CURSOR_BLINK_INTERVAL
+        } else {
+            update_deadline
+        };
+
+        *timer_guard = Some(next_update);
+        // Paint-only: toggling `blink_cursor_visible` doesn't change the
+        // element's size, position, or content — `blinking_cursors_visible()`
+        // is read fresh from `paint()` (see `paint.rs`), so a full layout of
+        // the window isn't needed to reflect the new value, only another
+        // paint. This is what lets an idle focused editor's blink skip
+        // re-running layout on the whole window. See issue #703.
+        Some(next_update - now)
+    }
 }
 
 /// Flags for how to display rich text, passed down from the parent view.
@@ -925,36 +961,18 @@ impl<V: EditorView> RichTextElement<V> {
         self.blocks = Some(blocks);
     }
 
-    /// Updates the cursor-blinking state.
-    fn update_blink_state(&self, ctx: &mut PaintContext) {
-        if !self.display_options.blink_cursors {
-            // Short-circuit if cursor blinking is disabled, since we won't use the blink state.
-            return;
-        }
-
-        let now = Instant::now();
-        let mut timer_guard = self.display_state.next_blink_update.lock();
-        let update_deadline = timer_guard.unwrap_or(now);
-
-        let next_update = if now >= update_deadline {
-            // Every update interval, toggle the blink flag.
-            self.display_state
-                .blink_cursor_visible
-                .fetch_xor(true, Ordering::Relaxed);
-
-            now + CURSOR_BLINK_INTERVAL
-        } else {
-            update_deadline
-        };
-
-        *timer_guard = Some(next_update);
-        // Paint-only: toggling `blink_cursor_visible` doesn't change this element's
-        // size, position, or content — `blinking_cursors_visible()` is read fresh
-        // from `paint()` (see `paint.rs`), so a full layout of the window isn't
-        // needed to reflect the new value, only another paint. This is what lets an
-        // idle focused editor's blink skip re-running layout on the whole window.
-        // See issue #703.
-        ctx.repaint_after_paint_only(next_update - now);
+    /// Updates the cursor-blinking toggle state and returns the delay until the
+    /// next toggle is due, or `None` if blinking is disabled.
+    ///
+    /// This only toggles state and computes a delay (see
+    /// `DisplayState::update_blink_state` for the logic); it does *not*
+    /// schedule the repaint itself (unlike before issue #787) — see the call
+    /// site in `paint()`, which schedules it once this frame's cursor rect is
+    /// known, so the next blink's repaint can be scoped to that rect instead of
+    /// the whole window.
+    fn update_blink_state(&self) -> Option<Duration> {
+        self.display_state
+            .update_blink_state(self.display_options.blink_cursors)
     }
 
     /// Whether or not blinking cursors are visible
@@ -1070,9 +1088,20 @@ impl<V: EditorView> Element for RichTextElement<V> {
         // `CURSOR_BLINK_INTERVAL`, forever, for as long as the pane stayed open. That kept every
         // open file-editor view scheduling frames (and repainting the whole window) at ~2Hz even
         // while idle and unfocused.
-        if self.display_options.editable && self.display_options.focused {
-            self.update_blink_state(ctx);
-        }
+        //
+        // `update_blink_state` only toggles the visibility flag and returns the
+        // delay until the next toggle; it must run here, before any cursor is
+        // painted below, so the toggle applies to *this* frame's rendering (see
+        // `blinking_cursors_visible`, read a few lines down). The actual repaint
+        // *scheduling* doesn't affect this frame's output — only when the next
+        // one happens — so it's deferred to the end of this function, once this
+        // frame's cursor rect is known, and used as the next repaint's damage
+        // region. See issue #787.
+        let blink_repaint_delay = if self.display_options.editable && self.display_options.focused {
+            self.update_blink_state()
+        } else {
+            None
+        };
 
         let element_size = self
             .element_size
@@ -1164,6 +1193,26 @@ impl<V: EditorView> Element for RichTextElement<V> {
                 }
             }
             None => log::error!("Rich-text blocks missing after layout"),
+        }
+
+        // Now that this frame's blocks (and therefore the cursor, if any) have
+        // painted, schedule the blink's next repaint — see the comment at
+        // `blink_repaint_delay`'s computation above. `draw_and_save_cursor`
+        // (`paint.rs`) always caches the cursor's rect via
+        // `cache_position_indefinitely`, whether or not it's currently visible,
+        // so the "off" half of the blink damages the same rect the "on" half
+        // will reappear into. Falls back to the whole content area if nothing
+        // was cached yet (e.g. this editor's very first paint) — conservative,
+        // not wrong, and moot today regardless: `AppContext::build_scene`
+        // treats any region as `Full` until the renderer is taught to act on
+        // it (issue #787).
+        if let Some(delay) = blink_repaint_delay {
+            let region = ctx
+                .paint
+                .position_cache
+                .get_position(model.saved_positions().cursor_id())
+                .unwrap_or(content_bounds);
+            ctx.paint.repaint_after_paint_only_in_region(delay, region);
         }
 
         ctx.paint.scene.stop_layer();
@@ -1298,3 +1347,7 @@ impl fmt::Debug for Box<dyn RenderableBlock> {
             .finish()
     }
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;

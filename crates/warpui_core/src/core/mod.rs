@@ -213,6 +213,84 @@ pub struct WindowInvalidation {
     /// applies. When this is the sole invalidation, `AppContext::build_scene` reuses the
     /// previous frame's layout and only re-runs paint. See issue #703.
     pub paint_only_redraw_requested: bool,
+    /// The window-local rect(s) a paint-only repaint actually needs repainted,
+    /// when known — the union of every `repaint_after_paint_only_in_region`/
+    /// `repaint_at_paint_only_in_region` call's rect for the timer that set
+    /// `paint_only_redraw_requested`. `None` if no paint-only repaint recorded a
+    /// region (including: none has fired yet, or one fired via the regionless
+    /// `repaint_after_paint_only`/`repaint_at_paint_only`). Never written
+    /// directly — use `merge_paint_only_region`, so repeated calls union rather
+    /// than clobber. Only meaningful together with `paint_only_redraw_requested`;
+    /// see `damage`. See issue #787.
+    pub paint_only_redraw_region: Option<RectF>,
+}
+
+/// The damage a `WindowInvalidation` requires repainting, derived by `WindowInvalidation::damage`.
+///
+/// This describes *what changed*; it is not yet something the renderer acts
+/// on — `AppContext::build_scene` paints the full window every frame
+/// regardless of which variant this returns. What's wired up so far is the
+/// invalidation-side plumbing: the merge semantics below, and the editor's
+/// blink repaint emitting a `Region`. Teaching the renderer to actually
+/// restrict repainting to a `Region` (safely, under a software rasterizer
+/// with no persistent framebuffer to composite onto) is follow-up work. See
+/// issue #787.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WindowDamage {
+    /// The whole window's content may have changed and must be repainted in full.
+    Full,
+    /// Only the given window-local rect changed; everything else is unchanged
+    /// from the last frame actually painted.
+    Region(RectF),
+}
+
+impl WindowDamage {
+    /// Merges the damage from two invalidations covering the same frame.
+    /// `Full` dominates — unioning with it is always `Full` — and two
+    /// `Region`s union into the smallest rect covering both (a bounding box,
+    /// not exact-pixel damage tracking).
+    pub fn union(self, other: WindowDamage) -> WindowDamage {
+        match (self, other) {
+            (WindowDamage::Full, _) | (_, WindowDamage::Full) => WindowDamage::Full,
+            (WindowDamage::Region(a), WindowDamage::Region(b)) => {
+                WindowDamage::Region(a.union_rect(b))
+            }
+        }
+    }
+}
+
+impl WindowInvalidation {
+    /// Unions `region` into `paint_only_redraw_region`. Called once per
+    /// paint-only repaint timer that fires in the same `update_windows` pass
+    /// (e.g. two blinking cursors in split panes in the same window), so their
+    /// regions union rather than the second clobbering the first.
+    pub fn merge_paint_only_region(&mut self, region: RectF) {
+        self.paint_only_redraw_region = Some(match self.paint_only_redraw_region {
+            Some(existing) => existing.union_rect(region),
+            None => region,
+        });
+    }
+
+    /// The damage this invalidation requires repainting. Mirrors the condition
+    /// `AppContext::build_scene` uses to decide whether to skip layout: this is
+    /// `Region` only when that same frame is also safe to skip layout for.
+    /// Anything that affects layout — a notified view, a removed view, or a
+    /// plain `redraw_requested` — forces `Full`, and a paint-only redraw that
+    /// never recorded a region (the regionless `repaint_after_paint_only`
+    /// path, or simply none yet) falls back to `Full` rather than silently
+    /// under-painting.
+    pub fn damage(&self) -> WindowDamage {
+        if self.redraw_requested || !self.updated.is_empty() || !self.removed.is_empty() {
+            return WindowDamage::Full;
+        }
+        if self.paint_only_redraw_requested {
+            return self
+                .paint_only_redraw_region
+                .map(WindowDamage::Region)
+                .unwrap_or(WindowDamage::Full);
+        }
+        WindowDamage::Full
+    }
 }
 
 pub enum Effect {
