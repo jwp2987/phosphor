@@ -834,6 +834,76 @@ fn finished_cli_subagent_inserts_ai_block_for_fullscreen_transcript() {
 }
 
 #[test]
+fn collapsed_cli_subagent_bubble_suppressed_when_entry_card_exists() {
+    // #798 (collapsed/restored case, round 2): once an AgentViewEntryBlock summary
+    // card exists for a conversation, it is the intended affordance to reopen it --
+    // laying the collapsed CLISubagentView bubble out *as well* painted a fragment of
+    // its content (typically a response's code-block header) into whatever sliver the
+    // anchor block's own height left. The previous fix only skipped layout below
+    // `CLI_SUBAGENT_MIN_RESIZABLE_HEIGHT` (40px), but a plain command with even a
+    // single line of output clears that floor on its own (its block is a "header"
+    // line plus a content line, ~45px) while still being far too little room to show
+    // real conversation content legibly -- hence this block's own suppression rule,
+    // independent of height, once an entry card exists.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+
+        let conversation_id = AIConversationId::new();
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.insert_agent_view_entry_block(
+                AgentViewEntryBlockParams {
+                    conversation_id,
+                    is_new: false,
+                    is_restored: false,
+                    origin: AgentViewEntryOrigin::LongRunningCommand,
+                    agent_view_controller: view.agent_view_controller().clone(),
+                },
+                RichContentInsertionPosition::Append {
+                    insert_below_long_running_block: false,
+                },
+                ctx,
+            );
+        });
+
+        let block_id = terminal.update(&mut app, |view, _ctx| {
+            let mut model = view.model.lock();
+            // A command line plus one line of output is ~45px -- already above
+            // `CLI_SUBAGENT_MIN_RESIZABLE_HEIGHT` (40px), so the entry-card rule,
+            // not the height floor, must be what suppresses this bubble.
+            model.simulate_block("sleep 120", "one line of output");
+            let block = model
+                .block_list_mut()
+                .blocks_mut()
+                .iter_mut()
+                .find(|block| block.command_to_string() == "sleep 120")
+                .expect("simulated block should exist");
+            block.set_agent_interaction_mode(AgentInteractionMetadata::new(
+                None,
+                conversation_id,
+                None,
+                None,
+                false,
+                false,
+            ));
+            block.id().clone()
+        });
+
+        terminal.read(&app, |view, _| {
+            let model = view.model.lock();
+            assert!(
+                view.should_suppress_collapsed_cli_subagent_bubble(&block_id, &model),
+                "a collapsed bubble should be suppressed once an entry card exists for \
+                 its conversation, even though the anchor block's own height clears the \
+                 layout floor on its own"
+            );
+        });
+    });
+}
+
+#[test]
 fn finished_cli_subagent_skips_rebuild_when_block_missing() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);

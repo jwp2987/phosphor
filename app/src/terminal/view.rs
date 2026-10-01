@@ -22066,6 +22066,48 @@ impl TerminalView {
         })
     }
 
+    /// Whether a CLI subagent's collapsed/restored floating bubble should be left out of
+    /// this frame's render entirely, rather than handed to `BlockListElement` to lay out.
+    ///
+    /// #798: once the anchor command finishes, `AgentViewEntryBlock` (the "<title> >"
+    /// summary card) becomes the intended affordance for reopening this conversation --
+    /// see `has_existing_lrc_agent_view_block` above. The floating bubble is still kept
+    /// in `cli_subagent_views` for exactly this case (restore tests rely on it staying
+    /// "expandable" there -- see `exiting_restored_cli_subagent_agent_view_inserts_entry_card`),
+    /// but once a summary card exists there is no reason to also paint it: the anchor
+    /// block's own height is usually just the command line (often ~1-2 lines for a
+    /// plain command with little or no output), so laying the bubble out anyway painted
+    /// a fragment of its first child -- typically a response's code-block header --
+    /// that read as a stray box pinned to the block's corner (`cli_subagent_has_room_to_
+    /// layout`'s height floor caught only the more extreme case where that fragment
+    /// didn't even clear one line). Filtering it out of the per-frame map here, rather
+    /// than tearing down the view, leaves `cli_subagent_views.contains_key` (and the
+    /// restored block's own terminal output) exactly as the restore tests expect.
+    ///
+    /// Falls back to `cli_subagent_has_room_to_layout`'s height floor (applied in
+    /// `BlockListElement`'s layout) when no summary card exists yet -- e.g. `FeatureFlag::
+    /// AgentView` disabled, or a conversation `insert_agent_view_entry_block` skipped as
+    /// entirely passive -- so the floating bubble remains the only way to reopen those.
+    fn should_suppress_collapsed_cli_subagent_bubble(
+        &self,
+        block_id: &BlockId,
+        model: &TerminalModel,
+    ) -> bool {
+        let Some(block) = model.block_list().block_with_id(block_id) else {
+            return false;
+        };
+        if block.is_active_and_long_running() {
+            return false;
+        }
+        let Some(conversation_id) = block
+            .agent_interaction_metadata()
+            .map(|metadata| *metadata.conversation_id())
+        else {
+            return false;
+        };
+        self.has_existing_lrc_agent_view_block(conversation_id)
+    }
+
     fn update_block_filter_for_block_with_active_editor(
         &mut self,
         block_filter_query: &BlockFilterQuery,
@@ -24180,6 +24222,9 @@ impl TerminalView {
             HashMap::from_iter(
                 self.cli_subagent_views
                     .iter()
+                    .filter(|&(block_id, _)| {
+                        !self.should_suppress_collapsed_cli_subagent_bubble(block_id, model)
+                    })
                     .map(|(id, view)| (id.clone(), ChildView::new(view).finish())),
             ),
             selection_range,
