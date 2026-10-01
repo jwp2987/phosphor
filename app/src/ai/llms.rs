@@ -928,7 +928,10 @@ impl LLMPreferences {
         self.get_cli_agent_available().choices.iter()
     }
 
-    /// Returns the `LLMInfo` for the CLI agent model.
+    /// Returns the `LLMInfo` for the CLI agent model ("Full Terminal Use" in the
+    /// model picker) -- the model a CLI subagent's floating window uses, and what
+    /// its chip displays whenever the active block `is_agent_in_control_or_tagged_in`
+    /// (see `ProfileModelSelector::refresh_state`, `terminal/profile_model_selector.rs`).
     pub fn get_active_cli_agent_model<'a>(
         &'a self,
         app: &'a AppContext,
@@ -936,13 +939,21 @@ impl LLMPreferences {
     ) -> &'a LLMInfo {
         let profile = AIExecutionProfilesModel::as_ref(app).active_profile(terminal_view_id, app);
 
-        let available = self.get_cli_agent_available();
-        profile
-            .data()
-            .cli_agent_model
-            .clone()
-            .and_then(|id| available.info_for_id(&id))
-            .unwrap_or_else(|| available.default_llm_info())
+        if let Some(preferred_llm_id) = &profile.data().cli_agent_model {
+            if let Some(info) = self.get_cli_agent_available().info_for_id(preferred_llm_id) {
+                return info;
+            }
+        }
+
+        // #797: no explicit "Full Terminal Use" choice (or it no longer resolves) --
+        // follow the Base model's own full resolution chain (per-view override >
+        // byop_last_used_model_id > profile default) instead of this category's own
+        // independent default. `get_cli_agent_available().default_llm_info()` is just
+        // "whichever BYOP choice happens to be first" in `build_byop_models_by_feature`,
+        // unrelated to what the user is actually using for Base -- this is why a CLI
+        // subagent's chip defaulted to "Ollama / gpt-oss:20b" even when Base was
+        // explicitly on a different, already-configured BYOP provider.
+        self.get_preferred_base_model(app, terminal_view_id)
     }
 
     /// Returns the default CLI agent model as a fallback.
