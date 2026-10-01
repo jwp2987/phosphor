@@ -6761,6 +6761,16 @@ impl TerminalView {
                         return;
                     }
 
+                    // #799: give the FullScreen transcript something to show for this
+                    // conversation before the summary card below is even clickable --
+                    // see `insert_ai_blocks_for_cli_subagent_conversation`'s doc comment.
+                    self.insert_ai_blocks_for_cli_subagent_conversation(
+                        *conversation_id,
+                        task_id,
+                        block_id,
+                        ctx,
+                    );
+
                     // In the case that the user has taken control and already exited the agent view,
                     // we insert the corresponding agent view block on command finish instead.
                     self.insert_agent_view_entry_block(

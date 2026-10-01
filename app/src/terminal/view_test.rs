@@ -764,6 +764,76 @@ fn finished_cli_subagent_keeps_read_only_card_when_metadata_matches() {
 }
 
 #[test]
+fn finished_cli_subagent_inserts_ai_block_for_fullscreen_transcript() {
+    // #799: tagging the agent into a running command, then opening the FullScreen
+    // agent view from the collapsed "<title> >" summary card once it finishes,
+    // rendered a blank pane: the conversation's response was fully persisted, but
+    // CLI subagent exchanges are deliberately excluded from the normal blocklist
+    // exchange list (`should_show_task_in_blocklist`) so they never became a
+    // `RichContentItem` the FullScreen transcript (`TranscriptScope::Conversation`)
+    // could find. The fix inserts an `AIBlock` rich content item for the task's
+    // exchanges on `FinishedSubagent`, scoped (via `agent_view_conversation_id`) so
+    // it is hidden from the normal inline terminal view and only shows up once this
+    // conversation is the active FullScreen transcript.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
+
+        let block_id = BlockId::from("cli-block-transcript".to_string());
+        let task_id = TaskId::new("cli-task-transcript".to_string());
+        let conversation_id = AIConversationId::new();
+        let conversation = build_restored_conversation_with_cli_subagent_snapshot_for_test(
+            conversation_id,
+            block_id.clone(),
+            task_id.clone(),
+            b"cli subagent output",
+        );
+        let serialized_blocks = serialized_blocks_for_restored_cli_subagent_for_test(&conversation);
+
+        let terminal = add_window_with_terminal(&mut app, Some(&serialized_blocks));
+        terminal.update(&mut app, |view, ctx| {
+            view.restore_conversation_after_view_creation(
+                RestoredAIConversation::new(conversation),
+                true,
+                RestoreConversationEntryBehavior::EnterRestoredConversation,
+                ctx,
+            );
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_cli_subagent_controller_event(
+                view.cli_subagent_controller.clone(),
+                &CLISubagentEvent::FinishedSubagent {
+                    block_id: block_id.clone(),
+                    task_id: task_id.clone(),
+                    conversation_id: Some(conversation_id),
+                    initial_requested_command_action_id: None,
+                },
+                ctx,
+            );
+        });
+
+        terminal.read(&app, |view, _| {
+            let has_ai_block_for_conversation =
+                view.rich_content_views.iter().any(|rich_content| {
+                    rich_content
+                        .ai_block_metadata()
+                        .is_some_and(|metadata| metadata.conversation_id == conversation_id)
+                });
+            assert!(
+                has_ai_block_for_conversation,
+                "FinishedSubagent should insert an AI block for the FullScreen \
+                 transcript to render, not just the summary card and bare block"
+            );
+        });
+    });
+}
+
+#[test]
 fn finished_cli_subagent_skips_rebuild_when_block_missing() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
