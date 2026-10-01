@@ -13451,6 +13451,20 @@ open findings that had no pre-existing row.
       Test: `test_open_file_with_target_global_search_origin_reveals_launchable_paths`
       added to `app/src/workspace/view_test.rs`, alongside the existing #706 sink test.
       `DECLINED.md`'s #681/#706 entry updated with the conflation and its fix.
+- [x] **The command palette's Quick Open bypassed the launch policy entirely — FIXED
+      (#757 follow-up, #788), 2026-09-30.** #757 fixed Global Search's own result-click
+      path, but `CommandPaletteEvent::OpenFile`'s handler
+      (`app/src/workspace/view.rs`, `handle_palette_event`) called `self.open_code(...)`
+      directly for every quick-open result, never calling `resolve_file_target` or the
+      workspace sink at all — so a launchable, non-text result (e.g. a `.docx`) landed in
+      an empty code-editor pane instead of being revealed, reported live against a build
+      that already had #757. Fixed by resolving a `FileTarget` with
+      `resolve_file_target_with_editor_choice` (same `open_code_panels_file_editor`
+      setting the file tree, Global Search, and code review use) and routing through
+      `Workspace::open_file_with_target` with `CodeSource::Link`, instead of calling
+      `open_code` directly. Test: `test_command_palette_open_file_reveals_launchable_path`
+      added to `app/src/workspace/view_test.rs`. `DECLINED.md`'s #681/#706 entry updated
+      with a (iv) note.
 - [x] **Make `script/precheck`'s integration step a hard gate once a clean baseline is
       recorded (#721 follow-up).** #721 added the integration-suite step but left it
       deliberately advisory (`warn`, not `fail`) on scenario failures, matching

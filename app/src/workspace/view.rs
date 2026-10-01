@@ -14296,19 +14296,36 @@ impl Workspace {
                 path,
                 line_and_column_arg,
             } => {
+                // #788: this used to call `open_code` directly, which always opens in
+                // Zap's code editor regardless of file type -- bypassing #681/#757's
+                // reveal-vs-launch policy. A launchable, non-text quick-open result
+                // (e.g. a `.docx`) landed in an empty code-editor pane instead of
+                // being revealed. Resolve the target the same way the other
+                // code-panel openers do (file tree, global search, code review) and
+                // route through the sink so the policy applies here too.
                 #[cfg(feature = "local_fs")]
-                self.open_code(
-                    CodeSource::Link {
-                        path: path.clone().into(),
-                        range_start: None,
-                        range_end: None,
-                    },
-                    *EditorSettings::as_ref(ctx).open_file_layout.value(),
-                    *line_and_column_arg,
-                    false, // preview
-                    &[],
-                    ctx,
-                );
+                {
+                    let path: PathBuf = path.clone().into();
+                    let settings = EditorSettings::as_ref(ctx);
+                    let target = resolve_file_target_with_editor_choice(
+                        &path,
+                        *settings.open_code_panels_file_editor,
+                        *settings.prefer_markdown_viewer,
+                        *settings.open_file_layout,
+                        None,
+                    );
+                    self.open_file_with_target(
+                        path.clone(),
+                        target,
+                        *line_and_column_arg,
+                        CodeSource::Link {
+                            path,
+                            range_start: None,
+                            range_end: None,
+                        },
+                        ctx,
+                    );
+                }
             }
             CommandPaletteEvent::OpenDirectory { path } => {
                 let active_terminal_view = self

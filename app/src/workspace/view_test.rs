@@ -848,6 +848,52 @@ fn test_open_file_with_target_global_search_origin_reveals_launchable_paths() {
     });
 }
 
+/// #788: a Quick Open result (`CommandPaletteEvent::OpenFile`, the file search surfaced from
+/// the command palette) used to call `open_code` directly, skipping `resolve_file_target` and
+/// the sink's #681/#757 launch policy entirely -- a launchable, non-text result like a
+/// `.docx` landed in an empty code-editor pane instead of being revealed. Regression test for
+/// the fix: the handler now resolves a target and routes through `open_file_with_target`,
+/// same as the file tree, Global Search, and code review's code-panel opens.
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_command_palette_open_file_reveals_launchable_path() {
+    use warpui::platform::test::{RecordedSystemOpen, recorded_system_opens_matching};
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let report = temp_dir.path().join("report.docx");
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.handle_palette_event(
+                &CommandPaletteEvent::OpenFile {
+                    path: report.to_string_lossy().into_owned(),
+                    line_and_column_arg: None,
+                },
+                ctx,
+            );
+        });
+
+        use warp_util::launch_policy::canonical_path_for_open as resolved;
+        let needle = temp_dir
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            recorded_system_opens_matching(&needle),
+            vec![RecordedSystemOpen::RevealedFile(resolved(&report))]
+        );
+
+        workspace.read(&app, |workspace, ctx| {
+            let pane_group = workspace.active_tab_pane_group().as_ref(ctx);
+            assert_eq!(pane_group.code_panes(ctx).count(), 0);
+        });
+    });
+}
+
 #[cfg(feature = "local_fs")]
 #[test]
 fn test_worktree_sidecar_search_editor_enter_executes_selection() {

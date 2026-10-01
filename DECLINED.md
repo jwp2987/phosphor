@@ -930,7 +930,14 @@ upstream's behavior is actually a defect rather than a preference.
   `CodeSource::GlobalSearch { path }` variant and a `FileOpenOrigin` field threaded through
   `LeftPanelEvent::OpenFileWithTarget` so the handler builds the correct `CodeSource`
   instead of assuming `FileTree`; Global Search keeps the reveal-not-launch behavior like
-  every other non-file-tree origin.
+  every other non-file-tree origin. **(iv) Fixed 2026-09-30 (#788): the command palette's
+  Quick Open result bypassed the policy entirely.** `CommandPaletteEvent::OpenFile`
+  (`app/src/workspace/view.rs`) called `open_code` directly instead of going through
+  `resolve_file_target`/the sink, so a launchable, non-text quick-open result (e.g. a
+  `.docx`) landed in an empty code-editor pane instead of being revealed. Fixed by
+  resolving a `FileTarget` with `resolve_file_target_with_editor_choice` and routing
+  through `Workspace::open_file_with_target` with `CodeSource::Link`, the same mechanism
+  the file tree, Global Search, and code review's code-panel opens already use.
   **Still open, not covered by this decision:** `uri/mod.rs`'s "Open with Phosphor" still
   executes runnable scripts by design. A re-pin must not restore `SystemGeneric` for a
   launchable path reached through any origin other than the file tree.
