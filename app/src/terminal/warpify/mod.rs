@@ -94,7 +94,18 @@ pub fn subshell_bootstrap_success_block_bytes(
             )
         })
         .collect();
-    (commands.concat(), is_executable)
+    // `shell_type.rc_file_paths(os)` returns more than one path for PowerShell on
+    // non-Windows `os` (it writes to both the PowerShell Core and Windows PowerShell
+    // profile locations), so `commands` can have more than one element there. Each
+    // per-path command is a complete, terminator-free statement (e.g. a single
+    // `Add-Content ... -Path '<path>'` invocation): naively concatenating two of them
+    // glues the end of one onto the start of the next with no statement separator,
+    // which pwsh parses as a single malformed command (confirmed: it reports
+    // "parameter 'Value' is specified more than once" and appends to neither profile).
+    // A newline is a valid statement separator for every shell family this function
+    // supports (bash/zsh/fish *and* PowerShell), and is a no-op here whenever there is
+    // only one path, which is the case for every shell but PowerShell today.
+    (commands.join(&b"\n"[..]), is_executable)
 }
 
 /// Replaces each instance of '%' in the given `templated_bytes` vector with `String` in
