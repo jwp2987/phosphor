@@ -899,6 +899,25 @@ fn spawned_cli_subagent_associates_anchor_block_with_conversation() {
                     .clone()
             };
 
+            // `create_cli_subagent_view` looks up the task's exchange in the history
+            // model and panics if it's missing (`.expect("Exchange exists.")`), so the
+            // conversation/task/exchange must be registered there first -- but register
+            // it directly via `restore_conversations` rather than going through
+            // `restore_conversation_after_view_creation`, which would also insert a
+            // *restored* command block carrying a pre-baked `AgentViewVisibility`. The
+            // live, freshly simulated block above must keep its plain, unassociated
+            // `AgentViewVisibility::Terminal` so the assertion below actually exercises
+            // `create_cli_subagent_view`'s own live-spawn association, not a snapshot's.
+            let conversation = build_restored_conversation_with_cli_subagent_snapshot_for_test(
+                conversation_id,
+                block_id.clone(),
+                task_id.clone(),
+                b"",
+            );
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
+                history_model.restore_conversations(view.view_id, vec![conversation], ctx);
+            });
+
             view.handle_cli_subagent_controller_event(
                 view.cli_subagent_controller.clone(),
                 &CLISubagentEvent::SpawnedSubagent {
