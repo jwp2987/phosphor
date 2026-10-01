@@ -1,5 +1,7 @@
 use crate::ai::blocklist::agent_view::{agent_view_bg_fill, AgentViewState};
-use crate::ai::blocklist::block::cli::CLI_SUBAGENT_MIN_RESIZABLE_WIDTH;
+use crate::ai::blocklist::block::cli::{
+    CLI_SUBAGENT_MIN_RESIZABLE_HEIGHT, CLI_SUBAGENT_MIN_RESIZABLE_WIDTH,
+};
 use crate::ai::blocklist::{ai_brand_color, ATTACH_AS_AGENT_MODE_CONTEXT_TEXT};
 use crate::ai_assistant::{AI_ASSISTANT_SVG_PATH, ASK_AI_ASSISTANT_TEXT};
 use crate::appearance::Appearance;
@@ -230,6 +232,20 @@ fn cli_subagent_layout_max_size(
     }
     .max(0.);
     vec2f(max_width, max_height)
+}
+
+/// Whether a CLI subagent floating window has enough room to lay itself out at all.
+///
+/// #798: once a long-running command finishes, `cli_subagent_layout_max_size` constrains
+/// the window to its own (often near-zero, for a plain command with little or no output)
+/// block height. Laying the window out anyway let a fragment of its content -- e.g. the
+/// language header of a fenced code block -- paint into that unusably small sliver, which
+/// read as a stray, disconnected box once the block list scrolled. The restored card's
+/// view handle is kept either way (see `cli_subagent_views.contains_key` in
+/// `view_test.rs`); it just isn't laid out, and therefore not painted, while there is no
+/// usable room for it.
+fn cli_subagent_has_room_to_layout(max_size: Vector2F) -> bool {
+    max_size.y() >= CLI_SUBAGENT_MIN_RESIZABLE_HEIGHT
 }
 
 pub type LabelBuilderFn = dyn Fn(
@@ -3448,18 +3464,25 @@ impl Element for BlockListElement {
                                 self.cli_subagent_views.get_mut(block.id())
                             {
                                 let block_height = (height.as_f64() as f32) * cell_size.y();
-                                cli_subagent_view.layout(
-                                    SizeConstraint {
-                                        min: vec2f(0., 0.),
-                                        max: cli_subagent_layout_max_size(
-                                            constraint.max,
-                                            block_height,
-                                            block.is_active_and_long_running(),
-                                        ),
-                                    },
-                                    ctx,
-                                    app,
+                                let max_size = cli_subagent_layout_max_size(
+                                    constraint.max,
+                                    block_height,
+                                    block.is_active_and_long_running(),
                                 );
+                                // #798: skip layout entirely below the usable floor (see
+                                // `cli_subagent_has_room_to_layout`'s doc comment) -- this
+                                // leaves `size()` at `None`, so the paint pass (which only
+                                // paints an element laid out this frame) naturally omits it.
+                                if cli_subagent_has_room_to_layout(max_size) {
+                                    cli_subagent_view.layout(
+                                        SizeConstraint {
+                                            min: vec2f(0., 0.),
+                                            max: max_size,
+                                        },
+                                        ctx,
+                                        app,
+                                    );
+                                }
                             }
                         }
 
@@ -5101,5 +5124,32 @@ mod tests {
             cli_subagent_layout_max_size(vec2f(320., 700.), 300., true).x(),
             360.
         );
+    }
+
+    // #798: a finished, plain command with ~1 line of its own block height (e.g.
+    // `sleep 90`, no output) and no longer active falls below the floating window's
+    // usable floor -- this is the exact input shape that used to still get laid out
+    // and paint a stray fragment of its content.
+    #[test]
+    fn cli_subagent_layout_max_size_can_fall_below_the_usable_height_floor_once_inactive() {
+        let max_size = cli_subagent_layout_max_size(vec2f(1000., 700.), 24., false);
+        assert!(max_size.y() < CLI_SUBAGENT_MIN_RESIZABLE_HEIGHT);
+    }
+
+    #[test]
+    fn cli_subagent_has_room_to_layout_is_false_below_the_height_floor() {
+        assert!(!cli_subagent_has_room_to_layout(vec2f(
+            972.,
+            CLI_SUBAGENT_MIN_RESIZABLE_HEIGHT - 1.
+        )));
+    }
+
+    #[test]
+    fn cli_subagent_has_room_to_layout_is_true_at_and_above_the_height_floor() {
+        assert!(cli_subagent_has_room_to_layout(vec2f(
+            972.,
+            CLI_SUBAGENT_MIN_RESIZABLE_HEIGHT
+        )));
+        assert!(cli_subagent_has_room_to_layout(vec2f(972., 686.)));
     }
 }

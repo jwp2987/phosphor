@@ -125,8 +125,11 @@ const MAX_HEIGHT: f32 = 320.0;
 // constraints consistent.
 pub(crate) const CLI_SUBAGENT_MIN_RESIZABLE_WIDTH: f32 = 360.0;
 const MIN_RESIZABLE_WIDTH: f32 = CLI_SUBAGENT_MIN_RESIZABLE_WIDTH;
-// Minimum height of the CLI agent floating window, keeping room for at least one line of content plus a drag hit area.
-const MIN_RESIZABLE_HEIGHT: f32 = 40.0;
+// Minimum height of the CLI agent floating window, keeping room for at least one line of content
+// plus a drag hit area; the outer layout also reuses this value (see #798) to decide when there
+// is no usable room to lay the window out at all.
+pub(crate) const CLI_SUBAGENT_MIN_RESIZABLE_HEIGHT: f32 = 40.0;
+const MIN_RESIZABLE_HEIGHT: f32 = CLI_SUBAGENT_MIN_RESIZABLE_HEIGHT;
 // Small amount of visible width kept at the window edge during horizontal resizing.
 const MIN_REMAINING_WINDOW_WIDTH: f32 = 16.0;
 // Small amount of visible height kept at the window edge during vertical resizing.
