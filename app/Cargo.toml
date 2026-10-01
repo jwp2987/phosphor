@@ -457,7 +457,11 @@ autoupdate = []
 # to other crates' test builds (e.g. warp_tui tests). Propagates `warp_core/test-util`
 # so app helpers that depend on warp_core mocks (e.g. `Appearance::mock`) resolve when
 # the app is built standalone with this feature (warp_tui dev-deps also enable it).
-test-util = ["warp_core/test-util", "dep:mockito"]
+# Also propagates `warpui/test-util` (-> `warpui_core/test-util`): app code gated on
+# `cfg(any(test, feature = "test-util"))` (e.g. window_footer_bar's
+# `debug_text_content` override) calls trait methods warpui_core only compiles under
+# its OWN test-util feature, and app's test-util did not forward that far (#769).
+test-util = ["warp_core/test-util", "warpui/test-util", "dep:mockito"]
 figma_detection = []
 bundled_skills = []
 windows_high_performance_gpu_default = []
