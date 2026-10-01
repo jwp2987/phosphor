@@ -34,9 +34,12 @@
 //! (`_exit(2)` / `TerminateProcess`), not `std::process::exit`: the main thread is
 //! mid-shutdown, and running `atexit` handlers and C++ static destructors (GPU
 //! drivers, SQLite) concurrently with it risks a crash. Once a signal-initiated
-//! shutdown has completed, [`exit_after_signal_shutdown`] re-raises the signal
+//! shutdown has completed, [`exit_after_signal_shutdown_for`] re-raises the signal
 //! with its default disposition, so the parent sees the conventional "terminated
-//! by SIGTERM" status rather than a clean exit.
+//! by SIGTERM" status rather than a clean exit -- but only for a request each
+//! main-loop variant has itself attributed to that signal (jwp2987/phosphor#726,
+//! jwp2987/phosphor#791), never merely because some signal was received at some
+//! point during the process's life.
 
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
@@ -120,8 +123,13 @@ pub(crate) trait ShutdownHooks {
     fn arm_deadline(&self, deadline: Duration, exit_code: i32);
     /// Exits the process immediately.
     fn exit(&self, exit_code: i32);
-    /// Remembers that `signal` started the shutdown, for
-    /// [`exit_after_signal_shutdown`].
+    /// Remembers that `signal` started the shutdown, for the latch-reading
+    /// [`exit_after_signal_shutdown`]. Kept as a fallback entry point: winit,
+    /// macOS, and the headless loop now all track their own request's
+    /// attribution instead and call [`exit_after_signal_shutdown_for`] directly
+    /// (jwp2987/phosphor#726, jwp2987/phosphor#791), so no current caller actually
+    /// reads this latch, but a future main-loop variant that cannot yet
+    /// distinguish its own request's signal still can.
     fn record_initiating_signal(&self, signal: i32);
 }
 
@@ -239,22 +247,26 @@ fn initiating_signal() -> Option<i32> {
 /// signal would have (default disposition, re-raised) now that `app_will_terminate`
 /// has finished; otherwise returns so the caller exits as usual.
 ///
-/// Called by platform loops right after `app_will_terminate` where the process is
-/// about to exit anyway (winit, macOS). Not by the headless loop itself
-/// (`headless::event_loop::run`), which still has to return control to its caller
-/// to restore the terminal (the TUI) or otherwise wind down first; that caller
-/// (`headless::app::App::run`) calls this once `event_loop::run` returns
-/// (jwp2987/phosphor#717).
-///
 /// Consults [`INITIATING_SIGNAL`], which [`ProcessHooks::record_initiating_signal`]
 /// sets the moment *any* termination signal is first received -- regardless of
 /// whether that signal is what actually ends up driving the app to quit. A caller
-/// that can end up here for a reason other than that specific signal (winit: a key
-/// binding or menu quit can race a concurrent SIGTERM/SIGHUP and still reach this
-/// same `LoopExiting` handler) must not use this global-state version, or it will
-/// re-raise a signal that had nothing to do with its own quit (jwp2987/phosphor#726).
-/// Such callers should track their own request's signal, if any, and call
-/// [`exit_after_signal_shutdown_for`] with it instead.
+/// that can end up here for a reason other than that specific signal (a key
+/// binding, menu, or TUI exit action's quit can race a concurrent SIGTERM/SIGHUP
+/// and still reach the same exit path) must not use this global-state version, or
+/// it will re-raise a signal that had nothing to do with its own quit
+/// (jwp2987/phosphor#726). Such callers should track their own request's signal,
+/// if any, and call [`exit_after_signal_shutdown_for`] with it instead -- as
+/// winit, macOS, and the headless loop all now do (jwp2987/phosphor#791), which
+/// is why nothing in this crate currently calls this latch-reading version; it
+/// is kept as a fallback entry point for a future main-loop variant that cannot
+/// yet distinguish its own request's signal (jwp2987/phosphor#717 has the
+/// headless-loop-specific reason a caller can't always call this immediately
+/// after `app_will_terminate`: it has to return control to its caller to
+/// restore the terminal first).
+// Kept as a documented fallback entry point even though nothing in this crate
+// currently calls it (see the doc comment above) -- every actual caller has been
+// scoped to `exit_after_signal_shutdown_for` (jwp2987/phosphor#791).
+#[allow(dead_code)]
 pub(crate) fn exit_after_signal_shutdown() {
     exit_after_signal_shutdown_for(initiating_signal());
 }
