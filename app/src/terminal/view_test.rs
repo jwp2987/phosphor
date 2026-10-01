@@ -797,6 +797,75 @@ fn finished_cli_subagent_skips_rebuild_when_block_missing() {
     });
 }
 
+#[test]
+fn spawned_cli_subagent_associates_anchor_block_with_conversation() {
+    // Issue #799: tagging the agent into a running command never associated the anchor
+    // command block's `AgentViewVisibility` with the new conversation. Opening the
+    // FullScreen agent view for that conversation later (e.g. from the collapsed
+    // summary card shown once the command finishes) relies on `TranscriptScope`
+    // filtering, which only shows blocks whose `AgentViewVisibility` names the active
+    // conversation (see `Block::should_hide_block`) -- so the pane rendered blank even
+    // though the response was fully persisted. The fix associates (and promotes) the
+    // anchor block with the conversation at spawn time, the same way a normal
+    // Ctrl-Shift-Enter tag-in does for the selected block.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let conversation_id = AIConversationId::new();
+        let task_id = TaskId::new("cli-task-live".to_string());
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let block_id = terminal.update(&mut app, |view, ctx| {
+            let block_id = {
+                let mut model = view.model.lock();
+                model.simulate_block("sleep 90", "");
+                model
+                    .block_list()
+                    .blocks()
+                    .iter()
+                    .find(|block| block.command_to_string() == "sleep 90")
+                    .expect("simulated block should exist")
+                    .id()
+                    .clone()
+            };
+
+            view.handle_cli_subagent_controller_event(
+                view.cli_subagent_controller.clone(),
+                &CLISubagentEvent::SpawnedSubagent {
+                    task_id: task_id.clone(),
+                    block_id: block_id.clone(),
+                    conversation_id,
+                    initial_requested_command_action_id: None,
+                },
+                ctx,
+            );
+            block_id
+        });
+
+        terminal.read(&app, |view, _| {
+            let model = view.model.lock();
+            let block = model
+                .block_list()
+                .block_with_id(&block_id)
+                .expect("anchor command block should still exist");
+            match block.agent_view_visibility() {
+                AgentViewVisibility::Terminal {
+                    pending_conversation_ids,
+                    conversation_ids,
+                } => {
+                    assert!(
+                        pending_conversation_ids.contains(&conversation_id)
+                            || conversation_ids.contains(&conversation_id),
+                        "anchor command block should be associated with the spawned \
+                         subagent's conversation so the FullScreen agent view can find it"
+                    );
+                }
+                visibility => panic!("expected terminal block visibility, got {visibility:?}"),
+            }
+        });
+    });
+}
+
 #[cfg(windows)]
 #[test]
 fn restored_cli_subagent_windows_ctrl_c_does_not_write_to_pty() {
