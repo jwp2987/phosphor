@@ -283,6 +283,66 @@ fn signal_sets_cover_sigterm_and_sighup() {
     );
 }
 
+// jwp2987/phosphor#773 (Windows follow-up to #685): `ctrl_event_shutdown_reason`
+// is the one part of the console-close/logoff/shutdown path that touches no OS
+// API, so -- unlike `termination_signals::console`, which is `#[cfg(windows)]`
+// -- it builds and runs on every platform this suite does.
+mod ctrl_event_shutdown_reason {
+    use super::ctrl_event_shutdown_reason;
+
+    // `windows::Win32::System::Console`'s own constants, duplicated here as the
+    // function under test duplicates them, so neither needs the `windows` crate.
+    const CTRL_C_EVENT: u32 = 0;
+    const CTRL_BREAK_EVENT: u32 = 1;
+    const CTRL_CLOSE_EVENT: u32 = 2;
+    const CTRL_LOGOFF_EVENT: u32 = 5;
+    const CTRL_SHUTDOWN_EVENT: u32 = 6;
+
+    #[test]
+    fn close_logoff_and_shutdown_map_to_their_own_event_code() {
+        assert_eq!(ctrl_event_shutdown_reason(CTRL_CLOSE_EVENT), Some(2));
+        assert_eq!(ctrl_event_shutdown_reason(CTRL_LOGOFF_EVENT), Some(5));
+        assert_eq!(ctrl_event_shutdown_reason(CTRL_SHUTDOWN_EVENT), Some(6));
+    }
+
+    #[test]
+    fn ctrl_c_and_ctrl_break_are_not_claimed() {
+        // The headless loop's own `ctrlc` handler, installed separately, already
+        // owns these (mapped to `SIGINT`); claiming them here too would race it.
+        assert_eq!(ctrl_event_shutdown_reason(CTRL_C_EVENT), None);
+        assert_eq!(ctrl_event_shutdown_reason(CTRL_BREAK_EVENT), None);
+    }
+
+    #[test]
+    fn an_unrecognized_event_code_is_not_claimed() {
+        assert_eq!(ctrl_event_shutdown_reason(99), None);
+    }
+}
+
+#[test]
+fn a_repeated_console_close_event_escalates_like_sigterm() {
+    // CTRL_CLOSE_EVENT (2) is not SIGHUP, so a repeat after the escalation
+    // interval must still exit immediately, exactly as a repeated SIGTERM does.
+    let hooks = FakeHooks::default();
+    let mut state = ShutdownState::default();
+    let start = Instant::now();
+    const CTRL_CLOSE_EVENT: i32 = 2;
+
+    handle_signal(&mut state, CTRL_CLOSE_EVENT, start, &hooks);
+    handle_signal(
+        &mut state,
+        CTRL_CLOSE_EVENT,
+        start + ESCALATION_MIN_INTERVAL,
+        &hooks,
+    );
+
+    assert_eq!(hooks.terminate_requests.get(), 1);
+    assert_eq!(
+        *hooks.exits.borrow(),
+        vec![exit_code_for_signal(CTRL_CLOSE_EVENT)]
+    );
+}
+
 mod approve_termination {
     use std::cell::Cell;
 

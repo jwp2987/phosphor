@@ -69,6 +69,12 @@ pub(super) fn run(
 
     callbacks.app_will_terminate();
 
+    // A Windows console control handler thread may be blocked waiting for this
+    // (jwp2987/phosphor#773); a no-op everywhere else, including on Windows
+    // when nothing is blocked.
+    #[cfg(windows)]
+    platform::termination_signals::console::notify_shutdown_complete();
+
     ui_app.termination_result().unwrap_or(Ok(()))
 }
 
@@ -82,11 +88,12 @@ pub(super) fn run(
 /// [`platform::termination_signals`].
 ///
 /// Unix handles `SIGINT`, `SIGTERM` and `SIGHUP` through `signal-hook`. Windows
-/// keeps `ctrlc` for Ctrl-C / Ctrl-Break.
-// TODO(#685): Windows `CTRL_CLOSE_EVENT` (console window closed) still kills the
-// process without a graceful shutdown; `ctrlc`'s `termination` feature would add
-// it, but it is workspace-wide and would also redirect SIGTERM in the
-// integration-test driver's `ctrlc` handler.
+/// keeps `ctrlc` for Ctrl-C / Ctrl-Break and, separately, a
+/// `SetConsoleCtrlHandler` callback (jwp2987/phosphor#773) for console close /
+/// logoff / shutdown (`CTRL_CLOSE_EVENT` / `CTRL_LOGOFF_EVENT` /
+/// `CTRL_SHUTDOWN_EVENT`); `ctrlc`'s `termination` feature was not used for
+/// those because it is workspace-wide and would also redirect SIGTERM in the
+/// integration-test driver's own `ctrlc` handler.
 #[cfg(unix)]
 fn setup_signal_handler(sender: Sender<AppEvent>) {
     use platform::termination_signals;
@@ -112,6 +119,12 @@ fn setup_signal_handler(sender: Sender<AppEvent>) {
     /// Ctrl-C is reported as SIGINT (2), preserving the historical exit status 130.
     const SIGINT: i32 = 2;
 
+    // `CTRL_CLOSE_EVENT` / `CTRL_LOGOFF_EVENT` / `CTRL_SHUTDOWN_EVENT` are a
+    // separate handler, installed below, so clone the sender before Ctrl-C's
+    // handler consumes it (jwp2987/phosphor#773).
+    #[cfg(windows)]
+    let console_sender = sender.clone();
+
     let hooks = ProcessHooks::new(move |_signal| {
         sender
             .send(AppEvent::Terminate(TerminationMode::ForceTerminate))
@@ -126,6 +139,22 @@ fn setup_signal_handler(sender: Sender<AppEvent>) {
     });
     if let Err(e) = result {
         log::warn!("Failed to set up Ctrl-C handler: {e}");
+    }
+
+    // Console close, logoff and shutdown (jwp2987/phosphor#773, the Windows
+    // follow-up to #685): unlike Ctrl-C, these take their default disposition
+    // (process killed) unless something else handles them, skipping
+    // `app_will_terminate` entirely. See `termination_signals::console`.
+    #[cfg(windows)]
+    {
+        let result = platform::termination_signals::console::install(move |_signal| {
+            console_sender
+                .send(AppEvent::Terminate(TerminationMode::ForceTerminate))
+                .is_ok()
+        });
+        if let Err(e) = result {
+            log::warn!("Failed to set up the console control handler: {e}");
+        }
     }
 }
 

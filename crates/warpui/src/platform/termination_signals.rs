@@ -130,6 +130,41 @@ pub(crate) fn exit_code_for_signal(signal: i32) -> i32 {
     128 + signal
 }
 
+/// Maps a Windows console control event -- as delivered to a
+/// `SetConsoleCtrlHandler` callback -- to the synthetic "signal" number that
+/// drives the same [`ShutdownState`] machine `SIGTERM`/`SIGHUP` already use, or
+/// `None` for an event this module does not own (jwp2987/phosphor#773, the
+/// Windows follow-up to #685).
+///
+/// `CTRL_C_EVENT` (0) and `CTRL_BREAK_EVENT` (1) are excluded on purpose:
+/// Windows calls every registered console control handler for every event
+/// type regardless of install order, and the headless loop's own `ctrlc`-based
+/// handler already owns Ctrl-C/Ctrl-Break (mapped to `SIGINT`, installed
+/// separately in `headless::event_loop::setup_signal_handler`); this handler
+/// must return `None` for them so it never races that one.
+///
+/// Deliberately free of the `windows` crate -- the numbers are
+/// `windows::Win32::System::Console`'s own `CTRL_CLOSE_EVENT` (2),
+/// `CTRL_LOGOFF_EVENT` (5) and `CTRL_SHUTDOWN_EVENT` (6), duplicated here as
+/// plain `u32`s -- so this mapping, unlike the rest of the console-handler
+/// path, builds and is unit-tested on every platform, not only Windows.
+///
+/// Its only non-test caller is [`console::console_ctrl_handler`], which is
+/// `#[cfg(windows)]`; a non-Windows build that does not compile `#[cfg(test)]`
+/// code (e.g. `cargo check` without `--tests`) sees no caller at all, so this
+/// needs its own `dead_code` opt-out there rather than relying on tests to
+/// keep it "used".
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn ctrl_event_shutdown_reason(ctrl_type: u32) -> Option<i32> {
+    const CTRL_CLOSE_EVENT: u32 = 2;
+    const CTRL_LOGOFF_EVENT: u32 = 5;
+    const CTRL_SHUTDOWN_EVENT: u32 = 6;
+    match ctrl_type {
+        CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT => Some(ctrl_type as i32),
+        _ => None,
+    }
+}
+
 /// Handles one delivered termination signal. Runs on the signal-handling
 /// thread, never in signal context.
 pub(crate) fn handle_signal(
@@ -387,6 +422,135 @@ pub(crate) fn install(
             }
         })?;
     Ok(())
+}
+
+/// Windows-only: turns console control events (`CTRL_CLOSE_EVENT`,
+/// `CTRL_LOGOFF_EVENT`, `CTRL_SHUTDOWN_EVENT`) into the same graceful,
+/// non-cancellable quit that `SIGTERM`/`SIGHUP` already run on Unix
+/// (jwp2987/phosphor#773, following up #685's "out of scope unless trivial").
+///
+/// # Why this can't just be [`install`]'s Unix shape
+///
+/// A Unix signal-handling thread only has to post a request and return --
+/// nothing then kills the process, so the next line of `for signal in
+/// delivered.forever()` is free to wait for the *next* signal. A Windows
+/// console control handler is different: the OS calls it on its own thread and
+/// kills the process shortly after *every* registered handler for the event
+/// has *returned* (about 5s for `CTRL_CLOSE_EVENT`; similar for logoff and
+/// shutdown). So [`console_ctrl_handler`] blocks that OS thread -- never the
+/// main/UI thread, which it never touches -- until [`notify_shutdown_complete`]
+/// reports that `app_will_terminate` has finished, or [`SHUTDOWN_DEADLINE`]
+/// elapses, whichever comes first. The deadline watchdog [`handle_signal`]
+/// already arms still ends the process if `app_will_terminate` itself wedges;
+/// this wait is only what keeps the handler from returning -- and inviting the
+/// OS's own kill -- before that has had its chance.
+#[cfg(windows)]
+pub(crate) mod console {
+    use std::sync::{Condvar, Mutex, OnceLock};
+    use std::time::Duration;
+
+    use instant::Instant;
+    use windows::Win32::Foundation::{FALSE, TRUE};
+    use windows::Win32::System::Console::SetConsoleCtrlHandler;
+    use windows::core::BOOL;
+
+    use super::{
+        ProcessHooks, SHUTDOWN_DEADLINE, ShutdownHooks, ShutdownState, ctrl_event_shutdown_reason,
+        handle_signal,
+    };
+
+    /// Which signals have been seen so far (for escalation) and how to post a
+    /// terminate request to the main loop. `SetConsoleCtrlHandler` takes a bare
+    /// `fn` pointer, not a closure, so [`console_ctrl_handler`] can only reach
+    /// this through statics rather than captured state -- one handler is
+    /// installed per process, so that is enough.
+    static STATE: OnceLock<Mutex<ShutdownState>> = OnceLock::new();
+    static HOOKS: OnceLock<ProcessHooks<Box<dyn Fn(i32) -> bool + Send + Sync>>> = OnceLock::new();
+
+    /// Set once a signal-initiated shutdown's `app_will_terminate` has run, so
+    /// a console control handler thread blocked in
+    /// [`wait_for_shutdown_or_deadline`] can stop waiting and return. There is
+    /// no need to reset it: the process exits, one way or another, once any
+    /// termination shutdown completes.
+    static SHUTDOWN_COMPLETE: OnceLock<(Mutex<bool>, Condvar)> = OnceLock::new();
+
+    fn shutdown_complete() -> &'static (Mutex<bool>, Condvar) {
+        SHUTDOWN_COMPLETE.get_or_init(|| (Mutex::new(false), Condvar::new()))
+    }
+
+    /// Called by a platform loop right after `app_will_terminate` finishes, so
+    /// a console control handler thread blocked waiting for it can return
+    /// instead of sitting out the full deadline. A harmless no-op if no console
+    /// handler is installed, or none is currently blocked.
+    pub(crate) fn notify_shutdown_complete() {
+        let (lock, cvar) = shutdown_complete();
+        let mut done = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *done = true;
+        cvar.notify_all();
+    }
+
+    /// Blocks the calling thread until [`notify_shutdown_complete`] runs or
+    /// `deadline` elapses, whichever is first.
+    fn wait_for_shutdown_or_deadline(deadline: Duration) {
+        let (lock, cvar) = shutdown_complete();
+        let done = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = cvar.wait_timeout_while(done, deadline, |done| !*done);
+    }
+
+    /// The `SetConsoleCtrlHandler` callback. Runs on its own OS thread, never
+    /// the main/UI thread, and must never touch app state directly -- only
+    /// [`ShutdownHooks::request_terminate`] (a channel send) does that, exactly
+    /// as the Unix signal thread's [`handle_signal`] call already does.
+    ///
+    /// Returns `TRUE` once the graceful shutdown has finished or the deadline
+    /// has passed, telling Windows this handler dealt with the event (so it
+    /// does not fall through to the next handler, or to the default
+    /// disposition, which would kill the process without running
+    /// `app_will_terminate` at all -- the exact bug #773 files). Returns
+    /// `FALSE` immediately for an event this handler does not own
+    /// (`CTRL_C_EVENT`/`CTRL_BREAK_EVENT`, which the headless loop's own
+    /// `ctrlc` handler, installed separately, already covers).
+    unsafe extern "system" fn console_ctrl_handler(ctrl_type: u32) -> BOOL {
+        let Some(signal) = ctrl_event_shutdown_reason(ctrl_type) else {
+            return FALSE;
+        };
+        let (Some(state), Some(hooks)) = (STATE.get(), HOOKS.get()) else {
+            // `install` was never called, so this handler was never registered
+            // either; unreachable in practice.
+            return FALSE;
+        };
+        {
+            let mut state = state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            handle_signal(&mut state, signal, Instant::now(), hooks);
+        }
+        // A duplicate/`ExitImmediately` response, or a main loop that could not
+        // receive the request, already ends the process from inside
+        // `handle_signal` (through `hooks.exit`, which never returns); this
+        // wait only matters for the first event of a shutdown that is still in
+        // progress.
+        wait_for_shutdown_or_deadline(SHUTDOWN_DEADLINE);
+        TRUE
+    }
+
+    /// Installs the console control handler. `request_terminate` must be safe
+    /// to call from this module's own OS thread and must only enqueue work for
+    /// the main loop, exactly like Unix's [`super::install`].
+    pub(crate) fn install(
+        request_terminate: impl Fn(i32) -> bool + Send + Sync + 'static,
+    ) -> windows::core::Result<()> {
+        STATE.get_or_init(|| Mutex::new(ShutdownState::default()));
+        HOOKS.get_or_init(|| {
+            ProcessHooks::new(Box::new(request_terminate) as Box<dyn Fn(i32) -> bool + Send + Sync>)
+        });
+        // SAFETY: `console_ctrl_handler` only ever touches the statics above
+        // (initialized just before this call, and never torn down) plus
+        // `wait_for_shutdown_or_deadline`, `handle_signal` and `hard_exit`, none
+        // of which depend on anything this function sets up beyond those
+        // statics.
+        unsafe { SetConsoleCtrlHandler(Some(console_ctrl_handler), true) }
+    }
 }
 
 #[cfg(test)]
