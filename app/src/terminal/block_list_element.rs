@@ -197,20 +197,35 @@ const CLI_SUBAGENT_MAX_HEIGHT_RATIO: f32 = 0.98;
 fn cli_subagent_layout_max_size(
     available_size: Vector2F,
     block_height: f32,
-    is_agent_blocked: bool,
+    is_active_and_long_running: bool,
 ) -> Vector2F {
     // Follows Warp's outer-constraint shape: the block list first gives the floating
     // window a sufficiently large layout ceiling, then hands off to CLISubagentView's
     // internal Resizable to handle the final drag size.
+    //
+    // #798: this used to gate on `block.is_agent_blocked()` -- "is the agent waiting
+    // on user approval right now" -- rather than whether the anchor command is still
+    // running. Approval is the exception, not the common case: a plain monitored
+    // command (e.g. `sleep 90`, or anything that needs no write-to-pty/file
+    // permission) is live and long-running but *never* agent-blocked, so its bubble
+    // was constrained to the anchor command's own (often one-line) block height for
+    // its entire run. The conversation content -- including a response's code-block
+    // header -- then laid out into that sliver, clipped to a couple of pixels and
+    // squeezed up against the block's corner, which read as a stray, disconnected
+    // fragment overlapping whatever sat below it once the block list scrolled. Once
+    // the command finished, `is_active_and_long_running` naturally becomes false too,
+    // so a restored/collapsed bubble still gets the block-height constraint it was
+    // designed for.
     let max_width = (available_size.x() * CLI_SUBAGENT_MAX_WIDTH_RATIO
         - CLI_SUBAGENT_HORIZONTAL_MARGIN)
         .max(CLI_SUBAGENT_MIN_RESIZABLE_WIDTH);
     let window_max_height = available_size.y() * CLI_SUBAGENT_MAX_HEIGHT_RATIO;
-    let max_height = if is_agent_blocked {
+    let max_height = if is_active_and_long_running {
         window_max_height
     } else {
-        // In the non-blocked state, keep Warp's within-block constraint so an inactive
-        // floating window doesn't spill outside its owning block.
+        // Once the anchor command is no longer active, keep Warp's within-block
+        // constraint so the now-inactive floating window doesn't spill outside its
+        // owning block.
         (block_height - CLI_SUBAGENT_VERTICAL_MARGIN * 2.).min(window_max_height)
     }
     .max(0.);
@@ -3439,7 +3454,7 @@ impl Element for BlockListElement {
                                         max: cli_subagent_layout_max_size(
                                             constraint.max,
                                             block_height,
-                                            block.is_agent_blocked(),
+                                            block.is_active_and_long_running(),
                                         ),
                                     },
                                     ctx,
@@ -5042,15 +5057,30 @@ mod tests {
     }
 
     #[test]
-    fn cli_subagent_layout_max_size_allows_nearly_full_height_when_agent_blocked() {
+    fn cli_subagent_layout_max_size_allows_nearly_full_height_while_active() {
         assert_eq!(
             cli_subagent_layout_max_size(vec2f(1000., 700.), 300., true),
             vec2f(972., 686.)
         );
     }
 
+    // #798: a long-running command the agent is merely monitoring (not blocked on
+    // approval -- e.g. `sleep 90`) must still get the generous height ceiling while
+    // it runs. Before the fix, this call site passed `block.is_agent_blocked()`,
+    // which is false for the entire run of a command that never needs approval, so
+    // the bubble was squeezed down to the anchor command's own block height (see
+    // the test below) even though the command -- and the bubble's conversation --
+    // was still fully live.
     #[test]
-    fn cli_subagent_layout_max_size_keeps_block_height_limit_when_not_agent_blocked() {
+    fn cli_subagent_layout_max_size_allows_nearly_full_height_while_active_and_not_blocked() {
+        assert_eq!(
+            cli_subagent_layout_max_size(vec2f(1000., 700.), 60., true),
+            vec2f(972., 686.)
+        );
+    }
+
+    #[test]
+    fn cli_subagent_layout_max_size_keeps_block_height_limit_once_inactive() {
         assert_eq!(
             cli_subagent_layout_max_size(vec2f(1000., 700.), 300., false),
             vec2f(972., 284.)
