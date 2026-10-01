@@ -241,18 +241,37 @@ lazy_static! {
     pub static ref POETRY_SUBSHELL_COMMAND_REGEX: Regex  = Regex::new(r"^poetry\s+shell").expect("Poetry subshell regex invalid");
     pub static ref PIPENV_SUBSHELL_COMMAND_REGEX: Regex  = Regex::new(r"^pipenv\s+shell").expect("pipenv subshell regex invalid");
 
+    // Matches "pwsh", "/usr/bin/pwsh", "pwsh.exe", "powershell", "powershell.exe", each
+    // optionally followed by any number of flag-only tokens ("-NoLogo", "-NoProfile",
+    // "-NoExit", ...). No value-taking flag is allowed (e.g. "-Command <script>",
+    // "-File <path>") because those run one command and exit, leaving no interactive
+    // subshell to warpify -- the trailing anchor rejects a bare argument that doesn't
+    // start with "-", so "pwsh -Command Get-Process" and "pwsh -File script.ps1" both
+    // correctly fail to match. Exposed publicly (unlike the plain bash/zsh/fish regex
+    // above) so `TerminalView` can reuse it to recognize a pwsh subshell from its
+    // spawning command text and skip `unknown_init_subshell.sh` -- that probe is `sh`
+    // syntax and errors out when evaluated at a live PowerShell prompt (#800).
+    pub static ref PWSH_SUBSHELL_COMMAND_REGEX: Regex = Regex::new(r"^/?([\w\.-]+/)*(pwsh|powershell)(\.exe)?(\s+-\w+)*$").expect("pwsh subshell regex invalid");
+
     /// These are known compatible subshell commands
     static ref SUBSHELL_COMMAND_REGEXES: Vec<Regex> = vec![
         // Matches "bash", "/bin/bash", any "./any/path/to/bash", plus the zsh/fish equivalents
         Regex::new(r"^/?([\w\.-]+/)*(bash|zsh|fish)$").expect("Direct shell regex invalid"),
 
-        // Matches "docker run [whatever args] bash", plus zsh/fish equivalents.
-        // Optionally allows single or double quotes around the shell name.
-        Regex::new(r#"^docker\s+run\s+.*?['"]?(bash|zsh|fish)['"]?$"#).expect("docker run regex invalid"),
+        // Matches "docker run [whatever args] bash", plus zsh/fish/pwsh/powershell equivalents.
+        // Optionally allows single or double quotes around the shell name. The container
+        // bootstrap write path for pwsh is tracked separately (#795); this only recognizes
+        // the command so the warpify hint/banner shows up.
+        Regex::new(r#"^docker\s+run\s+.*?['"]?(bash|zsh|fish|pwsh|powershell)['"]?$"#).expect("docker run regex invalid"),
 
-        // Matches "docker exec [whatever args] bash", plus zsh/fish equivalents.
-        // Optionally allows single or double quotes around the shell name.
-        Regex::new(r#"^docker\s+exec\s+.*?['"]?(bash|zsh|fish)['"]?$"#).expect("docker exec regex invalid"),
+        // Matches "docker exec [whatever args] bash", plus zsh/fish/pwsh/powershell equivalents.
+        // Optionally allows single or double quotes around the shell name. See the "docker
+        // run" entry above re: #795.
+        Regex::new(r#"^docker\s+exec\s+.*?['"]?(bash|zsh|fish|pwsh|powershell)['"]?$"#).expect("docker exec regex invalid"),
+
+        // Matches a direct pwsh/powershell invocation. See the standalone regex's doc
+        // comment above for why this one is public.
+        PWSH_SUBSHELL_COMMAND_REGEX.clone(),
 
         // Matches commands that spawn a poetry subshell.
         POETRY_SUBSHELL_COMMAND_REGEX.clone(),

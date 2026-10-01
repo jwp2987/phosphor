@@ -303,7 +303,9 @@ use crate::terminal::shared_session::{
 use crate::terminal::ssh::ssh_detection::SshInteractiveSessionDetected;
 use crate::terminal::view::block_onboarding::onboarding_prompt_block::OnboardingPromptBlock;
 use crate::terminal::warpify::{
-    render::render_subshell_separator, settings::WarpifySettings, SubshellSource,
+    render::render_subshell_separator,
+    settings::{PWSH_SUBSHELL_COMMAND_REGEX, WarpifySettings},
+    SubshellSource,
 };
 use crate::terminal::ShellLaunchData;
 use crate::terminal::writeable_pty::{PtyIntent, PtyIntentEvent, TerminalSurface};
@@ -9405,6 +9407,43 @@ impl TerminalView {
             },
             ctx
         );
+    }
+
+    /// Returns the subshell command text behind the currently shown warpify banner or
+    /// footer, if either is active.
+    fn pending_subshell_warpify_command(&self, ctx: &mut ViewContext<Self>) -> Option<String> {
+        if let Some(WithinBlockBanner::WarpifyBanner(state)) =
+            self.model.lock().block_list().active_block().block_banner()
+        {
+            if let WarpificationMode::Subshell { command } = &state.mode {
+                return Some(command.clone());
+            }
+        }
+
+        if let Some(WarpificationMode::Subshell { command }) =
+            self.use_agent_footer.as_ref(ctx).warpify_mode(ctx)
+        {
+            return Some(command);
+        }
+
+        None
+    }
+
+    /// Returns `Some(ShellType::PowerShell)` when `TriggerSubshellBootstrap` is about to
+    /// warpify a recognized `pwsh`/`powershell` invocation.
+    ///
+    /// Every other shell type is resolved at runtime by `unknown_init_subshell.sh`, a POSIX
+    /// `sh` probe written into the pty that detects which shell is actually running and
+    /// reports back via the `InitSubshell` hook (see `ModelEvent::InitSubshell` above). That
+    /// probe cannot be reused for PowerShell: it is `sh` syntax (`[ -z $VAR ] && printf ...`),
+    /// which errors out visibly when a live PowerShell prompt tries to evaluate it. So a
+    /// `pwsh`/`powershell` subshell is instead recognized statically, from the same command
+    /// text that made `is_compatible_subshell_command` show the banner/footer in the first
+    /// place, and the probe is skipped for it entirely (#800).
+    fn pending_subshell_shell_type(&self, ctx: &mut ViewContext<Self>) -> Option<ShellType> {
+        shell_type_for_recognized_powershell_subshell_command(
+            &self.pending_subshell_warpify_command(ctx)?,
+        )
     }
 
     /// Util method to update the ssh block, with a lock
@@ -27043,7 +27082,10 @@ impl TypedActionView for TerminalView {
 
                 self.ask_ai(&AskAISource::Block(*block_index), ctx)
             }
-            TriggerSubshellBootstrap => self.trigger_subshell_bootstrap(None, false, ctx),
+            TriggerSubshellBootstrap => {
+                let shell_type = self.pending_subshell_shell_type(ctx);
+                self.trigger_subshell_bootstrap(shell_type, false, ctx);
+            }
             ShowSubshellBanner(command) => {
                 // Abort handle is no longer needed since we've waited the 1s already.
                 self.warpify_state.take_subshell_banner_abort_handle();
@@ -28805,6 +28847,15 @@ fn command_first_word_and_suffix(command: &str) -> Option<(&str, &str)> {
     let word_start = command.find(first_word)?;
     let rest = &command[word_start + first_word.len()..];
     Some((first_word, rest))
+}
+
+/// Returns `Some(ShellType::PowerShell)` if `command` is a recognized `pwsh`/`powershell`
+/// invocation (`PWSH_SUBSHELL_COMMAND_REGEX`), `None` otherwise. See
+/// `TerminalView::pending_subshell_shell_type`'s doc comment for why this matters (#800).
+fn shell_type_for_recognized_powershell_subshell_command(command: &str) -> Option<ShellType> {
+    PWSH_SUBSHELL_COMMAND_REGEX
+        .is_match(command.trim())
+        .then_some(ShellType::PowerShell)
 }
 
 /// Conditionally wrap a terminal element (altscreen / blocklist element) in a scrollable element.

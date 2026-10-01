@@ -181,6 +181,82 @@ fn test_privilege_escalation_subshell_detection_fail() {
     });
 }
 
+/// A direct `pwsh`/`powershell` invocation, with or without flag-only options, is a
+/// known compatible subshell command (#800).
+#[test]
+fn test_pwsh_subshell_detection_success() {
+    [
+        "pwsh",
+        "pwsh.exe",
+        "powershell",
+        "powershell.exe",
+        "/usr/bin/pwsh",
+        "/usr/local/bin/pwsh",
+        "./pwsh",
+        "pwsh -NoLogo",
+        "pwsh -NoLogo -NoProfile",
+        "pwsh -NoProfile -NoExit",
+        "powershell -NoLogo",
+        "/usr/bin/pwsh -NoLogo -NoProfile",
+    ]
+    .iter()
+    .for_each(|cmd| {
+        assert!(
+            WarpifySettings::is_built_in_subshell_match(cmd),
+            "{} failed to match",
+            *cmd
+        )
+    });
+}
+
+/// A `pwsh`/`powershell` invocation that runs one command/script and exits (e.g.
+/// `-Command`/`-File`) has no interactive subshell to warpify, and must not match --
+/// mirroring the "su -c '<cmd>'" / "sudo bash -c '...'" exclusions above. Also checks
+/// words that merely contain "pwsh"/"powershell" as a substring.
+#[test]
+fn test_pwsh_subshell_detection_fail() {
+    [
+        "pwsh -Command Get-Process",
+        "pwsh -Command \"Get-Process\"",
+        "pwsh -File script.ps1",
+        "pwsh -c \"Get-Process\"",
+        "powershell -Command Get-Process",
+        "notpwsh",
+        "pwshell",
+        "echo pwsh",
+        "ls /usr/bin/pwsh",
+    ]
+    .iter()
+    .for_each(|cmd| {
+        assert!(
+            !WarpifySettings::is_built_in_subshell_match(cmd),
+            "{} accidentally matched",
+            *cmd
+        )
+    });
+}
+
+/// `docker run`/`docker exec` spawning a pwsh/powershell subshell are also recognized,
+/// mirroring the existing bash/zsh/fish docker entries (#800).
+#[test]
+fn test_pwsh_docker_subshell_detection_success() {
+    [
+        "docker run -it mcr.microsoft.com/powershell pwsh",
+        "docker run --rm -it my-image powershell",
+        "docker run -it my-image 'pwsh'",
+        "docker exec -it my-container pwsh",
+        "docker exec -it my-container \"powershell\"",
+    ]
+    .iter()
+    .for_each(|cmd| {
+        assert!(
+            WarpifySettings::is_built_in_subshell_match(cmd),
+            "{} failed to match",
+            *cmd
+        )
+    });
+}
+
 /// Built-in subshell regexes and the user's `warpify.subshells.added_subshell_commands`
 /// are two separate lists that `is_compatible_subshell_command` consults in turn, so
 /// adding built-ins can neither shadow nor duplicate a user's own entries.
