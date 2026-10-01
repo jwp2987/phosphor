@@ -238,8 +238,36 @@ impl App {
                 log::warn!("Failed to set up termination signal handling: {err}");
             }
         }
-        // TODO(#685): Windows `WM_ENDSESSION` / `WM_QUERYENDSESSION` (logoff,
-        // shutdown) still end the process without `app_will_terminate`.
+        // TODO(#773, Windows follow-up to #685): `WM_QUERYENDSESSION` /
+        // `WM_ENDSESSION` (logoff, shutdown) still end the process without
+        // `app_will_terminate`. The headless/TUI side of #773 is fixed (see
+        // `termination_signals::console`: `SetConsoleCtrlHandler` for
+        // `CTRL_CLOSE_EVENT` / `CTRL_LOGOFF_EVENT` / `CTRL_SHUTDOWN_EVENT`), but
+        // this GUI path is not, deliberately -- the pinned winit fork
+        // (`https://github.com/jwp2987/winit.git`, rev
+        // `05e8c04da47960d8a627b73cf729d38aac91f80d`) has no `WM_ENDSESSION`
+        // support to opt into (checked: no `ENDSESSION` in its source at all),
+        // so unlike `CTRL_CLOSE_EVENT` this cannot reuse an existing seam.
+        //
+        // The viable mechanism is `SetWindowSubclass`/`DefSubclassProc`
+        // (`windows::Win32::UI::Shell`, already enabled for this crate) on the
+        // HWND winit's `WindowExtWindows::window_handle_any_thread` exposes:
+        // unlike `SetConsoleCtrlHandler`, which runs on its own OS thread,
+        // `WM_ENDSESSION` is *sent* synchronously on the same thread that pumps
+        // winit's event loop, nested inside that thread's own
+        // `GetMessage`/`DispatchMessage` call -- so the real work (hide windows,
+        // `app_will_terminate`, exit) has to run right there in the subclass
+        // callback, bounded by its own deadline watchdog, rather than merely
+        // posting a `CustomEvent` and returning: the OS may not grant this
+        // process another loop iteration before killing it. That callback would
+        // need `&mut EventLoop` (`self.callbacks`, `self.ui_app`) to actually run
+        // `app_will_terminate`, and nothing today threads a reference to it out
+        // to where `SetWindowSubclass` could reach -- doing so blind, without a
+        // Windows build to exercise a nested-message-pump case (e.g. a live
+        // resize/move loop) where `WM_ENDSESSION` could arrive while this
+        // thread's winit state is already borrowed elsewhere, is exactly the
+        // kind of change issue #773's own "Scope note" says needs a real
+        // Windows build/test before being trusted. Left for whoever has one.
 
         let ui_app = Self::construct_ui_app(assets, is_integration_test, &event_loop);
         let inner_event_loop = super::EventLoop::new(
