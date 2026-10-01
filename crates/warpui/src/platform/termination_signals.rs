@@ -148,6 +148,13 @@ pub(crate) fn exit_code_for_signal(signal: i32) -> i32 {
 /// `CTRL_LOGOFF_EVENT` (5) and `CTRL_SHUTDOWN_EVENT` (6), duplicated here as
 /// plain `u32`s -- so this mapping, unlike the rest of the console-handler
 /// path, builds and is unit-tested on every platform, not only Windows.
+///
+/// Its only non-test caller is [`console::console_ctrl_handler`], which is
+/// `#[cfg(windows)]`; a non-Windows build that does not compile `#[cfg(test)]`
+/// code (e.g. `cargo check` without `--tests`) sees no caller at all, so this
+/// needs its own `dead_code` opt-out there rather than relying on tests to
+/// keep it "used".
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn ctrl_event_shutdown_reason(ctrl_type: u32) -> Option<i32> {
     const CTRL_CLOSE_EVENT: u32 = 2;
     const CTRL_LOGOFF_EVENT: u32 = 5;
