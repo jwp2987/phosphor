@@ -346,15 +346,18 @@ impl ShellType {
         let is_windows = matches!(os, TargetOS::Windows);
         let home_dir = if is_windows { "$HOME" } else { "~" };
         let relative_paths: Vec<&str> = match (self, os) {
-            (ShellType::PowerShell, TargetOS::Windows) => {
-                vec![".config/powershell/Microsoft.PowerShell_profile.ps1"]
-            }
-            // We need to make sure this works for either editor of PowerShell (PowerShell Core or
-            // Windows PowerShell) so just write the file to both.
-            (ShellType::PowerShell, _) => vec![
+            // On Windows either edition may be in use (PowerShell 7 reads
+            // `Documents\PowerShell`, Windows PowerShell 5 reads
+            // `Documents\WindowsPowerShell`), so write the file to both. On Unix
+            // pwsh's `$PROFILE` is the XDG path. These were swapped (byte-identical
+            // at the oracle pin) until #804.
+            (ShellType::PowerShell, TargetOS::Windows) => vec![
                 "Documents/PowerShell/Microsoft.PowerShell_profile.ps1",
                 "Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1",
             ],
+            (ShellType::PowerShell, _) => {
+                vec![".config/powershell/Microsoft.PowerShell_profile.ps1"]
+            }
             (_, TargetOS::Windows) => vec![],
             (ShellType::Bash, _) => vec![".bashrc"],
             (ShellType::Zsh, _) => vec![".zshrc"],

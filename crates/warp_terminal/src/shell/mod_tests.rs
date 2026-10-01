@@ -297,26 +297,30 @@ fn test_rc_file_paths_use_target_os_separator() {
             ShellType::Fish.rc_file_paths(os.clone()),
             vec![TypedPathBuf::from_unix("~/.config/fish/config.fish")],
         );
+        // pwsh on Unix reads the XDG profile, not the Windows `Documents` one (#804).
         assert_eq!(
             ShellType::PowerShell.rc_file_paths(os),
-            vec![
-                TypedPathBuf::from_unix("~/Documents/PowerShell/Microsoft.PowerShell_profile.ps1"),
-                TypedPathBuf::from_unix(
-                    "~/Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1"
-                ),
-            ],
+            vec![TypedPathBuf::from_unix(
+                "~/.config/powershell/Microsoft.PowerShell_profile.ps1"
+            )],
         );
     }
 
     // On Windows the only Auto-Warpify-supported shell is PowerShell; Unix
-    // shells deliberately return no rc paths.
-    // The leading separator follows target OS; the literal interior slashes
-    // are left as-is (PowerShell accepts forward slashes on Windows).
+    // shells deliberately return no rc paths. Both editions' profiles are
+    // written (#804). The leading separator follows target OS; the literal
+    // interior slashes are left as-is (PowerShell accepts forward slashes on
+    // Windows).
     assert_eq!(
         ShellType::PowerShell.rc_file_paths(TargetOS::Windows),
-        vec![TypedPathBuf::from_windows(
-            "$HOME\\.config/powershell/Microsoft.PowerShell_profile.ps1"
-        )],
+        vec![
+            TypedPathBuf::from_windows(
+                "$HOME\\Documents/PowerShell/Microsoft.PowerShell_profile.ps1"
+            ),
+            TypedPathBuf::from_windows(
+                "$HOME\\Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1"
+            ),
+        ],
     );
     assert!(ShellType::Zsh.rc_file_paths(TargetOS::Windows).is_empty());
     assert!(ShellType::Bash.rc_file_paths(TargetOS::Windows).is_empty());

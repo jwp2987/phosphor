@@ -163,8 +163,8 @@ fn pwsh_subshell_bootstrap_success_block_bytes_is_non_empty_and_executable() {
     );
 }
 
-/// `ShellType::PowerShell.rc_file_paths(TargetOS::Linux)` returns *two* paths (it
-/// writes to both the PowerShell Core and Windows PowerShell profile locations), so
+/// `ShellType::PowerShell.rc_file_paths(TargetOS::Windows)` returns *two* paths (it
+/// writes to both the PowerShell 7 and Windows PowerShell profile locations), so
 /// `subshell_bootstrap_success_block_bytes` concatenates two per-path commands here --
 /// unlike every other shell, which has exactly one rc file and so never exercises the
 /// multi-command concatenation at all. Each per-path command is a complete,
@@ -186,7 +186,7 @@ fn pwsh_subshell_bootstrap_success_block_keeps_multiple_rc_commands_separate() {
     let (bytes, _) = subshell_bootstrap_success_block_bytes(
         &subshell_initialization_info,
         ShellType::PowerShell,
-        TargetOS::Linux,
+        TargetOS::Windows,
         false,
     );
     let command = String::from_utf8(bytes).expect("command should be utf8");
