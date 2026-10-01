@@ -133,14 +133,21 @@ impl App {
         // force-terminate on the main dispatch queue; `applicationWillTerminate`
         // then runs `app_will_terminate` as for any other quit. Integration tests
         // keep default dispositions: their driver owns signal handling.
+        //
+        // The specific `signal` is threaded through to `terminate_app_on_main_queue`
+        // (rather than discarded here) so `warp_app_will_terminate` can attribute
+        // its eventual re-raise to THIS request, not to whatever the process-wide
+        // latch happens to hold -- the same per-request scoping winit and the
+        // headless loop use (jwp2987/phosphor#726, jwp2987/phosphor#791).
         if !self.is_integration_test {
             use crate::platform::termination_signals;
 
             let result = termination_signals::install(
                 termination_signals::GUI_TERMINATION_SIGNALS,
-                |_signal| {
+                |signal| {
                     super::delegate::terminate_app_on_main_queue(
                         platform::TerminationMode::ForceTerminate,
+                        Some(signal),
                     );
                     true
                 },
@@ -458,8 +465,17 @@ extern "C-unwind" fn warp_app_will_terminate(this: &mut Object, _: Sel, _: id) {
     let app = unsafe { get_app(this) };
     app.callbacks.app_will_terminate();
     // Cocoa exits with status 0 once this returns; a signal-initiated quit should
-    // end the way the signal would have (jwp2987/phosphor#685).
-    crate::platform::termination_signals::exit_after_signal_shutdown();
+    // end the way the signal would have (jwp2987/phosphor#685) -- but only if
+    // THIS termination request is itself the one a signal asked for, not merely
+    // because some signal was received at some point during the process's life.
+    // `take_terminating_signal` reads the attribution `terminate_app_on_main_queue`
+    // set immediately before the call that led here, never the process-wide
+    // latch `exit_after_signal_shutdown` (unused on this path) would read -- the
+    // same per-request scoping winit and the headless loop now use
+    // (jwp2987/phosphor#726, jwp2987/phosphor#791).
+    crate::platform::termination_signals::exit_after_signal_shutdown_for(
+        super::delegate::take_terminating_signal(),
+    );
 }
 
 #[unsafe(no_mangle)]

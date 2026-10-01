@@ -1,6 +1,7 @@
 use std::ffi::c_void;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use anyhow::Result;
 use cocoa::base::{BOOL, NO, YES, id, nil};
@@ -399,7 +400,12 @@ impl platform::Delegate for AppDelegate {
     }
 
     fn terminate_app(&self, termination_mode: TerminationMode) {
-        terminate_app_on_main_queue(termination_mode);
+        // Not signal-initiated: a key binding, menu item, or dialog drives this
+        // path, never the termination-signal handler thread (that calls
+        // `terminate_app_on_main_queue` directly with its own attribution; see
+        // `app::App::run`), so it must never pick up a signal's re-raise
+        // (jwp2987/phosphor#726, jwp2987/phosphor#791).
+        terminate_app_on_main_queue(termination_mode, None);
     }
 
     fn is_screen_reader_enabled(&self) -> Option<bool> {
@@ -470,11 +476,45 @@ impl platform::DispatchDelegate for DispatchDelegate {
     }
 }
 
+/// The signal (if any) attributed to the [`terminate_app_on_main_queue`] call
+/// currently driving (or about to drive) Cocoa's termination sequence. Set right
+/// before the `app.terminate(None)` call it is attributed to, by the SAME
+/// `exec_async` closure that makes that call -- which runs on the main dispatch
+/// queue, serialized with respect to every other closure `terminate_app_on_main_queue`
+/// enqueues there, so only the closure that actually reaches `app.terminate(None)`
+/// (Cocoa does not re-enter an in-progress termination) can be the one whose
+/// attribution [`take_terminating_signal`] later reads from
+/// `warp_app_will_terminate`. Deliberately request-scoped rather than the
+/// process-wide [`crate::platform::termination_signals`] latch: a key binding,
+/// menu item, or dialog quit reaches the exact same `warp_app_will_terminate`
+/// and must not re-raise a signal that merely happened to arrive around the same
+/// time (jwp2987/phosphor#726, jwp2987/phosphor#791).
+static TERMINATING_SIGNAL: AtomicI32 = AtomicI32::new(0);
+
+/// Takes (reads and clears) the signal attribution [`terminate_app_on_main_queue`]
+/// set for the termination request currently finishing, or `None` if it was not
+/// itself signal-initiated. Called once, by `warp_app_will_terminate`, right
+/// after `app_will_terminate` runs.
+pub(super) fn take_terminating_signal() -> Option<i32> {
+    match TERMINATING_SIGNAL.swap(0, Ordering::AcqRel) {
+        0 => None,
+        signal => Some(signal),
+    }
+}
+
 /// Runs `[NSApp terminate]` asynchronously on the main dispatch queue. Safe to
 /// call from any thread, which is what lets the termination-signal thread request
 /// a graceful quit (jwp2987/phosphor#685); also avoids double-borrow errors when
 /// called from the main thread.
-pub(super) fn terminate_app_on_main_queue(termination_mode: TerminationMode) {
+///
+/// `signal` is `Some` only when this specific call is itself answering a
+/// termination signal (the signal handler installed in `app::App::run`); an
+/// ordinary key binding / menu / dialog quit (`AppDelegate::terminate_app`)
+/// always passes `None`. It is recorded in [`TERMINATING_SIGNAL`] immediately
+/// before the `app.terminate(None)` call it is attributed to, so
+/// `warp_app_will_terminate` re-raises a signal only for a request that was
+/// actually that signal's (jwp2987/phosphor#726, jwp2987/phosphor#791).
+pub(super) fn terminate_app_on_main_queue(termination_mode: TerminationMode, signal: Option<i32>) {
     dispatch::Queue::main().exec_async(move || {
         // SAFETY: the closure runs on the main dispatch queue.
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
@@ -490,6 +530,7 @@ pub(super) fn terminate_app_on_main_queue(termination_mode: TerminationMode) {
             }
             TerminationMode::Cancellable => {}
         }
+        TERMINATING_SIGNAL.store(signal.unwrap_or(0), Ordering::Release);
         app.terminate(None);
     });
 }
