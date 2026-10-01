@@ -29,7 +29,11 @@ fn get_subshell_bootstrap_success_block_path(shell_type: ShellType) -> Option<&'
             Some("bundled/bootstrap/bash_zsh_subshell_bootstrap_block_output.txt")
         }
         ShellType::Fish => Some("bundled/bootstrap/fish_subshell_bootstrap_block_output.txt"),
-        ShellType::PowerShell => None,
+        // `uname` is a real external command under pwsh on Unix (the focus of #800), so the
+        // same "bake the current uname in, leave the rest of the snippet literal for next
+        // startup" trick the bash/zsh/fish templates use works here too. Not exercised for
+        // Windows PowerShell, where `uname` is not generally available.
+        ShellType::PowerShell => Some("bundled/bootstrap/pwsh_subshell_bootstrap_block_output.txt"),
     }
 }
 
@@ -90,7 +94,18 @@ pub fn subshell_bootstrap_success_block_bytes(
             )
         })
         .collect();
-    (commands.concat(), is_executable)
+    // `shell_type.rc_file_paths(os)` returns more than one path for PowerShell on
+    // non-Windows `os` (it writes to both the PowerShell Core and Windows PowerShell
+    // profile locations), so `commands` can have more than one element there. Each
+    // per-path command is a complete, terminator-free statement (e.g. a single
+    // `Add-Content ... -Path '<path>'` invocation): naively concatenating two of them
+    // glues the end of one onto the start of the next with no statement separator,
+    // which pwsh parses as a single malformed command (confirmed: it reports
+    // "parameter 'Value' is specified more than once" and appends to neither profile).
+    // A newline is a valid statement separator for every shell family this function
+    // supports (bash/zsh/fish *and* PowerShell), and is a no-op here whenever there is
+    // only one path, which is the case for every shell but PowerShell today.
+    (commands.join(&b"\n"[..]), is_executable)
 }
 
 /// Replaces each instance of '%' in the given `templated_bytes` vector with `String` in

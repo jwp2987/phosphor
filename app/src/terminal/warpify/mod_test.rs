@@ -16,6 +16,11 @@
 //! so renaming the string in the asset without renaming the enum variant (and
 //! every terminal on the other end of the pipe) would just break detection.
 
+use super::subshell_bootstrap_success_block_bytes;
+use crate::terminal::model::terminal_model::SubshellInitializationInfo;
+use crate::terminal::shell::ShellType;
+use channel_versions::overrides::TargetOS;
+
 const FISH_SNIPPET: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/bundled/bootstrap/fish_subshell_bootstrap_block_output.txt"
@@ -27,6 +32,10 @@ const BASH_ZSH_SNIPPET: &str = include_str!(concat!(
 const LEGACY_REMOTE_SNIPPET: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/bundled/bootstrap/legacy_remote_subshell_bootstrap_block_output.txt"
+));
+const PWSH_SNIPPET: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/bundled/bootstrap/pwsh_subshell_bootstrap_block_output.txt"
 ));
 
 /// Not scanned by `assert_no_stray_warp_branding` below: this script is riddled with
@@ -104,4 +113,100 @@ fn shell_snippets_still_emit_the_expected_wire_hook() {
             "{label} snippet no longer emits the SourcedRcFileForWarp hook: {snippet:?}"
         );
     }
+}
+
+/// The pwsh RC-snippet template (#800) builds the hook JSON with backtick-escaped
+/// quotes (it is itself the body of a future PowerShell double-quoted string literal),
+/// so it carries the same wire hook as the other snippets but spelled differently --
+/// checked on its own rather than folded into `shell_snippets_still_emit_the_expected_wire_hook`.
+#[test]
+fn pwsh_bootstrap_snippet_comment_says_phosphorize_and_emits_the_expected_wire_hook() {
+    assert!(
+        PWSH_SNIPPET.contains("# Auto-Phosphorize"),
+        "expected the pwsh rc-file comment to say Phosphorize: {PWSH_SNIPPET:?}"
+    );
+    assert_no_stray_warp_branding(PWSH_SNIPPET, "pwsh bootstrap snippet");
+    assert!(
+        PWSH_SNIPPET.contains(r#"`"hook`": `"SourcedRcFileForWarp`""#),
+        "pwsh snippet no longer emits the SourcedRcFileForWarp hook: {PWSH_SNIPPET:?}"
+    );
+}
+
+/// `replace_template_chars_with_arguments` `debug_assert!`s if the number of '%'
+/// placeholders in the asset doesn't match the number of arguments supplied -- this
+/// guards the pwsh template (#800) against silently drifting out of sync with that
+/// argument count, and against `get_subshell_bootstrap_success_block_path` regressing
+/// back to `None` for `ShellType::PowerShell`.
+#[test]
+fn pwsh_subshell_bootstrap_success_block_bytes_is_non_empty_and_executable() {
+    let subshell_initialization_info = SubshellInitializationInfo {
+        spawning_command: "pwsh -NoLogo".to_owned(),
+        was_triggered_by_rc_file_snippet: false,
+        env_var_collection_name: None,
+        ssh_connection_info: None,
+    };
+
+    let (bytes, is_executable) = subshell_bootstrap_success_block_bytes(
+        &subshell_initialization_info,
+        ShellType::PowerShell,
+        TargetOS::Linux,
+        false,
+    );
+
+    assert!(
+        !bytes.is_empty(),
+        "expected a non-empty pwsh subshell bootstrap success block"
+    );
+    assert!(
+        is_executable,
+        "expected the pwsh subshell bootstrap success block to be executable on Linux"
+    );
+}
+
+/// `ShellType::PowerShell.rc_file_paths(TargetOS::Linux)` returns *two* paths (it
+/// writes to both the PowerShell Core and Windows PowerShell profile locations), so
+/// `subshell_bootstrap_success_block_bytes` concatenates two per-path commands here --
+/// unlike every other shell, which has exactly one rc file and so never exercises the
+/// multi-command concatenation at all. Each per-path command is a complete,
+/// terminator-free statement (a single `Add-Content ... -Path '<path>'` call), so
+/// gluing them together with no separator produces one malformed `Add-Content`
+/// invocation that pwsh rejects with "parameter 'Value' is specified more than once"
+/// and that appends to neither profile file (confirmed by running the generated
+/// command through pwsh directly). This asserts the two invocations stay separate
+/// statements and both target paths are actually present in the output.
+#[test]
+fn pwsh_subshell_bootstrap_success_block_keeps_multiple_rc_commands_separate() {
+    let subshell_initialization_info = SubshellInitializationInfo {
+        spawning_command: "pwsh -NoLogo".to_owned(),
+        was_triggered_by_rc_file_snippet: false,
+        env_var_collection_name: None,
+        ssh_connection_info: None,
+    };
+
+    let (bytes, _) = subshell_bootstrap_success_block_bytes(
+        &subshell_initialization_info,
+        ShellType::PowerShell,
+        TargetOS::Linux,
+        false,
+    );
+    let command = String::from_utf8(bytes).expect("command should be utf8");
+
+    assert_eq!(
+        command.matches("Add-Content").count(),
+        2,
+        "expected two separate Add-Content invocations (one per PowerShell profile \
+         location), got: {command:?}"
+    );
+    assert!(
+        !command.contains("'Add-Content"),
+        "the end of one Add-Content invocation was glued directly onto the start of \
+         the next with no statement separator, which pwsh cannot parse as two \
+         statements: {command:?}"
+    );
+    assert!(
+        command.contains("Documents/PowerShell/Microsoft.PowerShell_profile.ps1")
+            && command.contains("Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1"),
+        "expected both PowerShell profile paths to appear in the generated command: \
+         {command:?}"
+    );
 }

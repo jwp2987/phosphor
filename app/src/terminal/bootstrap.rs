@@ -269,8 +269,8 @@ pub fn init_shell_script_for_shell(
 /// Returns the command to be used to emit the InitShell hook for a new subshell session.
 ///
 /// If `shell_type` is `Some()`, returns a shell type-specific command (e.g. valid command for
-/// bash, fish, or zsh). Otherwise, returns a shell type-agnostic command that emits the right
-/// `InitShell` hook based on the shell it is evaluated in.
+/// bash, fish, zsh, or pwsh). Otherwise, returns a shell type-agnostic command that emits the
+/// right `InitShell` hook based on the shell it is evaluated in.
 pub fn init_subshell_command(
     shell_type: Option<ShellType>,
     vars: &[EnvVar],
@@ -278,6 +278,21 @@ pub fn init_subshell_command(
     ctx: &AppContext,
 ) -> String {
     match shell_type {
+        Some(ShellType::PowerShell) => {
+            let subshell_script = init_subshell_script_for_shell(
+                ShellType::PowerShell,
+                &crate::ASSETS,
+                vars,
+                session_id,
+                ctx,
+            );
+            // The POSIX `[ -z $WARP_BOOTSTRAPPED ] && eval '...'` guard below is not valid
+            // PowerShell syntax (#800) -- `$global:WARP_BOOTSTRAPPED` (set by `pwsh.ps1`,
+            // see its `$global:WARP_BOOTSTRAPPED = 1`) is PowerShell's equivalent guard
+            // variable, and the subshell script is raw PowerShell source rather than a
+            // single-quoted `eval` argument, so no escaping is needed here.
+            format!(" if (-not $global:WARP_BOOTSTRAPPED) {{ {subshell_script} }}")
+        }
         Some(shell_type) => {
             let subshell_script =
                 init_subshell_script_for_shell(shell_type, &crate::ASSETS, vars, session_id, ctx);
@@ -290,8 +305,10 @@ pub fn init_subshell_command(
 /// Returns the init subshell script for the given `shell_type` (e.g. the script that emits the
 /// subshell version of the InitShell DCS hook).
 ///
-/// The returned script is one line and has escaped single-quotes for the purposes of being passed
-/// as a single-quoted argument to 'eval'.
+/// The returned script is one line. For bash/zsh/fish it has escaped single-quotes for the
+/// purposes of being passed as a single-quoted argument to 'eval'; for PowerShell, which its
+/// caller writes out as raw source rather than wrapping in `eval`, it is unescaped (see
+/// `init_subshell_command`).
 fn init_subshell_script_for_shell(
     shell_type: ShellType,
     assets: &dyn AssetProvider,
@@ -302,16 +319,24 @@ fn init_subshell_script_for_shell(
     let honor_ps1 = *SessionSettings::as_ref(ctx).honor_ps1;
     let honor_ps1_env_var_value = if honor_ps1 { "1" } else { "0" };
 
-    // Prepend environment variable settings to the script
-    let env_setup_script = format!(
-        "export WARP_HONOR_PS1={}; {}",
-        honor_ps1_env_var_value,
-        env_vars
-            .iter()
-            .map(|var| var.get_initialization_string(shell_type))
-            .collect_vec()
-            .join(" ")
-    );
+    let env_vars_init = env_vars
+        .iter()
+        .map(|var| var.get_initialization_string(shell_type))
+        .collect_vec()
+        .join(" ");
+
+    // Prepend environment variable settings to the script. PowerShell needs its own `$env:`
+    // assignment syntax here -- the POSIX `export NAME=value;` form the other shells use is
+    // not valid PowerShell and would abort the subshell bootstrap before the InitShell hook
+    // below it ever runs (#800).
+    let env_setup_script = match shell_type {
+        ShellType::PowerShell => {
+            format!("$env:WARP_HONOR_PS1 = '{honor_ps1_env_var_value}'; {env_vars_init}")
+        }
+        ShellType::Bash | ShellType::Zsh | ShellType::Fish => {
+            format!("export WARP_HONOR_PS1={honor_ps1_env_var_value}; {env_vars_init}")
+        }
+    };
 
     // Load and escape the shell-specific init script
     let shell_init_script = match shell_type {
@@ -322,8 +347,7 @@ fn init_subshell_script_for_shell(
         ShellType::Fish => {
             load_and_escape_script("bundled/bootstrap/fish_init_subshell.sh", assets)
         }
-        // TODO(PLAT-750)
-        ShellType::PowerShell => todo!(),
+        ShellType::PowerShell => load_script("bundled/bootstrap/pwsh_init_subshell.ps1", assets),
     };
     let shell_init_script =
         shell_init_script.replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string());

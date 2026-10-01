@@ -1123,6 +1123,43 @@ fn command_first_word_and_suffix_handles_alias_without_args() {
     );
 }
 
+/// `TriggerSubshellBootstrap` resolves a recognized `pwsh`/`powershell` command statically
+/// instead of going through the POSIX `unknown_init_subshell.sh` probe, which errors out at
+/// a live PowerShell prompt (#800).
+#[test]
+fn shell_type_for_recognized_powershell_subshell_command_recognizes_pwsh_and_powershell() {
+    for cmd in [
+        "pwsh",
+        "pwsh -NoLogo",
+        "powershell",
+        "/usr/bin/pwsh -NoLogo -NoProfile",
+    ] {
+        assert_eq!(
+            shell_type_for_recognized_powershell_subshell_command(cmd),
+            Some(ShellType::PowerShell),
+            "{cmd} should resolve to PowerShell"
+        );
+    }
+}
+
+#[test]
+fn shell_type_for_recognized_powershell_subshell_command_ignores_other_shells() {
+    for cmd in [
+        "bash",
+        "zsh -l",
+        "fish",
+        "pwsh -Command Get-Process",
+        "",
+        "docker run -it img pwsh",
+    ] {
+        assert_eq!(
+            shell_type_for_recognized_powershell_subshell_command(cmd),
+            None,
+            "{cmd} should not resolve via the direct pwsh/powershell regex"
+        );
+    }
+}
+
 #[test]
 fn escape_does_not_exit_local_agent_view_with_long_running_command() {
     App::test((), |mut app| async move {
