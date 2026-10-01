@@ -1,0 +1,4 @@
+Add-Content -Value ('
+# Auto-Phosphorize
+if ([Environment]::UserInteractive) { Write-Host "$([char]0x1b)]9278;f;{`"hook`": `"SourcedRcFileForWarp`", `"value`": { `"shell`": `"%`", `"uname`": `"' + $(uname) + '`"% }}`a" -NoNewline }
+') -Path '%'

@@ -29,7 +29,11 @@ fn get_subshell_bootstrap_success_block_path(shell_type: ShellType) -> Option<&'
             Some("bundled/bootstrap/bash_zsh_subshell_bootstrap_block_output.txt")
         }
         ShellType::Fish => Some("bundled/bootstrap/fish_subshell_bootstrap_block_output.txt"),
-        ShellType::PowerShell => None,
+        // `uname` is a real external command under pwsh on Unix (the focus of #800), so the
+        // same "bake the current uname in, leave the rest of the snippet literal for next
+        // startup" trick the bash/zsh/fish templates use works here too. Not exercised for
+        // Windows PowerShell, where `uname` is not generally available.
+        ShellType::PowerShell => Some("bundled/bootstrap/pwsh_subshell_bootstrap_block_output.txt"),
     }
 }
 
