@@ -4583,6 +4583,20 @@ impl Element for BlockListElement {
 
         if events_to_propagate_on {
             for cli_subagent_view in self.cli_subagent_views.values_mut() {
+                // A bubble that wasn't laid out this frame (see `cli_subagent_has_room_
+                // to_layout`, and the entry-card suppression in `TerminalView::
+                // render_block_list_element`) has no current bounds to hit-test
+                // against. Don't start a new mouse-down gesture on it -- a stale hit-box
+                // from a previous frame's layout must not "catch" a click at a screen
+                // position nothing is painted at this frame. A mouse-up is let through
+                // regardless, so a gesture that began while the bubble *was* laid out
+                // (e.g. a drag-resize) still closes out cleanly instead of leaving the
+                // bubble's resize state stuck mid-drag.
+                if matches!(event_at_z_index, Event::LeftMouseDown { .. })
+                    && cli_subagent_view.size().is_none()
+                {
+                    continue;
+                }
                 // If the event is handled by the CLI subagent view, do not propagate it down to the blocklist.
                 if cli_subagent_view.dispatch_event(event, ctx, app) {
                     return true;
