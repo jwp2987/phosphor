@@ -40,6 +40,7 @@ use crate::{
     ai::{
         agent::{
             conversation::{AIConversation, AIConversationId},
+            task::TaskId,
             AIAgentExchange, AIAgentExchangeId, AIAgentOutput,
         },
         blocklist::{
@@ -51,7 +52,7 @@ use crate::{
     terminal::{
         find::TerminalFindModel,
         model::{
-            blocks::RichContentItem, session::active_session::ActiveSession,
+            block::BlockId, blocks::RichContentItem, session::active_session::ActiveSession,
             terminal_model::BlockIndex,
         },
         view::{
@@ -642,6 +643,83 @@ impl TerminalView {
                     ctx,
                 );
             }
+        }
+    }
+
+    /// Inserts an `AIBlock` rich content item, scoped to `conversation_id`'s FullScreen
+    /// agent-view transcript, for each exchange of a CLI subagent task.
+    ///
+    /// #799: CLI subagent exchanges are deliberately excluded from the normal blocklist
+    /// exchange list (`exchanges_for_blocklist`/`should_show_task_in_blocklist`) so they
+    /// don't also appear as a duplicate inline card under the running command -- the
+    /// floating `CLISubagentView` bubble already shows them there. But that exclusion
+    /// meant a `TranscriptScope::Conversation(id)` view (the FullScreen pane opened from
+    /// the "<title> >" summary card) had nothing to render: no `RichContentItem` anywhere
+    /// carried `agent_view_conversation_id == Some(id)` for this conversation, even
+    /// though the response was fully persisted (confirmed via GUI verification: the
+    /// `agent_tasks` row held the full text, but the pane was blank). Associating the
+    /// anchor block's `AgentViewVisibility` (see `create_cli_subagent_view`) made the
+    /// bare command block itself visible in that scope, but there was still no
+    /// conversation content to show alongside it.
+    ///
+    /// `RichContentItem::should_hide_for_transcript_scope` already hides any item
+    /// carrying an `agent_view_conversation_id` from `TranscriptScope::Terminal` /
+    /// `Unfiltered` unconditionally, so inserting one here does not reintroduce the
+    /// inline duplicate the exclusion above exists to avoid -- it only becomes visible
+    /// once this specific conversation is the active FullScreen transcript.
+    pub(super) fn insert_ai_blocks_for_cli_subagent_conversation(
+        &mut self,
+        conversation_id: AIConversationId,
+        task_id: &TaskId,
+        block_id: &BlockId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(conversation) = BlocklistAIHistoryModel::as_ref(ctx)
+            .conversation(&conversation_id)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(task) = conversation.get_task(task_id) else {
+            return;
+        };
+        let exchanges: Vec<AIAgentExchange> = task.exchanges().cloned().collect();
+        if exchanges.is_empty() {
+            return;
+        }
+
+        let command_block_index = self
+            .model
+            .lock()
+            .block_list()
+            .block_with_id(block_id)
+            .map(|block| block.index());
+
+        let size_info = *self.size_info;
+        let height = DEFAULT_AI_BLOCK_HEIGHT
+            .into_pixels()
+            .to_lines(size_info.cell_height_px());
+
+        for exchange in exchanges {
+            let params = AIBlockCreationParams {
+                ai_controller: self.ai_controller.clone(),
+                ai_action_model: self.ai_action_model.clone(),
+                ai_context_model: self.ai_context_model.clone(),
+                cli_subagent_controller: self.cli_subagent_controller.clone(),
+                find_model: self.find_model.clone(),
+                active_session: self.active_session.clone(),
+                model_events_handle: self.model_events_handle.clone(),
+                terminal_view_id: self.view_id,
+                height: height.as_f64() as f32,
+                conversation_id,
+                exchange_id: exchange.id,
+                working_directory: exchange.working_directory.clone(),
+                command_block_index,
+                exchange,
+                use_live_appearance: true,
+                is_restoring_on_startup: false,
+            };
+            self.create_and_insert_ai_block(params, ctx);
         }
     }
 

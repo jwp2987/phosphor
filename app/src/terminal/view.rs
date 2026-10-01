@@ -6483,6 +6483,44 @@ impl TerminalView {
         });
 
         if is_live {
+            // #799: associate the anchor command block with this conversation so
+            // `TranscriptScope::Conversation` can find it once the user opens the
+            // FullScreen agent view from the collapsed summary card (e.g. after the
+            // long-running command finishes). Without this, the block's
+            // `AgentViewVisibility` stays `Terminal` with no conversation ids attached
+            // -- it was never "tagged in" through the normal selection-based flow -- so
+            // `Block::should_hide_block` filters it out of the transcript, leaving the
+            // pane blank even though the response is fully persisted in `agent_tasks`.
+            // A restored (post-restart) CLI subagent block doesn't need this: its
+            // snapshot already carries `AgentViewVisibility::Agent` (see
+            // `AIConversation::normalized_cli_subagent_snapshot_block`).
+            let associated_blocks = {
+                let mut model = self.model.lock();
+                let block_list = model.block_list_mut();
+                let mut associated = block_list
+                    .associate_blocks_with_conversation([&block_id].into_iter(), conversation_id);
+                let promoted =
+                    block_list.promote_blocks_to_attached_from_conversation(conversation_id);
+                associated.extend(promoted);
+                associated
+            };
+            if let Some(sender) = GlobalResourceHandlesProvider::as_ref(ctx)
+                .get()
+                .model_event_sender
+                .as_ref()
+            {
+                for (associated_block_id, agent_view_visibility) in associated_blocks {
+                    if let Err(e) =
+                        sender.send(persistence::ModelEvent::UpdateBlockAgentViewVisibility {
+                            block_id: associated_block_id.to_string(),
+                            agent_view_visibility: agent_view_visibility.into(),
+                        })
+                    {
+                        log::error!("Error sending UpdateBlockAgentViewVisibility event: {e:?}");
+                    }
+                }
+            }
+
             if let Some(initial_requested_command_id) = initial_requested_command_action_id {
                 // On a live spawn, the AI block that triggered the CLI subagent is
                 // just a bridging tool call; the real UI is attached to the command
@@ -6724,6 +6762,16 @@ impl TerminalView {
                     {
                         return;
                     }
+
+                    // #799: give the FullScreen transcript something to show for this
+                    // conversation before the summary card below is even clickable --
+                    // see `insert_ai_blocks_for_cli_subagent_conversation`'s doc comment.
+                    self.insert_ai_blocks_for_cli_subagent_conversation(
+                        *conversation_id,
+                        task_id,
+                        block_id,
+                        ctx,
+                    );
 
                     // In the case that the user has taken control and already exited the agent view,
                     // we insert the corresponding agent view block on command finish instead.

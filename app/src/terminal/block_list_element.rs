@@ -1,5 +1,7 @@
 use crate::ai::blocklist::agent_view::{agent_view_bg_fill, AgentViewState};
-use crate::ai::blocklist::block::cli::CLI_SUBAGENT_MIN_RESIZABLE_WIDTH;
+use crate::ai::blocklist::block::cli::{
+    CLI_SUBAGENT_MIN_RESIZABLE_HEIGHT, CLI_SUBAGENT_MIN_RESIZABLE_WIDTH,
+};
 use crate::ai::blocklist::{ai_brand_color, ATTACH_AS_AGENT_MODE_CONTEXT_TEXT};
 use crate::ai_assistant::{AI_ASSISTANT_SVG_PATH, ASK_AI_ASSISTANT_TEXT};
 use crate::appearance::Appearance;
@@ -197,24 +199,53 @@ const CLI_SUBAGENT_MAX_HEIGHT_RATIO: f32 = 0.98;
 fn cli_subagent_layout_max_size(
     available_size: Vector2F,
     block_height: f32,
-    is_agent_blocked: bool,
+    is_active_and_long_running: bool,
 ) -> Vector2F {
     // Follows Warp's outer-constraint shape: the block list first gives the floating
     // window a sufficiently large layout ceiling, then hands off to CLISubagentView's
     // internal Resizable to handle the final drag size.
+    //
+    // #798: this used to gate on `block.is_agent_blocked()` -- "is the agent waiting
+    // on user approval right now" -- rather than whether the anchor command is still
+    // running. Approval is the exception, not the common case: a plain monitored
+    // command (e.g. `sleep 90`, or anything that needs no write-to-pty/file
+    // permission) is live and long-running but *never* agent-blocked, so its bubble
+    // was constrained to the anchor command's own (often one-line) block height for
+    // its entire run. The conversation content -- including a response's code-block
+    // header -- then laid out into that sliver, clipped to a couple of pixels and
+    // squeezed up against the block's corner, which read as a stray, disconnected
+    // fragment overlapping whatever sat below it once the block list scrolled. Once
+    // the command finished, `is_active_and_long_running` naturally becomes false too,
+    // so a restored/collapsed bubble still gets the block-height constraint it was
+    // designed for.
     let max_width = (available_size.x() * CLI_SUBAGENT_MAX_WIDTH_RATIO
         - CLI_SUBAGENT_HORIZONTAL_MARGIN)
         .max(CLI_SUBAGENT_MIN_RESIZABLE_WIDTH);
     let window_max_height = available_size.y() * CLI_SUBAGENT_MAX_HEIGHT_RATIO;
-    let max_height = if is_agent_blocked {
+    let max_height = if is_active_and_long_running {
         window_max_height
     } else {
-        // In the non-blocked state, keep Warp's within-block constraint so an inactive
-        // floating window doesn't spill outside its owning block.
+        // Once the anchor command is no longer active, keep Warp's within-block
+        // constraint so the now-inactive floating window doesn't spill outside its
+        // owning block.
         (block_height - CLI_SUBAGENT_VERTICAL_MARGIN * 2.).min(window_max_height)
     }
     .max(0.);
     vec2f(max_width, max_height)
+}
+
+/// Whether a CLI subagent floating window has enough room to lay itself out at all.
+///
+/// #798: once a long-running command finishes, `cli_subagent_layout_max_size` constrains
+/// the window to its own (often near-zero, for a plain command with little or no output)
+/// block height. Laying the window out anyway let a fragment of its content -- e.g. the
+/// language header of a fenced code block -- paint into that unusably small sliver, which
+/// read as a stray, disconnected box once the block list scrolled. The restored card's
+/// view handle is kept either way (see `cli_subagent_views.contains_key` in
+/// `view_test.rs`); it just isn't laid out, and therefore not painted, while there is no
+/// usable room for it.
+fn cli_subagent_has_room_to_layout(max_size: Vector2F) -> bool {
+    max_size.y() >= CLI_SUBAGENT_MIN_RESIZABLE_HEIGHT
 }
 
 pub type LabelBuilderFn = dyn Fn(
@@ -3433,18 +3464,25 @@ impl Element for BlockListElement {
                                 self.cli_subagent_views.get_mut(block.id())
                             {
                                 let block_height = (height.as_f64() as f32) * cell_size.y();
-                                cli_subagent_view.layout(
-                                    SizeConstraint {
-                                        min: vec2f(0., 0.),
-                                        max: cli_subagent_layout_max_size(
-                                            constraint.max,
-                                            block_height,
-                                            block.is_agent_blocked(),
-                                        ),
-                                    },
-                                    ctx,
-                                    app,
+                                let max_size = cli_subagent_layout_max_size(
+                                    constraint.max,
+                                    block_height,
+                                    block.is_active_and_long_running(),
                                 );
+                                // #798: skip layout entirely below the usable floor (see
+                                // `cli_subagent_has_room_to_layout`'s doc comment) -- this
+                                // leaves `size()` at `None`, so the paint pass (which only
+                                // paints an element laid out this frame) naturally omits it.
+                                if cli_subagent_has_room_to_layout(max_size) {
+                                    cli_subagent_view.layout(
+                                        SizeConstraint {
+                                            min: vec2f(0., 0.),
+                                            max: max_size,
+                                        },
+                                        ctx,
+                                        app,
+                                    );
+                                }
                             }
                         }
 
@@ -5042,15 +5080,30 @@ mod tests {
     }
 
     #[test]
-    fn cli_subagent_layout_max_size_allows_nearly_full_height_when_agent_blocked() {
+    fn cli_subagent_layout_max_size_allows_nearly_full_height_while_active() {
         assert_eq!(
             cli_subagent_layout_max_size(vec2f(1000., 700.), 300., true),
             vec2f(972., 686.)
         );
     }
 
+    // #798: a long-running command the agent is merely monitoring (not blocked on
+    // approval -- e.g. `sleep 90`) must still get the generous height ceiling while
+    // it runs. Before the fix, this call site passed `block.is_agent_blocked()`,
+    // which is false for the entire run of a command that never needs approval, so
+    // the bubble was squeezed down to the anchor command's own block height (see
+    // the test below) even though the command -- and the bubble's conversation --
+    // was still fully live.
     #[test]
-    fn cli_subagent_layout_max_size_keeps_block_height_limit_when_not_agent_blocked() {
+    fn cli_subagent_layout_max_size_allows_nearly_full_height_while_active_and_not_blocked() {
+        assert_eq!(
+            cli_subagent_layout_max_size(vec2f(1000., 700.), 60., true),
+            vec2f(972., 686.)
+        );
+    }
+
+    #[test]
+    fn cli_subagent_layout_max_size_keeps_block_height_limit_once_inactive() {
         assert_eq!(
             cli_subagent_layout_max_size(vec2f(1000., 700.), 300., false),
             vec2f(972., 284.)
@@ -5071,5 +5124,32 @@ mod tests {
             cli_subagent_layout_max_size(vec2f(320., 700.), 300., true).x(),
             360.
         );
+    }
+
+    // #798: a finished, plain command with ~1 line of its own block height (e.g.
+    // `sleep 90`, no output) and no longer active falls below the floating window's
+    // usable floor -- this is the exact input shape that used to still get laid out
+    // and paint a stray fragment of its content.
+    #[test]
+    fn cli_subagent_layout_max_size_can_fall_below_the_usable_height_floor_once_inactive() {
+        let max_size = cli_subagent_layout_max_size(vec2f(1000., 700.), 24., false);
+        assert!(max_size.y() < CLI_SUBAGENT_MIN_RESIZABLE_HEIGHT);
+    }
+
+    #[test]
+    fn cli_subagent_has_room_to_layout_is_false_below_the_height_floor() {
+        assert!(!cli_subagent_has_room_to_layout(vec2f(
+            972.,
+            CLI_SUBAGENT_MIN_RESIZABLE_HEIGHT - 1.
+        )));
+    }
+
+    #[test]
+    fn cli_subagent_has_room_to_layout_is_true_at_and_above_the_height_floor() {
+        assert!(cli_subagent_has_room_to_layout(vec2f(
+            972.,
+            CLI_SUBAGENT_MIN_RESIZABLE_HEIGHT
+        )));
+        assert!(cli_subagent_has_room_to_layout(vec2f(972., 686.)));
     }
 }
