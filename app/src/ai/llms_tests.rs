@@ -449,3 +449,162 @@ fn copying_an_absent_override_clears_a_stale_override_on_the_target() {
         });
     });
 }
+
+/// #797 reproduction, at the resolution-function level: pins the X11 observation on
+/// the integrated build directly. Populating `base_llm_for_terminal_view` for the
+/// subagent's own view id does not help here -- `get_active_cli_agent_model` never
+/// consults it, and the chip keys off the parent's view id anyway. A BYOP "Local"
+/// provider is configured and
+/// resolves correctly for Base, while "Full Terminal Use" (the CLI subagent's chip,
+/// shown whenever the active block `is_agent_in_control_or_tagged_in` -- see
+/// `terminal/profile_model_selector.rs::refresh_state`) independently defaulted to
+/// Ollama because `cli_agent`'s own `AvailableLLMs` lists it first -- unrelated to
+/// what Base actually resolved to. Fails before the `get_active_cli_agent_model` fix
+/// (it would assert "ollama-gpt-oss" instead).
+#[test]
+fn cli_agent_model_without_an_explicit_choice_follows_the_base_model_not_its_own_default() {
+    App::test((), |mut app| async move {
+        install_profile_model_singletons(&mut app);
+        let _profiles = app.add_singleton_model(|ctx| {
+            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+        });
+
+        let local_claude_opus = LLMId::from("local-claude-opus");
+        let ollama_gpt_oss = LLMId::from("ollama-gpt-oss");
+        let agent_mode = AvailableLLMs::new(
+            "auto".into(),
+            vec![
+                agent_llm("auto", "auto (cost-efficient)"),
+                agent_llm(local_claude_opus.as_str(), "Local / claude-opus5.5"),
+            ],
+            None,
+        )
+        .expect("choices are non-empty");
+        // Mirrors `build_byop_models_by_feature`'s `cli_agent` list: the same choices as
+        // `agent_mode`, but its own `default_id` is independent -- and, as observed, can
+        // land on a different entry (Ollama) than whatever Base actually resolves to.
+        let cli_agent = AvailableLLMs::new(
+            ollama_gpt_oss.clone(),
+            vec![
+                agent_llm(ollama_gpt_oss.as_str(), "Ollama / gpt-oss:20b"),
+                agent_llm(local_claude_opus.as_str(), "Local / claude-opus5.5"),
+            ],
+            None,
+        )
+        .expect("choices are non-empty");
+
+        let preferences = app.add_singleton_model(|_| LLMPreferences {
+            models_by_feature: ModelsByFeature {
+                agent_mode,
+                cli_agent: Some(cli_agent),
+                ..Default::default()
+            },
+            last_update: None,
+            base_llm_for_terminal_view: HashMap::new(),
+            reasoning_effort_per_terminal: HashMap::new(),
+            last_used_reasoning: HashMap::new(),
+            agent_mode_models_unavailable: false,
+        });
+
+        let terminal_view_id = EntityId::new();
+        // The parent conversation is explicitly on the BYOP "Local" model for Base --
+        // the same per-view override tier `get_active_base_model` consults.
+        preferences.update(&mut app, |preferences, _ctx| {
+            preferences
+                .base_llm_for_terminal_view
+                .insert(terminal_view_id, local_claude_opus.clone());
+        });
+
+        preferences.read(&app, |preferences, ctx| {
+            assert_eq!(
+                preferences
+                    .get_active_base_model(ctx, Some(terminal_view_id))
+                    .id
+                    .as_str(),
+                local_claude_opus.as_str(),
+                "sanity check: Base resolves to the configured Local model"
+            );
+            assert_eq!(
+                preferences
+                    .get_active_cli_agent_model(ctx, Some(terminal_view_id))
+                    .id
+                    .as_str(),
+                local_claude_opus.as_str(),
+                "#797: with no explicit \"Full Terminal Use\" choice, the CLI subagent \
+                 must follow the Base model, not cli_agent's own independent default \
+                 (Ollama)"
+            );
+        });
+    });
+}
+
+/// The companion case: an explicit "Full Terminal Use" choice must still win over
+/// the Base model, so the fallback above cannot shadow a real user selection.
+#[test]
+fn cli_agent_model_with_an_explicit_choice_is_not_overridden_by_the_base_model() {
+    App::test((), |mut app| async move {
+        install_profile_model_singletons(&mut app);
+        let profiles = app.add_singleton_model(|ctx| {
+            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+        });
+
+        let local_claude_opus = LLMId::from("local-claude-opus");
+        let ollama_gpt_oss = LLMId::from("ollama-gpt-oss");
+        let agent_mode = AvailableLLMs::new(
+            "auto".into(),
+            vec![
+                agent_llm("auto", "auto (cost-efficient)"),
+                agent_llm(local_claude_opus.as_str(), "Local / claude-opus5.5"),
+            ],
+            None,
+        )
+        .expect("choices are non-empty");
+        let cli_agent = AvailableLLMs::new(
+            ollama_gpt_oss.clone(),
+            vec![
+                agent_llm(ollama_gpt_oss.as_str(), "Ollama / gpt-oss:20b"),
+                agent_llm(local_claude_opus.as_str(), "Local / claude-opus5.5"),
+            ],
+            None,
+        )
+        .expect("choices are non-empty");
+
+        let preferences = app.add_singleton_model(|_| LLMPreferences {
+            models_by_feature: ModelsByFeature {
+                agent_mode,
+                cli_agent: Some(cli_agent),
+                ..Default::default()
+            },
+            last_update: None,
+            base_llm_for_terminal_view: HashMap::new(),
+            reasoning_effort_per_terminal: HashMap::new(),
+            last_used_reasoning: HashMap::new(),
+            agent_mode_models_unavailable: false,
+        });
+
+        let terminal_view_id = EntityId::new();
+        preferences.update(&mut app, |preferences, _ctx| {
+            preferences
+                .base_llm_for_terminal_view
+                .insert(terminal_view_id, local_claude_opus.clone());
+        });
+        // The user explicitly picked Ollama in the "Full Terminal Use" tab.
+        let profile_id = profiles.read(&app, |profiles, ctx| {
+            *profiles.active_profile(Some(terminal_view_id), ctx).id()
+        });
+        profiles.update(&mut app, |profiles, ctx| {
+            profiles.set_cli_agent_model(profile_id, Some(ollama_gpt_oss.clone()), ctx);
+        });
+
+        preferences.read(&app, |preferences, ctx| {
+            assert_eq!(
+                preferences
+                    .get_active_cli_agent_model(ctx, Some(terminal_view_id))
+                    .id
+                    .as_str(),
+                ollama_gpt_oss.as_str(),
+                "an explicit Full Terminal Use choice must still win over the Base model"
+            );
+        });
+    });
+}
