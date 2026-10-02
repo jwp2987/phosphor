@@ -748,26 +748,21 @@ impl TerminalView {
     /// `try_enter_agent_view`, or the restored-and-unmodified exit path -- with nothing backing
     /// it, since that live handler never ran this session.
     ///
-    /// Returns early once any rich content item already carries
-    /// `agent_view_conversation_id == Some(conversation_id)`, so calling this more than once
-    /// for the same conversation (e.g. once from restore and again from a later
-    /// `try_enter_agent_view`) does no work after the first. The check is whole-conversation,
-    /// not per-exchange: `insert_ai_blocks_for_cli_subagent_conversation`'s own per-exchange
-    /// dedupe is what actually prevents a double-insert if this is ever called twice before
-    /// any content exists yet.
+    /// Idempotent via `insert_ai_blocks_for_cli_subagent_conversation`'s own per-exchange
+    /// dedupe, not a whole-conversation guard here: a conversation that mixes ordinary
+    /// exchanges with a CLI-subagent task already has a tagged `RichContentItem` for the
+    /// ordinary exchanges by the time any of this function's callers run (restore inserts
+    /// `exchanges_for_blocklist`'s ordinary `AIBlock`s before calling this), so a
+    /// whole-conversation "does any tagged item exist yet" check would wrongly no-op the
+    /// subagent backfill for exactly that mixed case -- the one #802 exists to fix. Calling
+    /// this more than once for the same conversation (e.g. once from restore and again from a
+    /// later `try_enter_agent_view`) still does no work after the first, because the
+    /// per-exchange dedupe below sees the same exchange ids already backed.
     pub(super) fn ensure_cli_subagent_transcript_blocks(
         &mut self,
         conversation_id: AIConversationId,
         ctx: &mut ViewContext<Self>,
     ) {
-        let already_has_transcript_content = self
-            .rich_content_views
-            .iter()
-            .any(|rich_content| rich_content.agent_view_conversation_id() == Some(conversation_id));
-        if already_has_transcript_content {
-            return;
-        }
-
         let Some(conversation) = BlocklistAIHistoryModel::as_ref(ctx)
             .conversation(&conversation_id)
             .cloned()
