@@ -3262,6 +3262,13 @@ impl TerminalView {
                     was_ambient_agent,
                     ..
                 } => {
+                    // #802: the user was just in this conversation's FullScreen transcript, so
+                    // backfill it before deciding below whether to leave behind a re-openable
+                    // entry card -- otherwise a CLI-subagent conversation reached without going
+                    // through either restore path (e.g. already live in memory) could get an
+                    // entry card pointing at a transcript with nothing in it.
+                    me.ensure_cli_subagent_transcript_blocks(*conversation_id, ctx);
+
                     // Prompt suggestions should not follow the user back to terminal view.
                     me.clear_prompt_suggestions(ctx);
                     // The transcript navigation cursor is agent-view-scoped; drop it so its
