@@ -330,6 +330,124 @@ pub(crate) fn exit_after_signal_shutdown_for(initiating_signal: Option<i32>) {
     }
 }
 
+/// Tracks which in-flight termination request, if any, is attributed to a
+/// specific signal, so two quit paths racing to the same completion point
+/// cannot clobber each other's attribution.
+///
+/// macOS is the motivating case: `AppDelegate::terminate_app` (a key binding,
+/// menu item, or dialog) and the termination-signal handler both ultimately
+/// call `app.terminate(None)`, and Cocoa's `applicationShouldTerminate:` runs
+/// a two-phase dance (cancel -> hide -> a deferred re-invocation of
+/// `terminate:`) before either one's request actually completes at
+/// `applicationWillTerminate:`. Without this, whichever call's closure runs
+/// last before completion wins the attribution, regardless of which request
+/// is the one that is actually completing -- which is exactly how a
+/// signal-initiated quit racing an ordinary one could previously exit status
+/// 0 (the ordinary request's `None` overwrote the signal's `Some(sig)`), or an
+/// ordinary Cmd+Q could re-raise a signal that had nothing to do with it (it
+/// picked up a stale `Some(sig)` left by an earlier, unrelated signal
+/// request) (jwp2987/phosphor#791).
+///
+/// Every accepted request gets a generation. [`TerminationAttribution::request`]
+/// is first-writer-wins: if a termination sequence is already in flight, a
+/// later call does not change its attribution, it only reports which request
+/// (its own, or whichever got there first) actually owns the in-flight
+/// generation. Only the request holding that generation may end it --
+/// [`TerminationAttribution::complete`] consumes the attribution when that
+/// request is the one that actually finishes, [`TerminationAttribution::cancel`]
+/// clears it when that request is abandoned instead (e.g. the user declined
+/// the "Quit Phosphor?" confirmation), so a later, unrelated quit attempt is
+/// not told a shutdown is still in flight and silently denied its own
+/// attribution.
+///
+/// Platform-neutral on purpose, so it is covered by tests that build and run
+/// on every platform, including Linux; the mac glue that calls it
+/// (`platform::mac::delegate`) stays `cfg(target_os = "macos")`.
+#[derive(Debug)]
+pub(crate) struct TerminationAttribution {
+    state: parking_lot::Mutex<AttributionState>,
+}
+
+// Deliberately no `Default` impl: a default-constructed `next_generation` of
+// 0 would collide with the sentinel 0 the mac glue's `CURRENT_GENERATION`
+// static uses for "no request has run yet" -- `TerminationAttribution::new`
+// always starts it at 1 instead.
+#[derive(Debug)]
+struct AttributionState {
+    /// The generation to hand out to the next request that does not find one
+    /// already in flight. Monotonically increasing; never reused, so a
+    /// `complete`/`cancel` call carrying a stale generation can never match a
+    /// later, unrelated request that happens to reuse a number.
+    next_generation: u64,
+    /// The request currently in flight, if a termination sequence has been
+    /// requested and not yet completed or cancelled.
+    in_flight: Option<InFlightRequest>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct InFlightRequest {
+    generation: u64,
+    signal: Option<i32>,
+}
+
+impl TerminationAttribution {
+    pub(crate) const fn new() -> Self {
+        Self {
+            state: parking_lot::Mutex::new(AttributionState {
+                next_generation: 1,
+                in_flight: None,
+            }),
+        }
+    }
+
+    /// Requests a termination attributed to `signal` (`None` for an ordinary
+    /// key/menu/dialog quit, `Some(signal)` for the termination-signal
+    /// handler's own request). Returns the generation of whichever request
+    /// now owns the in-flight attribution: a fresh one if none was in flight,
+    /// or the existing one, unchanged, if one already was -- first-writer-wins,
+    /// so a later request can never overwrite an earlier one that is still
+    /// being decided, regardless of whether either side is `None` or `Some`.
+    pub(crate) fn request(&self, signal: Option<i32>) -> u64 {
+        let mut state = self.state.lock();
+        if let Some(in_flight) = &state.in_flight {
+            return in_flight.generation;
+        }
+        let generation = state.next_generation;
+        state.next_generation += 1;
+        state.in_flight = Some(InFlightRequest { generation, signal });
+        generation
+    }
+
+    /// Consumes the attribution for the request that is actually completing,
+    /// identified by `generation`. Returns its signal (or `None` if it was not
+    /// signal-initiated) and clears the in-flight state, if `generation` is
+    /// the one currently owning it. Returns `None` without changing anything
+    /// if it is not -- superseded by first-writer-wins, already completed, or
+    /// never began -- so that caller must not attribute anything to this
+    /// completion.
+    pub(crate) fn complete(&self, generation: u64) -> Option<i32> {
+        let mut state = self.state.lock();
+        match &state.in_flight {
+            Some(in_flight) if in_flight.generation == generation => {
+                let signal = in_flight.signal;
+                state.in_flight = None;
+                signal
+            }
+            _ => None,
+        }
+    }
+
+    /// Cancels the in-flight request if `generation` is the one that owns it
+    /// (e.g. the user declined to quit), clearing its attribution so the next
+    /// request starts fresh. A no-op if `generation` does not own it.
+    pub(crate) fn cancel(&self, generation: u64) {
+        let mut state = self.state.lock();
+        if matches!(&state.in_flight, Some(f) if f.generation == generation) {
+            state.in_flight = None;
+        }
+    }
+}
+
 /// [`ShutdownHooks`] that act on the real process.
 pub(crate) struct ProcessHooks<F> {
     request_terminate: F,
