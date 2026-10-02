@@ -467,15 +467,48 @@ extern "C-unwind" fn warp_app_will_terminate(this: &mut Object, _: Sel, _: id) {
     // Cocoa exits with status 0 once this returns; a signal-initiated quit should
     // end the way the signal would have (jwp2987/phosphor#685) -- but only if
     // THIS termination request is itself the one a signal asked for, not merely
-    // because some signal was received at some point during the process's life.
-    // `take_terminating_signal` reads the attribution `terminate_app_on_main_queue`
-    // set immediately before the call that led here, never the process-wide
-    // latch `exit_after_signal_shutdown` (unused on this path) would read -- the
-    // same per-request scoping winit and the headless loop now use
-    // (jwp2987/phosphor#726, jwp2987/phosphor#791).
+    // because some signal was received at some point during the process's life,
+    // and not merely because it is the last `terminate_app_on_main_queue` call
+    // that happened to run before this -- the Quit menu item, a key binding, a
+    // dialog, and the termination-signal handler can all end up here through
+    // the two-phase `applicationShouldTerminate:` dance, racing for the same
+    // completion. `complete_terminating_request` consumes the attribution of
+    // whichever request actually owns it (the `TerminationAttribution`
+    // request/complete/cancel state machine in `termination_signals.rs`,
+    // first-writer-wins while a shutdown is in progress), never the
+    // process-wide latch `exit_after_signal_shutdown` (unused on this path)
+    // would read (jwp2987/phosphor#726, jwp2987/phosphor#791).
     crate::platform::termination_signals::exit_after_signal_shutdown_for(
-        super::delegate::take_terminating_signal(),
+        super::delegate::complete_terminating_request(),
     );
+}
+
+/// Invoked by the Quit menu item's `warpTerminateFromMenu:` selector (see
+/// `objc/app.m`'s `WarpApplication`), instead of Cocoa's own `terminate:`
+/// which the item used to bind directly. That bypassed the single Rust
+/// chokepoint every other quit path goes through
+/// (`AppContext::terminate_app` -> `platform::Delegate::terminate_app` ->
+/// `terminate_app_on_main_queue`), so a Quit-menu click never recorded any
+/// attribution for `warp_app_will_terminate` to read -- it either defaulted
+/// to "not signal-initiated" (usually harmless) or, racing a real
+/// termination signal, could pick up or discard that signal's attribution
+/// incorrectly (jwp2987/phosphor#791). Routing it through the chokepoint like
+/// every other quit path means it now participates correctly in the
+/// request/complete/cancel attribution below.
+#[unsafe(no_mangle)]
+pub(crate) extern "C-unwind" fn warp_app_quit_menu_item_triggered(this: &mut Object) {
+    let app = unsafe { get_app(this) };
+    app.callbacks.terminate_app_requested();
+}
+
+/// Cocoa's `applicationShouldTerminate:` decided NOT to proceed with this
+/// request (the user declined the "Quit Phosphor?" confirmation). Cancels its
+/// attribution so a later, unrelated quit attempt is not told a shutdown is
+/// still in flight and silently denied its own attribution by
+/// first-writer-wins (jwp2987/phosphor#791).
+#[unsafe(no_mangle)]
+pub(crate) extern "C-unwind" fn warp_app_terminate_declined(_this: &mut Object) {
+    super::delegate::cancel_terminating_request();
 }
 
 #[unsafe(no_mangle)]

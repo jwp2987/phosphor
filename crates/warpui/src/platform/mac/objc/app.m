@@ -292,6 +292,13 @@ NSUInteger activeScreenId() {
                        dispatch_get_main_queue(), ^{
                          [application terminate:nil];
                        });
+    } else {
+        // This request is not going anywhere -- nothing will ever reach
+        // `applicationWillTerminate:` for it, so its attribution must be
+        // cancelled rather than left "in flight" forever, or every future
+        // quit attempt would find a stale request still in progress and lose
+        // its own attribution to first-writer-wins (jwp2987/phosphor#791).
+        warp_app_terminate_declined(application);
     }
     return NSTerminateCancel;
 }
@@ -463,6 +470,22 @@ NSUInteger activeScreenId() {
 - (void)setForceTermination {
     WarpDelegate *delegate = (WarpDelegate *)self.delegate;
     [delegate setForceTermination];
+}
+
+// The Quit menu item's action (see menus.rs's `resolve_standard_action` for
+// `StandardAction::Quit`). Deliberately does NOT call `[self terminate:sender]`
+// directly: that is exactly the bypass of the Rust termination chokepoint
+// that let a Quit-menu click race a real termination signal and come away
+// with the wrong signal attribution (jwp2987/phosphor#791). Instead this
+// notifies Rust, which routes the request through
+// `AppContext::terminate_app` -> `terminate_app_on_main_queue`, the same
+// chokepoint every other quit path (key bindings, dialogs, the
+// termination-signal handler) already goes through -- which itself calls
+// `[application terminate:nil]` once it has recorded this request's
+// attribution, so the actual Cocoa termination sequence
+// (`applicationShouldTerminate:` and on) is unchanged.
+- (void)warpTerminateFromMenu:(id)sender {
+    warp_app_quit_menu_item_triggered(self);
 }
 
 - (void)showModal:(NSAlert *)alert modalId:(NSUInteger)modalId {
