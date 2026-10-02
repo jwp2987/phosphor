@@ -227,6 +227,11 @@ windows = { workspace = true, features = [
     # `CTRL_SHUTDOWN_EVENT` for the headless/TUI graceful-shutdown handler
     # (jwp2987/phosphor#773).
     "Win32_System_Console",
+    # `ShutdownBlockReasonCreate`/`ShutdownBlockReasonDestroy` for the GUI
+    # `WM_QUERYENDSESSION`/`WM_ENDSESSION` window subclass (jwp2987/phosphor#773).
+    # `SetWindowSubclass`/`DefSubclassProc` come from `Win32_UI_Shell`, already
+    # enabled above for other Shell APIs.
+    "Win32_System_Shutdown",
 ] }
 windows-core.workspace = true
 windows-version = "0.1.2"

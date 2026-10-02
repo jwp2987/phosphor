@@ -772,6 +772,18 @@ impl Window {
         self.titlebar_height.get()
     }
 
+    /// Returns this window's underlying winit window, once [`Self::open_window`]
+    /// has created it. Used to install the `WM_QUERYENDSESSION`/`WM_ENDSESSION`
+    /// subclass right after creation (jwp2987/phosphor#773); see
+    /// `windowing::winit::windows::session_end`.
+    #[cfg(windows)]
+    pub(super) fn winit_window(&self) -> Option<Arc<winit::window::Window>> {
+        self.inner
+            .borrow()
+            .as_ref()
+            .map(|inner| inner.window.clone())
+    }
+
     pub fn open_window(
         &self,
         window_target: &ActiveEventLoop,

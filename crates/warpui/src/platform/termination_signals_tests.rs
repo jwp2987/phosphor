@@ -319,6 +319,74 @@ mod ctrl_event_shutdown_reason {
     }
 }
 
+// jwp2987/phosphor#773: `session_end_action` is the pure decision behind the
+// `WM_QUERYENDSESSION`/`WM_ENDSESSION` window subclass, so -- like
+// `ctrl_event_shutdown_reason` above -- it builds and runs on every platform,
+// not only Windows.
+mod session_end_action {
+    use super::{SessionEndAction, session_end_action};
+
+    const QUERY_END_SESSION: bool = true;
+    const END_SESSION: bool = false;
+
+    #[test]
+    fn query_end_session_always_blocks_and_allows() {
+        // Never veto a shutdown/logoff, and this is independent of whether a
+        // shutdown is already underway or what a later `WM_ENDSESSION` will say.
+        assert_eq!(
+            session_end_action(QUERY_END_SESSION, false, false, false),
+            SessionEndAction::BlockAndAllow
+        );
+        assert_eq!(
+            session_end_action(QUERY_END_SESSION, true, true, true),
+            SessionEndAction::BlockAndAllow
+        );
+    }
+
+    #[test]
+    fn first_endsession_true_begins_a_graceful_shutdown() {
+        assert_eq!(
+            session_end_action(END_SESSION, true, false, false),
+            SessionEndAction::BeginGracefulShutdown { reason_signal: 6 },
+        );
+    }
+
+    #[test]
+    fn logoff_maps_to_the_console_paths_logoff_reason() {
+        assert_eq!(
+            session_end_action(END_SESSION, true, true, false),
+            SessionEndAction::BeginGracefulShutdown { reason_signal: 5 },
+        );
+    }
+
+    #[test]
+    fn a_second_windows_endsession_true_is_ignored_once_already_shutting_down() {
+        // Windows sends `WM_ENDSESSION` to every top-level window for the one
+        // real shutdown attempt; only the first should start anything.
+        assert_eq!(
+            session_end_action(END_SESSION, true, false, true),
+            SessionEndAction::AlreadyShuttingDown
+        );
+        assert_eq!(
+            session_end_action(END_SESSION, true, true, true),
+            SessionEndAction::AlreadyShuttingDown
+        );
+    }
+
+    #[test]
+    fn endsession_false_is_a_cancellation_regardless_of_the_latch() {
+        // Some other application vetoed the session end.
+        assert_eq!(
+            session_end_action(END_SESSION, false, false, false),
+            SessionEndAction::Cancelled
+        );
+        assert_eq!(
+            session_end_action(END_SESSION, false, false, true),
+            SessionEndAction::Cancelled
+        );
+    }
+}
+
 #[test]
 fn a_repeated_console_close_event_escalates_like_sigterm() {
     // CTRL_CLOSE_EVENT (2) is not SIGHUP, so a repeat after the escalation
