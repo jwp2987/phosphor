@@ -1,3 +1,6 @@
+use std::cell::Cell;
+use std::rc::Rc;
+
 use warpui::{App, SingletonEntity};
 
 use super::*;
@@ -606,5 +609,98 @@ fn cli_agent_model_with_an_explicit_choice_is_not_overridden_by_the_base_model()
                 "an explicit Full Terminal Use choice must still win over the Base model"
             );
         });
+    });
+}
+
+/// #801: `base_llm_for_terminal_view` and `reasoning_effort_per_terminal` are keyed
+/// by terminal-view `EntityId` and previously only shrank via an explicit "reset to
+/// profile default" action (`remove_llm_override`, which only ever touched the first
+/// map). Closing a pane or tearing down a CLI subagent's own sub-session view never
+/// removed anything, so both maps grew for the life of the session. `forget_terminal_view`
+/// is the teardown counterpart: it must drop the torn-down view's entry from *both*
+/// maps, and must leave every other view's entries -- in both maps -- untouched.
+#[test]
+fn forgetting_a_terminal_view_drops_both_maps_but_leaves_other_ids_intact() {
+    App::test((), |mut app| async move {
+        install_profile_model_singletons(&mut app);
+        let custom_model_id = LLMId::from("custom-endpoint");
+        let preferences =
+            app.add_singleton_model(|_| preferences_for_profile_model_tests(&custom_model_id));
+
+        let closing_id = EntityId::new();
+        let other_id = EntityId::new();
+
+        preferences.update(&mut app, |preferences, _ctx| {
+            preferences
+                .base_llm_for_terminal_view
+                .insert(closing_id, LLMId::from("claude-opus"));
+            preferences
+                .base_llm_for_terminal_view
+                .insert(other_id, LLMId::from("claude-opus"));
+            preferences
+                .reasoning_effort_per_terminal
+                .insert(closing_id, crate::settings::ReasoningEffortSetting::High);
+            preferences
+                .reasoning_effort_per_terminal
+                .insert(other_id, crate::settings::ReasoningEffortSetting::High);
+        });
+
+        preferences.update(&mut app, |preferences, ctx| {
+            preferences.forget_terminal_view(closing_id, ctx);
+        });
+
+        preferences.read(&app, |preferences, _| {
+            assert_eq!(
+                preferences.base_llm_for_terminal_view.get(&closing_id),
+                None,
+                "the closed view's model override must be dropped"
+            );
+            assert_eq!(
+                preferences.reasoning_effort_per_terminal.get(&closing_id),
+                None,
+                "the closed view's reasoning-effort override must be dropped"
+            );
+            assert_eq!(
+                preferences.base_llm_for_terminal_view.get(&other_id),
+                Some(&LLMId::from("claude-opus")),
+                "an unrelated view's model override must survive"
+            );
+            assert_eq!(
+                preferences.reasoning_effort_per_terminal.get(&other_id),
+                Some(&crate::settings::ReasoningEffortSetting::High),
+                "an unrelated view's reasoning-effort override must survive"
+            );
+        });
+    });
+}
+
+/// `forget_terminal_view` runs unconditionally from pane teardown (#801), so the
+/// overwhelming common case -- a pane whose view never got a model/reasoning
+/// override -- must be a cheap no-op, not a settings write on every close.
+#[test]
+fn forgetting_an_unknown_terminal_view_is_a_no_op_without_a_snapshot_save() {
+    App::test((), |mut app| async move {
+        install_profile_model_singletons(&mut app);
+        let custom_model_id = LLMId::from("custom-endpoint");
+        let preferences =
+            app.add_singleton_model(|_| preferences_for_profile_model_tests(&custom_model_id));
+
+        let saved = Rc::new(Cell::new(false));
+        let saved_for_handler = saved.clone();
+        app.update(|ctx| {
+            ctx.add_global_action("workspace:save_app", move |_: &(), _ctx| {
+                saved_for_handler.set(true);
+            });
+        });
+
+        let unknown_id = EntityId::new();
+        preferences.update(&mut app, |preferences, ctx| {
+            preferences.forget_terminal_view(unknown_id, ctx);
+        });
+
+        assert!(
+            !saved.get(),
+            "forgetting a view with no override must not trigger a snapshot save"
+        );
     });
 }

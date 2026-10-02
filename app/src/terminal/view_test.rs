@@ -14,7 +14,7 @@ use crate::ai::agent::{
     AIAgentActionId, AIAgentExchange, AIAgentExchangeId, AIAgentInput, AIAgentOutput,
     AIAgentOutputStatus, UserQueryMode,
 };
-use crate::ai::llms::LLMId;
+use crate::ai::llms::{LLMId, LLMPreferences};
 #[cfg(windows)]
 use crate::ai::blocklist::block::cli::CLISubagentViewEvent;
 use crate::ai::blocklist::block::cli_controller::{
@@ -758,6 +758,92 @@ fn finished_cli_subagent_keeps_read_only_card_when_metadata_matches() {
             assert!(
                 view.cli_subagent_views.contains_key(&block_id),
                 "FinishedSubagent should keep a read-only CLI subagent card when metadata matches"
+            );
+        });
+    });
+}
+
+/// #801: `LLMPreferences::base_llm_for_terminal_view` is keyed by the CLI
+/// subagent's OWN view id (`CLISubagentView::terminal_view_id`, set to
+/// `ctx.view_id()` at construction -- see #797), not the parent pane's. The
+/// `FinishedSubagent` handler removed the view from `cli_subagent_views` but
+/// never touched this map, so the entry outlived the view for the rest of
+/// the session. The fix captures the sub-session's `terminal_view_id` before
+/// the map entry is dropped and forgets it via `LLMPreferences::
+/// forget_terminal_view`.
+#[test]
+fn finished_cli_subagent_forgets_its_own_llm_override() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        // FinishedSubagent triggers sidecar persistence, which needs GlobalResourceHandlesProvider.
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
+
+        let block_id = BlockId::from("cli-block-llmprefs".to_string());
+        let task_id = TaskId::new("cli-task-llmprefs".to_string());
+        let conversation_id = AIConversationId::new();
+        let conversation = build_restored_conversation_with_cli_subagent_snapshot_for_test(
+            conversation_id,
+            block_id.clone(),
+            task_id.clone(),
+            b"cli subagent output",
+        );
+        let serialized_blocks = serialized_blocks_for_restored_cli_subagent_for_test(&conversation);
+
+        let terminal = add_window_with_terminal(&mut app, Some(&serialized_blocks));
+        terminal.update(&mut app, |view, ctx| {
+            view.restore_conversation_after_view_creation(
+                RestoredAIConversation::new(conversation),
+                true,
+                RestoreConversationEntryBehavior::EnterRestoredConversation,
+                ctx,
+            );
+        });
+
+        // The restored CLI subagent view has its own terminal_view_id, distinct
+        // from the parent pane's -- capture it the same way `FinishedSubagent`
+        // must, before anything tears the view down.
+        let subagent_view_id = terminal.read(&app, |view, ctx| {
+            view.cli_subagent_views
+                .get(&block_id)
+                .expect("restored CLI subagent view should exist")
+                .as_ref(ctx)
+                .terminal_view_id()
+        });
+
+        LLMPreferences::handle(&app).update(&mut app, |prefs, ctx| {
+            prefs.update_preferred_agent_mode_llm(
+                &LLMId::from("claude-opus"),
+                subagent_view_id,
+                ctx,
+            );
+        });
+        LLMPreferences::handle(&app).read(&app, |prefs, _| {
+            assert!(
+                prefs.get_base_llm_override(subagent_view_id).is_some(),
+                "sanity check: the override was recorded under the subagent's own view id"
+            );
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_cli_subagent_controller_event(
+                view.cli_subagent_controller.clone(),
+                &CLISubagentEvent::FinishedSubagent {
+                    block_id: block_id.clone(),
+                    task_id: task_id.clone(),
+                    conversation_id: Some(conversation_id),
+                    initial_requested_command_action_id: None,
+                },
+                ctx,
+            );
+        });
+
+        LLMPreferences::handle(&app).read(&app, |prefs, _| {
+            assert!(
+                prefs.get_base_llm_override(subagent_view_id).is_none(),
+                "FinishedSubagent must forget the sub-session's own LLM override"
             );
         });
     });
