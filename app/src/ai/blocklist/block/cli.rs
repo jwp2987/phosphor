@@ -1451,6 +1451,16 @@ impl CLISubagentView {
         self.clear_view_level_selection();
     }
 
+    /// This sub-session's own view id -- the key it was registered under in
+    /// `LLMPreferences`/`AIExecutionProfilesModel` (see `terminal_view_id:
+    /// ctx.view_id()` in the constructor above), distinct from the parent
+    /// pane's terminal view. Callers tearing down this view (e.g.
+    /// `FinishedSubagent`, #801) must capture this *before* the view handle
+    /// is dropped from `cli_subagent_views`.
+    pub fn terminal_view_id(&self) -> EntityId {
+        self.terminal_view_id
+    }
+
     pub fn selected_text(&self, ctx: &AppContext) -> Option<String> {
         self.code_editor_views
             .iter()
