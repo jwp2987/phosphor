@@ -201,6 +201,11 @@ impl TerminalView {
             controller.try_enter_agent_view(conversation_id, origin, ctx)
         })?;
 
+        // #802: a previously-live conversation re-entered here (rather than reached through
+        // startup restore) never ran either restore path's backfill, so do it lazily on entry
+        // too -- see `ensure_cli_subagent_transcript_blocks`'s doc comment.
+        self.ensure_cli_subagent_transcript_blocks(conversation_id, ctx);
+
         // Associate pending context blocks with the new conversation so they remain
         // visible in the agent view. This must happen after the conversation is created
         // but before any re-filtering of pending context block IDs occurs.

@@ -683,7 +683,23 @@ impl TerminalView {
         let Some(task) = conversation.get_task(task_id) else {
             return;
         };
-        let exchanges: Vec<AIAgentExchange> = task.exchanges().cloned().collect();
+        // Defensive dedupe: `ensure_cli_subagent_transcript_blocks` already skips a
+        // conversation that has any tagged content at all, but that check is coarse
+        // (whole-conversation), so guard per-exchange here too against a second call for
+        // the same task -- e.g. a race between two of its callers -- ever inserting the
+        // same exchange's `AIBlock` twice.
+        let already_inserted_exchange_ids: HashSet<AIAgentExchangeId> = self
+            .rich_content_views
+            .iter()
+            .filter_map(|rich_content| rich_content.ai_block_metadata())
+            .filter(|metadata| metadata.conversation_id == conversation_id)
+            .map(|metadata| metadata.exchange_id)
+            .collect();
+        let exchanges: Vec<AIAgentExchange> = task
+            .exchanges()
+            .filter(|exchange| !already_inserted_exchange_ids.contains(&exchange.id))
+            .cloned()
+            .collect();
         if exchanges.is_empty() {
             return;
         }
@@ -720,6 +736,53 @@ impl TerminalView {
                 is_restoring_on_startup: false,
             };
             self.create_and_insert_ai_block(params, ctx);
+        }
+    }
+
+    /// #802: makes every entry into `conversation_id`'s FullScreen transcript backfill the
+    /// CLI-subagent `AIBlock`s that `exchanges_for_blocklist` deliberately excludes (see
+    /// `insert_ai_blocks_for_cli_subagent_conversation`'s doc comment). #799 only did this
+    /// backfill from the live `CLISubagentEvent::FinishedSubagent` handler, so a conversation
+    /// whose subagent task finished in a *previous* session reached the transcript -- via
+    /// startup restore, re-entering a previously-live conversation through
+    /// `try_enter_agent_view`, or the restored-and-unmodified exit path -- with nothing backing
+    /// it, since that live handler never ran this session.
+    ///
+    /// Idempotent via `insert_ai_blocks_for_cli_subagent_conversation`'s own per-exchange
+    /// dedupe, not a whole-conversation guard here: a conversation that mixes ordinary
+    /// exchanges with a CLI-subagent task already has a tagged `RichContentItem` for the
+    /// ordinary exchanges by the time any of this function's callers run (restore inserts
+    /// `exchanges_for_blocklist`'s ordinary `AIBlock`s before calling this), so a
+    /// whole-conversation "does any tagged item exist yet" check would wrongly no-op the
+    /// subagent backfill for exactly that mixed case -- the one #802 exists to fix. Calling
+    /// this more than once for the same conversation (e.g. once from restore and again from a
+    /// later `try_enter_agent_view`) still does no work after the first, because the
+    /// per-exchange dedupe below sees the same exchange ids already backed.
+    pub(super) fn ensure_cli_subagent_transcript_blocks(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(conversation) = BlocklistAIHistoryModel::as_ref(ctx)
+            .conversation(&conversation_id)
+            .cloned()
+        else {
+            return;
+        };
+
+        let targets: Vec<(BlockId, TaskId)> = conversation
+            .all_tasks()
+            .filter(|task| task.is_cli_subagent())
+            .filter_map(|task| Some((task.cli_subagent_block_id()?, task.id().clone())))
+            .collect();
+
+        for (block_id, task_id) in targets {
+            self.insert_ai_blocks_for_cli_subagent_conversation(
+                conversation_id,
+                &task_id,
+                &block_id,
+                ctx,
+            );
         }
     }
 
@@ -819,6 +882,10 @@ impl TerminalView {
             &conversation_for_cli_subagent_restore,
             ctx,
         );
+        // #802: this restore path is one of the ways a CLI-subagent conversation reaches the
+        // FullScreen agent view, so it needs the same backfill #799 only wired up for the live
+        // `FinishedSubagent` handler.
+        self.ensure_cli_subagent_transcript_blocks(conversation_id, ctx);
 
         log::info!(
             "Successfully restored {blocks_created} AI blocks for conversation: {conversation_id}"
@@ -963,6 +1030,10 @@ impl TerminalView {
         );
         for conversation in &conversations_for_cli_subagent_restore {
             self.restore_cli_subagent_views_for_conversation(conversation, ctx);
+            // #802: backfill the FullScreen transcript here too -- this is the startup
+            // restore-into-new-pane path, the other way a CLI-subagent conversation's
+            // exchanges can reach the agent view with nothing backing them.
+            self.ensure_cli_subagent_transcript_blocks(conversation.id(), ctx);
         }
 
         if is_fork_conversation_in_new_pane {
