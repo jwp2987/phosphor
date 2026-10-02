@@ -645,9 +645,26 @@ fn forgetting_a_terminal_view_drops_both_maps_but_leaves_other_ids_intact() {
                 .insert(other_id, crate::settings::ReasoningEffortSetting::High);
         });
 
+        // The "only if changed" half of `forget_terminal_view`'s contract has a
+        // negative-direction test already (an unknown id triggers no save, see
+        // below); this is its positive-direction counterpart -- removing a real
+        // override must still trigger exactly the one save it promises.
+        let saved = Rc::new(Cell::new(false));
+        let saved_for_handler = saved.clone();
+        app.update(|ctx| {
+            ctx.add_global_action("workspace:save_app", move |_: &(), _ctx| {
+                saved_for_handler.set(true);
+            });
+        });
+
         preferences.update(&mut app, |preferences, ctx| {
             preferences.forget_terminal_view(closing_id, ctx);
         });
+
+        assert!(
+            saved.get(),
+            "forgetting a view that had overrides must trigger a snapshot save"
+        );
 
         preferences.read(&app, |preferences, _| {
             assert_eq!(
