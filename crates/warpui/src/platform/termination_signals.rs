@@ -173,6 +173,83 @@ pub(crate) fn ctrl_event_shutdown_reason(ctrl_type: u32) -> Option<i32> {
     }
 }
 
+/// What a Windows GUI window's `WM_QUERYENDSESSION` / `WM_ENDSESSION` subclass
+/// callback should do for one such message (jwp2987/phosphor#773, the GUI
+/// follow-up to the console path above, which has no equivalent window to
+/// subclass -- a console app has no HWND).
+///
+/// A winit app can own several top-level windows, and Windows sends
+/// `WM_ENDSESSION` to *every one of them* for a single real shutdown attempt --
+/// so `already_shutting_down` must be a process-wide latch the caller threads
+/// through each window's callback, not per-window state, or a two-window app
+/// would post two terminate requests for the one event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionEndAction {
+    /// `WM_QUERYENDSESSION`: tell Windows this process may need a moment to
+    /// clean up (`ShutdownBlockReasonCreate`) and allow the session to end --
+    /// this fork never vetoes a shutdown/logoff/close-all-programs from here.
+    BlockAndAllow,
+    /// The first `WM_ENDSESSION` with `wParam` true that any window has seen
+    /// since the latch was last clear: start the graceful shutdown, carrying
+    /// which of the two reasons [`ctrl_event_shutdown_reason`]'s synthetic
+    /// signal space `WM_ENDSESSION`'s `lParam` can distinguish.
+    BeginGracefulShutdown { reason_signal: i32 },
+    /// A later `WM_ENDSESSION` true while that shutdown is already in flight --
+    /// another window's copy of the same one real event, not a second attempt.
+    AlreadyShuttingDown,
+    /// `WM_ENDSESSION` with `wParam` false: a *different* application vetoed
+    /// the session end, so this one was cancelled. The caller should release
+    /// its shutdown block and clear the latch, so a later, successful attempt
+    /// still starts a shutdown instead of being mistaken for a continuation of
+    /// the cancelled one.
+    Cancelled,
+}
+
+/// The pure decision behind [`SessionEndAction`]: given which message arrived
+/// (`is_query_end_session` for `WM_QUERYENDSESSION`, else `WM_ENDSESSION`),
+/// `WM_ENDSESSION`'s own `wParam`/`lParam` (`session_ending`, `is_logoff`), and
+/// whether a shutdown this message could be part of has already been started
+/// (`already_shutting_down`), decide what to do. Free of the `windows` crate --
+/// like [`ctrl_event_shutdown_reason`] -- so it builds and is unit-tested on
+/// every platform, not only Windows; its only non-test caller is
+/// `windowing::winit::windows::session_end`'s subclass procedure.
+///
+/// `is_logoff` maps to [`ctrl_event_shutdown_reason`]'s `CTRL_LOGOFF_EVENT` (5),
+/// otherwise to its `CTRL_SHUTDOWN_EVENT` (6) -- `WM_ENDSESSION`'s `lParam` has
+/// no flag that distinguishes an actual shutdown/restart from the user picking
+/// "Close all programs and shut down" in the Shutdown Event Tracker, so both
+/// collapse to the one reason code already used for every non-logoff console
+/// close/shutdown event. Reusing the same numbers means the GUI's
+/// `WM_ENDSESSION` path and the headless/console `CTRL_*` path exit with the
+/// same conventional status for the same real-world event.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn session_end_action(
+    is_query_end_session: bool,
+    session_ending: bool,
+    is_logoff: bool,
+    already_shutting_down: bool,
+) -> SessionEndAction {
+    const CTRL_LOGOFF_EVENT: i32 = 5;
+    const CTRL_SHUTDOWN_EVENT: i32 = 6;
+
+    if is_query_end_session {
+        return SessionEndAction::BlockAndAllow;
+    }
+    if !session_ending {
+        return SessionEndAction::Cancelled;
+    }
+    if already_shutting_down {
+        return SessionEndAction::AlreadyShuttingDown;
+    }
+    SessionEndAction::BeginGracefulShutdown {
+        reason_signal: if is_logoff {
+            CTRL_LOGOFF_EVENT
+        } else {
+            CTRL_SHUTDOWN_EVENT
+        },
+    }
+}
+
 /// Handles one delivered termination signal. Runs on the signal-handling
 /// thread, never in signal context.
 pub(crate) fn handle_signal(

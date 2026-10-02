@@ -1,6 +1,7 @@
 pub mod clipboard;
 mod network;
 mod registry;
+pub(crate) mod session_end;
 mod system_caption_buttons;
 mod window_attribute;
 mod window_ext;
