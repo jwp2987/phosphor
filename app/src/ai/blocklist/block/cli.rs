@@ -1459,6 +1459,26 @@ impl CLISubagentView {
             .filter(|selection| !selection.is_empty())
     }
 
+    /// Whether the floating window's width or height dragbar has an active resize
+    /// gesture in progress.
+    ///
+    /// #803: `BlockListElement::dispatch_event` uses this to let a bubble that has
+    /// fallen below the layout floor (and so is not laid out/painted this frame --
+    /// see `cli_subagent_has_room_to_layout`) still receive the drag's continuation
+    /// and end events, so a resize that was already in progress doesn't get stuck.
+    /// `resizable_width`/`resizable_height` are read directly rather than through
+    /// the rendered `Resizable` elements, which only exist in the view's cached
+    /// render tree and may be stale for exactly the frame this needs to check.
+    pub(crate) fn is_resize_dragging(&self) -> bool {
+        let is_resizing = |handle: &ResizableStateHandle| {
+            handle
+                .lock()
+                .map(|state| state.is_resizing())
+                .unwrap_or(false)
+        };
+        is_resizing(&self.resizable_width) || is_resizing(&self.resizable_height)
+    }
+
     fn maybe_copy_on_select(&self, selection: String, ctx: &mut ViewContext<Self>) {
         SelectionSettings::handle(ctx).update(ctx, |selection_settings, ctx| {
             selection_settings.maybe_copy_on_select(ClipboardContent::plain_text(selection), ctx);

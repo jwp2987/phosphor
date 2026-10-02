@@ -248,6 +248,41 @@ fn cli_subagent_has_room_to_layout(max_size: Vector2F) -> bool {
     max_size.y() >= CLI_SUBAGENT_MIN_RESIZABLE_HEIGHT
 }
 
+/// Whether a CLI subagent bubble's `dispatch_event` loop should hand it a given event.
+///
+/// #803: once a bubble is skipped by `cli_subagent_has_room_to_layout` (or suppressed by
+/// the entry-card check in `TerminalView::render_block_list_element`),
+/// `was_laid_out_this_frame` is `false` and the bubble's view's cached render tree keeps
+/// whatever geometry it had the last time it *was* laid out -- stale, and potentially
+/// the bubble's full pre-collapse size. A bubble in that state must not be hit-tested by
+/// a pointer event, since nothing is actually painted at that position this frame.
+///
+/// The one exception is a drag the bubble already owns (`has_active_drag`, from
+/// `CLISubagentView::is_resize_dragging`): its `LeftMouseDragged`/`LeftMouseUp` must
+/// still get through, or the drag is left stuck with no mouse-up ever reaching it.
+/// `MouseMoved` (hover/cursor-style) and `ScrollWheel` are never let through for a
+/// bubble that wasn't laid out this frame -- a drag in progress is driven by
+/// `LeftMouseDragged`, not `MouseMoved`, so hover has no owned interaction to complete.
+/// Keyboard events (`KeyDown`/`TypedCharacters`) aren't hit-tested by position, so they
+/// are unaffected and always pass through.
+fn cli_subagent_should_receive_pointer_event(
+    event: &Event,
+    was_laid_out_this_frame: bool,
+    has_active_drag: bool,
+) -> bool {
+    if was_laid_out_this_frame {
+        return true;
+    }
+    match event {
+        Event::LeftMouseDragged { .. } | Event::LeftMouseUp { .. } => has_active_drag,
+        Event::LeftMouseDown { .. }
+        | Event::RightMouseDown { .. }
+        | Event::MouseMoved { .. }
+        | Event::ScrollWheel { .. } => false,
+        _ => true,
+    }
+}
+
 pub type LabelBuilderFn = dyn Fn(
     Vec<BlockIndex>,
     &HashMap<BlockIndex, MouseStateHandle>,
@@ -693,6 +728,11 @@ pub struct BlockListElement {
     /// flags.
     subshell_separators: HashMap<SeparatorId, Box<dyn Element>>,
     cli_subagent_views: HashMap<BlockId, Box<dyn Element>>,
+    /// CLI subagent bubbles that own an in-progress `Resizable` drag (see
+    /// `CLISubagentView::is_resize_dragging`). Consulted by `dispatch_event` (#803) so a
+    /// bubble not laid out this frame can still receive the drag's continuation/end
+    /// events instead of having the drag get stuck when its hit-box is suppressed.
+    cli_subagent_active_drag_block_ids: HashSet<BlockId>,
     subshell_separator_height: f32,
 
     selected_blocks: SelectedBlocks,
@@ -966,6 +1006,7 @@ impl BlockListElement {
         inline_banners: HashMap<InlineBannerId, Box<dyn Element>>,
         subshell_separators: HashMap<SeparatorId, Box<dyn Element>>,
         cli_subagent_views: HashMap<BlockId, Box<dyn Element>>,
+        cli_subagent_active_drag_block_ids: HashSet<BlockId>,
         selection_ranges: Option<Vec1<SelectionRange>>,
         block_banner: Option<Box<dyn Element>>,
         shared_session_banners: SharedSessionBanners,
@@ -1054,6 +1095,7 @@ impl BlockListElement {
             block_footer_elements: HashMap::new(),
             cursor_hint_text_element,
             cli_subagent_views,
+            cli_subagent_active_drag_block_ids,
             inline_menu_positioner,
             #[cfg(feature = "voice_input")]
             voice_input_toggle_key_code: None,
@@ -4582,19 +4624,22 @@ impl Element for BlockListElement {
         );
 
         if events_to_propagate_on {
-            for cli_subagent_view in self.cli_subagent_views.values_mut() {
+            for (block_id, cli_subagent_view) in self.cli_subagent_views.iter_mut() {
                 // A bubble that wasn't laid out this frame (see `cli_subagent_has_room_
                 // to_layout`, and the entry-card suppression in `TerminalView::
-                // render_block_list_element`) has no current bounds to hit-test
-                // against. Don't start a new mouse-down gesture on it -- a stale hit-box
-                // from a previous frame's layout must not "catch" a click at a screen
-                // position nothing is painted at this frame. A mouse-up is let through
-                // regardless, so a gesture that began while the bubble *was* laid out
-                // (e.g. a drag-resize) still closes out cleanly instead of leaving the
-                // bubble's resize state stuck mid-drag.
-                if matches!(event_at_z_index, Event::LeftMouseDown { .. })
-                    && cli_subagent_view.size().is_none()
-                {
+                // render_block_list_element`) has no current bounds to hit-test against
+                // -- but its view's own cached render tree (reached through `ChildView::
+                // dispatch_event` -> `EventContext::dispatch_event_on_view`) is untouched
+                // and keeps whatever geometry (e.g. `Resizable`'s origin/size) it last had
+                // when it *was* laid out, potentially the bubble's full pre-collapse size.
+                // Pointer events must not hit-test against that stale geometry (#803), with
+                // one exception: a drag the bubble already owns must still get the events
+                // that continue and end it, or the resize state is left stuck mid-drag.
+                if !cli_subagent_should_receive_pointer_event(
+                    event_at_z_index,
+                    cli_subagent_view.size().is_some(),
+                    self.cli_subagent_active_drag_block_ids.contains(block_id),
+                ) {
                     continue;
                 }
                 // If the event is handled by the CLI subagent view, do not propagate it down to the blocklist.
@@ -5165,5 +5210,134 @@ mod tests {
             CLI_SUBAGENT_MIN_RESIZABLE_HEIGHT
         )));
         assert!(cli_subagent_has_room_to_layout(vec2f(972., 686.)));
+    }
+
+    // #803: a bubble not laid out this frame (no active drag) must ignore every
+    // pointer event -- a fresh mouse-down must not start a gesture on its stale
+    // hit-box, a drag it doesn't own must not continue into it, and hover must not
+    // land on it either.
+    #[test]
+    fn cli_subagent_not_laid_out_without_active_drag_ignores_pointer_events() {
+        let position = vec2f(4., 8.);
+        let modifiers = ModifiersState::default();
+
+        for event in [
+            Event::LeftMouseDown {
+                position,
+                modifiers,
+                click_count: 1,
+                is_first_mouse: false,
+            },
+            Event::LeftMouseDragged {
+                position,
+                modifiers,
+            },
+            Event::LeftMouseUp {
+                position,
+                modifiers,
+            },
+            Event::RightMouseDown {
+                position,
+                cmd: false,
+                shift: false,
+                click_count: 1,
+            },
+            Event::MouseMoved {
+                position,
+                cmd: false,
+                shift: false,
+                is_synthetic: false,
+            },
+            Event::ScrollWheel {
+                position,
+                delta: vec2f(0., 1.),
+                precise: false,
+                modifiers,
+            },
+        ] {
+            assert!(
+                !cli_subagent_should_receive_pointer_event(&event, false, false),
+                "expected {event:?} to be ignored by a bubble not laid out this frame \
+                 with no active drag"
+            );
+        }
+    }
+
+    // #803: a bubble not laid out this frame but with an active resize drag must still
+    // get the events that continue and end that drag, so the resize doesn't get stuck
+    // -- but a fresh mouse-down or hover still must not reach its stale hit-box.
+    #[test]
+    fn cli_subagent_with_active_drag_still_receives_drag_continuation_and_end() {
+        let position = vec2f(4., 8.);
+        let modifiers = ModifiersState::default();
+
+        assert!(cli_subagent_should_receive_pointer_event(
+            &Event::LeftMouseDragged {
+                position,
+                modifiers,
+            },
+            false,
+            true,
+        ));
+        assert!(cli_subagent_should_receive_pointer_event(
+            &Event::LeftMouseUp {
+                position,
+                modifiers,
+            },
+            false,
+            true,
+        ));
+
+        assert!(!cli_subagent_should_receive_pointer_event(
+            &Event::LeftMouseDown {
+                position,
+                modifiers,
+                click_count: 1,
+                is_first_mouse: false,
+            },
+            false,
+            true,
+        ));
+        assert!(!cli_subagent_should_receive_pointer_event(
+            &Event::MouseMoved {
+                position,
+                cmd: false,
+                shift: false,
+                is_synthetic: false,
+            },
+            false,
+            true,
+        ));
+    }
+
+    // #803: a bubble that *was* laid out this frame is unaffected by this gating --
+    // every pointer event reaches it exactly as before, drag or no drag.
+    #[test]
+    fn cli_subagent_laid_out_this_frame_is_unaffected() {
+        let position = vec2f(4., 8.);
+        let modifiers = ModifiersState::default();
+
+        for has_active_drag in [false, true] {
+            assert!(cli_subagent_should_receive_pointer_event(
+                &Event::LeftMouseDown {
+                    position,
+                    modifiers,
+                    click_count: 1,
+                    is_first_mouse: false,
+                },
+                true,
+                has_active_drag,
+            ));
+            assert!(cli_subagent_should_receive_pointer_event(
+                &Event::MouseMoved {
+                    position,
+                    cmd: false,
+                    shift: false,
+                    is_synthetic: false,
+                },
+                true,
+                has_active_drag,
+            ));
+        }
     }
 }

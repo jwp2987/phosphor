@@ -24127,6 +24127,23 @@ impl TerminalView {
 
         let enforce_minimum_contrast = *FontSettings::as_ref(app).enforce_minimum_contrast;
 
+        // #803: `BlockListElement::dispatch_event` needs to know, for a CLI subagent
+        // bubble it didn't lay out this frame, whether that bubble owns an in-progress
+        // resize drag -- if so the drag's continuation/end events must still reach it
+        // so the resize doesn't get stuck, even though the bubble's own stale hit-box
+        // must otherwise be ignored. `CLISubagentView` holds the `Resizable` state
+        // handles directly, so this is readable here without depending on whatever
+        // got laid out this frame.
+        let cli_subagent_active_drag_block_ids: HashSet<BlockId> = self
+            .cli_subagent_views
+            .iter()
+            .filter(|&(block_id, _)| {
+                !self.should_suppress_collapsed_cli_subagent_bubble(block_id, model)
+            })
+            .filter(|&(_, view)| view.as_ref(app).is_resize_dragging())
+            .map(|(id, _)| id.clone())
+            .collect();
+
         let mut element = BlockListElement::new(
             self.model.clone(),
             self.find_model.clone(),
@@ -24227,6 +24244,7 @@ impl TerminalView {
                     })
                     .map(|(id, view)| (id.clone(), ChildView::new(view).finish())),
             ),
+            cli_subagent_active_drag_block_ids,
             selection_range,
             block_banner,
             self.inline_banners_state.shared_session_banner_state,
