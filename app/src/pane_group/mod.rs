@@ -6581,7 +6581,19 @@ impl PaneGroup {
 
     // When user clicked on the close tab button, we should wind down the existing panes
     // by deleting all the saved blocks in each pane from the database.
+    //
+    // This is the whole-tab/whole-window counterpart to `cleanup_closed_pane`'s
+    // single-pane case: `UndoCloseStack`'s `ClosedItem::discard` (grace-period
+    // expiry, capacity eviction, or the undo-close feature being turned off)
+    // is this group's only permanent-teardown path, and it is this function's
+    // only caller (`clean_up_pane_group` in `undo_close/stack.rs`) -- so, like
+    // `cleanup_closed_pane`, forgetting each terminal view's `LLMPreferences`
+    // overrides here (#801) can't double-run against a pane that gets
+    // individually closed later, since by this point the whole group is gone.
     pub fn clean_up_panes(&self, ctx: &mut ViewContext<Self>) {
+        for pane_id in self.terminal_pane_ids().collect::<Vec<_>>() {
+            self.forget_llm_overrides_for_pane(pane_id, ctx);
+        }
         for pane in self.pane_contents.values() {
             let pane = pane.as_pane();
             pane.detach(self, DetachType::Closed, ctx);
