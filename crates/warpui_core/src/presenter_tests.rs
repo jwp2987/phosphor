@@ -1,4 +1,4 @@
-use crate::presenter::PositionCache;
+use crate::presenter::{ChildView, PositionCache};
 use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::Vector2F;
 
@@ -6,7 +6,7 @@ use std::{cell::Cell, rc::Rc, time::Duration};
 
 use crate::{
     AfterLayoutContext, App, AppContext, Element, Entity, EventContext, LayoutContext,
-    PaintContext, SizeConstraint, TypedActionView,
+    PaintContext, SizeConstraint, TypedActionView, ViewContext, ViewHandle,
     r#async::Timer,
     elements::{ParentElement, Point, Stack},
     event::DispatchedEvent,
@@ -503,5 +503,357 @@ fn test_pending_paint_only_timer_upgrades_when_a_layout_required_repaint_joins_i
             "a pending paint-only timer must be upgraded to run a full layout once a \
              layout-required repaint request is covered by its (earlier) deadline"
         );
+    })
+}
+
+/// A child view that counts its own `render` calls on top of its element's
+/// layout/paint counts. Stands in for a `TerminalView` in a tab. See issue #805.
+#[derive(Default)]
+struct CountingChildView {
+    counts: Rc<RepaintCounts>,
+    render_calls: Rc<Cell<u32>>,
+}
+
+impl Entity for CountingChildView {
+    type Event = ();
+}
+
+impl crate::core::View for CountingChildView {
+    fn render(&self, _app: &AppContext) -> Box<dyn Element> {
+        self.render_calls.set(self.render_calls.get() + 1);
+        Box::new(CountingElement {
+            counts: self.counts.clone(),
+            size: None,
+            origin: None,
+        })
+    }
+
+    fn ui_name() -> &'static str {
+        "CountingChildView"
+    }
+}
+
+impl TypedActionView for CountingChildView {
+    type Action = ();
+}
+
+/// An element that lays out (and paints) its child only while `lay_out_child`
+/// is set, the way a block list only lays out the items in its viewport. The
+/// child is always *rendered* into the tree; it is just not visited by layout.
+/// See issue #805.
+struct GatedChild {
+    child: Box<dyn Element>,
+    lay_out_child: Rc<Cell<bool>>,
+    size: Option<Vector2F>,
+    origin: Option<Point>,
+}
+
+impl Element for GatedChild {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        ctx: &mut LayoutContext,
+        app: &AppContext,
+    ) -> Vector2F {
+        let size = if self.lay_out_child.get() {
+            self.child.layout(constraint, ctx, app)
+        } else {
+            constraint.max
+        };
+        self.size = Some(size);
+        size
+    }
+
+    fn after_layout(&mut self, ctx: &mut AfterLayoutContext, app: &AppContext) {
+        if self.lay_out_child.get() {
+            self.child.after_layout(ctx, app);
+        }
+    }
+
+    fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
+        self.origin = Some(Point::from_vec2f(origin, ctx.scene.z_index()));
+        if self.lay_out_child.get() {
+            self.child.paint(origin, ctx, app);
+        }
+    }
+
+    fn size(&self) -> Option<Vector2F> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<Point> {
+        self.origin
+    }
+
+    fn dispatch_event(
+        &mut self,
+        _event: &DispatchedEvent,
+        _ctx: &mut EventContext,
+        _app: &AppContext,
+    ) -> bool {
+        false
+    }
+}
+
+/// The view between the root and the child — a tab's pane group, which the
+/// workspace mounts only while that tab is active. It lays the child out only
+/// while `lay_out_child` is set (the way a block list lays out only the items
+/// in view). See issue #805.
+struct TabView {
+    child: ViewHandle<CountingChildView>,
+    lay_out_child: Rc<Cell<bool>>,
+}
+
+impl Entity for TabView {
+    type Event = ();
+}
+
+impl crate::core::View for TabView {
+    fn render(&self, _app: &AppContext) -> Box<dyn Element> {
+        Box::new(GatedChild {
+            child: ChildView::new(&self.child).finish(),
+            lay_out_child: self.lay_out_child.clone(),
+            size: None,
+            origin: None,
+        })
+    }
+
+    fn ui_name() -> &'static str {
+        "TabView"
+    }
+}
+
+impl TypedActionView for TabView {
+    type Action = ();
+}
+
+/// A root that mounts its tab only while `show_child` is set (the way the
+/// workspace mounts only the active tab's pane group); the tab in turn holds
+/// the child, so hiding the tab hides the child's parent too, as in production
+/// (workspace → pane group → pane → terminal). Its own element counts layout
+/// calls, which is how the tests below count frames. See issue #805.
+struct SwitchingRootView {
+    counts: Rc<RepaintCounts>,
+    tab: ViewHandle<TabView>,
+    child: ViewHandle<CountingChildView>,
+    show_child: bool,
+    lay_out_child: Rc<Cell<bool>>,
+}
+
+impl SwitchingRootView {
+    fn new(ctx: &mut ViewContext<Self>) -> Self {
+        let child = ctx.add_view(|_| CountingChildView::default());
+        let lay_out_child = Rc::new(Cell::new(true));
+        let tab = ctx.add_view(|_| TabView {
+            child: child.clone(),
+            lay_out_child: lay_out_child.clone(),
+        });
+        Self {
+            counts: Rc::default(),
+            tab,
+            child,
+            show_child: true,
+            lay_out_child,
+        }
+    }
+}
+
+impl Entity for SwitchingRootView {
+    type Event = ();
+}
+
+impl crate::core::View for SwitchingRootView {
+    fn render(&self, _app: &AppContext) -> Box<dyn Element> {
+        let mut stack = Stack::new();
+        stack.add_child(Box::new(CountingElement {
+            counts: self.counts.clone(),
+            size: None,
+            origin: None,
+        }));
+        if self.show_child {
+            stack.add_child(ChildView::new(&self.tab).finish());
+        }
+        stack.finish()
+    }
+
+    fn ui_name() -> &'static str {
+        "SwitchingRootView"
+    }
+}
+
+impl TypedActionView for SwitchingRootView {
+    type Action = ();
+}
+
+/// Notifying a view that is not in the window's element tree, and whose parent
+/// is not either (its parent stopped mounting it — a terminal in a hidden tab
+/// receiving pty output), must not build a frame: nothing on screen can change.
+/// The view is still re-rendered as the notification is flushed, so that when
+/// the parent mounts it again the one frame that takes lays out its current
+/// state, with no further render. A mounted view's notification must still
+/// build a frame as before. This drives the real `ctx.notify()` → effect flush
+/// → `update_windows` → eager unit-test `build_scene` path, which is where the
+/// gate lives. See issue #805.
+#[test]
+fn test_notifying_an_unmounted_view_does_not_build_a_frame() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, root) = app.add_window(WindowStyle::NotStealFocus, SwitchingRootView::new);
+        let (frames, child) =
+            root.update(app, |root, _ctx| (root.counts.clone(), root.child.clone()));
+        let child_renders = child.update(app, |child, _ctx| child.render_calls.clone());
+        let presenter = app.presenter(window_id).unwrap();
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        assert!(presenter.borrow().is_view_mounted(child.id()));
+
+        // Mounted: a notification is a frame and a render, exactly as before.
+        let frames_before = frames.layout_calls.get();
+        let renders_before = child_renders.get();
+        child.update(app, |_, ctx| ctx.notify());
+        assert_eq!(
+            frames.layout_calls.get(),
+            frames_before + 1,
+            "notifying a mounted view must still build a frame"
+        );
+        assert_eq!(child_renders.get(), renders_before + 1);
+
+        // Hide the tab: the next layout visits neither it nor the child.
+        let tab = root.update(app, |root, _| root.tab.clone());
+        root.update(app, |root, ctx| {
+            root.show_child = false;
+            ctx.notify();
+        });
+        assert!(!presenter.borrow().is_view_mounted(tab.id()));
+        assert!(!presenter.borrow().is_view_mounted(child.id()));
+
+        // Unmounted: each notification re-renders the view but builds no frame,
+        // and leaves no pending invalidation behind for the platform to act on.
+        let frames_before = frames.layout_calls.get();
+        let renders_before = child_renders.get();
+        child.update(app, |_, ctx| ctx.notify());
+        child.update(app, |_, ctx| ctx.notify());
+        assert_eq!(
+            frames.layout_calls.get(),
+            frames_before,
+            "notifying a view that is not in the element tree must not build a frame"
+        );
+        assert_eq!(
+            child_renders.get(),
+            renders_before + 2,
+            "an unmounted view is still re-rendered when notified"
+        );
+        assert!(!app.has_window_invalidations(window_id));
+
+        // Show it again: one frame, laid out from the element the last
+        // notification rendered — no render of its own.
+        let child_layouts_before = child.update(app, |child, _| child.counts.layout_calls.get());
+        root.update(app, |root, ctx| {
+            root.show_child = true;
+            ctx.notify();
+        });
+        assert_eq!(frames.layout_calls.get(), frames_before + 1);
+        assert_eq!(child_renders.get(), renders_before + 2);
+        assert_eq!(
+            child.update(app, |child, _| child.counts.layout_calls.get()),
+            child_layouts_before + 1,
+            "the re-shown child is laid out by the frame that mounts it"
+        );
+        assert!(presenter.borrow().is_view_mounted(child.id()));
+
+        // And it is an ordinary mounted view again.
+        let frames_before = frames.layout_calls.get();
+        child.update(app, |_, ctx| ctx.notify());
+        assert_eq!(frames.layout_calls.get(), frames_before + 1);
+    })
+}
+
+/// A view that its parent renders but does not lay out (a block-list item
+/// outside the viewport) is not in the tree either — but its *parent* is, and
+/// the parent's layout may depend on the child's state (the block list
+/// re-measures off-screen rich content inside its own layout). Such a
+/// notification must still build a frame. See issue #805.
+#[test]
+fn test_notifying_an_unmounted_child_of_a_mounted_parent_still_builds_a_frame() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, root) = app.add_window(WindowStyle::NotStealFocus, SwitchingRootView::new);
+        let (frames, child, lay_out_child) = root.update(app, |root, _ctx| {
+            (
+                root.counts.clone(),
+                root.child.clone(),
+                root.lay_out_child.clone(),
+            )
+        });
+        let presenter = app.presenter(window_id).unwrap();
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+
+        // Keep rendering the child but stop laying it out; its parent, the tab,
+        // stays mounted.
+        let tab = root.update(app, |root, _| root.tab.clone());
+        lay_out_child.set(false);
+        tab.update(app, |_, ctx| ctx.notify());
+        assert!(!presenter.borrow().is_view_mounted(child.id()));
+        assert!(presenter.borrow().is_view_mounted(tab.id()));
+
+        let frames_before = frames.layout_calls.get();
+        child.update(app, |_, ctx| ctx.notify());
+        assert_eq!(
+            frames.layout_calls.get(),
+            frames_before + 1,
+            "a child of a mounted parent must still get its frame when notified"
+        );
+    })
+}
+
+/// A view the app creates is new: its creation is an invalidation and builds a
+/// frame as before, even though nothing mounts it yet (a parent may do so in
+/// the same frame). Once it has been rendered, though, further notifications
+/// while it stays unmounted re-render it without a frame; and when a parent
+/// finally mounts it, that parent's re-render is the frame, laying out the
+/// element the view already has. See issue #805.
+#[test]
+fn test_a_new_view_builds_a_frame_once_then_none_until_mounted() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, root) = app.add_window(WindowStyle::NotStealFocus, SwitchingRootView::new);
+        let frames = root.update(app, |root, _ctx| root.counts.clone());
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        let presenter = app.presenter(window_id).unwrap();
+
+        // Created, not mounted by anything: rendered once, one frame.
+        let frames_before = frames.layout_calls.get();
+        let new_child = app.add_view(window_id, |_| CountingChildView::default());
+        let renders = new_child.update(app, |child, _ctx| child.render_calls.clone());
+        assert_eq!(renders.get(), 1);
+        assert_eq!(
+            frames.layout_calls.get(),
+            frames_before + 1,
+            "a new view's creation is still a frame"
+        );
+        assert!(!presenter.borrow().is_view_mounted(new_child.id()));
+
+        // Notified again while still unmounted: re-rendered, no frame.
+        let frames_before = frames.layout_calls.get();
+        new_child.update(app, |_, ctx| ctx.notify());
+        assert_eq!(renders.get(), 2, "an unmounted view is still re-rendered");
+        assert_eq!(
+            frames.layout_calls.get(),
+            frames_before,
+            "an unmounted view that was rendered before must not build a frame"
+        );
+        assert!(!app.has_window_invalidations(window_id));
+
+        // Mounted by the tab: the tab's re-render is the frame; the new view is
+        // laid out from the element it already has.
+        let tab = root.update(app, |root, _| root.tab.clone());
+        tab.update(app, |tab, ctx| {
+            tab.child = new_child.clone();
+            ctx.notify();
+        });
+        let layouts = new_child.update(app, |child, _ctx| child.counts.layout_calls.get());
+        assert_eq!(frames.layout_calls.get(), frames_before + 1);
+        assert_eq!(renders.get(), 2, "mounting an already-rendered view needs no render");
+        assert_eq!(layouts, 1, "and the frame that mounts it lays it out");
+        assert!(presenter.borrow().is_view_mounted(new_child.id()));
     })
 }

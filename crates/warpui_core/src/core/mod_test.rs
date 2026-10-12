@@ -1867,6 +1867,11 @@ fn test_dispatch_custom_action_triggers_typed_action() -> Result<()> {
 fn test_ui_and_window_updates() {
     struct View {
         count: usize,
+        /// Views this one mounts, as `ChildView`s. The root uses it to keep the
+        /// test's other views in the element tree: a view that nothing mounts no
+        /// longer surfaces its notifications as window invalidations (they are
+        /// deferred until something mounts it, see issue #805).
+        children: Rc<RefCell<Vec<EntityId>>>,
     }
 
     impl Entity for View {
@@ -1875,7 +1880,15 @@ fn test_ui_and_window_updates() {
 
     impl super::View for View {
         fn render<'a>(&self, _: &AppContext) -> Box<dyn Element> {
-            Empty::new().finish()
+            let children = self.children.borrow();
+            if children.is_empty() {
+                return Empty::new().finish();
+            }
+            let mut stack = Stack::new();
+            for &child in children.iter() {
+                stack.add_child(ChildView::<View>::with_id(child).finish());
+            }
+            stack.finish()
         }
 
         fn ui_name() -> &'static str {
@@ -1888,9 +1901,24 @@ fn test_ui_and_window_updates() {
     }
 
     App::test((), |mut app| async move {
-        let (window_id, _) = app.add_window(WindowStyle::NotStealFocus, |_| View { count: 3 });
-        let view_1 = app.add_view(window_id, |_| View { count: 1 });
-        let view_2 = app.add_view(window_id, |_| View { count: 2 });
+        let mounted = Rc::new(RefCell::new(Vec::new()));
+        let (window_id, root) = app.add_window(WindowStyle::NotStealFocus, |_| View {
+            count: 3,
+            children: mounted.clone(),
+        });
+        let view_1 = app.add_view(window_id, |_| View {
+            count: 1,
+            children: Rc::default(),
+        });
+        let view_2 = app.add_view(window_id, |_| View {
+            count: 2,
+            children: Rc::default(),
+        });
+
+        // Mount both views under the root and let the eager unit-test frame lay
+        // them out, so that their notifications below count as invalidations.
+        mounted.borrow_mut().extend([view_1.id(), view_2.id()]);
+        root.update(&mut app, |_, ctx| ctx.notify());
 
         // Ensure that registering for UI updates after mutating the app still gives us all the
         // updates.
@@ -1916,7 +1944,12 @@ fn test_ui_and_window_updates() {
         assert_eq!(invalidation.removed.len(), 1);
         assert!(invalidation.removed.contains(&view_2_id));
 
-        let view_3 = view_1.update(&mut app, |_, ctx| ctx.add_view(|_| View { count: 8 }));
+        let view_3 = view_1.update(&mut app, |_, ctx| {
+            ctx.add_view(|_| View {
+                count: 8,
+                children: Rc::default(),
+            })
+        });
 
         let invalidation = window_invalidations.borrow_mut().drain(..).next().unwrap();
         assert_eq!(invalidation.updated.len(), 1);

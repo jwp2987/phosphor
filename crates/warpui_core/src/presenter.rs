@@ -38,11 +38,20 @@ pub struct Presenter {
     text_layout_cache: LayoutCache,
     position_cache: PositionCache,
     highlighted_view: Option<EntityId>,
+    /// The views the most recent layout pass actually visited — i.e. the views
+    /// that are in the window's element tree right now. A parent that stops
+    /// mounting a child (the workspace only mounts the active tab's pane group)
+    /// drops it from this set on the next layout; a view an element lays out
+    /// only while it is in view (a block list item) drops out when it scrolls
+    /// away. A paint-only frame (`build_scene_skip_layout_if`) leaves it
+    /// untouched. See issue #805.
+    mounted_views: EntityIdSet,
 }
 
 pub struct LayoutContext<'a> {
     rendered_views: &'a mut EntityIdMap<Box<dyn Element>>,
     parents: &'a mut EntityIdMap<EntityId>,
+    mounted_views: &'a mut EntityIdSet,
     pub text_layout_cache: &'a LayoutCache,
     view_stack: Vec<EntityId>,
     pub window_size: Vector2F,
@@ -327,6 +336,7 @@ impl Presenter {
             text_layout_cache: LayoutCache::new(),
             position_cache: PositionCache::default(),
             highlighted_view: None,
+            mounted_views: EntityIdSet::default(),
         }
     }
 
@@ -343,7 +353,72 @@ impl Presenter {
         for view_id in invalidation.removed {
             self.rendered_views.remove(&view_id);
             self.parents.remove(&view_id);
+            self.mounted_views.remove(&view_id);
         }
+    }
+
+    /// Re-renders, right now, every notified view whose re-render cannot change
+    /// what is on screen, and takes it out of `invalidation.updated` so that it
+    /// is not, by itself, a reason to build a frame. See issue #805.
+    ///
+    /// That is a view which is not in the element tree (the last layout pass did
+    /// not visit it) and whose parent — the view that last laid it out, or that
+    /// created it — is not in the tree either: a terminal in a hidden tab (its
+    /// pane and pane group are hidden with it), that terminal's agent footer, a
+    /// view created by the app and never mounted. Its render runs exactly where
+    /// and when it always did (outside layout, as the notification is flushed),
+    /// so `View::render` sees no new calling context and the cached element is
+    /// fresh whenever a parent next mounts it; only the layout+paint of the
+    /// whole window is saved.
+    ///
+    /// Three kinds of notified view keep their frame: one that has never been
+    /// rendered — it is new, its creation is an invalidation in its own right,
+    /// and a parent may mount it in this very frame; one whose parent *is*
+    /// mounted — the parent's layout may depend on it (the block list
+    /// re-measures off-screen rich content inside its own layout; a modal the
+    /// workspace stopped showing is still the workspace's child), so the frame
+    /// it used to get is still owed — and everything before the first layout,
+    /// when nothing is mounted yet.
+    ///
+    /// Returns whether anything was taken out.
+    pub(crate) fn render_unmounted_updates(
+        &mut self,
+        invalidation: &mut WindowInvalidation,
+        app: &AppContext,
+    ) -> bool {
+        if self.mounted_views.is_empty() {
+            return false;
+        }
+        let unmounted: Vec<EntityId> = invalidation
+            .updated
+            .iter()
+            .copied()
+            .filter(|view_id| {
+                !self.mounted_views.contains(view_id)
+                    && self.rendered_views.contains_key(view_id)
+                    && !invalidation.removed.contains(view_id)
+                    && self
+                        .parents
+                        .get(view_id)
+                        .is_none_or(|parent_id| !self.mounted_views.contains(parent_id))
+            })
+            .collect();
+        for view_id in &unmounted {
+            match app.render_view(self.window_id, *view_id) {
+                Ok(element) => {
+                    self.rendered_views.insert(*view_id, element);
+                }
+                Err(e) => log::warn!("View was not rendered, error: {e:?}"),
+            }
+            invalidation.updated.remove(view_id);
+        }
+        !unmounted.is_empty()
+    }
+
+    /// Test-only: whether the last layout pass visited `view_id`. See issue #805.
+    #[cfg(test)]
+    pub(crate) fn is_view_mounted(&self, view_id: EntityId) -> bool {
+        self.mounted_views.contains(&view_id)
     }
 
     pub fn build_scene(
@@ -449,9 +524,13 @@ impl Presenter {
 
     fn layout(&mut self, window_size: Vector2F, app: &AppContext) {
         if let Some(root_view_id) = app.root_view_id(self.window_id) {
+            // Rebuilt from scratch by this pass: whatever it does not visit is not
+            // in the tree. See issue #805.
+            self.mounted_views.clear();
             let mut layout_ctx = LayoutContext {
                 rendered_views: &mut self.rendered_views,
                 parents: &mut self.parents,
+                mounted_views: &mut self.mounted_views,
                 text_layout_cache: &self.text_layout_cache,
                 view_stack: Vec::new(),
                 window_size,
@@ -663,6 +742,7 @@ impl LayoutContext<'_> {
         let Some(mut rendered_view) = self.rendered_views.remove(&view_id) else {
             return vec2f(0., 0.);
         };
+        self.mounted_views.insert(view_id);
 
         if let Some(parent_id) = self.view_stack.last() {
             self.parents.insert(view_id, *parent_id);

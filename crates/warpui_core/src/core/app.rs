@@ -3914,11 +3914,47 @@ impl AppContext {
             .cloned()
             .collect_vec();
         for window_id in invalidated_window_ids {
+            if !self.prepare_window_invalidations(window_id) {
+                continue;
+            }
             if let Some(mut callback) = self.invalidation_callbacks.remove(&window_id) {
                 callback(window_id, self);
                 self.invalidation_callbacks.insert(window_id, callback);
             }
         }
+    }
+
+    /// Folds the autotracked invalidations for `window_id` into its manual ones,
+    /// then lets the presenter re-render, in place, the notified views that are
+    /// not in the window's element tree (`Presenter::render_unmounted_updates`).
+    /// Returns whether anything is left that needs a frame; when nothing is, the
+    /// pending invalidation is dropped, so the window is not asked to redraw.
+    ///
+    /// This is what keeps pty output in a hidden tab from costing a full-window
+    /// layout and paint per chunk: the hidden `TerminalView` still notifies and
+    /// is still re-rendered, but its tab is not mounted, so no frame is built
+    /// for it. See issue #805.
+    fn prepare_window_invalidations(&mut self, window_id: WindowId) -> bool {
+        let autotracked = autotracking::take_invalidations_for_window(window_id);
+        let mut invalidation = self.window_invalidations.remove(&window_id).unwrap_or_default();
+        invalidation.updated.extend(autotracked);
+        if let Some(presenter) = self.presenter(window_id) {
+            // No known caller reaches here while the presenter is borrowed (the
+            // long borrow in `build_scene` never flushes effects), but if one
+            // ever does, falling back to the pre-#805 behaviour for that round
+            // is the safe choice.
+            if let Ok(mut presenter) = presenter.try_borrow_mut() {
+                presenter.render_unmounted_updates(&mut invalidation, self);
+            }
+        }
+        let needs_frame = !invalidation.updated.is_empty()
+            || !invalidation.removed.is_empty()
+            || invalidation.redraw_requested
+            || invalidation.paint_only_redraw_requested;
+        if needs_frame {
+            self.window_invalidations.insert(window_id, invalidation);
+        }
+        needs_frame
     }
 
     /// Collects invalidations for the given window from all sources: manual
