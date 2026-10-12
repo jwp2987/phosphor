@@ -524,16 +524,13 @@ impl ViewSnapshot {
             .into_par_iter()
             .enumerate()
             .map(|(cur_line_idx, stylized_chars)| {
-                let mut line = String::with_capacity(stylized_chars.len());
-                let mut style_runs = Vec::with_capacity(stylized_chars.len());
-                for (idx, stylized_char) in stylized_chars.into_iter().enumerate() {
-                    // Accumulate both style information and the characters to lay out.
-                    style_runs.push((
-                        idx..idx + 1,
-                        StyleAndFont::new(family_id, properties, stylized_char.style()),
-                    ));
-                    line.push(stylized_char.char());
-                }
+                let (line, style_runs) = line_and_style_runs(
+                    stylized_chars
+                        .into_iter()
+                        .map(|stylized_char| (stylized_char.char(), stylized_char.style())),
+                    family_id,
+                    properties,
+                );
 
                 layout_cache.layout_text(
                     &line,
@@ -664,3 +661,33 @@ impl ViewSnapshot {
         vec2f(scaled_size + VOICE_INPUT_ICON_IMAGE_OFFSET_X, scaled_size)
     }
 }
+
+/// Collects one row's characters into the string to lay out, together with the style
+/// runs (char-index ranges, as `layout_text` expects) that describe it.
+///
+/// Adjacent characters with the same style extend the current run instead of each
+/// becoming a run of their own. The layout cache hashes every run to key its entries
+/// and the text layout system shapes run by run, so one run per character made both
+/// linear in the row length on every frame -- for a prompt that is normally a single
+/// style from end to end (#813).
+fn line_and_style_runs(
+    stylized_chars: impl IntoIterator<Item = (char, TextStyle)>,
+    family_id: FamilyId,
+    properties: Properties,
+) -> (String, Vec<(Range<usize>, StyleAndFont)>) {
+    let mut line = String::new();
+    let mut style_runs: Vec<(Range<usize>, StyleAndFont)> = Vec::new();
+    for (idx, (ch, style)) in stylized_chars.into_iter().enumerate() {
+        let style_and_font = StyleAndFont::new(family_id, properties, style);
+        match style_runs.last_mut() {
+            Some((run, run_style)) if *run_style == style_and_font => run.end = idx + 1,
+            _ => style_runs.push((idx..idx + 1, style_and_font)),
+        }
+        line.push(ch);
+    }
+    (line, style_runs)
+}
+
+#[cfg(test)]
+#[path = "snapshot_tests.rs"]
+mod tests;
