@@ -3294,6 +3294,9 @@ impl Element for BlockListElement {
                 }
             }
         }
+        // O(1) when the map is empty, which is almost every frame; otherwise patches only the
+        // named items (#810). The viewport pass below needs the updated tree, so this cannot
+        // be merged with the second call.
         model
             .block_list_mut()
             .update_rich_content_heights(&updated_rich_content_heights);
@@ -3353,6 +3356,9 @@ impl Element for BlockListElement {
         // NOTE: This approach assumes that we don't have other RichContent blocks also collapsing
         // offscreen. If we allow that behavior, this first pass won't account for the updated
         // heights of those blocks not currently visible.
+        // Heights discovered by this pass are collected separately from the dirty-set pass
+        // above so the second update only touches items the first did not (#810).
+        let mut viewport_updated_rich_content_heights = HashMap::new();
         let mut viewport_iter = viewport.iter_with_bottom_overhang(Lines::new(20.));
         for viewport_item in viewport_iter.by_ref() {
             if let BlockHeightItem::RichContent(RichContentItem {
@@ -3362,7 +3368,7 @@ impl Element for BlockListElement {
             }) = viewport_item.block_height_item
             {
                 // Skip any items which were already updated because they were explicitly
-                // dirtied.
+                // dirtied. (At this point the map holds only the dirty-set pass's results.)
                 if updated_rich_content_heights.contains_key(&view_id) {
                     continue;
                 }
@@ -3387,7 +3393,7 @@ impl Element for BlockListElement {
                 // To avoid unnecessary churn with rounding errors, we require any changes be
                 // at least 1 pixel
                 if f64::abs(height_px - prev_height_px) > 1. {
-                    updated_rich_content_heights.insert(view_id, height_px);
+                    viewport_updated_rich_content_heights.insert(view_id, height_px);
                 }
             }
         }
@@ -3396,9 +3402,12 @@ impl Element for BlockListElement {
         drop(viewport_iter);
         drop(viewport);
 
+        // Also O(1) when nothing in the viewport changed height (#810).
         model
             .block_list_mut()
-            .update_rich_content_heights(&updated_rich_content_heights);
+            .update_rich_content_heights(&viewport_updated_rich_content_heights);
+        // The visible-items pass below wants every height measured this frame.
+        updated_rich_content_heights.extend(viewport_updated_rich_content_heights);
 
         // Rebuild the viewport to account for updated block heights, then compute visible items.
         let viewport = create_viewport!(model.block_list());
