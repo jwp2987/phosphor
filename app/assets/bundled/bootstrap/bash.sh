@@ -191,6 +191,36 @@
          __bp_set_ret_value "$__bp_last_ret_value"
      }
 
+ #### Phosphor (#807): put __bp_precmd_invoke_cmd back in front of whatever the
+ #### user assigned to PROMPT_COMMAND, keeping their command, and run the precmd
+ #### the prompt cycle in progress skipped -- so the block of the previous command
+ #### (whose status is $1) gets its CommandFinished now instead of never.
+     __bp_reinstall_prompt_command() {
+         local user_prompt_command line
+         # Keep the user's commands, dropping any of our own that survived the
+         # reassignment (e.g. `PROMPT_COMMAND+=(...)` on bash 5.1 keeps the old
+         # elements), so the repaired value never carries a hook twice.
+         user_prompt_command=
+         for line in "${PROMPT_COMMAND[@]}"; do
+             case "$line" in
+                 __bp_precmd_invoke_cmd|__bp_interactive_mode|"") continue ;;
+             esac
+             user_prompt_command+=${user_prompt_command:+$'\n'}$line
+         done
+         # Mirror bash_body.sh: never keep a PROMPT_COMMAND that re-assigns
+         # PROMPT_COMMAND, it would undo this repair at every prompt.
+         if [[ "$user_prompt_command" == *"PROMPT_COMMAND="* ]]; then
+             user_prompt_command=
+         fi
+         __bp_set_ret_value "${1:-0}"
+         __bp_precmd_invoke_cmd
+         unset PROMPT_COMMAND
+         PROMPT_COMMAND='__bp_precmd_invoke_cmd'
+         PROMPT_COMMAND+=${user_prompt_command:+$'\n'$user_prompt_command}
+         PROMPT_COMMAND+=$'\n__bp_interactive_mode'
+         __bp_interactive_mode
+     }
+
      # Sets a return value in $?. We may want to get access to the $? variable in our
      # precmd functions. This is available for instance in zsh. We can simulate it in bash
      # by setting the value here.
@@ -222,6 +252,10 @@
      # environment to attempt to detect if the current command is being invoked
      # interactively, and invoke 'preexec' if so.
      __bp_preexec_invoke_exec() {
+ #### Phosphor (#807): the exit status of the command that ran before this trap,
+ #### saved before anything else can clobber it; __bp_reinstall_prompt_command
+ #### reports it for the prompt cycle that lost our precmd.
+         local __bp_status_at_trap="$?"
 
          # Save the contents of $_ so that it can be restored later on.
          # https://stackoverflow.com/questions/40944532/bash-preserve-in-a-debug-trap#40944702
@@ -231,6 +265,22 @@
            return
          fi
          local __bp_inside_preexec=1
+
+ #### Phosphor (#807): if PROMPT_COMMAND was reassigned at the prompt
+ #### (`PROMPT_COMMAND='echo pc'`, or a sourced script doing the same), our
+ #### precmd hook is gone: CommandFinished is never emitted again and every
+ #### block from here on keeps its running timer, with later commands typed
+ #### raw into it. This DEBUG trap still fires -- for the user's new
+ #### PROMPT_COMMAND at the very next prompt -- so repair it here. Only once
+ #### __bp_install has put the hook in place; before that its absence is normal.
+ #### Limit: with PROMPT_COMMAND unset or empty nothing runs at the prompt, so
+ #### the repair waits for the user's next command; that command's block then
+ #### starts without its command line (its echo already landed in the stuck
+ #### block). Still a recovery, where before it was a permanent lock-up.
+         if [[ -n "${__bp_prompt_command_installed:-}" \
+               && "${PROMPT_COMMAND[*]:-}" != *"__bp_precmd_invoke_cmd"* ]]; then
+             __bp_reinstall_prompt_command "$__bp_status_at_trap"
+         fi
 
          # Checks if the file descriptor is not standard out (i.e. '1')
          # __bp_delay_install checks if we're in test. Needed for bats to run.
@@ -380,6 +430,10 @@
          # of definition.
          precmd_functions+=(precmd)
          preexec_functions+=(preexec)
+
+ #### Phosphor (#807): from here on, PROMPT_COMMAND without our hook means the
+ #### user removed it; see __bp_preexec_invoke_exec.
+         __bp_prompt_command_installed=1
 
          # Invoke our two functions manually that were added to $PROMPT_COMMAND
          __bp_precmd_invoke_cmd

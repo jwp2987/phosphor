@@ -54,16 +54,29 @@ function warp_send_json_message
     # Sends a message to the controlling terminal as a DSC control sequence.
     set -l escaped_json (warp_hex_encode_string "$argv")
     if [ "$WARP_USING_WINDOWS_CON_PTY" = true ]
-        echo -n "$OSC_START$DCS_JSON_MARKER$OSC_PARAM_SEPARATOR$escaped_json$OSC_END"
+        __warp_emit "$OSC_START$DCS_JSON_MARKER$OSC_PARAM_SEPARATOR$escaped_json$OSC_END"
     else
-        echo -n "$DCS_START$DCS_JSON_MARKER$escaped_json$DCS_END"
+        __warp_emit "$DCS_START$DCS_JSON_MARKER$escaped_json$DCS_END"
+    end
+end
+
+# Hooks go to the controlling terminal, not fd 1, so that redirecting the
+# interactive shell's own stdout (`exec >/dev/null`) cannot swallow them and
+# leave the block running forever (#806). Falls back to fd 1 without a tty.
+# (The fish_prompt functions below must keep writing to stdout: fish captures
+# their output itself.)
+function __warp_emit
+    if begin; true > /dev/tty; end 2>/dev/null
+        echo -n $argv > /dev/tty
+    else
+        echo -n $argv
     end
 end
 
 function warp_maybe_send_reset_grid_osc
     # Note that $WARP_USING_WINDOWS_CON_PTY is set in the init shell script.
     if [ "$WARP_USING_WINDOWS_CON_PTY" = true ]
-        printf $RESET_GRID_OSC
+        __warp_emit $RESET_GRID_OSC
     end
 end
 
