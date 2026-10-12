@@ -477,6 +477,10 @@ fn test_is_unambiguous_shell_command_forces_shell_for_clear_commands() {
             "yes|head -c 5",
             "ls|grep x",
             "echo \"Josh's PR\" > note.txt",
+            // `exit` with a numeric argument; a bare redirect with only non-prose before it.
+            "exit 1",
+            "exit 1 && echo bye",
+            "echo $TS > ~/t.txt",
         ] {
             assert!(
                 is_unambiguous_shell_command_for(buffer).await,
@@ -548,6 +552,23 @@ fn test_is_unambiguous_shell_command_leaves_prose_and_ambiguous_input_to_the_cla
             "/plan",
             "/init",
             "/model gpt",
+            // `exit <word>` ends the whole session, not <word>.
+            "exit vim",
+            "exit tmux",
+            // Prose before a bare redirect: the `>` would truncate the file before the failing
+            // command ran. (`echo hello > x.txt` is the accepted recall cost of the same check.)
+            "export data > backup.csv",
+            "sort contacts > contacts.csv",
+            "make dashboard > report.pdf",
+            "echo hello > x.txt",
+            // A substitution only counts when a command word is inside it.
+            "make $(money) fast",
+            // Typographic apostrophe, and Unicode punctuation glued to a function word.
+            "find Josh\u{2019}s PR",
+            "make it\u{2026} ; ls",
+            // An assignment-prefixed unknown head must itself be non-prose.
+            "DEBUG=1 why",
+            "x=3 squared",
         ] {
             assert!(
                 !is_unambiguous_shell_command_for(buffer).await,
@@ -560,7 +581,13 @@ fn test_is_unambiguous_shell_command_leaves_prose_and_ambiguous_input_to_the_cla
 #[test]
 fn test_has_shell_safe_quoting() {
     // Closed quotes, escapes, and apostrophes that are inside quotes are safe.
-    for text in ["\\'", "echo \"it's\"", "echo 'don\"t'", "echo a\\\\"] {
+    for text in [
+        "\\'",
+        "echo \"it's\"",
+        "echo 'don\"t'",
+        "echo a\\\\",
+        "echo \"Josh\u{2019}s PR\"",
+    ] {
         assert!(
             has_shell_safe_quoting(text),
             "expected {text:?} to be safe quoting"
@@ -577,6 +604,8 @@ fn test_has_shell_safe_quoting() {
         "rm -rf build\\",
         "echo 'unterminated",
         "$'it\\'s'",
+        "find Josh\u{2019}s PR",
+        "kill node; don\u{2019}t ask",
     ] {
         assert!(
             !has_shell_safe_quoting(text),
@@ -606,5 +635,16 @@ fn test_is_unambiguous_shell_command_accepts_completer_evidence_for_unknown_comm
         // is prose even though `find` is a real command.
         let token = mock_parsed_input_token("find large files".to_string()).await;
         assert!(!is_unambiguous_shell_command(&token));
+    });
+}
+
+#[test]
+fn test_is_unambiguous_shell_command_ignores_pasted_buffers() {
+    futures::executor::block_on(async move {
+        // The pre-filter runs synchronously per keystroke; a buffer over the size cap is a paste
+        // for the classifier to handle, even when it is a plain command line.
+        let long = format!("ls {}", "-a ".repeat(2000));
+        assert!(is_unambiguous_shell_command_for("ls -a -a").await);
+        assert!(!is_unambiguous_shell_command_for(&long).await);
     });
 }

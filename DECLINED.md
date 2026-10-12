@@ -1048,7 +1048,7 @@ upstream's behavior is actually a defect rather than a preference.
   loaded — the fail-safe direction, but a real (documented) false positive.
 
 - **An unambiguous shell command line is forced to Shell before any classifier runs**
-  (#808, `2044a687f` + `726fa0c30` + the second review follow-up on
+  (#808, `2044a687f` + `726fa0c30` + `6cbd6ac3e` + this follow-up on
   `fix/808-autodetect-prefilter`, 2026-10-12,
   `crates/input_classifier/src/util.rs::is_unambiguous_shell_command`, wired into
   `SafetyGatedClassifier` and, synchronously, into
@@ -1060,18 +1060,24 @@ upstream's behavior is actually a defect rather than a preference.
   a stress pass); the shell never saw them, and with no reachable model the user got a stream
   error instead of their command. **We do:** force `InputType::Shell` with no model round-trip
   when the buffer has command *shape*. **Vetoes first** (always leave it to the classifier): a
-  trailing `?`; quoting bash would reject, including an apostrophe inside a word (`find Josh's
-  PR`) or a trailing line-continuation backslash; the #696 prose colon shape ("run exactly
-  this:", via the same `buffer_has_prose_colon_shape` helper the safety gate uses); a quoted
-  head; a slash command head (`/plan`, `/model gpt`); and any closed-class English function
-  word among the other unquoted words (`the`, `it`, `and`, `sure`, `please`, `if`, `then`...).
+  trailing `?`; a buffer over 4 KiB (a paste); quoting bash would reject, including an
+  apostrophe inside a word (`find Josh's PR`), a typographic quote (`don’t`) or a trailing
+  line-continuation backslash; the #696 prose colon shape ("run exactly this:", via the same
+  `buffer_has_prose_colon_shape` helper the safety gate uses); a quoted head; a slash command
+  head (`/plan`, `/model gpt`); any closed-class English function word among the other unquoted
+  words (`the`, `it`, `and`, `sure`, `please`, `if`, `then`..., Unicode punctuation stripped);
+  and `exit`/`return`/`logout` with a non-numeric argument (`exit vim` ends the session).
   Then **rule 1:** the head itself has command
   evidence (a curated command-word list, a one-off keyword, an explicit `./` `/` `~/` `../`
   path, or a completer `token_description` — an assignment prefix is *not* evidence) **and**
-  the buffer has a shell operator used as a shell uses it (`| cmd`, `&& cmd`, `; cmd`, `>
-  file.ext`, `2>&1`, `$(`, `` `cmd` ``; `> 1.5GB` is a comparison, not a redirection). Or
-  **rule 2:** the head is a known command word, explicit path or assignment-prefixed word
-  **and** no later word reads as English prose — a stemmed English dictionary word, a word
+  the buffer has a shell operator used as a shell uses it (`| cmd`, `&& cmd`, `; cmd`, `2>&1`,
+  `2>/dev/null`, `$(cmd`, `` `cmd` ``; `> 1.5GB` is a comparison, not a redirection) — and when
+  the only operator is a bare `>`/`>>`/`<` to a file, no word before it may be prose either
+  (`export data > backup.csv` would truncate the file before the failing command ran; `echo
+  hello > x.txt` is the accepted recall cost). Or **rule 2:** the head is a known command word,
+  explicit path, or an assignment-prefixed word that is itself neither prose nor a function
+  word (`FOO=bar mycmd` yes, `x=3 squared` and `DEBUG=1 why` no) **and** no later word reads as
+  English prose — a stemmed English dictionary word, a word
   from the StackOverflow vocabulary, or a Capitalised word like `kill Chrome`; ALL-CAPS
   `DEBUG` is not prose, and neither is CamelCase (`PyTorch`) or a non-ASCII capital (`Émile`),
   a known hole. A lone command word (`ls`) and the one-off NL word `yes` never qualify under
@@ -1079,11 +1085,19 @@ upstream's behavior is actually a defect rather than a preference.
   push origin main` and similar "command word + English subcommand" lines are *not*
   pre-filtered (the classifier already handles them), and the function-word veto costs real
   commands with a bare function word as an argument — `grep -r for src`, `echo it > x`, `git
-  log --author me` — which likewise fall back to the classifier. Precision: lowercase jargon
-  after a known head is still pre-filtered as Shell (`kill chrome`, `watch netflix` run as
-  typed), as is an assignment-prefixed unknown head followed by jargon and no colon (`FOO=1
-  mytool frobnicate`). The pre-filter only removes the model from the path of lines that have
-  shell shape and no prose in them. The #696 exploit prompts (with or without an assignment
+  log --author me` — which likewise fall back to the classifier. Precision, i.e. prose that
+  still runs: (1) the rule-1 residue class — terse, article-free imperatives joined by `;` or
+  `&&` to a literal command, `clear cache; rm -rf node_modules`, `go home; rm -rf ~`, `kill
+  time; sleep 600` — rule 1 checks the head and the operator's neighbor, not the words between
+  them (the function-word veto is what catches the natural phrasing of the same requests); (2)
+  lowercase jargon after a known head (`kill chrome`, `watch netflix`, `ssh prod` run as
+  typed), including the per-keystroke prefix of a prose word (`kill th` is Shell for an instant
+  before `kill the` flips back); (3) an assignment-prefixed unknown head followed by jargon and
+  no colon (`FOO=1 mytool frobnicate`). A substitution (`$(`, `<(`, `>(`) only counts as an
+  operator when a command word opens it (`echo $(whoami)` yes, `make $(money) fast` no). The
+  synchronous path is capped at 4 KiB; below that there is no further length bound. The
+  pre-filter only removes the model from the path of lines that have shell shape and no prose
+  in them. The #696 exploit prompts (with or without an assignment
   prefix) are vetoed before either rule and still reach the gated classifier.
 
 - **`set_before_open_url` can refuse a URL outright, not only rewrite it**

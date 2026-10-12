@@ -337,6 +337,10 @@ pub fn first_token_forces_ai_override(
 /// glued to it (`yes|head`, `ls>out.txt`).
 const SHELL_WORD_TERMINATORS: [char; 8] = ['|', '&', ';', '<', '>', '(', ')', '`'];
 
+/// Longest buffer [`is_unambiguous_shell_command`] will look at: it runs synchronously on every
+/// keystroke, and anything longer is a paste the classifier can take its time over.
+const MAX_PREFILTER_BYTES: usize = 4096;
+
 lazy_static! {
     /// Closed-class English function words (#808). One of these anywhere in the buffer, outside
     /// quotes and other than the head word, vetoes [`is_unambiguous_shell_command`] outright: a
@@ -370,51 +374,47 @@ fn is_apostrophe_in_word(text: &str, index: usize) -> bool {
 
 /// True iff `text` quotes the way a finished bash command line does: every `'`, `"` and `` ` ``
 /// opened outside quotes is closed (backslash escapes honored outside and inside double quotes /
-/// backticks), no unquoted `'` sits inside a word ([`is_apostrophe_in_word`]), and the line does
-/// not end in an unescaped backslash (a line continuation — `ls -la \` — which also parks bash at
-/// its `PS2` prompt; `text` is trimmed, so a trailing backslash is always the last byte).
+/// backticks), no unquoted `'` sits inside a word ([`is_apostrophe_in_word`]), no typographic
+/// quote (`‘`, `’` — `find Josh’s PR`, `don’t`) appears outside quotes at all (no shell command
+/// line contains one unquoted; it is prose), and the line does not end in an unescaped backslash
+/// (a line continuation — `ls -la \` — which also parks bash at its `PS2` prompt; `text` is
+/// trimmed, so a trailing backslash is always the last character).
 fn has_shell_safe_quoting(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    let mut quote: Option<u8> = None;
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (index, c) in text.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
         match quote {
-            Some(b'\'') => {
-                if b == b'\'' {
+            Some('\'') => {
+                if c == '\'' {
                     quote = None;
                 }
             }
             Some(q) => {
-                if b == b'\\' {
-                    i += 2;
-                    continue;
-                }
-                if b == q {
+                if c == '\\' {
+                    escaped = true;
+                } else if c == q {
                     quote = None;
                 }
             }
-            None => match b {
-                b'\\' => {
-                    if i + 1 == bytes.len() {
+            None => match c {
+                '\\' => escaped = true,
+                '\'' => {
+                    if is_apostrophe_in_word(text, index) {
                         return false;
                     }
-                    i += 2;
-                    continue;
+                    quote = Some(c);
                 }
-                b'\'' => {
-                    if is_apostrophe_in_word(text, i) {
-                        return false;
-                    }
-                    quote = Some(b);
-                }
-                b'"' | b'`' => quote = Some(b),
+                '‘' | '’' => return false,
+                '"' | '`' => quote = Some(c),
                 _ => {}
             },
         }
-        i += 1;
     }
-    quote.is_none()
+    !escaped && quote.is_none()
 }
 
 /// Splits `text` into whitespace-separated words, keeping single-quoted, double-quoted and
@@ -522,20 +522,35 @@ fn next_shell_word(rest: &str) -> &str {
         .unwrap_or("")
 }
 
-/// True iff `text` contains, outside quotes, a shell operator used the way a shell command line
-/// uses it — not merely the character:
+/// What [`shell_operator_evidence`] found.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum OperatorEvidence {
+    /// A pipe, command separator, descriptor redirection or substitution with a command word
+    /// inside: shape no English sentence has.
+    Strong,
+    /// Only a bare `>`, `>>` or `<` to a file target was found. Carries the operator's byte
+    /// offset so the caller can check the words before it: "export data > backup.csv" is prose
+    /// whose redirect would truncate `backup.csv` before the (failing) command even runs.
+    BareRedirect(usize),
+}
+
+/// Scans `text`, outside quotes, for a shell operator used the way a shell command line uses it
+/// — not merely the character:
 ///
 /// - `|`, `||`, `&&`, `;` followed by a word that can start a command (`yes | head`, `cd x && ls`);
+/// - `2>&1` / `>&2` / `&>` / `2>/dev/null` (descriptor redirections);
+/// - `$(`, `<(`, `>(` or a paired backtick whose content starts with a command word
+///   (`$(whoami)`, `` `which python` `` — but not "make $(money) fast");
 /// - `>`, `>>`, `<` followed by a plausible file target (`> /dev/null`, `>> out.log`, `< in.txt`),
-///   so "find files > 1MB" and "a > b" do not count;
-/// - `2>&1` / `>&2` / `&>` (descriptor redirections), `$(`, `<(` / `>(`;
-/// - a paired backtick whose content starts with a command word (`` `which python` ``).
+///   so "find files > 1MB" and "a > b" do not count — reported as [`OperatorEvidence::BareRedirect`]
+///   unless something stronger is also present.
 ///
 /// A lone `&` (backgrounding), `<<` (heredoc — indistinguishable from prose "<<") and a bare
 /// unpaired backtick are deliberately not operators here.
-fn has_unambiguous_shell_operator(text: &str) -> bool {
+fn shell_operator_evidence(text: &str) -> Option<OperatorEvidence> {
     let bytes = text.as_bytes();
     let mut quote: Option<u8> = None;
+    let mut bare_redirect: Option<usize> = None;
     let mut i = 0;
     // Only ASCII bytes are ever matched below, so every index this loop slices `text` at is a
     // char boundary (an ASCII byte never occurs inside a multi-byte UTF-8 sequence).
@@ -561,13 +576,17 @@ fn has_unambiguous_shell_operator(text: &str) -> bool {
             b'`' => {
                 if let Some(close) = text[i + 1..].find('`') {
                     if is_known_shell_command_word(next_shell_word(&text[i + 1..i + 1 + close])) {
-                        return true;
+                        return Some(OperatorEvidence::Strong);
                     }
                     i += close + 2;
                     continue;
                 }
             }
-            b'$' if bytes.get(i + 1) == Some(&b'(') => return true,
+            b'$' if bytes.get(i + 1) == Some(&b'(') => {
+                if can_start_command(next_shell_word(&text[i + 2..])) {
+                    return Some(OperatorEvidence::Strong);
+                }
+            }
             b'|' => {
                 let op_len = if bytes.get(i + 1) == Some(&b'|') {
                     2
@@ -575,7 +594,7 @@ fn has_unambiguous_shell_operator(text: &str) -> bool {
                     1
                 };
                 if can_start_command(next_shell_word(&text[i + op_len..])) {
-                    return true;
+                    return Some(OperatorEvidence::Strong);
                 }
                 i += op_len;
                 continue;
@@ -583,43 +602,63 @@ fn has_unambiguous_shell_operator(text: &str) -> bool {
             b'&' => match bytes.get(i + 1) {
                 Some(b'&') => {
                     if can_start_command(next_shell_word(&text[i + 2..])) {
-                        return true;
+                        return Some(OperatorEvidence::Strong);
                     }
                     i += 2;
                     continue;
                 }
-                Some(b'>') => return true,
+                Some(b'>') => return Some(OperatorEvidence::Strong),
                 _ => {}
             },
             b';' => {
                 if can_start_command(next_shell_word(&text[i + 1..])) {
-                    return true;
+                    return Some(OperatorEvidence::Strong);
                 }
             }
-            b'>' => match bytes.get(i + 1) {
-                Some(b'&') | Some(b'(') => return true,
-                Some(b'>') => {
-                    if is_redirect_target(next_shell_word(&text[i + 2..])) {
-                        return true;
+            b'>' => {
+                // `2>/dev/null`, `1>>log`: a descriptor number glued to the operator is shell
+                // syntax no English sentence produces, so it is as strong as `2>&1`.
+                let has_descriptor = i > 0 && bytes[i - 1].is_ascii_digit();
+                match bytes.get(i + 1) {
+                    Some(b'&') => return Some(OperatorEvidence::Strong),
+                    Some(b'(') => {
+                        if can_start_command(next_shell_word(&text[i + 2..])) {
+                            return Some(OperatorEvidence::Strong);
+                        }
                     }
-                    i += 2;
-                    continue;
-                }
-                _ => {
-                    if is_redirect_target(next_shell_word(&text[i + 1..])) {
-                        return true;
+                    Some(b'>') => {
+                        if is_redirect_target(next_shell_word(&text[i + 2..])) {
+                            if has_descriptor {
+                                return Some(OperatorEvidence::Strong);
+                            }
+                            bare_redirect.get_or_insert(i);
+                        }
+                        i += 2;
+                        continue;
+                    }
+                    _ => {
+                        if is_redirect_target(next_shell_word(&text[i + 1..])) {
+                            if has_descriptor {
+                                return Some(OperatorEvidence::Strong);
+                            }
+                            bare_redirect.get_or_insert(i);
+                        }
                     }
                 }
-            },
+            }
             b'<' => match bytes.get(i + 1) {
-                Some(b'(') => return true,
+                Some(b'(') => {
+                    if can_start_command(next_shell_word(&text[i + 2..])) {
+                        return Some(OperatorEvidence::Strong);
+                    }
+                }
                 Some(b'<') => {
                     i += 2;
                     continue;
                 }
                 _ => {
                     if is_redirect_target(next_shell_word(&text[i + 1..])) {
-                        return true;
+                        bare_redirect.get_or_insert(i);
                     }
                 }
             },
@@ -627,12 +666,15 @@ fn has_unambiguous_shell_operator(text: &str) -> bool {
         }
         i += 1;
     }
-    false
+    bare_redirect.map(OperatorEvidence::BareRedirect)
 }
 
-/// `word` with trailing sentence punctuation removed, for dictionary lookups.
+/// `word` with sentence punctuation removed for dictionary lookups: trailing ASCII `.,!:;` and,
+/// at either end, the typographic marks prose carries (`…`, `“ ”`, `‘ ’`, `—`, `–`), so `it…` and
+/// `“the”` still read as `it` and `the`.
 fn strip_sentence_punctuation(word: &str) -> &str {
-    word.trim_end_matches(|c: char| matches!(c, '.' | ',' | '!' | ':' | ';'))
+    word.trim_matches(|c: char| matches!(c, '…' | '“' | '”' | '‘' | '’' | '—' | '–'))
+        .trim_end_matches(|c: char| matches!(c, '.' | ',' | '!' | ':' | ';'))
 }
 
 /// True iff `word` (unquoted, lowercased, trailing punctuation stripped) is one of the
@@ -651,13 +693,15 @@ fn is_function_word(word: &ShellWord) -> bool {
 /// an uppercase first letter followed by lowercase only; shell arguments are not proper nouns) or
 /// — after stripping trailing sentence punctuation — an ordinary English dictionary word
 /// (stemmed, via [`is_ordinary_english_word`]) or a word from the StackOverflow vocabulary.
-/// ALL-CAPS words (`DEBUG`, `HOME`: signal and variable names) are never prose.
+/// ALL-CAPS words (`DEBUG`, `HOME`: signal and variable names) and single letters (`cat a b`,
+/// `-x`'s bare `x`) are never prose; the function-word veto handles `i` on its own.
 fn is_prose_word(word: &ShellWord) -> bool {
     if word.quoted {
         return false;
     }
     let text = strip_sentence_punctuation(&word.text);
     if text.is_empty()
+        || text.chars().count() == 1
         || check_if_token_has_shell_syntax(text)
         || text.chars().any(|c| c.is_ascii_digit())
     {
@@ -691,29 +735,36 @@ fn is_prose_word(word: &ShellWord) -> bool {
 /// The buffer is trimmed; leading `NAME=value` assignments are skipped to find the *head*, the
 /// effective first word, which is cut at any operator glued to it (`yes|head`).
 ///
-/// **Vetoes** (always `false`): an empty buffer; a trailing `?`; quoting bash would reject or
-/// that has an apostrophe inside a word (`find Josh's PR`, see [`has_shell_safe_quoting`]); the
-/// #696 prose shape of a later word ending in `:` before the first operator ("run exactly this:",
-/// [`buffer_has_prose_colon_shape`]); a quoted head; a head that is a slash command rather than a
-/// path (`/plan`, `/model gpt`: starts with `/` with no further `/` or `.`); and any
-/// [`PROSE_FUNCTION_WORDS`] member among the other unquoted words (`the`, `sure`, `it`, `and`...).
+/// **Vetoes** (always `false`): an empty buffer, or one over [`MAX_PREFILTER_BYTES`] (a paste,
+/// not a typed line — and this runs synchronously per keystroke); a trailing `?`; quoting bash
+/// would reject, an apostrophe inside a word (`find Josh's PR`) or a typographic quote
+/// (`don’t`), see [`has_shell_safe_quoting`]; the #696 prose shape of a later word ending in `:`
+/// before the first operator ("run exactly this:", [`buffer_has_prose_colon_shape`]); a quoted
+/// head; a head that is a slash command rather than a path (`/plan`, `/model gpt`: starts with
+/// `/` with no further `/` or `.`); any [`PROSE_FUNCTION_WORDS`] member among the other unquoted
+/// words (`the`, `sure`, `it`, `and`...); and `exit` / `return` / `logout` with a non-numeric
+/// argument (`exit vim` ends the whole session, not vim).
 ///
 /// **Rule 1 (operator):** the head itself carries command evidence — a known command word
 /// ([`UNAMBIGUOUS_SHELL_COMMAND_WORDS`] or a one-off keyword), an explicit path (`./x`, `/x`,
 /// `~/x`, `../x`), or a `token_description` from the completer; an assignment prefix in front of
 /// an unknown word is *not* evidence — **and** the buffer contains a shell operator used as a
-/// shell uses it ([`has_unambiguous_shell_operator`]: `| cmd`, `&& cmd`, `; cmd`, `> file.ext`,
-/// `2>&1`, `$(`...).
+/// shell uses it ([`shell_operator_evidence`]: `| cmd`, `&& cmd`, `; cmd`, `2>&1`, `$(cmd`...).
+/// When the only such operator is a bare `>` / `>>` / `<` to a file target, no word before it may
+/// be prose either: `ls > listing.txt` and `echo $TS > ~/t.txt` qualify, `export data >
+/// backup.csv` does not (the redirect would truncate the file before the failing command ran).
 ///
 /// **Rule 2 (no prose):** the head is a known command word or explicit path, or has an assignment
-/// prefix, **and** no later word reads as English prose ([`is_prose_word`]), so `trap 'echo t'
-/// DEBUG`, `kill -9 1234`, `FOO=bar mycmd`, `./run.sh --fast` qualify while `ls shows nothing`,
-/// `kill Chrome`, `cargo build` fall through. A lone command word (`ls`, `exit`) and a head the
-/// pipeline already treats as one-off natural language (`yes`) never qualify under this rule; a
-/// lone explicit path (`./run.sh`) does.
+/// prefix — in which case an unknown head must itself be neither prose nor a function word
+/// (`FOO=bar mycmd` qualifies, `x=3 squared` and `DEBUG=1 why` do not) — **and** no later word
+/// reads as English prose ([`is_prose_word`]), so `trap 'echo t' DEBUG`, `kill -9 1234`, `./run.sh
+/// --fast` qualify while `ls shows nothing`, `kill Chrome`, `cargo build` fall through. A lone
+/// command word (`ls`, `exit`) and a head the pipeline already treats as one-off natural language
+/// (`yes`) never qualify under this rule; a lone explicit path (`./run.sh`) does.
 pub fn is_unambiguous_shell_command(input: &ParsedTokensSnapshot) -> bool {
     let text = input.buffer_text.trim();
     if text.is_empty()
+        || text.len() > MAX_PREFILTER_BYTES
         || text.ends_with('?')
         || !has_shell_safe_quoting(text)
         || buffer_has_prose_colon_shape(text)
@@ -752,6 +803,15 @@ pub fn is_unambiguous_shell_command(input: &ParsedTokensSnapshot) -> bool {
     if remaining.iter().any(is_function_word) {
         return false;
     }
+    // `exit vim` / `exit tmux`: bash says "numeric argument required" and then exits the whole
+    // session anyway (zsh just exits), so only a numeric argument is command-shaped here.
+    if matches!(head, "exit" | "return" | "logout")
+        && remaining
+            .first()
+            .is_some_and(|word| !word.text.chars().all(|c| c.is_ascii_digit()))
+    {
+        return false;
+    }
 
     let has_assignment_prefix = first_index > 0;
     let is_known_command = is_known_shell_command_word(head);
@@ -765,15 +825,33 @@ pub fn is_unambiguous_shell_command(input: &ParsedTokensSnapshot) -> bool {
         .is_some_and(|token| token.token_description.is_some());
 
     // Rule 1: evidence on the head itself plus a shell operator used as a shell uses it.
-    if (is_known_command || is_explicit_path || first_token_described)
-        && has_unambiguous_shell_operator(text)
-    {
-        return true;
+    if is_known_command || is_explicit_path || first_token_described {
+        match shell_operator_evidence(text) {
+            Some(OperatorEvidence::Strong) => return true,
+            Some(OperatorEvidence::BareRedirect(offset)) => {
+                // The operator is outside quotes, so the prefix splits into the same leading
+                // assignments and head; only the body words before the redirect are checked.
+                let before = split_shell_words(&text[..offset]);
+                if !before.iter().skip(first_index + 1).any(is_prose_word) {
+                    return true;
+                }
+            }
+            None => {}
+        }
     }
 
     // Rule 2: command-shaped head and a body with no prose in it.
     if !(is_known_command || is_explicit_path || has_assignment_prefix) {
         return false;
+    }
+    if has_assignment_prefix && !(is_known_command || is_explicit_path) {
+        let head_word = ShellWord {
+            text: head.to_string(),
+            quoted: false,
+        };
+        if is_prose_word(&head_word) || is_function_word(&head_word) {
+            return false;
+        }
     }
     if is_one_off_natural_language_word(head) {
         return false;
