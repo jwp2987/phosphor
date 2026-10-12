@@ -468,11 +468,16 @@ upstream's behavior is actually a defect rather than a preference.
   shell sits at its prompt -- cost a `RanFind`, a find-bar frame and a rescan. Measured
   at ~46% vs ~30% total CPU for a two-lines-per-second background job (#815). **We
   do:** every `GridHandler` carries a `ContentGeneration` that every mutating entry
-  point bumps; the async path remembers the active block's identity and its grids'
-  generations as of the last scan it enqueued, and skips the rescan only when there
-  are no dirty rows *and* nothing changed. An unlocalised change still gets the full
-  rescan, and so -- newly -- does a prompt-and-command grid that changed without dirty
-  rows while the output grid had some, which upstream ignored.
+  point bumps; the async path remembers the active block's identity and, per grid, the
+  generation its enqueued work covered whole (a full rescan, or no change). A wakeup
+  with no dirty rows skips the rescan only when that grid's generation is unchanged
+  since. A dirty-range rescan covers only the cursor's rows (#822), so it vouches for
+  nothing: the first wakeup without dirty rows after any output burst rescans the
+  block whole, exactly as upstream does, which heals changes the dirty range missed
+  (an erase above the cursor). A run vouches for nothing either, so the first wakeup
+  after a query change rescans the active block. Newly, a prompt-and-command grid that
+  changed without dirty rows while the output grid had some also gets the full
+  rescan; upstream ignored that change.
 
 - **Zero-command Agent Mode input fails closed instead of vacuously auto-approving**
   (`#746`, 2026-09-27, `app/src/ai/blocklist/permissions.rs`). **Upstream:**

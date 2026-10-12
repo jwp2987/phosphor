@@ -179,8 +179,7 @@ impl<'a> BlockFindRenderData<'a> {
     }
 }
 
-/// The active block as the async path last scanned it, or enqueued a scan of
-/// it (#817).
+/// The active block as the async path last enqueued a scan of it (#817).
 ///
 /// [`TerminalFindModel::rerun_find_on_active_grid`] compares the active block
 /// against it to tell a wakeup that changed nothing there -- the common case
@@ -189,27 +188,12 @@ impl<'a> BlockFindRenderData<'a> {
 struct ActiveBlockScanState {
     block_index: BlockIndex,
     block_id: BlockId,
+    /// The output grid's generation, if the enqueued work covers the whole
+    /// grid at it; `None` if unknown (the next wakeup without dirty rows then
+    /// rescans).
     output: Option<ContentGeneration>,
+    /// Same, for the prompt-and-command grid.
     prompt_and_command: Option<ContentGeneration>,
-}
-
-impl ActiveBlockScanState {
-    /// The active block's current state, without consuming its dirty ranges.
-    fn current(model: &TerminalModel) -> Self {
-        let block_list = model.block_list();
-        let block = block_list.active_block();
-        let generation = |grid_type: GridType| {
-            block
-                .grid_of_type(grid_type)
-                .map(|grid| grid.grid_handler().content_generation())
-        };
-        Self {
-            block_index: block_list.active_block_index(),
-            block_id: block.id().clone(),
-            output: generation(GridType::Output),
-            prompt_and_command: generation(GridType::PromptAndCommand),
-        }
-    }
 }
 
 /// Consumes `grid`'s find dirty-row range and reads its content generation.
@@ -270,8 +254,9 @@ pub struct TerminalFindModel {
     results_revision: u64,
 
     /// Async path only: the active block as of the last scan enqueued for it,
-    /// or `None` when nothing is known (no run, or a run whose work queue was
-    /// not live), which makes the next wakeup rescan the active block whole.
+    /// or `None` when nothing is known (no wakeup since the run started, or a
+    /// run whose work queue was not live), which makes the next wakeup rescan
+    /// the active block whole.
     active_block_scan_state: Option<ActiveBlockScanState>,
 }
 
@@ -522,11 +507,11 @@ impl TerminalFindModel {
                 options.query
             );
             controller.start_find(&options, block_sort_direction, ctx);
-            // The run's initial queue covers every block at its current
-            // content, so that is what the next wakeup compares against.
-            self.active_block_scan_state = controller
-                .is_accepting_work()
-                .then(|| ActiveBlockScanState::current(&self.terminal_model.lock()));
+            // Claim nothing about the active block: the run's initial queue
+            // comes from `collect_block_info`, which skips zero-height blocks,
+            // and the active block at the prompt is one of them (and keeps its
+            // id once its command starts). The first wakeup rescans it whole.
+            self.active_block_scan_state = None;
             self.mark_results_changed();
             ctx.emit(FindEvent::RanFind);
             return;
@@ -599,13 +584,6 @@ impl TerminalFindModel {
             // Drop the model lock before emitting events.
             drop(model);
 
-            let scan_state = ActiveBlockScanState {
-                block_index: active_block_index,
-                block_id,
-                output: output_generation,
-                prompt_and_command: command_generation,
-            };
-
             // A grid with no dirty rows either did not change at all or
             // changed in a way the cursor-driven dirty tracking cannot
             // localise (resize/reflow, a scrollback load, ...). Only the
@@ -617,20 +595,38 @@ impl TerminalFindModel {
             // a RanFind and a find-bar frame each time.
             let needs_full_rescan = match self.active_block_scan_state.take() {
                 Some(previous)
-                    if previous.block_index == scan_state.block_index
-                        && previous.block_id == scan_state.block_id =>
+                    if previous.block_index == active_block_index
+                        && previous.block_id == block_id =>
                 {
-                    (output_dirty_info.is_none() && previous.output != scan_state.output)
+                    (output_dirty_info.is_none() && previous.output != output_generation)
                         || (command_dirty_info.is_none()
-                            && previous.prompt_and_command != scan_state.prompt_and_command)
+                            && previous.prompt_and_command != command_generation)
                 }
                 // A different active block (a new command, or indices shifted
                 // under it), or nothing recorded: scan it whole, as before.
                 _ => true,
             };
-            // Only remember a state that the enqueued work will actually
-            // cover; with no live work queue nothing is enqueued, so the next
-            // wakeup must not treat the block as scanned.
+
+            // Remember a grid's generation only if the work enqueued below
+            // covers the whole grid at it: a full rescan, or no change to
+            // cover. A dirty-range rescan does not -- the dirty range is only
+            // the rows the cursor passed through (#822), so the same chunk may
+            // have changed others (an erase above the cursor, deleted lines).
+            // Recording `None` for such a grid makes the first wakeup without
+            // dirty rows rescan it whole, which is what healed such changes
+            // before #817 too.
+            let covered = |generation: Option<ContentGeneration>, has_dirty_rows: bool| {
+                generation.filter(|_| needs_full_rescan || !has_dirty_rows)
+            };
+            let scan_state = ActiveBlockScanState {
+                block_index: active_block_index,
+                block_id,
+                output: covered(output_generation, output_dirty_info.is_some()),
+                prompt_and_command: covered(command_generation, command_dirty_info.is_some()),
+            };
+            // Likewise only remember anything if work is enqueued at all;
+            // with no live work queue the next wakeup must not treat the
+            // block as scanned.
             self.active_block_scan_state = is_accepting_work.then_some(scan_state);
 
             if needs_full_rescan {

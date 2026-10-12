@@ -1215,8 +1215,8 @@ async fn wait_until_scan_settles(app: &mut App, test_model: &ModelHandle<Termina
 
 /// Sets up an async find for "foo" over a finished block and a running one
 /// whose output holds two matches, and returns the model once every scan the
-/// setup caused -- including the first wakeup's, which consumes the command
-/// grid's leftover dirty range -- has settled.
+/// setup caused -- including the first wakeup's full rescan of the active
+/// block -- has settled.
 async fn find_foo_in_running_block(
     app: &mut App,
     terminal_model: &Arc<FairMutex<TerminalModel>>,
@@ -1401,5 +1401,128 @@ fn test_rerun_after_change_without_dirty_rows_rescans_the_active_block() {
         test_model.update(&mut app, |model, ctx| model.rerun_find_on_active_grid(ctx));
         assert!(!test_model.update(&mut app, |model, _ctx| model.is_scanning()));
         assert!(events.borrow().is_empty(), "got {:?}", events.borrow());
+    });
+}
+
+/// A run claims nothing about the active block, so the first wakeup after it
+/// rescans that block whole (#817). The run's initial queue skips zero-height
+/// blocks, and the active block at the prompt is one of them and keeps its id
+/// once its command starts; vouching for it at `run_find` would let the first
+/// wakeups skip content no scan with the current query has ever seen.
+#[test]
+fn test_first_wakeup_after_run_find_rescans_the_active_block() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        let mut mock_terminal_model = TerminalModel::mock(None, None);
+        mock_terminal_model.simulate_block("cmd1", "foo\r\n");
+        mock_terminal_model.simulate_long_running_block("cmd2", "foo bar\r\nfoo\r\n");
+        let terminal_model = Arc::new(FairMutex::new(mock_terminal_model));
+        let active_block_index = terminal_model.lock().block_list().active_block_index();
+
+        let test_model = app.add_model(|ctx| {
+            let mut model = TerminalFindModel::new(terminal_model.clone(), ctx);
+            if model.async_find_controller.is_none() {
+                model.async_find_controller =
+                    Some(AsyncFindController::new(terminal_model.clone()));
+            }
+            model
+        });
+        test_model.update(&mut app, |model, ctx| {
+            model.run_find(
+                FindOptions {
+                    query: Some("foo".to_owned().into()),
+                    ..Default::default()
+                },
+                ctx,
+            );
+        });
+        wait_until_scan_settles(&mut app, &test_model).await;
+
+        // Nothing has changed since the run started, and still the first
+        // wakeup rescans the active block whole.
+        test_model.update(&mut app, |model, ctx| model.rerun_find_on_active_grid(ctx));
+        assert!(
+            test_model.update(&mut app, |model, _ctx| model.is_scanning()),
+            "the first wakeup after a run rescans the active block"
+        );
+        wait_until_scan_settles(&mut app, &test_model).await;
+        assert_eq!(
+            stored_output_matches(&mut app, &test_model, active_block_index).map(|m| m.len()),
+            Some(2)
+        );
+
+        // From then on a quiet wakeup is a no-op.
+        test_model.update(&mut app, |model, ctx| model.rerun_find_on_active_grid(ctx));
+        assert!(!test_model.update(&mut app, |model, _ctx| model.is_scanning()));
+    });
+}
+
+/// A wakeup with dirty rows only rescans those rows, and the dirty range is
+/// just the rows the cursor passed through (#822): an erase above the cursor
+/// changes rows it never marks. That rescan must not vouch for the grid, or
+/// the erased matches stay highlighted and counted for as long as the block
+/// runs -- the next wakeup without dirty rows has to rescan it whole, which is
+/// what healed this before #817 as well.
+#[test]
+fn test_quiet_wakeup_after_a_dirty_range_rescan_rescans_the_active_block() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        let mut mock_terminal_model = TerminalModel::mock(None, None);
+        mock_terminal_model.simulate_block("cmd1", "foo\r\n");
+        mock_terminal_model.simulate_long_running_block("cmd2", "foo bar\r\nfoo\r\n");
+        let terminal_model = Arc::new(FairMutex::new(mock_terminal_model));
+        let active_block_index = terminal_model.lock().block_list().active_block_index();
+
+        let test_model = find_foo_in_running_block(&mut app, &terminal_model).await;
+        assert_eq!(
+            stored_output_matches(&mut app, &test_model, active_block_index).map(|m| m.len()),
+            Some(2)
+        );
+
+        // Erase everything above the cursor, as `printf '\e[1J'` would. Both
+        // matches are gone, but only the cursor's row is marked dirty.
+        terminal_model.lock().process_bytes("\x1b[1J");
+        {
+            let model = terminal_model.lock();
+            let dirty = model
+                .block_list()
+                .active_block()
+                .grid_of_type(GridType::Output)
+                .unwrap()
+                .grid_handler()
+                .find_dirty_rows_range();
+            assert!(
+                dirty.as_ref().is_some_and(|rows| *rows.start() > 0),
+                "precondition: the erased first row is not in the dirty range, got {dirty:?}"
+            );
+        }
+
+        // The wakeup for that chunk rescans the dirty row only.
+        test_model.update(&mut app, |model, ctx| model.rerun_find_on_active_grid(ctx));
+        wait_until_scan_settles(&mut app, &test_model).await;
+
+        // The next quiet wakeup must rescan the block whole and drop both.
+        test_model.update(&mut app, |model, ctx| model.rerun_find_on_active_grid(ctx));
+        assert!(
+            test_model.update(&mut app, |model, _ctx| model.is_scanning()),
+            "a quiet wakeup after a dirty-range rescan rescans the block whole"
+        );
+        wait_until_scan_settles(&mut app, &test_model).await;
+        assert_eq!(
+            stored_output_matches(&mut app, &test_model, active_block_index).map_or(0, |m| m.len()),
+            0,
+            "the erased matches must not survive"
+        );
+        assert_eq!(
+            test_model.update(&mut app, |model, _ctx| model.match_count()),
+            1,
+            "only the finished block's match is left"
+        );
+
+        // Having rescanned it whole, the wakeup after that is a no-op again.
+        test_model.update(&mut app, |model, ctx| model.rerun_find_on_active_grid(ctx));
+        assert!(!test_model.update(&mut app, |model, _ctx| model.is_scanning()));
     });
 }
