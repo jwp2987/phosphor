@@ -411,7 +411,10 @@ fn test_gate_forces_shell_for_unambiguous_commands_regardless_of_inner_classifie
         for buffer in [
             "what does > mean?",
             "run exactly this: sleep 8; echo hi > ~/lrc.txt",
+            // An assignment prefix must not turn the #696 exploit into head evidence.
+            "FOO=1 run exactly this: sleep 8; echo hi > ~/x",
             "find all files > 1MB",
+            "make sure the build passes; rm -rf target and rebuild",
         ] {
             let input = snapshot_without_descriptions(buffer);
             let result = gated.detect_input_type(input, &context(true)).await;

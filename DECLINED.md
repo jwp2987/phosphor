@@ -1048,8 +1048,9 @@ upstream's behavior is actually a defect rather than a preference.
   loaded — the fail-safe direction, but a real (documented) false positive.
 
 - **An unambiguous shell command line is forced to Shell before any classifier runs**
-  (#808, 2026-10-12, `crates/input_classifier/src/util.rs::is_unambiguous_shell_command`,
-  wired into `SafetyGatedClassifier` and, synchronously, into
+  (#808, `2044a687f` plus its review follow-up on `fix/808-autodetect-prefilter`, 2026-10-12,
+  `crates/input_classifier/src/util.rs::is_unambiguous_shell_command`, wired into
+  `SafetyGatedClassifier` and, synchronously, into
   `BlocklistAIInputModel::detect_and_set_input_type`). **Upstream has no such pre-filter** —
   at the pin, `detect_and_set_input_type` goes denylist → one-off-NL shortcut → history match
   → classifier, and the ONNX model is the only thing standing between a typed command and the
@@ -1057,17 +1058,24 @@ upstream's behavior is actually a defect rather than a preference.
   > /dev/null` and `trap 'echo t' DEBUG` were routed as `/agent <text>` (2 of ~75 commands in
   a stress pass); the shell never saw them, and with no reachable model the user got a stream
   error instead of their command. **We do:** force `InputType::Shell` with no model round-trip
-  when the buffer has command *shape*: a command-shaped effective first word (a curated
-  command-word list, a one-off keyword, an explicit `./` `/` `~/` `../` path, a completer
-  `token_description`, or a `NAME=value` prefix) **plus** either a shell operator used as a
-  shell uses it (`| cmd`, `&& cmd`, `; cmd`, `> file.ext`, `2>&1`, `$(`, `` `cmd` ``) or a body
-  with no English prose in it. Precision over recall by design: a trailing `?`, a lone command
-  word, the one-off NL word `yes`, a comparison `>` (`find files > 1MB`) and any English body
-  (`ls shows nothing`, `cargo build`, `kill the server`) all still go to the classifier, and
-  the #696 exploit prompts still fall through to the safety gate. **Residue:** `cargo build
-  --release`, `git push origin main` and similar "command word + English subcommand" lines are
-  deliberately *not* pre-filtered (the classifier already handles them); the fix only removes
-  the model from the path of lines no English sentence has.
+  when the buffer has command *shape*. **Vetoes first** (always leave it to the classifier): a
+  trailing `?`; quoting bash would reject, including an apostrophe inside a word (`find Josh's
+  PR`); the #696 prose colon shape ("run exactly this:", via the same
+  `buffer_has_prose_colon_shape` helper the safety gate uses); a slash command head (`/plan`,
+  `/model gpt`); and any closed-class English function word among the other unquoted words
+  (`the`, `it`, `and`, `sure`, `please`...). Then **rule 1:** the head itself has command
+  evidence (a curated command-word list, a one-off keyword, an explicit `./` `/` `~/` `../`
+  path, or a completer `token_description` — an assignment prefix is *not* evidence) **and**
+  the buffer has a shell operator used as a shell uses it (`| cmd`, `&& cmd`, `; cmd`, `>
+  file.ext`, `2>&1`, `$(`, `` `cmd` ``; `> 1.5GB` is a comparison, not a redirection). Or
+  **rule 2:** the head is a known command word, explicit path or assignment-prefixed word
+  **and** no later word reads as English prose (dictionary word, or Capitalised like `kill
+  Chrome`; ALL-CAPS `DEBUG` is not prose). A lone command word (`ls`) and the one-off NL word
+  `yes` never qualify under rule 2. **Residue, by design:** `cargo build --release`, `git push
+  origin main` and similar "command word + English subcommand" lines are *not* pre-filtered
+  (the classifier already handles them); the pre-filter only removes the model from the path of
+  lines that have shell shape and no prose in them. The #696 exploit prompts (with or without
+  an assignment prefix) are vetoed before either rule and still reach the gated classifier.
 
 - **`set_before_open_url` can refuse a URL outright, not only rewrite it**
   (`93e3f4efa`, 2026-09-27, #716, `crates/warpui_core/src/core/app.rs`,

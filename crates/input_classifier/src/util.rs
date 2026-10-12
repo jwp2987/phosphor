@@ -44,7 +44,7 @@ lazy_static! {
         ".", ":", "[", "[[", "alias", "bg", "bind", "builtin", "cd", "command", "compgen",
         "complete", "declare", "dirs", "disown", "eval", "exec", "exit", "export", "false", "fc",
         "fg", "getopts", "hash", "history", "jobs", "kill", "let", "local", "popd", "printf",
-        "pushd", "pwd", "read", "readonly", "return", "set", "shift", "source", "test", "time",
+        "pushd", "pwd", "readonly", "return", "set", "shift", "source", "test", "time",
         "trap", "true", "type", "typeset", "ulimit", "umask", "unalias", "unset", "wait",
         // Coreutils and the usual text / file / process tools.
         "awk", "basename", "bat", "bc", "bzip2", "cat", "chgrp", "chmod", "chown", "clear", "cmp",
@@ -332,34 +332,95 @@ pub fn first_token_forces_ai_override(
     commands_fully_loaded || buffer_has_prose_colon_shape(&input.buffer_text)
 }
 
-/// Characters that end a bare shell word when [`is_unambiguous_shell_command`] scans
-/// `buffer_text` for operators and their neighbors.
+/// Char/// Characters that end a bare shell word when [`is_unambiguous_shell_command`] scans
+/// `buffer_text` for operators and their neighbors, and that cut the head word off an operator
+/// glued to it (`yes|head`, `ls>out.txt`).
 const SHELL_WORD_TERMINATORS: [char; 8] = ['|', '&', ';', '<', '>', '(', ')', '`'];
 
-/// A whitespace-separated word of the buffer, with quoted spans (`'echo t'`, `"a b"`) kept
-/// together. See [`split_shell_words`].
+lazy_static! {
+    /// Closed-class English function words (#808). One of these anywhere in the buffer, outside
+    /// quotes and other than the head word, vetoes [`is_unambiguous_shell_command`] outright: a
+    /// shell command line essentially never contains a bare `the`, `sure`, `it`, `and`... as an
+    /// argument, while "make sure the build passes; rm -rf target and rebuild" or "find the bug;
+    /// test it" are exactly the prose that otherwise has command shape. Deliberately excludes
+    /// `a` (`cat a b > c.txt` is a real command line).
+    static ref PROSE_FUNCTION_WORDS: HashSet<&'static str> = HashSet::from([
+        "the", "an", "this", "that", "these", "those", "it", "its", "is", "are", "was", "were",
+        "be", "been", "my", "me", "your", "our", "their", "them", "they", "we", "you", "i", "to",
+        "for", "of", "with", "and", "into", "through", "why", "how", "what", "whether", "sure",
+        "please", "should", "would", "could", "can",
+    ]);
+}
+
+/// A whitespace-separated word of the buffer, with quoted spans (`'echo t'`, `"a b"`, `` `cmd` ``)
+/// kept together. See [`split_shell_words`].
 struct ShellWord {
     text: String,
-    /// `true` if any part of the word was inside quotes.
+    /// `true` if any part of the word was inside quotes or backticks.
     quoted: bool,
 }
 
-/// True iff a `'` at byte `index` of `text` is an apostrophe inside a word (`doesn't`, `it's`)
-/// rather than the start of a single-quoted shell string: it directly follows an alphanumeric.
-/// Prose is full of contractions, and treating one as an unterminated quote would swallow the rest
-/// of the sentence.
+/// True iff a `'` at byte `index` of `text` directly follows an alphanumeric: an apostrophe inside
+/// a word (`Josh's`, `doesn't`). To bash that is an opening quote, so such a line (outside quotes)
+/// is never an unambiguous command — it is either prose or an unbalanced quote headed for the
+/// `PS2` prompt.
 fn is_apostrophe_in_word(text: &str, index: usize) -> bool {
     index > 0 && text.as_bytes()[index - 1].is_ascii_alphanumeric()
 }
 
-/// Splits `text` into whitespace-separated words, keeping single- and double-quoted spans
-/// together (quote characters are kept in `text`). Unterminated quotes run to the end.
+/// True iff `text` quotes the way a finished bash command line does: every `'`, `"` and `` ` ``
+/// opened outside quotes is closed (backslash escapes honored outside and inside double quotes /
+/// backticks), and no unquoted `'` sits inside a word ([`is_apostrophe_in_word`]).
+fn has_shell_safe_quoting(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut quote: Option<u8> = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match quote {
+            Some(b'\'') => {
+                if b == b'\'' {
+                    quote = None;
+                }
+            }
+            Some(q) => {
+                if b == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if b == q {
+                    quote = None;
+                }
+            }
+            None => match b {
+                b'\\' => {
+                    i += 2;
+                    continue;
+                }
+                b'\'' => {
+                    if is_apostrophe_in_word(text, i) {
+                        return false;
+                    }
+                    quote = Some(b);
+                }
+                b'"' | b'`' => quote = Some(b),
+                _ => {}
+            },
+        }
+        i += 1;
+    }
+    quote.is_none()
+}
+
+/// Splits `text` into whitespace-separated words, keeping single-quoted, double-quoted and
+/// backtick spans together (the delimiters are kept in `text`). Only called on text that passed
+/// [`has_shell_safe_quoting`], so every span is closed.
 fn split_shell_words(text: &str) -> Vec<ShellWord> {
     let mut words = Vec::new();
     let mut current = String::new();
     let mut quoted = false;
     let mut quote: Option<char> = None;
-    for (index, c) in text.char_indices() {
+    for c in text.chars() {
         match quote {
             Some(q) => {
                 current.push(c);
@@ -376,7 +437,7 @@ fn split_shell_words(text: &str) -> Vec<ShellWord> {
                     quoted = false;
                 }
             }
-            None if c == '"' || (c == '\'' && !is_apostrophe_in_word(text, index)) => {
+            None if matches!(c, '\'' | '"' | '`') => {
                 quote = Some(c);
                 quoted = true;
                 current.push(c);
@@ -412,8 +473,10 @@ fn is_explicit_path_token(token: &str) -> bool {
 }
 
 /// True iff `token` looks like something a redirection would plausibly target: a path (`/dev/null`,
-/// `~/out.log`, `logs/x`) or a `name.ext` file name (`out.txt`). A bare word or a number does not
-/// qualify, so "find files > 1MB" and "a > b" are not redirections to this check.
+/// `~/out.log`, `logs/x`) or a `name.ext` file name (`out.txt`, `out.tar.gz`, `.hidden`). The
+/// name must start with a letter, `_` or `.`, and every part after a dot must start with a letter,
+/// so a bare word, a number or a quantity (`1MB`, `1.5GB`, `10.5MB`) does not qualify — "find
+/// files > 1.5GB" is a comparison, not a redirection.
 fn is_redirect_target(token: &str) -> bool {
     if token.is_empty() {
         return false;
@@ -421,14 +484,20 @@ fn is_redirect_target(token: &str) -> bool {
     if is_explicit_path_token(token) || token.contains('/') {
         return true;
     }
+    if !token.contains('.') {
+        return false;
+    }
+    let is_part_char = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
     let mut parts = token.split('.');
-    let is_word_part = |part: &str| {
-        !part.is_empty()
-            && part
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    let Some(first) = parts.next() else {
+        return false;
     };
-    parts.next().is_some_and(is_word_part) && token.contains('.') && parts.all(is_word_part)
+    let first_ok = first.chars().all(is_part_char)
+        && (first.is_empty() || first.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_'));
+    first_ok
+        && parts.all(|part| {
+            part.starts_with(|c: char| c.is_ascii_alphabetic()) && part.chars().all(is_part_char)
+        })
 }
 
 /// True iff `word` could begin a (sub)command: a known command word, an explicit path, or a
@@ -483,7 +552,6 @@ fn has_unambiguous_shell_operator(text: &str) -> bool {
                 i += 2;
                 continue;
             }
-            b'\'' if is_apostrophe_in_word(text, i) => {}
             b'\'' | b'"' => quote = Some(b),
             b'`' => {
                 if let Some(close) = text[i + 1..].find('`') {
@@ -557,24 +625,47 @@ fn has_unambiguous_shell_operator(text: &str) -> bool {
     false
 }
 
+/// `word` with trailing sentence punctuation removed, for dictionary lookups.
+fn strip_sentence_punctuation(word: &str) -> &str {
+    word.trim_end_matches(|c: char| matches!(c, '.' | ',' | '!' | ':' | ';'))
+}
+
+/// True iff `word` (unquoted, lowercased, trailing punctuation stripped) is one of the
+/// [`PROSE_FUNCTION_WORDS`].
+fn is_function_word(word: &ShellWord) -> bool {
+    !word.quoted
+        && PROSE_FUNCTION_WORDS.contains(
+            strip_sentence_punctuation(&word.text)
+                .to_lowercase()
+                .as_str(),
+        )
+}
+
 /// True iff `word` reads as a word of English prose rather than a command argument: unquoted, no
-/// shell syntax characters, no digits, not ALL-CAPS (signal and variable names: `DEBUG`, `HOME`),
-/// and — after stripping trailing sentence punctuation — an ordinary English dictionary word
+/// shell syntax characters, no digits, and then either Capitalised (`Chrome`, `Netflix`, `Sarah` —
+/// an uppercase first letter followed by lowercase only; shell arguments are not proper nouns) or
+/// — after stripping trailing sentence punctuation — an ordinary English dictionary word
 /// (stemmed, via [`is_ordinary_english_word`]) or a word from the StackOverflow vocabulary.
+/// ALL-CAPS words (`DEBUG`, `HOME`: signal and variable names) are never prose.
 fn is_prose_word(word: &ShellWord) -> bool {
     if word.quoted {
         return false;
     }
-    let text = word
-        .text
-        .trim_end_matches(|c: char| matches!(c, '.' | ',' | '!' | ':'));
+    let text = strip_sentence_punctuation(&word.text);
     if text.is_empty()
         || check_if_token_has_shell_syntax(text)
         || text.chars().any(|c| c.is_ascii_digit())
     {
         return false;
     }
-    if text.chars().any(|c| c.is_uppercase()) && !text.chars().any(|c| c.is_lowercase()) {
+    let has_lowercase = text.chars().any(|c| c.is_lowercase());
+    if text.starts_with(|c: char| c.is_ascii_uppercase())
+        && has_lowercase
+        && text.chars().skip(1).all(|c| c.is_ascii_lowercase())
+    {
+        return true;
+    }
+    if !has_lowercase && text.chars().any(|c| c.is_uppercase()) {
         return false;
     }
     is_ordinary_english_word(text) || is_word(&text.to_lowercase(), WordDb::StackOverflow)
@@ -592,24 +683,36 @@ fn is_prose_word(word: &ShellWord) -> bool {
 /// command (`cargo build`, `git push origin main`, a lone `ls`) is left to the existing pipeline,
 /// which already handles those well.
 ///
-/// The rules, after trimming (and after skipping leading `NAME=value` assignments to find the
-/// *effective* first word):
+/// The buffer is trimmed; leading `NAME=value` assignments are skipped to find the *head*, the
+/// effective first word, which is cut at any operator glued to it (`yes|head`).
 ///
-/// 1. **Never** if the buffer ends in `?`, is empty, or starts with a quoted word.
-/// 2. **Shell** if the effective first word has command evidence — a known command word
-///    ([`UNAMBIGUOUS_SHELL_COMMAND_WORDS`] or a one-off keyword), an explicit path (`./x`, `/x`,
-///    `~/x`, `../x`), a `token_description` from the completer, or an assignment prefix in front
-///    of it — **and** the buffer contains a shell operator used as a shell uses it
-///    ([`has_unambiguous_shell_operator`]: `| cmd`, `&& cmd`, `; cmd`, `> file`, `2>&1`, `$(`...).
-/// 3. **Shell** if the effective first word is a known command word or explicit path (or has an
-///    assignment prefix) **and** no later word reads as English prose ([`is_prose_word`]), so
-///    `trap 'echo t' DEBUG`, `kill -9 1234`, `FOO=bar mycmd`, `./run.sh --fast` qualify while
-///    `ls shows nothing`, `kill the server`, `cargo build` fall through. A lone command word
-///    (`ls`, `exit`) and a word the pipeline already treats as one-off natural language (`yes`)
-///    never qualify under this rule; a lone explicit path (`./run.sh`) does.
+/// **Vetoes** (always `false`): an empty buffer; a trailing `?`; quoting bash would reject or
+/// that has an apostrophe inside a word (`find Josh's PR`, see [`has_shell_safe_quoting`]); the
+/// #696 prose shape of a later word ending in `:` before the first operator ("run exactly this:",
+/// [`buffer_has_prose_colon_shape`]); a quoted head; a head that is a slash command rather than a
+/// path (`/plan`, `/model gpt`: starts with `/` with no further `/` or `.`); and any
+/// [`PROSE_FUNCTION_WORDS`] member among the other unquoted words (`the`, `sure`, `it`, `and`...).
+///
+/// **Rule 1 (operator):** the head itself carries command evidence — a known command word
+/// ([`UNAMBIGUOUS_SHELL_COMMAND_WORDS`] or a one-off keyword), an explicit path (`./x`, `/x`,
+/// `~/x`, `../x`), or a `token_description` from the completer; an assignment prefix in front of
+/// an unknown word is *not* evidence — **and** the buffer contains a shell operator used as a
+/// shell uses it ([`has_unambiguous_shell_operator`]: `| cmd`, `&& cmd`, `; cmd`, `> file.ext`,
+/// `2>&1`, `$(`...).
+///
+/// **Rule 2 (no prose):** the head is a known command word or explicit path, or has an assignment
+/// prefix, **and** no later word reads as English prose ([`is_prose_word`]), so `trap 'echo t'
+/// DEBUG`, `kill -9 1234`, `FOO=bar mycmd`, `./run.sh --fast` qualify while `ls shows nothing`,
+/// `kill Chrome`, `cargo build` fall through. A lone command word (`ls`, `exit`) and a head the
+/// pipeline already treats as one-off natural language (`yes`) never qualify under this rule; a
+/// lone explicit path (`./run.sh`) does.
 pub fn is_unambiguous_shell_command(input: &ParsedTokensSnapshot) -> bool {
     let text = input.buffer_text.trim();
-    if text.is_empty() || text.ends_with('?') {
+    if text.is_empty()
+        || text.ends_with('?')
+        || !has_shell_safe_quoting(text)
+        || buffer_has_prose_colon_shape(text)
+    {
         return false;
     }
 
@@ -628,10 +731,26 @@ pub fn is_unambiguous_shell_command(input: &ParsedTokensSnapshot) -> bool {
     if first.quoted {
         return false;
     }
-    let first_word = first.text.as_str();
+    let head = first
+        .text
+        .split(|c: char| SHELL_WORD_TERMINATORS.contains(&c))
+        .next()
+        .unwrap_or("");
+    if head.is_empty() {
+        return false;
+    }
+    // A slash command (`/plan`, `/model gpt`) that reached autodetection is never a path to run.
+    if head.starts_with('/') && !head[1..].contains(['/', '.']) {
+        return false;
+    }
+    let remaining = &words[first_index + 1..];
+    if remaining.iter().any(is_function_word) {
+        return false;
+    }
+
     let has_assignment_prefix = first_index > 0;
-    let is_known_command = is_known_shell_command_word(first_word);
-    let is_explicit_path = is_explicit_path_token(first_word);
+    let is_known_command = is_known_shell_command_word(head);
+    let is_explicit_path = is_explicit_path_token(head);
 
     // The completer's view of the effective first token: skip the same leading assignments.
     let first_token_described = input
@@ -640,21 +759,20 @@ pub fn is_unambiguous_shell_command(input: &ParsedTokensSnapshot) -> bool {
         .find(|token| !is_env_assignment_token(token.token.as_str()))
         .is_some_and(|token| token.token_description.is_some());
 
-    // Rule 2: command-shaped head plus a shell operator used as a shell uses it.
-    if (is_known_command || is_explicit_path || first_token_described || has_assignment_prefix)
+    // Rule 1: evidence on the head itself plus a shell operator used as a shell uses it.
+    if (is_known_command || is_explicit_path || first_token_described)
         && has_unambiguous_shell_operator(text)
     {
         return true;
     }
 
-    // Rule 3: command-shaped head and a body with no prose in it.
+    // Rule 2: command-shaped head and a body with no prose in it.
     if !(is_known_command || is_explicit_path || has_assignment_prefix) {
         return false;
     }
-    if is_one_off_natural_language_word(first_word) {
+    if is_one_off_natural_language_word(head) {
         return false;
     }
-    let remaining = &words[first_index + 1..];
     if remaining.is_empty() && !is_explicit_path && !has_assignment_prefix {
         return false;
     }

@@ -466,6 +466,17 @@ fn test_is_unambiguous_shell_command_forces_shell_for_clear_commands() {
             "test -f config.toml",
             "git stash",
             "cd ..",
+            // Real command lines that contain words which are English too (`fix`, `install`,
+            // `run`, `build`, `test`): an operator with a command-shaped neighbor decides, and
+            // none of them contains a function word.
+            "git commit -m \"fix\" && git push",
+            "npm install && npm run build",
+            "cargo test -p warp 2>&1 | tee test.log",
+            "cat a b > c.txt",
+            // An operator glued to the head, and an apostrophe safely inside double quotes.
+            "yes|head -c 5",
+            "ls|grep x",
+            "echo \"Josh's PR\" > note.txt",
         ] {
             assert!(
                 is_unambiguous_shell_command_for(buffer).await,
@@ -506,10 +517,33 @@ fn test_is_unambiguous_shell_command_leaves_prose_and_ambiguous_input_to_the_cla
             "~/.bashrc has a syntax error",
             "FOO=1 doesn't work for me",
             "ls isn't showing hidden files",
-            // A `>` that is a comparison, not a redirection.
+            // A `>` / `<` that is a comparison, not a redirection (a quantity is no file name).
             "find all files > 1MB",
+            "find files > 1.5GB",
+            "find files < 10.5MB",
             // Only assignments: valid shell, but also what a question about `x=5` looks like.
             "FOO=bar",
+            // Prose with command shape after an operator: a function word anywhere vetoes.
+            "make sure the build passes; rm -rf target and rebuild",
+            "find the stale branches; git branch -D them",
+            "find the bug; test it",
+            "make sure `cargo build` still works",
+            "kill the server > server.log",
+            // `read` is not a head word (it would block on stdin), and a Capitalised argument is
+            // prose, not a shell argument.
+            "read RFC 9110",
+            "kill Chrome",
+            "watch Netflix",
+            "date Sarah",
+            "free Willy",
+            // An apostrophe inside a word is an unbalanced quote to bash.
+            "find Josh's PR",
+            // An assignment prefix is not head evidence, and the #696 colon shape still vetoes.
+            "FOO=1 run exactly this: sleep 8; echo hi > ~/x",
+            // Slash commands that reach autodetection are not paths.
+            "/plan",
+            "/init",
+            "/model gpt",
         ] {
             assert!(
                 !is_unambiguous_shell_command_for(buffer).await,
