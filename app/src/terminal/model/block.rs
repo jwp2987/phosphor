@@ -3177,18 +3177,52 @@ impl Block {
     /// A completion signal (`CommandFinished` or a `Precmd` carrying completion metadata) can arrive
     /// for a block whose `Preexec` was never observed. Recording the completion still requires the
     /// block to have provably executed, so this drives it from `BeforeExecution` to `Executing`.
-    pub(super) fn ensure_executing_for_completion(&mut self) {
+    ///
+    /// `was_started` is whether the block was started *before* completion recovery began --
+    /// the caller must capture it ahead of `EarlyOutput::preexec` and
+    /// `ensure_active_block_started`, both of which start the block lazily. See
+    /// [`finish_command_grid_for_execution`](Self::finish_command_grid_for_execution).
+    pub(super) fn ensure_executing_for_completion(&mut self, was_started: bool) {
         if self.finished() || self.state != BlockState::BeforeExecution {
             return;
         }
 
         self.ensure_started_for_preexec();
-        self.header_grid.finish_command_grid();
+        self.finish_command_grid_for_execution(was_started);
         self.leading_linefeeds_ignored = 0;
         self.output_grid.start();
         self.state = BlockState::Executing;
         self.is_for_in_band_command |=
             command_executor::is_in_band_command(self.command_to_string().as_str());
+    }
+
+    /// Finishes the command grid because the command is now executing (`Preexec`, or a completion
+    /// that implies one).
+    ///
+    /// For a block that was already started when the shell began executing, this goes through
+    /// `finish_command` so an executed command whose command line never reached the block still
+    /// gets its (blank) row: bash echoes the submitted line on stderr, so after `exec 2>/dev/null`
+    /// the grid is empty here. Truncating it bare left `is_command_empty()` true, the layout then
+    /// reserved zero lines for the prompt while the Zap prompt label was still painted for the
+    /// block, and the first output row landed on top of the `~ (0.026s)` header (#809). The same
+    /// "no echoed newline, force a linefeed" fallback in `finish_command` also makes an empty
+    /// Enter in bash a visible empty block, as it is in zsh; at the pin it was dead in live
+    /// sessions, because every accepted `CommandFinished` finished the grid bare first.
+    ///
+    /// `was_started` must be captured BEFORE any lazy `start()`. A block started lazily -- legacy
+    /// bash multi-line submissions, or a command the shell ran that did not come from the input
+    /// editor -- has already received its echo in the combined grid, and in Zap-prompt mode the
+    /// end-of-prompt marker does not mark, so `start()` caches the command start at the
+    /// post-echo cursor. `cursor == command start` is then true for a grid that is full of real
+    /// command text, and `finish_command` would put a blank row under it. Those blocks keep the
+    /// bare truncation; so do never-started blocks such as bash's prompt-mode-switch block,
+    /// which must stay invisible.
+    fn finish_command_grid_for_execution(&mut self, was_started: bool) {
+        if was_started {
+            self.header_grid.finish_command(self.bootstrap_stage);
+        } else {
+            self.header_grid.finish_command_grid();
+        }
     }
 
     /// Starts the block when `Preexec` is the first observed start evidence.
@@ -3606,11 +3640,12 @@ impl ansi::Handler for Block {
         // is violated if we get multiple blocks per ExecuteCommand event. So, as a fallback, we
         // start the block here if it hasn't happened already. Note: the displayed command duration
         // in the "block label" may be under-estimated in this case.
-        if !self.started() && self.state == BlockState::BeforeExecution {
+        let was_started = self.started();
+        if !was_started && self.state == BlockState::BeforeExecution {
             self.start();
         }
 
-        self.header_grid.preexec(data.clone());
+        self.finish_command_grid_for_execution(was_started);
 
         let is_for_in_band_command = command_executor::is_in_band_command(data.command.as_str());
         if self.bootstrap_stage() == BootstrapStage::PostBootstrapPrecmd {
