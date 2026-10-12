@@ -573,6 +573,14 @@ impl AsyncFindController {
         self.current_config.is_some()
     }
 
+    /// Returns true if [`Self::invalidate_block`] would enqueue work right now:
+    /// a find is configured and its work queue is live. After
+    /// [`Self::cancel_current_find`] the configuration survives but the queue
+    /// does not, and invalidations are dropped (#817).
+    pub(super) fn is_accepting_work(&self) -> bool {
+        self.current_config.is_some() && self.work_queue.is_some()
+    }
+
     /// Returns the currently focused match index (0-based), if any.
     pub fn focused_match_index(&self) -> Option<usize> {
         self.focused_match_index

@@ -456,6 +456,23 @@ upstream's behavior is actually a defect rather than a preference.
   that repaint on `FindEvent::RanFind` additionally compare the model's results
   revision (`FindModel::results_revision`) against the one they last painted, so a
   rerun that reproduces the previous results costs no frame at all.
+- **A wakeup that changed nothing in the active block does not rescan it**
+  (`#817`, 2026-10-12, `app/src/terminal/find/model.rs`,
+  `app/src/terminal/model/grid/grid_handler.rs`). **Upstream:**
+  `rerun_find_on_active_grid` enqueues a full rescan of the active block whenever its
+  output grid reports no find-dirty rows. That range is fed only by cursor tracking, so
+  "no dirty rows" covers both "nothing happened" and "changed in a way the cursor did
+  not trace" (resize/reflow, a scrollback load). A full rescan drops the block's
+  matches and shows as scanning, so with the find bar open every wakeup whose output
+  landed elsewhere -- a background job printing into a background block while the
+  shell sits at its prompt -- cost a `RanFind`, a find-bar frame and a rescan. Measured
+  at ~46% vs ~30% total CPU for a two-lines-per-second background job (#815). **We
+  do:** every `GridHandler` carries a `ContentGeneration` that every mutating entry
+  point bumps; the async path remembers the active block's identity and its grids'
+  generations as of the last scan it enqueued, and skips the rescan only when there
+  are no dirty rows *and* nothing changed. An unlocalised change still gets the full
+  rescan, and so -- newly -- does a prompt-and-command grid that changed without dirty
+  rows while the output grid had some, which upstream ignored.
 
 - **Zero-command Agent Mode input fails closed instead of vacuously auto-approving**
   (`#746`, 2026-09-27, `app/src/ai/blocklist/permissions.rs`). **Upstream:**

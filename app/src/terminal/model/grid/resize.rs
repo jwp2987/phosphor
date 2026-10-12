@@ -36,6 +36,10 @@ impl GridHandler {
             return;
         }
 
+        // Everything above only returned early or stored cell pixel metrics;
+        // from here on the storage is resized and reflowed.
+        self.content_generation.bump();
+
         log::debug!("New num_cols is {num_cols} and num_lines is {num_rows}");
 
         if old_cols != num_cols {

@@ -23,10 +23,11 @@ use warpui::{AppContext, Entity, EntityId, ModelContext, SingletonEntity, ViewHa
 use crate::settings::InputModeSettings;
 use crate::terminal::block_list_element::GridType;
 use crate::terminal::block_list_viewport::InputMode;
-use crate::terminal::model::TerminalModel;
-use crate::terminal::model::grid::grid_handler::GridHandler;
+use crate::terminal::model::blockgrid::BlockGrid;
+use crate::terminal::model::grid::grid_handler::{ContentGeneration, GridHandler};
 use crate::terminal::model::index::Point;
 use crate::terminal::model::terminal_model::BlockIndex;
+use crate::terminal::model::{BlockId, TerminalModel};
 use crate::terminal::settings::TerminalSettings;
 use crate::view_components::find::{FindDirection, FindEvent, FindModel};
 
@@ -178,6 +179,61 @@ impl<'a> BlockFindRenderData<'a> {
     }
 }
 
+/// The active block as the async path last scanned it, or enqueued a scan of
+/// it (#817).
+///
+/// [`TerminalFindModel::rerun_find_on_active_grid`] compares the active block
+/// against it to tell a wakeup that changed nothing there -- the common case
+/// while a background job prints into a background block -- apart from a
+/// change the dirty-row ranges could not localise.
+struct ActiveBlockScanState {
+    block_index: BlockIndex,
+    block_id: BlockId,
+    output: Option<ContentGeneration>,
+    prompt_and_command: Option<ContentGeneration>,
+}
+
+impl ActiveBlockScanState {
+    /// The active block's current state, without consuming its dirty ranges.
+    fn current(model: &TerminalModel) -> Self {
+        let block_list = model.block_list();
+        let block = block_list.active_block();
+        let generation = |grid_type: GridType| {
+            block
+                .grid_of_type(grid_type)
+                .map(|grid| grid.grid_handler().content_generation())
+        };
+        Self {
+            block_index: block_list.active_block_index(),
+            block_id: block.id().clone(),
+            output: generation(GridType::Output),
+            prompt_and_command: generation(GridType::PromptAndCommand),
+        }
+    }
+}
+
+/// Consumes `grid`'s find dirty-row range and reads its content generation.
+///
+/// Returns the dirty range as the `(rows, grid type, lines truncated)` tuple
+/// [`TerminalFindModel::invalidate_async_find_block`] takes, and the
+/// generation the grid is at once that range has been taken.
+fn take_find_dirty_info(
+    grid: Option<&mut BlockGrid>,
+    grid_type: GridType,
+) -> (
+    Option<(RangeInclusive<usize>, GridType, u64)>,
+    Option<ContentGeneration>,
+) {
+    let Some(grid) = grid else {
+        return (None, None);
+    };
+    let grid_handler = grid.grid_handler_mut();
+    let dirty_info = grid_handler
+        .take_find_dirty_rows_range()
+        .map(|dirty| (dirty, grid_type, grid_handler.num_lines_truncated()));
+    (dirty_info, Some(grid_handler.content_generation()))
+}
+
 /// `TerminalView`-scoped model for the find bar.
 pub struct TerminalFindModel {
     terminal_model: Arc<FairMutex<TerminalModel>>,
@@ -212,6 +268,11 @@ pub struct TerminalFindModel {
     /// user-driven path (a new query, clearing, focusing the next match, a block
     /// filter) bumps unconditionally, so they behave exactly as before.
     results_revision: u64,
+
+    /// Async path only: the active block as of the last scan enqueued for it,
+    /// or `None` when nothing is known (no run, or a run whose work queue was
+    /// not live), which makes the next wakeup rescan the active block whole.
+    active_block_scan_state: Option<ActiveBlockScanState>,
 }
 
 impl FindModel for TerminalFindModel {
@@ -278,6 +339,7 @@ impl TerminalFindModel {
             is_find_bar_open: false,
             async_find_controller,
             results_revision: 0,
+            active_block_scan_state: None,
         }
     }
 
@@ -460,6 +522,11 @@ impl TerminalFindModel {
                 options.query
             );
             controller.start_find(&options, block_sort_direction, ctx);
+            // The run's initial queue covers every block at its current
+            // content, so that is what the next wakeup compares against.
+            self.active_block_scan_state = controller
+                .is_accepting_work()
+                .then(|| ActiveBlockScanState::current(&self.terminal_model.lock()));
             self.mark_results_changed();
             ctx.emit(FindEvent::RanFind);
             return;
@@ -507,6 +574,8 @@ impl TerminalFindModel {
                 return;
             }
 
+            let is_accepting_work = controller.is_accepting_work();
+
             // Get the active block index and dirty range info.
             // We use active_block_index() (not last_non_hidden_block_by_index) because
             // the active block is where output is being written, even if it's still
@@ -517,26 +586,58 @@ impl TerminalFindModel {
             // Consume dirty ranges from both grids. We need mutable access
             // because take_find_dirty_rows_range is destructive.
             let active_block = model.block_list_mut().active_block_mut();
-            let output_dirty_info =
-                active_block
-                    .grid_of_type_mut(GridType::Output)
-                    .and_then(|grid| {
-                        let dirty = grid.grid_handler_mut().take_find_dirty_rows_range()?;
-                        let truncated = grid.grid_handler().num_lines_truncated();
-                        Some((dirty, GridType::Output, truncated))
-                    });
-            let command_dirty_info = active_block
-                .grid_of_type_mut(GridType::PromptAndCommand)
-                .and_then(|grid| {
-                    let dirty = grid.grid_handler_mut().take_find_dirty_rows_range()?;
-                    let truncated = grid.grid_handler().num_lines_truncated();
-                    Some((dirty, GridType::PromptAndCommand, truncated))
-                });
+            let block_id = active_block.id().clone();
+            let (output_dirty_info, output_generation) = take_find_dirty_info(
+                active_block.grid_of_type_mut(GridType::Output),
+                GridType::Output,
+            );
+            let (command_dirty_info, command_generation) = take_find_dirty_info(
+                active_block.grid_of_type_mut(GridType::PromptAndCommand),
+                GridType::PromptAndCommand,
+            );
 
             // Drop the model lock before emitting events.
             drop(model);
 
-            self.invalidate_async_find_block(active_block_index, output_dirty_info, ctx);
+            let scan_state = ActiveBlockScanState {
+                block_index: active_block_index,
+                block_id,
+                output: output_generation,
+                prompt_and_command: command_generation,
+            };
+
+            // A grid with no dirty rows either did not change at all or
+            // changed in a way the cursor-driven dirty tracking cannot
+            // localise (resize/reflow, a scrollback load, ...). Only the
+            // latter needs the active block rescanned whole; telling them
+            // apart takes the grid's content generation (#817). Without this,
+            // every wakeup whose output lands in another block -- a background
+            // job printing while the shell sits at its prompt -- dropped and
+            // rescanned the active block, which shows as scanning and so cost
+            // a RanFind and a find-bar frame each time.
+            let needs_full_rescan = match self.active_block_scan_state.take() {
+                Some(previous)
+                    if previous.block_index == scan_state.block_index
+                        && previous.block_id == scan_state.block_id =>
+                {
+                    (output_dirty_info.is_none() && previous.output != scan_state.output)
+                        || (command_dirty_info.is_none()
+                            && previous.prompt_and_command != scan_state.prompt_and_command)
+                }
+                // A different active block (a new command, or indices shifted
+                // under it), or nothing recorded: scan it whole, as before.
+                _ => true,
+            };
+            // Only remember a state that the enqueued work will actually
+            // cover; with no live work queue nothing is enqueued, so the next
+            // wakeup must not treat the block as scanned.
+            self.active_block_scan_state = is_accepting_work.then_some(scan_state);
+
+            if needs_full_rescan {
+                self.invalidate_async_find_block(active_block_index, None, ctx);
+            } else if let Some(info) = output_dirty_info {
+                self.invalidate_async_find_block(active_block_index, Some(info), ctx);
+            }
             if let Some(info) = command_dirty_info {
                 self.invalidate_async_find_block(active_block_index, Some(info), ctx);
             }
@@ -637,6 +738,7 @@ impl TerminalFindModel {
             }
         } else if let Some(controller) = &mut self.async_find_controller {
             controller.clear_results(ctx);
+            self.active_block_scan_state = None;
         } else if let Some(run) = self.block_list_find_run.take() {
             for (_, rich_content_view) in self.rich_content_views.iter() {
                 rich_content_view.clear_matches(ctx);

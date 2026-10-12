@@ -3000,3 +3000,139 @@ fn test_finished_grid_reflows_after_its_storage_was_shrunk() {
     assert_eq!(row_text(&grid, 0), "abcdefghijklm");
     assert!(grid.grid.raw.capacity() < rows);
 }
+
+/// A small grid with two lines of text and the cursor at the end of the second,
+/// for the content-generation tests below.
+fn content_generation_test_grid() -> GridHandler {
+    let mut grid = GridHandler::new_for_test_with_scroll_limit(4, 6, MAX_SCROLL_LIMIT);
+    for c in "foo ba".chars() {
+        grid.input(c);
+    }
+    grid.carriage_return();
+    grid.linefeed();
+    for c in "foo".chars() {
+        grid.input(c);
+    }
+    grid.on_finish_byte_processing(&ansi::ProcessorInput::new(&[]));
+    grid
+}
+
+/// Asserts that `mutate` moves a fresh test grid to a new content generation.
+fn assert_bumps_content_generation(name: &str, mutate: impl FnOnce(&mut GridHandler)) {
+    let mut grid = content_generation_test_grid();
+    let before = grid.content_generation();
+    mutate(&mut grid);
+    assert_ne!(
+        grid.content_generation(),
+        before,
+        "{name} must bump the content generation"
+    );
+}
+
+/// Find skips rescanning a grid whose dirty-row range is empty only while its
+/// content generation is unchanged (#817), so every way of changing the grid's
+/// content has to bump it -- in particular the ones that leave no dirty rows
+/// behind (erase without cursor motion, resize/reflow, truncation, direct cell
+/// writes).
+#[test]
+fn test_content_generation_bumps_on_every_mutation_path() {
+    // Pty output: every `ansi::Handler` method, a representative set here.
+    assert_bumps_content_generation("input", |grid| grid.input('x'));
+    assert_bumps_content_generation("erase chars", |grid| grid.erase_chars(2));
+    assert_bumps_content_generation("delete chars", |grid| grid.delete_chars(1));
+    assert_bumps_content_generation("insert blank", |grid| grid.insert_blank(1));
+    assert_bumps_content_generation("clear line", |grid| {
+        grid.clear_line(ansi::LineClearMode::All)
+    });
+    assert_bumps_content_generation("clear above", |grid| {
+        grid.clear_screen(ansi::ClearMode::Above)
+    });
+    assert_bumps_content_generation("clear below", |grid| {
+        grid.clear_screen(ansi::ClearMode::Below)
+    });
+    assert_bumps_content_generation("clear all", |grid| grid.clear_screen(ansi::ClearMode::All));
+    assert_bumps_content_generation("clear scrollback", |grid| {
+        grid.clear_screen(ansi::ClearMode::Saved)
+    });
+    assert_bumps_content_generation("linefeed", |grid| {
+        grid.linefeed();
+    });
+    assert_bumps_content_generation("scroll up", |grid| {
+        grid.scroll_up(1);
+    });
+    assert_bumps_content_generation("scroll down", |grid| {
+        grid.scroll_down(1);
+    });
+    assert_bumps_content_generation("insert lines", |grid| {
+        grid.insert_blank_lines(1);
+    });
+    assert_bumps_content_generation("delete lines", |grid| {
+        grid.delete_lines(1);
+    });
+    assert_bumps_content_generation("reverse index", |grid| {
+        grid.reverse_index();
+    });
+    assert_bumps_content_generation("attribute", |grid| {
+        grid.terminal_attribute(ansi::Attr::Bold)
+    });
+    assert_bumps_content_generation("decaln", |grid| grid.decaln());
+    assert_bumps_content_generation("reset state", |grid| grid.reset_state());
+    assert_bumps_content_generation("substitute", |grid| grid.substitute());
+    assert_bumps_content_generation("end of byte processing", |grid| {
+        grid.on_finish_byte_processing(&ansi::ProcessorInput::new(&[]))
+    });
+
+    // Non-pty entry points.
+    assert_bumps_content_generation("resize", |grid| {
+        grid.resize(SizeInfo::new_without_font_metrics(4, 3))
+    });
+    assert_bumps_content_generation("truncate rows", |grid| grid.truncate_to_cursor_rows());
+    assert_bumps_content_generation("truncate columns", |grid| grid.truncate_to_cursor_cols());
+    assert_bumps_content_generation("finish", |grid| grid.finish());
+    assert_bumps_content_generation("cell storage", |grid| {
+        grid.grid_storage_mut();
+    });
+    assert_bumps_content_generation("cursor", |grid| {
+        grid.update_cursor(|cursor| cursor.point.col = 0)
+    });
+    assert_bumps_content_generation("wrapline", |grid| grid.wrapline());
+    assert_bumps_content_generation("refilter", |grid| grid.refilter_lines());
+    assert_bumps_content_generation("clear filter", |grid| grid.clear_filter());
+    assert_bumps_content_generation("clear secrets", |grid| grid.clear_secrets());
+    assert_bumps_content_generation("rescan secrets", |grid| grid.scan_full_grid_for_secrets());
+    assert_bumps_content_generation("marked text", |grid| grid.set_marked_text("x", &(0..1)));
+    assert_bumps_content_generation("clear marked text", |grid| grid.clear_marked_text());
+}
+
+#[test]
+fn test_content_generation_is_stable_without_mutation() {
+    let mut grid = content_generation_test_grid();
+    let before = grid.content_generation();
+
+    // Reads, and find consuming its own dirty-row range, change nothing.
+    let _ = grid.total_rows();
+    let _ = grid.cell_type(Point::new(0, 0));
+    let _ = grid.take_find_dirty_rows_range();
+    let _ = grid.take_find_dirty_rows_range();
+    assert_eq!(grid.content_generation(), before);
+
+    // A resize to the current size is a no-op and must not cost a rescan.
+    grid.resize(SizeInfo::new_without_font_metrics(4, 6));
+    assert_eq!(grid.content_generation(), before);
+}
+
+#[test]
+fn test_content_generation_is_unique_per_grid_instance() {
+    let grid = content_generation_test_grid();
+    let other = content_generation_test_grid();
+    assert_ne!(
+        grid.content_generation(),
+        other.content_generation(),
+        "two grids with identical histories must still differ"
+    );
+
+    // A clone diverges from the original from its first write on, so it must
+    // never compare equal to it, even before either is touched.
+    let clone = grid.clone();
+    assert_ne!(clone.content_generation(), grid.content_generation());
+}

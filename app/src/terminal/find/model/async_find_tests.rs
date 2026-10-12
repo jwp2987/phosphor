@@ -6,12 +6,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use parking_lot::FairMutex;
-use warpui::{App, EntityId, ModelContext};
+use warpui::{App, EntityId, ModelContext, ModelHandle};
 
 use super::{
     AbsoluteMatch, AsyncFindConfig, AsyncFindController, AsyncFindStatus, BlockFindResults,
     FindTaskMessage, is_query_refinement,
 };
+use crate::terminal::SizeInfo;
 use crate::terminal::block_list_element::GridType;
 use crate::terminal::find::model::block_list::run_find_on_block_list;
 use crate::terminal::find::model::{FindOptions, TerminalFindModel};
@@ -1188,5 +1189,217 @@ fn test_dirty_range_invalidation_is_silent_until_results_differ() {
             matches!(stored_matches(&mut app), None | Some(2)),
             "the full rescan drops the block's matches until it reports back"
         );
+    });
+}
+
+/// Waits for the async scan to complete, then for the 50 ms `RanFind` throttle
+/// to drain, so that whatever the test does next starts from a quiet model.
+async fn wait_until_scan_settles(app: &mut App, test_model: &ModelHandle<TerminalFindModel>) {
+    for _ in 0..100 {
+        let is_complete = test_model.update(app, |model, _ctx| {
+            model
+                .async_find_controller
+                .as_ref()
+                .map(|c| matches!(c.status(), AsyncFindStatus::Complete))
+                .unwrap_or(false)
+        });
+        if is_complete {
+            break;
+        }
+        warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
+    }
+    for _ in 0..10 {
+        warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// Sets up an async find for "foo" over a finished block and a running one
+/// whose output holds two matches, and returns the model once every scan the
+/// setup caused -- including the first wakeup's, which consumes the command
+/// grid's leftover dirty range -- has settled.
+async fn find_foo_in_running_block(
+    app: &mut App,
+    terminal_model: &Arc<FairMutex<TerminalModel>>,
+) -> ModelHandle<TerminalFindModel> {
+    let test_model = app.add_model(|ctx| {
+        let mut model = TerminalFindModel::new(terminal_model.clone(), ctx);
+        if model.async_find_controller.is_none() {
+            model.async_find_controller = Some(AsyncFindController::new(terminal_model.clone()));
+        }
+        model
+    });
+    test_model.update(app, |model, ctx| {
+        model.run_find(
+            FindOptions {
+                query: Some("foo".to_owned().into()),
+                ..Default::default()
+            },
+            ctx,
+        );
+    });
+    wait_until_scan_settles(app, &test_model).await;
+    test_model.update(app, |model, ctx| model.rerun_find_on_active_grid(ctx));
+    wait_until_scan_settles(app, &test_model).await;
+    test_model
+}
+
+fn record_find_events(
+    app: &mut App,
+    test_model: &ModelHandle<TerminalFindModel>,
+) -> Rc<RefCell<Vec<&'static str>>> {
+    let events: Rc<RefCell<Vec<&'static str>>> = Default::default();
+    let recorded = events.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_model(test_model, move |_, event, _| {
+            recorded.borrow_mut().push(match event {
+                FindEvent::RanFind => "RanFind",
+                FindEvent::UpdatedFocusedMatch => "UpdatedFocusedMatch",
+            });
+        });
+    });
+    events
+}
+
+fn stored_output_matches(
+    app: &mut App,
+    test_model: &ModelHandle<TerminalFindModel>,
+    block_index: BlockIndex,
+) -> Option<Vec<AbsoluteMatch>> {
+    test_model.update(app, |model, _ctx| {
+        model
+            .async_find_controller
+            .as_ref()
+            .unwrap()
+            .matches_for_block_grid(block_index, GridType::Output)
+            .cloned()
+    })
+}
+
+/// A wakeup that changed nothing in the active block -- what every wakeup is
+/// while a background job prints into a background block with the shell at its
+/// prompt -- must neither rescan the active block nor announce anything (#817).
+/// It used to rescan it whole, because "no dirty rows" was all it could see,
+/// and the rescan showed as scanning and cost a RanFind and a frame each time.
+#[test]
+fn test_rerun_without_content_change_neither_rescans_nor_emits_ran_find() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        let mut mock_terminal_model = TerminalModel::mock(None, None);
+        mock_terminal_model.simulate_block("cmd1", "foo\r\n");
+        mock_terminal_model.simulate_long_running_block("cmd2", "foo bar\r\nfoo\r\n");
+        let terminal_model = Arc::new(FairMutex::new(mock_terminal_model));
+        let active_block_index = terminal_model.lock().block_list().active_block_index();
+
+        let test_model = find_foo_in_running_block(&mut app, &terminal_model).await;
+        let stored_before = stored_output_matches(&mut app, &test_model, active_block_index);
+        assert_eq!(
+            stored_before.as_ref().map(Vec::len),
+            Some(2),
+            "the running block's output holds both matches"
+        );
+
+        let events = record_find_events(&mut app, &test_model);
+        let revision_before = test_model.update(&mut app, |model, _ctx| model.results_revision());
+
+        for _ in 0..3 {
+            test_model.update(&mut app, |model, ctx| model.rerun_find_on_active_grid(ctx));
+
+            // Checked synchronously: a full rescan drops the block's matches
+            // and shows as scanning the moment it is enqueued.
+            let (is_scanning, revision) = test_model.update(&mut app, |model, _ctx| {
+                (model.is_scanning(), model.results_revision())
+            });
+            assert!(!is_scanning, "an unchanged block must not be rescanned");
+            assert_eq!(revision, revision_before);
+            assert_eq!(
+                stored_output_matches(&mut app, &test_model, active_block_index),
+                stored_before,
+                "an unchanged block keeps its matches"
+            );
+        }
+
+        // Nothing arrives later either.
+        wait_until_scan_settles(&mut app, &test_model).await;
+        assert_eq!(
+            test_model.update(&mut app, |model, _ctx| model.results_revision()),
+            revision_before
+        );
+        assert!(
+            events.borrow().is_empty(),
+            "no RanFind for wakeups that changed nothing, got {:?}",
+            events.borrow()
+        );
+    });
+}
+
+/// The other half of #817: a change that leaves no dirty rows behind -- here a
+/// resize that reflows the running block's output -- must still rescan the
+/// block whole and update its matches, as it did before.
+#[test]
+fn test_rerun_after_change_without_dirty_rows_rescans_the_active_block() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        let mut mock_terminal_model = TerminalModel::mock(None, None);
+        mock_terminal_model.simulate_block("cmd1", "foo\r\n");
+        mock_terminal_model.simulate_long_running_block("cmd2", "foo bar\r\nfoo\r\n");
+        let terminal_model = Arc::new(FairMutex::new(mock_terminal_model));
+        let active_block_index = terminal_model.lock().block_list().active_block_index();
+
+        let test_model = find_foo_in_running_block(&mut app, &terminal_model).await;
+        let stored_before = stored_output_matches(&mut app, &test_model, active_block_index);
+        assert_eq!(stored_before.as_ref().map(Vec::len), Some(2));
+        let events = record_find_events(&mut app, &test_model);
+
+        // Narrow the output grid so "foo bar" wraps over three rows, which
+        // moves the second "foo" down. Nothing here moves the cursor through
+        // the grid, so find sees no dirty rows at all.
+        {
+            let mut model = terminal_model.lock();
+            let grid_handler = model
+                .block_list_mut()
+                .active_block_mut()
+                .grid_of_type_mut(GridType::Output)
+                .unwrap()
+                .grid_handler_mut();
+            grid_handler.resize(SizeInfo::new_without_font_metrics(10, 3));
+            assert_eq!(
+                grid_handler.find_dirty_rows_range(),
+                None,
+                "a reflow leaves no dirty rows; this is the unlocalised case"
+            );
+        }
+
+        test_model.update(&mut app, |model, ctx| model.rerun_find_on_active_grid(ctx));
+        assert!(
+            test_model.update(&mut app, |model, _ctx| model.is_scanning()),
+            "a change without dirty rows rescans the block whole"
+        );
+        assert_eq!(events.borrow().first(), Some(&"RanFind"));
+
+        wait_until_scan_settles(&mut app, &test_model).await;
+        let stored_after = stored_output_matches(&mut app, &test_model, active_block_index);
+        assert_eq!(stored_after.as_ref().map(Vec::len), Some(2));
+        assert_ne!(
+            stored_after, stored_before,
+            "the rescan must replace the pre-reflow positions"
+        );
+
+        // And what it stored is what a fresh full scan of the block finds.
+        test_model.update(&mut app, |model, ctx| {
+            model.invalidate_async_find_block(active_block_index, None, ctx)
+        });
+        wait_until_scan_settles(&mut app, &test_model).await;
+        assert_eq!(
+            stored_output_matches(&mut app, &test_model, active_block_index),
+            stored_after
+        );
+
+        // Having rescanned, the next quiet wakeup is a no-op again.
+        events.borrow_mut().clear();
+        test_model.update(&mut app, |model, ctx| model.rerun_find_on_active_grid(ctx));
+        assert!(!test_model.update(&mut app, |model, _ctx| model.is_scanning()));
+        assert!(events.borrow().is_empty(), "got {:?}", events.borrow());
     });
 }
