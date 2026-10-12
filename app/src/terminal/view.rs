@@ -24303,15 +24303,20 @@ impl TerminalView {
 
         // Since blocks in a blocklist can have different sizes, we want
         // to make sure we're rendering with enough columns to support them all.
-        let transcript_scope = model.block_list().transcript_scope();
-        let columns_needed = model
-            .block_list()
-            .blocks()
-            .iter()
-            .filter(|b| b.is_visible(transcript_scope))
-            .map(|b| b.size().columns)
-            .max()
-            .unwrap_or(self.size_info.columns);
+        //
+        // `required_terminal_width` is only read by `maybe_wrap_terminal_element_in_scrollable`
+        // in its horizontally-scrollable arms, and horizontal scrolling requires this to be an
+        // active shared-session viewer. For any other session the value is dead, so only an
+        // active viewer pays for the O(blocks) scan; everyone else falls back to the pane's own
+        // column count, exactly as the scan did when no block was visible (#814).
+        // `None` means no block is visible.
+        let is_active_viewer = model.shared_session_status().is_active_viewer();
+        let max_visible_columns = if is_active_viewer {
+            model.block_list().max_visible_columns()
+        } else {
+            None
+        };
+        let columns_needed = max_visible_columns.unwrap_or(self.size_info.columns);
 
         let required_terminal_width = self.size_info.cell_width_px.as_f32()
             * (columns_needed as f32)
@@ -24324,14 +24329,8 @@ impl TerminalView {
         // If this is a shared session viewer and the width required to display the entire
         // terminal is larger than the width of the pane, we should make it horizontally scrollable.
         // If there aren't any visible blocks, we should not show a horizontally-scrollable view.
-        let should_be_horizontal_scrollable = model.shared_session_status().is_active_viewer()
-            && model
-                .block_list()
-                .blocks()
-                .iter()
-                .filter(|b| b.is_visible(transcript_scope))
-                .count()
-                > 0
+        let should_be_horizontal_scrollable = is_active_viewer
+            && max_visible_columns.is_some()
             && required_terminal_width > pane_width;
 
         let block_list = maybe_wrap_terminal_element_in_scrollable(
