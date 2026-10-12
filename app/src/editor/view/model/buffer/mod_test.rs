@@ -270,8 +270,8 @@ fn test_text_is_memoised_until_the_buffer_changes() -> Result<()> {
             assert_eq!(buffer.text(), "abc");
             assert_eq!(cached_text_versions(buffer), Some(buffer.versions()));
 
-            // An edit moves the version vector, so the cached text is stale and the
-            // next read re-materialises it.
+            // An edit clears the cache at the fragment write and moves the version
+            // vector; the next read re-materialises the text at the new version.
             let versions_before_edit = buffer.versions();
             buffer.edit_for_test(
                 vec![to_char_index_range(3..3)],
@@ -280,16 +280,20 @@ fn test_text_is_memoised_until_the_buffer_changes() -> Result<()> {
                 ctx,
             )?;
             assert_ne!(buffer.versions(), versions_before_edit);
-            assert_eq!(cached_text_versions(buffer), Some(versions_before_edit));
+            assert_eq!(cached_text_versions(buffer), None);
             assert_eq!(buffer.text(), "abcdef");
             assert_eq!(cached_text_versions(buffer), Some(buffer.versions()));
 
-            // Undo and redo are version changes too, even though they only flip the
-            // visibility of existing fragments.
+            // Undo and redo rewrite the fragments too, even though they only flip the
+            // visibility of existing ones, so they clear the cache the same way.
             buffer.undo(ctx);
+            assert_eq!(cached_text_versions(buffer), None);
             assert_eq!(buffer.text(), "abc");
+            assert_eq!(cached_text_versions(buffer), Some(buffer.versions()));
             buffer.redo(ctx);
+            assert_eq!(cached_text_versions(buffer), None);
             assert_eq!(buffer.text(), "abcdef");
+            assert_eq!(cached_text_versions(buffer), Some(buffer.versions()));
 
             // Recreating the buffer resets the version vector to the one a fresh buffer
             // has; the cache must not survive that.
