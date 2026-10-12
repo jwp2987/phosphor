@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::{
+    cell::RefCell,
     cmp::{self},
     collections::HashMap,
     iter::{self, Iterator},
@@ -111,6 +112,19 @@ pub struct Buffer {
     ///
     /// Only operations from known peers can be applied to the buffer.
     registered_peers: HashMap<ReplicaId, Peer>,
+
+    /// The visible text of the buffer, memoised against the version vector it was
+    /// materialised at. See [`Self::text`] for why this exists and why `versions`
+    /// is a sufficient key.
+    text_cache: RefCell<Option<CachedText>>,
+}
+
+/// A materialised copy of a [`Buffer`]'s visible text together with the
+/// version vector ([`Buffer::versions`]) the buffer had when it was computed.
+#[derive(Clone)]
+struct CachedText {
+    versions: Global,
+    text: String,
 }
 
 #[derive(Clone)]
@@ -857,6 +871,7 @@ impl Buffer {
             local_undo_stack: LocalUndoStack::new(root_selections),
             undo_history: UndoHistory::new(),
             registered_peers: HashMap::new(),
+            text_cache: RefCell::new(None),
         }
     }
 
@@ -1134,8 +1149,30 @@ impl Buffer {
             .collect())
     }
 
+    /// The visible text of the buffer.
+    ///
+    /// Materialising it walks every fragment ever inserted and asks the undo history
+    /// whether each is visible, so the cost grows with the number of edits, and the
+    /// prompt asks for the full text several times per keystroke (#813). The result
+    /// is therefore memoised against [`Self::versions`]: every change to the visible
+    /// text observes a new lamport timestamp in the version vector, whether it is a
+    /// local edit or undo/redo (`tick`) or a remote operation (`apply_op`), and
+    /// [`Self::recreate`] replaces the whole struct, cache included. The one fragment
+    /// rewrite that does not bump the version, [`Self::update_styles`], changes styles
+    /// only and leaves the text identical, so a hit there is still correct.
     pub fn text(&self) -> String {
-        self.chars().collect()
+        if let Some(cached) = self.text_cache.borrow().as_ref() {
+            if cached.versions == self.versions {
+                return cached.text.clone();
+            }
+        }
+
+        let text: String = self.chars().collect();
+        *self.text_cache.borrow_mut() = Some(CachedText {
+            versions: self.versions.clone(),
+            text: text.clone(),
+        });
+        text
     }
 
     pub fn text_for_range<T: ToCharOffset>(&self, range: Range<T>) -> Result<String> {
