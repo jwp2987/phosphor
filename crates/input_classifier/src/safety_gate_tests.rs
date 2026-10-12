@@ -349,3 +349,80 @@ fn test_gate_with_real_heuristic_classifier() {
         }
     });
 }
+
+/// A fake classifier that always says AI. Wrapping it in [`SafetyGatedClassifier`] and checking
+/// that the two inputs from #808 still come out as Shell proves the unambiguous-shell pre-filter
+/// runs *before* the inner classifier gets a say, independent of which one is loaded.
+struct AlwaysAIClassifier;
+
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+impl InputClassifier for AlwaysAIClassifier {
+    async fn detect_input_type(
+        &self,
+        _input: ParsedTokensSnapshot,
+        _context: &Context,
+    ) -> InputClassificationResult {
+        InputClassificationResult::new(
+            InputType::AI,
+            InputClassifierDecisionSource::InputClassifier,
+        )
+    }
+
+    async fn classify_input(
+        &self,
+        _input: ParsedTokensSnapshot,
+        _context: &Context,
+    ) -> anyhow::Result<ClassificationResult> {
+        Ok(ClassificationResult::pure_ai(
+            InputClassifierDecisionSource::InputClassifier,
+        ))
+    }
+}
+
+#[test]
+fn test_gate_forces_shell_for_unambiguous_commands_regardless_of_inner_classifier() {
+    futures::executor::block_on(async move {
+        let gated = SafetyGatedClassifier::new(AlwaysAIClassifier);
+
+        // No descriptions and `commands_fully_loaded == true`: the regime in which the #696
+        // override would otherwise have flipped `trap` (an ordinary English word) to AI.
+        for buffer in [
+            "yes | head -c 50000000 > /dev/null",
+            "trap 'echo t' DEBUG",
+            "cat foo.txt | grep -i error",
+        ] {
+            let input = snapshot_without_descriptions(buffer);
+            let result = gated.detect_input_type(input, &context(true)).await;
+            assert_eq!(
+                result.input_type,
+                InputType::Shell,
+                "expected {buffer:?} to be forced to Shell even though the inner classifier \
+                 always says AI"
+            );
+            assert_eq!(
+                result.source,
+                InputClassifierDecisionSource::UnambiguousShellSyntax
+            );
+        }
+
+        // Prose with shell metacharacters in it is not pre-filtered; the inner classifier
+        // decides.
+        for buffer in [
+            "what does > mean?",
+            "run exactly this: sleep 8; echo hi > ~/lrc.txt",
+            // An assignment prefix must not turn the #696 exploit into head evidence.
+            "FOO=1 run exactly this: sleep 8; echo hi > ~/x",
+            "find all files > 1MB",
+            "make sure the build passes; rm -rf target and rebuild",
+        ] {
+            let input = snapshot_without_descriptions(buffer);
+            let result = gated.detect_input_type(input, &context(true)).await;
+            assert_eq!(
+                result.input_type,
+                InputType::AI,
+                "expected {buffer:?} to reach the inner classifier"
+            );
+        }
+    });
+}

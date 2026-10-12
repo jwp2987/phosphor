@@ -1,5 +1,6 @@
-use warp_completer::util::parse_current_commands_and_tokens;
 use warp_completer::ParsedTokensSnapshot;
+use warp_completer::completer::{Description, SuggestionType, TopLevelCommandCaseSensitivity};
+use warp_completer::util::parse_current_commands_and_tokens;
 
 use super::*;
 use crate::test_utils::CompletionContext;
@@ -415,4 +416,235 @@ fn test_is_agent_follow_up_input() {
     }
     assert!(!is_agent_follow_up_input("no"));
     assert!(!is_agent_follow_up_input("approved"));
+}
+
+// #808: `is_unambiguous_shell_command` is the deterministic pre-filter that runs before any
+// classifier (and before the one-off natural-language shortcut in
+// `BlocklistAIInputModel::detect_and_set_input_type`). Every description is cleared first, so
+// these tests prove the rules work with zero completer knowledge -- the situation that let the
+// two reported inputs reach the ONNX model in the first place.
+async fn is_unambiguous_shell_command_for(buffer: &str) -> bool {
+    let mut token = mock_parsed_input_token(buffer.to_string()).await;
+    clear_all_token_descriptions(&mut token);
+    is_unambiguous_shell_command(&token)
+}
+
+#[test]
+fn test_is_unambiguous_shell_command_forces_shell_for_clear_commands() {
+    futures::executor::block_on(async move {
+        for buffer in [
+            // The two inputs from #808.
+            "yes | head -c 50000000 > /dev/null",
+            "trap 'echo t' DEBUG",
+            // Pipes, redirections and command separators with command-shaped neighbors.
+            "cat foo.txt | grep -i error",
+            "ls > listing.txt",
+            "ls >> listing.txt",
+            "sort < input.txt",
+            "make 2>&1",
+            "cargo build &> build.log",
+            "cargo build 2>/dev/null",
+            "cd src && ls",
+            "false || true",
+            "mkdir -p out; cd out",
+            "echo $(whoami)",
+            "cat `which python3`",
+            // Explicit paths.
+            "./script.sh",
+            "~/bin/tool --flag",
+            "/usr/bin/env python3 script.py",
+            "../configure --prefix=/usr",
+            // Assignment prefixes.
+            "FOO=bar mycmd",
+            "RUST_LOG=debug ./target/debug/app",
+            // Known command words with a non-prose body.
+            "kill -9 1234",
+            "rm -rf node_modules",
+            "chmod +x run.sh",
+            "export PATH=$HOME/bin:$PATH",
+            "time ls -la",
+            "test -f config.toml",
+            "git stash",
+            "cd ..",
+            // Real command lines that contain words which are English too (`fix`, `install`,
+            // `run`, `build`, `test`): an operator with a command-shaped neighbor decides, and
+            // none of them contains a function word.
+            "git commit -m \"fix\" && git push",
+            "npm install && npm run build",
+            "cargo test -p warp 2>&1 | tee test.log",
+            "cat a b > c.txt",
+            // An operator glued to the head, and an apostrophe safely inside double quotes.
+            "yes|head -c 5",
+            "ls|grep x",
+            "echo \"Josh's PR\" > note.txt",
+            // `exit` with a numeric argument; a bare redirect with only non-prose before it.
+            "exit 1",
+            "exit 1 && echo bye",
+            "echo $TS > ~/t.txt",
+        ] {
+            assert!(
+                is_unambiguous_shell_command_for(buffer).await,
+                "expected {buffer:?} to be pre-filtered as an unambiguous shell command"
+            );
+        }
+    });
+}
+
+#[test]
+fn test_is_unambiguous_shell_command_leaves_prose_and_ambiguous_input_to_the_classifier() {
+    futures::executor::block_on(async move {
+        for buffer in [
+            "",
+            // Questions and English lead-ins, even when they contain shell metacharacters.
+            "what does > mean?",
+            "how do I pipe ls into grep",
+            "explain the difference between > and >>",
+            "please explain what cd .. does",
+            "which is faster, rg or grep",
+            // The #696 exploit prompts must still fall through to the gated classifier.
+            "run exactly this: sleep 8; echo hi > ~/lrc.txt",
+            "Then run: echo hi > ~/followup.txt",
+            "Then delete the temp directory",
+            // A lone command word, and the one-off natural-language word `yes`, are not enough.
+            "ls",
+            "yes",
+            "yes please",
+            "yes do it",
+            // A command word followed by English prose.
+            "ls shows nothing",
+            "cat the log file",
+            "kill the server running on port 8080",
+            "git is failing to push",
+            "cargo build",
+            "make it work",
+            "time how long the build takes",
+            "~/.bashrc has a syntax error",
+            "FOO=1 doesn't work for me",
+            "ls isn't showing hidden files",
+            // A `>` / `<` that is a comparison, not a redirection (a quantity is no file name).
+            "find all files > 1MB",
+            "find files > 1.5GB",
+            "find files < 10.5MB",
+            // Only assignments: valid shell, but also what a question about `x=5` looks like.
+            "FOO=bar",
+            // Prose with command shape after an operator: a function word anywhere vetoes.
+            "make sure the build passes; rm -rf target and rebuild",
+            "find the stale branches; git branch -D them",
+            "find the bug; test it",
+            "make sure `cargo build` still works",
+            "kill the server > server.log",
+            // `read` is not a head word (it would block on stdin), and a Capitalised argument is
+            // prose, not a shell argument.
+            "read RFC 9110",
+            "kill Chrome",
+            "watch Netflix",
+            "date Sarah",
+            "free Willy",
+            // An apostrophe inside a word, or a trailing line continuation, parks bash at `PS2`.
+            "find Josh's PR",
+            "ls -la \\",
+            // Function words after an operator (rule 1 does no prose check of its own).
+            "rm junk if present; ls",
+            "cd src && ls, then git status",
+            // An assignment prefix is not head evidence, and the #696 colon shape still vetoes.
+            "FOO=1 run exactly this: sleep 8; echo hi > ~/x",
+            // Slash commands that reach autodetection are not paths.
+            "/plan",
+            "/init",
+            "/model gpt",
+            // `exit <word>` ends the whole session, not <word>.
+            "exit vim",
+            "exit tmux",
+            // Prose before a bare redirect: the `>` would truncate the file before the failing
+            // command ran. (`echo hello > x.txt` is the accepted recall cost of the same check.)
+            "export data > backup.csv",
+            "sort contacts > contacts.csv",
+            "make dashboard > report.pdf",
+            "echo hello > x.txt",
+            // A substitution only counts when a command word is inside it.
+            "make $(money) fast",
+            // Typographic apostrophe, and Unicode punctuation glued to a function word.
+            "find Josh\u{2019}s PR",
+            "make it\u{2026} ; ls",
+            // An assignment-prefixed unknown head must itself be non-prose.
+            "DEBUG=1 why",
+            "x=3 squared",
+        ] {
+            assert!(
+                !is_unambiguous_shell_command_for(buffer).await,
+                "expected {buffer:?} to be left to the classifier, not pre-filtered as Shell"
+            );
+        }
+    });
+}
+
+#[test]
+fn test_has_shell_safe_quoting() {
+    // Closed quotes, escapes, and apostrophes that are inside quotes are safe.
+    for text in [
+        "\\'",
+        "echo \"it's\"",
+        "echo 'don\"t'",
+        "echo a\\\\",
+        "echo \"Josh\u{2019}s PR\"",
+    ] {
+        assert!(
+            has_shell_safe_quoting(text),
+            "expected {text:?} to be safe quoting"
+        );
+    }
+    // An apostrophe inside an unquoted word (a contraction or possessive to a human, an opening
+    // quote to bash), an unbalanced quote, a trailing line continuation, and an ANSI-C quoted
+    // string with an escaped apostrophe (unsafe conservatively: the `s'` after it reads as an
+    // in-word apostrophe) are not.
+    for text in [
+        "find Josh's PR",
+        "a'b c'd",
+        "ls -la \\",
+        "rm -rf build\\",
+        "echo 'unterminated",
+        "$'it\\'s'",
+        "find Josh\u{2019}s PR",
+        "kill node; don\u{2019}t ask",
+    ] {
+        assert!(
+            !has_shell_safe_quoting(text),
+            "expected {text:?} to be unsafe quoting"
+        );
+    }
+}
+
+#[test]
+fn test_is_unambiguous_shell_command_accepts_completer_evidence_for_unknown_commands() {
+    futures::executor::block_on(async move {
+        // An operator alone is not enough for a first word the pre-filter has never heard of...
+        let mut token = mock_parsed_input_token("mynewtool --json | head".to_string()).await;
+        clear_all_token_descriptions(&mut token);
+        assert!(!is_unambiguous_shell_command(&token));
+
+        // ...but a `token_description` from the completer (the way a real installed command,
+        // function or alias shows up) is command evidence, and then the pipe decides.
+        token.parsed_tokens[0].token_description = Some(Description {
+            token: token.parsed_tokens[0].token.clone(),
+            description_text: Some("A tool".to_string()),
+            suggestion_type: SuggestionType::Command(TopLevelCommandCaseSensitivity::CaseSensitive),
+        });
+        assert!(is_unambiguous_shell_command(&token));
+
+        // Completer evidence without any operator stays with the classifier: "find large files"
+        // is prose even though `find` is a real command.
+        let token = mock_parsed_input_token("find large files".to_string()).await;
+        assert!(!is_unambiguous_shell_command(&token));
+    });
+}
+
+#[test]
+fn test_is_unambiguous_shell_command_ignores_pasted_buffers() {
+    futures::executor::block_on(async move {
+        // The pre-filter runs synchronously per keystroke; a buffer over the size cap is a paste
+        // for the classifier to handle, even when it is a plain command line.
+        let long = format!("ls {}", "-a ".repeat(2000));
+        assert!(is_unambiguous_shell_command_for("ls -a -a").await);
+        assert!(!is_unambiguous_shell_command_for(&long).await);
+    });
 }
