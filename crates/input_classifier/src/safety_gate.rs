@@ -15,7 +15,8 @@ use warp_completer::ParsedTokensSnapshot;
 
 use crate::{
     ClassificationResult, Context, InputClassificationResult, InputClassifier,
-    InputClassifierDecisionSource, InputType, util::first_token_forces_ai_override,
+    InputClassifierDecisionSource, InputType,
+    util::{first_token_forces_ai_override, is_unambiguous_shell_command},
 };
 
 /// Wraps any [`InputClassifier`] and enforces a hard safety invariant on its `detect_input_type`
@@ -42,6 +43,17 @@ impl<C: InputClassifier> InputClassifier for SafetyGatedClassifier<C> {
         input: ParsedTokensSnapshot,
         context: &Context,
     ) -> InputClassificationResult {
+        // #808: an unambiguous shell command line never reaches a classifier at all, so neither
+        // a model's opinion of its words nor the prose override below can send it to the agent.
+        // `BlocklistAIInputModel::detect_and_set_input_type` runs the same check synchronously
+        // before it even spawns the classification task; this one covers every other consumer
+        // of a classifier (e.g. the `evaluate` tool).
+        if is_unambiguous_shell_command(&input) {
+            return InputClassificationResult::new(
+                InputType::Shell,
+                InputClassifierDecisionSource::UnambiguousShellSyntax,
+            );
+        }
         let result = self.inner.detect_input_type(input.clone(), context).await;
         if matches!(result.input_type, InputType::Shell)
             && first_token_forces_ai_override(&input, context.commands_fully_loaded)

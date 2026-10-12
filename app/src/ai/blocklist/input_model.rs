@@ -713,6 +713,24 @@ impl BlocklistAIInputModel {
             return;
         }
 
+        // #808: if the buffer is unambiguously a shell command line (`yes | head -c 50000000 >
+        // /dev/null`, `trap 'echo t' DEBUG`), force Shell right here, synchronously, before the
+        // one-off natural-language shortcut, the history matcher and the classifier get a say.
+        // The ONNX model routed both of those to the agent (and with no reachable model the user
+        // got a stream error instead of their command); the rules are precision-first, so
+        // anything merely *probably* a command still goes through the pipeline below. See
+        // `input_classifier::util::is_unambiguous_shell_command`.
+        if input_classifier::util::is_unambiguous_shell_command(&input) {
+            self.set_input_config_internal(
+                InputConfig {
+                    input_type: InputType::Shell,
+                    ..self.input_config()
+                },
+                ctx,
+            );
+            return;
+        }
+
         // If we have a session, gather command history entries. `History::commands`
         // returns entries in ascending (oldest-first) order, so downstream matching
         // reverses them to iterate newest-first.

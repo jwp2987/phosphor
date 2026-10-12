@@ -1047,6 +1047,28 @@ upstream's behavior is actually a defect rather than a preference.
   happens to be an ordinary English word still overrides to AI once the command index is
   loaded — the fail-safe direction, but a real (documented) false positive.
 
+- **An unambiguous shell command line is forced to Shell before any classifier runs**
+  (#808, 2026-10-12, `crates/input_classifier/src/util.rs::is_unambiguous_shell_command`,
+  wired into `SafetyGatedClassifier` and, synchronously, into
+  `BlocklistAIInputModel::detect_and_set_input_type`). **Upstream has no such pre-filter** —
+  at the pin, `detect_and_set_input_type` goes denylist → one-off-NL shortcut → history match
+  → classifier, and the ONNX model is the only thing standing between a typed command and the
+  agent. **The defect is real and inherited:** with autodetection on, `yes | head -c 50000000
+  > /dev/null` and `trap 'echo t' DEBUG` were routed as `/agent <text>` (2 of ~75 commands in
+  a stress pass); the shell never saw them, and with no reachable model the user got a stream
+  error instead of their command. **We do:** force `InputType::Shell` with no model round-trip
+  when the buffer has command *shape*: a command-shaped effective first word (a curated
+  command-word list, a one-off keyword, an explicit `./` `/` `~/` `../` path, a completer
+  `token_description`, or a `NAME=value` prefix) **plus** either a shell operator used as a
+  shell uses it (`| cmd`, `&& cmd`, `; cmd`, `> file.ext`, `2>&1`, `$(`, `` `cmd` ``) or a body
+  with no English prose in it. Precision over recall by design: a trailing `?`, a lone command
+  word, the one-off NL word `yes`, a comparison `>` (`find files > 1MB`) and any English body
+  (`ls shows nothing`, `cargo build`, `kill the server`) all still go to the classifier, and
+  the #696 exploit prompts still fall through to the safety gate. **Residue:** `cargo build
+  --release`, `git push origin main` and similar "command word + English subcommand" lines are
+  deliberately *not* pre-filtered (the classifier already handles them); the fix only removes
+  the model from the path of lines no English sentence has.
+
 - **`set_before_open_url` can refuse a URL outright, not only rewrite it**
   (`93e3f4efa`, 2026-09-27, #716, `crates/warpui_core/src/core/app.rs`,
   `app/src/lib.rs`). **Upstream, confirmed at the pin** (`4111d08f9:crates/

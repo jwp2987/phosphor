@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 
 use lazy_static::lazy_static;
-use natural_language_detection::{check_if_token_has_shell_syntax, is_ordinary_english_word};
+use natural_language_detection::{
+    WordDb, check_if_token_has_shell_syntax, is_ordinary_english_word, is_word,
+};
 use warp_completer::ParsedTokensSnapshot;
 
 /// The percentage of input tokens that can be described by our completion engine before
@@ -28,6 +30,52 @@ lazy_static! {
     /// A set of words that should trigger an AI classification if they are the entire input
     /// and the input is a follow-up to an agent response.
     static ref AGENT_FOLLOW_UP_INPUTS: HashSet<&'static str> = HashSet::from(["yes", "continue", "do it", "approve"]);
+
+    /// Fork-original (#808): command words that [`is_unambiguous_shell_command`] accepts as the
+    /// head of a shell command line, without needing a `token_description` from the completer.
+    /// Shell builtins and the everyday Unix / developer tool set. Membership alone never forces a
+    /// Shell classification — the rest of the line has to be command-shaped too (see
+    /// `is_unambiguous_shell_command`) — so this list only needs to be *right*, not exhaustive.
+    /// It deliberately leaves out words that commonly open an English request in a terminal
+    /// (`help`, `show`, `list`, `install`, `run`, `delete`, `update`...), which are never commands
+    /// in their own right.
+    static ref UNAMBIGUOUS_SHELL_COMMAND_WORDS: HashSet<&'static str> = HashSet::from([
+        // Shell builtins and keywords.
+        ".", ":", "[", "[[", "alias", "bg", "bind", "builtin", "cd", "command", "compgen",
+        "complete", "declare", "dirs", "disown", "eval", "exec", "exit", "export", "false", "fc",
+        "fg", "getopts", "hash", "history", "jobs", "kill", "let", "local", "popd", "printf",
+        "pushd", "pwd", "read", "readonly", "return", "set", "shift", "source", "test", "time",
+        "trap", "true", "type", "typeset", "ulimit", "umask", "unalias", "unset", "wait",
+        // Coreutils and the usual text / file / process tools.
+        "awk", "basename", "bat", "bc", "bzip2", "cat", "chgrp", "chmod", "chown", "clear", "cmp",
+        "cp", "cut", "date", "dd", "df", "diff", "dirname", "du", "egrep", "env", "exa", "eza",
+        "fd", "fgrep", "file", "find", "free", "fzf", "gawk", "grep", "groups", "gunzip", "gzip",
+        "head", "hexdump", "htop", "id", "killall", "less", "ln", "locate", "ls", "mkdir",
+        "mkfifo", "mktemp", "more", "mount", "mv", "ncdu", "nice", "nohup", "od", "patch",
+        "pgrep", "pkill", "printenv", "ps", "readlink", "realpath", "renice", "rg", "rm", "rmdir",
+        "sed", "seq", "sleep", "sort", "stat", "strings", "tac", "tail", "tar", "tee", "top",
+        "touch", "tr", "tree", "umount", "uname", "uniq", "uptime", "watch", "wc", "whereis",
+        "which", "who", "whoami", "xargs", "xxd", "xz", "yes", "zcat", "zip", "unzip",
+        // Network.
+        "curl", "dig", "ifconfig", "ip", "lsof", "nc", "netstat", "nmap", "nslookup", "ping",
+        "rsync", "scp", "sftp", "ss", "ssh", "ssh-add", "ssh-agent", "ssh-keygen", "tcpdump",
+        "traceroute", "wget",
+        // Developer tool chains.
+        "ar", "bun", "bundle", "cargo", "clang", "clang++", "clippy", "cmake", "deno", "docker",
+        "dotnet", "g++", "gcc", "gdb", "gem", "gh", "git", "go", "gofmt", "gradle", "hg", "java",
+        "javac", "jq", "ld", "lldb", "ltrace", "make", "mvn", "nm", "ninja", "node", "npm", "npx",
+        "objdump", "perf", "perl", "php", "pip", "pip3", "pipx", "pnpm", "podman", "poetry",
+        "python", "python3", "ruby", "rustc", "rustfmt", "rustup", "strace", "svn", "swift",
+        "uv", "valgrind", "yarn", "yq",
+        // Infra, packages, services, editors, misc.
+        "ansible", "apk", "apt", "apt-get", "aws", "az", "bash", "brew", "chsh", "code",
+        "crontab", "dash", "dmesg", "dnf", "doas", "dpkg", "emacs", "fdisk", "fish", "flatpak",
+        "gcloud", "gpg", "helm", "iptables", "journalctl", "ksh", "kubectl", "lsblk", "mkfs",
+        "mongosh", "mysql", "nano", "nvim", "open", "openssl", "pacman", "parted", "passwd",
+        "psql", "redis-cli", "rpm", "screen", "sh", "snap", "sqlite3", "stty", "su", "sudo",
+        "systemctl", "terraform", "tmux", "tput", "tty", "ufw", "vagrant", "vi", "vim",
+        "xdg-open", "yum", "zsh", "zypper",
+    ]);
 }
 
 pub fn is_agent_follow_up_input(input: &str) -> bool {
@@ -282,6 +330,335 @@ pub fn first_token_forces_ai_override(
     }
 
     commands_fully_loaded || buffer_has_prose_colon_shape(&input.buffer_text)
+}
+
+/// Characters that end a bare shell word when [`is_unambiguous_shell_command`] scans
+/// `buffer_text` for operators and their neighbors.
+const SHELL_WORD_TERMINATORS: [char; 8] = ['|', '&', ';', '<', '>', '(', ')', '`'];
+
+/// A whitespace-separated word of the buffer, with quoted spans (`'echo t'`, `"a b"`) kept
+/// together. See [`split_shell_words`].
+struct ShellWord {
+    text: String,
+    /// `true` if any part of the word was inside quotes.
+    quoted: bool,
+}
+
+/// True iff a `'` at byte `index` of `text` is an apostrophe inside a word (`doesn't`, `it's`)
+/// rather than the start of a single-quoted shell string: it directly follows an alphanumeric.
+/// Prose is full of contractions, and treating one as an unterminated quote would swallow the rest
+/// of the sentence.
+fn is_apostrophe_in_word(text: &str, index: usize) -> bool {
+    index > 0 && text.as_bytes()[index - 1].is_ascii_alphanumeric()
+}
+
+/// Splits `text` into whitespace-separated words, keeping single- and double-quoted spans
+/// together (quote characters are kept in `text`). Unterminated quotes run to the end.
+fn split_shell_words(text: &str) -> Vec<ShellWord> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    let mut quote: Option<char> = None;
+    for (index, c) in text.char_indices() {
+        match quote {
+            Some(q) => {
+                current.push(c);
+                if c == q {
+                    quote = None;
+                }
+            }
+            None if c.is_whitespace() => {
+                if !current.is_empty() {
+                    words.push(ShellWord {
+                        text: std::mem::take(&mut current),
+                        quoted,
+                    });
+                    quoted = false;
+                }
+            }
+            None if c == '"' || (c == '\'' && !is_apostrophe_in_word(text, index)) => {
+                quote = Some(c);
+                quoted = true;
+                current.push(c);
+            }
+            None => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        words.push(ShellWord {
+            text: current,
+            quoted,
+        });
+    }
+    words
+}
+
+/// True iff `word` is a command word this pre-filter recognizes without completer help: the
+/// curated [`UNAMBIGUOUS_SHELL_COMMAND_WORDS`] set or a one-off shell keyword (`echo`, `sudo`...).
+fn is_known_shell_command_word(word: &str) -> bool {
+    UNAMBIGUOUS_SHELL_COMMAND_WORDS.contains(word) || is_one_off_shell_command_keyword(word)
+}
+
+/// True iff `token` is spelled as an explicit filesystem path to run or reference (`./x`, `../x`,
+/// `/x`, `~/x`, bare `~`). Stricter than [`is_path_like_token`] on purpose: `foo/bar` or `.hidden`
+/// alone is weaker evidence than a leading path prefix, and this pre-filter wants only the
+/// unambiguous shape.
+fn is_explicit_path_token(token: &str) -> bool {
+    token.starts_with("./")
+        || token.starts_with("../")
+        || token.starts_with('/')
+        || token.starts_with("~/")
+        || token == "~"
+}
+
+/// True iff `token` looks like something a redirection would plausibly target: a path (`/dev/null`,
+/// `~/out.log`, `logs/x`) or a `name.ext` file name (`out.txt`). A bare word or a number does not
+/// qualify, so "find files > 1MB" and "a > b" are not redirections to this check.
+fn is_redirect_target(token: &str) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+    if is_explicit_path_token(token) || token.contains('/') {
+        return true;
+    }
+    let mut parts = token.split('.');
+    let is_word_part = |part: &str| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    };
+    parts.next().is_some_and(is_word_part) && token.contains('.') && parts.all(is_word_part)
+}
+
+/// True iff `word` could begin a (sub)command: a known command word, an explicit path, or a
+/// leading `NAME=value` assignment.
+fn can_start_command(word: &str) -> bool {
+    is_known_shell_command_word(word)
+        || is_explicit_path_token(word)
+        || is_env_assignment_token(word)
+}
+
+/// The first bare word of `rest` (after leading whitespace), ending at whitespace or an operator
+/// character. Empty if there is none.
+fn next_shell_word(rest: &str) -> &str {
+    rest.trim_start()
+        .split(|c: char| c.is_whitespace() || SHELL_WORD_TERMINATORS.contains(&c))
+        .next()
+        .unwrap_or("")
+}
+
+/// True iff `text` contains, outside quotes, a shell operator used the way a shell command line
+/// uses it — not merely the character:
+///
+/// - `|`, `||`, `&&`, `;` followed by a word that can start a command (`yes | head`, `cd x && ls`);
+/// - `>`, `>>`, `<` followed by a plausible file target (`> /dev/null`, `>> out.log`, `< in.txt`),
+///   so "find files > 1MB" and "a > b" do not count;
+/// - `2>&1` / `>&2` / `&>` (descriptor redirections), `$(`, `<(` / `>(`;
+/// - a paired backtick whose content starts with a command word (`` `which python` ``).
+///
+/// A lone `&` (backgrounding), `<<` (heredoc — indistinguishable from prose "<<") and a bare
+/// unpaired backtick are deliberately not operators here.
+fn has_unambiguous_shell_operator(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut quote: Option<u8> = None;
+    let mut i = 0;
+    // Only ASCII bytes are ever matched below, so every index this loop slices `text` at is a
+    // char boundary (an ASCII byte never occurs inside a multi-byte UTF-8 sequence).
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            if b == b'\\' && q == b'"' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\\' => {
+                i += 2;
+                continue;
+            }
+            b'\'' if is_apostrophe_in_word(text, i) => {}
+            b'\'' | b'"' => quote = Some(b),
+            b'`' => {
+                if let Some(close) = text[i + 1..].find('`') {
+                    if is_known_shell_command_word(next_shell_word(&text[i + 1..i + 1 + close])) {
+                        return true;
+                    }
+                    i += close + 2;
+                    continue;
+                }
+            }
+            b'$' if bytes.get(i + 1) == Some(&b'(') => return true,
+            b'|' => {
+                let op_len = if bytes.get(i + 1) == Some(&b'|') {
+                    2
+                } else {
+                    1
+                };
+                if can_start_command(next_shell_word(&text[i + op_len..])) {
+                    return true;
+                }
+                i += op_len;
+                continue;
+            }
+            b'&' => match bytes.get(i + 1) {
+                Some(b'&') => {
+                    if can_start_command(next_shell_word(&text[i + 2..])) {
+                        return true;
+                    }
+                    i += 2;
+                    continue;
+                }
+                Some(b'>') => return true,
+                _ => {}
+            },
+            b';' => {
+                if can_start_command(next_shell_word(&text[i + 1..])) {
+                    return true;
+                }
+            }
+            b'>' => match bytes.get(i + 1) {
+                Some(b'&') | Some(b'(') => return true,
+                Some(b'>') => {
+                    if is_redirect_target(next_shell_word(&text[i + 2..])) {
+                        return true;
+                    }
+                    i += 2;
+                    continue;
+                }
+                _ => {
+                    if is_redirect_target(next_shell_word(&text[i + 1..])) {
+                        return true;
+                    }
+                }
+            },
+            b'<' => match bytes.get(i + 1) {
+                Some(b'(') => return true,
+                Some(b'<') => {
+                    i += 2;
+                    continue;
+                }
+                _ => {
+                    if is_redirect_target(next_shell_word(&text[i + 1..])) {
+                        return true;
+                    }
+                }
+            },
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
+/// True iff `word` reads as a word of English prose rather than a command argument: unquoted, no
+/// shell syntax characters, no digits, not ALL-CAPS (signal and variable names: `DEBUG`, `HOME`),
+/// and — after stripping trailing sentence punctuation — an ordinary English dictionary word
+/// (stemmed, via [`is_ordinary_english_word`]) or a word from the StackOverflow vocabulary.
+fn is_prose_word(word: &ShellWord) -> bool {
+    if word.quoted {
+        return false;
+    }
+    let text = word
+        .text
+        .trim_end_matches(|c: char| matches!(c, '.' | ',' | '!' | ':'));
+    if text.is_empty()
+        || check_if_token_has_shell_syntax(text)
+        || text.chars().any(|c| c.is_ascii_digit())
+    {
+        return false;
+    }
+    if text.chars().any(|c| c.is_uppercase()) && !text.chars().any(|c| c.is_lowercase()) {
+        return false;
+    }
+    is_ordinary_english_word(text) || is_word(&text.to_lowercase(), WordDb::StackOverflow)
+}
+
+/// Fork-original (#808): a cheap, deterministic pre-filter run *before* any classifier (ML model,
+/// heuristic, history match) that returns `true` only when the buffer is unambiguously a shell
+/// command line. The caller then forces `InputType::Shell` with no model round-trip, so inputs
+/// like `yes | head -c 50000000 > /dev/null` and `trap 'echo t' DEBUG` can never be routed to the
+/// agent — which is what the ONNX classifier did (`yes` is a strong natural-language token to it,
+/// and `trap`, being an ordinary English word, tripped the #696 safety gate).
+///
+/// Precision over recall: a `true` here executes the line, so every rule requires command
+/// *shape*, never a bare keyword or a bare metacharacter. Anything that is merely *probably* a
+/// command (`cargo build`, `git push origin main`, a lone `ls`) is left to the existing pipeline,
+/// which already handles those well.
+///
+/// The rules, after trimming (and after skipping leading `NAME=value` assignments to find the
+/// *effective* first word):
+///
+/// 1. **Never** if the buffer ends in `?`, is empty, or starts with a quoted word.
+/// 2. **Shell** if the effective first word has command evidence — a known command word
+///    ([`UNAMBIGUOUS_SHELL_COMMAND_WORDS`] or a one-off keyword), an explicit path (`./x`, `/x`,
+///    `~/x`, `../x`), a `token_description` from the completer, or an assignment prefix in front
+///    of it — **and** the buffer contains a shell operator used as a shell uses it
+///    ([`has_unambiguous_shell_operator`]: `| cmd`, `&& cmd`, `; cmd`, `> file`, `2>&1`, `$(`...).
+/// 3. **Shell** if the effective first word is a known command word or explicit path (or has an
+///    assignment prefix) **and** no later word reads as English prose ([`is_prose_word`]), so
+///    `trap 'echo t' DEBUG`, `kill -9 1234`, `FOO=bar mycmd`, `./run.sh --fast` qualify while
+///    `ls shows nothing`, `kill the server`, `cargo build` fall through. A lone command word
+///    (`ls`, `exit`) and a word the pipeline already treats as one-off natural language (`yes`)
+///    never qualify under this rule; a lone explicit path (`./run.sh`) does.
+pub fn is_unambiguous_shell_command(input: &ParsedTokensSnapshot) -> bool {
+    let text = input.buffer_text.trim();
+    if text.is_empty() || text.ends_with('?') {
+        return false;
+    }
+
+    let words = split_shell_words(text);
+    let mut first_index = 0;
+    while words
+        .get(first_index)
+        .is_some_and(|word| !word.quoted && is_env_assignment_token(&word.text))
+    {
+        first_index += 1;
+    }
+    let Some(first) = words.get(first_index) else {
+        // Only assignments (`FOO=bar`): valid shell, but also what "x=5" in a question looks like.
+        return false;
+    };
+    if first.quoted {
+        return false;
+    }
+    let first_word = first.text.as_str();
+    let has_assignment_prefix = first_index > 0;
+    let is_known_command = is_known_shell_command_word(first_word);
+    let is_explicit_path = is_explicit_path_token(first_word);
+
+    // The completer's view of the effective first token: skip the same leading assignments.
+    let first_token_described = input
+        .parsed_tokens
+        .iter()
+        .find(|token| !is_env_assignment_token(token.token.as_str()))
+        .is_some_and(|token| token.token_description.is_some());
+
+    // Rule 2: command-shaped head plus a shell operator used as a shell uses it.
+    if (is_known_command || is_explicit_path || first_token_described || has_assignment_prefix)
+        && has_unambiguous_shell_operator(text)
+    {
+        return true;
+    }
+
+    // Rule 3: command-shaped head and a body with no prose in it.
+    if !(is_known_command || is_explicit_path || has_assignment_prefix) {
+        return false;
+    }
+    if is_one_off_natural_language_word(first_word) {
+        return false;
+    }
+    let remaining = &words[first_index + 1..];
+    if remaining.is_empty() && !is_explicit_path && !has_assignment_prefix {
+        return false;
+    }
+    !remaining.iter().any(is_prose_word)
 }
 
 #[cfg(test)]

@@ -45,6 +45,11 @@ pub enum InputClassifierDecisionSource {
     /// case-insensitively (e.g. "run", "Run", "then", "Please", "delete"), so the result was
     /// overridden to AI. See `util::first_token_forces_ai_override` and `safety_gate`.
     NoFirstTokenCommandEvidence,
+    /// Fork-original, not in the pin (#808): the buffer was unambiguously a shell command line
+    /// (a command-shaped first word plus a shell operator used as a shell uses it, or a
+    /// command-shaped first word with no English prose after it), so it was forced to Shell
+    /// before any classifier ran. See `util::is_unambiguous_shell_command`.
+    UnambiguousShellSyntax,
 }
 
 /// The detected input type along with the decision source that produced it.
