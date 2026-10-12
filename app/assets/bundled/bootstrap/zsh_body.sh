@@ -36,6 +36,15 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
   # handled as output for an in-band command.
   OSC_END_GENERATOR_OUTPUT="$(printf '\e]9277;B\a')"
 
+  # Hooks go to the controlling terminal, not fd 1, so that `exec >/dev/null`
+  # or `exec > >(tee log)` in the interactive shell cannot swallow them and
+  # leave the block running forever (#806). Fall back to fd 1 without a tty.
+  if { : > /dev/tty; } 2>/dev/null; then
+      __warp_emit () { printf "$@" > /dev/tty; }
+  else
+      __warp_emit () { printf "$@"; }
+  fi
+
   OSC_START="$(printf '\e]9278;')"
 
   OSC_END="$(printf '\a')"
@@ -85,9 +94,9 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
       local msg=$(warp_hex_encode_string "$1")
       # We send the InitShell hook via OSCs when on WSL and via DCSs otherwise.
       if [ "$WARP_USING_WINDOWS_CON_PTY" = true ]; then
-        printf $OSC_START$DCS_JSON_MARKER$OSC_PARAM_SEPARATOR$msg$OSC_END
+        __warp_emit "$OSC_START$DCS_JSON_MARKER$OSC_PARAM_SEPARATOR$msg$OSC_END"
       else
-        printf "%b%b%s%b" $DCS_START $DCS_JSON_MARKER $msg $DCS_END
+        __warp_emit "%b%b%s%b" $DCS_START $DCS_JSON_MARKER $msg $DCS_END
       fi
   }
 
@@ -132,7 +141,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
 
   warp_maybe_send_reset_grid_osc() {
       if [ "$WARP_USING_WINDOWS_CON_PTY" = true ]; then
-          printf $OSC_RESET_GRID
+          __warp_emit "$OSC_RESET_GRID"
       fi
   }
 
@@ -149,7 +158,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
   warp_send_generator_output_osc() {
       local hex_encoded_message=$(warp_hex_encode_string "$1")
       local byte_count=$(LC_ALL="C"; printf "${#hex_encoded_message}")
-      printf "%b%i;%s%b" $OSC_START_GENERATOR_OUTPUT $byte_count $hex_encoded_message $OSC_END_GENERATOR_OUTPUT
+      __warp_emit "%b%i;%s%b" $OSC_START_GENERATOR_OUTPUT $byte_count $hex_encoded_message $OSC_END_GENERATOR_OUTPUT
       warp_maybe_send_reset_grid_osc
   }
 

@@ -35,6 +35,21 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
     # handled as output for an in-band command.
     OSC_END_GENERATOR_OUTPUT="$(printf '\e]9277;B\a')"
 
+    # Every hook below is written with __warp_emit, which goes to the controlling
+    # terminal rather than to fd 1. Phosphor reads the pty, and the pty is the
+    # shell's controlling terminal, so the two are the same device -- until the
+    # user redirects the shell's own stdout (`exec >/dev/null`, `exec > >(tee
+    # log)`, `exec >&-`). With fd 1 pointed elsewhere, CommandFinished and
+    # Precmd used to disappear into the redirect: the block kept its running
+    # timer forever, keystrokes went raw into it, and only `exec >/dev/tty`
+    # brought the prompt back (#806). Fall back to fd 1 only when there is no
+    # controlling terminal to write to.
+    if { : > /dev/tty; } 2>/dev/null; then
+        __warp_emit () { printf "$@" > /dev/tty; }
+    else
+        __warp_emit () { printf "$@"; }
+    fi
+
     # Attempt to cd to the desired initial working directory, swallowing any
     # errors.  If this fails, the user will end up in their home directory.
     if [[ ! -z "$WARP_INITIAL_WORKING_DIR" ]]; then
@@ -76,9 +91,9 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
         # We send the InitShell hook via OSCs when on WSL or MSYS2 or SSH from Windows and via DCSs otherwise.
         # Note that $WARP_USING_WINDOWS_CON_PTY is set in the init shell script.
         if [ "$WARP_USING_WINDOWS_CON_PTY" = true ]; then
-          printf $OSC_START$DCS_JSON_MARKER$OSC_PARAM_SEPARATOR$encoded_message$OSC_END
+          __warp_emit "$OSC_START$DCS_JSON_MARKER$OSC_PARAM_SEPARATOR$encoded_message$OSC_END"
         else
-          printf $DCS_START$DCS_JSON_MARKER$encoded_message$DCS_END
+          __warp_emit "$DCS_START$DCS_JSON_MARKER$encoded_message$DCS_END"
         fi
     }
 
@@ -116,23 +131,23 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
 
     warp_maybe_send_reset_grid_osc () {
         if [ "$WARP_USING_WINDOWS_CON_PTY" = true ]; then
-            printf $RESET_GRID_OSC
+            __warp_emit "$RESET_GRID_OSC"
         fi
     }
 
     # Expects the first argument to be the shell hook.
     warp_send_hook_via_kv_pairs_start () {
-      printf "${OSC_START}k;A;%s\a" $1
+      __warp_emit "${OSC_START}k;A;%s\a" $1
     }
 
     # Expects the first argument to be the key and the second argument to be the value.
     warp_send_hook_kv_pair_escaped () {
       # Note that we only escape the value.
       if [[ -n "$2" ]]; then
-        printf "${OSC_START}k;B;%s;%q\a" "$1" "$2"
+        __warp_emit "${OSC_START}k;B;%s;%q\a" "$1" "$2"
       else
         # Don't print anything for the empty value.
-        printf "${OSC_START}k;B;%s;\a" "$1"
+        __warp_emit "${OSC_START}k;B;%s;\a" "$1"
       fi
     }
 
@@ -140,15 +155,15 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
     warp_send_hook_kv_pair () {
       # Note that we only escape the value.
       if [[ -n "$2" ]]; then
-        printf "${OSC_START}k;B;%s;%s\a" "$1" "$2"
+        __warp_emit "${OSC_START}k;B;%s;%s\a" "$1" "$2"
       else
         # Don't print anything for the empty value.
-        printf "${OSC_START}k;B;%s;\a" "$1"
+        __warp_emit "${OSC_START}k;B;%s;\a" "$1"
       fi
     }
 
     warp_send_hook_via_kv_pairs_end () {
-      printf "${OSC_START}k;C\a"
+      __warp_emit "${OSC_START}k;C\a"
     }
 
     # Hex-encodes the given argument and writes it to the PTY, wrapped in the OSC
@@ -168,7 +183,7 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
     # the in-band command.
     warp_send_generator_output_osc_pre_hex_encoded () {
         local byte_count=$(LC_ALL="C"; printf "${#1}")
-        printf "%b%i;%s%b" $OSC_START_GENERATOR_OUTPUT $byte_count $1 $OSC_END_GENERATOR_OUTPUT
+        __warp_emit "%b%i;%s%b" $OSC_START_GENERATOR_OUTPUT $byte_count $1 $OSC_END_GENERATOR_OUTPUT
         warp_maybe_send_reset_grid_osc
     }
 
@@ -364,7 +379,7 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
       # Set the title. Be sure to make the title a %s argument to prevent title content from ending up
       # in the block output, see:
       # https://linear.app/warpdotdev/issue/WAR-6064/bash-commands-having-esc-write-the-command-to-the-block-output
-      printf "\033]0;%s\a" "$title"
+      __warp_emit "\033]0;%s\a" "$title"
     }
 
     # Runs before executing the command
