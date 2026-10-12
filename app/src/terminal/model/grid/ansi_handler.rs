@@ -142,7 +142,7 @@ impl State {
             dirty_cells_range: Default::default(),
             pane_size: size_info.pane_size_px(),
             keyboard_mode: KeyboardModes::NO_MODE,
-            keyboard_mode_stack: BoundedVecDeque::new(super::KEYBOARD_MODE_STACK_MAX_DEPTH),
+            keyboard_mode_stack: super::new_keyboard_mode_stack(),
         }
     }
 }

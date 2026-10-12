@@ -1337,3 +1337,23 @@ upstream's behavior is actually a defect rather than a preference.
   of needing one. **Not upstream's mechanism to diverge from** — the pin's
   `report_error()` is a live Sentry client with no local user-facing analogue,
   so this is a fork-original fix for a fork-original silence, not a port.
+
+- **The kitty keyboard-mode stack is not preallocated per grid** (`#816`, 2026-10-12,
+  `app/src/terminal/model/grid/grid_handler.rs`, `app/src/terminal/model/grid/ansi_handler.rs`).
+  **Upstream:** `ansi_handler::State::new` builds the stack with
+  `BoundedVecDeque::new(KEYBOARD_MODE_STACK_MAX_DEPTH)`
+  (`4111d08f9:crates/warp_terminal/src/model/grid/ansi_handler.rs:141`, byte-identical), and
+  `reset_keyboard_mode_state` does the same. `BoundedVecDeque::new(n)` is
+  `VecDeque::with_capacity(n)`, so every `GridHandler` reserves 4096 x 4 B = 16 KiB on
+  construction. **The defect:** a block owns four grids (prompt, prompt+command, rprompt,
+  output), so that is 64 KiB retained for the life of every finished block -- by code
+  reading, 64 of the ~90 KiB a finished trivial block is modelled to keep (an estimate from
+  the struct definitions, not a measurement) -- for a stack that is empty in any grid that
+  never saw a `CSI > flags u`. The bound exists to cap a DoS, not to be paid up front.
+  **We do:** `new_keyboard_mode_stack()` creates the deque with the same `max_len` and zero
+  capacity, so it grows only when a program pushes a mode; `GridHandler::finish` calls
+  `shrink_to_fit` on it, since a finished grid takes no more input. Push/pop semantics and
+  the 4096 bound are unchanged (`test_keyboard_mode_stack_is_still_bounded_without_preallocation`).
+  The fork-only `new_keyboard_mode_stack` marker is inert at re-pin (#752), so the row is also
+  anchored on `KEYBOARD_MODE_STACK_MAX_DEPTH`, which exists at both the fork and the pin
+  (`4111d08f9:crates/warp_terminal/src/model/grid/grid_handler.rs:94`). <!-- markers: keep:new_keyboard_mode_stack keep:KEYBOARD_MODE_STACK_MAX_DEPTH keep:test_keyboard_mode_stack_is_still_bounded_without_preallocation -->

@@ -879,3 +879,19 @@ fn partially_filled_row(content: char, columns_to_fill: usize, total_columns: us
     }
     row
 }
+
+/// `truncate_to` must release the capacity of the dropped rows, not just
+/// shorten `len`: this is what lets a finished block give back the
+/// `rows x columns` matrix it was created with (#816).
+#[test]
+fn truncate_to_releases_capacity() {
+    let mut storage = Storage::with_capacity(40, 1, false);
+    assert_eq!(storage.inner.capacity(), 40);
+
+    storage.truncate_to(2);
+
+    assert_eq!(storage.len(), 2);
+    assert_eq!(storage.inner.len(), 2);
+    assert_eq!(storage.inner.capacity(), 2);
+    assert_eq!(storage.visible_lines, 2);
+}

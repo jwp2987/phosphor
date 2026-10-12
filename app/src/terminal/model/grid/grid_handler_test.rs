@@ -2868,3 +2868,135 @@ fn test_full_grid_clear_resize_then_bounds_to_string_does_not_panic() {
         );
     }
 }
+
+// ─── #816: memory a finished grid retains ────────────────────────────
+
+/// Collects the printable characters of row `row`, dropping empty cells.
+fn row_text(grid: &GridHandler, row: usize) -> String {
+    let row = grid.row(row).expect("row should exist");
+    (0..grid.columns())
+        .map(|col| row[col].c)
+        .filter(|c| *c != '\0')
+        .collect()
+}
+
+#[test]
+fn test_new_grid_does_not_preallocate_keyboard_mode_stack() {
+    // `BoundedVecDeque::new(max)` reserves `max` slots up front: 4096 x 4 B =
+    // 16 KiB per grid, in every grid, for a stack that stays empty unless a
+    // program pushes a kitty keyboard mode. Four grids per block made this the
+    // largest heap allocation a finished trivial block retained.
+    let grid = GridHandler::new_for_test(5, 10);
+
+    assert_eq!(grid.ansi_handler_state.keyboard_mode_stack.capacity(), 0);
+    assert_eq!(
+        grid.ansi_handler_state.keyboard_mode_stack.max_len(),
+        KEYBOARD_MODE_STACK_MAX_DEPTH
+    );
+}
+
+#[test]
+fn test_keyboard_mode_stack_is_still_bounded_without_preallocation() {
+    let mut grid = GridHandler::new_for_test(5, 10);
+
+    for _ in 0..KEYBOARD_MODE_STACK_MAX_DEPTH + 1 {
+        grid.push_keyboard_mode(KeyboardModes::DISAMBIGUATE_ESC_CODES);
+    }
+    assert_eq!(
+        grid.ansi_handler_state.keyboard_mode_stack.len(),
+        KEYBOARD_MODE_STACK_MAX_DEPTH
+    );
+    assert!(
+        grid.ansi_handler_state.keyboard_mode_stack.capacity() >= KEYBOARD_MODE_STACK_MAX_DEPTH
+    );
+
+    grid.reset_keyboard_mode_state();
+    assert!(grid.ansi_handler_state.keyboard_mode_stack.is_empty());
+    assert_eq!(grid.ansi_handler_state.keyboard_mode_stack.capacity(), 0);
+    assert_eq!(
+        grid.ansi_handler_state.keyboard_mode,
+        KeyboardModes::NO_MODE
+    );
+}
+
+#[test]
+fn test_finish_releases_row_storage_below_cursor() {
+    // A fresh grid materializes the full `rows x columns` cell matrix. Finishing
+    // with the cursor on row 1 must keep only rows 0..=1 and must actually
+    // release the capacity for the other rows, not merely shorten the length
+    // (`Vec::truncate` keeps capacity).
+    let rows = 40;
+    let columns = 95;
+    let mut grid = GridHandler::new_for_test_with_scroll_limit(rows, columns, MAX_SCROLL_LIMIT);
+    grid.input_at_cursor("1");
+    grid.carriage_return();
+    grid.linefeed();
+    assert_eq!(grid.grid_storage().cursor().point.row, VisibleRow(1));
+
+    let heap_before = grid.grid_storage().estimated_heap_usage_bytes();
+    assert_eq!(grid.grid.raw.capacity(), rows);
+
+    grid.finish();
+
+    assert_eq!(grid.total_rows(), 2);
+    assert_eq!(grid.visible_rows(), 2);
+    assert_eq!(grid.history_size(), 0);
+    assert_eq!(grid.grid.raw.capacity(), 2);
+    // Heap usage is `capacity x bytes-per-row`, so it must drop in proportion.
+    assert_eq!(
+        grid.grid_storage().estimated_heap_usage_bytes(),
+        heap_before * 2 / rows
+    );
+    assert_eq!(row_text(&grid, 0), "1");
+    assert_eq!(row_text(&grid, 1), "");
+    assert_eq!(grid.ansi_handler_state.keyboard_mode_stack.capacity(), 0);
+}
+
+#[test]
+fn test_finish_shrinks_keyboard_mode_stack_capacity_to_contents() {
+    let mut grid = GridHandler::new_for_test(5, 10);
+    for _ in 0..64 {
+        grid.push_keyboard_mode(KeyboardModes::DISAMBIGUATE_ESC_CODES);
+    }
+    grid.pop_keyboard_modes(60);
+    assert!(grid.ansi_handler_state.keyboard_mode_stack.capacity() >= 64);
+
+    grid.finish();
+
+    // Contents are kept; only the slack is released. `VecDeque::shrink_to_fit`
+    // promises "as close as possible to the length", not equality, so allow
+    // the allocator a little rounding.
+    let stack = &grid.ansi_handler_state.keyboard_mode_stack;
+    assert_eq!(stack.len(), 4);
+    assert!(stack.capacity() >= 4 && stack.capacity() < 64);
+}
+
+#[test]
+fn test_finished_grid_reflows_after_its_storage_was_shrunk() {
+    // A finished block is re-wrapped when the pane is resized. After `finish`
+    // shrank storage to the used rows, both directions of reflow must still
+    // work, and neither may re-materialize the original `rows x columns`
+    // matrix: a finished grid's visible region is capped by its content.
+    let rows = 10;
+    let mut grid = GridHandler::new_for_test_with_scroll_limit(rows, 10, MAX_SCROLL_LIMIT);
+    grid.input_at_cursor("abcdefghijklm");
+    grid.finish();
+    assert_eq!(grid.total_rows(), 2);
+    assert_eq!(grid.grid.raw.capacity(), 2);
+
+    // Narrower: "abcdefghijklm" wraps into three rows of five.
+    grid.resize(SizeInfo::new_without_font_metrics(rows, 5));
+    assert_eq!(grid.columns(), 5);
+    assert_eq!(grid.total_rows(), 3);
+    assert_eq!(row_text(&grid, 0), "abcde");
+    assert_eq!(row_text(&grid, 1), "fghij");
+    assert_eq!(row_text(&grid, 2), "klm");
+    assert!(grid.grid.raw.capacity() < rows);
+
+    // Wider: everything fits on one row again.
+    grid.resize(SizeInfo::new_without_font_metrics(rows, 20));
+    assert_eq!(grid.columns(), 20);
+    assert_eq!(grid.total_rows(), 1);
+    assert_eq!(row_text(&grid, 0), "abcdefghijklm");
+    assert!(grid.grid.raw.capacity() < rows);
+}
