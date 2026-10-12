@@ -305,6 +305,47 @@ Started from a maintainer patch (`git am`, authorship kept):
   for a long-running command defaults its model chip to Ollama instead of
   inheriting the parent conversation's provider (pre-existing).
 
+### What landed — round 11, the filed-only issues (2026-10-12)
+
+Scope: the seven issues round 10 filed but did not fix (#808, #809, #812-#816). Same
+cycle per branch: fix agent (no cargo) → Sonnet review → Opus refutation → box tests
+and release build → headless X11 before/after → `git merge --no-ff`.
+
+| issue | outcome | evidence |
+|---|---|---|
+| #814 `columns_needed` scan | **fixed** (a4e4aece6) | 0 block scans per frame locally (was 2); 54/54 blocks tests |
+| #809 output over block header | **fixed** (26a2b674e) | headless: `exec 2>/dev/null; echo x; ls /nonexist` overdraws on main, not on fix; 164/164 |
+| #808 auto-detect misroutes commands | **fixed** (c5fef2a90) | issue inputs never ran on main, run on fix (`yes|head` wrote 50,000,000 B); 37/37 + 16/16 |
+| #813 per-keystroke buffer copies | **fixed** (6579911a6) | main-thread CPU typing 2000 chars 3.1-3.4 s → 2.4 s; 248/248 |
+| #816 per-block memory | **partial**, Refs (de919859a) | hypothesis wrong (finished grids already shrink); 64 KiB/block reservation removed, RSS slope unchanged |
+| #815 find bar second frame | **partial**, Refs (13250a3c7) | correct gating, but extra ~16 pts with output + open bar persist; likely #817 |
+| #812 visible-pane frames | **parked**, branch `fix/812-visible-output-frames` | no gain in any scenario; wide stale-screen surface |
+
+Box `script/precheck` green on the combined main 9da2bb5ff (2026-10-12).
+
+Follow-up measurement the maintainer asked for: 24 tabs each running `claude` (login screen, isolated profile; harness `x11-tabs/tabs-claude.sh`, results `cbase.tsv`/`cr12.tsv`) cost Phosphor nothing: idle CPU 7% → 9% from 1 to 24 tabs on both 0.1.11 and main, main thread 0%, typing unaffected, ~5 MiB per tab. Each idle `claude` process itself holds ~186 MiB RSS, so 24 sessions is ~4.5 GB of system memory before MCP servers. Logged-in idle sessions are unmeasured.
+
+Filed during review: #817 (find full rescan when no dirty rows), #818 (sync-output
+timeout flush sends no wakeup), #819 (AI focused match reads the sync find run), #820
+(ticks "invisible" — explained below), #821 (`reinit_shell` orphan background block).
+
+**Operational lessons:**
+- **The perf harness measured agent view, not the terminal.** A fresh profile with the
+  maintainer's settings opens new tabs as an *agent conversation*, where background-job
+  output is not drawn. Every round-10 ticker/pane/find number (#812, #815) was taken
+  there. `perf7.sh` (Escape to the terminal after each new tab) is the valid scenario;
+  in it, main's run-to-run noise is 1-2 points.
+- **Chained box jobs must fail closed.** A DNS outage on the box made
+  `git fetch && git checkout ...` fail while the following cargo steps ran on the
+  previous checkout: five branches "passed" with byte-identical binaries. Write
+  `fetch && checkout || exit 1`, log `HEAD=` into each test log, compare binary md5s.
+- **#808 needed four review passes.** Each pass found prose that a deterministic
+  pre-filter would have executed (`...; rm -rf target`, `read RFC 9110`, `exit vim`,
+  `export data > backup.csv`). Keep the adversarial pass for anything that can route
+  text into a shell.
+- `cargo nextest -p input_classifier` alone trips a debug assertion (feature flags not
+  initialised); run it with `-p warp_completer` in the same invocation as CI does.
+
 ### What landed — round 10, terminal robustness (2026-10-11 → 10-12)
 
 Triggered by two maintainer reports: "lag with 20+ tabs, typing sluggish" and
