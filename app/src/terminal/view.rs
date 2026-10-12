@@ -9497,13 +9497,15 @@ impl TerminalView {
     /// Util method to update the ssh block, with a lock
     fn update_long_running_ssh_block_with_lock(&self, f: impl FnOnce(&mut Block)) -> bool {
         if let Some(block_id) = self.warpify_state.block_id() {
-            if let Some(block) = self
-                .model
-                .lock()
-                .block_list_mut()
-                .mut_block_from_id(&block_id)
-            {
+            let mut model = self.model.lock();
+            let block_list = model.block_list_mut();
+            if let Some(block) = block_list.mut_block_from_id(&block_id) {
                 f(block);
+                // Every caller hides or unhides the block, which changes its height; record
+                // that in the height tree now rather than relying on the next layout to
+                // rebuild it (#810).
+                let block_index = block.index();
+                block_list.refresh_block_height(block_index);
                 return true;
             }
         }
@@ -9666,7 +9668,7 @@ impl TerminalView {
         let (full_ssh_command, hidden_ssh_block_id) = {
             let mut model = self.model.lock();
             if !show_ssh_block_debug {
-                model.block_list_mut().active_block_mut().hide();
+                model.block_list_mut().hide_active_block();
             }
 
             (
@@ -9721,7 +9723,7 @@ impl TerminalView {
         let (full_ssh_command, hidden_ssh_block_id) = {
             let mut model = self.model.lock();
             if !show_ssh_block_debug {
-                model.block_list_mut().active_block_mut().hide();
+                model.block_list_mut().hide_active_block();
             }
             (
                 model.block_list().active_block().command_to_string(),

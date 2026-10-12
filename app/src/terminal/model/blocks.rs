@@ -290,6 +290,12 @@ pub struct BlockList {
     /// remeasured on the next layout.
     dirty_rich_content_items: HashSet<EntityId>,
 
+    /// Number of full `block_heights` rebuilds performed by `update_blocks_and_sumtree`.
+    /// Test-only instrumentation for #810: the per-frame rich-content height path must
+    /// patch items in place and never trigger an O(blocks) rebuild.
+    #[cfg(test)]
+    sumtree_rebuild_count: usize,
+
     /// The gap height to set after a clear or ctrl-l.
     /// The view needs to tell the model this because the gap height varies based
     /// on the input mode, which is a view concept, not a model concept.
@@ -718,6 +724,8 @@ impl BlockList {
             removable_blocklist_item_positions: HashMap::new(),
             active_gap: None,
             dirty_rich_content_items: HashSet::new(),
+            #[cfg(test)]
+            sumtree_rebuild_count: 0,
             size: sizes.size,
             next_gap_height_in_lines: None,
             max_grid_size_limit: sizes.max_block_scroll_limit,
@@ -966,16 +974,180 @@ impl BlockList {
         Some(start..start.saturating_add(height))
     }
 
-    /// Updates the laid-out heights of rich-content items and rebuilds the height sum-tree.
+    /// Updates the laid-out heights of rich-content items in the height sum-tree.
+    ///
+    /// Only the named items are touched (O(k log N)); see
+    /// [`set_rich_content_heights_in_place`](Self::set_rich_content_heights_in_place).
     pub fn update_rich_content_heights_in_lines(
         &mut self,
         updated_heights: &HashMap<EntityId, BlockHeight>,
     ) {
-        let heights: HashMap<EntityId, f64> = updated_heights
-            .iter()
-            .map(|(view_id, height)| (*view_id, height.as_f64()))
+        self.set_rich_content_heights_in_place(
+            updated_heights
+                .iter()
+                .map(|(view_id, height)| (*view_id, *height)),
+        );
+    }
+
+    /// Writes new `last_laid_out_height` values for the given rich-content items directly into
+    /// `block_heights`, leaving every other item untouched.
+    ///
+    /// This used to go through `update_blocks_and_sumtree`, which walks every item, calls
+    /// `Block::height` on every block and allocates a whole new tree. `BlockListElement::layout`
+    /// calls it twice on every frame, almost always with an empty map, so the rebuild was
+    /// ~9% of main-thread time while typing with 300 finished blocks and linear in block
+    /// count (#810). Nothing else in that rebuild could change for this call: block heights
+    /// are refreshed by the paths that mutate blocks (`update_active_block_height` after each
+    /// pty chunk, `refresh_block_height` for visibility flips), and the `is_hidden` /
+    /// `should_hide` flags derive from `agent_view_state` / `transcript_scope`, whose setters
+    /// rebuild explicitly. An empty map is a no-op.
+    ///
+    /// Items whose `view_id` is not in the blocklist are ignored, matching the rebuild, which
+    /// only ever updated items it found in the tree.
+    ///
+    /// The in-place pass trusts `removable_blocklist_item_positions`. If that map turns out
+    /// to be stale -- two views at one index, or an index that does not hold the expected
+    /// rich-content item -- the pass is abandoned and the heights are applied by one full
+    /// `update_blocks_and_sumtree` rebuild, which matches items by `view_id` and never
+    /// consults the map. Dropping a measured height would leave the item at a wrong size.
+    fn set_rich_content_heights_in_place(
+        &mut self,
+        updated_heights: impl Iterator<Item = (EntityId, BlockHeight)>,
+    ) {
+        // Resolve each view ID to its position so a single left-to-right cursor pass can
+        // splice every affected leaf.
+        let mut updates: Vec<(TotalIndex, EntityId, BlockHeight)> = updated_heights
+            .filter_map(|(view_id, height)| {
+                self.removable_blocklist_item_positions
+                    .get(&RemovableBlocklistItem::RichContent(view_id))
+                    .map(|index| (*index, view_id, height))
+            })
             .collect();
-        self.update_blocks_and_sumtree(None, Some(&heights), |_| {}, |_| {});
+        if updates.is_empty() {
+            return;
+        }
+        updates.sort_unstable_by_key(|(index, _, _)| index.0);
+
+        let transcript_scope = &self.transcript_scope;
+        let patched_tree = {
+            let mut cursor = self.block_heights.cursor::<TotalIndex, ()>();
+            let mut new_tree = SumTree::new();
+            let mut last_index: Option<TotalIndex> = None;
+            let mut positions_are_stale = false;
+
+            for &(index, view_id, height) in &updates {
+                // `slice` can only move rightwards (debug builds assert on it), so a repeated
+                // index means the positions map is inconsistent.
+                if last_index.is_some_and(|last| index.0 <= last.0) {
+                    log::error!(
+                        "rich content {view_id:?} shares position {index:?} with another item"
+                    );
+                    positions_are_stale = true;
+                    break;
+                }
+                last_index = Some(index);
+
+                new_tree.push_tree(cursor.slice(&index, SeekBias::Right));
+                match cursor.item() {
+                    Some(BlockHeightItem::RichContent(item)) if item.view_id == view_id => {
+                        // Re-derive `should_hide` exactly as the full rebuild did, so the two
+                        // paths stay observably identical.
+                        let should_hide = RichContentItem {
+                            should_hide: false,
+                            ..*item
+                        }
+                        .should_hide_for_transcript_scope(transcript_scope);
+                        new_tree.push(BlockHeightItem::RichContent(RichContentItem {
+                            last_laid_out_height: height,
+                            should_hide,
+                            ..*item
+                        }));
+                        cursor.next();
+                    }
+                    other => {
+                        log::error!(
+                            "rich content {view_id:?} recorded at {index:?} but found {other:?}"
+                        );
+                        positions_are_stale = true;
+                        break;
+                    }
+                }
+            }
+
+            if positions_are_stale {
+                None
+            } else {
+                new_tree.push_tree(cursor.suffix());
+                Some(new_tree)
+            }
+        };
+
+        match patched_tree {
+            Some(new_tree) => self.block_heights = new_tree,
+            None => {
+                let heights: HashMap<EntityId, BlockHeight> = updates
+                    .into_iter()
+                    .map(|(_, view_id, height)| (view_id, height))
+                    .collect();
+                self.update_blocks_and_sumtree(None, Some(&heights), |_| {}, |_| {});
+            }
+        }
+    }
+
+    /// Re-reads `Block::height` for the block at `block_index` and writes it into
+    /// `block_heights` in place (O(log N)).
+    ///
+    /// Unlike [`update_live_block_height`](Self::update_live_block_height) this works for any
+    /// block, including finished ones, and does not touch the active gap -- it exists for
+    /// visibility flips (`hide` / `unhide` / conversation attachment, the agent-monitored
+    /// upgrade that clears `should_hide_block`) on an otherwise immutable block. Until #810
+    /// those flips were picked up by the unconditional per-frame `update_blocks_and_sumtree`
+    /// rebuild in `BlockListElement::layout`; now that the rebuild only runs when something
+    /// actually changed, every such flip must call this.
+    pub(crate) fn refresh_block_height(&mut self, block_index: BlockIndex) {
+        let Some(block) = self.block_at(block_index) else {
+            log::error!(
+                "Tried to refresh height of block at {block_index:?}, but no such block exists"
+            );
+            return;
+        };
+        let block_height: BlockHeight = block.height(&self.transcript_scope).into();
+
+        self.block_heights = {
+            let mut cursor = self.block_heights.cursor::<BlockIndex, ()>();
+            // The BlockIndex dimension acts like a count rather than an index.
+            // |    block 0    |    block 1    |    block 2    | ...
+            // ^ count=0       ^ count=1       ^ count=2       ^ count=3
+            // To position the cursor at block N, we want to seek to the left
+            // of the point where count=N + 1. Zero-count items (rich content,
+            // banners, separators) between blocks stay in the prefix / suffix.
+            let next_index = block_index + BlockIndex(1);
+            let mut new_tree = cursor.slice(&next_index, SeekBias::Left);
+            match cursor.item() {
+                Some(BlockHeightItem::Block(_)) => {
+                    new_tree.push(BlockHeightItem::Block(block_height));
+                    cursor.next();
+                }
+                other => {
+                    log::error!("expected a block item at {block_index:?}, found {other:?}");
+                }
+            }
+            new_tree.push_tree(cursor.suffix());
+            new_tree
+        };
+        // TODO: Update active gap.
+    }
+
+    /// Hides the active block and records its new (zero) height in `block_heights`.
+    pub fn hide_active_block(&mut self) {
+        self.active_block_mut().hide();
+        self.refresh_block_height(self.active_block_index());
+    }
+
+    /// Number of full `block_heights` rebuilds so far (see `sumtree_rebuild_count`).
+    #[cfg(test)]
+    pub(super) fn sumtree_rebuild_count(&self) -> usize {
+        self.sumtree_rebuild_count
     }
 
     pub fn active_block(&self) -> &Block {
@@ -1551,6 +1723,8 @@ impl BlockList {
     pub fn toggle_visibility_of_block(&mut self, block_id: &BlockId) -> Option<bool> {
         if let Some(block) = self.mut_block_from_id(block_id) {
             let is_visible = !block.toggle_hidden();
+            let block_index = block.index();
+            self.refresh_block_height(block_index);
 
             // Force a re-draw since the blocklist has changed.
             self.event_proxy.send_wakeup_event();
@@ -1562,6 +1736,8 @@ impl BlockList {
     pub fn unhide_block(&mut self, block_id: &BlockId) {
         if let Some(block) = self.mut_block_from_id(block_id) {
             block.unhide();
+            let block_index = block.index();
+            self.refresh_block_height(block_index);
 
             // Force a re-draw since the blocklist has changed.
             self.event_proxy.send_wakeup_event();
@@ -1586,6 +1762,7 @@ impl BlockList {
             self.active_block_mut()
                 .set_is_oz_environment_startup_command(false);
         }
+        self.refresh_block_height(self.active_block_index());
     }
 
     /// Ends the Oz environment startup-command phase at `block_id`, un-hiding every
@@ -2053,6 +2230,10 @@ impl BlockList {
                 }
                 block.add_pending_conversation_id(conversation_id);
                 modified_blocks.push((block_id.clone(), block.agent_view_visibility().clone()));
+                let block_index = block.index();
+                // A pending association makes the block visible in that conversation's
+                // transcript scope, which is a height change.
+                self.refresh_block_height(block_index);
             }
         }
         modified_blocks
@@ -2094,6 +2275,10 @@ impl BlockList {
             if let Some(block) = self.mut_block_from_id(block_id) {
                 if block.remove_pending_conversation_id(conversation_id) {
                     modified_blocks.push((block_id.clone(), block.agent_view_visibility().clone()));
+                    let block_index = block.index();
+                    // Dropping the association hides the block in that conversation's
+                    // transcript scope, which is a height change.
+                    self.refresh_block_height(block_index);
                 }
             }
         }
@@ -2107,10 +2292,18 @@ impl BlockList {
         conversation_id: AIConversationId,
     ) -> Vec<(BlockId, AgentViewVisibility)> {
         let mut modified_blocks = Vec::new();
+        let mut modified_indices = Vec::new();
         for block in &mut self.blocks {
             if block.promote_pending_to_attached(conversation_id) {
                 modified_blocks.push((block.id().clone(), block.agent_view_visibility().clone()));
+                modified_indices.push(block.index());
             }
+        }
+        // Pending and attached are both visible in the conversation's scope, so this is
+        // normally a no-op for heights; refresh anyway so the tree never depends on a
+        // frame-time rebuild to catch up (#810).
+        for block_index in modified_indices {
+            self.refresh_block_height(block_index);
         }
         modified_blocks
     }
@@ -2566,16 +2759,29 @@ impl BlockList {
     /// updated to reflect the change in height. If subshell_separator_height is Some, update
     /// BlockHeightItem::SubshellSeparator to that new value. If it is None, leave it at the
     /// current value.
+    ///
+    /// If `rich_content_heights` is Some, rich-content items named in it take that height
+    /// (matched by `view_id`); others keep their current one.
+    ///
+    /// This walks every item and allocates a new tree, so it is O(blocks) and must only run
+    /// when something that affects many items changed (padding, visibility settings, agent
+    /// view state). Per-item changes go through `refresh_block_height` /
+    /// `set_rich_content_heights_in_place` instead; the latter only falls back to passing
+    /// `rich_content_heights` here when its positions map proves stale (#810).
     fn update_blocks_and_sumtree<F, G>(
         &mut self,
         subshell_separator_height: Option<f32>,
-        rich_content_heights: Option<&HashMap<EntityId, f64>>,
+        rich_content_heights: Option<&HashMap<EntityId, BlockHeight>>,
         block_update_fn: F,
         gap_update_fn: G,
     ) where
         F: Fn(&mut Block),
         G: Fn(&mut Gap),
     {
+        #[cfg(test)]
+        {
+            self.sumtree_rebuild_count += 1;
+        }
         let transcript_scope = &self.transcript_scope;
         self.block_heights = {
             let mut new_sum_tree = SumTree::new();
@@ -2630,19 +2836,13 @@ impl BlockList {
                             ..*item
                         }
                         .should_hide_for_transcript_scope(transcript_scope);
-                        let updated_height = if let Some(updated_height) =
-                            rich_content_heights.and_then(|heights| heights.get(&item.view_id))
-                        {
-                            updated_height
-                                .into_pixels()
-                                .to_lines(self.size().cell_height_px())
-                                .into()
-                        } else {
-                            item.last_laid_out_height
-                        };
+                        let last_laid_out_height = rich_content_heights
+                            .and_then(|heights| heights.get(&item.view_id))
+                            .copied()
+                            .unwrap_or(item.last_laid_out_height);
 
                         new_sum_tree.push(BlockHeightItem::RichContent(RichContentItem {
-                            last_laid_out_height: updated_height,
+                            last_laid_out_height,
                             should_hide,
                             ..*item
                         }));
@@ -2752,8 +2952,24 @@ impl BlockList {
         );
     }
 
+    /// Records freshly measured rich-content heights (in pixels) in `block_heights`.
+    ///
+    /// Called twice per frame by `BlockListElement::layout`, almost always with an empty map,
+    /// so it must be O(1) when there is nothing to do and must never rebuild the whole tree
+    /// (#810). See [`set_rich_content_heights_in_place`](Self::set_rich_content_heights_in_place).
     pub fn update_rich_content_heights(&mut self, updated_heights: &HashMap<EntityId, f64>) {
-        self.update_blocks_and_sumtree(None, Some(updated_heights), |_| {}, |_| {});
+        if updated_heights.is_empty() {
+            return;
+        }
+        let cell_height_px = self.size().cell_height_px();
+        self.set_rich_content_heights_in_place(updated_heights.iter().map(
+            |(view_id, height_px)| {
+                (
+                    *view_id,
+                    height_px.into_pixels().to_lines(cell_height_px).into(),
+                )
+            },
+        ));
     }
 
     pub fn set_show_in_band_command_blocks(&mut self, should_show_in_band_command_blocks: bool) {
@@ -3729,31 +3945,6 @@ impl BlockList {
         self.cached_prompt_data.as_ref()
     }
 
-    /// Updates the sumtree with the block's new height.
-    fn update_block_height_at_idx(&mut self, block_index: BlockIndex) {
-        if let Some(block) = self.block_at(block_index) {
-            let new_block_height = block.height(&self.transcript_scope).into();
-
-            self.block_heights = {
-                let mut cursor = self.block_heights.cursor::<BlockIndex, ()>();
-                // The BlockIndex dimension acts like a count rather than an index.
-                // |    block 0    |    block 1    |    block 2    | ...
-                // ^ count=0       ^ count=1       ^ count=2       ^ count=3
-                // To position the cursor at block N, we want to seek to the left
-                // of the point where count=N + 1.
-                let next_index = block_index + BlockIndex(1);
-                let mut tree_before_last_block = cursor.slice(&next_index, SeekBias::Left);
-                tree_before_last_block.push(BlockHeightItem::Block(new_block_height));
-
-                cursor.next();
-                let suffix = cursor.suffix();
-                tree_before_last_block.push_tree(suffix);
-                tree_before_last_block
-            };
-            // TODO: Update active gap.
-        }
-    }
-
     pub fn filtered_blocks(&self) -> HashSet<BlockIndex> {
         // Fast path: this is called from the view on every render, and the
         // overwhelmingly common case is that no block has an active filter at all,
@@ -3789,7 +3980,7 @@ impl BlockList {
                 }
                 _ => {}
             }
-            self.update_block_height_at_idx(block_index);
+            self.refresh_block_height(block_index);
         }
         self.clear_selection();
     }
@@ -3812,7 +4003,7 @@ impl BlockList {
             if was_active {
                 self.active_filter_count = self.active_filter_count.saturating_sub(1);
             }
-            self.update_block_height_at_idx(block_index);
+            self.refresh_block_height(block_index);
         }
     }
 

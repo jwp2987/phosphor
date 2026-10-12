@@ -380,6 +380,7 @@ impl CLISubagentController {
                 {
                     if let Some(block) = terminal_model.block_list_mut().mut_block_from_id(block_id)
                     {
+                        let block_index = block.index();
                         match block.set_agent_interaction_mode_for_agent_monitored_command(
                             task_id,
                             *conversation_id,
@@ -392,6 +393,13 @@ impl CLISubagentController {
                                     *conversation_id,
                                     action_id,
                                 ));
+                                // The upgrade clears `should_hide_block`, taking an
+                                // AI-requested block from height 0 to its full height. A quiet
+                                // monitored command may not produce another pty chunk, so
+                                // record the new height now (#810).
+                                terminal_model
+                                    .block_list_mut()
+                                    .refresh_block_height(block_index);
                             }
                             Err(e) => {
                                 log::error!(
@@ -848,6 +856,13 @@ impl CLISubagentController {
 
                 let action_id = block.requested_command_action_id().cloned();
                 let agent_has_control = block.is_agent_in_control();
+                // The upgrade clears `should_hide_block`, taking an AI-requested block from
+                // height 0 to its full height. A quiet monitored command may not produce another
+                // pty chunk, so record the new height now (#810).
+                let block_index = block.index();
+                terminal_model
+                    .block_list_mut()
+                    .refresh_block_height(block_index);
                 drop(terminal_model);
 
                 // When the CLI subagent is first created for a long running command,

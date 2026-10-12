@@ -5,6 +5,7 @@ use warpui::units::IntoLines;
 use warpui::{elements::DEFAULT_UI_LINE_HEIGHT_RATIO, App};
 
 use super::*;
+use crate::ai::agent::task::TaskId;
 use crate::ai::agent::AIAgentActionId;
 use crate::ai::blocklist::agent_view::{
     AgentViewDisplayMode, AgentViewEntryOrigin, AgentViewState,
@@ -2693,5 +2694,267 @@ fn filtered_blocks_tracks_activation_deactivation_and_removal() {
     assert!(
         block_list.filtered_blocks().is_empty(),
         "removing a block with an active filter must decrement the tracked count"
+    );
+}
+
+/// The `BlockHeightItem::Block` entry for `block_index`, read straight from the tree.
+fn block_height_in_tree(block_list: &BlockList, block_index: BlockIndex) -> BlockHeight {
+    block_list
+        .block_heights()
+        .items()
+        .into_iter()
+        .filter_map(|item| match item {
+            BlockHeightItem::Block(height) => Some(height),
+            _ => None,
+        })
+        .nth(block_index.0)
+        .expect("block should have a height item")
+}
+
+/// #810: `BlockListElement::layout` calls `update_rich_content_heights` twice per frame,
+/// almost always with nothing to report. That must leave the tree untouched and must not
+/// rebuild it.
+#[test]
+fn test_empty_rich_content_height_update_leaves_block_heights_untouched() {
+    let mut block_list =
+        new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+    insert_block(&mut block_list, "cmd", "output");
+    let view_id = EntityId::new();
+    block_list.append_rich_content(RichContentItem::new_for_test(None, view_id, None), false);
+    insert_block(&mut block_list, "cmd", "output");
+
+    let items_before = block_list.block_heights().items();
+    let rebuilds_before = block_list.sumtree_rebuild_count();
+
+    block_list.update_rich_content_heights(&HashMap::new());
+    block_list.update_rich_content_heights_in_lines(&HashMap::new());
+    // A view that is not in the blocklist is ignored, as the old rebuild ignored it.
+    block_list.update_rich_content_heights(&HashMap::from([(EntityId::new(), 42.0)]));
+
+    assert_eq!(block_list.block_heights().items(), items_before);
+    assert_eq!(
+        block_list.sumtree_rebuild_count(),
+        rebuilds_before,
+        "an empty rich-content update must not rebuild the whole block_heights tree"
+    );
+}
+
+/// #810: a non-empty update changes exactly the named item, in place, and nothing else.
+#[test]
+fn test_rich_content_height_update_patches_only_the_named_item() {
+    let mut block_list =
+        new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+    insert_block(&mut block_list, "cmd", "output");
+    let view_id_a = EntityId::new();
+    block_list.append_rich_content(RichContentItem::new_for_test(None, view_id_a, None), false);
+    let view_id_b = EntityId::new();
+    block_list.append_rich_content(RichContentItem::new_for_test(None, view_id_b, None), false);
+    insert_block(&mut block_list, "cmd", "output");
+
+    let items_before = block_list.block_heights().items();
+    let total_before = block_list.block_heights().summary().height;
+    let rebuilds_before = block_list.sumtree_rebuild_count();
+
+    // The test SizeInfo has a 1px cell, so 5px measures as 5 lines.
+    block_list.update_rich_content_heights(&HashMap::from([(view_id_a, 5.0)]));
+
+    let items_after = block_list.block_heights().items();
+    assert_eq!(items_after.len(), items_before.len());
+    for (before, after) in items_before.iter().zip(&items_after) {
+        match (before, after) {
+            (BlockHeightItem::RichContent(b), BlockHeightItem::RichContent(a))
+                if b.view_id == view_id_a =>
+            {
+                assert_eq!(b.last_laid_out_height, BlockHeight::from(1.0));
+                assert_eq!(a.last_laid_out_height, BlockHeight::from(5.0));
+                // Only the height changed on this item.
+                assert_eq!(
+                    RichContentItem {
+                        last_laid_out_height: b.last_laid_out_height,
+                        ..*a
+                    },
+                    *b
+                );
+            }
+            _ => assert_eq!(before, after, "items other than {view_id_a:?} must be untouched"),
+        }
+    }
+    assert_lines_approx_eq!(
+        block_list.block_heights().summary().height,
+        total_before + 4.0
+    );
+
+    // The TUI path takes heights in lines and shares the in-place update.
+    block_list.update_rich_content_heights_in_lines(&HashMap::from([(
+        view_id_b,
+        BlockHeight::from(3.0),
+    )]));
+    let heights: HashMap<EntityId, BlockHeight> = block_list
+        .block_heights()
+        .items()
+        .into_iter()
+        .filter_map(|item| match item {
+            BlockHeightItem::RichContent(item) => Some((item.view_id, item.last_laid_out_height)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(heights[&view_id_a], BlockHeight::from(5.0));
+    assert_eq!(heights[&view_id_b], BlockHeight::from(3.0));
+    assert_lines_approx_eq!(
+        block_list.block_heights().summary().height,
+        total_before + 6.0
+    );
+
+    assert_eq!(
+        block_list.sumtree_rebuild_count(),
+        rebuilds_before,
+        "rich-content height updates must patch items in place, not rebuild the tree"
+    );
+}
+
+/// #810: hiding or unhiding a finished block used to reach the height tree only through the
+/// unconditional per-frame rebuild. Now that the rebuild is gone, the flip itself must record
+/// the new height, without rebuilding.
+#[test]
+fn test_toggle_visibility_of_block_updates_block_heights_in_place() {
+    let mut block_list =
+        new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+    let block_index = insert_block(&mut block_list, "cmd", "output");
+    insert_block(&mut block_list, "cmd2", "output2");
+    let block_id = block_list
+        .block_at(block_index)
+        .expect("block should exist")
+        .id()
+        .clone();
+
+    let visible_height = block_height_in_tree(&block_list, block_index);
+    assert!(visible_height > BlockHeight::zero());
+    let total_before = block_list.block_heights().summary().height;
+    let rebuilds_before = block_list.sumtree_rebuild_count();
+
+    assert_eq!(
+        block_list.toggle_visibility_of_block(&block_id),
+        Some(false)
+    );
+    assert_eq!(
+        block_height_in_tree(&block_list, block_index),
+        BlockHeight::zero()
+    );
+    assert_lines_approx_eq!(
+        block_list.block_heights().summary().height,
+        total_before - visible_height.as_f64()
+    );
+
+    block_list.unhide_block(&block_id);
+    assert_eq!(block_height_in_tree(&block_list, block_index), visible_height);
+    assert_lines_approx_eq!(block_list.block_heights().summary().height, total_before);
+
+    assert_eq!(
+        block_list.sumtree_rebuild_count(),
+        rebuilds_before,
+        "a single block's visibility flip must not rebuild the whole tree"
+    );
+}
+
+/// #810: `refresh_block_height` seeks by `BlockIndex`, a dimension that counts only
+/// `BlockHeightItem::Block` entries. Zero-count items (rich content) before the refreshed
+/// block must stay in place and keep their height.
+#[test]
+fn test_refresh_block_height_with_rich_content_before_the_block() {
+    let mut block_list =
+        new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+    insert_block(&mut block_list, "cmd", "output");
+    let view_id = EntityId::new();
+    block_list.append_rich_content(RichContentItem::new_for_test(None, view_id, None), false);
+    let block_index = insert_block(&mut block_list, "cmd2", "output2");
+    let block_id = block_list
+        .block_at(block_index)
+        .expect("block should exist")
+        .id()
+        .clone();
+
+    let items_before = block_list.block_heights().items();
+    let rich_content_position = items_before
+        .iter()
+        .position(|item| matches!(item, BlockHeightItem::RichContent(rc) if rc.view_id == view_id))
+        .expect("rich content should be in the tree");
+    let visible_height = block_height_in_tree(&block_list, block_index);
+    assert!(visible_height > BlockHeight::zero());
+    let total_before = block_list.block_heights().summary().height;
+    let rebuilds_before = block_list.sumtree_rebuild_count();
+
+    assert_eq!(
+        block_list.toggle_visibility_of_block(&block_id),
+        Some(false)
+    );
+
+    let items_after = block_list.block_heights().items();
+    assert_eq!(items_after.len(), items_before.len());
+    assert_eq!(
+        items_after[rich_content_position],
+        items_before[rich_content_position],
+        "the rich content item before the block must be untouched"
+    );
+    assert_eq!(
+        block_height_in_tree(&block_list, block_index),
+        BlockHeight::zero()
+    );
+    // Exactly one item changed: the refreshed block.
+    let changed = items_before
+        .iter()
+        .zip(&items_after)
+        .filter(|(before, after)| before != after)
+        .count();
+    assert_eq!(changed, 1);
+    assert_lines_approx_eq!(
+        block_list.block_heights().summary().height,
+        total_before - visible_height.as_f64()
+    );
+    assert_eq!(block_list.sumtree_rebuild_count(), rebuilds_before);
+}
+
+/// #810: upgrading an AI-requested (hidden) block to agent-monitored clears
+/// `should_hide_block`, so its height goes from 0 to full. `cli_controller` records that via
+/// `refresh_block_height`; this pins that the refresh picks the change up without a rebuild.
+#[test]
+fn test_refresh_block_height_after_agent_monitored_upgrade() {
+    let mut block_list =
+        new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+    let block_index = insert_block(&mut block_list, "cmd", "output");
+    insert_block(&mut block_list, "cmd2", "output2");
+    let conversation_id = AIConversationId::new();
+    let action_id: AIAgentActionId = "action".to_owned().into();
+
+    let full_height = block_height_in_tree(&block_list, block_index);
+    assert!(full_height > BlockHeight::zero());
+    let total_before = block_list.block_heights().summary().height;
+    let rebuilds_before = block_list.sumtree_rebuild_count();
+
+    block_list.blocks_mut()[block_index.0]
+        .set_agent_interaction_mode(AgentInteractionMetadata::new_hidden(
+            action_id,
+            conversation_id,
+        ));
+    block_list.refresh_block_height(block_index);
+    assert_eq!(
+        block_height_in_tree(&block_list, block_index),
+        BlockHeight::zero()
+    );
+    assert_lines_approx_eq!(
+        block_list.block_heights().summary().height,
+        total_before - full_height.as_f64()
+    );
+
+    let task_id = TaskId::new("cli-task-810".to_owned());
+    block_list.blocks_mut()[block_index.0]
+        .set_agent_interaction_mode_for_agent_monitored_command(&task_id, conversation_id)
+        .expect("upgrade to agent-monitored should succeed");
+    block_list.refresh_block_height(block_index);
+    assert_eq!(block_height_in_tree(&block_list, block_index), full_height);
+    assert_lines_approx_eq!(block_list.block_heights().summary().height, total_before);
+    assert_eq!(
+        block_list.sumtree_rebuild_count(),
+        rebuilds_before,
+        "per-block height refreshes must not rebuild the tree"
     );
 }
