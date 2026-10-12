@@ -320,11 +320,24 @@ fn test_text_cache_survives_style_only_updates() -> Result<()> {
                 ctx,
             )?;
 
-            // The single "abcdef" fragment was spliced into three, but the version vector
-            // and the cache are both untouched, and the cached text is still right.
+            // The style landed on exactly "bcd" (asserted per character, because the
+            // fragment layout -- how many pieces the splice produced -- is an internal
+            // detail), but the version vector and the cache are both untouched, and the
+            // cached text is still right.
+            let plain = TextStyle::default();
             assert_eq!(
-                visible_text_styles(buffer),
-                vec![None, Some(black_underline_style), None]
+                buffer
+                    .stylized_chars()
+                    .map(|stylized_char| stylized_char.style())
+                    .collect::<Vec<_>>(),
+                vec![
+                    plain,
+                    black_underline_style,
+                    black_underline_style,
+                    black_underline_style,
+                    plain,
+                    plain,
+                ]
             );
             assert_eq!(buffer.versions(), versions_before_style_update);
             assert_eq!(

@@ -1160,6 +1160,11 @@ impl Buffer {
     /// [`Self::recreate`] replaces the whole struct, cache included. The one fragment
     /// rewrite that does not bump the version, [`Self::update_styles`], changes styles
     /// only and leaves the text identical, so a hit there is still correct.
+    ///
+    /// Invariant: `text_cache` is valid only while its `versions` matches ours, and the
+    /// text-changing mutators (`undo_or_redo`, `apply_edit`, `update_fragments_for_edit`)
+    /// also clear it at the point they write `self.fragments`, so correctness does not
+    /// rest on the version being observed after a fallible step later in the same call.
     pub fn text(&self) -> String {
         if let Some(cached) = self.text_cache.borrow().as_ref() {
             if cached.versions == self.versions {
@@ -1486,6 +1491,7 @@ impl Buffer {
             cursor.next();
         }
         self.fragments = new_fragments;
+        self.text_cache.get_mut().take();
 
         // After apply an undo / redo operation, we need to merge selection state
         // in case there are overlapping ranges.
@@ -1952,6 +1958,7 @@ impl Buffer {
 
         new_fragments.push_tree(cursor.slice(&last_id_ref, SeekBias::Right));
         self.fragments = new_fragments;
+        self.text_cache.get_mut().take();
 
         // After applying a remote edit, we need to merge selection state
         // in case there are overlapping ranges.
@@ -2372,6 +2379,7 @@ impl Buffer {
         }
 
         self.fragments = new_fragments;
+        self.text_cache.get_mut().take();
         Ok(ops)
     }
 

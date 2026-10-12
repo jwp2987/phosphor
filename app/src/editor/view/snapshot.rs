@@ -675,9 +675,14 @@ fn line_and_style_runs(
     family_id: FamilyId,
     properties: Properties,
 ) -> (String, Vec<(Range<usize>, StyleAndFont)>) {
-    let mut line = String::new();
-    let mut style_runs: Vec<(Range<usize>, StyleAndFont)> = Vec::new();
-    for (idx, (ch, style)) in stylized_chars.into_iter().enumerate() {
+    let stylized_chars = stylized_chars.into_iter();
+    let (expected_len, _) = stylized_chars.size_hint();
+    let mut line = String::with_capacity(expected_len);
+    // Pre-size for the common case of a row with one style; a row with a second
+    // style grows this once, which is still far fewer allocations than a run per
+    // character.
+    let mut style_runs: Vec<(Range<usize>, StyleAndFont)> = Vec::with_capacity(1);
+    for (idx, (ch, style)) in stylized_chars.enumerate() {
         let style_and_font = StyleAndFont::new(family_id, properties, style);
         match style_runs.last_mut() {
             Some((run, run_style)) if *run_style == style_and_font => run.end = idx + 1,
