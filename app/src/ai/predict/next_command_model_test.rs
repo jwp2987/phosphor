@@ -3,12 +3,35 @@ use crate::terminal::model::session::Session;
 use crate::terminal::model::session::{
     command_executor::testing::TestCommandExecutor, BootstrapSessionType, SessionInfo,
 };
+use std::cell::Cell;
+use std::collections::HashSet;
 use typed_path::TypedPathBuf;
 use warp_completer::signatures::CommandRegistry;
 use warp_completer::{meta::SpannedItem, parsers::ParsedToken};
 use warpui::App;
 
 use super::*;
+
+/// The pre-#811 shape of `find_potential_autosuggestions_from_history`: plain entries in and
+/// out, no excluded commands, and a limit none of the small histories in these tests can
+/// reach, so the ordering tests below keep asserting on the complete ranked list.
+fn find_unbounded_autosuggestions_from_history<'a>(
+    history_entries: impl DoubleEndedIterator<Item = &'a HistoryEntry>,
+    buffer_text: &str,
+    working_dir: Option<&str>,
+) -> Vec<HistoryEntry> {
+    let shared = history_entries.cloned().map(Arc::new).collect_vec();
+    find_potential_autosuggestions_from_history(
+        shared.iter(),
+        buffer_text,
+        working_dir,
+        &HashSet::new(),
+        MAX_HISTORY_AUTOSUGGESTION_CANDIDATES,
+    )
+    .into_iter()
+    .map(|entry| (*entry).clone())
+    .collect()
+}
 
 #[test]
 fn test_find_autosuggestion_from_history_same_directory() {
@@ -21,7 +44,7 @@ fn test_find_autosuggestion_from_history_same_directory() {
 
     // We should return the most recent command from history that starts with the
     // buffer text and was executed in the current working directory.
-    let autosuggestions = find_potential_autosuggestions_from_history(
+    let autosuggestions = find_unbounded_autosuggestions_from_history(
         history_entries.iter(),
         "cd D",
         Some("/Users/tadej"),
@@ -50,7 +73,7 @@ fn test_find_autosuggestion_from_history_error_exit_code() {
     ];
 
     // We want to return failed commands in case the user wants to run it again.
-    let autosuggestions = find_potential_autosuggestions_from_history(
+    let autosuggestions = find_unbounded_autosuggestions_from_history(
         history_entries.iter(),
         "cd D",
         Some("/Users/tadej"),
@@ -79,7 +102,7 @@ fn test_find_autosuggestion_from_history_no_working_dir() {
 
     // No working directory, so return the first successful command.
     let autosuggestions =
-        find_potential_autosuggestions_from_history(history_entries.iter(), "cd D", None)
+        find_unbounded_autosuggestions_from_history(history_entries.iter(), "cd D", None)
             .into_iter()
             .map(|history_entry| history_entry.command)
             .collect_vec();
@@ -101,7 +124,7 @@ fn test_find_autosuggestion_from_history_different_directory() {
 
     // There are no commands in history that were executed in the current directory,
     // So we return the most recent command that starts with the buffer text.
-    let autosuggestions = find_potential_autosuggestions_from_history(
+    let autosuggestions = find_unbounded_autosuggestions_from_history(
         history_entries.iter(),
         "cd D",
         Some("/Users/jonas"),
@@ -122,7 +145,7 @@ fn test_find_autosuggestion_from_history_different_directory() {
     // There isn't a current working directory, so return the most recent command that
     // starts with the buffer text.
     let autosuggestions =
-        find_potential_autosuggestions_from_history(history_entries.iter(), "cd D", None)
+        find_unbounded_autosuggestions_from_history(history_entries.iter(), "cd D", None)
             .into_iter()
             .map(|history_entry| history_entry.command)
             .collect_vec();
@@ -146,7 +169,7 @@ fn test_find_autosuggestion_from_history_no_matching_commands() {
         HistoryEntry::with_pwd_and_exit_code("cd Downloads", "/Users/tadej/dev", 0),
     ];
 
-    let autosuggestions = find_potential_autosuggestions_from_history(
+    let autosuggestions = find_unbounded_autosuggestions_from_history(
         history_entries.iter(),
         "cd Z",
         Some("/Users/jonas"),
@@ -164,7 +187,7 @@ fn test_find_autosuggestion_from_history_matches_command_with_no_pwd() {
         HistoryEntry::with_pwd_and_exit_code("cd Downloads", "/Users/tadej/dev", 0),
     ];
 
-    let autosuggestions = find_potential_autosuggestions_from_history(
+    let autosuggestions = find_unbounded_autosuggestions_from_history(
         history_entries.iter(),
         "cd P",
         Some("/Users/tadej"),
@@ -187,7 +210,7 @@ fn test_find_autosuggestion_from_history_with_no_pwd_and_no_working_directory() 
     // When no working directory is passed, it shouldn't consider a command with
     // no pwd to be executed in the "same" directory and prioritize it.
     let autosuggestions =
-        find_potential_autosuggestions_from_history(history_entries.iter(), "cd D", None)
+        find_unbounded_autosuggestions_from_history(history_entries.iter(), "cd D", None)
             .into_iter()
             .map(|history_entry| history_entry.command)
             .collect_vec();
@@ -200,6 +223,194 @@ fn test_find_autosuggestion_from_history_with_no_pwd_and_no_working_directory() 
             "cd Dotfiles".to_owned()
         ]
     );
+}
+
+/// A `DoubleEndedIterator` adapter that counts how many entries the scan actually pulls
+/// (yielded items only, not the terminating `None`), so a test can assert that the walk
+/// stopped instead of visiting the whole history.
+struct CountingIter<'c, I> {
+    inner: I,
+    visited: &'c Cell<usize>,
+}
+
+impl<I: Iterator> CountingIter<'_, I> {
+    fn record(&self, item: Option<I::Item>) -> Option<I::Item> {
+        if item.is_some() {
+            self.visited.set(self.visited.get() + 1);
+        }
+        item
+    }
+}
+
+impl<I: Iterator> Iterator for CountingIter<'_, I> {
+    type Item = I::Item;
+    fn next(&mut self) -> Option<Self::Item> {
+        let item = self.inner.next();
+        self.record(item)
+    }
+}
+
+impl<I: DoubleEndedIterator> DoubleEndedIterator for CountingIter<'_, I> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let item = self.inner.next_back();
+        self.record(item)
+    }
+}
+
+fn commands(entries: Vec<Arc<HistoryEntry>>) -> Vec<String> {
+    entries.iter().map(|entry| entry.command.clone()).collect()
+}
+
+/// Pins the ranking the bounded scan must reproduce: newest-first within the current
+/// directory, then newest-first everywhere else, with per-bucket dedup keeping the newest
+/// occurrence and excluded commands never occupying a slot. The duplicate `git status` in the
+/// other-dir bucket is deliberately kept: it is the newest occurrence *in that bucket*, and
+/// dropping it in favour of the same-dir one would reorder what the consumer sees.
+#[test]
+fn test_find_autosuggestion_from_history_is_bounded_deduped_and_ranked() {
+    // Oldest first.
+    let history_entries = [
+        HistoryEntry::with_pwd_and_exit_code("git status", "/repo", 0),
+        HistoryEntry::with_pwd_and_exit_code("git stash", "/repo", 0),
+        HistoryEntry::with_pwd_and_exit_code("git log", "/elsewhere", 0),
+        HistoryEntry::with_pwd_and_exit_code("git status", "/elsewhere", 0),
+        HistoryEntry::with_pwd_and_exit_code("git push", "/repo", 0),
+        HistoryEntry::with_pwd_and_exit_code("git status", "/repo", 0),
+        HistoryEntry::with_pwd_and_exit_code("git log", "/elsewhere", 0),
+        HistoryEntry::with_pwd_and_exit_code("git ignored-cmd", "/repo", 0),
+        HistoryEntry::command_only("git diff"),
+    ]
+    .map(Arc::new);
+    let excluded = HashSet::from(["git ignored-cmd".to_owned()]);
+
+    // Unbounded (limit larger than history): full ranked list.
+    let all = find_potential_autosuggestions_from_history(
+        history_entries.iter(),
+        "git ",
+        Some("/repo"),
+        &excluded,
+        MAX_HISTORY_AUTOSUGGESTION_CANDIDATES,
+    );
+    assert_eq!(
+        commands(all),
+        vec![
+            // same dir, newest first, one `git status`
+            "git status".to_owned(),
+            "git push".to_owned(),
+            "git stash".to_owned(),
+            // other dirs (and no-pwd), newest first, one `git log`
+            "git diff".to_owned(),
+            "git log".to_owned(),
+            "git status".to_owned(),
+        ]
+    );
+
+    // Bounded: the first `limit` of exactly that list, whichever buckets they fall in.
+    for limit in 1..=6 {
+        let bounded = find_potential_autosuggestions_from_history(
+            history_entries.iter(),
+            "git ",
+            Some("/repo"),
+            &excluded,
+            limit,
+        );
+        let expected = commands(find_potential_autosuggestions_from_history(
+            history_entries.iter(),
+            "git ",
+            Some("/repo"),
+            &excluded,
+            MAX_HISTORY_AUTOSUGGESTION_CANDIDATES,
+        ))
+        .into_iter()
+        .take(limit)
+        .collect_vec();
+        assert_eq!(commands(bounded), expected, "limit {limit}");
+    }
+
+    // A ranked list that is all other-dir entries truncates the same way.
+    let elsewhere = find_potential_autosuggestions_from_history(
+        history_entries.iter(),
+        "git ",
+        Some("/nowhere"),
+        &excluded,
+        2,
+    );
+    assert_eq!(
+        commands(elsewhere),
+        vec!["git diff".to_owned(), "git log".to_owned()]
+    );
+}
+
+/// The per-keystroke scan must stop once the same-directory bucket is full rather than walk
+/// the whole history (#811): with a 50k-line histfile the unbounded walk cloned every prefix
+/// match on the UI thread on every keystroke that landed with no suggestion showing.
+#[test]
+fn test_find_autosuggestion_from_history_stops_once_same_dir_bucket_is_full() {
+    const OLD: usize = 990;
+    const NEW: usize = 10;
+    // Oldest first: a long tail run elsewhere, then a few recent commands run here.
+    let history_entries = (0..OLD)
+        .map(|i| {
+            HistoryEntry::with_pwd_and_exit_code(
+                format!("echo old {i}"),
+                "/elsewhere".to_owned(),
+                0,
+            )
+        })
+        .chain((0..NEW).map(|i| {
+            HistoryEntry::with_pwd_and_exit_code(format!("echo new {i}"), "/here".to_owned(), 0)
+        }))
+        .map(Arc::new)
+        .collect_vec();
+
+    let visited = Cell::new(0);
+    let found = find_potential_autosuggestions_from_history(
+        CountingIter {
+            inner: history_entries.iter(),
+            visited: &visited,
+        },
+        "echo",
+        Some("/here"),
+        &HashSet::new(),
+        3,
+    );
+    assert_eq!(
+        commands(found),
+        vec![
+            "echo new 9".to_owned(),
+            "echo new 8".to_owned(),
+            "echo new 7".to_owned()
+        ]
+    );
+    assert_eq!(
+        visited.get(),
+        3,
+        "scan should stop after filling the same-dir bucket, not visit all {} entries",
+        OLD + NEW
+    );
+
+    // When the same-dir bucket cannot fill, the whole history is (correctly) consulted, but
+    // the result is still capped and in ranked order: the three newest matches anywhere.
+    let visited = Cell::new(0);
+    let found = find_potential_autosuggestions_from_history(
+        CountingIter {
+            inner: history_entries.iter(),
+            visited: &visited,
+        },
+        "echo",
+        Some("/nowhere"),
+        &HashSet::new(),
+        3,
+    );
+    assert_eq!(
+        commands(found),
+        vec![
+            "echo new 9".to_owned(),
+            "echo new 8".to_owned(),
+            "echo new 7".to_owned()
+        ]
+    );
+    assert_eq!(visited.get(), OLD + NEW);
 }
 
 fn test_session_context(cwd: TypedPathBuf, app: &App) -> SessionContext {

@@ -846,13 +846,27 @@ impl History {
     fn collect_visible_commands_for_session<'a, T>(
         &'a self,
         session_id: SessionId,
-        mut to_output: impl FnMut(&'a Arc<HistoryEntry>) -> T,
+        to_output: impl FnMut(&'a Arc<HistoryEntry>) -> T,
     ) -> Option<Vec<T>> {
+        Some(self.visible_commands(session_id)?.map(to_output).collect())
+    }
+
+    /// Lazily yields the history entries visible to `session_id`, oldest first: the same set,
+    /// in the same order, that [`Self::commands`] materialises.
+    ///
+    /// Unlike `commands` this allocates nothing. It is double-ended so a caller that only
+    /// needs the newest few matches (the per-keystroke autosuggestion scan, #811) can `rev()`
+    /// it and stop as soon as it has them, instead of paying for a `Vec` over the whole
+    /// history on every edit.
+    pub fn visible_commands<'a>(
+        &'a self,
+        session_id: SessionId,
+    ) -> Option<impl DoubleEndedIterator<Item = &'a Arc<HistoryEntry>> + 'a> {
         let Some(shell_host) = self.session_id_to_shell_host.get(&session_id) else {
             log::warn!("ShellHost should be populated in the map for all bootstrapped sessions.");
             return None;
         };
-        let Some(session_start_index) = self.session_start_indices.get(&session_id) else {
+        let Some(session_start_index) = self.session_start_indices.get(&session_id).copied() else {
             log::warn!("Session start index for session {session_id:?} is None.");
             return None;
         };
@@ -869,38 +883,41 @@ impl History {
             log::warn!("Session commands for session {session_id:?} are empty.");
             return None;
         };
-        let commands: Vec<T> = histfile_commands
-            .iter()
-            .chain(session_commands.iter())
-            .enumerate()
-            .filter_map(|(idx, h)| {
-                if skip_indices.contains(&idx) {
-                    return None;
-                }
-                // Restored blocks may appear before the session start index because they may be
-                // loaded before the history file has been read. However, restored block commands
-                // have the same semantics as post-start index session commands -- they should only
-                // be shown in the session where they were restored.
-                if idx < *session_start_index && !h.is_for_restored_block {
-                    // This history entry was from before the session's history
-                    // started, so we include it.
-                    return Some(to_output(h));
-                }
-                // Otherwise, we need to check if the history entry is from this session.
-                if let Some(history_session_id) = h.session_id {
-                    if history_session_id == session_id {
-                        Some(to_output(h))
-                    } else {
-                        None
+        // Indices are into the concatenation `histfile_commands ++ session_commands`, which is
+        // what `session_skip_indices` refers to. Enumerate each half separately (offsetting the
+        // second) rather than `chain(..).enumerate()`: `Chain` is not `ExactSizeIterator`, so
+        // the latter could not be walked from the back.
+        let histfile_len = histfile_commands.len();
+        let entries = histfile_commands.iter().enumerate().chain(
+            session_commands
+                .iter()
+                .enumerate()
+                .map(move |(idx, h)| (idx + histfile_len, h)),
+        );
+        Some(
+            entries
+                .filter(move |(idx, h)| {
+                    if skip_indices.contains(idx) {
+                        return false;
                     }
-                } else {
-                    // No session id, so command is from the history file
-                    Some(to_output(h))
-                }
-            })
-            .collect();
-
-        Some(commands)
+                    // Restored blocks may appear before the session start index because they may be
+                    // loaded before the history file has been read. However, restored block commands
+                    // have the same semantics as post-start index session commands -- they should only
+                    // be shown in the session where they were restored.
+                    if *idx < session_start_index && !h.is_for_restored_block {
+                        // This history entry was from before the session's history
+                        // started, so we include it.
+                        return true;
+                    }
+                    // Otherwise, we need to check if the history entry is from this session.
+                    match h.session_id {
+                        Some(history_session_id) => history_session_id == session_id,
+                        // No session id, so command is from the history file
+                        None => true,
+                    }
+                })
+                .map(|(_, h)| h),
+        )
     }
 
     /// `commands_shared` returns the same logical set as [`Self::commands`], but with shared
@@ -911,8 +928,8 @@ impl History {
 
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self, session_id: SessionId) -> usize {
-        self.commands(session_id)
-            .map(|c| c.len())
+        self.visible_commands(session_id)
+            .map(|c| c.count())
             .unwrap_or_default()
     }
 
