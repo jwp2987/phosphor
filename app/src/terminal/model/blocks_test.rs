@@ -2958,3 +2958,71 @@ fn test_refresh_block_height_after_agent_monitored_upgrade() {
         "per-block height refreshes must not rebuild the tree"
     );
 }
+
+/// `max_visible_columns` is the widest visible block's column count (#814): it follows a
+/// block that is added or resized, drops a block that is hidden, and is `None` only when
+/// nothing is visible.
+#[test]
+fn test_max_visible_columns_tracks_visible_blocks() {
+    let mut block_list =
+        new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+    let base_columns = block_list.size().columns();
+
+    // Every block so far was laid out at the block list's own size.
+    let first_block_index = insert_block(&mut block_list, "echo one", "one");
+    assert_eq!(block_list.max_visible_columns(), Some(base_columns));
+
+    // Start a second, non-empty block and widen only it (`update_old_blocks = false`):
+    // the maximum follows the widest visible block, not the pane.
+    block_list.start_active_block();
+    input_string(&mut block_list, "echo two");
+    block_list.preexec(Default::default());
+    input_string(&mut block_list, "two");
+    let wide_columns = base_columns + 20;
+    let rows = block_list.size().rows();
+    let widen = SizeUpdate {
+        update_reason: SizeUpdateReason::Refresh,
+        last_size: *block_list.size(),
+        new_size: SizeInfo::new_without_font_metrics(rows, wide_columns),
+        new_gap_height: None,
+        natural_rows: rows,
+        natural_cols: wide_columns,
+    };
+    block_list.resize(&widen, false);
+    assert_eq!(
+        block_list.blocks()[first_block_index.0].size().columns(),
+        base_columns,
+        "resizing only the active block must leave old blocks alone"
+    );
+    assert_eq!(block_list.max_visible_columns(), Some(wide_columns));
+
+    // Hiding the wide block removes it from the maximum.
+    block_list.hide_active_block();
+    assert_eq!(block_list.max_visible_columns(), Some(base_columns));
+
+    // Resizing every block narrows the maximum with them.
+    let narrow_columns = base_columns.saturating_sub(5).max(2);
+    let narrow = SizeUpdate {
+        update_reason: SizeUpdateReason::Refresh,
+        last_size: *block_list.size(),
+        new_size: SizeInfo::new_without_font_metrics(rows, narrow_columns),
+        new_gap_height: None,
+        natural_rows: rows,
+        natural_cols: narrow_columns,
+    };
+    block_list.resize(&narrow, true);
+    assert_eq!(block_list.max_visible_columns(), Some(narrow_columns));
+
+    // With every block hidden there is no visible column count at all.
+    let transcript_scope = *block_list.transcript_scope();
+    for block in block_list.blocks_mut().iter_mut() {
+        block.hide();
+    }
+    assert!(
+        block_list
+            .blocks()
+            .iter()
+            .all(|block| !block.is_visible(&transcript_scope))
+    );
+    assert_eq!(block_list.max_visible_columns(), None);
+}

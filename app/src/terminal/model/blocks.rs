@@ -2437,6 +2437,22 @@ impl BlockList {
         &self.blocks
     }
 
+    /// The widest `size().columns` among the blocks that are currently rendered, or `None`
+    /// when no block is visible under the current transcript scope.
+    ///
+    /// This walks every block, so it is O(blocks) and must not be called unconditionally per
+    /// frame. Its one consumer is the horizontal-scroll decision for an active shared-session
+    /// viewer in `TerminalView::render`, whose blocks may have been laid out at the sharer's
+    /// width rather than the viewer's pane width; that caller only asks when it is such a
+    /// viewer, so a local session never pays for the scan (#814).
+    pub fn max_visible_columns(&self) -> Option<usize> {
+        self.blocks
+            .iter()
+            .filter(|block| block.is_visible(&self.transcript_scope))
+            .map(|block| block.size().columns())
+            .max()
+    }
+
     pub fn blocks_mut(&mut self) -> &mut Vec<Block> {
         &mut self.blocks
     }
