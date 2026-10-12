@@ -75,6 +75,17 @@ pub trait FindModel {
     fn is_scanning(&self) -> bool {
         false
     }
+
+    /// Identifies the current find results. Two equal values mean that nothing
+    /// a find bar renders -- match count, focused match, scanning state -- and
+    /// nothing any other consumer of the results renders changed in between, so
+    /// a `RanFind` that finds the value unchanged needs no repaint (#815).
+    ///
+    /// The default, `None`, means the model does not track this and the find
+    /// bar repaints on every `RanFind`, as it always did.
+    fn results_revision(&self) -> Option<u64> {
+        None
+    }
 }
 
 pub enum Event {
@@ -116,6 +127,10 @@ pub struct Find<T: FindModel + Entity<Event = FindEvent> + 'static> {
     pub case_sensitivity_enabled: bool,
     pub regex_search_enabled: bool,
     pub display_find_within_block: FindWithinBlockState,
+    /// The [`FindModel::results_revision`] this view last repainted for in
+    /// response to a find event. A `RanFind` whose revision equals this one
+    /// carries nothing new to draw and is dropped instead of costing a frame.
+    last_notified_results_revision: Option<u64>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -182,8 +197,23 @@ impl<T: FindModel + Entity<Event = FindEvent> + 'static> Find<T> {
             ctx.notify();
         });
 
-        ctx.subscribe_to_model(&model, |_, _, event, ctx| match event {
-            FindEvent::RanFind | FindEvent::UpdatedFocusedMatch => ctx.notify(),
+        ctx.subscribe_to_model(&model, |me, _, event, ctx| match event {
+            FindEvent::UpdatedFocusedMatch => {
+                me.last_notified_results_revision = me.model.as_ref(ctx).results_revision();
+                ctx.notify();
+            }
+            FindEvent::RanFind => {
+                // With the find bar open, find re-runs on every pty chunk; when
+                // the rerun reproduced the same results there is nothing new to
+                // draw, and the frame this notify would build is pure cost
+                // (#815). A model that does not track revisions (`None`) keeps
+                // the unconditional repaint.
+                let revision = me.model.as_ref(ctx).results_revision();
+                if revision.is_none() || revision != me.last_notified_results_revision {
+                    me.last_notified_results_revision = revision;
+                    ctx.notify();
+                }
+            }
         });
 
         Self {
@@ -193,6 +223,7 @@ impl<T: FindModel + Entity<Event = FindEvent> + 'static> Find<T> {
             case_sensitivity_enabled: false,
             regex_search_enabled: false,
             display_find_within_block: FindWithinBlockState::Disabled,
+            last_notified_results_revision: None,
         }
     }
 

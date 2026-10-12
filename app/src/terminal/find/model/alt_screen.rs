@@ -116,13 +116,19 @@ impl AltScreenFindRun {
     }
 
     /// Reruns the find operation with the same options on the alt screen.
-    pub(super) fn rerun(mut self, alt_screen: &AltScreen) -> Self {
+    ///
+    /// Returns the updated run and whether its results -- the match list or the
+    /// focused match -- differ from before. The caller skips the repaint a
+    /// no-op rerun would otherwise cost on every wakeup (#815).
+    pub(super) fn rerun(mut self, alt_screen: &AltScreen) -> (Self, bool) {
         let Some(dfas) = self.dfas.as_ref() else {
-            return self;
+            return (self, false);
         };
 
         let new_matches = alt_screen.find(dfas);
+        let matches_changed = new_matches != self.matches;
         self.matches = new_matches;
+        let old_focused_match_index = self.focused_match_index;
 
         // If there are no more matches, reset the focused index.
         if self.matches.is_empty() {
@@ -139,7 +145,8 @@ impl AltScreenFindRun {
             // focus the first match.
             self.focused_match_index = Some(0);
         }
-        self
+        let changed = matches_changed || self.focused_match_index != old_focused_match_index;
+        (self, changed)
     }
 
     /// Returns a cleared version of this run (has no matches but the same options).

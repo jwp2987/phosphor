@@ -1,10 +1,12 @@
 //! Tests for async find functionality.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use parking_lot::FairMutex;
-use warpui::{App, EntityId};
+use warpui::{App, EntityId, ModelContext};
 
 use super::{
     AbsoluteMatch, AsyncFindConfig, AsyncFindController, AsyncFindStatus, BlockFindResults,
@@ -20,7 +22,7 @@ use crate::terminal::model::grid::grid_handler::AbsolutePoint;
 use crate::terminal::model::index::Point;
 use crate::terminal::model::terminal_model::{BlockIndex, BlockSortDirection};
 use crate::test_util::settings::initialize_settings_for_tests;
-use crate::view_components::find::FindDirection;
+use crate::view_components::find::{FindDirection, FindEvent, FindModel};
 
 /// Helper to create an AbsoluteMatch at a given row with default column span.
 fn make_match(row: u64) -> AbsoluteMatch {
@@ -949,4 +951,242 @@ fn test_focused_match_index_walks_across_terminal_and_ai_blocks() {
         .expect("Index 1 should resolve to terminal match.");
     assert_eq!(focused_terminal.block_index, BlockIndex(0));
     assert_eq!(focused_terminal.grid_type, GridType::Output);
+}
+
+/// Feeds one `DirtyRangeMatches` message for block 1's output grid to the
+/// controller and returns whether it reported a change (#815).
+fn process_dirty_range(
+    model: &mut TerminalFindModel,
+    ctx: &mut ModelContext<TerminalFindModel>,
+    matches: Vec<AbsoluteMatch>,
+) -> bool {
+    model
+        .async_find_controller
+        .as_mut()
+        .unwrap()
+        .process_message(
+            FindTaskMessage::DirtyRangeMatches {
+                block_index: BlockIndex(1),
+                grid_type: GridType::Output,
+                dirty_range: 0..=1,
+                matches,
+            },
+            ctx,
+        )
+}
+
+#[test]
+fn test_dirty_range_results_report_a_change_only_when_they_differ() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        let terminal_model = Arc::new(FairMutex::new(TerminalModel::mock(None, None)));
+        let test_model = app.add_model(|ctx| {
+            let mut model = TerminalFindModel::new(terminal_model.clone(), ctx);
+            let mut controller = AsyncFindController::new(terminal_model.clone());
+            controller.set_test_status(AsyncFindStatus::Complete);
+            model.async_find_controller = Some(controller);
+            model
+        });
+
+        // First results for a grid with none: a change.
+        let changed = test_model.update(&mut app, |model, ctx| {
+            process_dirty_range(
+                model,
+                ctx,
+                vec![make_match_at(0, 0, 2), make_match_at(1, 0, 2)],
+            )
+        });
+        assert!(changed, "first results are a change");
+
+        // The same rescan again -- what every output chunk that does not touch
+        // the query produces -- is not.
+        let changed = test_model.update(&mut app, |model, ctx| {
+            process_dirty_range(
+                model,
+                ctx,
+                vec![make_match_at(0, 0, 2), make_match_at(1, 0, 2)],
+            )
+        });
+        assert!(!changed, "identical results must not report a change");
+
+        // A different count is.
+        let changed = test_model.update(&mut app, |model, ctx| {
+            process_dirty_range(model, ctx, vec![make_match_at(0, 0, 2)])
+        });
+        assert!(changed, "a different match count is a change");
+
+        // So is the same count at a different position: the highlight moves.
+        let changed = test_model.update(&mut app, |model, ctx| {
+            process_dirty_range(model, ctx, vec![make_match_at(0, 3, 5)])
+        });
+        assert!(changed, "a moved match is a change");
+
+        let changed = test_model.update(&mut app, |model, ctx| {
+            process_dirty_range(model, ctx, vec![make_match_at(0, 3, 5)])
+        });
+        assert!(!changed, "repeating the moved match is not a change");
+
+        let (match_count, status) = test_model.update(&mut app, |model, _ctx| {
+            let c = model.async_find_controller.as_ref().unwrap();
+            (c.match_count(), c.status().clone())
+        });
+        assert_eq!(match_count, 1);
+        assert_eq!(
+            status,
+            AsyncFindStatus::Complete,
+            "dirty-range results never touch the scanning state"
+        );
+
+        // `Done` for a run that is already complete changes nothing either.
+        let changed = test_model.update(&mut app, |model, ctx| {
+            model
+                .async_find_controller
+                .as_mut()
+                .unwrap()
+                .process_message(FindTaskMessage::Done, ctx)
+        });
+        assert!(!changed, "Done while already Complete is not a change");
+    });
+}
+
+#[test]
+fn test_dirty_range_invalidation_is_silent_until_results_differ() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        let mut mock_terminal_model = TerminalModel::mock(None, None);
+        mock_terminal_model.simulate_block("cmd1", "line1\r\nline2\r\n");
+        let terminal_model = Arc::new(FairMutex::new(mock_terminal_model));
+        let test_model = app.add_model(|ctx| {
+            let mut model = TerminalFindModel::new(terminal_model.clone(), ctx);
+            if model.async_find_controller.is_none() {
+                model.async_find_controller =
+                    Some(AsyncFindController::new(terminal_model.clone()));
+            }
+            model
+        });
+
+        test_model.update(&mut app, |model, ctx| {
+            model.run_find(
+                FindOptions {
+                    query: Some("line".to_owned().into()),
+                    ..Default::default()
+                },
+                ctx,
+            );
+        });
+
+        // Wait for the initial scan to complete (see
+        // `test_async_find_produces_same_results_as_sync_find`).
+        for _ in 0..100 {
+            let is_complete = test_model.update(&mut app, |model, _ctx| {
+                model
+                    .async_find_controller
+                    .as_ref()
+                    .map(|c| matches!(c.status(), AsyncFindStatus::Complete))
+                    .unwrap_or(false)
+            });
+            if is_complete {
+                break;
+            }
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
+        }
+        let match_count = test_model.update(&mut app, |model, _ctx| model.match_count());
+        assert!(match_count > 0, "the initial scan should find matches");
+
+        let events: Rc<RefCell<Vec<&'static str>>> = Default::default();
+        let recorded = events.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&test_model, move |_, event, _| {
+                recorded.borrow_mut().push(match event {
+                    FindEvent::RanFind => "RanFind",
+                    FindEvent::UpdatedFocusedMatch => "UpdatedFocusedMatch",
+                });
+            });
+        });
+
+        // The initial scan's last result may still be queued behind the 50 ms
+        // RanFind throttle; let it drain before the baseline is taken.
+        for _ in 0..10 {
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
+        }
+        events.borrow_mut().clear();
+        let revision_before = test_model.update(&mut app, |model, _ctx| model.results_revision());
+
+        // `simulate_block` finishes its block and opens a new, empty active
+        // one; the finished block just before it is the one holding
+        // "line1"/"line2", and it must have both matches stored.
+        let block_index = BlockIndex(terminal_model.lock().block_list().active_block_index().0 - 1);
+        let stored_matches = |app: &mut App| {
+            test_model.update(app, |model, _ctx| {
+                model
+                    .async_find_controller
+                    .as_ref()
+                    .unwrap()
+                    .matches_for_block_grid(block_index, GridType::Output)
+                    .map(|matches| matches.len())
+            })
+        };
+        assert_eq!(
+            stored_matches(&mut app),
+            Some(2),
+            "the finished block should hold both matches"
+        );
+
+        // Enqueuing a dirty-range rescan -- what every wakeup does while the
+        // find bar is open -- is not a change: nothing is known yet, and it
+        // must not surface as "scanning".
+        test_model.update(&mut app, |model, ctx| {
+            model.invalidate_async_find_block(block_index, Some((0..=1, GridType::Output, 0)), ctx);
+        });
+        let (is_scanning, revision) = test_model.update(&mut app, |model, _ctx| {
+            (model.is_scanning(), model.results_revision())
+        });
+        assert!(
+            !is_scanning,
+            "a dirty-range rescan must not show as scanning"
+        );
+        assert_eq!(revision, revision_before);
+        assert!(
+            events.borrow().is_empty(),
+            "no RanFind for enqueuing a dirty-range rescan, got {:?}",
+            events.borrow()
+        );
+
+        // Let the background task rescan both rows and report back. It finds
+        // exactly what the full scan found, so still nothing changes.
+        for _ in 0..10 {
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
+        }
+        let (is_scanning, revision) = test_model.update(&mut app, |model, _ctx| {
+            (model.is_scanning(), model.results_revision())
+        });
+        assert!(!is_scanning);
+        assert_eq!(
+            revision, revision_before,
+            "a rescan that reproduces the results is not a change"
+        );
+        assert!(events.borrow().is_empty(), "got {:?}", events.borrow());
+        assert_eq!(stored_matches(&mut app), Some(2));
+
+        // A full rescan of the block is a real scan: it drops the block's
+        // matches, shows as scanning, and is announced.
+        test_model.update(&mut app, |model, ctx| {
+            model.invalidate_async_find_block(block_index, None, ctx);
+        });
+        let (is_scanning, revision) = test_model.update(&mut app, |model, _ctx| {
+            (model.is_scanning(), model.results_revision())
+        });
+        assert!(is_scanning, "a full rescan shows as scanning");
+        assert_ne!(revision, revision_before, "a full rescan is a change");
+        // The announcement is synchronous; the rescan's own results may or may
+        // not have been delivered yet, so only the first event is pinned down,
+        // and the stored matches are either dropped or already rescanned.
+        assert_eq!(events.borrow().first(), Some(&"RanFind"));
+        assert!(
+            matches!(stored_matches(&mut app), None | Some(2)),
+            "the full rescan drops the block's matches until it reports back"
+        );
+    });
 }
