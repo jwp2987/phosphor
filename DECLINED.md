@@ -1428,3 +1428,26 @@ upstream's behavior is actually a defect rather than a preference.
   is what zsh already produces and what the fallback's own comment says it is for.
   Covered by `block_test.rs::test_empty_command_grid_at_preexec_keeps_header_row`
   (+ `_ps1`) and `test_lazily_started_block_at_preexec_is_not_padded`.
+
+- **The kitty keyboard-mode stack is not preallocated per grid** (`#816`, 2026-10-12,
+  `app/src/terminal/model/grid/grid_handler.rs`, `app/src/terminal/model/grid/ansi_handler.rs`).
+  **Upstream:** `ansi_handler::State::new` builds the stack with
+  `BoundedVecDeque::new(KEYBOARD_MODE_STACK_MAX_DEPTH)`
+  (`4111d08f9:crates/warp_terminal/src/model/grid/ansi_handler.rs:141`, byte-identical), and
+  `reset_keyboard_mode_state` does the same. `BoundedVecDeque::new(n)` is
+  `VecDeque::with_capacity(n)`, so every `GridHandler` reserves 4096 x 4 B = 16 KiB on
+  construction. **The defect:** a block owns four grids (prompt, prompt+command, rprompt,
+  output), so that is 64 KiB retained for the life of every finished block -- by code
+  reading, 64 of the ~90 KiB a finished trivial block is modelled to keep (an estimate from
+  the struct definitions, not a measurement) -- for a stack that is empty in any grid that
+  never saw a `CSI > flags u`. The bound exists to cap a DoS, not to be paid up front.
+  **We do:** `new_keyboard_mode_stack()` creates the deque with the same `max_len` and zero
+  capacity, so it grows only when a program pushes a mode; `GridHandler::finish` calls
+  `shrink_to_fit` on it, since a finished grid takes no more input. Push/pop semantics and
+  the 4096 bound are unchanged (`test_keyboard_mode_stack_is_still_bounded_without_preallocation`).
+  **Measured:** no visible RSS change over 1000 trivial blocks (same ~0.125 MiB/block slope as
+  main, Xvfb harness 2026-10-12): the reservation was never written, so it was not resident.
+  The change saves reserved heap, not RSS; #816 stays open for the real per-block cost.
+  The fork-only `new_keyboard_mode_stack` marker is inert at re-pin (#752), so the row is also
+  anchored on `KEYBOARD_MODE_STACK_MAX_DEPTH`, which exists at both the fork and the pin
+  (`4111d08f9:crates/warp_terminal/src/model/grid/grid_handler.rs:94`). <!-- markers: keep:new_keyboard_mode_stack keep:KEYBOARD_MODE_STACK_MAX_DEPTH keep:test_keyboard_mode_stack_is_still_bounded_without_preallocation -->

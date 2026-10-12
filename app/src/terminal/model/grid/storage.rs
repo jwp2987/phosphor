@@ -259,6 +259,14 @@ impl Storage {
         self.len
     }
 
+    /// Number of rows the raw buffer has allocated space for, whether or not
+    /// they are active. Used by tests to check that truncation really releases
+    /// memory rather than only shortening `len`.
+    #[cfg(test)]
+    pub fn capacity(&self) -> usize {
+        self.inner.capacity()
+    }
+
     #[inline]
     /// Swap two visible lines. This function takes visible rows and converts them
     /// to grid indices and then raw storage indices.

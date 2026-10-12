@@ -104,6 +104,19 @@ const URL_SCAN_CHARACTER_MAX_COUNT: usize = 1000;
 /// bounded to prevent denial of service attacks.
 const KEYBOARD_MODE_STACK_MAX_DEPTH: usize = 4096;
 
+/// Builds an empty kitty keyboard-mode stack.
+///
+/// `BoundedVecDeque::new(max_len)` reserves `max_len` slots up front, which for
+/// [`KEYBOARD_MODE_STACK_MAX_DEPTH`] is 4096 x 4 B = 16 KiB per `GridHandler`.
+/// Every block owns four grids (prompt, prompt+command, rprompt, output), so
+/// that was 64 KiB retained per finished block for a stack that stays empty in
+/// any grid that never sees a `CSI > flags u` -- the single largest heap
+/// allocation a finished trivial block kept (#816). Start with no capacity and
+/// let the deque grow on push; the length bound is unchanged.
+pub(super) fn new_keyboard_mode_stack() -> BoundedVecDeque<KeyboardModes> {
+    BoundedVecDeque::with_capacity(0, KEYBOARD_MODE_STACK_MAX_DEPTH)
+}
+
 /// For escape sequences
 const CSI_START: &str = "\x1b[";
 const SGR_RESET_ATTRIBUTES: &str = "\x1b[0m";
@@ -1867,6 +1880,11 @@ impl GridHandler {
         if FeatureFlag::MaximizeFlatStorage.is_enabled() {
             self.resize_storage(1, self.columns());
         }
+
+        // A finished grid receives no more input, so any capacity the kitty
+        // keyboard-mode stack grew to while a program was running is dead
+        // weight for the rest of the block's life. Its contents are kept.
+        self.ansi_handler_state.keyboard_mode_stack.shrink_to_fit();
     }
 
     /// Returns the total number of rows that _precede_ the row containing the
@@ -2390,8 +2408,7 @@ impl GridHandler {
 
     /// Reset keyboard mode state to defaults.
     pub fn reset_keyboard_mode_state(&mut self) {
-        self.ansi_handler_state.keyboard_mode_stack =
-            BoundedVecDeque::new(KEYBOARD_MODE_STACK_MAX_DEPTH);
+        self.ansi_handler_state.keyboard_mode_stack = new_keyboard_mode_stack();
         self.set_keyboard_mode(KeyboardModes::NO_MODE, KeyboardModesApplyBehavior::Replace);
     }
 
