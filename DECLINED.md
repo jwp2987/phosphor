@@ -1337,3 +1337,27 @@ upstream's behavior is actually a defect rather than a preference.
   of needing one. **Not upstream's mechanism to diverge from** — the pin's
   `report_error()` is a live Sentry client with no local user-facing analogue,
   so this is a fork-original fix for a fork-original silence, not a port.
+
+- **An executed command with no shell echo still gets its header row** (#809,
+  2026-10-12, `app/src/terminal/model/block.rs`). **Upstream:** `Block::preexec`
+  finishes the command grid through `HeaderGrid::preexec`, which is a bare
+  `finish_command_grid()` — truncate at the cursor — and the completion-recovery
+  path (`ensure_executing_for_completion`) does the same
+  (`42effe840:app/src/terminal/model/header_grid.rs:1222`, byte-identical). The
+  "newer bash doesn't echo the newline for an empty command, force a linefeed so
+  the block stays visible" fallback lives only in `HeaderGrid::finish_command`, which
+  by then finds the grid already finished and does nothing. **The defect:** bash
+  echoes the submitted command line on **stderr**. After `exec 2>/dev/null` the echo
+  never arrives, so at preexec the grid is empty and gets truncated to zero rows;
+  `is_command_empty()` is then true, `prompt_height()`/`padding_top()`/
+  `command_padding_top()`/`prompt_and_command_height()` all go to zero and the
+  output grid is laid out `padding_middle` from the top of the block — while
+  `block_list_element.rs` still paints the Zap prompt label (`~ (0.026s)`) for every
+  visible non-PS1, non-background, non-static block. The first output row is drawn on
+  top of the header. **We do:** both "the command is now executing" transitions call
+  `HeaderGrid::finish_command(bootstrap_stage)` instead, so the existing fallback
+  gives the un-echoed command one blank row and the header keeps its lines; the same
+  gate (`is_empty_block_allowed`) applies as for the no-preexec case. The command
+  grid is deliberately not filled from `PreexecValue::command`: for bash that string
+  is cut at the first job-control token, so showing it would misreport the command.
+  Covered by `block_test.rs::test_empty_command_grid_at_preexec_keeps_header_row`.

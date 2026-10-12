@@ -3183,7 +3183,8 @@ impl Block {
         }
 
         self.ensure_started_for_preexec();
-        self.header_grid.finish_command_grid();
+        // Same as `preexec`: keep the blank command row when no echo reached the block (#809).
+        self.header_grid.finish_command(self.bootstrap_stage);
         self.leading_linefeeds_ignored = 0;
         self.output_grid.start();
         self.state = BlockState::Executing;
@@ -3610,7 +3611,14 @@ impl ansi::Handler for Block {
             self.start();
         }
 
-        self.header_grid.preexec(data.clone());
+        // Finish the command grid through `finish_command`, not `finish_command_grid`, so an
+        // executed command whose command line never reached the block still gets its (blank)
+        // row. bash echoes the submitted line on stderr, so after `exec 2>/dev/null` the grid is
+        // empty here; truncating it at the cursor left `is_command_empty()` true, and the layout
+        // then reserved zero lines for the prompt while the Zap prompt label was still painted
+        // for the block, so the first output row landed on top of the `~ (0.026s)` header. The
+        // same fallback already covers an empty command finished without a preexec (#809).
+        self.header_grid.finish_command(self.bootstrap_stage);
 
         let is_for_in_band_command = command_executor::is_in_band_command(data.command.as_str());
         if self.bootstrap_stage() == BootstrapStage::PostBootstrapPrecmd {

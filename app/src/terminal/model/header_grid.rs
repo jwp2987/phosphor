@@ -1217,6 +1217,9 @@ impl ansi::Handler for HeaderGrid {
     }
 
     fn preexec(&mut self, _data: PreexecValue) {
+        // `Block::preexec` does not route here: it calls `finish_command` with its bootstrap
+        // stage so an un-echoed command still keeps its row (#809). This remains the bare
+        // truncation for any caller that drives the header grid as a handler directly.
         self.finish_command_grid();
     }
 

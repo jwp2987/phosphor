@@ -8,7 +8,9 @@ use crate::{
         cell::Flags,
         header_grid::PromptEndPoint,
         session::SessionInfo,
-        test_utils::{create_test_block_with_grids, test_iterm_image, TestBlockBuilder},
+        test_utils::{
+            block_size, create_test_block_with_grids, test_iterm_image, TestBlockBuilder,
+        },
     },
     test_util::mock_blockgrid,
 };
@@ -524,6 +526,44 @@ pub fn test_empty_command() {
     block.finish(0);
 
     assert!(!block.is_command_empty());
+}
+
+/// Regression test (#809): a command that executed, but whose command line never reached the
+/// block, must still reserve the header row. bash echoes the submitted line on stderr, so after
+/// `exec 2>/dev/null` the command grid is still empty when `preexec` finishes it. The Zap prompt
+/// label (`~ (0.026s)`) is painted for every non-PS1 block regardless, so a zero-height header put
+/// the first output row on top of it.
+#[test]
+pub fn test_empty_command_grid_at_preexec_keeps_header_row() {
+    let mut block = TestBlockBuilder::new().build();
+    block.prompt_only_precmd(PromptMetadata::default());
+    block.start();
+
+    // No echo of the command line arrives before the command starts executing.
+    block.preexec(Default::default());
+    for c in "after-2devnull".chars() {
+        block.input(c);
+    }
+    block.on_finish_byte_processing(&ansi::ProcessorInput::new(&[]));
+    block.finish(0);
+
+    assert!(
+        !block.is_command_empty(),
+        "an executed command keeps a (blank) command row even without a shell echo"
+    );
+    let prompt_rows = block_size().warp_prompt_height_lines;
+    assert_lines_approx_eq!(block.prompt_height(), prompt_rows);
+
+    // The output grid starts below the prompt label and the blank command row, never on top of
+    // the label. With the test fixture: padding_top (0.2) + prompt (0.6) + command_padding_top
+    // (0.2) + one command row (1.0) + padding_middle (0.5).
+    assert!(
+        block.output_grid_offset() >= block.prompt_grid_offset() + block.prompt_height(),
+        "output must not overdraw the header: output offset {:?}, header ends at {:?}",
+        block.output_grid_offset(),
+        block.prompt_grid_offset() + block.prompt_height()
+    );
+    assert_lines_approx_eq!(block.output_grid_offset(), 2.5);
 }
 
 #[test]
