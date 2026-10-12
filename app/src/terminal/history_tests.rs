@@ -21,6 +21,7 @@ use itertools::Itertools;
 use warp_core::command::ExitCode;
 use warpui::{App, ModelHandle};
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::pin::pin;
 use std::sync::Arc;
@@ -205,6 +206,78 @@ async fn initialize_history_for_testing<F>(
                 .collect_vec(),
         );
     });
+}
+
+/// `History::visible_commands` is the lazy, double-ended source behind `commands()` and the
+/// per-keystroke autosuggestion scan (#811), which walks it from the back. Build the
+/// concatenation `histfile ++ session_commands` by hand with every visibility rule in play --
+/// a skip index in each half (the session-half one exercises the `idx + histfile_len`
+/// offset), a restored-block entry before the session start index, and an entry from another
+/// session after it -- and check the reverse walk is exactly `commands()` reversed.
+#[test]
+fn visible_commands_reverse_walk_matches_commands() {
+    let session_a = SessionId::from(1u64);
+    let session_b = SessionId::from(2u64);
+    let shell_host = ShellHost {
+        shell_type: ShellType::Bash,
+        user: "user".to_string(),
+        hostname: "host".to_string(),
+    };
+
+    // Indices into the concatenation, oldest first.
+    let histfile_commands = vec![
+        Arc::new(HistoryEntry::command_only("cd ~")), // 0
+        Arc::new(HistoryEntry::command_only("ls")),   // 1
+        Arc::new(HistoryEntry::command_only("ls")),   // 2: deduped -> skipped
+    ];
+    let histfile_len = histfile_commands.len();
+    let mut restored = HistoryEntry::with_session_id(session_a, "vim notes");
+    restored.is_for_restored_block = true;
+    let session_commands = vec![
+        Arc::new(restored), // 3: restored, before the start index, still visible to A
+        Arc::new(HistoryEntry::with_session_id(session_b, "make")), // 4: other session
+        Arc::new(HistoryEntry::with_session_id(session_a, "git status")), // 5
+        Arc::new(HistoryEntry::with_session_id(session_a, "git status")), // 6: deduped
+    ];
+
+    let mut history = History::default();
+    history
+        .history_file_commands
+        .insert(shell_host.clone(), histfile_commands);
+    history
+        .session_commands
+        .insert(shell_host.clone(), session_commands);
+    history
+        .session_id_to_shell_host
+        .insert(session_a, shell_host);
+    history
+        .session_start_indices
+        .insert(session_a, histfile_len + 1);
+    history
+        .session_skip_indices
+        .insert(session_a, HashSet::from([2, histfile_len + 3]));
+
+    let forward = history.commands(session_a).unwrap();
+    assert_eq!(
+        forward
+            .iter()
+            .map(|entry| entry.command.as_str())
+            .collect_vec(),
+        vec!["cd ~", "ls", "vim notes", "git status"]
+    );
+
+    let reverse = history
+        .visible_commands(session_a)
+        .unwrap()
+        .rev()
+        .map(Arc::as_ref)
+        .collect_vec();
+    assert_eq!(reverse, forward.iter().rev().copied().collect_vec());
+    assert_eq!(history.len(session_a), forward.len());
+
+    // A session the history has never heard of yields nothing from either accessor.
+    assert!(history.visible_commands(session_b).is_none());
+    assert!(history.commands(session_b).is_none());
 }
 
 #[test]

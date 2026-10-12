@@ -8239,19 +8239,23 @@ impl Input {
             .as_ref()
             .map(|completion_context| completion_context.session.clone());
 
+        // Get current ignored shell commands to filter during generation. They are also
+        // excluded from the history scan below so they never take up one of its bounded
+        // candidate slots (the loop in the future re-checks them; that is now redundant but
+        // harmless).
+        let ignored_suggestions = IgnoredSuggestionsModel::as_ref(ctx)
+            .get_ignored_suggestions_for_type(SuggestionType::ShellCommand);
         let reverse_chronological_potential_autosuggestions =
             NextCommandModel::get_reverse_chronological_potential_autosuggestions(
                 &buffer_text,
                 &completer_data,
+                &ignored_suggestions,
                 ctx,
             );
 
         let session_env_vars = self.sessions.read(ctx, |sessions, _| {
             sessions.get_env_vars_for_session(session_id)
         });
-        // Get current ignored shell commands to filter during generation
-        let ignored_suggestions = IgnoredSuggestionsModel::as_ref(ctx)
-            .get_ignored_suggestions_for_type(SuggestionType::ShellCommand);
         #[cfg(feature = "local_fs")]
         let conn = self.conn.clone();
         // Resolve the last completed block's lazily-computed fields now, synchronously, since the
@@ -8354,7 +8358,9 @@ impl Input {
                         {
                             return AutoSuggestionResult {
                                 buffer_text,
-                                autosuggestion_result: Some(reverse_chronological_command.command),
+                                autosuggestion_result: Some(
+                                    reverse_chronological_command.command.clone(),
+                                ),
                             };
                         }
                     }

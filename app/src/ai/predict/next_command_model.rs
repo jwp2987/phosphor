@@ -16,7 +16,7 @@ use futures::stream::AbortHandle;
 use itertools::Itertools;
 #[cfg_attr(not(feature = "local_fs"), allow(unused_imports))]
 use parking_lot::{FairMutex, Mutex};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 #[cfg(feature = "local_fs")]
 use std::time::Duration;
@@ -392,21 +392,33 @@ impl NextCommandModel {
 
     /// Returns the most recent command with a matching prefix run in the user's current working directory.
     /// If no such command exists, returns the most recent command anywhere with a matching prefix.
+    ///
+    /// The result is a bounded ranked candidate list (at most
+    /// [`MAX_HISTORY_AUTOSUGGESTION_CANDIDATES`] distinct commands) of shared entries, not a
+    /// deep copy of the whole matching history: callers walk it in order and stop at the first
+    /// command that passes `is_command_valid`, so only the head is ever consumed.
+    /// `excluded_commands` are dropped during the scan so they never occupy a slot in that head.
+    ///
+    /// This runs synchronously on the UI thread for every keystroke that lands with no
+    /// autosuggestion showing, so it must not do O(history) allocation (#811).
     pub fn get_reverse_chronological_potential_autosuggestions(
         prefix: &str,
         completer_data: &CompleterData,
+        excluded_commands: &HashSet<String>,
         app: &AppContext,
-    ) -> Option<Vec<HistoryEntry>> {
+    ) -> Option<Vec<Arc<HistoryEntry>>> {
         let session_id = completer_data.active_block_session_id()?;
-        let history_entries = History::as_ref(app).commands(session_id)?;
+        let history_entries = History::as_ref(app).visible_commands(session_id)?;
         let working_dir = completer_data
             .active_block_metadata
             .as_ref()
             .and_then(|block_metadata| block_metadata.current_working_directory());
         Some(find_potential_autosuggestions_from_history(
-            history_entries.into_iter(),
+            history_entries,
             prefix,
             working_dir,
+            excluded_commands,
+            MAX_HISTORY_AUTOSUGGESTION_CANDIDATES,
         ))
     }
 
@@ -450,7 +462,12 @@ impl NextCommandModel {
         let completion_context = completer_data.completion_session_context(ctx);
         // This is only needed if we have a prefix.
         let reverse_chronological_potential_autosuggestions = if let Some(prefix) = &prefix {
-            Self::get_reverse_chronological_potential_autosuggestions(prefix, &completer_data, ctx)
+            Self::get_reverse_chronological_potential_autosuggestions(
+                prefix,
+                &completer_data,
+                &HashSet::new(),
+                ctx,
+            )
         } else {
             None
         };
@@ -586,7 +603,7 @@ impl NextCommandModel {
                                 Ok(GenerateAIInputSuggestionsResponseV2 {
                                     commands: vec![reverse_chronological_command.command.clone()],
                                 ai_queries: vec![],
-                                most_likely_action: reverse_chronological_command.command,
+                                most_likely_action: reverse_chronological_command.command.clone(),
                             }),
                             request,
                             false,
@@ -930,19 +947,49 @@ pub async fn is_command_valid(
     true
 }
 
+/// How many distinct history candidates a prefix scan returns (per directory bucket, and in
+/// total).
+///
+/// Consumers take the first candidate that is not ignored and passes `is_command_valid`;
+/// validation only rejects a command whose file/folder/generator argument no longer resolves,
+/// so a window this deep is exhausted only when that many distinct recent matches are all
+/// stale (e.g. 256 different stale `cd s*` targets, newer than any that still resolves). Beyond
+/// it the consumer falls through to the completer, where the unbounded scan would have kept
+/// walking history. Each returned candidate is an `Arc` refcount bump, not a string copy, so
+/// the per-keystroke cost of a full window is at most 2 * 256 bumps.
+pub(crate) const MAX_HISTORY_AUTOSUGGESTION_CANDIDATES: usize = 256;
+
 /// Scans the given history entries in reverse order for commands that start
 /// with the buffer text to return as a potential autosuggestion. Prioritizes commands
 /// in history that were executed in the user's current working directory,
 /// with any command executed in other directories at the end.
+///
+/// Returns at most `limit` entries, each a distinct command within its directory bucket, as
+/// shared `Arc`s (no `HistoryEntry` is deep-copied). The walk stops as soon as the
+/// same-directory bucket holds `limit` commands: nothing older can outrank them, and the
+/// other-directory bucket is only consulted once the same-directory one is exhausted. With no
+/// (or too few) same-directory matches the walk does visit the whole history, but still
+/// retains at most `limit` entries per bucket.
+///
+/// Dedup is per bucket and keeps the newest occurrence, which is the one the unbounded list
+/// would have offered first; a later duplicate of a rejected command would be rejected for
+/// the same reason, so dropping it does not change which command is chosen.
 fn find_potential_autosuggestions_from_history<'a>(
-    history_entries: impl DoubleEndedIterator<Item = &'a HistoryEntry>,
+    history_entries: impl DoubleEndedIterator<Item = &'a Arc<HistoryEntry>>,
     buffer_text: &str,
     working_dir: Option<&str>,
-) -> Vec<HistoryEntry> {
-    let mut commands_in_same_dir = vec![];
-    let mut commands_in_other_dirs = vec![];
+    excluded_commands: &HashSet<String>,
+    limit: usize,
+) -> Vec<Arc<HistoryEntry>> {
+    if limit == 0 {
+        return vec![];
+    }
+    let mut commands_in_same_dir: Vec<&Arc<HistoryEntry>> = vec![];
+    let mut commands_in_other_dirs: Vec<&Arc<HistoryEntry>> = vec![];
+    let mut seen_in_same_dir: HashSet<&str> = HashSet::new();
+    let mut seen_in_other_dirs: HashSet<&str> = HashSet::new();
     for entry in history_entries.rev() {
-        if !entry.command.starts_with(buffer_text) {
+        if !entry.command.starts_with(buffer_text) || excluded_commands.contains(&entry.command) {
             continue;
         }
         let same_dir = entry
@@ -951,14 +998,24 @@ fn find_potential_autosuggestions_from_history<'a>(
             .zip(working_dir)
             .is_some_and(|(pwd, working_dir)| pwd == working_dir);
 
-        if same_dir {
-            commands_in_same_dir.push(entry.clone());
+        let (bucket, seen) = if same_dir {
+            (&mut commands_in_same_dir, &mut seen_in_same_dir)
         } else {
-            commands_in_other_dirs.push(entry.clone());
+            (&mut commands_in_other_dirs, &mut seen_in_other_dirs)
+        };
+        if bucket.len() < limit && seen.insert(entry.command.as_str()) {
+            bucket.push(entry);
+        }
+        if commands_in_same_dir.len() >= limit {
+            break;
         }
     }
-    commands_in_same_dir.extend(commands_in_other_dirs);
     commands_in_same_dir
+        .into_iter()
+        .chain(commands_in_other_dirs)
+        .take(limit)
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
