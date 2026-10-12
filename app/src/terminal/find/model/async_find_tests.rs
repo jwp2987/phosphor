@@ -1105,18 +1105,40 @@ fn test_dirty_range_invalidation_is_silent_until_results_differ() {
                 });
             });
         });
+
+        // The initial scan's last result may still be queued behind the 50 ms
+        // RanFind throttle; let it drain before the baseline is taken.
+        for _ in 0..10 {
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
+        }
+        events.borrow_mut().clear();
         let revision_before = test_model.update(&mut app, |model, _ctx| model.results_revision());
-        let active_block_index = terminal_model.lock().block_list().active_block_index();
+
+        // `simulate_block` finishes its block and opens a new, empty active
+        // one; the finished block just before it is the one holding
+        // "line1"/"line2", and it must have both matches stored.
+        let block_index = BlockIndex(terminal_model.lock().block_list().active_block_index().0 - 1);
+        let stored_matches = |app: &mut App| {
+            test_model.update(app, |model, _ctx| {
+                model
+                    .async_find_controller
+                    .as_ref()
+                    .unwrap()
+                    .matches_for_block_grid(block_index, GridType::Output)
+                    .map(|matches| matches.len())
+            })
+        };
+        assert_eq!(
+            stored_matches(&mut app),
+            Some(2),
+            "the finished block should hold both matches"
+        );
 
         // Enqueuing a dirty-range rescan -- what every wakeup does while the
         // find bar is open -- is not a change: nothing is known yet, and it
         // must not surface as "scanning".
         test_model.update(&mut app, |model, ctx| {
-            model.invalidate_async_find_block(
-                active_block_index,
-                Some((0..=0, GridType::Output, 0)),
-                ctx,
-            );
+            model.invalidate_async_find_block(block_index, Some((0..=1, GridType::Output, 0)), ctx);
         });
         let (is_scanning, revision) = test_model.update(&mut app, |model, _ctx| {
             (model.is_scanning(), model.results_revision())
@@ -1132,7 +1154,7 @@ fn test_dirty_range_invalidation_is_silent_until_results_differ() {
             events.borrow()
         );
 
-        // Let the background task rescan the row and report back. It finds
+        // Let the background task rescan both rows and report back. It finds
         // exactly what the full scan found, so still nothing changes.
         for _ in 0..10 {
             warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
@@ -1146,11 +1168,12 @@ fn test_dirty_range_invalidation_is_silent_until_results_differ() {
             "a rescan that reproduces the results is not a change"
         );
         assert!(events.borrow().is_empty(), "got {:?}", events.borrow());
+        assert_eq!(stored_matches(&mut app), Some(2));
 
-        // A full rescan of a block is a real scan: it drops the block's matches,
-        // shows as scanning, and is announced.
+        // A full rescan of the block is a real scan: it drops the block's
+        // matches, shows as scanning, and is announced.
         test_model.update(&mut app, |model, ctx| {
-            model.invalidate_async_find_block(active_block_index, None, ctx);
+            model.invalidate_async_find_block(block_index, None, ctx);
         });
         let (is_scanning, revision) = test_model.update(&mut app, |model, _ctx| {
             (model.is_scanning(), model.results_revision())
@@ -1158,7 +1181,12 @@ fn test_dirty_range_invalidation_is_silent_until_results_differ() {
         assert!(is_scanning, "a full rescan shows as scanning");
         assert_ne!(revision, revision_before, "a full rescan is a change");
         // The announcement is synchronous; the rescan's own results may or may
-        // not have been delivered yet, so only the first event is pinned down.
+        // not have been delivered yet, so only the first event is pinned down,
+        // and the stored matches are either dropped or already rescanned.
         assert_eq!(events.borrow().first(), Some(&"RanFind"));
+        assert!(
+            matches!(stored_matches(&mut app), None | Some(2)),
+            "the full rescan drops the block's matches until it reports back"
+        );
     });
 }
