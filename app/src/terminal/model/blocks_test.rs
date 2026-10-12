@@ -3001,7 +3001,7 @@ fn test_max_visible_columns_tracks_visible_blocks() {
     assert_eq!(block_list.max_visible_columns(), Some(base_columns));
 
     // Resizing every block narrows the maximum with them.
-    let narrow_columns = base_columns.saturating_sub(5).max(1);
+    let narrow_columns = base_columns.saturating_sub(5).max(2);
     let narrow = SizeUpdate {
         update_reason: SizeUpdateReason::Refresh,
         last_size: *block_list.size(),
