@@ -305,6 +305,79 @@ Started from a maintainer patch (`git am`, authorship kept):
   for a long-running command defaults its model chip to Ollama instead of
   inheriting the parent conversation's provider (pre-existing).
 
+### What landed — round 10, terminal robustness (2026-10-11 → 10-12)
+
+Triggered by two maintainer reports: "lag with 20+ tabs, typing sluggish" and
+"the terminal locked in a long-running command after a bad redirection". Every
+fix went through: write → Sonnet review → Opus refutation → one box build per
+branch → headless X11 before/after → merge to `main`. Five branches, no
+version bump (the maintainer's rule for the round: no numbered build until
+every item is done).
+
+- **#805** (`fix/805-unmounted-view-redraw`, `52a379f24`): pty output in a
+  hidden tab forced a full-window frame per chunk (`handle_terminal_wakeup` →
+  unconditional `ctx.notify()`; the workspace mounts only the active tab).
+  The presenter now records the views the last layout visited; a notified
+  view that is not mounted, and whose parent is not either, is still
+  re-rendered as the notification is flushed but no longer requests a frame.
+  **The first design parked the render until layout mounted the view again and
+  rendered it lazily inside `LayoutContext::layout`; refutation found that
+  `BlockListElement::layout` holds the terminal `FairMutex` across child layout
+  while `AIBlock::render` takes it — a guaranteed deadlock on tab switch.**
+  Dropped before it ever built. X11, 20 hidden tabs printing 2 lines/s:
+  361% → 52% total CPU, main thread 7% → 2%; 10 fast-streaming tabs 688% →
+  443%. Byte-identical at the pin — inherited.
+- **#806/#807** (`fix/806-hooks-to-tty`, `22571582a`): the reported lock-up
+  is NOT bad redirection syntax (≈75 stress cases — trailing `>`/`|`/`&&`,
+  unclosed quotes, heredocs, ctrl-c/z, nested shells, 60 s streams — all
+  complete). It is redirecting the interactive shell's own stdout
+  (`exec >/dev/null`, `exec > >(tee log)`, `exec >&-`): every hook was a
+  `printf` to fd 1, so CommandFinished vanished and the block spun forever
+  while keystrokes went raw into it. Hooks now go through `__warp_emit` →
+  `/dev/tty` (fd 1 fallback) in bash, zsh and fish. Same symptom from
+  `PROMPT_COMMAND='…'` at the prompt: the bash DEBUG trap now re-installs
+  `__bp_precmd_invoke_cmd` and emits the missed precmd. Known limit (in the
+  trap's comment): with PROMPT_COMMAND *unset* nothing runs at the prompt, so
+  the repair waits for the next command and that command's block has no
+  command line. Re-tested in native bash/zsh/fish sessions; the installed
+  0.1.11 still locks up on the same script.
+- **#811** (`fix/811-autosuggest-history-scan`, `d9f4e6262`): the per-keystroke
+  autosuggestion scan materialised the whole history and deep-cloned every
+  prefix match. Now a lazy double-ended iterator, newest-first, ≤256 distinct
+  candidates per directory bucket, `Arc` clones. 50k-line history, 140 keys:
+  main thread 0.45/0.40/0.36 s → 0.36/0.32/0.31 s (no-history floor 0.27).
+- **#810** (`fix/810-sumtree-rebuild`, `d76be14eb`): `BlockListElement::layout`
+  rebuilt the whole block-height SumTree twice per frame even with nothing to
+  update. Now O(1) when empty, in-place splice otherwise — and because that
+  rebuild was masking them, nine hidden-state/association mutations now
+  refresh their block's leaf explicitly (refutation caught the
+  `cli_controller` agent-monitored upgrade the first draft missed). 1000
+  blocks + 50k history: 0.44/0.46 s → 0.40/0.37 s main thread.
+- **Filed, not fixed** (report-only per the maintainer): #808 AI
+  auto-detection routes plain shell commands to the agent — hit independently
+  by both stress agents, including one-word builtins in a fresh tab; #809
+  stderr-redirect header overlap (cosmetic); #812 visible-pane output redraws
+  the whole window per chunk, additive across splits; #813 per-keystroke input
+  buffer copies (~25% of keystroke main-thread cost); #814 `columns_needed`
+  scans all blocks per frame; #815 open find bar doubles frames during output;
+  #816 ~0.2–0.4 MiB RSS per finished trivial block.
+
+Operational lessons from the round:
+
+- **The review → refute loop paid for itself three times**: a deadlock, a test
+  that contradicted its own rule, and a missed mutation site. Keep it for
+  anything that touches the presenter or block heights.
+- **Agents die with the usage limit** and leave nothing committed. Worktrees
+  were clean (they had not started editing), but a dead X11 agent would have
+  left its app instance on the display — check `ps` for `phosphor-oss-*` and
+  `Xvfb :9x` after any interrupted round before launching more.
+- **`pgrep -f` self-kill, again** (exit 144): the pattern was in the quoted
+  remote command. Two steps, always.
+- The tab-scaling, lockup and perf harnesses live in
+  `~/.claude/projects/-home-winters-git-phosphor/x11-tabs/` and the session
+  scratchpad (`x11/`, `lockup/`, `perf/`); `lockup/retest-806.md` and
+  `perf/RESULTS.md` are the evidence tables behind the issue numbers.
+
 ### What landed — #793 lane and round 9 (`integ/r9`, 2026-09-30 → 10-01)
 
 - **#793** (`fix/793-chip-prose-selection`, on main since `44718bdf5`, shipped in
