@@ -1354,10 +1354,24 @@ upstream's behavior is actually a defect rather than a preference.
   output grid is laid out `padding_middle` from the top of the block — while
   `block_list_element.rs` still paints the Zap prompt label (`~ (0.026s)`) for every
   visible non-PS1, non-background, non-static block. The first output row is drawn on
-  top of the header. **We do:** both "the command is now executing" transitions call
-  `HeaderGrid::finish_command(bootstrap_stage)` instead, so the existing fallback
-  gives the un-echoed command one blank row and the header keeps its lines; the same
-  gate (`is_empty_block_allowed`) applies as for the no-preexec case. The command
-  grid is deliberately not filled from `PreexecValue::command`: for bash that string
-  is cut at the first job-control token, so showing it would misreport the command.
-  Covered by `block_test.rs::test_empty_command_grid_at_preexec_keeps_header_row`.
+  top of the header. **We do:** both "the command is now executing" transitions
+  (`Block::preexec`, and `ensure_executing_for_completion` for a `CommandFinished`
+  whose `Preexec` was never observed) call `HeaderGrid::finish_command(bootstrap_stage)`
+  instead, so the existing fallback gives the un-echoed command one blank row and the
+  header keeps its lines, under the same `is_empty_block_allowed` gate. Only for blocks
+  that were already started when execution began: a block started *lazily* at preexec
+  (legacy-bash multi-line submissions, commands the shell ran that did not come from
+  the input editor, bash's never-started prompt-mode-switch block) has its echo in the
+  grid already and, in Zap-prompt mode, caches the command start at the post-echo
+  cursor, so the fallback would put a blank row under real command text; those keep the
+  bare truncation. The command grid is deliberately not filled from
+  `PreexecValue::command`: for bash that string is cut at the first job-control token,
+  so showing it would misreport the command. **Intended behaviour change beyond the
+  overdraw:** `complete_command` runs `ensure_executing_for_completion` on *every*
+  accepted `CommandFinished`, so at the pin the "newer bash doesn't echo the newline"
+  fallback in `finish_command` was dead in live sessions — the grid was always already
+  finished bare. A no-echo empty Enter in bash (post-bootstrap) therefore used to be a
+  height-0 block; it is now a visible empty block (Zap label plus one blank row), which
+  is what zsh already produces and what the fallback's own comment says it is for.
+  Covered by `block_test.rs::test_empty_command_grid_at_preexec_keeps_header_row`
+  (+ `_ps1`) and `test_lazily_started_block_at_preexec_is_not_padded`.

@@ -3498,11 +3498,15 @@ impl BlockList {
         {
             return;
         }
+        // Captured before either call below starts the block lazily; see
+        // `Block::finish_command_grid_for_execution` (#809).
+        let was_started = self.active_block().started();
         if self.is_bootstrapping_precmd_done() {
             EarlyOutput::preexec(self);
         }
         self.ensure_active_block_started();
-        self.active_block_mut().ensure_executing_for_completion();
+        self.active_block_mut()
+            .ensure_executing_for_completion(was_started);
     }
 
     /// Increments `self.in_flight_in_band_command_count` and starts the active block as usual.

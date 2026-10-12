@@ -564,6 +564,78 @@ pub fn test_empty_command_grid_at_preexec_keeps_header_row() {
         block.prompt_grid_offset() + block.prompt_height()
     );
     assert_lines_approx_eq!(block.output_grid_offset(), 2.5);
+    // The blank row is layout only: history persistence filters on a non-empty command.
+    assert_eq!(block.command_to_string(), "");
+}
+
+/// PS1 variant of the test above: the combined grid is the header here, so it must keep a
+/// non-zero height and the output must start below it.
+#[test]
+pub fn test_empty_command_grid_at_preexec_keeps_header_row_ps1() {
+    let mut block = TestBlockBuilder::new().with_honor_ps1(true).build();
+    block.prompt_only_precmd(PromptMetadata::default());
+    block.start();
+
+    block.preexec(Default::default());
+    for c in "after-2devnull".chars() {
+        block.input(c);
+    }
+    block.on_finish_byte_processing(&ansi::ProcessorInput::new(&[]));
+    block.finish(0);
+
+    assert!(!block.is_command_empty());
+    assert!(block.prompt_and_command_height() > Lines::zero());
+    assert!(
+        block.output_grid_offset()
+            >= block.prompt_and_command_grid_offset() + block.prompt_and_command_height(),
+        "output must not overdraw the header: output offset {:?}, header ends at {:?}",
+        block.output_grid_offset(),
+        block.prompt_and_command_grid_offset() + block.prompt_and_command_height()
+    );
+    assert_eq!(block.command_to_string(), "");
+}
+
+/// A block started lazily at `preexec` (legacy bash multi-line submissions, or a command the
+/// shell ran that did not come from the input editor) has already received its echo, and in
+/// Zap-prompt mode `start()` then caches the command start at the post-echo cursor. The #809
+/// blank-row fallback must not fire for it -- `cursor == command start` is true there even
+/// though the grid holds real command text -- so it must lay out exactly like a block that was
+/// started before the echo arrived.
+#[test]
+pub fn test_lazily_started_block_at_preexec_is_not_padded() {
+    let echo = |block: &mut Block| {
+        for c in "ls".chars() {
+            block.input(c);
+        }
+        block.carriage_return();
+        block.linefeed();
+        block.on_finish_byte_processing(&ansi::ProcessorInput::new(&[]));
+    };
+
+    let mut eager = TestBlockBuilder::new().build();
+    eager.prompt_only_precmd(PromptMetadata::default());
+    eager.start();
+    echo(&mut eager);
+    eager.preexec(Default::default());
+    eager.finish(0);
+
+    let mut lazy = TestBlockBuilder::new().build();
+    lazy.prompt_only_precmd(PromptMetadata::default());
+    echo(&mut lazy);
+    assert!(!lazy.started(), "fixture must exercise the lazy start, or this proves nothing");
+    lazy.preexec(Default::default());
+    assert!(lazy.started());
+    lazy.finish(0);
+
+    assert_eq!(lazy.contents_to_string(), eager.contents_to_string());
+    assert_lines_approx_eq!(
+        lazy.prompt_and_command_height(),
+        eager.prompt_and_command_height()
+    );
+    assert_lines_approx_eq!(
+        lazy.height(&TranscriptScope::Terminal),
+        eager.height(&TranscriptScope::Terminal)
+    );
 }
 
 #[test]
