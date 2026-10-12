@@ -244,6 +244,116 @@ fn test_edit_for_test() -> Result<()> {
     })
 }
 
+/// The version vector the memoised text was computed at, if there is one.
+fn cached_text_versions(buffer: &Buffer) -> Option<Global> {
+    buffer
+        .text_cache
+        .borrow()
+        .as_ref()
+        .map(|cached| cached.versions.clone())
+}
+
+/// `Buffer::text` memoises the materialised text against the version vector (#813):
+/// repeated reads without an intervening change must come from the cache, and every
+/// kind of change that alters the visible text -- edit, undo, redo, recreate -- must
+/// invalidate it.
+#[test]
+fn test_text_is_memoised_until_the_buffer_changes() -> Result<()> {
+    App::test((), |mut app| async move {
+        let buffer = app.add_model(|_| Buffer::new("abc"));
+        buffer.update(&mut app, |buffer, ctx| {
+            // A fresh buffer has nothing cached; the first read populates the cache at
+            // the current version and repeated reads hit it.
+            assert_eq!(cached_text_versions(buffer), None);
+            assert_eq!(buffer.text(), "abc");
+            assert_eq!(cached_text_versions(buffer), Some(buffer.versions()));
+            assert_eq!(buffer.text(), "abc");
+            assert_eq!(cached_text_versions(buffer), Some(buffer.versions()));
+
+            // An edit clears the cache at the fragment write and moves the version
+            // vector; the next read re-materialises the text at the new version.
+            let versions_before_edit = buffer.versions();
+            buffer.edit_for_test(
+                vec![to_char_index_range(3..3)],
+                "def",
+                EditOrigin::UserInitiated,
+                ctx,
+            )?;
+            assert_ne!(buffer.versions(), versions_before_edit);
+            assert_eq!(cached_text_versions(buffer), None);
+            assert_eq!(buffer.text(), "abcdef");
+            assert_eq!(cached_text_versions(buffer), Some(buffer.versions()));
+
+            // Undo and redo rewrite the fragments too, even though they only flip the
+            // visibility of existing ones, so they clear the cache the same way.
+            buffer.undo(ctx);
+            assert_eq!(cached_text_versions(buffer), None);
+            assert_eq!(buffer.text(), "abc");
+            assert_eq!(cached_text_versions(buffer), Some(buffer.versions()));
+            buffer.redo(ctx);
+            assert_eq!(cached_text_versions(buffer), None);
+            assert_eq!(buffer.text(), "abcdef");
+            assert_eq!(cached_text_versions(buffer), Some(buffer.versions()));
+
+            // Recreating the buffer resets the version vector to the one a fresh buffer
+            // has; the cache must not survive that.
+            let replica_id = buffer.replica_id();
+            buffer.recreate(replica_id, "xyz");
+            assert_eq!(cached_text_versions(buffer), None);
+            assert_eq!(buffer.text(), "xyz");
+            Ok(())
+        })
+    })
+}
+
+/// Style updates splice fragments without changing the visible text or the version
+/// vector, so the memoised text stays valid and stays correct across them.
+#[test]
+fn test_text_cache_survives_style_only_updates() -> Result<()> {
+    App::test((), |mut app| async move {
+        let buffer = app.add_model(|_| Buffer::new("abcdef"));
+        buffer.update(&mut app, |buffer, ctx| {
+            assert_eq!(buffer.text(), "abcdef");
+            let versions_before_style_update = buffer.versions();
+
+            let black_underline_style =
+                TextStyle::default().with_error_underline_color(ColorU::black());
+            buffer.update_styles(
+                vec![to_char_index_range(1..4)],
+                TextStyleOperation::default().set_error_underline_color(ColorU::black()),
+                ctx,
+            )?;
+
+            // The style landed on exactly "bcd" (asserted per character, because the
+            // fragment layout -- how many pieces the splice produced -- is an internal
+            // detail), but the version vector and the cache are both untouched, and the
+            // cached text is still right.
+            let plain = TextStyle::default();
+            assert_eq!(
+                buffer
+                    .stylized_chars()
+                    .map(|stylized_char| stylized_char.style())
+                    .collect::<Vec<_>>(),
+                vec![
+                    plain,
+                    black_underline_style,
+                    black_underline_style,
+                    black_underline_style,
+                    plain,
+                    plain,
+                ]
+            );
+            assert_eq!(buffer.versions(), versions_before_style_update);
+            assert_eq!(
+                cached_text_versions(buffer),
+                Some(versions_before_style_update)
+            );
+            assert_eq!(buffer.text(), "abcdef");
+            Ok(())
+        })
+    })
+}
+
 #[test]
 fn test_edit_with_text_style() -> Result<()> {
     App::test((), |mut app| async move {
