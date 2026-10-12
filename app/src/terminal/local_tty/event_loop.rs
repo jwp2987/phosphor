@@ -278,10 +278,12 @@ where
             FairMutexGuard::bump(terminal);
         }
 
-        // Queue a terminal redraw if we processed some number
-        // of non-(synchronized output) bytes.
+        // Queue a terminal wakeup if we processed some number of non-(synchronized output)
+        // bytes. This deliberately does not mark the view render-dirty: the model's
+        // `ansi::Handler` already did so for anything the bytes changed on screen, and the
+        // view skips its frame for a wakeup that arrives clean (#812).
         if bytes_processed > state.parser.sync_output_buffer_len().unwrap_or(0) {
-            self.event_listener.send_wakeup_event();
+            self.event_listener.send_byte_processing_wakeup_event();
         }
 
         Ok(())

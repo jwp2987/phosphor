@@ -2438,3 +2438,91 @@ fn ssh_login_classifies_current_last_line_after_scan_cursor_has_advanced() {
          has advanced"
     );
 }
+
+// --- #812: the render-dirty flag that gates the view's per-wakeup frame ---------------------
+
+/// Pty output that writes cells marks the model render-dirty; taking the flag clears it.
+#[test]
+fn pty_output_marks_render_dirty_until_taken() {
+    let mut terminal = TerminalModel::mock(None, None);
+    assert!(
+        terminal.take_render_dirty(),
+        "a fresh model starts dirty so the first wakeup always draws"
+    );
+    assert!(!terminal.take_render_dirty());
+
+    terminal.process_bytes("hello");
+
+    assert!(terminal.take_render_dirty(), "a cell write marks the flag");
+    assert!(!terminal.take_render_dirty(), "take clears the flag");
+}
+
+/// Block lifecycle hooks (preexec, command finished, precmd) change the block list and mark
+/// the flag even when they carry no printable bytes.
+#[test]
+fn block_lifecycle_marks_render_dirty() {
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.take_render_dirty();
+    terminal.simulate_long_running_block("sleep 5", "");
+    assert!(terminal.take_render_dirty(), "preexec marks the flag");
+
+    terminal.finish_block();
+
+    assert!(
+        terminal.take_render_dirty(),
+        "command_finished and precmd mark the flag"
+    );
+}
+
+/// Entering and leaving the alt screen swaps what the view renders.
+#[test]
+fn alt_screen_switch_marks_render_dirty() {
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.take_render_dirty();
+
+    terminal.process_bytes("\x1b[?1049h");
+    assert!(terminal.is_alt_screen_active());
+    assert!(
+        terminal.take_render_dirty(),
+        "entering the alt screen marks the flag"
+    );
+
+    terminal.process_bytes("\x1b[?1049l");
+    assert!(!terminal.is_alt_screen_active());
+    assert!(
+        terminal.take_render_dirty(),
+        "leaving the alt screen marks the flag"
+    );
+}
+
+/// A terminal query (`CSI 6 n`, cursor position report) only writes a response back to the
+/// pty; nothing on screen changes, so the wakeup that follows it must not force a frame.
+#[test]
+fn cursor_position_query_does_not_mark_render_dirty() {
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.process_bytes("hello");
+    terminal.take_render_dirty();
+
+    terminal.process_bytes("\x1b[6n");
+
+    assert!(
+        !terminal.take_render_dirty(),
+        "a cursor position report changes nothing the view renders"
+    );
+}
+
+/// Output captured for an in-band command never reaches a grid, so its chunks must not force
+/// frames either.
+#[test]
+fn captured_in_band_command_output_does_not_mark_render_dirty() {
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.start_in_band_command_output();
+    terminal.take_render_dirty();
+
+    terminal.process_bytes("captured generator output");
+
+    assert!(
+        !terminal.take_render_dirty(),
+        "captured in-band output is not rendered"
+    );
+}

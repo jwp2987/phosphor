@@ -437,6 +437,30 @@ these as expected, not as drift to reconcile.
 Each entry must say what upstream does, what we do instead, and the evidence that
 upstream's behavior is actually a defect rather than a preference.
 
+- **A pty read only earns a window frame if it changed something the view renders**
+  (`#812`, 2026-10-12, `app/src/terminal/event_listener.rs`,
+  `app/src/terminal/model/terminal_model.rs`, `app/src/terminal/view.rs`). **Upstream:**
+  every pty read ends in `send_wakeup_event`, and `TerminalView::handle_terminal_wakeup`
+  ends in an unconditional `ctx.notify()` plus the agent footer's
+  `notify_and_notify_children` (byte-identical at the pin; the audit in #812 confirmed every
+  path is inherited). **The defect:** a notify is a full-window layout+paint, so output that
+  changed nothing visible — captured in-band command and completions output, terminal
+  queries such as `CSI 6 n` / DA / XTVERSION that only write a response, the leading bytes
+  of a sequence completed by a later read — still cost a frame per chunk, and with split
+  panes those frames are additive. **We do:** keep a render-dirty bit on
+  `ChannelEventListener`, shared by every clone; the model's `ansi::Handler` marks it for
+  every render-affecting mutation (through `delegate!`, with `delegate_query!` for the pure
+  queries), every terminal event and explicit `send_wakeup_event` marks it, the pty event
+  loops send a non-marking `send_byte_processing_wakeup_event`, and the view takes the bit
+  once per wakeup and skips its notify when it is clear. Terminal events notify the view at
+  dispatch, since they arrive on a task separate from the wakeup stream and most arms of
+  `handle_terminal_event` mutate view state without notifying. **Honest scope:** output that
+  lands in a rendered background block (the issue's ticker) is a real screen change and
+  still earns its frame; the per-pane additivity and the full-window cost of a genuine
+  one-pane change are the issue's remaining follow-ups (window-level coalescing, damage
+  rect), so #812 stays open.
+  <!-- markers: keep:send_byte_processing_wakeup_event keep:take_render_dirty keep:delegate_query -->
+
 - **Zero-command Agent Mode input fails closed instead of vacuously auto-approving**
   (`#746`, 2026-09-27, `app/src/ai/blocklist/permissions.rs`). **Upstream:**
   `can_autoexecute_command` decomposes the command line into `commands: Vec<String>` and

@@ -223,7 +223,10 @@ impl EventLoop {
         let mut terminal_model = self.terminal_model.lock();
         self.parser
             .parse_bytes(&mut *terminal_model, bytes, &mut io::sink());
-        self.channel_event_listener.send_wakeup_event();
+        // The handler marked the view render-dirty for anything these bytes changed; the
+        // wakeup itself does not (#812).
+        self.channel_event_listener
+            .send_byte_processing_wakeup_event();
     }
 }
 

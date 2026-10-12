@@ -3656,6 +3656,13 @@ impl TerminalView {
         let (find_link_tx, find_link_rx) = async_channel::unbounded();
         ctx.subscribe_to_model(&model_events_handle, |me, _, event, ctx| {
             me.handle_terminal_event(event, ctx);
+            // Terminal events reach this view through `ModelEventDispatcher`'s own task, not
+            // the wakeup stream, and most arms of `handle_terminal_event` mutate view state
+            // without notifying. Before #812 the wakeup for the same pty read always drew that
+            // state; now that wakeup can arrive after the render-dirty bit was already taken
+            // and be skipped, so the event itself must earn the frame. One notify per event
+            // is bounded by the per-read frame it replaces.
+            ctx.notify();
         });
 
         ctx.subscribe_to_model(&ai_controller, |me, handle, event, ctx| {
@@ -9337,6 +9344,16 @@ impl TerminalView {
             model.block_list_mut().update_active_block_height();
         }
         self.maybe_emit_terminal_view_state_changed_for_long_running_block(ctx);
+
+        // A frame is a full-window layout+paint, so only build one if something the view
+        // renders changed since the last wakeup (#812). The model's `ansi::Handler` marks the
+        // flag for every render-affecting mutation, and every terminal event and explicit
+        // `send_wakeup_event` marks it too; the only wakeups that arrive clean are pty reads
+        // whose bytes touched nothing visible (captured in-band/completions output, terminal
+        // queries, or the leading bytes of a sequence that completes in a later read).
+        if !self.model.lock().take_render_dirty() {
+            return;
+        }
         self.use_agent_footer.update(ctx, |footer, ctx| {
             footer.notify_and_notify_children(ctx);
         });

@@ -2141,6 +2141,7 @@ impl TerminalModel {
     /// Resize terminal to new dimensions.
     /// The block sort direction is needed to update the state of the find dialog.
     pub fn resize(&mut self, size_update: SizeUpdate) {
+        self.mark_render_dirty();
         // Only resize the model on a pane size change or gap size change.  If it's just
         // the content height changing, we don't need to resize the model, and resizing
         // the model will actually clear the selection state, which we don't want to do.
@@ -2530,10 +2531,13 @@ impl TerminalModel {
     }
 }
 
-/// Used in the ansi::Handler implementation for TerminalModel below. Performs
-/// the provided method call on the active handler, either the block_list or the
-/// alt_screen if it is active.
-macro_rules! delegate {
+/// Performs the provided method call on the active handler, either the
+/// block_list or the alt_screen if it is active, WITHOUT marking the view
+/// render-dirty. Only for methods that cannot change what the view renders:
+/// terminal queries that just write a response (`CSI 6 n`, DA, XTVERSION,
+/// `CSI 14/18 t`, kitty keyboard flags), `on_finish_byte_processing`, and
+/// read-only lookups. Everything else uses [`delegate!`].
+macro_rules! delegate_query {
     ($self:ident.$method:ident( $( $arg:expr_2021 ),* )) => {
         if $self.alt_screen_active {
             $self.alt_screen.$method($( $arg ),*)
@@ -2543,6 +2547,21 @@ macro_rules! delegate {
     }
 }
 
+/// Used in the ansi::Handler implementation for TerminalModel below. Performs
+/// the provided method call on the active handler, either the block_list or the
+/// alt_screen if it is active.
+///
+/// Every method routed through here can change what the terminal view renders
+/// (cells, cursor, scroll, modes, images, block lifecycle), so it also marks
+/// the view render-dirty (#812): `TerminalView::handle_terminal_wakeup` only
+/// builds a frame for a wakeup if something was marked since the last one.
+macro_rules! delegate {
+    ($self:ident.$method:ident( $( $arg:expr_2021 ),* )) => {{
+        $self.mark_render_dirty();
+        delegate_query!($self.$method($( $arg ),*))
+    }}
+}
+
 impl TerminalModel {
     /// Registers a client-generated session ID so that DCS hooks carrying
     /// this ID will be accepted by the integrity check.
@@ -2550,8 +2569,25 @@ impl TerminalModel {
         self.registered_session_ids.insert(session_id);
     }
 
+    /// Records that something the terminal view renders has changed (#812).
+    ///
+    /// Called by every render-affecting `ansi::Handler` method below (through
+    /// [`delegate!`] or explicitly), and by [`ChannelEventListener`] for every
+    /// terminal event and explicit wakeup. The flag lives on the event proxy so
+    /// that blocks, early output and background timers share it.
+    pub fn mark_render_dirty(&self) {
+        self.event_proxy.mark_render_dirty();
+    }
+
+    /// Returns whether anything the view renders changed since the last call,
+    /// and clears the flag. The terminal view calls this once per wakeup and
+    /// skips its frame when it returns `false`.
+    pub fn take_render_dirty(&self) -> bool {
+        self.event_proxy.take_render_dirty()
+    }
+
     pub fn needs_bracketed_paste(&mut self) -> bool {
-        delegate!(self.needs_bracketed_paste())
+        delegate_query!(self.needs_bracketed_paste())
     }
 
     pub fn set_marked_text(&mut self, marked_text: &str, selected_range: &Range<usize>) {
@@ -2746,6 +2782,8 @@ impl ansi::Handler for TerminalModel {
             return;
         }
 
+        self.mark_render_dirty();
+
         // Filter out null bytes from the title string.
         let filtered_title = title.map(|t| t.replace('\0', ""));
 
@@ -2823,15 +2861,15 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn identify_terminal<W: std::io::Write>(&mut self, writer: &mut W, intermediate: Option<char>) {
-        delegate!(self.identify_terminal(writer, intermediate));
+        delegate_query!(self.identify_terminal(writer, intermediate));
     }
 
     fn report_xtversion<W: std::io::Write>(&mut self, writer: &mut W) {
-        delegate!(self.report_xtversion(writer));
+        delegate_query!(self.report_xtversion(writer));
     }
 
     fn device_status<W: std::io::Write>(&mut self, writer: &mut W, arg: usize) {
-        delegate!(self.device_status(writer, arg));
+        delegate_query!(self.device_status(writer, arg));
     }
 
     fn move_forward(&mut self, columns: usize) {
@@ -2955,6 +2993,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn reset_state(&mut self) {
+        self.mark_render_dirty();
         self.title_stack = Vec::new();
         self.title = None;
 
@@ -2967,11 +3006,13 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn terminal_attribute(&mut self, attribute: ansi::Attr) {
+        self.mark_render_dirty();
         self.alt_screen.terminal_attribute(attribute);
         self.block_list.terminal_attribute(attribute);
     }
 
     fn set_mode(&mut self, mode: ansi::Mode) {
+        self.mark_render_dirty();
         if let ansi::Mode::SwapScreen {
             save_cursor_and_clear_screen,
         } = mode
@@ -2986,6 +3027,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn unset_mode(&mut self, mode: ansi::Mode) {
+        self.mark_render_dirty();
         match mode {
             ansi::Mode::SwapScreen {
                 save_cursor_and_clear_screen,
@@ -3026,6 +3068,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn set_color(&mut self, index: usize, color: warpui::color::ColorU) {
+        self.mark_render_dirty();
         self.override_colors[index] = Some(color);
     }
 
@@ -3045,6 +3088,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn reset_color(&mut self, index: usize) {
+        self.mark_render_dirty();
         self.override_colors[index] = None;
     }
 
@@ -3076,11 +3120,11 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn text_area_size_pixels<W: std::io::Write>(&mut self, writer: &mut W) {
-        delegate!(self.text_area_size_pixels(writer));
+        delegate_query!(self.text_area_size_pixels(writer));
     }
 
     fn text_area_size_chars<W: std::io::Write>(&mut self, writer: &mut W) {
-        delegate!(self.text_area_size_chars(writer));
+        delegate_query!(self.text_area_size_chars(writer));
     }
 
     fn prompt_marker(&mut self, marker: ansi::PromptMarker) {
@@ -3104,6 +3148,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn command_finished(&mut self, data: CommandFinishedValue) {
+        self.mark_render_dirty();
         let disposition = self
             .block_list
             .classify_next_block_id(&data.completion_metadata.next_block_id);
@@ -3135,10 +3180,12 @@ impl ansi::Handler for TerminalModel {
         // etc.) would silently swallow updates emitted by tools it
         // launches. The shell's CWD belongs on the block list regardless
         // of what's currently rendered on screen.
+        self.mark_render_dirty();
         self.block_list.set_current_working_directory(path);
     }
 
     fn precmd_with_completion_metadata(&mut self, data: PrecmdValue) {
+        self.mark_render_dirty();
         let disposition = self
             .block_list
             .classify_next_block_id(&data.completion_metadata.next_block_id);
@@ -3165,6 +3212,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn prompt_only_precmd(&mut self, data: PromptMetadata) {
+        self.mark_render_dirty();
         let transition = self.plan_lifecycle_transition(
             LifecycleInput::PromptOnlyPrecmd,
             None,
@@ -3178,6 +3226,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn preexec(&mut self, data: PreexecValue) {
+        self.mark_render_dirty();
         let active_block = self.block_list.active_block();
         let observation = if active_block.state() == BlockState::Executing {
             if active_block.command_to_string() == data.command.as_str() {
@@ -3197,6 +3246,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn bootstrapped(&mut self, value: BootstrappedValue) {
+        self.mark_render_dirty();
         self.block_list.bootstrapped(value.clone());
 
         let pending_session_info = match self.pending_session_info.take() {
@@ -3285,6 +3335,7 @@ impl ansi::Handler for TerminalModel {
 
     fn init_shell(&mut self, data: InitShellValue) {
         if !self.ignore_bootstrapping_messages {
+            self.mark_render_dirty();
             let hook_session_id = Some(data.session_id.as_u64());
             let transition = self.plan_lifecycle_transition(
                 LifecycleInput::InitShell,
@@ -3344,6 +3395,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn clear(&mut self, _data: ClearValue) {
+        self.mark_render_dirty();
         self.clear_visible_screen();
     }
 
@@ -3534,7 +3586,7 @@ impl ansi::Handler for TerminalModel {
             }
         }
 
-        delegate!(self.on_finish_byte_processing(input))
+        delegate_query!(self.on_finish_byte_processing(input))
     }
 
     fn on_reset_grid(&mut self) {
@@ -3803,6 +3855,8 @@ impl ansi::Handler for TerminalModel {
             log::warn!("Received 'end_kitty_action_receiving' while not expecting to read kitty image chunks.");
             return;
         };
+        // Stores, placements and deletions below all change what is drawn.
+        self.mark_render_dirty();
 
         let message_id = pending.control_data.image_id;
         let verbosity = pending.control_data.verbosity;
@@ -3972,7 +4026,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn query_keyboard_enhancement_flags<W: std::io::Write>(&mut self, writer: &mut W) {
-        delegate!(self.query_keyboard_enhancement_flags(writer));
+        delegate_query!(self.query_keyboard_enhancement_flags(writer));
     }
 }
 
