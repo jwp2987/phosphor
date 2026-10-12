@@ -555,27 +555,33 @@ impl TerminalFindModel {
         // Call find on the the last block's command and output grids.
         // If the block is a new finished block, the matches are inserted at a new key, the block's index in the blocklist.
         // If the block is an active, running block, its matches are overwritten in the terminal's block_matches.
-        if let Some(block) = self
-            .terminal_model
-            .lock()
-            .block_list()
-            .block_at(last_block_index)
-        {
+        // The lock guard must be gone before `mark_results_changed` (which needs
+        // `&mut self`), so the rerun happens inside this block and only its
+        // verdict escapes.
+        let changed = {
+            let terminal_model = self.terminal_model.lock();
+            let Some(block) = terminal_model.block_list().block_at(last_block_index) else {
+                return;
+            };
             let block_sort_direction = InputModeSettings::handle(ctx)
                 .as_ref(ctx)
                 .input_mode
                 .value()
                 .block_sort_direction();
 
-            if let Some(old_find_run) = self.block_list_find_run.take() {
-                let (new_find_run, changed) =
-                    old_find_run.rerun_on_block(block, last_block_index, block_sort_direction);
-                self.block_list_find_run = Some(new_find_run);
-                if changed {
-                    self.mark_results_changed();
-                    ctx.emit(FindEvent::RanFind);
+            match self.block_list_find_run.take() {
+                Some(old_find_run) => {
+                    let (new_find_run, changed) =
+                        old_find_run.rerun_on_block(block, last_block_index, block_sort_direction);
+                    self.block_list_find_run = Some(new_find_run);
+                    changed
                 }
+                None => false,
             }
+        };
+        if changed {
+            self.mark_results_changed();
+            ctx.emit(FindEvent::RanFind);
         }
     }
 
@@ -663,21 +669,30 @@ impl TerminalFindModel {
             return;
         }
 
-        let terminal_model = self.terminal_model.lock();
-        if let (Some(block_list_find_run), Some(filtered_block)) = (
-            self.block_list_find_run.as_mut(),
-            terminal_model.block_list().block_at(block_index),
-        ) {
-            let block_sort_direction = InputModeSettings::as_ref(ctx)
-                .input_mode
-                .value()
-                .block_sort_direction();
+        // Same shape as the sync path of `rerun_find_on_active_grid`: release
+        // the lock guard before `mark_results_changed` needs `&mut self`.
+        let changed = {
+            let terminal_model = self.terminal_model.lock();
+            if let (Some(block_list_find_run), Some(filtered_block)) = (
+                self.block_list_find_run.as_mut(),
+                terminal_model.block_list().block_at(block_index),
+            ) {
+                let block_sort_direction = InputModeSettings::as_ref(ctx)
+                    .input_mode
+                    .value()
+                    .block_sort_direction();
 
-            block_list_find_run.update_matches_for_filtered_block(
-                filtered_block,
-                block_index,
-                block_sort_direction,
-            );
+                block_list_find_run.update_matches_for_filtered_block(
+                    filtered_block,
+                    block_index,
+                    block_sort_direction,
+                );
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
             self.mark_results_changed();
             ctx.emit(FindEvent::RanFind);
         }
