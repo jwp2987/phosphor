@@ -332,7 +332,7 @@ pub fn first_token_forces_ai_override(
     commands_fully_loaded || buffer_has_prose_colon_shape(&input.buffer_text)
 }
 
-/// Char/// Characters that end a bare shell word when [`is_unambiguous_shell_command`] scans
+/// Characters that end a bare shell word when [`is_unambiguous_shell_command`] scans
 /// `buffer_text` for operators and their neighbors, and that cut the head word off an operator
 /// glued to it (`yes|head`, `ls>out.txt`).
 const SHELL_WORD_TERMINATORS: [char; 8] = ['|', '&', ';', '<', '>', '(', ')', '`'];
@@ -348,7 +348,7 @@ lazy_static! {
         "the", "an", "this", "that", "these", "those", "it", "its", "is", "are", "was", "were",
         "be", "been", "my", "me", "your", "our", "their", "them", "they", "we", "you", "i", "to",
         "for", "of", "with", "and", "into", "through", "why", "how", "what", "whether", "sure",
-        "please", "should", "would", "could", "can",
+        "please", "should", "would", "could", "can", "then", "or", "if", "but", "so",
     ]);
 }
 
@@ -370,7 +370,9 @@ fn is_apostrophe_in_word(text: &str, index: usize) -> bool {
 
 /// True iff `text` quotes the way a finished bash command line does: every `'`, `"` and `` ` ``
 /// opened outside quotes is closed (backslash escapes honored outside and inside double quotes /
-/// backticks), and no unquoted `'` sits inside a word ([`is_apostrophe_in_word`]).
+/// backticks), no unquoted `'` sits inside a word ([`is_apostrophe_in_word`]), and the line does
+/// not end in an unescaped backslash (a line continuation — `ls -la \` — which also parks bash at
+/// its `PS2` prompt; `text` is trimmed, so a trailing backslash is always the last byte).
 fn has_shell_safe_quoting(text: &str) -> bool {
     let bytes = text.as_bytes();
     let mut quote: Option<u8> = None;
@@ -394,6 +396,9 @@ fn has_shell_safe_quoting(text: &str) -> bool {
             }
             None => match b {
                 b'\\' => {
+                    if i + 1 == bytes.len() {
+                        return false;
+                    }
                     i += 2;
                     continue;
                 }

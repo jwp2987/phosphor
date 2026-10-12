@@ -536,8 +536,12 @@ fn test_is_unambiguous_shell_command_leaves_prose_and_ambiguous_input_to_the_cla
             "watch Netflix",
             "date Sarah",
             "free Willy",
-            // An apostrophe inside a word is an unbalanced quote to bash.
+            // An apostrophe inside a word, or a trailing line continuation, parks bash at `PS2`.
             "find Josh's PR",
+            "ls -la \\",
+            // Function words after an operator (rule 1 does no prose check of its own).
+            "rm junk if present; ls",
+            "cd src && ls, then git status",
             // An assignment prefix is not head evidence, and the #696 colon shape still vetoes.
             "FOO=1 run exactly this: sleep 8; echo hi > ~/x",
             // Slash commands that reach autodetection are not paths.
@@ -551,6 +555,34 @@ fn test_is_unambiguous_shell_command_leaves_prose_and_ambiguous_input_to_the_cla
             );
         }
     });
+}
+
+#[test]
+fn test_has_shell_safe_quoting() {
+    // Closed quotes, escapes, and apostrophes that are inside quotes are safe.
+    for text in ["\\'", "echo \"it's\"", "echo 'don\"t'", "echo a\\\\"] {
+        assert!(
+            has_shell_safe_quoting(text),
+            "expected {text:?} to be safe quoting"
+        );
+    }
+    // An apostrophe inside an unquoted word (a contraction or possessive to a human, an opening
+    // quote to bash), an unbalanced quote, a trailing line continuation, and an ANSI-C quoted
+    // string with an escaped apostrophe (unsafe conservatively: the `s'` after it reads as an
+    // in-word apostrophe) are not.
+    for text in [
+        "find Josh's PR",
+        "a'b c'd",
+        "ls -la \\",
+        "rm -rf build\\",
+        "echo 'unterminated",
+        "$'it\\'s'",
+    ] {
+        assert!(
+            !has_shell_safe_quoting(text),
+            "expected {text:?} to be unsafe quoting"
+        );
+    }
 }
 
 #[test]
