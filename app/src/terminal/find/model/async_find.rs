@@ -343,10 +343,18 @@ impl BlockFindResults {
     }
 
     /// Removes all results for a specific block index.
-    fn remove_block(&mut self, block_index: BlockIndex) {
+    ///
+    /// Returns `true` if the block had any stored matches, i.e. if removing it
+    /// changed what a consumer of these results can observe.
+    fn remove_block(&mut self, block_index: BlockIndex) -> bool {
+        let had_matches = self
+            .terminal_matches
+            .iter()
+            .any(|((idx, _), matches)| *idx == block_index && !matches.is_empty());
         self.terminal_matches
             .retain(|(idx, _), _| *idx != block_index);
         self.terminal_total_indices.remove(&block_index);
+        had_matches
     }
 
     /// Updates matches for a dirty range within a specific block grid.
@@ -355,13 +363,19 @@ impl BlockFindResults {
     /// inserts the new matches in their place, maintaining ascending order.
     ///
     /// Adapted from `FilterState::update_dirty_matches` in filtering.rs.
+    ///
+    /// Returns `true` if the stored matches changed, i.e. if the matches that
+    /// lay in the dirty range differ from `new_matches`. A rescan that finds
+    /// exactly what was already there -- the common case while a command streams
+    /// output that does not touch the query -- reports `false`, and callers use
+    /// that to skip the repaint it would otherwise cost (#815).
     fn update_dirty_matches(
         &mut self,
         block_index: BlockIndex,
         grid_type: GridType,
         dirty_range: RangeInclusive<u64>,
         new_matches: Vec<AbsoluteMatch>,
-    ) {
+    ) -> bool {
         let matches = self
             .terminal_matches
             .entry((block_index, grid_type))
@@ -369,8 +383,9 @@ impl BlockFindResults {
 
         // If there are no current matches, just insert the new ones.
         if matches.is_empty() {
+            let changed = !new_matches.is_empty();
             *matches = new_matches;
-            return;
+            return changed;
         }
 
         // If the dirty range is before all existing matches, insert at the start.
@@ -378,8 +393,11 @@ impl BlockFindResults {
             .first()
             .is_some_and(|first_match| *dirty_range.end() < first_match.start_row())
         {
+            if new_matches.is_empty() {
+                return false;
+            }
             matches.splice(0..0, new_matches);
-            return;
+            return true;
         }
 
         // If the dirty range is after all existing matches, append at the end.
@@ -387,8 +405,11 @@ impl BlockFindResults {
             .last()
             .is_some_and(|last_match| last_match.end_row() < *dirty_range.start())
         {
+            if new_matches.is_empty() {
+                return false;
+            }
             matches.extend(new_matches);
-            return;
+            return true;
         }
 
         // Find the range of matches that overlap with the dirty range.
@@ -411,6 +432,11 @@ impl BlockFindResults {
             replace_start..replace_start
         };
 
+        // The rescan reproduced the matches it replaces: nothing to do.
+        if matches[replace_range.clone()] == new_matches[..] {
+            return false;
+        }
+
         matches.splice(replace_range, new_matches);
 
         // Assert that matches are still in ascending order.
@@ -418,6 +444,7 @@ impl BlockFindResults {
             matches.windows(2).all(|w| w[0] <= w[1]),
             "Matches should be in ascending order after update_dirty_matches"
         );
+        true
     }
 }
 
@@ -459,8 +486,8 @@ pub struct AsyncFindController {
     result_tx: Option<async_channel::Sender<FindTaskMessage>>,
 
     /// Sender for the throttled UI-update channel. `process_message` sends
-    /// a `()` signal here; a throttled stream on the other end emits
-    /// `FindEvent::RanFind` at most every 50 ms.
+    /// a `()` signal here whenever a message changed the results; a throttled
+    /// stream on the other end emits `FindEvent::RanFind` at most every 50 ms.
     throttle_tx: Option<async_channel::Sender<()>>,
 
     /// Handle to abort the background task's future.
@@ -858,18 +885,27 @@ impl AsyncFindController {
     ///
     /// Called by the result stream's `on_item` callback for each message
     /// delivered from the background task.
+    ///
+    /// Returns `true` if the message changed anything a consumer of this
+    /// controller can observe: the stored match set (positions or filtered
+    /// flags), the focused match, or the scanning state. Only then is the
+    /// throttled UI-update stream signalled, so a dirty-range rescan that finds
+    /// exactly what was already there emits no `FindEvent::RanFind` and costs
+    /// no frame (#815).
     pub fn process_message(
         &mut self,
         msg: FindTaskMessage,
         ctx: &mut ModelContext<TerminalFindModel>,
-    ) {
-        match msg {
+    ) -> bool {
+        let changed = match msg {
             FindTaskMessage::BlockGridMatches {
                 block_index,
                 grid_type,
                 matches,
             } => {
-                if !matches.is_empty() {
+                if matches.is_empty() {
+                    false
+                } else {
                     // Store TotalIndex for this block if not already known
                     // (e.g. the block was added after the initial scan).
                     if !self
@@ -901,6 +937,7 @@ impl AsyncFindController {
                     // filter-hidden rows so they're excluded from the count,
                     // focus, and highlights (also re-clamps focus).
                     self.recompute_filtered_for_block(block_index);
+                    true
                 }
             }
             FindTaskMessage::DirtyRangeMatches {
@@ -909,7 +946,7 @@ impl AsyncFindController {
                 dirty_range,
                 matches,
             } => {
-                self.block_results.update_dirty_matches(
+                let matches_changed = self.block_results.update_dirty_matches(
                     block_index,
                     grid_type,
                     dirty_range,
@@ -918,15 +955,17 @@ impl AsyncFindController {
                 // Prune matches that have been truncated from scrollback.
                 // Dirty range messages arrive when the active block receives
                 // new output, which is exactly when truncation can occur.
-                self.prune_truncated_matches(block_index, grid_type);
+                let pruned = self.prune_truncated_matches(block_index, grid_type);
                 // Recompute filter-hidden state for the (possibly updated)
                 // output matches; also re-clamps the focused index.
-                self.recompute_filtered_for_block(block_index);
+                let filtering_changed = self.recompute_filtered_for_block(block_index);
+                matches_changed || pruned || filtering_changed
             }
             FindTaskMessage::ScanAIBlock {
                 view_id,
                 total_index,
             } => {
+                let mut changed = false;
                 // Scan AI block on main thread.
                 if let Some(view) = self.rich_content_views.get(&view_id)
                     && let Some(config) = &self.current_config
@@ -951,18 +990,24 @@ impl AsyncFindController {
                             .ai_total_indices
                             .insert(view_id, total_index);
                         self.clamp_focused_match_index();
+                        changed = true;
                     }
                 }
+                changed
             }
             FindTaskMessage::Done => {
+                let changed = self.status != AsyncFindStatus::Complete;
                 self.status = AsyncFindStatus::Complete;
+                changed
             }
-        }
+        };
 
-        // Signal the throttled UI-update stream.
-        if let Some(tx) = &self.throttle_tx {
+        // Signal the throttled UI-update stream, but only for a change that is
+        // worth a frame.
+        if changed && let Some(tx) = &self.throttle_tx {
             let _ = tx.try_send(());
         }
+        changed
     }
 
     /// Cancels the current find operation, if any.
@@ -1014,24 +1059,46 @@ impl AsyncFindController {
     /// * `block_index` - The index of the block that changed.
     /// * `dirty_info` - If provided, a `(row_range, grid_type, num_lines_truncated)`
     ///   tuple describing the dirty region. If `None`, a full block rescan is enqueued.
+    ///
+    /// Returns `true` if this call itself changed observable state. A full
+    /// rescan drops the block's stale matches and shows the scanning indicator,
+    /// so it does; a dirty-range rescan changes nothing until its results
+    /// arrive via [`Self::process_message`], so it does not.
+    ///
+    /// A dirty-range rescan deliberately does **not** flip the status to
+    /// `Scanning`. It covers the handful of rows the last output chunk touched
+    /// and completes within the same throttle window, so the find bar would
+    /// only ever show its `N+ ...` scanning label for one frame -- which is what
+    /// happened: every output chunk flipped the label to `N+ ...` in the
+    /// wakeup's frame and back to `i/N` in a second, otherwise identical frame
+    /// (#815). The indicator is still shown for a full scan, where the count
+    /// genuinely grows over time.
     pub fn invalidate_block(
         &mut self,
         block_index: BlockIndex,
         dirty_info: Option<(RangeInclusive<usize>, GridType, u64)>,
-    ) {
+    ) -> bool {
         if self.current_config.is_none() {
-            return;
+            return false;
         }
 
         let Some(queue) = self.work_queue.clone() else {
-            return;
+            return false;
         };
 
-        // For a full block rescan (no dirty range), clear existing results now
-        // so stale matches are not shown while the rescan is pending.
+        let mut changed = false;
         if dirty_info.is_none() {
-            self.block_results.remove_block(block_index);
-            self.clamp_focused_match_index();
+            // For a full block rescan (no dirty range), clear existing results now
+            // so stale matches are not shown while the rescan is pending.
+            let removed = self.block_results.remove_block(block_index);
+            let focus_changed = self.clamp_focused_match_index();
+            changed = removed || focus_changed;
+
+            // A full rescan is a real scan: surface it in the find bar.
+            if self.status != AsyncFindStatus::Scanning {
+                self.status = AsyncFindStatus::Scanning;
+                changed = true;
+            }
         }
 
         log::trace!(
@@ -1041,10 +1108,7 @@ impl AsyncFindController {
         );
 
         queue.invalidate_block(block_index, dirty_info);
-
-        // Mark status as scanning so the polling loop stays alive while the
-        // background task processes the new work.
-        self.status = AsyncFindStatus::Scanning;
+        changed
     }
 
     /// Returns matches for a specific terminal block grid as AbsoluteMatch references.
@@ -1069,11 +1133,13 @@ impl AsyncFindController {
     ///
     /// This removes matches whose start row has been truncated from scrollback,
     /// keeping the match count and focused index accurate.
-    fn prune_truncated_matches(&mut self, block_index: BlockIndex, grid_type: GridType) {
+    ///
+    /// Returns `true` if any match was removed.
+    fn prune_truncated_matches(&mut self, block_index: BlockIndex, grid_type: GridType) -> bool {
         let num_lines_truncated = {
             let model = self.terminal_model.lock();
             let Some(block) = model.block_list().block_at(block_index) else {
-                return;
+                return false;
             };
             match grid_type {
                 GridType::Output => block.output_grid().grid_handler().num_lines_truncated(),
@@ -1081,21 +1147,24 @@ impl AsyncFindController {
                     .prompt_and_command_grid()
                     .grid_handler()
                     .num_lines_truncated(),
-                _ => return,
+                _ => return false,
             }
         };
 
         if num_lines_truncated == 0 {
-            return;
+            return false;
         }
 
-        if let Some(matches) = self
+        let Some(matches) = self
             .block_results
             .terminal_matches
             .get_mut(&(block_index, grid_type))
-        {
-            matches.retain(|m| !m.is_truncated(num_lines_truncated));
-        }
+        else {
+            return false;
+        };
+        let len_before = matches.len();
+        matches.retain(|m| !m.is_truncated(num_lines_truncated));
+        matches.len() != len_before
     }
 
     /// Recomputes `is_filtered` for the Output-grid matches of `block_index`,
@@ -1106,11 +1175,15 @@ impl AsyncFindController {
     ///
     /// Filtered matches are treated as if they don't exist for search — they are
     /// excluded from the match count, focus traversal, and highlight rendering.
-    pub(crate) fn recompute_filtered_for_block(&mut self, block_index: BlockIndex) {
+    ///
+    /// Returns `true` if any match's filtered flag flipped or the focused match
+    /// index moved as a result.
+    pub(crate) fn recompute_filtered_for_block(&mut self, block_index: BlockIndex) -> bool {
+        let mut flags_changed = false;
         {
             let model = self.terminal_model.lock();
             let Some(block) = model.block_list().block_at(block_index) else {
-                return;
+                return false;
             };
             let grid_handler = block.output_grid().grid_handler();
             let num_lines_truncated = grid_handler.num_lines_truncated();
@@ -1126,7 +1199,7 @@ impl AsyncFindController {
                     // `AbsoluteMatch::to_point`/`to_range` here: those translate
                     // into *displayed* coordinates when a filter is active,
                     // whereas `is_displayed_row` expects an original row index.
-                    absolute_match.is_filtered =
+                    let is_filtered =
                         match absolute_match.start.row.checked_sub(num_lines_truncated) {
                             Some(original_row) => {
                                 !grid_handler.is_displayed_row(original_row as usize)
@@ -1134,11 +1207,14 @@ impl AsyncFindController {
                             // Truncated from scrollback — treat as hidden/gone.
                             None => true,
                         };
+                    flags_changed |= absolute_match.is_filtered != is_filtered;
+                    absolute_match.is_filtered = is_filtered;
                 }
             }
         }
         // Filtering can change the visible match count, so re-clamp focus.
-        self.clamp_focused_match_index();
+        let focus_changed = self.clamp_focused_match_index();
+        flags_changed || focus_changed
     }
 
     /// Clamps the focused match index to the current match count.
@@ -1146,7 +1222,10 @@ impl AsyncFindController {
     /// If the count is 0, sets the index to `None`. This should be called after
     /// any operation that can reduce the total match count (e.g. dirty range
     /// updates, block removal).
-    fn clamp_focused_match_index(&mut self) {
+    ///
+    /// Returns `true` if the focused match index moved.
+    fn clamp_focused_match_index(&mut self) -> bool {
+        let index_before = self.focused_match_index;
         let total = self.match_count();
         if total == 0 {
             self.focused_match_index = None;
@@ -1154,6 +1233,7 @@ impl AsyncFindController {
             self.focused_match_index = self.focused_match_index.map(|i| i.min(total - 1));
         }
         self.update_cached_focused_match();
+        self.focused_match_index != index_before
     }
 
     /// Filters existing results for a query refinement.
@@ -1243,9 +1323,11 @@ impl AsyncFindController {
     /// Spawns the result delivery stream and the throttled UI-update stream.
     ///
     /// The result stream invokes `process_message` for every `FindTaskMessage`
-    /// received from the background task. The throttle stream coalesces rapid
-    /// signals and emits `FindEvent::RanFind` at most every 50 ms (with the
-    /// first signal passing through immediately).
+    /// received from the background task and bumps the owning model's results
+    /// revision when the message changed the results. The throttle stream
+    /// coalesces rapid signals and emits `FindEvent::RanFind` at most every
+    /// 50 ms (with the first signal passing through immediately); it is only
+    /// signalled for messages that changed something (#815).
     fn spawn_result_and_throttle_streams(
         &mut self,
         result_rx: async_channel::Receiver<FindTaskMessage>,
@@ -1262,10 +1344,14 @@ impl AsyncFindController {
         ctx.spawn_stream_local(
             result_rx,
             move |me, msg, ctx| {
-                if let Some(controller) = &mut me.async_find_controller
-                    && controller.generation == generation
-                {
-                    controller.process_message(msg, ctx);
+                let changed = match &mut me.async_find_controller {
+                    Some(controller) if controller.generation == generation => {
+                        controller.process_message(msg, ctx)
+                    }
+                    _ => false,
+                };
+                if changed {
+                    me.mark_results_changed();
                 }
             },
             |_me, _ctx| {},

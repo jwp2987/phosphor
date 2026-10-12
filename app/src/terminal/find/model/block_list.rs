@@ -495,20 +495,26 @@ impl BlockListFindRun {
     ///
     /// Note that matches for a given block are expected to appear in a contiguous slice (per the
     /// expected ordering of `self.matches`).
+    ///
+    /// Returns the updated run and whether its results -- the block's matches or
+    /// the focused match -- differ from before, so the caller can skip the
+    /// repaint a no-op rerun would otherwise cost on every wakeup (#815).
     pub(super) fn rerun_on_block(
         mut self,
         block: &Block,
         block_index: BlockIndex,
         block_sort_direction: BlockSortDirection,
-    ) -> Self {
+    ) -> (Self, bool) {
         let Some(dfas) = self.dfas.as_ref() else {
-            return self;
+            return (self, false);
         };
 
         // Remember the currently focused match so we can relocate it after splicing.
         let old_focused_match = self
             .raw_focused_match_index
             .and_then(|i| self.matches.get(i).cloned());
+        let old_focused_match_index = self.raw_focused_match_index;
+        let block_matches_changed;
 
         let old_block_matches_start_index = self
             .matches
@@ -527,6 +533,7 @@ impl BlockListFindRun {
                 .unwrap_or(self.matches.len());
 
             let old_block_match_count = end_index - start_index;
+            block_matches_changed = self.matches[start_index..end_index] != new_matches[..];
 
             // Splice in the new matches where the old block matches used to exist.
             self.matches.splice(start_index..end_index, new_matches);
@@ -563,6 +570,7 @@ impl BlockListFindRun {
                 // needs no adjustment.
             }
         } else {
+            block_matches_changed = !new_matches.is_empty();
             let mut new_matches = new_matches;
             new_matches.append(&mut self.matches);
             self.matches = new_matches;
@@ -582,7 +590,9 @@ impl BlockListFindRun {
             }
         }
 
-        self
+        let changed =
+            block_matches_changed || self.raw_focused_match_index != old_focused_match_index;
+        (self, changed)
     }
 
     pub(super) fn update_matches_for_filtered_block(

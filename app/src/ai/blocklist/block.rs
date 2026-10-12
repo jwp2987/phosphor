@@ -186,7 +186,7 @@ use crate::settings::{
 use crate::view_components::find::FindEvent;
 
 use crate::terminal::{
-    find::TerminalFindModel,
+    find::{RichContentMatchId, TerminalFindModel},
     model::secrets::RichContentSecretTooltipInfo,
     safe_mode_settings::{
         get_secret_obfuscation_mode, SafeModeSettings, SafeModeSettingsChangedEvent,
@@ -850,6 +850,31 @@ pub(crate) fn received_message_collapsible_id(message_id: &str) -> MessageId {
     ))
 }
 
+/// The find-model state an AI block's render actually reads: whether the find
+/// bar is open (which decides if a `FindContext` is built at all) and which
+/// rich-content match is focused (`get_highlight_ranges_for_find_matches`). The
+/// block's own match set lives in its `FindState` and is repainted by
+/// `FindableRichContentView::run_find` / `clear_matches` themselves.
+///
+/// On `FindEvent::RanFind` the block repaints only when this key changed. With
+/// the find bar open, find re-runs on every pty chunk and every AI block in the
+/// tab used to repaint for each of those reruns, whether or not anything it
+/// draws had changed (#815).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct AIBlockFindRenderKey {
+    is_find_bar_open: bool,
+    focused_match_id: Option<RichContentMatchId>,
+}
+
+impl AIBlockFindRenderKey {
+    fn current(find_model: &TerminalFindModel) -> Self {
+        Self {
+            is_find_bar_open: find_model.is_find_bar_open(),
+            focused_match_id: find_model.focused_rich_content_match_id(),
+        }
+    }
+}
+
 pub struct AIBlock {
     model: Rc<dyn AIBlockModel<View = AIBlock>>,
 
@@ -951,6 +976,9 @@ pub struct AIBlock {
     detected_links_state: DetectedLinksState,
     find_state: FindState,
     find_model: ModelHandle<TerminalFindModel>,
+    /// The find-model state this block last repainted for in response to a
+    /// find event; see [`AIBlockFindRenderKey`].
+    find_render_key: AIBlockFindRenderKey,
 
     /// The CodeEditorViews associated with this block.
     code_editor_views: Vec<EmbeddedCodeEditorView>,
@@ -1128,10 +1156,19 @@ impl AIBlock {
 
         ctx.subscribe_to_model(&find_model, |me, _, event, ctx| match event {
             FindEvent::UpdatedFocusedMatch => {
+                me.find_render_key = AIBlockFindRenderKey::current(me.find_model.as_ref(ctx));
                 me.handle_find_match_focus_change(ctx);
                 ctx.notify();
             }
-            FindEvent::RanFind => ctx.notify(),
+            FindEvent::RanFind => {
+                // Repaint only if something this block draws from the find
+                // model changed; see `AIBlockFindRenderKey` (#815).
+                let key = AIBlockFindRenderKey::current(me.find_model.as_ref(ctx));
+                if key != me.find_render_key {
+                    me.find_render_key = key;
+                    ctx.notify();
+                }
+            }
         });
 
         // Input Mode affects styling of AI blocks -- in particular, the spacing and border between
@@ -1377,6 +1414,7 @@ impl AIBlock {
             secret_redaction_state,
             find_state: FindState::default(),
             find_model,
+            find_render_key: AIBlockFindRenderKey::default(),
             is_references_section_open: false,
             active_session,
             ambient_agent_view_model,

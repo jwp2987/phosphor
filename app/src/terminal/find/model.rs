@@ -195,6 +195,23 @@ pub struct TerminalFindModel {
 
     /// Controller for async find operations.
     pub(crate) async_find_controller: Option<AsyncFindController>,
+
+    /// Bumped every time the find results a view can observe change: the match
+    /// set (positions or filtered flags, on any grid or rich-content view), the
+    /// focused match, the scanning state, or the active run itself.
+    ///
+    /// Views that repaint on [`FindEvent::RanFind`] compare this against the
+    /// value they last repainted for and skip the frame when it is equal. With
+    /// the find bar open, every pty chunk re-runs find on the active block's
+    /// dirty rows; for a command whose output never touches the query that
+    /// rerun reproduces the same results, and before this existed it still cost
+    /// a second full-window frame per chunk (#815).
+    ///
+    /// Only the per-chunk paths -- [`Self::rerun_find_on_active_grid`] and the
+    /// async controller's result stream -- do real change detection. Every
+    /// user-driven path (a new query, clearing, focusing the next match, a block
+    /// filter) bumps unconditionally, so they behave exactly as before.
+    results_revision: u64,
 }
 
 impl FindModel for TerminalFindModel {
@@ -239,6 +256,10 @@ impl FindModel for TerminalFindModel {
     fn is_scanning(&self) -> bool {
         self.is_async_find_scanning()
     }
+
+    fn results_revision(&self) -> Option<u64> {
+        Some(self.results_revision)
+    }
 }
 
 impl TerminalFindModel {
@@ -256,7 +277,14 @@ impl TerminalFindModel {
             block_list_find_run: None,
             is_find_bar_open: false,
             async_find_controller,
+            results_revision: 0,
         }
+    }
+
+    /// Records that the observable find results changed. See
+    /// [`Self::results_revision`] for what counts.
+    pub(crate) fn mark_results_changed(&mut self) {
+        self.results_revision = self.results_revision.wrapping_add(1);
     }
     pub fn register_findable_rich_content_view<T: FindableRichContentView>(
         &mut self,
@@ -415,6 +443,7 @@ impl TerminalFindModel {
                 options,
                 self.terminal_model.lock().alt_screen(),
             ));
+            self.mark_results_changed();
             ctx.emit(FindEvent::RanFind);
             return;
         }
@@ -431,6 +460,7 @@ impl TerminalFindModel {
                 options.query
             );
             controller.start_find(&options, block_sort_direction, ctx);
+            self.mark_results_changed();
             ctx.emit(FindEvent::RanFind);
             return;
         }
@@ -444,17 +474,29 @@ impl TerminalFindModel {
             block_sort_direction,
             ctx,
         ));
+        self.mark_results_changed();
         ctx.emit(FindEvent::RanFind);
     }
 
     /// Reruns find with the same options applied to the current run, to be called if terminal
     /// contents have changed since the last find run.
+    ///
+    /// This runs on every terminal wakeup while the find bar is open, so it
+    /// emits [`FindEvent::RanFind`] -- and bumps the results revision -- only
+    /// when the rerun actually changed the results (#815). On the alt screen
+    /// and the sync block-list path the rerun compares its new matches and
+    /// focus against the old; on the async path nothing is known until the
+    /// background scan reports back, and the result stream does the comparing.
     pub fn rerun_find_on_active_grid(&mut self, ctx: &mut ModelContext<Self>) {
         if self.terminal_model.lock().is_alt_screen_active() {
             if let Some(old_find_state) = self.alt_screen_find_run.take() {
-                self.alt_screen_find_run =
-                    Some(old_find_state.rerun(self.terminal_model.lock().alt_screen()));
-                ctx.emit(FindEvent::RanFind);
+                let (new_find_state, changed) =
+                    old_find_state.rerun(self.terminal_model.lock().alt_screen());
+                self.alt_screen_find_run = Some(new_find_state);
+                if changed {
+                    self.mark_results_changed();
+                    ctx.emit(FindEvent::RanFind);
+                }
             }
             return;
         }
@@ -526,12 +568,13 @@ impl TerminalFindModel {
                 .block_sort_direction();
 
             if let Some(old_find_run) = self.block_list_find_run.take() {
-                self.block_list_find_run = Some(old_find_run.rerun_on_block(
-                    block,
-                    last_block_index,
-                    block_sort_direction,
-                ));
-                ctx.emit(FindEvent::RanFind);
+                let (new_find_run, changed) =
+                    old_find_run.rerun_on_block(block, last_block_index, block_sort_direction);
+                self.block_list_find_run = Some(new_find_run);
+                if changed {
+                    self.mark_results_changed();
+                    ctx.emit(FindEvent::RanFind);
+                }
             }
         }
     }
@@ -559,6 +602,7 @@ impl TerminalFindModel {
 
             block_list_find_run.focus_next_match(find_direction, block_sort_direction);
         }
+        self.mark_results_changed();
         ctx.emit(FindEvent::UpdatedFocusedMatch);
     }
 
@@ -593,6 +637,7 @@ impl TerminalFindModel {
             }
             self.block_list_find_run = Some(run.cleared());
         }
+        self.mark_results_changed();
         ctx.emit(FindEvent::RanFind);
     }
 
@@ -613,6 +658,7 @@ impl TerminalFindModel {
         // match count, focus traversal, and highlights consistent with sync.
         if let Some(controller) = self.async_find_controller.as_mut() {
             controller.recompute_filtered_for_block(block_index);
+            self.mark_results_changed();
             ctx.emit(FindEvent::RanFind);
             return;
         }
@@ -632,6 +678,7 @@ impl TerminalFindModel {
                 block_index,
                 block_sort_direction,
             );
+            self.mark_results_changed();
             ctx.emit(FindEvent::RanFind);
         }
     }
@@ -653,18 +700,26 @@ impl TerminalFindModel {
     /// * `dirty_info` - If provided, a `(row_range, grid_type, num_lines_truncated)`
     ///   tuple describing the dirty region. If `None`, a full block rescan is enqueued.
     /// * `ctx` - The model context.
+    ///
+    /// Emits [`FindEvent::RanFind`] only if enqueuing the rescan itself changed
+    /// observable state (a full rescan drops the block's stale matches and
+    /// shows the scanning indicator; a dirty-range rescan does neither). The
+    /// results of the rescan are announced by the controller's result stream
+    /// once they arrive, again only if they differ (#815).
     pub fn invalidate_async_find_block(
         &mut self,
         block_index: BlockIndex,
         dirty_info: Option<(RangeInclusive<usize>, GridType, u64)>,
         ctx: &mut ModelContext<Self>,
     ) {
-        if let Some(controller) = self.async_find_controller.as_mut() {
-            controller.invalidate_block(block_index, dirty_info);
-        } else {
-            return;
+        let changed = match self.async_find_controller.as_mut() {
+            Some(controller) => controller.invalidate_block(block_index, dirty_info),
+            None => return,
+        };
+        if changed {
+            self.mark_results_changed();
+            ctx.emit(FindEvent::RanFind);
         }
-        ctx.emit(FindEvent::RanFind);
     }
 
     /// Notifies async find that a block has completed.
@@ -790,6 +845,11 @@ impl std::fmt::Debug for TerminalFindModel {
             .field("alt_screen_find_run", &self.alt_screen_find_run)
             .field("block_list_find_run", &self.block_list_find_run)
             .field("is_find_bar_open", &self.is_find_bar_open)
+            .field("results_revision", &self.results_revision)
             .finish()
     }
 }
+
+#[cfg(test)]
+#[path = "model_tests.rs"]
+mod tests;

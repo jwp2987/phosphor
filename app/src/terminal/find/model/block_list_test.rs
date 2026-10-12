@@ -415,7 +415,9 @@ fn test_rerun_on_block_preserves_focused_match_in_active_block() {
             .block_list()
             .block_at(last_block_index)
             .unwrap();
-        let run = run.rerun_on_block(block, last_block_index, BlockSortDirection::MostRecentLast);
+        let (run, changed) =
+            run.rerun_on_block(block, last_block_index, BlockSortDirection::MostRecentLast);
+        assert!(changed, "new output matches must be reported as a change");
 
         // The focused match must still be the same prompt span, even though new output
         // matches were inserted before it in the active block's match slice.
@@ -484,7 +486,9 @@ fn test_rerun_on_block_preserves_focused_match_in_older_block() {
             .block_list()
             .block_at(last_block_index)
             .unwrap();
-        let run = run.rerun_on_block(block, last_block_index, BlockSortDirection::MostRecentLast);
+        let (run, changed) =
+            run.rerun_on_block(block, last_block_index, BlockSortDirection::MostRecentLast);
+        assert!(changed, "new output matches must be reported as a change");
 
         // The focused match must still be the same span in block 1.
         assert_eq!(run.focused_match().cloned(), focused_before);

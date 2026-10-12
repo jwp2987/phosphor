@@ -437,6 +437,26 @@ these as expected, not as drift to reconcile.
 Each entry must say what upstream does, what we do instead, and the evidence that
 upstream's behavior is actually a defect rather than a preference.
 
+- **An incremental find rescan does not flash the find bar's scanning label**
+  (`#815`, 2026-10-12, `app/src/terminal/find/model/async_find.rs`). **Upstream:**
+  `AsyncFindController::invalidate_block` sets `status = Scanning` for every
+  invalidation, including the dirty-range rescan that `rerun_find_on_active_grid`
+  enqueues on every terminal wakeup while the find bar is open; `Done` sets it back to
+  `Complete`. The find bar renders `is_scanning()` as an `N+ ...` label in place of
+  `i/N`. **The defect:** a dirty-range rescan covers the handful of rows the last
+  output chunk touched and completes within the same 50 ms throttle window, so the
+  label flipped to `N+ ...` in the wakeup's frame and back to `i/N` in a second,
+  otherwise identical frame -- for every chunk a running command emitted. That second
+  frame measured +18-20% of a core for a two-lines-per-second job (#815), and the label
+  blink carried no information: the count never changes between the two frames. **We
+  do:** only a full block rescan (no dirty range) sets `Scanning`; a dirty-range rescan
+  leaves the status alone, and its results are announced by the result stream only
+  when they differ from what was already stored. The indicator still shows for the
+  initial scan and for full rescans, where the count genuinely grows over time. Views
+  that repaint on `FindEvent::RanFind` additionally compare the model's results
+  revision (`FindModel::results_revision`) against the one they last painted, so a
+  rerun that reproduces the previous results costs no frame at all.
+
 - **Zero-command Agent Mode input fails closed instead of vacuously auto-approving**
   (`#746`, 2026-09-27, `app/src/ai/blocklist/permissions.rs`). **Upstream:**
   `can_autoexecute_command` decomposes the command line into `commands: Vec<String>` and
