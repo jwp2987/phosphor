@@ -69,6 +69,7 @@ use crate::terminal::model::block::{
 };
 use crate::terminal::model::blocks::{insert_block, TotalIndex};
 use crate::terminal::model::terminal_model::WithinBlock;
+use crate::terminal::model::typeahead_handoff::{ActiveDecision, HandoffState, HeldAgentCommand};
 use crate::terminal::view::load_ai_conversation::{
     RestoreConversationEntryBehavior, RestoredAIConversation,
 };
@@ -12890,5 +12891,532 @@ fn ctrl_c_on_a_parked_agent_command_discards_it_before_the_interrupt() {
                 .expect("conversation should exist");
             assert_eq!(conversation.status(), &ConversationStatus::InProgress);
         });
+    })
+}
+
+/// Collects what a terminal view writes to the pty, through either write event.
+fn collect_pty_writes(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+) -> Rc<RefCell<Vec<Vec<u8>>>> {
+    let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+    let writes = pty_writes.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(terminal, move |_, event, _| match event {
+            Event::WriteBytesToPty { bytes } | Event::WriteHandoffUserBytesToPty { bytes } => {
+                writes.borrow_mut().push(bytes.to_vec());
+            }
+            _ => {}
+        });
+    });
+    pty_writes
+}
+
+/// The keys of a fast command's first 50 ms (#826): started, not yet long-running. Enter,
+/// Backspace and Ctrl-C used to be dropped here, and typed characters written to the pty.
+fn type_during_a_fast_command(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    view.keydown_on_terminal("\r", ctx);
+    view.control_sequence_on_terminal(&[0x7f], ctx);
+    view.ctrl_c(ctx);
+}
+
+#[test]
+fn typeahead_handoff_sends_every_key_of_a_fast_command_to_the_pty() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.start_command_execution();
+                model.typeahead_handoff_mut().on_command_written();
+                let active_block = model.block_list().active_block();
+                assert!(active_block.started());
+                assert!(!active_block.is_active_and_long_running());
+            }
+            type_during_a_fast_command(view, ctx);
+        });
+
+        assert_eq!(
+            *pty_writes.borrow(),
+            vec![b"\r".to_vec(), vec![0x7f], vec![escape_sequences::C0::ETX]],
+            "no key typed while the pty owns input may be dropped"
+        );
+        terminal.read(&app, |view, _| {
+            let model = view.model.lock();
+            assert_eq!(
+                model.typeahead_handoff().state(),
+                &HandoffState::PtyOwned {
+                    // Ctrl-C killed the command and the tty dropped the queued Enter.
+                    wrote_user_bytes: false,
+                    enters_written: 1,
+                    precmds_seen: 0,
+                }
+            );
+            assert_eq!(model.typeahead_handoff().writes_in_flight(), 3);
+        });
+    })
+}
+
+/// Without `FeatureFlag::TypeaheadHandoff`, the pre-hand-off routing is unchanged: non-printable
+/// keys reaching the terminal before the command is long-running are not written.
+#[test]
+fn without_typeahead_handoff_keys_of_a_fast_command_keep_the_old_routing() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(false);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().start_command_execution();
+            assert!(view.model.lock().block_list().active_block().started());
+            type_during_a_fast_command(view, ctx);
+        });
+
+        assert!(pty_writes.borrow().is_empty());
+        terminal.read(&app, |view, _| {
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::EditorOwned
+            );
+        });
+    })
+}
+
+/// Keys typed after an Enter that waits for the shell's typeahead report are held, in order, so
+/// they can follow the deferred command instead of landing in it or being dropped.
+#[test]
+fn typeahead_handoff_holds_keys_behind_a_deferred_enter() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                let handoff = model.typeahead_handoff_mut();
+                handoff.on_command_written();
+                handoff.on_user_bytes(b"ec");
+                handoff.on_user_write_flushed();
+                handoff.on_precmd();
+                assert_eq!(
+                    handoff.on_line_editor_active(true, true),
+                    ActiveDecision::SendRequest
+                );
+                assert!(handoff.defer_enter());
+            }
+            view.keydown_on_terminal("\r", ctx);
+            view.control_sequence_on_terminal(&[0x7f], ctx);
+        });
+
+        assert!(pty_writes.borrow().is_empty());
+        terminal.read(&app, |view, _| {
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::HoldAfterEnter {
+                    held: b"\r\x7f".to_vec(),
+                    released: false,
+                }
+            );
+        });
+    })
+}
+
+/// Ctrl-C after an Enter that waits for the report cancels the Enter and the held keys; nothing
+/// is replayed after a command the user just tried to stop.
+#[test]
+fn typeahead_handoff_ctrl_c_cancels_a_deferred_enter() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                let handoff = model.typeahead_handoff_mut();
+                handoff.on_command_written();
+                handoff.on_user_bytes(b"ec");
+                handoff.on_user_write_flushed();
+                handoff.on_precmd();
+                assert_eq!(
+                    handoff.on_line_editor_active(true, true),
+                    ActiveDecision::SendRequest
+                );
+                assert!(handoff.defer_enter());
+            }
+            view.keydown_on_terminal("\r", ctx);
+            view.ctrl_c(ctx);
+        });
+
+        assert!(pty_writes.borrow().is_empty());
+        terminal.read(&app, |view, _| {
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::AwaitingReport
+            );
+        });
+    })
+}
+
+/// The view's precmd handler hands input back to the editor when nothing was typed: no
+/// request, and the terminal stops owning keys. It also asks the controller to decide again, as
+/// no line-editor activation follows a prompt that ran no command, and writes held for this
+/// prompt must drain.
+#[test]
+fn typeahead_handoff_precmd_hands_back_when_nothing_was_typed() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let retries = Rc::new(RefCell::new(0));
+        let retries_seen = retries.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::RetryTypeaheadHandoffRequest = event {
+                    *retries_seen.borrow_mut() += 1;
+                }
+            });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                let handoff = model.typeahead_handoff_mut();
+                handoff.on_command_written();
+                handoff.on_precmd();
+            }
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+        });
+
+        terminal.read(&app, |view, _| {
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::EditorOwned
+            );
+        });
+        assert_eq!(*retries.borrow(), 1);
+    })
+}
+
+/// Ctrl-D at the prompt with nothing typed would exit the shell; it is not written.
+#[test]
+fn typeahead_handoff_ctrl_d_on_an_empty_shell_line_is_not_written() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.block_list_mut().set_bootstrapped();
+                let handoff = model.typeahead_handoff_mut();
+                handoff.on_command_written();
+                // A further Enter the shell answers with a prompt; both prompts have come.
+                handoff.on_user_bytes(b"\r");
+                handoff.on_precmd();
+                handoff.on_precmd();
+                assert!(handoff.routes_keys_to_pty());
+            }
+            view.ctrl_d(ctx);
+            // With bytes in the shell's line, Ctrl-D is an edit there and is written.
+            view.model
+                .lock()
+                .typeahead_handoff_mut()
+                .on_user_bytes(b"ab");
+            view.ctrl_d(ctx);
+        });
+
+        assert_eq!(*pty_writes.borrow(), vec![vec![escape_sequences::C0::EOT]]);
+    })
+}
+
+/// Keys typed into a full-screen program (vim's `:wq` Enter) are written but are not lines for
+/// the shell: they must not leave the hand-off waiting for a prompt that never comes.
+#[test]
+fn typeahead_handoff_does_not_count_full_screen_enters() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.simulate_long_running_block("vim", "");
+                model.set_mode(ansi::Mode::SwapScreen {
+                    save_cursor_and_clear_screen: true,
+                });
+                assert!(model.is_alt_screen_active());
+                model.typeahead_handoff_mut().on_command_written();
+            }
+            view.keydown_on_terminal("\r", ctx);
+        });
+
+        assert_eq!(*pty_writes.borrow(), vec![b"\r".to_vec()]);
+        terminal.read(&app, |view, _| {
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::PtyOwned {
+                    wrote_user_bytes: false,
+                    enters_written: 1,
+                    precmds_seen: 0,
+                }
+            );
+        });
+    })
+}
+
+/// After a Ctrl-C the settle timer asks the controller to decide again while the pty still owns
+/// input, for a killed command as much as at the prompt: if the counts were off (an Enter a
+/// program consumed), no precmd would otherwise hand input back.
+#[test]
+fn typeahead_handoff_ctrl_c_settle_asks_for_a_new_decision() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let retries = Rc::new(RefCell::new(0));
+        let retries_seen = retries.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::RetryTypeaheadHandoffRequest = event {
+                    *retries_seen.borrow_mut() += 1;
+                }
+            });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.start_command_execution();
+                model.typeahead_handoff_mut().on_command_written();
+            }
+            view.ctrl_c(ctx);
+            let model = view.model.lock();
+            assert!(model.typeahead_handoff().is_pty_owned());
+        });
+        assert_eq!(*retries.borrow(), 0);
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while *retries.borrow() == 0 && Instant::now() < deadline {
+            Timer::after(Duration::from_millis(50)).await;
+        }
+        assert_eq!(*retries.borrow(), 1);
+    })
+}
+
+/// Drives the hand-off to "Enter deferred while the report is outstanding".
+fn hold_after_deferred_enter(view: &TerminalView) {
+    let mut model = view.model.lock();
+    let handoff = model.typeahead_handoff_mut();
+    handoff.on_command_written();
+    handoff.on_user_bytes(b"ec");
+    handoff.on_user_write_flushed();
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert!(handoff.defer_enter());
+}
+
+/// #850 x the typeahead hand-off: ctrl-c on an agent command in flight while keys are held
+/// behind a deferred Enter still discards the parked copy and sends exactly one ^C -- it is not
+/// swallowed by the hold. The deferred Enter is dropped.
+#[test]
+fn typeahead_handoff_ctrl_c_on_an_agent_command_is_not_held() {
+    App::test((), |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let (terminal, _conversation_id, _action_id) =
+            terminal_with_real_async_agent_command(&mut app, false);
+        terminal.update(&mut app, |view, _| {
+            view.model
+                .lock()
+                .block_list_mut()
+                .active_block_mut()
+                .start();
+            hold_after_deferred_enter(view);
+        });
+        let sequence: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let recorded = sequence.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
+                Event::DiscardPendingCommandWrites => recorded.borrow_mut().push("discard"),
+                Event::WriteBytesToPty { bytes } | Event::WriteHandoffUserBytesToPty { bytes }
+                    if bytes.contains(&C0::ETX) =>
+                {
+                    recorded.borrow_mut().push("etx")
+                }
+                _ => {}
+            });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_action(&TerminalAction::CtrlC, ctx);
+        });
+
+        assert_eq!(*sequence.borrow(), vec!["discard", "etx"]);
+        terminal.read(&app, |view, _| {
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::AwaitingReport
+            );
+        });
+    })
+}
+
+/// An agent's running async action whose command is held behind the user's typeahead: never
+/// written, so the active block is a plain prompt that does not hold it.
+/// `terminal_with_real_async_agent_command` tags the prompt block itself with the command (a
+/// command written but not yet preexec'd, which counts as in flight); that block is finished
+/// here, leaving a fresh prompt block without agent metadata, as when a command is held.
+fn terminal_with_held_agent_command(
+    app: &mut App,
+) -> (ViewHandle<TerminalView>, AIConversationId, AIAgentActionId) {
+    let (terminal, conversation_id, action_id) = terminal_with_real_async_agent_command(app, false);
+    terminal.update(app, |view, _| {
+        let mut model = view.model.lock();
+        model.finish_block_with_exit_code(0);
+        assert!(
+            !model
+                .block_list()
+                .active_block()
+                .agent_holds_in_flight_command(&action_id),
+            "precondition: no block holds a held command"
+        );
+    });
+    let action_model = terminal.read(app, |view, _| view.ai_action_model.clone());
+    action_model.read(app, |action_model, _| {
+        assert!(
+            action_model
+                .get_action_status(&action_id)
+                .is_some_and(|status| status.is_running()),
+            "precondition: the held command's action is still running"
+        );
+    });
+    (terminal, conversation_id, action_id)
+}
+
+/// Counts the hand-off's targeted discard of a held command, the full #848 discard and ^C.
+fn count_held_discard_effects(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+) -> Rc<RefCell<(usize, usize, usize)>> {
+    let counts = Rc::new(RefCell::new((0, 0, 0)));
+    let seen = counts.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(terminal, move |_, event, _| match event {
+            Event::DiscardHeldTypeaheadCommand => seen.borrow_mut().0 += 1,
+            Event::DiscardPendingCommandWrites => seen.borrow_mut().1 += 1,
+            Event::WriteBytesToPty { bytes } | Event::WriteHandoffUserBytesToPty { bytes }
+                if bytes.contains(&C0::ETX) =>
+            {
+                seen.borrow_mut().2 += 1
+            }
+            _ => {}
+        });
+    });
+    counts
+}
+
+/// The status bar's stop of an agent action whose command is held behind the user's typeahead
+/// (written nowhere, no block started): the executor's cancel asks the terminal to interrupt it,
+/// and the terminal drops only the held command -- no ^C, no full discard that would also drop
+/// a command from the editor queued after it.
+#[test]
+fn typeahead_handoff_cancel_of_a_held_agent_command_drops_only_it() {
+    App::test((), |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        // Lets the setup finish the agent-tagged prompt block from the mock's lifecycle phase.
+        let _recovery = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+        let (terminal, conversation_id, action_id) = terminal_with_held_agent_command(&mut app);
+        terminal.update(&mut app, |view, _| {
+            view.model
+                .lock()
+                .typeahead_handoff_mut()
+                .set_held_agent_command(Some(HeldAgentCommand {
+                    action_id: action_id.clone(),
+                    conversation_id,
+                }));
+        });
+        let counts = count_held_discard_effects(&mut app, &terminal);
+        let action_model = terminal.read(&app, |view, _| view.ai_action_model.clone());
+
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model.cancel_action_with_id(
+                conversation_id,
+                &action_id,
+                CancellationReason::ManuallyCancelled,
+                ctx,
+            );
+        });
+
+        assert_eq!(*counts.borrow(), (1, 0, 0));
+        terminal.read(&app, |view, _| {
+            assert!(
+                view.model
+                    .lock()
+                    .typeahead_handoff()
+                    .held_agent_command()
+                    .is_none()
+            );
+        });
+    })
+}
+
+/// Stopping a conversation drops its agent command held behind the user's typeahead (only it),
+/// exactly once; a held command of another conversation is left alone. Stopped with the
+/// tab-close scope (`AgentCommandOnly`), which interrupts nothing at a plain prompt, so the
+/// counts measure only the held command's ownership.
+#[test]
+fn typeahead_handoff_stopping_a_conversation_drops_its_held_command() {
+    App::test((), |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let _recovery = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+        let (terminal, conversation_id, action_id) = terminal_with_held_agent_command(&mut app);
+        let counts = count_held_discard_effects(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .typeahead_handoff_mut()
+                .set_held_agent_command(Some(HeldAgentCommand {
+                    action_id: AIAgentActionId::from("other-conversation".to_owned()),
+                    conversation_id: AIConversationId::new(),
+                }));
+            view.stop_local_agent_conversation_with_interrupt_scope(
+                conversation_id,
+                StopInterruptScope::AgentCommandOnly,
+                ctx,
+            );
+        });
+        assert_eq!(*counts.borrow(), (0, 0, 0));
+
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .typeahead_handoff_mut()
+                .set_held_agent_command(Some(HeldAgentCommand {
+                    action_id: action_id.clone(),
+                    conversation_id,
+                }));
+            view.stop_local_agent_conversation_with_interrupt_scope(
+                conversation_id,
+                StopInterruptScope::AgentCommandOnly,
+                ctx,
+            );
+        });
+        assert_eq!(*counts.borrow(), (1, 0, 0));
     })
 }

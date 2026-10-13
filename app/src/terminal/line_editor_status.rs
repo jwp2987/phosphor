@@ -59,6 +59,12 @@ impl LineEditorStatus {
         self.is_line_editor_active
     }
 
+    /// Sets the flag `LineEditorStatusEvent::Active` would set, without the precmd timer.
+    #[cfg(test)]
+    pub(crate) fn set_line_editor_active_for_test(&mut self, is_active: bool) {
+        self.is_line_editor_active = is_active;
+    }
+
     /// Marks the line editor as inactive.
     ///
     /// This is meant to be called when a command is written to the PTY.
