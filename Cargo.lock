@@ -15276,6 +15276,7 @@ dependencies = [
  "unic-langid",
  "unicase",
  "unicode-general-category",
+ "unicode-linebreak",
  "unicode-width 0.1.14",
  "unindent 0.1.11",
  "url",

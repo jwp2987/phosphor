@@ -5,10 +5,10 @@ use super::{
     COMMAND_CANCELLED_FOR_RUNNING_COMMAND_MESSAGE, COMMAND_CANCELLED_FOR_SHELL_EXIT_MESSAGE,
     COMMAND_CANCELLED_FOR_USER_COMMAND_MESSAGE, COMMAND_DENYLISTED_MESSAGE,
     COMMAND_REJECTED_BY_USER_MESSAGE, EDIT_MODE_OPEN_KEYMAP_CONTEXT, RequestedCommandView,
-    cancel_explanation_for_reason, denylisted_command_message,
+    StreamedTextChange, cancel_explanation_for_reason, denylisted_command_message,
     enter_accepts_requested_command_context, format_command_text,
     header_message_for_user_take_over_reason, mcp_blocked_title_text,
-    mcp_viewing_detail_title_text,
+    mcp_viewing_detail_title_text, streamed_text_change,
 };
 use crate::ai::agent::{CancellationReason, RequestCommandOutputResult};
 use crate::ai::blocklist::action_model::AIActionStatus;
@@ -414,4 +414,40 @@ mod ctrl_c_reject_tests {
 
         assert!(!ctrl_c_rejects_requested_command_context().eval(&context));
     }
+}
+
+/// #847 round 5: once the user commits an edit E, a later or re-sent stream S for the same action
+/// must not overwrite it on the card (whose text the model's pending action follows).
+#[test]
+fn committed_edit_wins_over_a_re_sent_stream() {
+    assert_eq!(
+        streamed_text_change("echo edited", "echo original", true),
+        StreamedTextChange::Unchanged
+    );
+    assert_eq!(
+        streamed_text_change("echo edited", "echo edited and more", true),
+        StreamedTextChange::Unchanged
+    );
+}
+
+/// Before any edit, an extending stream appends, and any other difference replaces, including a
+/// same-length or shorter one that the old length-only diff ignored or truncated.
+#[test]
+fn streamed_text_change_appends_or_replaces_before_an_edit() {
+    assert_eq!(
+        streamed_text_change("echo", "echo", false),
+        StreamedTextChange::Unchanged
+    );
+    assert_eq!(
+        streamed_text_change("echo", "echo hi", false),
+        StreamedTextChange::Append
+    );
+    assert_eq!(
+        streamed_text_change("echo hi", "rm -rf", false),
+        StreamedTextChange::Replace
+    );
+    assert_eq!(
+        streamed_text_change("echo hi; ls", "echo hi", false),
+        StreamedTextChange::Replace
+    );
 }

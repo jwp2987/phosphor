@@ -38,6 +38,9 @@ pub struct ClippedScrollData {
     scroll_start_px: Pixels,
     pub(super) scroll_to_position: Option<ScrollTarget>,
     selection_scroll_anchor: Option<ClippedSelectionScrollAnchor>,
+    /// The largest valid `scroll_start_px` as of the most recent layout, or `None` before the
+    /// first layout. Zero when the content fits without scrolling.
+    max_scroll_start_px: Option<Pixels>,
 }
 
 #[derive(Clone, Copy)]
@@ -77,6 +80,16 @@ impl ClippedScrollStateHandle {
 
     pub fn scroll_by(&self, delta: Pixels) {
         self.scroll_to(self.scroll_start() + delta);
+    }
+
+    /// Whether the end of the content is in view: either it fits without scrolling, or it has
+    /// been scrolled to the bottom (within a pixel). `None` until the element has been laid out
+    /// at least once. Read by consumers that must know the user could have seen everything, such
+    /// as an approval prompt (issue #847).
+    pub fn is_scrolled_to_end(&self) -> Option<bool> {
+        let data = self.clipped_scroll_data.lock();
+        data.max_scroll_start_px
+            .map(|max| data.scroll_start_px.as_f32() + 1.0 >= max.as_f32())
     }
 
     /// Records `selection` as the current selection scroll anchor (if not already recorded) and
@@ -417,6 +430,7 @@ impl Element for ClippedScrollable {
         if let Some(scroll_data) = self.scroll_data(app) {
             let max_scroll_top =
                 (scroll_data.total_size - scroll_data.visible_px).max(Pixels::zero());
+            self.state.clipped_scroll_data.lock().max_scroll_start_px = Some(max_scroll_top);
             let scroll_top = scroll_data.scroll_start;
             if scroll_top > max_scroll_top {
                 self.state.scroll_to(max_scroll_top);
