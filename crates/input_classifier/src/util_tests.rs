@@ -732,3 +732,47 @@ fn test_is_unambiguous_shell_command_ignores_pasted_buffers() {
         assert!(!is_unambiguous_shell_command_for(&long).await);
     });
 }
+
+#[test]
+fn test_reads_as_prose_flags_sentences_that_start_with_a_command_word() {
+    // #832: each of these ran in the shell once by mistake (the head is a real command, so the
+    // failure was not exit 127) and then routed to the shell forever through history matching.
+    for text in [
+        "find the bug in main.rs",
+        "find the bugs in main.py",
+        "find where config is loaded",
+        "make the tests pass please",
+        "cat the logs and tell me why",
+        "git is broken, help",
+        "what does ls -la do?",
+        "find Josh's PR",
+        "run exactly this: sleep 1",
+        "  FOO=1 make it faster  ",
+    ] {
+        assert!(reads_as_prose(text), "expected {text:?} to read as prose");
+    }
+}
+
+#[test]
+fn test_reads_as_prose_leaves_command_lines_alone() {
+    for text in [
+        "",
+        "   ",
+        "ls -la",
+        "cargo build --release",
+        "git push origin main",
+        "find . -name test",
+        "make install",
+        "git commit -m \"fix the bug in main.rs\"",
+        "echo 'is it the cache'",
+        "docker exec -it web sh",
+        "FOO=bar mycmd --flag",
+        // The head is never inspected; only the words after it are.
+        "this",
+    ] {
+        assert!(
+            !reads_as_prose(text),
+            "expected {text:?} not to read as prose"
+        );
+    }
+}

@@ -993,6 +993,33 @@ pub fn is_unambiguous_shell_command(input: &ParsedTokensSnapshot) -> bool {
     !remaining.iter().any(is_prose_word)
 }
 
+/// Fork-original (#832): true iff `buffer_text` carries one of the prose vetoes that
+/// [`is_unambiguous_shell_command`] applies — a trailing `?`; quoting bash would reject, an
+/// apostrophe inside a word or a typographic quote ([`has_shell_safe_quoting`]); the prose colon
+/// shape ([`buffer_has_prose_colon_shape`]); or a [`PROSE_FUNCTION_WORDS`] member among the
+/// unquoted words after the effective first word (`find the bug in main.rs`, `make the tests pass
+/// please`, `find where config is loaded`).
+///
+/// This is the same evidence the pre-filter uses to *refuse* a Shell verdict, exposed on its own
+/// so the command-history matcher can refuse to let a failed or unverified history entry force
+/// Shell for a buffer that reads as a sentence. It never says anything is a command: `false` only
+/// means "none of these vetoes fired", and the head word is not inspected (so `ssh me` and `cargo
+/// build` are judged on their arguments alone).
+pub fn reads_as_prose(buffer_text: &str) -> bool {
+    let text = buffer_text.trim();
+    if text.is_empty() {
+        return false;
+    }
+    if text.ends_with('?') || !has_shell_safe_quoting(text) || buffer_has_prose_colon_shape(text) {
+        return true;
+    }
+    split_shell_words(text)
+        .iter()
+        .skip_while(|word| !word.quoted && is_env_assignment_token(&word.text))
+        .skip(1)
+        .any(is_function_word)
+}
+
 #[cfg(test)]
 #[path = "util_tests.rs"]
 mod tests;

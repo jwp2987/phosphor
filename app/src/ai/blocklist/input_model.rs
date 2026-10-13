@@ -39,7 +39,7 @@ use crate::{
     terminal::{
         input::decorations::ParsedTokensSnapshot,
         model::{rich_content::RichContentType, session::SessionId},
-        History, TerminalModel,
+        History, HistoryEntry, TerminalModel,
     },
     TelemetryEvent,
 };
@@ -731,24 +731,15 @@ impl BlocklistAIInputModel {
             return;
         }
 
-        // If we have a session, gather command history entries. `History::commands`
-        // returns entries in ascending (oldest-first) order, so downstream matching
-        // reverses them to iterate newest-first.
+        // If we have a session, gather the command history entries allowed to force Shell for
+        // this buffer (#832, see `shell_history_candidates`). `History::commands` returns
+        // entries in ascending (oldest-first) order, so downstream matching reverses them to
+        // iterate newest-first.
         let history_entries = session_id.map(|sid| {
-            History::as_ref(ctx)
-                .commands(sid)
-                .into_iter()
-                .flatten()
-                .filter_map(|entry| {
-                    if entry
-                        .exit_code
-                        .is_some_and(|code| code.was_command_not_found())
-                    {
-                        return None;
-                    }
-                    Some((entry.command.to_string(), entry.start_ts))
-                })
-                .collect::<Vec<(String, Option<DateTime<Local>>)>>()
+            shell_history_candidates(
+                History::as_ref(ctx).commands(sid).into_iter().flatten(),
+                &input.buffer_text,
+            )
         });
 
         // Gather agent prompt history (ascending / oldest-first). Ported from the pin
@@ -1165,6 +1156,39 @@ async fn most_recent_close_match<'a>(
     }
 
     HistoryMatch::NoMatch
+}
+
+/// Fork-original (#832): the command-history entries that may route `buffer_text` to Shell by a
+/// close match, as `(command, start_ts)` pairs in the input order.
+///
+/// A command-history match short-circuits the classifier, so a sentence that once ran in the
+/// shell by mistake (`find the bug in main.rs`: `find` exits 1, not 127) used to route itself and
+/// every near-variant to the shell from then on — and through the shell's history file, across
+/// restarts. The rules:
+///
+/// - An entry that failed with "command not found" never matches (the pin's original filter).
+/// - When the buffer [`reads_as_prose`](input_classifier::util::reads_as_prose) (a function word
+///   after the head, a trailing `?`, an apostrophe in a word...), only an entry that is known to
+///   have **exited 0** may match. A failed run is no evidence the line was a command, and neither
+///   is an entry with no exit code: a line imported from the shell's history file that this app
+///   never ran (or one still running) carries none, which is exactly how a mistake persists.
+///   Exit 0 is strict on purpose: `was_successful` also accepts 130 (ctrl-c), and interrupting a
+///   sentence that hung (`yes please`) proves nothing.
+/// - A buffer with none of those prose signals keeps the original behavior, so re-running a real
+///   command (`cargo test` that failed, `ssh host` from `.bash_history`) still routes to Shell.
+fn shell_history_candidates<'a>(
+    entries: impl Iterator<Item = &'a HistoryEntry>,
+    buffer_text: &str,
+) -> Vec<(String, Option<DateTime<Local>>)> {
+    let buffer_reads_as_prose = input_classifier::util::reads_as_prose(buffer_text);
+    entries
+        .filter(|entry| match entry.exit_code {
+            Some(code) if code.was_command_not_found() => false,
+            Some(code) if code.value() == 0 => true,
+            _ => !buffer_reads_as_prose,
+        })
+        .map(|entry| (entry.command.to_string(), entry.start_ts))
+        .collect()
 }
 
 /// Resolves the history-match decision from the command-history and agent
