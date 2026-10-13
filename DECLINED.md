@@ -452,9 +452,11 @@ upstream's behavior is actually a defect rather than a preference.
   `TerminalView::suspend_agent_work_for_close` on every view in the pane's stack. Every
   running conversation (in progress, blocked, transient error, waiting for events; not an
   empty one, not a shared-session viewer) is stopped as a follow-up Ctrl-C stops it --
-  request cancelled, actions cancelled, agent-driven command interrupted, status
-  `Cancelled` -- and the view is marked suspended: the queue drain and LRC delivery fire
-  and restore nothing, and one-shot finished callbacks see `Cancelled`. Undo-close clears
+  request cancelled, actions cancelled, status `Cancelled` -- except that only a
+  command the agent itself is running gets Ctrl-C (never the user's own command or the idle
+  prompt). The view is marked suspended: the queue drain and LRC delivery fire and restore
+  nothing, one-shot finished callbacks see `Cancelled`, and a taken-over agent command that
+  exits does not auto-resume its conversation. Undo-close clears
   the mark in `attach` but resumes nothing; the queue comes back intact for the user to
   send or delete. Discarding the pane clears the conversations, which drops their queues as
   before. A permanent close now also stops non-active running conversations.

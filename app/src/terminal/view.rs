@@ -2304,6 +2304,18 @@ pub fn is_prompt_suggestions_enabled(app: &AppContext) -> bool {
 }
 
 type TerminalViewCallback = Box<dyn FnOnce(&mut TerminalView, &mut ViewContext<TerminalView>)>;
+
+/// Which running command `TerminalView::stop_local_agent_conversation_with_interrupt_scope` may
+/// interrupt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StopInterruptScope {
+    /// A user's follow-up Ctrl-C: the active block when it belongs to the conversation or the
+    /// conversation is the one being viewed, including the prompt.
+    UserCtrlC,
+    /// Closing the pane (#848): only a command the agent of this conversation is running.
+    AgentCommandOnly,
+}
+
 type ConversationFinishedCallback =
     Box<dyn FnOnce(&mut TerminalView, FinishReason, &mut ViewContext<TerminalView>)>;
 
@@ -8312,6 +8324,19 @@ impl TerminalView {
         conversation_id: AIConversationId,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.stop_local_agent_conversation_with_interrupt_scope(
+            conversation_id,
+            StopInterruptScope::UserCtrlC,
+            ctx,
+        );
+    }
+
+    fn stop_local_agent_conversation_with_interrupt_scope(
+        &mut self,
+        conversation_id: AIConversationId,
+        interrupt_scope: StopInterruptScope,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let had_active_stream = self
             .ai_controller
             .as_ref(ctx)
@@ -8336,12 +8361,27 @@ impl TerminalView {
         let should_interrupt_active_command = {
             let mut model = self.model.lock();
             let active_block = model.block_list_mut().active_block_mut();
-            let active_block_matches = active_block.ai_conversation_id() == Some(conversation_id)
-                || visible_conversation_id == Some(conversation_id)
-                || history_active_conversation_id == Some(conversation_id);
-            let command_is_running = active_block.is_executing()
-                || active_block.is_command_grid_active()
-                || active_block.is_active_and_long_running();
+            let block_is_this_conversations =
+                active_block.ai_conversation_id() == Some(conversation_id);
+            let (active_block_matches, command_is_running) = match interrupt_scope {
+                StopInterruptScope::UserCtrlC => (
+                    block_is_this_conversations
+                        || visible_conversation_id == Some(conversation_id)
+                        || history_active_conversation_id == Some(conversation_id),
+                    active_block.is_executing()
+                        || active_block.is_command_grid_active()
+                        || active_block.is_active_and_long_running(),
+                ),
+                // Only a command the agent itself is running, and only while it is actually
+                // running: never the user's own command, and never the idle prompt (whose
+                // half-typed line a Ctrl-C would wipe).
+                StopInterruptScope::AgentCommandOnly => (
+                    block_is_this_conversations,
+                    !active_block.is_command_grid_active()
+                        && (active_block.is_executing()
+                            || active_block.is_active_and_long_running()),
+                ),
+            };
 
             if active_block_matches && command_is_running {
                 active_block.set_user_control_with_stop_reason();
@@ -8378,8 +8418,11 @@ impl TerminalView {
     /// Every conversation of this view that is still running (in progress, blocked on an
     /// approval, recovering from a transient error, or waiting for events) is stopped the way a
     /// follow-up Ctrl-C stops it: the in-flight request is cancelled, pending and running
-    /// actions are cancelled (so no follow-up request carries their results), an agent-driven
-    /// command is interrupted, and the conversation ends up `Cancelled`. The queue itself is
+    /// actions are cancelled (so no follow-up request carries their results), a command the
+    /// agent is running is interrupted, and the conversation ends up `Cancelled`. Unlike a
+    /// Ctrl-C, the interrupt is limited to the agent's own running command
+    /// (`StopInterruptScope::AgentCommandOnly`): a user's own command keeps running, as it
+    /// does when closing a pane with no agent, and a half-typed prompt line is not wiped. The queue itself is
     /// left intact but suspended: if the close is undone the user gets the conversation back as
     /// cancelled with every queued row still there to send or delete, and nothing resumes on
     /// its own. If the close is never undone, discarding the pane clears the conversations,
@@ -8405,7 +8448,11 @@ impl TerminalView {
             .collect();
 
         for conversation_id in running_conversation_ids {
-            self.stop_local_agent_conversation(conversation_id, ctx);
+            self.stop_local_agent_conversation_with_interrupt_scope(
+                conversation_id,
+                StopInterruptScope::AgentCommandOnly,
+                ctx,
+            );
         }
     }
 
@@ -11162,6 +11209,11 @@ impl TerminalView {
             });
         }
 
+        // A closed (undo-restorable) pane never resumes an agent (#848): a command the user took
+        // over and then left running in a tab they closed must not start a request when it
+        // exits. Not owed after restore either -- the user resumes by hand if they want to.
+        let conversation_id_to_resume =
+            conversation_id_to_resume.filter(|_| !self.suspended_for_close);
         if let Some(conversation_id) = conversation_id_to_resume {
             // Include the context of the block that just completed in the resume context.
             // This is so that we correctly exit from LRC subagents attached to completed commands.

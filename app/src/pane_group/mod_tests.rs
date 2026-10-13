@@ -533,6 +533,38 @@ fn test_detach_for_close_stops_the_agent_and_reattach_does_not_resume_it() {
     });
 }
 
+/// #848: moving a pane to another tab or window (`DetachType::Moved`) is not a close; its agent
+/// keeps running and its queue keeps draining.
+#[test]
+fn test_moving_a_pane_does_not_stop_its_agent() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let pane_id = get_newly_created_pane_id(panes, &[]);
+            let conversation_id = start_running_conversation_in_pane(panes, pane_id, ctx);
+            let terminal_view = panes
+                .terminal_view_from_pane_id(pane_id, ctx)
+                .expect("pane should have a terminal view");
+
+            panes
+                .pane_contents
+                .get(&pane_id)
+                .expect("pane should exist")
+                .as_pane()
+                .detach(panes, DetachType::Moved, ctx);
+
+            assert!(!terminal_view.as_ref(ctx).is_suspended_for_close());
+            assert_eq!(
+                conversation_status(conversation_id, ctx),
+                Some(crate::ai::agent::conversation::ConversationStatus::InProgress),
+            );
+        });
+    });
+}
+
 /// #848: a permanent close (`DetachType::Closed`) used to cancel only the view's *active*
 /// conversation, via `ClearedConversationsInTerminalView`. Every running conversation of the
 /// pane must stop.
