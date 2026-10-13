@@ -13193,6 +13193,38 @@ fn typeahead_handoff_ctrl_c_on_an_agent_command_is_not_held() {
     })
 }
 
+/// An agent's running async action whose command is held behind the user's typeahead: never
+/// written, so the active block is a plain prompt that does not hold it.
+/// `terminal_with_real_async_agent_command` tags the prompt block itself with the command (a
+/// command written but not yet preexec'd, which counts as in flight); that block is finished
+/// here, leaving a fresh prompt block without agent metadata, as when a command is held.
+fn terminal_with_held_agent_command(
+    app: &mut App,
+) -> (ViewHandle<TerminalView>, AIConversationId, AIAgentActionId) {
+    let (terminal, conversation_id, action_id) = terminal_with_real_async_agent_command(app, false);
+    terminal.update(app, |view, _| {
+        let mut model = view.model.lock();
+        model.finish_block_with_exit_code(0);
+        assert!(
+            !model
+                .block_list()
+                .active_block()
+                .agent_holds_in_flight_command(&action_id),
+            "precondition: no block holds a held command"
+        );
+    });
+    let action_model = terminal.read(app, |view, _| view.ai_action_model.clone());
+    action_model.read(app, |action_model, _| {
+        assert!(
+            action_model
+                .get_action_status(&action_id)
+                .is_some_and(|status| status.is_running()),
+            "precondition: the held command's action is still running"
+        );
+    });
+    (terminal, conversation_id, action_id)
+}
+
 /// Counts the hand-off's targeted discard of a held command, the full #848 discard and ^C.
 fn count_held_discard_effects(
     app: &mut App,
@@ -13223,17 +13255,10 @@ fn count_held_discard_effects(
 fn typeahead_handoff_cancel_of_a_held_agent_command_drops_only_it() {
     App::test((), |mut app| async move {
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-        let (terminal, conversation_id, action_id) =
-            terminal_with_real_async_agent_command(&mut app, false);
+        // Lets the setup finish the agent-tagged prompt block from the mock's lifecycle phase.
+        let _recovery = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+        let (terminal, conversation_id, action_id) = terminal_with_held_agent_command(&mut app);
         terminal.update(&mut app, |view, _| {
-            assert!(
-                !view
-                    .model
-                    .lock()
-                    .block_list()
-                    .active_block()
-                    .agent_holds_in_flight_command(&action_id)
-            );
             view.model
                 .lock()
                 .typeahead_handoff_mut()
@@ -13268,13 +13293,15 @@ fn typeahead_handoff_cancel_of_a_held_agent_command_drops_only_it() {
 }
 
 /// Stopping a conversation drops its agent command held behind the user's typeahead (only it),
-/// exactly once; a held command of another conversation is left alone.
+/// exactly once; a held command of another conversation is left alone. Stopped with the
+/// tab-close scope (`AgentCommandOnly`), which interrupts nothing at a plain prompt, so the
+/// counts measure only the held command's ownership.
 #[test]
 fn typeahead_handoff_stopping_a_conversation_drops_its_held_command() {
     App::test((), |mut app| async move {
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-        let (terminal, conversation_id, action_id) =
-            terminal_with_real_async_agent_command(&mut app, false);
+        let _recovery = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+        let (terminal, conversation_id, action_id) = terminal_with_held_agent_command(&mut app);
         let counts = count_held_discard_effects(&mut app, &terminal);
 
         terminal.update(&mut app, |view, ctx| {
@@ -13285,7 +13312,11 @@ fn typeahead_handoff_stopping_a_conversation_drops_its_held_command() {
                     action_id: AIAgentActionId::from("other-conversation".to_owned()),
                     conversation_id: AIConversationId::new(),
                 }));
-            view.stop_local_agent_conversation(conversation_id, ctx);
+            view.stop_local_agent_conversation_with_interrupt_scope(
+                conversation_id,
+                StopInterruptScope::AgentCommandOnly,
+                ctx,
+            );
         });
         assert_eq!(*counts.borrow(), (0, 0, 0));
 
@@ -13297,7 +13328,11 @@ fn typeahead_handoff_stopping_a_conversation_drops_its_held_command() {
                     action_id: action_id.clone(),
                     conversation_id,
                 }));
-            view.stop_local_agent_conversation(conversation_id, ctx);
+            view.stop_local_agent_conversation_with_interrupt_scope(
+                conversation_id,
+                StopInterruptScope::AgentCommandOnly,
+                ctx,
+            );
         });
         assert_eq!(*counts.borrow(), (1, 0, 0));
     })
