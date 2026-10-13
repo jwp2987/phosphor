@@ -471,6 +471,22 @@ mod validated_load_tests {
             private: false,
             toml_path: "test.bounded_size",
         },
+        plain_ratio: PlainRatio {
+            type: f32,
+            default: 1.0,
+            supported_platforms: SupportedPlatforms::ALL,
+            sync_to_cloud: SyncToCloud::Never,
+            private: false,
+            toml_path: "test.plain_ratio",
+        },
+        mac_only_ratio: MacOnlyRatio {
+            type: f32,
+            default: 1.0,
+            supported_platforms: SupportedPlatforms::MAC,
+            sync_to_cloud: SyncToCloud::Never,
+            private: false,
+            toml_path: "test.mac_only_ratio",
+        },
     ]);
 
     impl BoundedSize {
@@ -538,6 +554,67 @@ mod validated_load_tests {
         }
     }
 
+    /// A float setting with no validator of its own still never holds a
+    /// non-finite value, and such a value is reported -- not silently kept
+    /// while `valid_fn`'s `==` (NaN != NaN) raised a banner about it.
+    #[test]
+    fn test_non_finite_float_is_reset_and_reported_without_a_validator() {
+        assert_eq!(*PlainRatio::new(Some(f32::INFINITY)).value(), 1.0);
+        assert_eq!(*PlainRatio::new(Some(f32::NEG_INFINITY)).value(), 1.0);
+        assert_eq!(*PlainRatio::new(Some(f32::NAN)).value(), 1.0);
+        assert_eq!(*PlainRatio::new(Some(1e30)).value(), 1e30);
+
+        warpui::App::test((), |mut app| async move {
+            crate::set_settings_file_enabled(true);
+            app.update(init_prefs);
+            app.add_singleton_model(|_| SettingsManager::default());
+            BoundedTestSettings::register(&mut app);
+            app.update(|ctx| {
+                let public =
+                    <crate::PublicPreferences as SingletonEntity>::as_ref(ctx).as_preferences();
+                // 1e308 deserializes into an f32 as +inf.
+                public
+                    .write_value("plain_ratio", "1e308".to_string())
+                    .unwrap();
+            });
+
+            let invalid_keys =
+                app.read(|ctx| SettingsManager::as_ref(ctx).validate_all_public_settings(ctx));
+            assert_eq!(invalid_keys, vec!["plain_ratio".to_string()]);
+        });
+    }
+
+    /// A bad value for a setting that has no effect on this platform is not
+    /// reported (it would tell the user to fix a line that does nothing).
+    #[test]
+    fn test_platform_irrelevant_setting_is_not_reported() {
+        if SupportedPlatforms::MAC.matches_current_platform() {
+            return; // the setting is relevant here; nothing to check
+        }
+        warpui::App::test((), |mut app| async move {
+            crate::set_settings_file_enabled(true);
+            app.update(init_prefs);
+            app.add_singleton_model(|_| SettingsManager::default());
+            BoundedTestSettings::register(&mut app);
+            app.update(|ctx| {
+                let public =
+                    <crate::PublicPreferences as SingletonEntity>::as_ref(ctx).as_preferences();
+                public
+                    .write_value("mac_only_ratio", "1e308".to_string())
+                    .unwrap();
+            });
+
+            let invalid_keys =
+                app.read(|ctx| SettingsManager::as_ref(ctx).validate_all_public_settings(ctx));
+            assert!(invalid_keys.is_empty(), "{invalid_keys:?}");
+            let failed_keys = app.update(|ctx| {
+                SettingsManager::handle(ctx)
+                    .update(ctx, |manager, ctx| manager.reload_all_public_settings(ctx))
+            });
+            assert!(failed_keys.is_empty(), "{failed_keys:?}");
+        });
+    }
+
     #[test]
     fn test_validate_all_accepts_in_range_value() {
         warpui::App::test((), |mut app| async move {
@@ -555,22 +632,48 @@ mod validated_load_tests {
 
     /// Hot reload of an out-of-range value: the in-memory value is the
     /// validated one, the key is reported, and a later UI change still
-    /// persists (the reload path must not treat it as a parse failure and
-    /// write-inhibit the key).
+    /// persists -- the reload path must not treat it as a parse failure and
+    /// write-inhibit the key.
+    ///
+    /// Uses the real TOML backend on a temp file: the in-memory backend's
+    /// `inhibit_writes_for_key` is a no-op, so it could not catch an
+    /// inhibited write.
     #[test]
     fn test_reload_validates_reports_and_does_not_inhibit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        std::fs::write(&path, "[test]\nbounded_size = 13.0\n").unwrap();
+        let toml_path = path.clone();
+
         warpui::App::test((), |mut app| async move {
-            app.update(init_prefs);
+            app.update(move |ctx| {
+                let (toml, err) =
+                    warpui_extras::user_preferences::toml_backed::TomlBackedUserPreferences::new(
+                        toml_path,
+                    );
+                assert!(err.is_none());
+                ctx.add_singleton_model(move |_| crate::PublicPreferences::new(Box::new(toml)));
+                ctx.add_singleton_model(move |_| -> crate::PrivatePreferences {
+                    crate::PrivatePreferences(Box::<
+                        warpui_extras::user_preferences::in_memory::InMemoryPreferences,
+                    >::default())
+                });
+            });
             app.add_singleton_model(|_| SettingsManager::default());
             BoundedTestSettings::register(&mut app);
-            app.update(|ctx| write_bounded(ctx, "1000.0"));
 
+            // The user edits the file; the watcher reloads it.
+            std::fs::write(&path, "[test]\nbounded_size = 1000.0\n").unwrap();
+            app.read(|ctx| {
+                <crate::PublicPreferences as SingletonEntity>::as_ref(ctx)
+                    .reload_from_disk()
+                    .unwrap();
+            });
             let failed_keys = app.update(|ctx| {
                 SettingsManager::handle(ctx)
                     .update(ctx, |manager, ctx| manager.reload_all_public_settings(ctx))
             });
             assert_eq!(failed_keys, vec!["bounded_size".to_string()]);
-
             app.read(|ctx| {
                 assert_eq!(
                     *BoundedTestSettings::as_ref(ctx).bounded_size.value(),
@@ -579,25 +682,17 @@ mod validated_load_tests {
                 );
             });
 
+            // The user fixes it from the settings UI: this must reach the file.
             app.update(|ctx| {
                 BoundedTestSettings::handle(ctx).update(ctx, |settings, ctx| {
                     settings.bounded_size.set_value(14.0, ctx).unwrap();
                 });
             });
-            app.read(|ctx| {
-                assert_eq!(*BoundedTestSettings::as_ref(ctx).bounded_size.value(), 14.0);
-                let public =
-                    <crate::PublicPreferences as SingletonEntity>::as_ref(ctx).as_preferences();
-                let stored = public
-                    .read_value(BoundedSize::storage_key())
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(
-                    stored.parse::<f32>().unwrap(),
-                    14.0,
-                    "a UI change must be persisted after a rejected value was reported"
-                );
-            });
+            let on_disk = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                on_disk.contains("bounded_size = 14") && !on_disk.contains("1000"),
+                "a UI change must be persisted after a rejected value was reported; file: {on_disk}"
+            );
         });
     }
 }

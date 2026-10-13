@@ -37,6 +37,11 @@ struct SettingReloadEntry {
     serialized_default: String,
     toml_key: &'static str,
     hierarchy: Option<&'static str>,
+    /// Whether the setting applies on this platform. A bad value for a
+    /// setting that does nothing here (e.g. `override_blur`, macOS-only, on
+    /// Linux) is not reported: telling the user to fix a line that has no
+    /// effect is noise.
+    reportable: bool,
 }
 
 #[derive(Debug)]
@@ -394,6 +399,7 @@ impl SettingsManager {
                     serialized_default: info.serialized_default_value.clone(),
                     toml_key: info.toml_key,
                     hierarchy: info.hierarchy,
+                    reportable: info.supported_platforms.matches_current_platform(),
                 }
             })
             .collect();
@@ -425,8 +431,10 @@ impl SettingsManager {
                 let prefs =
                     <super::PublicPreferences as SingletonEntity>::as_ref(ctx).as_preferences();
                 prefs.inhibit_writes_for_key(entry.toml_key, entry.hierarchy);
-                failed_keys.push(entry.toml_key.to_string());
-            } else if rejected_by_validation {
+                if entry.reportable {
+                    failed_keys.push(entry.toml_key.to_string());
+                }
+            } else if rejected_by_validation && entry.reportable {
                 log::warn!(
                     "Setting {} has an out-of-range value in the settings file; using a valid value instead",
                     entry.storage_key
@@ -451,6 +459,9 @@ impl SettingsManager {
         self.settings
             .iter()
             .filter(|(_, info)| !info.is_private)
+            // Not reported where the setting has no effect (see
+            // `SettingReloadEntry::reportable`).
+            .filter(|(_, info)| info.supported_platforms.matches_current_platform())
             .filter_map(|(key, info)| {
                 let value = prefs
                     .read_value_with_hierarchy(info.toml_key, info.hierarchy)

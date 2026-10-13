@@ -503,7 +503,11 @@ upstream's behavior is actually a defect rather than a preference.
   pane at the maximum font size 120. Tracked as a follow-up issue.
   A validator must return accepted values unchanged: any change is reported as an
   invalid value, so a normalising validator would raise false banner errors (documented
-  on `Setting::validate`).
+  on `Setting::validate`). Every float setting, validator or not, replaces a non-finite
+  stored value with its default and reports it (`SettingsValue::is_well_formed`). A bad
+  value for a setting that does nothing on this platform is not reported. The banner
+  now says "a valid value is being used instead" rather than "the default value is
+  being used", since a clamped value (opacity 0 -> 1) is not the default.
 
 - **An incremental find rescan does not flash the find bar's scanning label**
   (`#815`, 2026-10-12, `app/src/terminal/find/model/async_find.rs`). **Upstream:**

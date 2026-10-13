@@ -256,7 +256,7 @@ macro_rules! define_setting {
                             inner: Self::default_value(),
                             is_explicitly_set: true,
                         };
-                        setting.inner = setting.validate(v);
+                        setting.inner = setting.validate_stored(v);
                         setting
                     }
                     None => {
@@ -324,7 +324,7 @@ macro_rules! define_setting {
             ) -> anyhow::Result<()> {
                 use $crate::ChangeEventReason;
                 Self::clear_from_preferences(Self::preferences_for_setting(ctx))?;
-                self.inner = self.validate(Self::default_value());
+                self.inner = self.validate_stored(Self::default_value());
                 self.is_explicitly_set = false;
                 ctx.emit($crate::macros::concat_idents!(EventName = $group, ChangedEvent { EventName::$name {
                     change_event_reason: ChangeEventReason::Clear,
@@ -341,7 +341,7 @@ macro_rules! define_setting {
                 let changed_in_storage =
                     Self::write_to_preferences(&new_value, Self::preferences_for_setting(ctx))?;
                 if self.value() != &new_value || changed_in_storage {
-                    self.inner = self.validate(new_value);
+                    self.inner = self.validate_stored(new_value);
                     self.is_explicitly_set = true;
                     ctx.emit($crate::macros::concat_idents!(EventName = $group, ChangedEvent { EventName::$name {
                         change_event_reason: ChangeEventReason::CloudSync,
@@ -359,7 +359,7 @@ macro_rules! define_setting {
                 let changed_in_storage =
                     Self::write_to_preferences(&new_value, Self::preferences_for_setting(ctx))?;
                 if self.value() != &new_value || changed_in_storage {
-                    self.inner = self.validate(new_value);
+                    self.inner = self.validate_stored(new_value);
                     self.is_explicitly_set = true;
                     ctx.emit($crate::macros::concat_idents!(EventName = $group, ChangedEvent { EventName::$name {
                         change_event_reason: ChangeEventReason::LocalChange,
@@ -375,7 +375,7 @@ macro_rules! define_setting {
                 ctx: &mut warpui::ModelContext<Self::Group>,
             ) -> anyhow::Result<()> {
                 use $crate::ChangeEventReason;
-                let validated = self.validate(new_value);
+                let validated = self.validate_stored(new_value);
                 if self.value() != &validated || self.is_explicitly_set != explicitly_set {
                     self.inner = validated;
                     self.is_explicitly_set = explicitly_set;
@@ -403,6 +403,27 @@ macro_rules! define_setting {
                 Some($mtd)
             }
             )?
+        }
+
+        impl $name {
+            /// Runs the setting's `validate`, after replacing a value that no
+            /// setting of this type can hold (a non-finite float, see
+            /// `SettingsValue::is_well_formed`) with the default (#857).
+            fn validate_stored(&self, value: $type) -> $type {
+                use $crate::_settings_value::SettingsValue as _;
+                use $crate::Setting as _;
+                let value = if value.is_well_formed() {
+                    value
+                } else {
+                    log::warn!(
+                        "{} {:?} is not a usable value; using the default",
+                        Self::setting_name(),
+                        value
+                    );
+                    Self::default_value()
+                };
+                self.validate(value)
+            }
         }
 
         impl std::ops::Deref for $name {

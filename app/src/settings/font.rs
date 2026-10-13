@@ -224,8 +224,8 @@ pub const FONT_SIZE_SETTING_MAX: f32 = 120.0;
 /// terminal grid zero-sized, which closed windows and pruned the saved
 /// session; `1e308` blanked the terminal; `0` and negatives cost gigabytes of
 /// glyph atlas (#857). Rejected values fall back to the default rather than
-/// clamping to the nearest bound: the settings-errors banner tells the user
-/// "the default value is being used", and that must be true.
+/// clamping to the nearest bound: a typo like `1000` for `10.00` is better
+/// served by the familiar default than by the 120-point maximum.
 pub fn validated_font_size(setting: &str, new_value: f32, fallback: f32) -> f32 {
     if new_value.is_finite() && (FONT_SIZE_SETTING_MIN..=FONT_SIZE_SETTING_MAX).contains(&new_value)
     {

@@ -75,6 +75,15 @@ pub trait SettingsValue: Serialize + DeserializeOwned {
         serde_json::from_value(value.clone()).ok()
     }
 
+    /// Whether this value is usable by *any* setting of this type. `false`
+    /// only for values no setting can sensibly hold -- non-finite floats
+    /// (`inf`, `nan`, or `1e308` read into an `f32`). The settings macros
+    /// replace such a value with the setting's default before its own
+    /// `validate` runs, and report it as invalid (#857).
+    fn is_well_formed(&self) -> bool {
+        true
+    }
+
     /// Returns the JSON Schema describing the file representation of this type.
     ///
     /// The default delegates to `schemars::JsonSchema`, which is correct for
@@ -124,12 +133,22 @@ impl_default_file_format!(
     i16,
     i32,
     i64,
-    f32,
-    f64,
     String,
     PathBuf,
     DateTime<Utc>,
 );
+
+impl SettingsValue for f32 {
+    fn is_well_formed(&self) -> bool {
+        self.is_finite()
+    }
+}
+
+impl SettingsValue for f64 {
+    fn is_well_formed(&self) -> bool {
+        self.is_finite()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Generic collection impls (recursive)
