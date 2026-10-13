@@ -484,6 +484,15 @@ upstream's behavior is actually a defect rather than a preference.
   `winsize` is also clamped to 1..=65535 rows/cols instead of `usize as u16`.
   Side effect, intended: `BackgroundOpacity`/`BackgroundBlurRadius`, whose validators
   were likewise skipped at startup, are now clamped (and reported) at startup too.
+  **Scope of the fix:** this removes the *config* trigger only. Why a huge cell size
+  makes every idle shell run a command and exit (which is what closed the windows and
+  pruned the session) is **not root-caused**. The most plausible mechanism is the
+  2-column x 1-row winsize that `SizeInfo::new`'s `MIN_COLUMNS`/`MIN_ROWS` floor
+  produces, which zle/readline may mishandle; that size is still reachable with a tiny
+  pane at the maximum font size 120. Tracked as a follow-up issue.
+  A validator must return accepted values unchanged: any change is reported as an
+  invalid value, so a normalising validator would raise false banner errors (documented
+  on `Setting::validate`).
 
 - **An incremental find rescan does not flash the find bar's scanning label**
   (`#815`, 2026-10-12, `app/src/terminal/find/model/async_find.rs`). **Upstream:**

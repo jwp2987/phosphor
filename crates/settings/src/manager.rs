@@ -21,6 +21,10 @@ type EqualsFn = Box<dyn Fn(&str, &str) -> Result<bool>>;
 
 /// Checks a serialized stored value: `Err` when it does not deserialize, or
 /// when it deserializes but the setting's `validate` replaces it.
+///
+/// Any change `validate` makes counts as a rejection, so a validator that
+/// *normalises* accepted values (rounds, trims, canonicalises) would surface
+/// false errors in the settings banner. See `Setting::validate`.
 type ValidFn = Box<dyn Fn(&str) -> Result<()>>;
 
 type IsSyncableFn = Box<dyn Fn(&AppContext) -> bool>;
