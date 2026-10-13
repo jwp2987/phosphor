@@ -5525,10 +5525,7 @@ impl Input {
             });
 
             // Then run auto-detection on the current buffer content
-            self.run_input_background_jobs(
-                InputBackgroundJobOptions::default().with_ai_input_detection(),
-                ctx,
-            );
+            self.request_input_detection_for_current_buffer(ctx);
         }
     }
 
@@ -5899,10 +5896,7 @@ impl Input {
                     .should_run_input_autodetection(ctx)
                     && !self.editor.as_ref(ctx).buffer_text(ctx).is_empty()
                 {
-                    self.run_input_background_jobs(
-                        InputBackgroundJobOptions::default().with_ai_input_detection(),
-                        ctx,
-                    );
+                    self.request_input_detection_for_current_buffer(ctx);
                 }
             }
             #[cfg(feature = "voice_input")]
@@ -7565,10 +7559,7 @@ impl Input {
 
             // If we're closing an inline menu, trigger autodetection on the buffer contents
             if was_inline_menu_open {
-                self.run_input_background_jobs(
-                    InputBackgroundJobOptions::default().with_ai_input_detection(),
-                    ctx,
-                );
+                self.request_input_detection_for_current_buffer(ctx);
             }
 
             if should_focus_input {
@@ -9089,8 +9080,8 @@ impl Input {
 
                 // Abort any autodetection work on the old buffer state, and record that this
                 // buffer's input type is now undecided until its own verdict lands (#833). The
-                // model uses this to settle detections per buffer; see
-                // `BlocklistAIInputModel::is_detection_pending_for`.
+                // background path only classifies a parse whose text is still requested; see
+                // `BlocklistAIInputModel::is_detection_requested_for`.
                 let buffer_text_for_detection =
                     should_run_ai_input_detection.then(|| self.buffer_text(ctx));
                 self.ai_input_model.update(ctx, |controller, _| {
@@ -11949,6 +11940,20 @@ impl Input {
         self.ai_controller.update(ctx, move |controller, ctx| {
             controller.send_slash_command_request(SlashCommandRequest::CloneRepository { url }, ctx)
         });
+    }
+
+    /// Re-runs input-type detection on the current buffer outside an edit (a mode toggle, a
+    /// settings change, an inline menu closing). Records the request first: the background path
+    /// only classifies text whose detection is still requested (#833).
+    fn request_input_detection_for_current_buffer(&mut self, ctx: &mut ViewContext<Self>) {
+        let buffer_text = self.buffer_text(ctx);
+        self.ai_input_model.update(ctx, |model, _| {
+            model.note_detection_requested(buffer_text);
+        });
+        self.run_input_background_jobs(
+            InputBackgroundJobOptions::default().with_ai_input_detection(),
+            ctx,
+        );
     }
 
     /// Handles the user's 'Enter' keypress.

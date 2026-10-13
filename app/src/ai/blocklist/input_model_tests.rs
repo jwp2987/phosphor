@@ -491,12 +491,13 @@ fn autodetection_disabled_while_agent_drives_requested_command() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// #833: Enter must route on the verdict for the text being submitted.
+// #833: input-type detection is tracked per buffer.
 //
-// The view records every user edit that requests detection (`note_detection_requested`), and its
-// Enter handler waits -- bounded -- while `is_detection_pending_for` says the buffer's verdict is
-// still out. These tests pin the model half of that contract, the narrowed explicit-set window
-// (F7) and the typing-speed-independent one-off shortcut (F8).
+// The view records every user edit that requests detection (`note_detection_requested`) and only
+// classifies a parse whose text is still requested (`is_detection_requested_for`). These tests pin
+// the model half of that contract, the narrowed explicit-set window (F7), the withdrawal of
+// submitted text from detection, and the typing-speed-independent one-off shortcut (F8). F6
+// (Enter routing before the verdict lands) is not fixed.
 // ---------------------------------------------------------------------------------------------
 
 const AI_UNLOCKED: InputConfig = InputConfig {
@@ -550,24 +551,6 @@ fn request_detection(
     });
 }
 
-/// Pumps the executors until detection for `buffer_text` is no longer pending (2 s cap).
-async fn wait_until_settled(
-    app: &mut App,
-    input_model: &ModelHandle<BlocklistAIInputModel>,
-    buffer_text: &str,
-) {
-    for _ in 0..400 {
-        let is_pending = input_model.read(&*app, |model, ctx| {
-            model.is_detection_pending_for(buffer_text, ctx)
-        });
-        if !is_pending {
-            return;
-        }
-        warpui::r#async::Timer::after(std::time::Duration::from_millis(5)).await;
-    }
-    panic!("detection for {buffer_text:?} never settled");
-}
-
 #[test]
 fn edited_buffer_is_pending_until_its_own_verdict_lands() {
     App::test((), |mut app| async move {
@@ -597,35 +580,34 @@ fn edited_buffer_is_pending_until_its_own_verdict_lands() {
 }
 
 #[test]
-fn waiter_fires_when_in_flight_classification_settles() {
+fn submit_withdraws_the_submitted_text_from_detection() {
     App::test((), |mut app| async move {
         let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
-        // AI before the edit: the one-off shortcut settles `yes please` as AI on the async path
-        // without depending on which classifier is compiled in.
+        let _agent_view = FeatureFlag::AgentView.override_enabled(false);
         let input_model = build_autodetecting_input_model(&mut app, AI_UNLOCKED);
-        let buffer_text = "yes please";
+        AISettings::handle(&app).update(&mut app, |settings, ctx| {
+            settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx)
+                .unwrap();
+        });
 
-        let snapshot = parsed(buffer_text).await;
-        request_detection(&mut app, &input_model, snapshot);
-        let mut settled = input_model.update(&mut app, |model, _| {
-            assert!(model.is_detection_in_flight_for(buffer_text));
-            model.detection_settled_receiver()
+        // Typed, then submitted before its parse landed: the late parse must not be
+        // classified (the view checks `is_detection_requested_for` before classifying).
+        input_model.update(&mut app, |model, ctx| {
+            model.note_detection_requested(PREFILTERED_COMMAND.to_owned());
+            model.handle_input_buffer_submitted(ctx);
         });
         input_model.read(&app, |model, ctx| {
-            assert!(model.is_detection_pending_for(buffer_text, ctx));
-        });
-
-        wait_until_settled(&mut app, &input_model, buffer_text).await;
-        assert_eq!(settled.try_recv(), Ok(Some(())));
-        input_model.read(&app, |model, _| {
-            assert!(!model.is_detection_in_flight_for(buffer_text));
-            assert_eq!(model.input_type(), InputType::AI);
+            assert!(!model.is_detection_requested_for(PREFILTERED_COMMAND));
+            assert!(!model.is_detection_pending_for(PREFILTERED_COMMAND, ctx));
+            assert_eq!(model.input_config(), AI_UNLOCKED);
         });
     });
 }
 
 #[test]
-fn explicit_lock_is_never_pending_at_enter() {
+fn explicit_lock_is_never_pending() {
     App::test((), |mut app| async move {
         let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
         let input_model = build_autodetecting_input_model(&mut app, SHELL_UNLOCKED);

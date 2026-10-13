@@ -9416,3 +9416,41 @@ fn test_paste_requests_input_detection_inside_submit_window() {
         });
     });
 }
+
+#[test]
+fn test_parse_landing_after_submit_does_not_reclassify_the_mode() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let input = input_with_live_autodetection(&mut app).await;
+
+        // In AI mode, a command is pasted and submitted before its parse lands. The shell submit
+        // path leaves the text in the editor, so a buffer comparison alone would let the late
+        // parse through, and the #808 pre-filter would flip the mode to Shell for whatever is
+        // typed next.
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |model, ctx| {
+                model.enable_autodetection(InputType::AI, ctx);
+            });
+        });
+        let command = "cat foo.txt | grep -i error";
+        paste_into_input(&mut app, &input, command);
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |model, ctx| {
+                model.handle_input_buffer_submitted(ctx);
+            });
+        });
+
+        // Let the parse (and anything it would trigger) land.
+        for _ in 0..60 {
+            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+        }
+
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), command);
+            assert_eq!(
+                input.ai_input_model().as_ref(ctx).input_type(),
+                InputType::AI
+            );
+        });
+    });
+}

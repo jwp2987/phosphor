@@ -8,7 +8,6 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Local};
-use futures::channel::oneshot;
 use futures::stream::AbortHandle;
 use input_classifier::util::{is_agent_follow_up_input, is_one_off_natural_language_word};
 use instant::Instant;
@@ -175,17 +174,9 @@ pub struct BlocklistAIInputModel {
     /// [`Self::is_detection_pending_for`]).
     pending_detection_buffer: Option<String>,
 
-    /// Buffer text the in-flight async classification task was spawned for.
-    in_flight_detection_buffer: Option<String>,
-
     /// Incremented for every spawned classification task, so a task that completed just before
     /// being replaced cannot apply its verdict (or clear the handle) over its replacement.
     detection_generation: u64,
-
-    /// Notified whenever a detection settles (or is cancelled by an explicit write); see
-    /// [`Self::detection_settled_receiver`]. Shared behind a mutex only so the model stays
-    /// `Clone`; it is only ever touched on the main thread.
-    detection_settled_waiters: Arc<parking_lot::Mutex<Vec<oneshot::Sender<()>>>>,
 
     /// Whether the input buffer was empty at the time the lock was set.  This will be true
     /// if a persistent lock is in place and a buffer is submitted.
@@ -247,9 +238,7 @@ impl BlocklistAIInputModel {
             explicit_input_type_set: None,
             non_autodetected_input_type: input_config.input_type,
             pending_detection_buffer: None,
-            in_flight_detection_buffer: None,
             detection_generation: 0,
-            detection_settled_waiters: Default::default(),
             was_lock_set_with_empty_buffer: false,
             agent_view_controller: None,
             ai_context_model,
@@ -457,9 +446,7 @@ impl BlocklistAIInputModel {
             explicit_input_type_set: None,
             non_autodetected_input_type: input_config.input_type,
             pending_detection_buffer: None,
-            in_flight_detection_buffer: None,
             detection_generation: 0,
-            detection_settled_waiters: Default::default(),
             was_lock_set_with_empty_buffer: false,
             autodetect_abort_handle: None,
             model,
@@ -698,7 +685,6 @@ impl BlocklistAIInputModel {
             buffer_text: None,
         });
         self.pending_detection_buffer = None;
-        self.notify_detection_settled();
     }
 
     /// Returns `true` if a detection request for `buffer_text` falls under the explicit-write
@@ -719,7 +705,8 @@ impl BlocklistAIInputModel {
     }
 
     /// Records that the view has requested input-type detection for `buffer_text` (an edit the
-    /// user made), so a submission of that exact text can wait for the verdict (#833).
+    /// user made, or a re-detection the view triggered). The view classifies a parse only while
+    /// its text is still requested ([`Self::is_detection_requested_for`]) (#833).
     pub fn note_detection_requested(&mut self, buffer_text: String) {
         let explicit_state = self
             .explicit_input_type_set
@@ -745,7 +732,8 @@ impl BlocklistAIInputModel {
     ///
     /// An explicit write whose buffer is still unclaimed (no detection request has arrived since
     /// it) is treated as covering the current buffer: nothing has asked to reclassify it, and an
-    /// explicit choice is never overridden at Enter.
+    /// explicit choice is never overridden. Nothing in the submit path consults this yet (F6 of
+    /// #833 is open); it is the model's answer to "is this buffer's mode a real verdict?".
     pub fn is_detection_pending_for(&self, buffer_text: &str, app: &AppContext) -> bool {
         if buffer_text.trim().is_empty() || !self.should_run_input_autodetection(app) {
             return false;
@@ -765,26 +753,11 @@ impl BlocklistAIInputModel {
         self.pending_detection_buffer.as_deref() == Some(buffer_text)
     }
 
-    /// Whether the async classification task is currently running for `buffer_text`.
-    pub fn is_detection_in_flight_for(&self, buffer_text: &str) -> bool {
-        self.autodetect_abort_handle.is_some()
-            && self.in_flight_detection_buffer.as_deref() == Some(buffer_text)
-    }
-
-    /// Returns a receiver that resolves the next time any detection settles (a verdict is applied
-    /// or found unchanged, or an explicit write overrides it). Receivers are one-shot; callers
-    /// re-check [`Self::is_detection_pending_for`] when it fires, because the detection that
-    /// settled may have been for other text.
-    pub fn detection_settled_receiver(&mut self) -> oneshot::Receiver<()> {
-        let (tx, rx) = oneshot::channel();
-        self.detection_settled_waiters.lock().push(tx);
-        rx
-    }
-
-    fn notify_detection_settled(&mut self) {
-        for waiter in self.detection_settled_waiters.lock().drain(..) {
-            let _ = waiter.send(());
-        }
+    /// Whether the user's latest detection-requesting edit was for exactly `buffer_text` and its
+    /// verdict has not landed yet. The view's background path only classifies a parse when this
+    /// holds, so a parse that lands after its text was submitted (or superseded) is dropped.
+    pub fn is_detection_requested_for(&self, buffer_text: &str) -> bool {
+        self.pending_detection_buffer.as_deref() == Some(buffer_text)
     }
 
     /// Marks detection for `buffer_text` as settled: whatever the input type is now is the
@@ -793,7 +766,6 @@ impl BlocklistAIInputModel {
         if self.pending_detection_buffer.as_deref() == Some(buffer_text) {
             self.pending_detection_buffer = None;
         }
-        self.notify_detection_settled();
     }
 
     pub fn enable_autodetection(&mut self, input_type: InputType, ctx: &mut ModelContext<Self>) {
@@ -842,6 +814,13 @@ impl BlocklistAIInputModel {
         if let Some(explicit) = self.explicit_input_type_set.as_mut() {
             explicit.buffer_text = Some(String::new());
         }
+        // The submitted text has been routed; nothing may reclassify it now. The shell submit
+        // path leaves the command in the editor until its block completes, so a debounced parse
+        // of it can still land after this point, and the narrowed window above no longer
+        // swallows it: without this, its verdict (say AI, for prose that just ran in the shell)
+        // would become the mode the next command is typed into. The view only classifies a
+        // parse whose text is still `is_detection_requested_for`.
+        self.pending_detection_buffer = None;
     }
 
     pub fn was_lock_set_with_empty_buffer(&self) -> bool {
@@ -853,7 +832,6 @@ impl BlocklistAIInputModel {
         if let Some(handle) = self.autodetect_abort_handle.take() {
             handle.abort();
         }
-        self.in_flight_detection_buffer = None;
     }
 
     /// If the input type is unlocked, analyze the input and set the input type to the type we
@@ -958,7 +936,6 @@ impl BlocklistAIInputModel {
 
         let buffer_cloned = input.buffer_text.clone();
         let other_buffer_cloned = buffer_cloned.clone();
-        let input_buffer_text = buffer_cloned.clone();
         self.detection_generation = self.detection_generation.wrapping_add(1);
         let detection_generation = self.detection_generation;
         let current_input_type = self.input_type();
@@ -1094,7 +1071,6 @@ impl BlocklistAIInputModel {
                         return;
                     }
                     me.autodetect_abort_handle = None;
-                    me.in_flight_detection_buffer = None;
                     me.apply_autodetected_input_type(new_input_type, ctx);
                     me.settle_detection(&other_buffer_cloned);
                     if current_input_type != new_input_type {
@@ -1125,7 +1101,6 @@ impl BlocklistAIInputModel {
             )
             .abort_handle();
         self.autodetect_abort_handle = Some(handle);
-        self.in_flight_detection_buffer = Some(input_buffer_text);
     }
 }
 

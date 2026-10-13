@@ -111,13 +111,20 @@ impl Input {
         ctx: &mut ViewContext<Self>,
     ) {
         if let Some(parsed_token) = self.last_parsed_tokens.clone() {
-            // A parse that finished after the buffer moved on describes text that is no longer
-            // there; classifying it would set the input type for the wrong buffer. (The newer
-            // buffer's own detection, if it needs one, was requested by the edit that changed
-            // it.) This matters since #833 narrowed the explicit-set window to the buffer it was
-            // made for: a parse of a just-submitted command landing after the submit is no
-            // longer swallowed by that window.
-            if parsed_token.buffer_text != self.editor.as_ref(ctx).buffer_text(ctx) {
+            // Only classify a parse whose text still awaits a verdict (#833). A parse that
+            // finished after the buffer moved on describes text that is no longer there, and
+            // one that finished after its text was submitted would set the mode the *next*
+            // command is typed into (the shell submit path leaves the command in the editor
+            // until its block completes, so a buffer comparison alone cannot tell). Both used to
+            // be hidden by the explicit-set window, which #833 narrowed to the buffer it was
+            // made for. The newer buffer's own detection was requested by the edit that changed
+            // it.
+            if parsed_token.buffer_text != self.editor.as_ref(ctx).buffer_text(ctx)
+                || !self
+                    .ai_input_model
+                    .as_ref(ctx)
+                    .is_detection_requested_for(&parsed_token.buffer_text)
+            {
                 return;
             }
             let session_id = completion_context.session.id();
@@ -300,9 +307,13 @@ impl Input {
                             parse_current_commands_and_tokens(buffer_text, &detection_ctx).await
                         },
                         move |input, parsed_tokens, ctx| {
-                            // Stale parse: see `run_input_mode_detection`.
+                            // Stale or already-submitted parse: see `run_input_mode_detection`.
                             let buffer_text = input.editor.as_ref(ctx).buffer_text(ctx);
-                            if parsed_tokens.buffer_text != buffer_text {
+                            if parsed_tokens.buffer_text != buffer_text
+                                || !ai_input_model
+                                    .as_ref(ctx)
+                                    .is_detection_requested_for(&parsed_tokens.buffer_text)
+                            {
                                 return;
                             }
                             ai_input_model.update(ctx, |model, ctx| {

@@ -479,26 +479,35 @@ upstream's behavior is actually a defect rather than a preference.
   changed without dirty rows while the output grid had some also gets the full
   rescan; upstream ignored that change.
 
-- **Input-type detection is not swallowed after an explicit write, nor decided by typing
-  speed** (`#833`, 2026-10-13, `app/src/ai/blocklist/input_model.rs`,
-  `app/src/terminal/input/decorations.rs`). **Upstream:** the explicit-set window
+- **Input-type detection is not swallowed after an explicit write, not decided by typing
+  speed, and never re-run on submitted text** (`#833`, 2026-10-13,
+  `app/src/ai/blocklist/input_model.rs`, `app/src/terminal/input/decorations.rs`,
+  `app/src/terminal/input.rs`). **Upstream:** the explicit-set window
   (`AUTODETECTION_DISABLE_DURATION_MS`, `4111d08f9:app/src/ai/blocklist/input_model.rs:648`)
   drops *every* detection for 250 ms after any explicit input-type write, including the reset a
   submit makes; the one-off natural-language shortcut keys off the live, autodetected input type
-  (`:731`); and a parse that finishes after the buffer changed is still classified. **The
-  defect:** measured by the headless routing torture run (2026-10-13): prose pasted within
-  250 ms of submitting a command stayed in shell mode until the next keystroke, so Enter ran it
-  (F7); `yes please` went to the agent typed slowly and to the shell typed fast or pasted,
-  because the intermediate keystrokes' guesses decided whether the shortcut applied (F8).
-  **We do:** the window covers only the buffer the explicit write was made for (the first
-  detection request inside it claims it; a submit claims the empty buffer up front), so new text
-  is classified; the shortcut keys off the last *non-autodetected* input type; a parse that
-  lands after the buffer moved on is not classified (otherwise the parse of a just-submitted
-  command could set the mode for the empty buffer); and a classifier task replaced after it
-  completed cannot apply its verdict over its replacement. **Still open (F6):** Enter itself
-  routes on the input type current at the keypress, so prose pasted or fast-typed and submitted
-  at once can still run in the shell; the model now tracks which buffer's verdict is pending
-  (`is_detection_pending_for`) for that follow-up.
+  (`:731`); a parse that finishes after the buffer changed, or after its text was submitted, is
+  still classified (the window is what hid the latter); and a classifier task that completed just
+  before being replaced can still apply its verdict. **The defect:** measured by the headless
+  routing torture run (2026-10-13): prose pasted within 250 ms of submitting a command stayed in
+  shell mode until the next keystroke, so Enter ran it (F7); `yes please` went to the agent typed
+  slowly and to the shell typed fast or pasted, because the intermediate keystrokes' guesses
+  decided whether the shortcut applied (F8). **We do:**
+  - the window covers only the buffer the explicit write was made for: the first detection
+    request inside it claims it, a submit claims the empty buffer, so new text is classified (F7);
+  - the shortcut keys off the last *non-autodetected* input type (F8);
+  - the model records each detection request (user edits, and the view's explicit re-detection
+    triggers) and the view classifies a parse only while its text is still requested and still
+    in the editor -- a parse for text that moved on, or that was submitted (a submit withdraws
+    it; the shell path leaves the command in the editor until its block completes), is dropped,
+    so a late verdict cannot set the mode the next command is typed into;
+  - a classifier task replaced after it completed cannot apply its verdict (generation check).
+
+  **Not fixed (F6):** Enter still routes on the input type current at the keypress, so prose
+  pasted or fast-typed and submitted before its verdict lands can still run in the shell. A
+  deferred-Enter wait (editor frozen: drops typed input) and a synchronous Enter-time evaluation
+  (cannot classify before the debounced parse lands, so it did not change the measured case) were
+  both tried and dropped.
 
 - **Zero-command Agent Mode input fails closed instead of vacuously auto-approving**
   (`#746`, 2026-09-27, `app/src/ai/blocklist/permissions.rs`). **Upstream:**
