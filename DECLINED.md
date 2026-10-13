@@ -480,8 +480,9 @@ upstream's behavior is actually a defect rather than a preference.
   rescan; upstream ignored that change.
 
 - **Input-type detection is not swallowed after an explicit write, nor decided by typing
-  speed** (`#833`, 2026-10-13, `app/src/ai/blocklist/input_model.rs`,
-  `app/src/terminal/input/decorations.rs`). **Upstream:** the explicit-set window
+  speed, and Enter settles a pending verdict** (`#833`, 2026-10-13,
+  `app/src/ai/blocklist/input_model.rs`, `app/src/terminal/input/decorations.rs`,
+  `app/src/terminal/input.rs`). **Upstream:** the explicit-set window
   (`AUTODETECTION_DISABLE_DURATION_MS`, `4111d08f9:app/src/ai/blocklist/input_model.rs:648`)
   drops *every* detection for 250 ms after any explicit input-type write, including the reset a
   submit makes; the one-off natural-language shortcut keys off the live, autodetected input type
@@ -495,10 +496,19 @@ upstream's behavior is actually a defect rather than a preference.
   is classified; the shortcut keys off the last *non-autodetected* input type; a parse that
   lands after the buffer moved on is not classified (otherwise the parse of a just-submitted
   command could set the mode for the empty buffer); and a classifier task replaced after it
-  completed cannot apply its verdict over its replacement. **Still open (F6):** Enter itself
-  routes on the input type current at the keypress, so prose pasted or fast-typed and submitted
-  at once can still run in the shell; the model now tracks which buffer's verdict is pending
-  (`is_detection_pending_for`) for that follow-up.
+  completed cannot apply its verdict over its replacement. **F6 (Enter routed on the type
+  current at the keypress, so prose pasted or fast-typed and submitted at once ran in the
+  shell):** a user Enter whose exact buffer still has a detection pending now evaluates it
+  synchronously on the UI thread (`Input::input_enter_from_keypress` ->
+  `BlocklistAIInputModel::settle_detection_synchronously`), polling the background pipeline's
+  own future with a no-op waker for at most `ENTER_SYNC_DETECTION_BUDGET` (60 ms), then routes
+  via the unchanged `input_enter`; with no verdict it routes in the current mode, as upstream
+  does. It never awaits the completer: the classifier runs only on the view's completed parse
+  for exactly that text (and not on an alias, whose expansion re-parses); without that parse
+  only the text-only steps run (denylist, #808 pre-filter, one-off shortcut, follow-up,
+  history). Locked or explicitly chosen input is never re-evaluated, and the editor is never
+  frozen, so keystroke order is untouched. Known gap: prose submitted before its parse lands
+  and not matched by history still routes in the current mode.
 
 - **Zero-command Agent Mode input fails closed instead of vacuously auto-approving**
   (`#746`, 2026-09-27, `app/src/ai/blocklist/permissions.rs`). **Upstream:**

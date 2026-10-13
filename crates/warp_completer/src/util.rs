@@ -31,6 +31,63 @@ pub async fn parse_current_commands_and_tokens<T: CompletionContext>(
     }
 }
 
+/// Synchronous counterpart of [`parse_current_commands_and_tokens`] that skips token
+/// descriptions: every [`ParsedTokenData::token_description`] is `None`.
+///
+/// Describing a token runs the completer, which can await filesystem listings and generator
+/// commands executed in the session, so it cannot run on the UI thread. Tokenization itself is
+/// pure: the token text, spans and per-command indices (including the `--flag=value` split) are
+/// identical to the async parse's. Used where a verdict is needed *now* -- the Enter-time input
+/// type check (#833) -- by consumers that only need token text, such as the denylist and the
+/// `#808` shell-syntax pre-filter.
+pub fn parse_current_commands_and_tokens_without_descriptions<T: CompletionContext>(
+    buffer_text: String,
+    completion_context: &T,
+) -> ParsedTokensSnapshot {
+    let mut parsed_tokens = Vec::new();
+    for parsed_command in
+        all_parsed_commands(buffer_text.as_str(), completion_context.escape_char())
+    {
+        for (token_index, token) in parsed_command.parts.into_iter().enumerate() {
+            let eq_split = token
+                .item
+                .starts_with('-')
+                .then(|| token.item.find('='))
+                .flatten();
+            if let Some(eq_pos) = eq_split {
+                let eq_byte_pos = token.span.start() + eq_pos;
+                parsed_tokens.push(ParsedTokenData {
+                    token: token.item[..eq_pos]
+                        .to_string()
+                        .spanned(Span::new(token.span.start(), eq_byte_pos)),
+                    token_index,
+                    token_description: None,
+                });
+                let value_token = token.item[eq_pos + 1..]
+                    .to_string()
+                    .spanned(Span::new(eq_byte_pos + 1, token.span.end()));
+                if !value_token.item.is_empty() {
+                    parsed_tokens.push(ParsedTokenData {
+                        token: value_token,
+                        token_index,
+                        token_description: None,
+                    });
+                }
+            } else {
+                parsed_tokens.push(ParsedTokenData {
+                    token,
+                    token_index,
+                    token_description: None,
+                });
+            }
+        }
+    }
+    ParsedTokensSnapshot {
+        buffer_text,
+        parsed_tokens,
+    }
+}
+
 /// Expands aliases in the provided snapshot iteratively until no aliases are found.
 pub async fn expand_aliases<T: CompletionContext>(
     mut parsed_tokens_snapshot: ParsedTokensSnapshot,

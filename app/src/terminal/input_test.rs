@@ -9416,3 +9416,90 @@ fn test_paste_requests_input_detection_inside_submit_window() {
         });
     });
 }
+
+#[test]
+fn test_enter_keypress_routes_a_pending_buffer_by_its_own_verdict() {
+    use crate::ai::blocklist::agent_view::AgentViewState;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let input = input_with_live_autodetection(&mut app).await;
+
+        // F6, measured in the reverse direction too: the previous buffer was autodetected as
+        // AI, then a command is pasted and Enter pressed before its detection has run.
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |model, ctx| {
+                model.enable_autodetection(InputType::AI, ctx);
+            });
+        });
+        let command = "cat foo.txt | grep -i error";
+        paste_into_input(&mut app, &input, command);
+
+        let ai_query_count = Rc::new(RefCell::new(0));
+        let ai_query_count_for_subscription = ai_query_count.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                if matches!(event, super::Event::ExecuteAIQuery) {
+                    *ai_query_count_for_subscription.borrow_mut() += 1;
+                }
+            });
+        });
+
+        // Synchronous: the verdict for the pasted text is reached inside the keypress.
+        input.update(&mut app, |input, ctx| input.input_enter_from_keypress(ctx));
+
+        assert_eq!(*ai_query_count.borrow(), 0);
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.ai_input_model().as_ref(ctx).input_type(),
+                InputType::Shell
+            );
+            assert_eq!(
+                input.editor().as_ref(ctx).interaction_state(ctx),
+                InteractionState::Editable
+            );
+            assert!(!matches!(
+                input.model.lock().block_list().agent_view_state(),
+                AgentViewState::Active { .. }
+            ));
+        });
+    });
+}
+
+#[test]
+fn test_enter_keypress_leaves_a_locked_input_type_alone() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let input = input_with_live_autodetection(&mut app).await;
+        let locked_shell = InputConfig {
+            input_type: InputType::Shell,
+            is_locked: true,
+        };
+
+        // ctrl-I style lock to shell, then prose: the lock is the user's decision.
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |model, ctx| {
+                model.set_input_config(locked_shell, true /* is_input_buffer_empty */, ctx);
+            });
+        });
+        let prose = "find the bug in main.rs";
+        paste_into_input(&mut app, &input, prose);
+
+        input.update(&mut app, |input, ctx| {
+            assert!(
+                !input
+                    .ai_input_model()
+                    .as_ref(ctx)
+                    .is_detection_pending_for(prose, ctx)
+            );
+            input.input_enter_from_keypress(ctx);
+        });
+        // Routed as the locked shell input; the submit then resets the lock as usual.
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.ai_input_model().as_ref(ctx).input_type(),
+                InputType::Shell
+            );
+        });
+    });
+}
