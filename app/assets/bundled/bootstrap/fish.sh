@@ -533,11 +533,22 @@ function warp_escape_prompt
     echo "$argv" | command tr '\n\n' ' ' | command od -An -v -tx1 | command tr -d ' \n'
 end
 
+# sed commands that escape every C0 control character (and DEL) that has no short JSON escape as
+# \u00XX. JSON forbids raw control characters inside strings, so a single one in a directory name,
+# $VIRTUAL_ENV or $CONDA_DEFAULT_ENV made the whole Precmd payload unparseable, and the lost Precmd
+# left the tab unable to run anything (#866). The script is built once, here, out of printf escapes
+# so this file itself stays plain ASCII; NUL cannot occur in a fish string.
+set -g WARP_ESCAPE_JSON_CTRL_SED ''
+for warp_ctrl_hex in 01 02 03 04 05 06 07 0b 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f 7f
+    set WARP_ESCAPE_JSON_CTRL_SED "$WARP_ESCAPE_JSON_CTRL_SED s/"(printf "\\x$warp_ctrl_hex")"/\\\\u00$warp_ctrl_hex/g;"
+end
+set -e warp_ctrl_hex
+
 # Escapes string(s) passed as input to be JSON-serializable.
 #
 # Specifically, special characters like backspace, tab, form feed, carriage return, and newlines
-# are replaced with escaped equivalents. Double quotes and literal backslash characters are also
-# backslash-escaped.
+# are replaced with escaped equivalents, every other control character (and DEL) becomes \u00XX,
+# and double quotes and literal backslash characters are backslash-escaped.
 function warp_escape_json
     # Explanation of the sed replacements (each command is separated by a `;`):
     # s/(["\\])/\\\1/g - Replace all double-quote (") and backslash (\) characters with the escaped versions (\" and \\)
@@ -545,14 +556,21 @@ function warp_escape_json
     # s/\t/\\t/g - Replace all tab characters with \t
     # s/\f/\\f/g - Replace all form feed characters with \f
     # s/\r/\\r/g - Replace all carriage return characters with \r
+    # $WARP_ESCAPE_JSON_CTRL_SED - Replace every other control character (and DEL) with \u00XX
     # $!s/$/\\\\n/ - Replace any newlines (except the last trailing newline) with the literal \n character
     #
     # Additional note: In Fish, backslashes still need to be escaped in single quoted strings. So each `\\` below
     # represents a single `\` in the above regex explanation. We also close the single-quoted string in order to
     # insert literal characters (Fish supports literals with escapes when not quoting)
     #
+    # LC_ALL=C (set through `env`, so fish's own locale is untouched) makes sed and tr work byte by
+    # byte, so a value that is not valid UTF-8 (a directory name is arbitrary bytes) passes through
+    # unchanged instead of making a UTF-8-locale sed fail with "illegal byte sequence". Such bytes
+    # are not valid JSON on their own; the app decodes the payload lossily and shows each invalid
+    # byte as U+FFFD (see `handle_decoded_data` in app/src/terminal/model/ansi/mod.rs).
+    #
     # We also use 'command sed' to ensure that we aren't accidentally executing a function named 'sed'
-    string join \n $argv | command sed -E 's/(["\\\\])/\\\\\\1/g; s/'\b'/\\\\b/g; s/'\t'/\\\\t/g; s/'\f'/\\\\f/g; s/'\r'/\\\\r/g; $!s/$/\\\\n/' | command tr -d '\n'
+    string join \n $argv | command env LC_ALL=C sed -E 's/(["\\\\])/\\\\\\1/g; s/'\b'/\\\\b/g; s/'\t'/\\\\t/g; s/'\f'/\\\\f/g; s/'\r'/\\\\r/g;'"$WARP_ESCAPE_JSON_CTRL_SED"' $!s/$/\\\\n/' | command env LC_ALL=C tr -d '\n'
 end
 
 function warp_bootstrapped

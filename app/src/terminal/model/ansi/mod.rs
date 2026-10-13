@@ -786,7 +786,7 @@ impl<'a, H: Handler + 'a, W: io::Write> Performer<'a, H, W> {
                     full: ("Decoded payload string: {:?}", std::str::from_utf8(&decoded_data))
                 );
 
-                let hook = serde_json::from_slice::<DProtoHook>(&decoded_data);
+                let hook = parse_decoded_hook(&decoded_data);
                 if let Ok(hook) = &hook {
                     log::info!("Received {} hook", hook.name());
                 }
@@ -847,6 +847,39 @@ impl<'a, H: Handler + 'a, W: io::Write> Performer<'a, H, W> {
             }
         }
     }
+}
+
+/// Parses a decoded (hex-decoded) hook payload.
+///
+/// Strict parsing is tried first and is all a well-formed payload ever needs. A payload the
+/// bootstrap scripts built from hostile values -- a directory name with an ESC in it, a virtualenv
+/// name that is not UTF-8 -- is then repaired and, for `Precmd`, salvaged field by field, because
+/// dropping a `Precmd` leaves the tab unable to run any command (#866). Repair is logged at warn
+/// so the next malformed payload is visible without debug logging; the payload itself is not
+/// logged, as it holds paths and prompt text.
+fn parse_decoded_hook(decoded_data: &[u8]) -> Result<DProtoHook, serde_json::Error> {
+    let strict_error = match serde_json::from_slice::<DProtoHook>(decoded_data) {
+        Ok(hook) => return Ok(hook),
+        Err(error) => error,
+    };
+    let repaired = repair_hook_json(decoded_data);
+    if let Some(hook) = repaired
+        .as_deref()
+        .and_then(|repaired| serde_json::from_str::<DProtoHook>(repaired).ok())
+    {
+        log::warn!(
+            "Repaired malformed {} hook payload (raw control characters or invalid UTF-8): \
+             {strict_error}",
+            hook.name()
+        );
+        return Ok(hook);
+    }
+    let text = repaired.unwrap_or_else(|| String::from_utf8_lossy(decoded_data).into_owned());
+    if let Some(hook) = salvage_precmd(&text) {
+        log::warn!("Salvaged malformed Precmd hook payload by dropping fields: {strict_error}");
+        return Ok(hook);
+    }
+    Err(strict_error)
 }
 
 impl<'a, H, W> VtePerform for Performer<'a, H, W>

@@ -2237,7 +2237,7 @@ fn generic_shared_session_viewer_model_starts_view_pending() {
 /// `TerminalModel::process_bytes` with a real DCS-encoded hook rather than calling the handler
 /// method directly. Mirrors `hex_encoded_dcs_string` in `ansi/mod_test.rs`, duplicated here
 /// (rather than shared) because that helper is private to its own test module.
-fn hex_encoded_json_dcs(payload: &str) -> Vec<u8> {
+fn hex_encoded_json_dcs(payload: impl AsRef<[u8]>) -> Vec<u8> {
     const HEX_ENCODED_JSON_DCS_START: &[u8] = &[0x1b, 0x50, 0x24, 0x64];
     const DCS_END: &[u8] = &[0x9c];
     let encoded = hex::encode(payload).into_bytes();
@@ -2340,6 +2340,62 @@ fn sharer_rejects_dcs_hook_with_unregistered_session_id() {
             .map(String::as_str),
         None
     );
+}
+
+// Fork-only regression coverage for #866 (byte-identical at the pin, which wedges too). `cd` into a
+// directory whose name holds ESC/BEL or bytes that are not UTF-8 made the shell's Precmd JSON
+// invalid. The CommandFinished before it parsed, so the block completed, but the dropped Precmd
+// never handed the fresh active block its session ID -- and a block with no session ID is
+// `HistoryNotAppendable`, so the input refused every command from then on. Driving both hooks
+// through the real parser, the fresh block must now get its pwd and its session ID.
+#[test]
+fn precmd_with_control_characters_and_invalid_utf8_still_reaches_a_usable_prompt() {
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.register_session_id(SessionId::from(866));
+    terminal.start_command_execution();
+    let completed_block_id = terminal.active_block_id().clone();
+    let next_block_id = BlockId::new();
+
+    terminal.process_bytes(
+        hex_encoded_json_dcs(format!(
+            r#"{{"hook": "CommandFinished", "value": {{"exit_code": 0, "next_block_id": "{next_block_id}", "session_id": 866}}}}"#
+        ))
+        .as_slice(),
+    );
+    let precmd_payload = [
+        format!(
+            r#"{{"hook": "Precmd", "value": {{
+          "exit_code": 0,
+          "next_block_id": "{next_block_id}",
+          "pwd": "/h/esc"#
+        )
+        .as_bytes(),
+        b"\x1b[31mRED\x07",
+        br#"",
+          "conda_env": "c"#,
+        b"\xff",
+        br#"",
+          "session_id": 866
+          }}"#,
+    ]
+    .concat();
+    terminal.process_bytes(hex_encoded_json_dcs(precmd_payload).as_slice());
+
+    assert_eq!(
+        terminal
+            .block_list()
+            .block_with_id(&completed_block_id)
+            .expect("the finished block stays in the list")
+            .state(),
+        BlockState::DoneWithExecution
+    );
+    assert_eq!(terminal.active_block_id(), &next_block_id);
+    let active_block = terminal.block_list().active_block();
+    assert_eq!(
+        active_block.pwd().map(String::as_str),
+        Some("/h/esc\u{1b}[31mRED\u{7}")
+    );
+    assert_eq!(active_block.session_id(), Some(SessionId::from(866)));
 }
 
 // Fork-only regression coverage (no pin equivalent): `check_for_end_of_ssh_login` used to

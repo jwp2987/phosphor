@@ -634,6 +634,83 @@ impl<'de> Deserialize<'de> for PrecmdHookValue {
     }
 }
 
+/// Repairs the two ways a shell's hand-built hook JSON can be invalid even though its structure is
+/// right, returning `None` when the payload needed no repair (#866):
+///
+/// * a raw control character (U+0000-U+001F) inside a string. JSON forbids these, and older
+///   bootstrap scripts escaped only `\b \t \f \r \n`, so a directory name, `$VIRTUAL_ENV` or
+///   `$CONDA_DEFAULT_ENV` holding ESC, BEL, etc. made the whole hook unparseable. Each one is
+///   rewritten as its `\u00XX` escape. Control characters *outside* strings are left alone: the
+///   newlines and spaces between the scripts' JSON tokens are legal whitespace.
+/// * bytes that are not UTF-8. Directory names are arbitrary bytes and the scripts pass them
+///   through untouched. Each invalid sequence becomes U+FFFD, so the field is lossy: the prompt
+///   still shows the directory and the session keeps working, but the path no longer round-trips
+///   for features that need the exact bytes. The hook schema is `String`-typed, so there is no
+///   lossless representation to decode into.
+pub(super) fn repair_hook_json(payload: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(payload);
+    let mut repaired = matches!(text, std::borrow::Cow::Owned(_));
+    let mut out = String::with_capacity(text.len() + 16);
+    let mut in_string = false;
+    let mut after_backslash = false;
+    for c in text.chars() {
+        if !in_string {
+            in_string = c == '"';
+        } else if after_backslash {
+            after_backslash = false;
+        } else if c == '\\' {
+            after_backslash = true;
+        } else if c == '"' {
+            in_string = false;
+        } else if c < '\u{20}' {
+            out.push_str(&format!("\\u{:04x}", u32::from(c)));
+            repaired = true;
+            continue;
+        }
+        out.push(c);
+    }
+    repaired.then_some(out)
+}
+
+/// Salvages a `Precmd` hook whose payload is well-formed JSON but has a field of the wrong type,
+/// by dropping each display field that does not deserialize on its own (#866).
+///
+/// A rejected `Precmd` is what wedges a tab: it is the hook that hands the fresh active block its
+/// session ID and prompt, so without it the block never becomes a usable prompt and the input
+/// refuses every command (`HistoryNotAppendable`). Losing a git branch or a virtualenv name for one
+/// prompt is far better than that. The completion evidence (`exit_code`, `next_block_id`) and
+/// `session_id` are never dropped -- they are kept verbatim, so a payload that is wrong in *those*
+/// is still rejected exactly as before.
+pub(super) fn salvage_precmd(payload: &str) -> Option<DProtoHook> {
+    use serde_json::Value;
+
+    let Ok(Value::Object(mut root)) = serde_json::from_str::<Value>(payload) else {
+        return None;
+    };
+    if root.get("hook").and_then(Value::as_str) != Some("Precmd") {
+        return None;
+    }
+    let Some(Value::Object(fields)) = root.remove("value") else {
+        return None;
+    };
+    let mut kept = serde_json::Map::new();
+    for (key, value) in fields {
+        let is_essential = matches!(key.as_str(), "exit_code" | "next_block_id" | "session_id");
+        if !is_essential {
+            let alone = Value::Object(serde_json::Map::from_iter([(key.clone(), value.clone())]));
+            if RawPrecmdValue::deserialize(alone).is_err() {
+                log::warn!(
+                    "Dropped invalid Precmd field {key:?} so the prompt can still be applied"
+                );
+                continue;
+            }
+        }
+        kept.insert(key, value);
+    }
+    let value = PrecmdHookValue::deserialize(Value::Object(kept)).ok()?;
+    Some(DProtoHook::Precmd { value })
+}
+
 /// Prompt and shell context received from the pty at precmd.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PromptMetadata {

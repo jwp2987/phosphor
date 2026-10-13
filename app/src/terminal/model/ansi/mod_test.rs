@@ -714,6 +714,159 @@ fn parse_dcs_precmd_rejects_partial_completion_metadata() {
     }
 }
 
+/// A Precmd built by a bootstrap script from hostile values (#866): a directory name holding ESC,
+/// BEL and a raw C0 byte, a virtualenv name holding DEL, and a conda env name that is not UTF-8.
+/// The old scripts passed all of these through raw, which strict JSON rejects, and the dropped
+/// Precmd wedged the tab. The parser must repair the payload and still deliver the hook.
+fn hostile_precmd_payload() -> Vec<u8> {
+    [
+        &br#"{"hook": "Precmd", "value": {
+          "exit_code": 0,
+          "next_block_id": "block_id",
+          "pwd": "/h/esc"#[..],
+        b"\x1b[31mRED\x07\x01",
+        br#"",
+          "virtual_env": "venv"#,
+        b"\x7f\x1b[0m",
+        br#"",
+          "conda_env": "c"#,
+        b"\xff\xfe",
+        br#"",
+          "session_id": 167303092612201
+          }}"#,
+    ]
+    .concat()
+}
+
+#[test]
+fn parse_dcs_precmd_repairs_raw_control_characters_and_invalid_utf8() {
+    let payload = hostile_precmd_payload();
+    assert!(
+        serde_json::from_slice::<serde_json::Value>(&payload).is_err(),
+        "the fixture must be invalid JSON, or this test proves nothing"
+    );
+    let bytes = [
+        HEX_ENCODED_JSON_DCS_START,
+        hex::encode(&payload).as_bytes(),
+        DCS_END,
+    ]
+    .concat();
+    let (_, handler) = parse_bytes(&bytes);
+
+    assert_eq!(handler.d_proto_hooks.len(), 1);
+    match handler.d_proto_hooks.first().unwrap() {
+        DProtoHook::Precmd {
+            value: PrecmdHookValue::WithCompletionMetadata(value),
+        } => {
+            assert_eq!(
+                value.completion_metadata,
+                CompletionMetadata {
+                    exit_code: ExitCode::from(0),
+                    next_block_id: "block_id".to_owned().into(),
+                }
+            );
+            let prompt = &value.prompt_metadata;
+            assert_eq!(prompt.pwd.as_deref(), Some("/h/esc\u{1b}[31mRED\u{7}\u{1}"));
+            assert_eq!(prompt.virtual_env.as_deref(), Some("venv\u{7f}\u{1b}[0m"));
+            // Not UTF-8, so lossy: each invalid byte is shown as U+FFFD.
+            assert_eq!(prompt.conda_env.as_deref(), Some("c\u{fffd}\u{fffd}"));
+            assert_eq!(prompt.session_id, Some(167303092612201));
+        }
+        other => panic!("expected a Precmd with completion metadata, got {other:?}"),
+    }
+}
+
+#[test]
+fn repair_hook_json_escapes_only_inside_strings() {
+    // Already valid, including the newlines and tabs the scripts put between tokens: untouched.
+    assert_eq!(
+        repair_hook_json(b"{\n\t\"pwd\": \"/a\\\"b\\\\\",\n \"x\": 1}"),
+        None
+    );
+    // A raw control character inside a string is escaped; the whitespace outside it is kept, and
+    // an escaped quote does not end the string early.
+    assert_eq!(
+        repair_hook_json(b"{\n\t\"pwd\": \"q\\\"\x1b\x00\"}").as_deref(),
+        Some("{\n\t\"pwd\": \"q\\\"\\u001b\\u0000\"}")
+    );
+    // Invalid UTF-8 alone is a repair too.
+    assert_eq!(
+        repair_hook_json(b"{\"pwd\": \"\xff\"}").as_deref(),
+        Some("{\"pwd\": \"\u{fffd}\"}")
+    );
+}
+
+#[test]
+fn parse_dcs_precmd_salvages_invalid_display_field() {
+    let bytes = hex_encoded_dcs_string(
+        r#"{
+                "hook": "Precmd",
+                "value": {
+                    "exit_code": 0,
+                    "next_block_id": "block_id",
+                    "pwd": "/Users",
+                    "honor_ps1": "not a bool",
+                    "git_branch": 7,
+                    "session_id": 167303092612201
+                }
+            }"#,
+    );
+    let (_, handler) = parse_bytes(&bytes);
+
+    assert_eq!(handler.d_proto_hooks.len(), 1);
+    match handler.d_proto_hooks.first().unwrap() {
+        DProtoHook::Precmd {
+            value: PrecmdHookValue::WithCompletionMetadata(value),
+        } => {
+            assert_eq!(value.prompt_metadata.pwd.as_deref(), Some("/Users"));
+            assert_eq!(value.prompt_metadata.honor_ps1, None);
+            assert_eq!(value.prompt_metadata.git_branch, None);
+            assert_eq!(value.prompt_metadata.session_id, Some(167303092612201));
+        }
+        other => panic!("expected a Precmd with completion metadata, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_dcs_precmd_salvage_never_drops_completion_metadata_or_session_id() {
+    for invalid_essential_field in [
+        r#""exit_code": "zero", "next_block_id": "block_id""#,
+        r#""exit_code": 0, "next_block_id": 5"#,
+    ] {
+        let bytes = hex_encoded_dcs_string(&format!(
+            r#"{{
+                "hook": "Precmd",
+                "value": {{
+                    "pwd": "/Users",
+                    "honor_ps1": "not a bool",
+                    {invalid_essential_field},
+                    "session_id": 167303092612201
+                }}
+            }}"#
+        ));
+        let (_, handler) = parse_bytes(&bytes);
+
+        assert!(
+            handler.d_proto_hooks.is_empty(),
+            "salvage must not turn {invalid_essential_field} into a prompt-only precmd"
+        );
+    }
+
+    // An invalid session_id is not dropped either, so session validation still sees it.
+    let bytes = hex_encoded_dcs_string(
+        r#"{
+                "hook": "Precmd",
+                "value": {
+                    "pwd": "/Users",
+                    "honor_ps1": "not a bool",
+                    "session_id": "not a number"
+                }
+            }"#,
+    );
+    let (_, handler) = parse_bytes(&bytes);
+    assert!(handler.d_proto_hooks.is_empty());
+}
+
 #[test]
 fn parse_dcs_unregistered_session_id_rejected() {
     let bytes = hex_encoded_dcs_string(
