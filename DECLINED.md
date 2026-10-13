@@ -1089,58 +1089,85 @@ upstream's behavior is actually a defect rather than a preference.
   happens to be an ordinary English word still overrides to AI once the command index is
   loaded — the fail-safe direction, but a real (documented) false positive.
 
-- **An unambiguous shell command line is forced to Shell before any classifier runs**
-  (#808, `2044a687f` + `726fa0c30` + `6cbd6ac3e` + this follow-up on
-  `fix/808-autodetect-prefilter`, 2026-10-12,
-  `crates/input_classifier/src/util.rs::is_unambiguous_shell_command`, wired into
+- **An unambiguous shell command line is forced to Shell before any classifier runs** (#808,
+  `2044a687f` + `726fa0c30` + `6cbd6ac3e` + this follow-up on `fix/808-autodetect-prefilter`,
+  2026-10-12, `crates/input_classifier/src/util.rs::is_unambiguous_shell_command`, wired into
   `SafetyGatedClassifier` and, synchronously, into
-  `BlocklistAIInputModel::detect_and_set_input_type`). **Upstream has no such pre-filter** —
-  at the pin, `detect_and_set_input_type` goes denylist → one-off-NL shortcut → history match
-  → classifier, and the ONNX model is the only thing standing between a typed command and the
-  agent. **The defect is real and inherited:** with autodetection on, `yes | head -c 50000000
-  > /dev/null` and `trap 'echo t' DEBUG` were routed as `/agent <text>` (2 of ~75 commands in
-  a stress pass); the shell never saw them, and with no reachable model the user got a stream
-  error instead of their command. **We do:** force `InputType::Shell` with no model round-trip
-  when the buffer has command *shape*. **Vetoes first** (always leave it to the classifier): a
-  trailing `?`; a buffer over 4 KiB (a paste); quoting bash would reject, including an
-  apostrophe inside a word (`find Josh's PR`), a typographic quote (`don’t`) or a trailing
-  line-continuation backslash; the #696 prose colon shape ("run exactly this:", via the same
+  `BlocklistAIInputModel::detect_and_set_input_type`). **Upstream has no such pre-filter** — at
+  the pin, `detect_and_set_input_type` goes denylist → one-off-NL shortcut → history match →
+  classifier, and the ONNX model is the only thing standing between a typed command and the
+  agent. **The defect is real and inherited:** with autodetection on, `yes | head -c 50000000 >
+  /dev/null` and `trap 'echo t' DEBUG` were routed as `/agent <text>` (2 of ~75 commands in a
+  stress pass); the shell never saw them, and with no reachable model the user got a stream error
+  instead of their command. **We do:** force `InputType::Shell` with no model round-trip when the
+  buffer has command *shape*. **Vetoes first** (always leave it to the classifier): a trailing
+  `?`; a buffer over 4 KiB (a paste); quoting bash would reject, including an apostrophe inside a
+  word (`find Josh's PR`), a typographic quote (`don’t`) or a trailing line-continuation
+  backslash; the #696 prose colon shape ("run exactly this:", via the same
   `buffer_has_prose_colon_shape` helper the safety gate uses); a quoted head; a slash command
   head (`/plan`, `/model gpt`); any closed-class English function word among the other unquoted
   words (`the`, `it`, `and`, `sure`, `please`, `if`, `then`..., Unicode punctuation stripped);
-  and `exit`/`return`/`logout` with a non-numeric argument (`exit vim` ends the session).
-  Then **rule 1:** the head itself has command
-  evidence (a curated command-word list, a one-off keyword, an explicit `./` `/` `~/` `../`
-  path, or a completer `token_description` — an assignment prefix is *not* evidence) **and**
-  the buffer has a shell operator used as a shell uses it (`| cmd`, `&& cmd`, `; cmd`, `2>&1`,
-  `2>/dev/null`, `$(cmd`, `` `cmd` ``; `> 1.5GB` is a comparison, not a redirection) — and when
-  the only operator is a bare `>`/`>>`/`<` to a file, no word before it may be prose either
-  (`export data > backup.csv` would truncate the file before the failing command ran; `echo
-  hello > x.txt` is the accepted recall cost). Or **rule 2:** the head is a known command word,
-  explicit path, or an assignment-prefixed word that is itself neither prose nor a function
+  the article `a` before a word of two or more letters/digits (`make a PR`, `make a README`; `cat
+  a b > c.txt`, `touch a`, `grep a file.txt` keep `a` as a file name — #831); an unquoted word
+  ending in a sentence comma, or in a period after a letter, digit or `_` (`rm -rf node_modules,
+  reinstall` would run `rm -rf "node_modules," reinstall`; `rm -rf node_modules. reinstall`, `rm
+  -rf ~/x... retry`; flags like `cut -d,` / `awk -F,`, a bare `,` / `.` / `..`, `host:.` and
+  quoted punctuation are exempt — #831); a command-like `re-` word (`reinstall`, `reboot`,
+  `remount`...) anywhere but directly after a known command word or a flag (`brew reinstall foo`,
+  `sudo reboot`, `mount -o remount /` stay; `rm -rf node_modules reinstall`, its `;` / `+` / `&`
+  / `->` variants and `rm -rf dist reboot` are vetoed — #831); and `exit`/`return`/`logout` with
+  a non-numeric argument (`exit vim` ends the session). Then **rule 1:** the head itself has
+  command evidence (a curated command-word list, a one-off keyword, an explicit `./` `/` `~/`
+  `../` path, or a completer `token_description` — an assignment prefix is *not* evidence)
+  **and** the buffer has a shell operator used as a shell uses it (`| cmd`, `&& cmd`, `; cmd`,
+  `2>&1`, `2>/dev/null`, `$(cmd`, `` `cmd` ``; `> 1.5GB` is a comparison, not a redirection) —
+  and when the only operator is a bare `>`/`>>`/`<` to a file, no word before it may be prose
+  either (`export data > backup.csv` would truncate the file before the failing command ran;
+  `echo hello > x.txt` is the accepted recall cost). Or **rule 2:** the head is a known command
+  word, explicit path, or an assignment-prefixed word that is itself neither prose nor a function
   word (`FOO=bar mycmd` yes, `x=3 squared` and `DEBUG=1 why` no) **and** no later word reads as
-  English prose — a stemmed English dictionary word, a word
-  from the StackOverflow vocabulary, or a Capitalised word like `kill Chrome`; ALL-CAPS
-  `DEBUG` is not prose, and neither is CamelCase (`PyTorch`) or a non-ASCII capital (`Émile`),
-  a known hole. A lone command word (`ls`) and the one-off NL word `yes` never qualify under
-  rule 2. **Residue, by design — both directions.** Recall: `cargo build --release`, `git
-  push origin main` and similar "command word + English subcommand" lines are *not*
-  pre-filtered (the classifier already handles them), and the function-word veto costs real
-  commands with a bare function word as an argument — `grep -r for src`, `echo it > x`, `git
-  log --author me` — which likewise fall back to the classifier. Precision, i.e. prose that
-  still runs: (1) the rule-1 residue class — terse, article-free imperatives joined by `;` or
-  `&&` to a literal command, `clear cache; rm -rf node_modules`, `go home; rm -rf ~`, `kill
-  time; sleep 600` — rule 1 checks the head and the operator's neighbor, not the words between
-  them (the function-word veto is what catches the natural phrasing of the same requests); (2)
-  lowercase jargon after a known head (`kill chrome`, `watch netflix`, `ssh prod` run as
-  typed), including the per-keystroke prefix of a prose word (`kill th` is Shell for an instant
-  before `kill the` flips back); (3) an assignment-prefixed unknown head followed by jargon and
-  no colon (`FOO=1 mytool frobnicate`). A substitution (`$(`, `<(`, `>(`) only counts as an
-  operator when a command word opens it (`echo $(whoami)` yes, `make $(money) fast` no). The
-  synchronous path is capped at 4 KiB; below that there is no further length bound. The
-  pre-filter only removes the model from the path of lines that have shell shape and no prose
-  in them. The #696 exploit prompts (with or without an assignment
-  prefix) are vetoed before either rule and still reach the gated classifier.
+  English prose — a stemmed English dictionary word, a word from the StackOverflow vocabulary, a
+  spelling-level derivation the dictionaries miss (a `re-` word on an English base,
+  `redeploy`/`reclone`/`regenerate`, or any word ending in `-ly` — `recursively`, but also
+  `anomaly`, `butterfly`; six or more lowercase letters, and never one of the command-like `re-`
+  words above, which are judged by position instead — #831), a Capitalised word like `kill
+  Chrome`, or an acronym used as a noun (a closed list — `PR`, `CPU`, `RAM`, `PID`, `URL`...,
+  deliberately without plausible directory names like `API`/`SDK`/`VM`/`UI`/`UX`/`LLM` — or any
+  ALL-CAPS word with a plural `s`, `TODOs`/`PRs` — #831); other ALL-CAPS words (`DEBUG`, `HOME`,
+  `HEAD`, `README`: signal, variable, ref and file names) are not prose, and neither is CamelCase
+  (`PyTorch`) or a non-ASCII capital (`Émile`), a known hole. A lone command word (`ls`) and the
+  one-off NL word `yes` never qualify under rule 2.
+  **Residue, by design — both directions.** Recall: `cargo build --release`, `git push origin
+  main` and similar "command word + English subcommand" lines are *not* pre-filtered (the
+  classifier already handles them), and the function-word veto costs real commands with a bare
+  function word as an argument — `grep -r for src`, `echo it > x`, `git log --author me` — which
+  likewise fall back to the classifier. Since #831 so do: a bare argument with a trailing comma
+  (`echo a, b`, `echo foo,`, `cp a, b`, `printf %s, x`); `a` followed by a longer word (`cat a
+  bb`, `cp a bb`, `diff a bb`, `cd a bc`); a listed acronym as an argument (`echo CPU`, `top -o
+  CPU`, `sort -k3 CPU`, `kill -STOP PID`, `kill -9 PID`); a plural acronym as a file name (`ls
+  -la TODOs`, `git grep TODOs`, `ls PRs`); a derived word as a make target or directory (`make
+  regenerate`, `make redeploy`, `make reformat`, `cd rewrite`, `cd reactor`, `cd anomaly`); and a
+  trailing-period file name (`cp a.txt b.`). No recall was lost on the #831 routing corpus's 305
+  real commands or on the maintainer's 425-line shell history (150/305 and 245/425 forced before
+  and after); requests forced to Shell went from 1/193 to 0/193 and adversarial inputs from
+  40/137 to 16/137. Precision, i.e. prose that still runs: (1) the rule-1 residue class — terse,
+  article-free imperatives joined by `;` or `&&` to a literal command, `clear cache; rm -rf
+  node_modules`, `go home; rm -rf ~`, `kill time; sleep 600` — rule 1 checks the head and the
+  operator's neighbor, not the words between them (the function-word veto is what catches the
+  natural phrasing of the same requests), and the #831 acronym and derived-word prose classes are
+  not consulted under rule 1 either, so `make PR && git push --force` and `free RAM; kill -9 -1`
+  are still forced (documented, not fixed); (2) lowercase jargon after a known head (`kill
+  chrome`, `watch netflix`, `ssh prod`, `env vars`, `uptime stats` run as typed; so do an
+  un-listed acronym or file-name-shaped noun, `find TODO`, `make README.md`, and `rm -rf caches`,
+  whose plural the dictionary misses; and a command-like `re-` word right after a known command,
+  `make reinstall`, which is a real target as often as a request), including the per-keystroke
+  prefix of a prose word (`kill th` is Shell for an instant before `kill the` flips back); (3) an
+  assignment-prefixed unknown head followed by jargon and no colon (`FOO=1 mytool frobnicate`). A
+  substitution (`$(`, `<(`, `>(`) only counts as an operator when a command word opens it (`echo
+  $(whoami)` yes, `make $(money) fast` no). The synchronous path is capped at 4 KiB; below that
+  there is no further length bound. The pre-filter only removes the model from the path of lines
+  that have shell shape and no prose in them. The #696 exploit prompts (with or without an
+  assignment prefix) are vetoed before either rule and still reach the gated classifier.
 
 - **`set_before_open_url` can refuse a URL outright, not only rewrite it**
   (`93e3f4efa`, 2026-09-27, #716, `crates/warpui_core/src/core/app.rs`,
