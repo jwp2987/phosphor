@@ -246,30 +246,18 @@ fn run_auto_accept_batch<Id>(
     attempted
 }
 
-/// The id of the action `BlocklistAIActionModel::execute_next_action_for_user` may run: the
-/// front of the conversation's pending queue, or `None` if the queue is empty or its front
-/// cannot be accepted without its own UI (`AIAgentActionType::can_be_accepted_without_its_own_ui`).
-///
-/// This is the choke point for every accept that does not know what it is accepting (the AI
-/// block's Enter key, the CLI subagent view's accept and auto-approve). Running a blocked
-/// `ask_user_question` from there executes it as the user with no answer written to
-/// `AskUserQuestionExecutor`'s channel: its bare `recv()` waits forever, and the orphaned
-/// receiver, which shares the channel with every later question in the view, can swallow the
-/// next properly answered one. The question UIs write the answer first and then call
-/// `execute_action` by id, which does not come through here.
-///
-/// Returns `None` rather than skipping to a later action: the ordinary drain never runs past a
-/// blocked front action, and nothing queued after the question may run before it is answered.
 /// Whether a user-initiated accept of `action` must be refused (issue #847). This applies to a
 /// `RequestCommandOutput` whose approval-card preview elides part of the command (a long run,
-/// blank-line padding, too many lines) when the user has not asked to see the full command.
-/// Every other action, and any command shown whole, is unaffected.
+/// blank-line padding, too many lines), unless that exact text was reviewed in full. Every
+/// other action, and any command shown whole, is unaffected. The GUI card records a review
+/// (`mark_full_command_shown`) only when the user accepts after the full view has been on screen
+/// for a moment and scrolled to its end. So a command that needs one can only be accepted
+/// through the card. The AI block's Enter and the auto-execute toggle are routed through it; the
+/// CLI subagent's accept is refused.
 ///
 /// Applied in `start_pending_action_by_id` to `ActionInitiator::User` only. That one choke point
-/// is reached by every user accept: the card's Run button, Enter on the card, the AI block's Enter
-/// (`ExecuteNextPendingAction`), the CLI subagent's accept, and the auto-execute toggle's
-/// accept. The agent's own drain (`ActionInitiator::Agent`) is profile policy, not approval of
-/// text on screen, so it is out of scope here.
+/// is reached by every user accept. The agent's own drain (`ActionInitiator::Agent`) is profile
+/// policy, not approval of text on screen, so it is out of scope here.
 fn hidden_command_blocks_user_accept(
     conversation_id: AIConversationId,
     action: &AIAgentAction,
@@ -296,6 +284,20 @@ fn is_shown_text(
         .is_some_and(|shown| shown == command)
 }
 
+/// The id of the action `BlocklistAIActionModel::execute_next_action_for_user` may run: the
+/// front of the conversation's pending queue, or `None` if the queue is empty or its front
+/// cannot be accepted without its own UI (`AIAgentActionType::can_be_accepted_without_its_own_ui`).
+///
+/// This is the choke point for every accept that does not know what it is accepting (the AI
+/// block's Enter key, the CLI subagent view's accept and auto-approve). Running a blocked
+/// `ask_user_question` from there executes it as the user with no answer written to
+/// `AskUserQuestionExecutor`'s channel: its bare `recv()` waits forever, and the orphaned
+/// receiver, which shares the channel with every later question in the view, can swallow the
+/// next properly answered one. The question UIs write the answer first and then call
+/// `execute_action` by id, which does not come through here.
+///
+/// Returns `None` rather than skipping to a later action: the ordinary drain never runs past a
+/// blocked front action, and nothing queued after the question may run before it is answered.
 fn next_action_acceptable_by_plain_accept(
     queue: Option<&VecDeque<AIAgentAction>>,
 ) -> Option<&AIAgentActionId> {
@@ -367,6 +369,12 @@ pub struct BlocklistAIActionModel {
     /// The AI block's Enter key, the CLI subagent's accept and the auto-execute toggle all bypass
     /// the card.
     full_command_shown: HashMap<(AIConversationId, AIAgentActionId), String>,
+
+    /// Requested commands whose approval card is in edit mode. There, the card shows the editor's
+    /// uncommitted text, not the pending action's, so no user accept may run the pending text
+    /// until the card commits or leaves edit mode (issue #847). The card's own accept leaves
+    /// edit mode first.
+    commands_being_edited: HashSet<(AIConversationId, AIAgentActionId)>,
 }
 
 impl BlocklistAIActionModel {
@@ -427,6 +435,7 @@ impl BlocklistAIActionModel {
             is_view_only: false,
             ambient_agent_task_id: None,
             full_command_shown: HashMap::new(),
+            commands_being_edited: HashSet::new(),
         }
     }
 
@@ -472,6 +481,22 @@ impl BlocklistAIActionModel {
         action: &AIAgentAction,
     ) -> bool {
         hidden_command_blocks_user_accept(conversation_id, action, &self.full_command_shown)
+    }
+
+    /// Records whether the approval card of `action_id` is in edit mode. See
+    /// `commands_being_edited`.
+    pub fn set_command_being_edited(
+        &mut self,
+        conversation_id: AIConversationId,
+        action_id: &AIAgentActionId,
+        editing: bool,
+    ) {
+        let key = (conversation_id, action_id.clone());
+        if editing {
+            self.commands_being_edited.insert(key);
+        } else {
+            self.commands_being_edited.remove(&key);
+        }
     }
 
     /// Replaces the text of pending requested command `action_id` with the user's edit. The card
@@ -1071,6 +1096,19 @@ impl BlocklistAIActionModel {
 
         if initiator == ActionInitiator::User
             && self
+                .commands_being_edited
+                .contains(&(conversation_id, action_id.clone()))
+        {
+            // The card shows uncommitted edits; the pending text is not what is on screen.
+            log::info!(
+                "Refusing user accept of requested command {action_id:?}: its approval card is \
+                 in edit mode"
+            );
+            return None;
+        }
+
+        if initiator == ActionInitiator::User
+            && self
                 .pending_actions
                 .get(&conversation_id)
                 .and_then(|queue| queue.get(idx))
@@ -1434,6 +1472,12 @@ impl BlocklistAIActionModel {
             executor.cancel_all_running_async_actions_for_conversation(conversation_id, reason, ctx)
         });
 
+        // The conversation's pending actions are going away; so do their approval marks.
+        self.full_command_shown
+            .retain(|(conversation, _), _| *conversation != conversation_id);
+        self.commands_being_edited
+            .retain(|(conversation, _)| *conversation != conversation_id);
+
         let Some(actions_to_cancel) = self.pending_actions.get_mut(&conversation_id) else {
             return;
         };
@@ -1635,6 +1679,8 @@ impl BlocklistAIActionModel {
         ctx: &mut ModelContext<Self>,
     ) {
         self.full_command_shown
+            .remove(&(conversation_id, action_result.id.clone()));
+        self.commands_being_edited
             .remove(&(conversation_id, action_result.id.clone()));
         let should_remove_entry =
             self.running_actions

@@ -481,3 +481,97 @@ fn format_characters_are_escaped_by_category() {
         );
     }
 }
+
+/// The longest stretch of the display between two line-break opportunities: whitespace, a
+/// newline, or a zero-width break. The shaper treats such a stretch as one word.
+fn longest_unbroken_stretch(text: &str) -> usize {
+    text.split(|c: char| c.is_whitespace() || c == '\u{200B}')
+        .map(|stretch| stretch.chars().count())
+        .max()
+        .unwrap_or(0)
+}
+
+/// #847 round 3, N1 (#864): quotes, operators and escapes glued to letters give the shaper no
+/// break, so the full view must count chars across pieces. Otherwise one shaped word over 16,384
+/// chars is dropped by the renderer.
+#[test]
+fn full_view_breaks_words_glued_together_from_many_pieces() {
+    let quoted_a = format!("\"{}\"", "A".repeat(200));
+    let cases = [
+        "a\"".repeat(10_000),
+        "a;".repeat(10_000),
+        format!("echo {}", vec![quoted_a; 100].join("+")),
+        "a\u{202E}".repeat(10_000),
+        "a$(b)".repeat(4_000),
+        format!("x{}", "<U+".repeat(6_000)),
+    ];
+    for command in cases {
+        assert!(command.chars().count() > 16_384);
+        let full = command_approval_preview(&command, PreviewMode::Full);
+        let longest = longest_unbroken_stretch(&full.text);
+        assert!(
+            longest <= 1_024,
+            "unbroken stretch of {longest} chars in the full view of {}…",
+            &command[..20]
+        );
+        assert_eq!(full.hidden_chars, 0);
+    }
+}
+
+/// Operator and marker indices stay aligned with the text after breaks are inserted.
+#[test]
+fn full_view_highlight_indices_point_at_operators_and_escapes() {
+    let command = format!("{}\u{202E}", "a;".repeat(1_000));
+    let full = command_approval_preview(&command, PreviewMode::Full);
+    let chars: Vec<char> = full.text.chars().collect();
+    assert!(!full.operator_char_indices.is_empty());
+    for index in &full.operator_char_indices {
+        assert_eq!(chars[*index], ';');
+    }
+    let marker: String = full
+        .marker_char_indices
+        .iter()
+        .map(|index| chars[*index])
+        .collect();
+    assert_eq!(marker, "<U+202E>");
+}
+
+#[test]
+fn collapsed_preview_never_has_a_word_near_the_renderer_limit() {
+    let command = "a\"".repeat(10_000);
+    let collapsed = command_approval_preview(&command, PreviewMode::Collapsed);
+    assert!(longest_unbroken_stretch(&collapsed.text) <= COLLAPSED_PREVIEW_MAX_CHARS + 100);
+}
+
+#[test]
+fn rtl_letters_are_left_alone_when_operators_are_quoted_or_on_another_line() {
+    let quoted = command_approval_preview("echo \"\u{05D0}\u{05D1} > x\"", PreviewMode::Collapsed);
+    assert_eq!(quoted.text, "echo \"\u{05D0}\u{05D1} > x\"");
+    let other_line =
+        command_approval_preview("echo \u{05D0}\u{05D1}\nls > out", PreviewMode::Collapsed);
+    assert_eq!(other_line.text, "echo \u{05D0}\u{05D1}\nls > out");
+    let same_line = command_approval_preview("ls > out; echo \u{05D0}", PreviewMode::Collapsed);
+    assert_eq!(same_line.text, "ls > out; echo <U+05D0>");
+}
+
+#[test]
+fn everyday_cjk_punctuation_is_not_escaped_but_operator_lookalikes_are() {
+    let preview = command_approval_preview(
+        "echo \u{4F60}\u{597D}\u{FF0C}\u{FF1A}\u{FF01}\u{FF1F} \u{FF1B}\u{FF5C}\u{FF08}\u{FF09}",
+        PreviewMode::Collapsed,
+    );
+    assert!(
+        preview
+            .text
+            .starts_with("echo \u{4F60}\u{597D}\u{FF0C}\u{FF1A}\u{FF01}\u{FF1F} ")
+    );
+    assert!(preview.text.ends_with("<U+FF1B><U+FF5C><U+FF08><U+FF09>"));
+}
+
+#[test]
+fn unassigned_code_points_are_not_escaped() {
+    // U+1FAE9 is unassigned in older Unicode tables and a new emoji in newer ones; either way it
+    // is not a hiding character.
+    let preview = command_approval_preview("echo \u{1FAE9}", PreviewMode::Collapsed);
+    assert_eq!(preview.text, "echo \u{1FAE9}");
+}

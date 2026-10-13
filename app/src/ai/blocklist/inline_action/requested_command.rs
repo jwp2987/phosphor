@@ -4,10 +4,12 @@ use pathfinder_geometry::vector::vec2f;
 use settings::Setting as _;
 use std::borrow::Cow;
 use std::cell::{Ref, RefCell};
-use std::cmp::{Ordering, PartialEq};
+use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
+use instant::Instant;
 use uuid::Uuid;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::WarpTheme;
@@ -17,7 +19,9 @@ use warpui::clipboard::ClipboardContent;
 use warpui::elements::{
     ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Fill, Highlight, ScrollbarWidth,
 };
+use warpui::r#async::Timer;
 use warpui::text_layout::TextStyle;
+use warpui::units::Pixels;
 use warpui::ui_components::components::UiComponent as _;
 use warpui::{
     elements::{
@@ -100,6 +104,12 @@ const REQUESTED_COMMAND_MINIMIZE_LABEL: &str = "Done";
 /// Replaces Run while part of the command is elided on the card (issue #847): the full command
 /// has to be on screen before it can be approved.
 const REQUESTED_COMMAND_SHOW_FULL_LABEL: &str = "Show full command";
+/// Replaces Run while the full view of an elided command is being read: it must have been on
+/// screen for [`FULL_VIEW_DWELL`] and scrolled to its end before Run is offered (issue #847).
+const REQUESTED_COMMAND_READ_TO_END_LABEL: &str = "Read to the end to run";
+/// How long the full view must be on screen before an accept counts. A held or repeated Enter,
+/// or a double press, cannot reveal and approve a command in one motion.
+const FULL_VIEW_DWELL: Duration = Duration::from_millis(500);
 
 const LOADING_MESSAGE: &str = "Generating command...";
 const COMMAND_WAITING_FOR_USER_MESSAGE: &str = "OK if I run this command and read the output?";
@@ -322,6 +332,20 @@ fn mcp_response_text_element(
     .finish()
 }
 
+/// Where the user is in reviewing a requested command before Run is offered (issue #847). See
+/// [`RequestedCommandView::review_state`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReviewState {
+    /// Nothing of the command is elided on the card: Run as usual.
+    NotNeeded,
+    /// Part of the command is elided and its full view is not open: offer "Show full command".
+    NeedsFullView,
+    /// The full view is open but has not been on screen long enough, or not scrolled to its end.
+    Reading,
+    /// The full view has been read: Run is offered.
+    Reviewed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequestedActionViewType {
     Command,
@@ -360,9 +384,11 @@ pub enum RequestedCommandViewAction {
     CloseEditMode,
     FocusEditor,
     ToggleExpanded,
-    /// Shows the whole command on the approval card, which also re-enables Run for a command
-    /// whose collapsed preview elides part of it (issue #847).
+    /// Shows the whole command on the approval card. For a command whose collapsed preview
+    /// elides part of it, Run is offered once the full view has been read (issue #847).
     ShowFullCommand,
+    /// The "Read to the end to run" placeholder for Run. It does nothing but redraw.
+    ReadFullCommandToEnd,
     OpenActiveAgentProfileEditor,
     SelectText,
     CopyOnSelect(String),
@@ -391,14 +417,19 @@ pub struct RequestedCommandView {
     edit_button: CompactibleActionButton,
     minimize_button: CompactibleActionButton,
     show_full_command_button: CompactibleActionButton,
+    read_to_end_button: CompactibleActionButton,
+    /// The command text whose full view the user opened, and when. Run is offered for an elided
+    /// command only while this matches `command_text`, [`FULL_VIEW_DWELL`] has passed, and the
+    /// full view is scrolled to its end -- see [`Self::review_state`].
+    full_view_opened: Option<(String, Instant)>,
 
     /// The approval card's preview of `command_text` (collapsed and full forms, notes, and
     /// whether anything is elided). It is rebuilt lazily the first time it is read after
     /// `command_text` changes, never per frame or per streamed chunk -- see
-    /// [`Self::approval_preview`]. Whether the user has seen the full command
-    /// is not kept here. It lives in the action model
-    /// (`BlocklistAIActionModel::is_full_command_shown`), which refuses every user-initiated
-    /// accept of an elided, unseen command, whichever path it comes from (issue #847).
+    /// [`Self::approval_preview`]. When the user accepts a reviewed command, the card records
+    /// the text on the action model (`BlocklistAIActionModel::mark_full_command_shown`). The
+    /// model refuses every user-initiated accept of an elided command without that record,
+    /// whichever path it comes from (issue #847).
     approval_preview: RefCell<ApprovalPreviewCache>,
     /// Scroll state for the approval card's command preview.
     command_preview_scroll_state: ClippedScrollStateHandle,
@@ -540,6 +571,16 @@ impl RequestedCommandView {
             ButtonSize::InlineActionHeader,
             RequestedCommandViewAction::ShowFullCommand,
             Icon::Eye,
+            Arc::new(NakedTheme),
+            ctx,
+        );
+
+        let read_to_end_button = CompactibleActionButton::new(
+            REQUESTED_COMMAND_READ_TO_END_LABEL.to_string(),
+            None,
+            ButtonSize::InlineActionHeader,
+            RequestedCommandViewAction::ReadFullCommandToEnd,
+            Icon::ChevronDown,
             Arc::new(NakedTheme),
             ctx,
         );
@@ -705,6 +746,8 @@ impl RequestedCommandView {
             edit_button,
             minimize_button,
             show_full_command_button,
+            read_to_end_button,
+            full_view_opened: None,
             approval_preview: RefCell::new(ApprovalPreviewCache::default()),
             command_preview_scroll_state: Default::default(),
             accept_and_autoexecute_split_button,
@@ -809,13 +852,41 @@ impl RequestedCommandView {
         });
     }
 
-    /// Whether the user saw the current `command_text`, exactly, in full.
-    fn is_full_command_shown(&self, app: &AppContext) -> bool {
-        self.action_model.as_ref(app).is_full_command_shown(
-            self.client_ids.conversation_id,
-            &self.action_id,
-            &self.command_text,
-        )
+    /// Tells the model whether this card is in edit mode. While it is, the card shows the
+    /// editor's uncommitted text, so the model refuses user accepts that bypass the card (issue
+    /// #847).
+    fn set_command_being_edited(&mut self, editing: bool, ctx: &mut ViewContext<Self>) {
+        let conversation_id = self.client_ids.conversation_id;
+        let action_id = self.action_id.clone();
+        self.action_model.update(ctx, |model, _| {
+            model.set_command_being_edited(conversation_id, &action_id, editing);
+        });
+    }
+
+    /// Whether the full view of the current `command_text` is open.
+    fn is_full_view_open(&self) -> bool {
+        self.full_view_opened
+            .as_ref()
+            .is_some_and(|(command, _)| *command == self.command_text)
+    }
+
+    /// Where the user is in reviewing an elided command before Run is offered (issue #847).
+    fn review_state(&self) -> ReviewState {
+        if !self.action_type.is_requested_command() || !self.approval_preview().is_truncated() {
+            return ReviewState::NotNeeded;
+        }
+        match &self.full_view_opened {
+            Some((command, opened_at)) if *command == self.command_text => {
+                if opened_at.elapsed() < FULL_VIEW_DWELL
+                    || self.command_preview_scroll_state.is_scrolled_to_end() != Some(true)
+                {
+                    ReviewState::Reading
+                } else {
+                    ReviewState::Reviewed
+                }
+            }
+            _ => ReviewState::NeedsFullView,
+        }
     }
 
     /// Commits any pending editor edits to `command_text` and returns the committed text.
@@ -826,49 +897,81 @@ impl RequestedCommandView {
         self.command_text.clone()
     }
 
-    /// Whether this command may not be approved yet because the card elides part of it and the
-    /// user has not asked to see the full command (issue #847). Every accept path checks this
-    /// after committing editor contents: the Run button, Enter, the split-button menu, and
-    /// `AIBlock::accept_pending_requested_command` (the auto-execute toggle). MCP tool calls are
-    /// not gated here; their arguments are not shown through this preview.
-    pub fn approval_requires_full_view(&self, app: &AppContext) -> bool {
-        self.action_type.is_requested_command()
-            && self
-                .approval_preview()
-                .requires_full_view(self.is_full_command_shown(app))
-    }
-
     fn show_full_command(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.is_header_expanded {
+            // The body is not drawn, so nothing would be shown. Expand first; a further press
+            // opens the full view.
+            self.set_is_header_expanded(true, ctx);
+            ctx.notify();
+            return;
+        }
         if self.is_editing {
-            // The preview is drawn only outside edit mode. Leave edit mode so the full command
-            // the user asked for is what is on screen. Committing first means the text marked
-            // as seen below is the edited text.
-            self.commit_editor_contents(ctx);
+            // The preview is drawn only outside edit mode. Leaving edit mode commits the edit, so
+            // the full view shows the edited text.
             self.close_edit_mode(ctx);
         }
-        let conversation_id = self.client_ids.conversation_id;
-        let action_id = self.action_id.clone();
-        let command = self.command_text.clone();
-        self.action_model.update(ctx, |model, _| {
-            model.mark_full_command_shown(conversation_id, &action_id, &command);
-        });
-        self.set_is_header_expanded(true, ctx);
+        self.full_view_opened = Some((self.command_text.clone(), Instant::now()));
+        self.command_preview_scroll_state.scroll_to(Pixels::zero());
+        // Redraw once the dwell has passed, so Run appears without further input when the full
+        // view fits on screen.
+        ctx.spawn(
+            Timer::after(FULL_VIEW_DWELL + Duration::from_millis(50)),
+            |_, _, ctx| ctx.notify(),
+        );
         ctx.notify();
     }
 
-    /// Commits any edits and emits `Accepted`, unless the card still elides part of the
-    /// command. In that case nothing runs. The keystroke reveals the full command instead, as
-    /// the card's note announces, and a further Run is needed to accept it.
-    fn try_accept(&mut self, ctx: &mut ViewContext<Self>) -> bool {
-        self.commit_editor_contents(ctx);
-        if self.approval_requires_full_view(ctx) {
-            log::info!(
-                "Not accepting requested command {:?}: part of it is hidden on the card; \
-                 showing it in full instead",
-                self.action_id
-            );
-            self.show_full_command(ctx);
+    /// The card's accept. Enter, Run, the split menu, the AI block's Enter and the auto-execute
+    /// toggle all come here. Returns whether `Accepted` was emitted.
+    ///
+    /// Nothing is accepted that is not on screen exactly as it will run (issue #847):
+    /// * A collapsed card is expanded first.
+    /// * Edit mode is left (committing the edit) first.
+    /// * An elided command opens its full view instead of running.
+    /// * An open full view must have been on screen for [`FULL_VIEW_DWELL`] and scrolled to its
+    ///   end.
+    ///
+    /// Only then is the reviewed text recorded on the model, which refuses any user accept of
+    /// an elided command without that record.
+    pub(crate) fn try_accept(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        if !self.is_header_expanded {
+            self.set_is_header_expanded(true, ctx);
+            ctx.notify();
             return false;
+        }
+        if self.is_editing {
+            self.close_edit_mode(ctx);
+        } else {
+            self.commit_editor_contents(ctx);
+        }
+        match self.review_state() {
+            ReviewState::NotNeeded => {}
+            ReviewState::NeedsFullView => {
+                log::info!(
+                    "Not accepting requested command {:?}: part of it is hidden on the card; \
+                     showing it in full instead",
+                    self.action_id
+                );
+                self.show_full_command(ctx);
+                return false;
+            }
+            ReviewState::Reading => {
+                log::info!(
+                    "Not accepting requested command {:?}: its full view has not been read to \
+                     the end yet",
+                    self.action_id
+                );
+                ctx.notify();
+                return false;
+            }
+            ReviewState::Reviewed => {
+                let conversation_id = self.client_ids.conversation_id;
+                let action_id = self.action_id.clone();
+                let command = self.command_text.clone();
+                self.action_model.update(ctx, |model, _| {
+                    model.mark_full_command_shown(conversation_id, &action_id, &command);
+                });
+            }
         }
         ctx.emit(RequestedCommandViewEvent::Accepted);
         true
@@ -1188,6 +1291,7 @@ impl RequestedCommandView {
 
     fn open_edit_mode(&mut self, ctx: &mut ViewContext<Self>) {
         self.is_editing = true;
+        self.set_command_being_edited(true, ctx);
         self.accept_and_autoexecute_split_button.set_keybinding(
             Some(KeystrokeSource::Fixed(
                 CMD_ENTER_ACCEPT_REQUESTED_COMMAND_KEYSTROKE.clone(),
@@ -1211,6 +1315,7 @@ impl RequestedCommandView {
         // Escape showed the old text while Run committed and ran the edit.
         self.commit_editor_contents(ctx);
         self.is_editing = false;
+        self.set_command_being_edited(false, ctx);
         self.accept_and_autoexecute_split_button.set_keybinding(
             Some(KeystrokeSource::Fixed(
                 ENTER_ACCEPT_REQUESTED_COMMAND_KEYSTROKE.clone(),
@@ -1286,55 +1391,48 @@ impl RequestedCommandView {
     ///
     /// If the command length is shorter than the previous update, then the command is truncated to the given byte length.
     pub fn apply_streamed_update(&mut self, command: &str, ctx: &mut ViewContext<Self>) {
-        match command.len().cmp(&self.command_text.len()) {
-            Ordering::Greater => {
-                // Check if the existing length falls on a valid UTF-8 character boundary.
+        // Append when the update extends the current text, which is the common streaming case
+        // and avoids flicker. Otherwise replace it. A same-length or shorter update that differs
+        // used to be ignored or truncated by length, leaving the card showing text that was not
+        // the action's (issue #847).
+        if command != self.command_text {
+            if command.starts_with(self.command_text.as_str()) {
                 let existing_length = self.command_text.len();
-                if command.is_char_boundary(existing_length) {
-                    self.command_text.push_str(&command[existing_length..]);
-                } else {
-                    self.command_text = command.to_string();
-                }
+                self.command_text.push_str(&command[existing_length..]);
+            } else {
+                self.command_text = command.to_string();
             }
-            Ordering::Less => {
-                self.command_text.truncate(command.len());
-            }
-            Ordering::Equal => {}
         }
-        // No model update for streamed text: a "show full command" mark is keyed on the exact
-        // text shown, so a changed text is unmarked by construction.
+        // No model update for streamed text: a review mark is keyed on the exact text shown, so
+        // a changed text is unmarked by construction.
 
         // If the editor exists, sync it with the updated command text.
         if let Some(editor) = &self.editor {
             editor.update(ctx, |editor, ctx| {
-                let editor_length = editor.text(ctx).as_str().len();
-                match self.command_text.len().cmp(&editor_length) {
-                    Ordering::Greater => {
-                        let slice_to_append = if self.command_text.is_char_boundary(editor_length) {
-                            &self.command_text[editor_length..]
-                        } else {
-                            editor.truncate(0, ctx);
-                            &self.command_text
-                        };
-                        // TODO(Simon): The first insertion into an empty Buffer creates a trailing newline.
-                        // If the requested command is streamed in in a single chunk, then there will
-                        // be an extra newline rendered at the end of the `CodeEditorView`. This is likely
-                        // caused by an initial insertion bug somewhere in the `Buffer` logic.
-                        //
-                        // To reproduce this bug, simply clear the buffer and type in two letters. You'll
-                        // notice that a newline is created on the first letter, but removed on the second.
-                        // The temporary workaround is to append an empty string to the end of each chunk,
-                        // which acts as the second insertion that clears the trailing newline.
-                        editor.system_append_autoscroll_vertical_only(slice_to_append, ctx);
-                        editor.system_append_autoscroll_vertical_only("", ctx);
-                        ctx.notify();
-                    }
-                    Ordering::Less => {
-                        editor.truncate(self.command_text.len(), ctx);
-                        ctx.notify();
-                    }
-                    Ordering::Equal => {}
+                let editor_text = editor.text(ctx).into_string();
+                if editor_text == self.command_text {
+                    return;
                 }
+                if editor_text.starts_with(self.command_text.as_str()) {
+                    editor.truncate(self.command_text.len(), ctx);
+                } else {
+                    let slice_to_append = if self.command_text.starts_with(editor_text.as_str()) {
+                        &self.command_text[editor_text.len()..]
+                    } else {
+                        editor.truncate(0, ctx);
+                        &self.command_text
+                    };
+                    // TODO(Simon): The first insertion into an empty Buffer creates a trailing
+                    // newline. If the requested command is streamed in in a single chunk, then
+                    // there will be an extra newline rendered at the end of the `CodeEditorView`.
+                    // This is likely caused by an initial insertion bug somewhere in the `Buffer`
+                    // logic. The temporary workaround is to append an empty string to the end of
+                    // each chunk, which acts as the second insertion that clears the trailing
+                    // newline.
+                    editor.system_append_autoscroll_vertical_only(slice_to_append, ctx);
+                    editor.system_append_autoscroll_vertical_only("", ctx);
+                }
+                ctx.notify();
             });
         }
     }
@@ -1666,7 +1764,7 @@ impl RequestedCommandView {
                     let action_buttons: Vec<Rc<dyn RenderCompactibleActionButton>> = vec![
                         Rc::new(self.cancel_button.clone()),
                         Rc::new(self.minimize_button.clone()),
-                        self.accept_or_show_full_button(app),
+                        self.accept_or_show_full_button(),
                     ];
                     (action_buttons, MEDIUM_SIZE_SWITCH_THRESHOLD)
                 } else {
@@ -1675,7 +1773,7 @@ impl RequestedCommandView {
                             let action_buttons: Vec<Rc<dyn RenderCompactibleActionButton>> = vec![
                                 Rc::new(self.cancel_button.clone()),
                                 Rc::new(self.edit_button.clone()),
-                                self.accept_or_show_full_button(app),
+                                self.accept_or_show_full_button(),
                             ];
                             (action_buttons, LARGE_SIZE_SWITCH_THRESHOLD)
                         }
@@ -1784,14 +1882,15 @@ impl RequestedCommandView {
 
     /// The Run split button, or "Show full command" in its place while the card elides part of
     /// the command (issue #847).
-    fn accept_or_show_full_button(
-        &self,
-        app: &AppContext,
-    ) -> Rc<dyn RenderCompactibleActionButton> {
-        if self.approval_requires_full_view(app) {
-            Rc::new(self.show_full_command_button.clone())
-        } else {
-            Rc::new(self.accept_and_autoexecute_split_button.clone())
+    /// The Run split button, or what stands in for it while an elided command is not yet
+    /// reviewed (issue #847).
+    fn accept_or_show_full_button(&self) -> Rc<dyn RenderCompactibleActionButton> {
+        match self.review_state() {
+            ReviewState::NotNeeded | ReviewState::Reviewed => {
+                Rc::new(self.accept_and_autoexecute_split_button.clone())
+            }
+            ReviewState::NeedsFullView => Rc::new(self.show_full_command_button.clone()),
+            ReviewState::Reading => Rc::new(self.read_to_end_button.clone()),
         }
     }
 
@@ -1802,7 +1901,7 @@ impl RequestedCommandView {
     fn render_command_preview(&self, app: &AppContext) -> Box<dyn Element> {
         let appearance = Appearance::as_ref(app);
         let theme = appearance.theme();
-        let full_command_shown = self.is_full_command_shown(app);
+        let full_command_shown = self.is_full_view_open();
         let cache = self.approval_preview();
         let notes = cache.notes(full_command_shown);
         let preview = cache.preview(full_command_shown);
@@ -1880,8 +1979,9 @@ impl RequestedCommandView {
             );
         }
         if show_full_view {
-            // The full view can be any length, so it scrolls. Its end is always visible anyway:
-            // the "Ends with" note above echoes the command's last characters.
+            // The full view can be any length, so it scrolls inside a cap. Run is offered only
+            // once it has been scrolled to its end (`review_state`), so the middle cannot be
+            // skipped. The "Ends with" note above also echoes the last characters.
             column.add_child(
                 ConstrainedBox::new(
                     ClippedScrollable::vertical(
@@ -1898,9 +1998,12 @@ impl RequestedCommandView {
                 .finish(),
             );
         } else {
-            // The collapsed preview has no height limit and no scroll container. Soft-wrapped
-            // height depends on the card width, which its char and line budgets cannot bound, so
-            // any fold could hide its end while Run is enabled (#847 review B2).
+            // The collapsed preview has no height cap and no scroll container of its own.
+            // Soft-wrapped height depends on the card width, which its char and line budgets
+            // cannot bound, so a cap could clip the end of the card's text while Run is offered
+            // (#847 review B2). The block list around the card still scrolls like any other
+            // content. Run sits in the header above the text, and the "Ends with" note echoes
+            // the end next to it.
             column.add_child(selectable_text);
         }
         column.finish()
@@ -2025,8 +2128,7 @@ impl View for RequestedCommandView {
                 .as_ref()
                 .is_some_and(|status| status.is_blocked())
             && !self.command_text.is_empty()
-            && self.action_type.is_requested_command()
-            && self.editor.is_some();
+            && self.action_type.is_requested_command();
 
         // For MCP tools, when expanded, show either the tool call details or the JSON response.
         let should_render_mcp_content = self.is_header_expanded
@@ -2047,16 +2149,17 @@ impl View for RequestedCommandView {
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_child(Clipped::new(header_element).finish());
 
-        if let (true, Some(editor)) = (should_render_editor, &self.editor) {
+        if should_render_editor {
             // Outside edit mode the card shows the command preview, not the editor: the editor
             // lays a line out unwrapped at infinite width, and the text renderer drops any single
             // word over 16,384 chars, so the editor can misrepresent the command (issue #847).
             // In edit mode the user is changing the text, and Run is still gated on the
             // committed text (`try_accept`).
-            let body = if self.is_editing {
-                ChildView::new(editor).finish()
-            } else {
-                self.render_command_preview(app)
+            // The preview does not depend on the editor existing; only edit mode does.
+            let editing_editor = self.editor.as_ref().filter(|_| self.is_editing);
+            let body = match editing_editor {
+                Some(editor) => ChildView::new(editor).finish(),
+                None => self.render_command_preview(app),
             };
             let body = Container::new(body)
                 .with_horizontal_padding(INLINE_ACTION_HORIZONTAL_PADDING)
@@ -2067,11 +2170,11 @@ impl View for RequestedCommandView {
                 .with_background_color(theme.background().into_solid())
                 .with_corner_radius(CornerRadius::with_bottom(Radius::Pixels(8.)))
                 .finish();
-            // Only the editor is height-capped. The preview bounds its own height: the
-            // collapsed form is never capped, and the full form scrolls inside its own cap,
-            // below notes that echo the command's end. A cap here would clip the collapsed
-            // preview's end out of sight while Run is enabled.
-            content.add_child(if self.is_editing {
+            // Only the editor is height-capped here. The preview handles its own height: the
+            // collapsed form is never capped, and the full form scrolls inside its own cap and
+            // must be read to the end before Run. A cap here would clip the collapsed preview's
+            // end.
+            content.add_child(if editing_editor.is_some() {
                 ConstrainedBox::new(body)
                     .with_max_height(MAX_EDITOR_HEIGHT)
                     .finish()
@@ -2317,6 +2420,7 @@ impl TypedActionView for RequestedCommandView {
                 }
             }
             RequestedCommandViewAction::ShowFullCommand => self.show_full_command(ctx),
+            RequestedCommandViewAction::ReadFullCommandToEnd => ctx.notify(),
             RequestedCommandViewAction::ToggleAcceptMenu => {
                 self.toggle_accept_split_button_menu(ctx)
             }

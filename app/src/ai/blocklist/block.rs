@@ -4998,25 +4998,14 @@ impl AIBlock {
 
         if let Some(action_id) = pending_action_id {
             if let Some(requested_command) = self.requested_commands.get(&action_id) {
-                let command_text = requested_command
-                    .view
-                    .update(ctx, |view, ctx| view.commit_and_get_command_text(ctx));
-                // The card is still eliding part of this command, and the user has not asked to
-                // see all of it. Turning on auto-execute must not approve text nobody has seen
-                // (issue #847). The card stays blocked and offers "Show full command".
-                if requested_command
-                    .view
-                    .as_ref(ctx)
-                    .approval_requires_full_view(ctx)
-                {
-                    requested_command.force_expand(ctx);
-                    ctx.notify();
-                    return false;
-                }
-                self.action_model.update(ctx, |action_model, ctx| {
-                    action_model.handle_requested_command_accepted(&action_id, command_text, ctx);
-                });
+                // Through the card's own accept, so turning on auto-execute cannot approve text
+                // the card does not show exactly (issue #847). It may expand the card, leave edit
+                // mode, or open an elided command's full view instead of accepting. Its
+                // `Accepted` event reaches `handle_requested_command_view_event`, which runs it.
+                let view = requested_command.view.clone();
+                let accepted = view.update(ctx, |view, ctx| view.try_accept(ctx));
                 ctx.notify();
+                return accepted;
             }
         }
         true
@@ -5980,20 +5969,25 @@ impl TypedActionView for AIBlock {
                 self.cancel_action(action_id, ctx);
             }
             AIBlockAction::ExecuteNextPendingAction => {
-                // The model refuses a command whose card elides part of it (issue #847). Bring
-                // the card into view so the refusal has a visible reason and a way forward.
+                // A requested command at the front of this block's conversation is accepted
+                // through its card, exactly as Enter on the card would be. So this Enter runs only
+                // what the card shows (no uncommitted edit, no unread elided text), and it reveals
+                // rather than runs when review is needed (issue #847).
                 let conversation_id = self.conversation_id();
-                let action_model = self.action_model.as_ref(ctx);
-                let hidden_pending_command = action_model
-                    .get_pending_action(ctx)
+                let front_command_card = self
+                    .action_model
+                    .as_ref(ctx)
+                    .get_pending_actions_for_conversation(&conversation_id)
+                    .next()
                     .filter(|action| {
-                        action_model.user_accept_blocked_by_hidden_command(conversation_id, action)
+                        matches!(action.action, AIAgentActionType::RequestCommandOutput { .. })
                     })
-                    .map(|action| action.id.clone());
-                if let Some(action_id) = hidden_pending_command {
-                    if let Some(requested_command) = self.requested_commands.get(&action_id) {
-                        requested_command.force_expand(ctx);
-                    }
+                    .and_then(|action| self.requested_commands.get(&action.id))
+                    .map(|requested_command| requested_command.view.clone());
+                if let Some(view) = front_command_card {
+                    view.update(ctx, |view, ctx| {
+                        view.try_accept(ctx);
+                    });
                     ctx.notify();
                     return;
                 }

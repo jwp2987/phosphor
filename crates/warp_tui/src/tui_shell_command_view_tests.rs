@@ -950,3 +950,37 @@ fn user_accept_of_an_elided_command_is_refused_until_shown_in_full() {
         });
     });
 }
+
+/// #847 round 3: while a GUI approval card is in edit mode it shows uncommitted text, so a user
+/// accept that bypasses the card must not run the pending text. Leaving edit mode lifts this.
+#[test]
+fn user_accept_is_refused_while_the_approval_card_is_editing() {
+    App::test((), |mut app| async move {
+        app.update(super::init);
+        let action = command_action("action-editing", "echo short");
+        let view = add_shell_view(
+            &mut app,
+            action.clone(),
+            Arc::new(FairMutex::new(TerminalModel::mock(None, None))),
+        );
+        let (action_model, conversation_id) = app.read(|ctx| {
+            let view = view.as_ref(ctx);
+            (view.action_model.clone(), view.conversation_id)
+        });
+        action_model.update(&mut app, |model, ctx| {
+            queue_tui_permission_action(model, action.clone(), conversation_id, ctx);
+            model.set_command_being_edited(conversation_id, &action.id, true);
+            model.execute_next_action_for_user(conversation_id, ctx);
+            model.execute_action(&action.id, conversation_id, ctx);
+        });
+        app.read(|ctx| {
+            let model = action_model.as_ref(ctx);
+            assert!(
+                model
+                    .get_pending_actions_for_conversation(&conversation_id)
+                    .any(|pending| pending.id == action.id)
+            );
+            assert!(model.get_action_result(&action.id).is_none());
+        });
+    });
+}

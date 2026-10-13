@@ -35,8 +35,11 @@
 //! * [`PreviewMode::Full`] shows every non-whitespace character of the command. Only whitespace
 //!   stretches and blank-line runs stay collapsed, because they hide nothing else and would
 //!   otherwise push the end out of sight. The card echoes the end in an "Ends with" note.
-//!   Long runs get zero-width-space break opportunities. These are display-only, so no shaped
-//!   word reaches the renderer's limit, and the text soft-wraps instead of clipping. U+200B is a
+//!   A zero-width space is inserted wherever [`FULL_VIEW_BREAK_EVERY_CHARS`] display chars have
+//!   gone by without a line-break opportunity (whitespace, newline, or an earlier insertion).
+//!   The count runs across operators, quotes, escapes and markers, which give no break when
+//!   glued to letters (#864). The breaks are display-only, so no shaped word reaches the
+//!   renderer's limit, and the text soft-wraps instead of clipping. U+200B is a
 //!   Default_Ignorable code point, so the shaper hides it rather than drawing a missing-glyph box.
 //!   `layout_line` in `fonts.rs` already relies on that. Still, this needs a manual check on a
 //!   real X11 build with a 100K word.
@@ -73,8 +76,8 @@ pub(crate) const BLANK_LINE_RUN_COLLAPSE: usize = 3;
 ///
 /// The collapsed preview is drawn with no height limit and no scroll container: with soft wrap,
 /// laid-out height depends on the card width, which a char or line budget cannot bound. So
-/// nothing in it can sit below a fold. This budget, and the line budget below, only keep the
-/// card a reasonable size.
+/// the card itself never clips it (the surrounding block list still scrolls). This budget, and
+/// the line budget below, only keep the card a reasonable size.
 pub(crate) const COLLAPSED_PREVIEW_MAX_CHARS: usize = 1_500;
 /// Upper bound on the collapsed preview's line count before its middle is cut.
 pub(crate) const COLLAPSED_PREVIEW_MAX_LINES: usize = 20;
@@ -128,7 +131,8 @@ fn is_strong_rtl(c: char) -> bool {
 /// * non-ASCII whitespace, which looks like a word break but is part of a word to the shell;
 /// * glyphs that render blank (Hangul fillers, braille blank, object replacement), and variation
 ///   selectors;
-/// * fullwidth ASCII look-alikes (U+FF01-FF5E).
+/// * fullwidth Latin letters, digits, and fullwidth look-alikes of shell operators. Everyday
+///   CJK punctuation such as `，：！？` is left alone.
 fn must_escape(c: char) -> bool {
     if c == '\n' || c == '\t' {
         return false;
@@ -141,7 +145,6 @@ fn must_escape(c: char) -> bool {
         | GeneralCategory::LineSeparator
         | GeneralCategory::ParagraphSeparator
         | GeneralCategory::PrivateUse
-        | GeneralCategory::Unassigned
         | GeneralCategory::Surrogate => return true,
         GeneralCategory::SpaceSeparator if c != ' ' => return true,
         _ => {}
@@ -157,7 +160,14 @@ fn must_escape(c: char) -> bool {
             | '\u{2800}'
             | '\u{3164}'
             | '\u{FE00}'..='\u{FE0F}'
-            | '\u{FF01}'..='\u{FF5E}'
+            | '\u{FF02}'..='\u{FF04}'
+            | '\u{FF06}'..='\u{FF0A}'
+            | '\u{FF0D}'
+            | '\u{FF0F}'..='\u{FF19}'
+            | '\u{FF1B}'..='\u{FF1E}'
+            | '\u{FF21}'..='\u{FF3A}'
+            | '\u{FF3C}'
+            | '\u{FF40}'..='\u{FF5E}'
             | '\u{FFA0}'
             | '\u{FFFC}'
             | '\u{E0100}'..='\u{E01EF}'
@@ -324,25 +334,56 @@ fn push_run(pieces: &mut Vec<Piece>, run: &[char], is_whitespace: bool, mode: Pr
             Piece::new(PieceKind::Text, run.iter().collect(), run.len()).blank(is_whitespace),
         );
     } else {
-        // Full view: zero-width break opportunities keep every shaped word short.
-        let mut text = String::with_capacity(run.len() + run.len() / FULL_VIEW_BREAK_EVERY_CHARS);
-        for (i, c) in run.iter().enumerate() {
-            if i > 0 && i % FULL_VIEW_BREAK_EVERY_CHARS == 0 {
-                text.push(ZERO_WIDTH_BREAK);
-            }
-            text.push(*c);
-        }
-        pieces.push(Piece::new(PieceKind::Text, text, run.len()));
+        // Full view: the whole word. Break opportunities are added when the pieces are joined,
+        // in `command_approval_preview`, because a word that is too long for the shaper can span
+        // several pieces.
+        pieces.push(Piece::new(PieceKind::Text, run.iter().collect(), run.len()));
     }
+}
+
+/// Operators that reorder visually around RTL text and change what the shell runs.
+fn is_reorderable_operator(c: char) -> bool {
+    matches!(c, ';' | '&' | '|' | '<' | '>' | '(' | ')' | '$' | '`')
+}
+
+/// For each char of the command, whether its line contains a shell operator outside quotes. A
+/// quote opened on one line carries over to the next, as it does in the shell.
+fn rtl_escape_flags(chars: &[char]) -> Vec<bool> {
+    let mut flags = vec![false; chars.len()];
+    let (mut in_single, mut in_double, mut escaped) = (false, false, false);
+    let mut line_start = 0;
+    let mut line_has_operator = false;
+    for (i, &c) in chars.iter().enumerate() {
+        if escaped {
+            escaped = false;
+        } else if in_single {
+            in_single = c != '\'';
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '\'' && !in_double {
+            in_single = true;
+        } else if c == '"' {
+            in_double = !in_double;
+        } else if !in_double && is_reorderable_operator(c) {
+            line_has_operator = true;
+        }
+        if c == '\n' || i + 1 == chars.len() {
+            flags[line_start..=i].fill(line_has_operator);
+            line_start = i + 1;
+            line_has_operator = false;
+        }
+    }
+    flags
 }
 
 fn tokenize(command: &str, mode: PreviewMode) -> Vec<Piece> {
     let chars: Vec<char> = command.chars().collect();
     // Right-to-left letters reorder the operators, neutrals and brackets around them, so the
     // displayed order would differ from the order the shell reads. The text element has no
-    // base-direction override, so when a command mixes them with shell operators, the RTL letters
-    // are escaped instead.
-    let escape_rtl = chars.iter().any(|c| is_operator_char(*c));
+    // base-direction override, so the RTL letters on a line with an unquoted shell operator are
+    // escaped instead. RTL text on other lines, or only next to quoted operators, is drawn
+    // as-is.
+    let escape_rtl = rtl_escape_flags(&chars);
     let mut pieces = Vec::new();
     let mut run: Vec<char> = Vec::new();
     let mut run_is_whitespace = false;
@@ -359,7 +400,7 @@ fn tokenize(command: &str, mode: PreviewMode) -> Vec<Piece> {
         let escape = must_escape(c)
             || combining_run > 2
             || poses_as_escape
-            || (escape_rtl && is_strong_rtl(c));
+            || (escape_rtl[i] && is_strong_rtl(c));
 
         if !escape && c != '\n' && !is_operator_char(c) {
             let is_whitespace = c.is_whitespace();
@@ -528,20 +569,35 @@ pub(crate) fn command_approval_preview(command: &str, mode: PreviewMode) -> Comm
 
     let mut preview = CommandApprovalPreview::default();
     let mut char_index = 0;
+    // Display chars since the last real line-break opportunity: whitespace, a newline, or an
+    // inserted zero-width break. The shaper treats everything between two such opportunities as
+    // one word. The full view can be any length, so a break is inserted whenever this reaches
+    // `FULL_VIEW_BREAK_EVERY_CHARS`. The count carries across pieces, because quotes, operators,
+    // escapes and markers glued to letters give no break of their own (`a"a"a"…`, `a;a;a;…`).
+    // The collapsed preview needs no breaks: its whole display is bounded by
+    // `COLLAPSED_PREVIEW_MAX_CHARS` plus a marker, far below the renderer's 16,384-char limit.
+    let mut since_break = 0usize;
     for piece in &pieces {
-        let len = piece.display_chars();
-        match piece.kind {
-            PieceKind::Operator => preview
-                .operator_char_indices
-                .extend(char_index..char_index + len),
-            PieceKind::Marker => preview
-                .marker_char_indices
-                .extend(char_index..char_index + len),
-            PieceKind::Text | PieceKind::Newline => {}
-        }
         preview.hidden_chars += piece.hidden_chars;
-        preview.text.push_str(&piece.text);
-        char_index += len;
+        for c in piece.text.chars() {
+            if c.is_whitespace() || c == ZERO_WIDTH_BREAK {
+                since_break = 0;
+            } else {
+                if mode == PreviewMode::Full && since_break >= FULL_VIEW_BREAK_EVERY_CHARS {
+                    preview.text.push(ZERO_WIDTH_BREAK);
+                    char_index += 1;
+                    since_break = 0;
+                }
+                since_break += 1;
+            }
+            match piece.kind {
+                PieceKind::Operator => preview.operator_char_indices.push(char_index),
+                PieceKind::Marker => preview.marker_char_indices.push(char_index),
+                PieceKind::Text | PieceKind::Newline => {}
+            }
+            preview.text.push(c);
+            char_index += 1;
+        }
     }
     preview
 }
@@ -653,22 +709,22 @@ fn mixes_latin_with_lookalike_script(word: &str) -> bool {
     has_latin && has_lookalike
 }
 
-/// The "Ends with" note: the last [`ENDS_WITH_CHARS`] visible chars of the command, escaped like
-/// the preview, with newlines drawn as `↵`. `None` for a short single-line command, which the
-/// preview always shows whole.
-fn ends_with_note(command: &str) -> Option<String> {
+/// The "Ends with" note: the last [`ENDS_WITH_CHARS`] chars of the collapsed preview, with
+/// newlines drawn as `↵`. It is taken from the preview of the whole command, so the same escapes
+/// apply, and the collapsed preview always keeps the command's end. `None` for a short
+/// single-line command, which the preview always shows whole.
+fn ends_with_note(command: &str, collapsed: &CommandApprovalPreview) -> Option<String> {
     let trimmed = command.trim_end();
-    let chars = trimmed.chars().count();
-    if chars <= ENDS_WITH_CHARS && !trimmed.contains('\n') {
+    if trimmed.chars().count() <= ENDS_WITH_CHARS && !trimmed.contains('\n') {
         return None;
     }
-    let tail_start = trimmed
+    let text = collapsed.text.trim_end();
+    let chars = text.chars().count();
+    let tail_start = text
         .char_indices()
         .nth(chars.saturating_sub(ENDS_WITH_CHARS))
         .map_or(0, |(i, _)| i);
-    let tail = command_approval_preview(&trimmed[tail_start..], PreviewMode::Collapsed)
-        .text
-        .replace('\n', " ↵ ");
+    let tail = text[tail_start..].replace('\n', " ↵ ");
     let ellipsis = if tail_start > 0 { "…" } else { "" };
     Some(format!("Ends with: {ellipsis}{tail}"))
 }
@@ -690,9 +746,16 @@ pub(crate) struct ApprovalPreviewCache {
 
 impl ApprovalPreviewCache {
     pub fn new(command: &str) -> Self {
+        let collapsed = command_approval_preview(command, PreviewMode::Collapsed);
+        let chars: Vec<char> = command.chars().collect();
+        let has_escaped_rtl = rtl_escape_flags(&chars)
+            .iter()
+            .zip(&chars)
+            .any(|(escape, c)| *escape && is_strong_rtl(*c));
         Self {
             command: command.to_owned(),
-            collapsed: command_approval_preview(command, PreviewMode::Collapsed),
+            ends_with: ends_with_note(command, &collapsed),
+            collapsed,
             full: OnceCell::new(),
             shape: command_shape_summary(command),
             command_chars: command.chars().count(),
@@ -700,9 +763,7 @@ impl ApprovalPreviewCache {
             mixes_scripts: command
                 .split(|c: char| c.is_whitespace() || is_operator_char(c))
                 .any(mixes_latin_with_lookalike_script),
-            has_escaped_rtl: command.chars().any(is_operator_char)
-                && command.chars().any(is_strong_rtl),
-            ends_with: ends_with_note(command),
+            has_escaped_rtl,
         }
     }
 
@@ -739,7 +800,8 @@ impl ApprovalPreviewCache {
             let hidden = self.collapsed.hidden_chars;
             if full_command_shown {
                 notes.push(format!(
-                    "Showing the full command ({} chars; long blank runs stay collapsed).",
+                    "Showing the full command ({} chars; long blank runs stay collapsed). Scroll \
+                     to its end to enable Run.",
                     group_thousands(self.command_chars)
                 ));
             } else {

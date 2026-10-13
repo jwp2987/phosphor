@@ -465,47 +465,46 @@ upstream's behavior is actually a defect rather than a preference.
   Approve runs the full text in every case. Reproduced on 0.1.11 and at `beee34583`.
 
   **We do (GUI agent approval card):**
-  - **Preview.** Outside edit mode, the card draws `command_approval_preview`:
+  - **Preview.** Outside edit mode, the card draws `command_approval_preview`, even when no
+    editor exists:
     - Shell operators and separators are always visible and highlighted.
     - Over-long words are elided only in their middle, behind a marker with the exact hidden
-      count, so the tail stays visible.
+      count.
     - Whitespace stretches over 32 chars and runs of 3 or more blank lines collapse behind
-      counted markers. They stay collapsed in the full view too, since they hide only
-      whitespace.
-    - Over 1,500 chars or 20 lines, the middle is cut behind a marker that counts the hidden
-      chars and separators.
-    - The collapsed preview has no height cap or scroll container. Soft-wrapped height depends
-      on the card width, which a char budget cannot bound, so a cap could fold its end out of
-      sight.
-    - An "Ends with: ..." note echoes the last 120 chars in both views. The full view scrolls
-      inside a 500px cap.
+      counted markers, in both views.
+    - Over 1,500 chars or 20 lines, the middle is cut behind a counted marker.
+    - The collapsed preview has no height cap of its own. An "Ends with: ..." note echoes the
+      last 120 chars.
     - The following are drawn as `<U+XXXX>` on a marker background:
       - controls;
-      - Cf, Zl, Zp, Co and unassigned code points;
+      - Cf, Zl, Zp and Co code points;
       - non-ASCII spaces;
       - blank-rendering glyphs and variation selectors;
-      - fullwidth ASCII look-alikes;
+      - fullwidth Latin letters and digits, and fullwidth look-alikes of shell operators.
+        Everyday CJK punctuation is not escaped.
       - Mn/Me marks after the second in a row;
       - a literal `<U+`;
-      - strong right-to-left letters, when the command also contains shell operators, because
-        the text element has no base-direction override.
-    - Notes cover hidden counts, the command count, command substitution, non-ASCII text,
-      words that mix Latin with Cyrillic or Greek letters, and escaped RTL letters.
-  - **Gate.** The gate lives in the action model. `start_pending_action_by_id` refuses every
-    `ActionInitiator::User` start of an elided command unless the exact text that would run
-    was shown in full. The mark is keyed by (conversation, action id) and holds the shown
-    text, so an edit made after "Show full command" is not covered, and neither is the same id
-    in another conversation. That covers:
-    - the card's Run and Enter;
-    - the AI block's Enter, which expands the card;
-    - the CLI subagent's accept, which shows a toast;
-    - the auto-execute toggle, which does not switch autoexecute on when the accept was
-      refused. Switching it off always works.
-  - **Card behaviour.**
-    - Enter on an elided card shows the full command instead of running it.
-    - Committed edits, including leaving edit mode with Done or Escape, are written into the
-      pending action, so every accept path runs exactly what the card shows.
-    - The header title and the blocked-conversation notification use the same elided form.
+      - strong right-to-left letters on a line with an unquoted shell operator. The text element
+        has no base-direction override.
+    - Unassigned code points are not escaped, so new emoji are left alone.
+  - **Full view.** "Show full command", or Enter on an elided card, opens it. It inserts a
+    zero-width break wherever 256 display chars pass without a break opportunity. The count runs
+    across quotes, operators and escapes, so no shaped word reaches the renderer's 16,384-char
+    limit (#864). It scrolls inside a 500px cap.
+  - **Reviewed gate.** For an elided command, Run is offered only after the full view has been
+    on screen for 500ms and scrolled to its end. The card then records the exact text on the
+    action model, keyed by (conversation, action id).
+  - **Model gate.** `start_pending_action_by_id` refuses every `ActionInitiator::User` start of
+    an elided command without that record for the exact text it would run. It also refuses
+    while the card is in edit mode, where the card shows uncommitted text.
+  - **Accept paths.**
+    - The AI block's Enter and the auto-execute toggle go through the card's accept.
+    - The CLI subagent's accept is refused for elided commands, with a toast.
+    - Committed edits and Done/Escape out of edit mode write the text into the pending action.
+    - A collapsed card expands instead of accepting.
+    - Streamed updates replace any differing text, not only longer text.
+    - Turning autoexecute on is skipped when the accept was refused. Turning it off always
+      works.
 
   **Not done here:**
   - The renderer bug itself (in `fonts.rs` / cosmic-text) still affects any other text with a
