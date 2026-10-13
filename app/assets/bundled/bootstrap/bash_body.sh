@@ -634,16 +634,16 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         # them, so ^P there is previous-history and ESC-i is ESC (a no-op) followed by `i`
         # (insert mode): a command written while readline sits in vi-command would be typed on
         # top of a recalled history line, and a typeahead request would never be answered.
-        bind -m vi-insert '"\C-p":kill-whole-line'
-        bind -m vi-command '"\C-p":kill-whole-line'
+        bind -m vi-insert '"\C-p":kill-whole-line' 2>/dev/null
+        bind -m vi-command '"\C-p":kill-whole-line' 2>/dev/null
 
         # Reset the report-input binding in case the user's bashrc modified it.
         # This is arbitrarily bound to ESC-i in all supported shells ("i" for input).
         if [[ ${WARP_INPUT_REPORTING_SUPPORTED:-} == "1" ]]; then
           bind -r '"\ei"'
           bind -x '"\ei":"warp_report_input"'
-          bind -m vi-insert -x '"\ei":"warp_report_input"'
-          bind -m vi-command -x '"\ei":"warp_report_input"'
+          bind -m vi-insert -x '"\ei":"warp_report_input"' 2>/dev/null
+          bind -m vi-command -x '"\ei":"warp_report_input"' 2>/dev/null
         fi
         
         # We need to register bindkeys to enable intra-session switching of the prompt 

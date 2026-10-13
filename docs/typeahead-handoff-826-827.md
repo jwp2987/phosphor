@@ -250,17 +250,29 @@ Transitions out of `PtyOwned`:
   counts are then reset). A shell without input reporting commits instead.
 - Ctrl-C: written to the pty; a running command's queued lines die with it, so
   the counts reset; at the prompt the editor takes over after 250 ms or the next
-  precmd, whichever comes first.
+  precmd, whichever comes first. If the user typed after the Ctrl-C and no prompt
+  cycle came (zsh), that timer asks `PtyController` to re-run the request
+  decision, since no line-editor activation will.
+- A command the hand-off does not own (a queued-prompt-panel, agent or in-band
+  command) written while the pty owns input still has its Enter counted, so its
+  precmd cannot make lines the user queued ahead of it look answered.
+- Ctrl-C while keys are held behind a deferred Enter cancels the deferred Enter
+  and drops the held keys; nothing is written to the pty.
 
 Report handling: inserted at the front of the editor (the user's cursor stays
 put relative to their own text) and the editor keeps input. Enter while it is
 outstanding is deferred; the report (or a 500 ms deadline) runs it, then the held
-keys are written after the command as its typeahead. A late report is stashed and
+keys are written after the command as its typeahead. The 500 ms deadline runs from
+when the view handles the request (`PtyControllerEvent::TypeaheadHandoffChanged`),
+not from the Enter, so a deferred Enter waits at most what is left of it. A late
+report is stashed and
 inserted when the editor next owns input; a deferred Enter that wrote no command
 hands the held keys back to the editor after a second deadline.
 
-Gated model fixes (flag on only): additive reports, precmd keeps a report the
-editor has not inserted, and an empty report still notifies the hand-off.
+Gated model fixes (flag on only): additive reports, precmd keeps a shell-reported
+report the editor has not inserted (input-matched typeahead, which can hold a
+program's stdin echo, is still cleared), and an empty report still notifies the
+hand-off.
 Ungated shell fix: `\ei` (and bash's `\C-p`) bound in the vi command keymaps,
 recorded under `IMPROVED` in `DECLINED.md`.
 
@@ -274,6 +286,11 @@ across the boundary):
   250 ms settle and reinitializes the editor under the user;
 - text typed into the shell's line between the prompt and the request is echoed
   by the shell and can show briefly as background output;
+- a command the hand-off does not own, written while the shell's line holds
+  unreported user bytes, still kills them with its kill prefix (its Enter is
+  counted, so no request goes out in cooked mode);
+- `\ei` makes ESC a key prefix in the shells' vi keymaps (keyseq timeout on a bare
+  ESC typed into the shell's own line editor);
 - a request still waits on stale counts for 250 ms after a line the shell never
   answers with a prompt (a program reading stdin, a continuation line, a
   bracketed paste with newlines);

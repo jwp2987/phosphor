@@ -834,7 +834,12 @@ upstream's behavior is actually a defect rather than a preference.
   produced no report in either shell; after it, both report the line. **We do:** bind `\ei`
   in `main emacs viins vicmd` (zsh, like the existing `^P` loop) and in `vi-insert` and
   `vi-command` (bash, for `\ei` and `\C-p`); zsh's `warp_report_input` also returns to
-  `viins`, as the `^P` widget does. Unconditional, unlike the typeahead hand-off it hardens
+  `viins`, as the `^P` widget does. Cost: `\ei` makes ESC a key prefix in the vi keymaps, so
+  a bare ESC typed into the shell's own vi line editor waits for readline's
+  `keyseq-timeout` (bash, 500 ms by default) or `KEYTIMEOUT` (zsh, 400 ms by default) before
+  it acts. zsh's `viins` already had the prefix via `main`; the new waits are bash's
+  `vi-insert`/`vi-command` and zsh's `vicmd`. Keys reach that line editor only as typeahead or
+  as bytes Warp writes itself. Unconditional, unlike the typeahead hand-off it hardens
   (`FeatureFlag::TypeaheadHandoff`, dark): the app still writes the same bytes, and the shell
   only behaves differently in the vi command keymap, where it previously did the wrong
   thing. <!-- markers: keep:input_reporting_sequence keep:kill_buffer_bytes -->
