@@ -477,6 +477,10 @@ impl CommandSearchView {
         result_action: CommandSearchItemAction,
         ctx: &mut ViewContext<Self>,
     ) {
+        // Separator rows (#868) are not results: nothing to report, emit or close for.
+        if matches!(result_action, CommandSearchItemAction::NoOp) {
+            return;
+        }
         {
             use CommandSearchItemAction::*;
             let was_immediately_executed = match &result_action {
@@ -488,7 +492,8 @@ impl CommandSearchView {
                 | ZapAI
                 | AcceptEnvVarCollection(_)
                 | TranslateUsingWarpAI
-                | AcceptAIQuery(_) => false,
+                | AcceptAIQuery(_)
+                | NoOp => false,
             };
 
             let (a11y_content, a11y_help_content) = if was_immediately_executed {

@@ -16781,6 +16781,8 @@ impl Workspace {
 
                         active_input_handle.update(ctx, |input, ctx| input.input_enter(ctx));
                     }
+                    // Separator rows are never selected (#868).
+                    NoOp => {}
                 }
             }
             Resize => {

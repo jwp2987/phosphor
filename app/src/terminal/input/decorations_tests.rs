@@ -6,7 +6,7 @@ use crate::{
     settings::InputSettings,
     terminal::{
         input::{
-            decorations::InputBackgroundJobOptions,
+            decorations::{InputBackgroundJobOptions, MAX_BACKGROUND_JOB_BUFFER_CHARS},
             tests::{
                 add_window_with_bootstrapped_terminal, initialize_app,
                 simulate_directory_for_completion,
@@ -111,5 +111,84 @@ fn test_decorations_with_multibyte_chars() {
             text_style_runs, expected,
             "---- Expected ----\n{expected:#?}\n---- Actual ----\n{text_style_runs:#?}\n"
         );
+    });
+}
+
+/// #868: a buffer over `MAX_BACKGROUND_JOB_BUFFER_CHARS` (a huge history line recalled with
+/// Up) spawns no parse, carries no decorations, and later edits of it do not clear again.
+#[test]
+fn test_oversized_buffer_skips_background_jobs() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        InputSettings::handle(&app).update(&mut app, |input_settings, ctx| {
+            let _ = input_settings.syntax_highlighting.set_value(true, ctx);
+            let _ = input_settings.error_underlining.set_value(true, ctx);
+        });
+
+        let session_info = SessionInfo::new_for_test();
+        let session_id = session_info.session_id;
+        let terminal =
+            add_window_with_bootstrapped_terminal(&mut app, None, Some(session_info)).await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+        let editor = input.read(&app, |input, _| input.editor.clone());
+
+        // The decoration parse needs a completion session context, which needs the active
+        // block's working directory; without one `run_input_background_jobs` takes the
+        // empty-context branch and spawns nothing even for a normal buffer.
+        simulate_directory_for_completion(session_id, &terminal, &mut app, "/usr/bin");
+        assert!(
+            input.read(&app, |input, ctx| input
+                .completion_session_context(ctx)
+                .is_some()),
+            "test setup: the input should have a completion session context"
+        );
+
+        let decorate = InputBackgroundJobOptions::default().with_command_decoration();
+
+        input.update(&mut app, |input, ctx| {
+            // A normal buffer is parsed as usual.
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("echo hi", ctx);
+            input.run_input_background_jobs(decorate, ctx);
+            assert!(
+                input.decorations_future_handle.is_some(),
+                "a normal buffer should spawn a decoration parse"
+            );
+            assert!(!input.decorations_cleared_for_oversized_buffer);
+
+            // An oversized one is not.
+            let huge = format!("echo {}", "x".repeat(MAX_BACKGROUND_JOB_BUFFER_CHARS));
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(&huge, ctx);
+            input.run_input_background_jobs(decorate, ctx);
+            assert!(
+                input.decorations_future_handle.is_none(),
+                "an oversized buffer must not spawn a parse"
+            );
+            assert!(input.decorations_cleared_for_oversized_buffer);
+
+            // Running again on the same oversized buffer stays a no-op.
+            input.run_input_background_jobs(decorate, ctx);
+            assert!(input.decorations_future_handle.is_none());
+            assert!(input.decorations_cleared_for_oversized_buffer);
+        });
+
+        let all_plain = editor.read(&app, |editor, ctx| {
+            editor
+                .text_style_runs(ctx)
+                .all(|run| run.text_style() == TextStyle::default())
+        });
+        assert!(all_plain, "an oversized buffer should carry no decorations");
+
+        // Back under the limit, the next run parses again and re-arms the clear.
+        input.update(&mut app, |input, ctx| {
+            // A different text than the first parse, so the "already parsed" short-circuit
+            // cannot apply.
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("echo bye", ctx);
+            input.run_input_background_jobs(decorate, ctx);
+            assert!(input.decorations_future_handle.is_some());
+            assert!(!input.decorations_cleared_for_oversized_buffer);
+        });
     });
 }

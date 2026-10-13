@@ -536,6 +536,33 @@ upstream's behavior is actually a defect rather than a preference.
   now says "a valid value is being used instead" rather than "the default value is
   being used", since a clamped value (opacity 0 -> 1) is not the default.
 
+- **History search keeps the best 1,000 matches and bounds per-entry cost**
+  (`#868`, 2026-10-13, `app/src/search/command_search/history/history_data_source.rs`,
+  `app/src/search/command_search/history/history_search_item.rs`,
+  `app/src/terminal/input/inline_history/search_item.rs`,
+  `app/src/terminal/input/decorations.rs`). **Upstream:** `fuzzy_match_history` returns
+  every match, uncapped, and fuzzy-matches each history entry in full; the mixer then
+  sorts every result on the main thread and the search bar builds a renderer for each.
+  The ctrl-r row and the Up-arrow inline history row lay out the full command, and the
+  input parses any buffer for highlighting whatever its size. All of this is
+  byte-identical at `4111d08f9` (the pin's mixer lives in
+  `crates/warp_search_core/src/mixer.rs`, with the same full sort). **The defect:**
+  measured on r13 and on 0.1.11 alike: with a 1,000,000-line bash history, one typed
+  character in ctrl-r froze the UI for 66-224 s. With 200k zsh entries it cost ~220 s
+  of intermittent main-thread work. A single 50 MB history line cost ~10 s per ctrl-r
+  keystroke and ~11 s per Up press. **We do:** matching keeps the best 1,000 by
+  `(score, position)` in a bounded heap. That is exactly the set and order a full
+  stable sort would have put last, which is where the best result sits. Only the first
+  4 KiB of an entry is matched and shown, with an ellipsis. Accepting or executing a
+  row still uses the full command. The empty query (the history list a `history:`
+  filter atom opens; without a filter the zero state shows no history) skips matching
+  and lists the newest 10,000 entries in the same order as before. A capped list ends
+  in a non-selectable row saying so ("Showing the newest N..." / "Showing the best N of
+  M matches..."). Input buffers over 1M chars skip the background parse without
+  copying the buffer. **Cost:** the `history:` list stops at the newest 10,000 entries,
+  a ranked query at the best 1,000, and text that appears only past an entry's first
+  4 KiB no longer matches.
+
 - **An incremental find rescan does not flash the find bar's scanning label**
   (`#815`, 2026-10-12, `app/src/terminal/find/model/async_find.rs`). **Upstream:**
   `AsyncFindController::invalidate_block` sets `status = Scanning` for every

@@ -211,6 +211,70 @@ fn test_dedupe_on_preserves_items_without_keys() {
     assert_eq!(results.len(), 3);
 }
 
+/// The quadratic `dedupe_score` this crate shipped before #868, kept as the reference the
+/// linear one must match exactly.
+fn dedupe_score_reference(original: Vec<QueryResult<TestAction>>) -> Vec<QueryResult<TestAction>> {
+    let mut deduped_results: Vec<(Option<String>, &QueryResult<TestAction>)> = Vec::new();
+    for result in original.iter() {
+        let mut needs_insert = true;
+        let new_key = result.dedup_key();
+        if new_key.is_some() {
+            for (existing_key, existing_result) in deduped_results.iter_mut() {
+                if new_key == *existing_key {
+                    needs_insert = false;
+                    if result.score() > existing_result.score() {
+                        *existing_result = result;
+                    }
+                    break;
+                }
+            }
+        }
+        if needs_insert {
+            deduped_results.push((new_key, result));
+        }
+    }
+    deduped_results
+        .into_iter()
+        .map(|(_, r)| r.clone())
+        .collect()
+}
+
+/// #868: the linear `dedupe_score` keeps the same items, in the same order, as the
+/// quadratic one it replaced -- including ties (the first of equal scores wins) and
+/// unkeyed items.
+#[test]
+fn test_dedupe_score_matches_the_quadratic_reference() {
+    use rand::{Rng, SeedableRng};
+    let mut rng = rand::rngs::StdRng::seed_from_u64(868);
+    for _ in 0..200 {
+        let len = rng.gen_range(0..60);
+        let make = |rng: &mut rand::rngs::StdRng| {
+            (0..len)
+                .map(|i| {
+                    let key = rng.gen_range(0..12);
+                    QueryResult::from(TestSearchItem {
+                        id: format!("item{i}"),
+                        priority_tier: 0,
+                        // Few distinct scores, so ties are common.
+                        score: f64::from(rng.gen_range(0..4)),
+                        dedup_key: (key < 9).then(|| format!("key{key}")),
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        let results = make(&mut rng);
+        let expected = dedupe_score_reference(results.clone())
+            .into_iter()
+            .map(|r| r.accept_result().id)
+            .collect::<Vec<_>>();
+        let actual = dedupe_score(results)
+            .into_iter()
+            .map(|r| r.accept_result().id)
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+    }
+}
+
 #[test]
 fn test_results_are_sorted_by_tier_then_score() {
     let mut mixer = SearchMixer::<TestAction>::new();
