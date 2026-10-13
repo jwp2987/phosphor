@@ -5,6 +5,7 @@ use std::mem;
 use pathfinder_color::ColorU;
 use string_offset::CharOffset;
 
+use crate::features::FeatureFlag;
 use crate::safe_debug;
 use crate::terminal::view::CONTROL_MASTER_ERROR_REGEX;
 use crate::terminal::{event::Event as TerminalEvent, event_listener::ChannelEventListener};
@@ -99,9 +100,26 @@ impl EarlyOutput {
         log::info!("Configured typeahead mode as {:?}", self.mode);
     }
 
+    pub fn typeahead_mode(&self) -> TypeaheadMode {
+        self.mode
+    }
+
     /// Returns a reference to the current typeahead.
     pub fn typeahead(&self) -> &str {
         &self.typeahead
+    }
+
+    /// Whether stored typeahead has not been inserted into the input editor yet.
+    pub fn has_uninserted_typeahead(&self) -> bool {
+        self.typeahead.chars().count() > self.typeahead_chars_inserted.as_usize()
+    }
+
+    /// Forgets typeahead that belonged to the command just submitted from the input editor: it
+    /// was in that command's text, so a later report starts a new insertion at the front of the
+    /// fresh editor.
+    pub fn clear_typeahead_for_new_command(&mut self) {
+        self.typeahead.clear();
+        self.typeahead_chars_inserted = 0.into();
     }
 
     /// Record input from the user as potential typeahead.
@@ -190,6 +208,17 @@ impl EarlyOutput {
     /// blocklist's precmd hook, but doesn't implement the [`ansi::Handler`]
     /// interface because it doesn't need precmd data.
     pub fn precmd(&mut self) {
+        // A report the input editor has not inserted yet is the user's input, not the previous
+        // command's: it was stashed so it would not be wiped with that command's text, and is
+        // inserted once the editor takes over. Only a shell report qualifies: with input
+        // matching, typeahead is matched from echo and can hold a program's stdin echo.
+        if FeatureFlag::TypeaheadHandoff.is_enabled()
+            && self.mode == TypeaheadMode::ShellReported
+            && self.typeahead_chars_inserted.as_usize() == 0
+            && !self.typeahead.is_empty()
+        {
+            return;
+        }
         // On precmd, clear accumulated typeahead for the previous command.
         safe_debug!(
             safe: ("Clearing accumulated typeahead"),
@@ -336,12 +365,29 @@ impl ansi::Handler for EarlyOutputHandler<'_> {
             // already cleared it. If we overwrite our stored typeahead before
             // the terminal view has added it to the input buffer, it will be
             // lost.
+            //
+            // The typeahead hand-off still has to hear about it: it waits on every report
+            // it requested, and an empty line answers that request too.
+            if FeatureFlag::TypeaheadHandoff.is_enabled()
+                && self.inner().mode == TypeaheadMode::ShellReported
+            {
+                self.inner()
+                    .event_proxy
+                    .send_terminal_event(TerminalEvent::Typeahead);
+            }
             return;
         }
 
         let me = self.inner();
         if me.mode == TypeaheadMode::ShellReported {
-            me.typeahead = data.buffer;
+            // The shell clears its line when it reports it, so a second report in the same cycle
+            // holds different text: append it. Replacing it lost the first report whenever the
+            // view had not inserted it yet.
+            if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                me.typeahead.push_str(&data.buffer);
+            } else {
+                me.typeahead = data.buffer;
+            }
             if warp_core::channel::ChannelState::channel()
                 == warp_core::channel::Channel::Integration
             {

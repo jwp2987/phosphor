@@ -776,6 +776,17 @@ pub enum FeatureFlag {
     /// unchanged and the harness process/sandbox are never signaled or torn
     /// down.
     CtrlCCancelsThirdPartyHarness,
+
+    /// Hands keystrokes between the pty and the input editor around a command submitted from the
+    /// editor without dropping, wiping or splitting them (#826/#827): the pty owns every key from
+    /// submit until the shell is asked for its line buffer, and that request is written only once
+    /// no Enter-terminated line can still be queued. See
+    /// `app/src/terminal/model/typeahead_handoff.rs`.
+    ///
+    /// Deliberately dark: in no channel list, enabled only via
+    /// `ZAP_UNSTABLE_FEATURES=typeahead_handoff` until the torture repros pass with it on. With
+    /// it off, routing is exactly the pre-hand-off behavior, which is also the pin's.
+    TypeaheadHandoff,
 }
 
 static FLAG_STATES: [AtomicBool; cardinality::<FeatureFlag>()] =

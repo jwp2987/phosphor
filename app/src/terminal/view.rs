@@ -488,6 +488,9 @@ use crate::terminal::model::terminal_model::{BlockIndex, TerminalInputState};
 use crate::terminal::model::terminal_model::{
     BlockSelectionCardinality, SelectedBlocks, WithinModel,
 };
+use crate::terminal::model::typeahead_handoff::{
+    DeadlineOutcome, InterruptOutcome, ReportDisposition, UserBytesRoute, text_for_editor,
+};
 use crate::terminal::model::{
     ansi::{ClearMode, Handler},
     blocks::BlockListPoint,
@@ -1694,6 +1697,14 @@ pub enum Event {
     WriteBytesToPty {
         bytes: Cow<'static, [u8]>,
     },
+    /// User bytes the typeahead hand-off routed to the pty; in flight until the PTY controller
+    /// processes them (`FeatureFlag::TypeaheadHandoff`).
+    WriteHandoffUserBytesToPty {
+        bytes: Cow<'static, [u8]>,
+    },
+    /// Asks the PTY controller to re-run the typeahead hand-off's request decision
+    /// (`FeatureFlag::TypeaheadHandoff`).
+    RetryTypeaheadHandoffRequest,
     WriteAgentInputToPty {
         bytes: Cow<'static, [u8]>,
         mode: AIAgentPtyWriteMode,
@@ -8391,15 +8402,25 @@ impl TerminalView {
         action_id: &AIAgentActionId,
         ctx: &mut ViewContext<Self>,
     ) {
-        {
+        let holds_unwritten_copy = {
             let mut model = self.model.lock();
+            // Held behind the user's typeahead (`FeatureFlag::TypeaheadHandoff`): not written
+            // and its block not started, so no block holds it -- but it must still not run.
+            let holds_unwritten_copy = FeatureFlag::TypeaheadHandoff.is_enabled()
+                && model.typeahead_handoff().held_command_action() == Some(action_id);
             let active_block = model.block_list_mut().active_block_mut();
             if !active_block.agent_holds_in_flight_command(action_id) {
-                return;
+                Some(holds_unwritten_copy)
+            } else {
+                active_block.set_user_control_with_stop_reason();
+                None
             }
-            active_block.set_user_control_with_stop_reason();
+        };
+        match holds_unwritten_copy {
+            Some(true) => ctx.emit(Event::DiscardPendingCommandWrites),
+            Some(false) => {}
+            None => self.interrupt_agent_command(ctx),
         }
-        self.interrupt_agent_command(ctx);
     }
 
     /// Interrupts the agent's command in the active block: first drops any copy of it still
@@ -8408,6 +8429,14 @@ impl TerminalView {
     /// overtakes the queue; without the discard, the parked command would run once the line
     /// editor became active, after the interrupt it was meant to receive (#850).
     fn interrupt_agent_command(&mut self, ctx: &mut ViewContext<Self>) {
+        // Keys held behind a deferred Enter (`FeatureFlag::TypeaheadHandoff`) would hold this
+        // ^C too; the interrupt cancels that Enter and its keys instead, so the ^C is written.
+        if FeatureFlag::TypeaheadHandoff.is_enabled() {
+            self.model
+                .lock()
+                .typeahead_handoff_mut()
+                .cancel_deferred_enter();
+        }
         ctx.emit(Event::DiscardPendingCommandWrites);
         self.user_write_ctrl_c_to_pty(ctx);
     }
@@ -8646,6 +8675,26 @@ impl TerminalView {
     /// Windows users expect ctrl-c to copy if there is selected text. Otherwise,
     /// we perform the normal ctrl-c action.
     fn ctrl_c(&mut self, ctx: &mut ViewContext<Self>) {
+        // Ctrl-C after an Enter that waits for the typeahead report cancels that Enter and the
+        // keys held behind it, instead of being held and replayed after the deferred command.
+        // An agent command in flight still gets its single ^C below (#850); only the deferred
+        // Enter and its keys are dropped.
+        if FeatureFlag::TypeaheadHandoff.is_enabled() {
+            let (cancelled, agent_command_in_flight) = {
+                let mut model = self.model.lock();
+                let cancelled = model.typeahead_handoff_mut().cancel_deferred_enter();
+                let agent_command_in_flight = model
+                    .block_list()
+                    .active_block()
+                    .is_agent_requested_command_in_flight();
+                (cancelled, agent_command_in_flight)
+            };
+            if cancelled && !agent_command_in_flight {
+                self.redetermine_terminal_focus(ctx);
+                ctx.notify();
+                return;
+            }
+        }
         let (
             has_block_list_selection,
             has_alt_screen_selection,
@@ -8665,7 +8714,9 @@ impl TerminalView {
             // the line; precmd then finishes the block and the tool call resolves with it
             // (issue #850).
             let is_long_running = active_block.is_active_and_long_running()
-                || active_block.is_agent_requested_command_in_flight();
+                || active_block.is_agent_requested_command_in_flight()
+                || (FeatureFlag::TypeaheadHandoff.is_enabled()
+                    && model.typeahead_handoff().routes_keys_to_pty());
             let is_agent_in_control_of_command = active_block.is_agent_in_control();
             // If the user already took control via `Stop` (e.g. an earlier Ctrl-C), capture the
             // conversation to cancel so a follow-up Ctrl-C tears down both command and conversation.
@@ -8867,6 +8918,9 @@ impl TerminalView {
                 self.interrupt_agent_command(ctx);
             } else {
                 self.user_write_ctrl_c_to_pty(ctx);
+                if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                    self.handle_typeahead_handoff_interrupt(ctx);
+                }
             }
         } else {
             self.maybe_handle_ctrl_c_in_rich_content_block(ctx);
@@ -8975,7 +9029,11 @@ impl TerminalView {
         // the PTY is still bootstrapping, in which case the input would be shown
         // but we still want EOT written to the PTY in case there is a program
         // waiting for input during bootstrapping (e.g. omz update).
-        if !self.is_input_box_visible(&model, ctx) || !model.block_list().is_bootstrapped() {
+        if !self.is_input_box_visible(&model, ctx)
+            || !model.block_list().is_bootstrapped()
+            || (FeatureFlag::TypeaheadHandoff.is_enabled()
+                && model.typeahead_handoff().ctrl_d_reaches_a_reader())
+        {
             // This is relevant for the case where the user enters CTRL-d while the
             // ssh wrapper command is being run. The EOT character doesn't stop
             // the session immediately, instead it waits until the command passed
@@ -9049,7 +9107,7 @@ impl TerminalView {
     }
 
     fn control_sequence_on_terminal(&mut self, bytes: &[u8], ctx: &mut ViewContext<Self>) {
-        if self.is_long_running() {
+        if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
             self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_bytes(bytes)), ctx);
             self.write_user_bytes_to_pty(bytes.to_owned(), ctx);
         } else {
@@ -9118,7 +9176,7 @@ impl TerminalView {
     /// Receiving the warpui::Event::KeyDown event from a child element.
     /// Generally, this should be control characters rather than printable characters.
     fn keydown_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
-        if self.is_long_running() {
+        if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
             self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
             self.highlighted_link.invalidate();
             self.report_possible_typeahead(characters);
@@ -9144,7 +9202,10 @@ impl TerminalView {
         // Note that we check block started and NOT block.is_long_running(), because
         // the block starts on enter but only becomes long running on receiving Preexec.
         // We want to make sure we capture any input between enter and receiving Preexec.
-        if !model.block_list().active_block().started() {
+        if !model.block_list().active_block().started()
+            && !(FeatureFlag::TypeaheadHandoff.is_enabled()
+                && model.typeahead_handoff().routes_keys_to_pty())
+        {
             return false;
         }
 
@@ -9332,7 +9393,8 @@ impl TerminalView {
         data: B,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
-        {
+        let bytes: Cow<'static, [u8]> = data.into();
+        let handoff_route = {
             let mut terminal_model = self.model.lock();
             let active_block = terminal_model.block_list().active_block();
             if active_block.is_agent_in_control() {
@@ -9345,13 +9407,30 @@ impl TerminalView {
                     .active_block_mut()
                     .mark_received_user_input();
             }
+            if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                if terminal_model.is_alt_screen_active() {
+                    terminal_model
+                        .typeahead_handoff_mut()
+                        .on_user_bytes_to_full_screen_program(&bytes)
+                } else {
+                    terminal_model.typeahead_handoff_mut().on_user_bytes(&bytes)
+                }
+            } else {
+                UserBytesRoute::Write
+            }
+        };
+        if handoff_route == UserBytesRoute::Held {
+            return true;
         }
 
-        let bytes = data.into();
         let bytes_vec = bytes.to_vec();
         self.clear_selected_blocks(ctx);
         self.update_scroll_position_locking(ScrollPositionUpdate::AfterWriteUserBytesToPty, ctx);
-        self.write_to_pty(bytes, ctx);
+        if handoff_route == UserBytesRoute::WriteCounted {
+            ctx.emit(Event::WriteHandoffUserBytesToPty { bytes });
+        } else {
+            self.write_to_pty(bytes, ctx);
+        }
         self.emit_non_editor_typed_event(bytes_vec, ctx);
         true
     }
@@ -9574,6 +9653,167 @@ impl TerminalView {
             });
             ctx.notify();
         }
+    }
+
+    /// Whether keys typed on the terminal go to the pty because the typeahead hand-off gives it
+    /// input. Takes the model lock.
+    fn typeahead_handoff_routes_keys_to_pty(&self) -> bool {
+        FeatureFlag::TypeaheadHandoff.is_enabled()
+            && self.model.lock().typeahead_handoff().routes_keys_to_pty()
+    }
+
+    /// Re-evaluates focus after the typeahead hand-off changed who owns input, arms the report
+    /// deadline of a fresh request, and inserts a stashed report once the editor owns input.
+    fn handle_typeahead_handoff_changed(&mut self, ctx: &mut ViewContext<Self>) {
+        let (deadline, has_stashed_report) = {
+            let mut model = self.model.lock();
+            let deadline = model.typeahead_handoff_mut().take_report_deadline_to_arm();
+            let has_stashed_report = model.typeahead_handoff().editor_owns_input()
+                && model.block_list().early_output().has_uninserted_typeahead();
+            (deadline, has_stashed_report)
+        };
+        if let Some(request_generation) = deadline {
+            self.arm_typeahead_report_deadline(request_generation, ctx);
+        }
+        if has_stashed_report {
+            self.insert_typeahead_from_handoff(ctx);
+        }
+        self.redetermine_terminal_focus(ctx);
+    }
+
+    /// The shell reached a prompt: hand input back to the editor if nothing the user typed can be
+    /// in the shell's line. The finished block's `BlockCompleted`, which reinitializes the editor,
+    /// is delivered before this precmd, so nothing typed into the editor from here on is wiped.
+    ///
+    /// A prompt that ran no command (an empty Enter, a syntax error, a prompt cycle after
+    /// Ctrl-C) voids any quiet-period reset armed before it, and no line-editor activation
+    /// follows, since the line editor never went inactive. So whether the editor took over or
+    /// the pty still owns input, the controller is asked to decide again (draining writes held
+    /// for this prompt, or requesting); it only does while the line editor is active.
+    fn commit_typeahead_handoff_at_prompt(&mut self, ctx: &mut ViewContext<Self>) {
+        let (committed, still_pty_owned) = {
+            let mut model = self.model.lock();
+            let handoff = model.typeahead_handoff_mut();
+            let committed = handoff.try_commit_at_prompt();
+            (committed, handoff.is_pty_owned())
+        };
+        if committed {
+            self.handle_typeahead_handoff_changed(ctx);
+        }
+        if committed || still_pty_owned {
+            ctx.emit(Event::RetryTypeaheadHandoffRequest);
+        }
+    }
+
+    /// The shell started a command; if it was a typeahead line, the pty now owns input.
+    fn focus_terminal_if_typeahead_handoff_wants_it(&mut self, ctx: &mut ViewContext<Self>) {
+        let wants_terminal = self.model.lock().typeahead_handoff().wants_terminal_focus();
+        if wants_terminal {
+            self.redetermine_terminal_focus(ctx);
+        }
+    }
+
+    /// Applies a shell typeahead report under the typeahead hand-off.
+    fn handle_typeahead_report_with_handoff(&mut self, ctx: &mut ViewContext<Self>) {
+        let disposition = self.model.lock().typeahead_handoff_mut().on_report();
+        match disposition {
+            ReportDisposition::InsertLegacy => self.handle_typeahead_event(ctx),
+            ReportDisposition::Insert => {
+                self.insert_typeahead_from_handoff(ctx);
+                self.redetermine_terminal_focus(ctx);
+            }
+            ReportDisposition::InsertThenSubmit => {
+                self.insert_typeahead_from_handoff(ctx);
+                self.submit_deferred_enter(ctx);
+            }
+            ReportDisposition::Stash => {}
+        }
+    }
+
+    /// Inserts the stored typeahead at the front of the editor, ahead of anything the user typed
+    /// there since the request.
+    fn insert_typeahead_from_handoff(&mut self, ctx: &mut ViewContext<Self>) {
+        let typeahead = self
+            .model
+            .lock()
+            .block_list_mut()
+            .early_output_mut()
+            .advance_typeahead()
+            .map(|(typeahead, num_typeahead_chars_inserted)| {
+                (typeahead.to_owned(), num_typeahead_chars_inserted)
+            });
+        let Some((typeahead, num_typeahead_chars_inserted)) = typeahead else {
+            return;
+        };
+        self.input.update(ctx, |input, ctx| {
+            input.insert_handoff_typeahead_text(num_typeahead_chars_inserted, &typeahead, ctx);
+        });
+        ctx.notify();
+    }
+
+    /// Runs the Enter the typeahead hand-off deferred while a report was outstanding.
+    fn submit_deferred_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        self.input.update(ctx, |input, ctx| input.input_enter(ctx));
+    }
+
+    fn arm_typeahead_report_deadline(
+        &mut self,
+        request_generation: u64,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        /// How long a typeahead request may go unanswered before the editor stops waiting for it.
+        /// The shell answers from its line editor without running anything, so a healthy report
+        /// takes a round trip, not work.
+        const TYPEAHEAD_REPORT_DEADLINE: Duration = Duration::from_millis(1000);
+        ctx.spawn(
+            Timer::after(TYPEAHEAD_REPORT_DEADLINE),
+            move |me, _, ctx| {
+                me.on_typeahead_report_deadline(request_generation, ctx);
+            },
+        );
+    }
+
+    fn on_typeahead_report_deadline(
+        &mut self,
+        request_generation: u64,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let outcome = self
+            .model
+            .lock()
+            .typeahead_handoff_mut()
+            .on_report_deadline(request_generation);
+        match outcome {
+            DeadlineOutcome::Stale => {}
+            DeadlineOutcome::ReleaseEditor => {
+                self.redetermine_terminal_focus(ctx);
+            }
+            DeadlineOutcome::GiveUp { held } => {
+                let text = text_for_editor(&held);
+                if !text.is_empty() {
+                    self.input
+                        .update(ctx, |input, ctx| input.system_insert(&text, ctx));
+                }
+                self.redetermine_terminal_focus(ctx);
+            }
+        }
+    }
+
+    /// A Ctrl-C was written while the typeahead hand-off gave the pty input.
+    fn handle_typeahead_handoff_interrupt(&mut self, ctx: &mut ViewContext<Self>) {
+        /// Long enough for the prompt cycle bash and zsh run after an interrupted line, so the
+        /// editor is not reinitialized under the user after it took over.
+        const INTERRUPT_SETTLE: Duration = Duration::from_millis(250);
+        let outcome = self.model.lock().typeahead_handoff_mut().on_interrupt();
+        if outcome == InterruptOutcome::NotOwned {
+            return;
+        }
+        // zsh usually runs no prompt cycle after ^C at the prompt, so no precmd or line-editor
+        // activation would otherwise come to hand input back, ask for keys typed since, or
+        // notice that the counts were off because an earlier Enter was consumed by a program.
+        ctx.spawn(Timer::after(INTERRUPT_SETTLE), |me, _, ctx| {
+            me.commit_typeahead_handoff_at_prompt(ctx);
+        });
     }
 
     /// This function is invoked every time there is some form of view event
@@ -12852,7 +13092,11 @@ impl TerminalView {
             }
             ModelEvent::HonorPS1OutOfSync => {}
             ModelEvent::Typeahead => {
-                self.handle_typeahead_event(ctx);
+                if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                    self.handle_typeahead_report_with_handoff(ctx);
+                } else {
+                    self.handle_typeahead_event(ctx);
+                }
             }
             ModelEvent::Handler(AnsiHandlerEvent::InitShell {
                 pending_session_info,
@@ -12868,6 +13112,16 @@ impl TerminalView {
                         self.update_long_running_ssh_block_with_lock(|block| block.hide());
                     }
                 }
+            }
+            ModelEvent::Handler(AnsiHandlerEvent::Precmd)
+                if FeatureFlag::TypeaheadHandoff.is_enabled() =>
+            {
+                self.commit_typeahead_handoff_at_prompt(ctx);
+            }
+            ModelEvent::Handler(AnsiHandlerEvent::Preexec)
+                if FeatureFlag::TypeaheadHandoff.is_enabled() =>
+            {
+                self.focus_terminal_if_typeahead_handoff_wants_it(ctx);
             }
             ModelEvent::Handler(_) => {}
             ModelEvent::FinishUpdate(data) => {
@@ -16603,7 +16857,9 @@ impl TerminalView {
                 // and we want the paste to go there if the editor isn't focused.
                 self.is_input_box_visible(&model, ctx)
                     && (self.input.as_ref(ctx).editor().is_focused(ctx)
-                        || model.block_list().is_bootstrapped()),
+                        || model.block_list().is_bootstrapped())
+                    && !(FeatureFlag::TypeaheadHandoff.is_enabled()
+                        && model.typeahead_handoff().routes_keys_to_pty()),
                 model.needs_bracketed_paste(),
             )
         };
@@ -21490,7 +21746,14 @@ impl TerminalView {
             let has_block_or_text_selection_in_shell_mode =
                 is_shell_mode && !preserve_input_focus && (are_blocks_selected || is_text_selected);
 
-            has_active_user_terminal_command || has_block_or_text_selection_in_shell_mode
+            // While the typeahead hand-off gives the pty input, keys must reach the terminal even
+            // though the input box is visible (it still shows the submitted command).
+            let typeahead_handoff_wants_terminal = FeatureFlag::TypeaheadHandoff.is_enabled()
+                && model.typeahead_handoff().wants_terminal_focus();
+
+            has_active_user_terminal_command
+                || has_block_or_text_selection_in_shell_mode
+                || typeahead_handoff_wants_terminal
         };
         let blocked_cli_subagent_view = {
             let model = self.model.lock();
@@ -22248,6 +22511,11 @@ impl TerminalView {
             InputEvent::RegisterPluginListener(agent) => {
                 self.register_cli_agent_listener_without_session_start_event(*agent, ctx);
             }
+            InputEvent::TypeaheadHandoffEnterDeferred => {
+                if ctx.is_self_or_child_focused() {
+                    self.focus_terminal(ctx);
+                }
+            }
             #[cfg(not(target_family = "wasm"))]
             InputEvent::OpenPluginInstructionsPane(agent, kind) => {
                 ctx.emit(Event::OpenPluginInstructionsPane(*agent, *kind));
@@ -22801,7 +23069,7 @@ impl TerminalView {
                     );
                 }
             }
-        } else if self.is_long_running() {
+        } else if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
             self.on_ssh_warpification_key_event(None, ctx);
             let sequence =
                 EscCodes::build_escape_sequence(self.model.lock().deref(), &[EscCodes::ARROW_UP]);
@@ -22959,7 +23227,7 @@ impl TerminalView {
                     self.select_less_recent_block(false /* is_cmd_down */, ctx);
                 }
             }
-        } else if self.is_long_running() {
+        } else if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
             let sequence =
                 EscCodes::build_escape_sequence(self.model.lock().deref(), &[EscCodes::ARROW_DOWN]);
             self.write_user_bytes_to_pty(sequence, ctx);
@@ -22989,7 +23257,7 @@ impl TerminalView {
     }
 
     fn move_home(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.is_long_running() {
+        if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
             let sequence = EscCodes::build_escape_sequence(self.model.lock().deref(), b"H");
             self.write_user_bytes_to_pty(sequence, ctx);
         } else {
@@ -22998,7 +23266,7 @@ impl TerminalView {
     }
 
     fn move_end(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.is_long_running() {
+        if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
             let sequence = EscCodes::build_escape_sequence(self.model.lock().deref(), b"F");
             self.write_user_bytes_to_pty(sequence, ctx);
         } else {
@@ -26623,6 +26891,10 @@ impl PtyIntentEvent for Event {
             Event::ShutdownPty => Some(PtyIntent::ShutdownPty),
             Event::DiscardPendingCommandWrites => Some(PtyIntent::DiscardPendingCommandWrites),
             Event::WriteBytesToPty { bytes } => Some(PtyIntent::WriteBytes(bytes.clone())),
+            Event::WriteHandoffUserBytesToPty { bytes } => {
+                Some(PtyIntent::WriteHandoffUserBytes(bytes.clone()))
+            }
+            Event::RetryTypeaheadHandoffRequest => Some(PtyIntent::RetryTypeaheadHandoffRequest),
             Event::WriteAgentInputToPty { bytes, mode } => Some(PtyIntent::WriteAgentInput {
                 bytes: bytes.clone(),
                 mode: *mode,
@@ -26652,6 +26924,19 @@ impl TerminalSurface for TerminalView {
     #[cfg(feature = "local_tty")]
     fn on_shell_determined(&mut self, ctx: &mut ViewContext<Self>) {
         TerminalView::on_shell_determined(self, ctx);
+    }
+
+    fn on_typeahead_handoff_changed(&mut self, ctx: &mut ViewContext<Self>) {
+        self.handle_typeahead_handoff_changed(ctx);
+    }
+
+    fn on_command_coalesced(&mut self, command: &str, ctx: &mut ViewContext<Self>) {
+        const MAX_COMMAND_LENGTH: usize = 43;
+        let truncated_command = truncate_from_end(command, MAX_COMMAND_LENGTH);
+        self.show_error_toast(
+            format!("Cannot run `{truncated_command}` (command already running)."),
+            ctx,
+        );
     }
 
     fn on_active_shell_launch_data_updated(
