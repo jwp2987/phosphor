@@ -13421,29 +13421,79 @@ fn typeahead_handoff_stopping_a_conversation_drops_its_held_command() {
     })
 }
 
-/// Puts keys behind a deferred Enter and returns the request's generation, as a deadline sees it.
-fn hold_keys_after_deferred_enter(view: &TerminalView, keys: &[u8]) -> u64 {
-    hold_after_deferred_enter(view);
+/// Drives the hand-off to "request written, report outstanding".
+fn awaiting_typeahead_report(view: &TerminalView) {
     let mut model = view.model.lock();
     let handoff = model.typeahead_handoff_mut();
-    assert_eq!(handoff.on_user_bytes(keys), UserBytesRoute::Held);
-    handoff
-        .take_report_deadline_to_arm()
-        .expect("the request armed a deadline")
+    handoff.on_command_written();
+    handoff.on_user_bytes(b"ec");
+    handoff.on_user_write_flushed();
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
 }
 
-fn input_is_locked_to_shell(view: &TerminalView, ctx: &AppContext) -> bool {
-    let input_model = view.ai_input_model.as_ref(ctx);
-    input_model.input_type() == InputType::Shell && input_model.is_input_type_locked()
+/// Counts the commands a terminal view asks to execute.
+fn count_executed_commands(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+) -> Rc<RefCell<usize>> {
+    let count = Rc::new(RefCell::new(0));
+    let seen = count.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(terminal, move |_, event, _| {
+            if let Event::ExecuteCommand(_) = event {
+                *seen.borrow_mut() += 1;
+            }
+        });
+    });
+    count
 }
 
-/// #826 N1: under CPU starvation the report missed its deadline and the held keys -- shell lines
-/// the user typed -- came back into the editor with each Enter as a newline; the next Enter
-/// submitted them as one buffer, which natural-language detection sent to the agent. Now the last
-/// deadline runs the deferred Enter as a shell command, and if that writes no command the held
-/// lines go to the pty as typed. They never reach the editor.
+/// B1: an Enter while the report is outstanding waits for it, however long it takes. The
+/// editor holds only what was typed after the request; submitting it (or anything written after
+/// the request) would run a fragment. Nothing is written and no command runs until the report.
 #[test]
-fn typeahead_handoff_last_deadline_never_puts_held_shell_lines_in_the_editor() {
+fn typeahead_handoff_never_submits_a_fragment_without_the_report() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        let executed = count_executed_commands(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            awaiting_typeahead_report(view);
+            view.input
+                .update(ctx, |input, ctx| input.replace_buffer_content("ho 47", ctx));
+            view.input.update(ctx, |input, ctx| input.input_enter(ctx));
+            view.keydown_on_terminal("\r", ctx);
+        });
+        // Well past the old 1 s give-up deadline.
+        Timer::after(Duration::from_millis(1500)).await;
+
+        assert_eq!(*executed.borrow(), 0, "no command without the report");
+        assert!(pty_writes.borrow().is_empty());
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ho 47");
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::HoldAfterEnter {
+                    held: b"\r".to_vec(),
+                    released: false,
+                }
+            );
+        });
+    })
+}
+
+/// S2 and #826 N1: the report arrived but its submit wrote no command (the test view is not
+/// bootstrapped). The held shell lines go to the pty at once -- not into the editor, where the
+/// next Enter sent them to the agent.
+#[test]
+fn typeahead_handoff_releases_held_shell_lines_to_the_pty_when_the_submit_runs_nothing() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
@@ -13451,26 +13501,17 @@ fn typeahead_handoff_last_deadline_never_puts_held_shell_lines_in_the_editor() {
         let pty_writes = collect_pty_writes(&mut app, &terminal);
 
         terminal.update(&mut app, |view, ctx| {
-            let generation = hold_keys_after_deferred_enter(view, b"echo 1\recho 2\r");
-            // Earlier deadlines only keep waiting.
-            view.on_typeahead_report_deadline(generation, 3, ctx);
-            assert!(matches!(
-                view.model.lock().typeahead_handoff().state(),
-                HandoffState::HoldAfterEnter {
-                    released: false,
-                    ..
-                }
-            ));
+            hold_after_deferred_enter(view);
+            assert_eq!(
+                view.model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .on_user_bytes(b"echo 1\recho 2\r"),
+                UserBytesRoute::Held
+            );
+            view.handle_typeahead_report_with_handoff(ctx);
 
-            // The last one runs the deferred Enter, locked to shell mode. (The test view is not
-            // bootstrapped, so that submit writes no command.)
-            view.on_typeahead_report_deadline(generation, 0, ctx);
-            assert!(input_is_locked_to_shell(view, ctx));
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-
-            // It wrote no command, so the held lines go to the shell, as typed.
-            view.on_typeahead_report_deadline(generation, 0, ctx);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert!(!view.input.as_ref(ctx).buffer_text(ctx).contains("echo"));
             assert_eq!(
                 view.model.lock().typeahead_handoff().state(),
                 &HandoffState::EditorOwned
@@ -13481,21 +13522,53 @@ fn typeahead_handoff_last_deadline_never_puts_held_shell_lines_in_the_editor() {
     })
 }
 
-/// Held keys without an Enter are one unfinished line: they come back into the editor, and the
-/// submit that follows stays a shell command.
+/// B2: the deferred submit is a shell command in Universal input too (the production default),
+/// where the classic-mode setter does nothing; the lock covers that one submit and the previous
+/// configuration comes back.
 #[test]
-fn typeahead_handoff_last_deadline_hands_a_held_fragment_back_locked_to_shell() {
+fn typeahead_handoff_deferred_submit_is_a_shell_command_in_universal_input() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
         let terminal = add_window_with_terminal(&mut app, None);
+        InputSettings::handle(&app).update(&mut app, |input_settings, ctx| {
+            let _ = input_settings
+                .input_box_type
+                .set_value(crate::settings::InputBoxType::Universal, ctx);
+        });
+        let ai_input_model = terminal.read(&app, |view, _| view.ai_input_model.clone());
+        // Natural-language detection took the buffer for a query.
+        ai_input_model.update(&mut app, |input_model, ctx| {
+            input_model.set_input_type(InputType::AI, ctx)
+        });
+        let configs: Rc<RefCell<Vec<InputType>>> = Rc::new(RefCell::new(Vec::new()));
+        let recorded = configs.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&ai_input_model, move |_, event, _| {
+                if let BlocklistAIInputEvent::InputTypeChanged { config } = event {
+                    recorded.borrow_mut().push(config.input_type);
+                }
+            });
+        });
 
         terminal.update(&mut app, |view, ctx| {
-            let generation = hold_keys_after_deferred_enter(view, b"ls -l");
-            view.on_typeahead_report_deadline(generation, 0, ctx);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls -l");
-            assert!(input_is_locked_to_shell(view, ctx));
+            view.input.update(ctx, |input, ctx| {
+                input.replace_buffer_content("list the files", ctx);
+                input.input_enter_as_shell_command(ctx)
+            });
         });
+
+        let configs = configs.borrow();
+        assert_eq!(
+            configs.first(),
+            Some(&InputType::Shell),
+            "the submit ran with the input locked to shell"
+        );
+        assert_eq!(
+            configs.last(),
+            Some(&InputType::AI),
+            "the previous configuration is restored after that one submit"
+        );
     })
 }
 

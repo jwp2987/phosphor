@@ -1747,6 +1747,11 @@ pub struct Input {
     /// If simply looking for if the editor contents empty, check the editor view directly instead
     /// of using this flag.
     is_editor_empty_on_last_edit: bool,
+    /// Typeahead hand-off: the next Enter runs as a shell command (see
+    /// `input_enter_as_shell_command`).
+    shell_command_submit_pending: bool,
+    /// Whether the last Enter submitted a shell command; read by `input_enter_as_shell_command`.
+    last_enter_submitted_shell_command: bool,
 
     /// Weak handle to this input view for drop target data
     weak_view_handle: WeakViewHandle<Input>,
@@ -3368,6 +3373,8 @@ impl Input {
             cached_agent_mode_hint_key: None,
             cached_slash_menu_disabled: None,
             is_editor_empty_on_last_edit: is_editor_empty,
+            shell_command_submit_pending: false,
+            last_enter_submitted_shell_command: false,
             weak_view_handle: ctx.handle(),
             agent_status_view,
             agent_view_controller,
@@ -12072,6 +12079,10 @@ impl Input {
         if self.defer_enter_for_typeahead_report(ctx) {
             return;
         }
+        if std::mem::take(&mut self.shell_command_submit_pending) {
+            self.input_enter_as_shell_command(ctx);
+            return;
+        }
         let command = self.editor.as_ref(ctx).buffer_text(ctx);
 
         ctx.emit(Event::Enter);
@@ -12375,6 +12386,7 @@ impl Input {
             if !self.try_execute_command(&command, ctx) {
                 return;
             }
+            self.last_enter_submitted_shell_command = true;
 
             if FeatureFlag::AgentMode.is_enabled()
                 && AISettings::as_ref(ctx).is_ai_autodetection_enabled(ctx)
@@ -12429,19 +12441,35 @@ impl Input {
         });
     }
 
-    /// Locks the input to shell mode for the next submit, so natural-language detection does not
-    /// send text the user typed as shell lines to the agent (`FeatureFlag::TypeaheadHandoff`).
-    /// Submitting a shell command restores the usual configuration.
-    pub(crate) fn lock_input_to_shell(&mut self, ctx: &mut ViewContext<Self>) {
-        self.ai_input_model.update(ctx, |input, ctx| {
-            input.set_input_config_for_classic_mode(
+    /// Runs Enter as a shell command: for this one submit the input is locked to shell, in
+    /// Universal input as in Classic, so natural-language detection cannot send text the user
+    /// typed as shell lines to the agent (`FeatureFlag::TypeaheadHandoff`). The previous input
+    /// configuration is restored afterwards. Returns whether a shell command was submitted.
+    pub(crate) fn input_enter_as_shell_command(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        let previous_config = self.ai_input_model.as_ref(ctx).input_config();
+        let is_buffer_empty = self.editor.as_ref(ctx).is_empty(ctx);
+        self.ai_input_model.update(ctx, |input_model, ctx| {
+            input_model.set_input_config(
                 InputConfig {
                     input_type: InputType::Shell,
                     is_locked: true,
                 },
+                is_buffer_empty,
                 ctx,
             );
         });
+        self.last_enter_submitted_shell_command = false;
+        self.input_enter(ctx);
+        let submitted = self.last_enter_submitted_shell_command;
+        self.ai_input_model.update(ctx, |input_model, ctx| {
+            input_model.set_input_config(previous_config, is_buffer_empty, ctx);
+        });
+        submitted
+    }
+
+    /// Makes the next Enter in this input run as [`Self::input_enter_as_shell_command`].
+    pub(crate) fn submit_next_enter_as_shell_command(&mut self) {
+        self.shell_command_submit_pending = true;
     }
 
     /// Defers this Enter while the typeahead hand-off waits for the shell's report of what the

@@ -43,7 +43,7 @@ pub enum HandoffState {
     /// order, and follow the deferred command to the pty once it has been written.
     HoldAfterEnter {
         held: Vec<u8>,
-        /// Whether the deferred submit has run (after the report arrived, or its deadline).
+        /// Whether the deferred submit has run (after the report arrived).
         released: bool,
     },
 }
@@ -103,29 +103,17 @@ pub enum ReportDisposition {
     Stash,
 }
 
-/// What the view does when the report deadline of a request expires.
+/// Where keys held behind a deferred Enter go when the submit that the report triggered wrote no
+/// command (the report is in, so nothing is outstanding in the tty any more).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DeadlineOutcome {
-    /// The deadline belongs to an earlier request, or the report already arrived.
-    Stale,
-    /// Not the last deadline: keep waiting for the report. A late report is most often a busy
-    /// machine, not a dead shell, and nothing goes anywhere wrong while the hand-off waits.
-    KeepWaiting,
-    /// The last deadline, no report and no Enter: the editor simply keeps input.
-    ReleaseEditor,
-    /// The last deadline, no report, and the keys held behind the deferred Enter include an
-    /// Enter: they are shell lines. Run the deferred Enter as a shell command (never classified
-    /// as an agent query); the held keys follow it to the pty as typed.
-    SubmitAsShellCommand,
-    /// The last deadline, and the held keys are a fragment of one line (no Enter): hand them
-    /// back to the editor, for a submit that stays a shell command. The deferred Enter is not
-    /// run, so a fragment is never submitted.
-    GiveUp { held: Vec<u8> },
-    /// The last deadline after the deferred Enter ran without writing a command, and the held
-    /// keys include an Enter: they are shell lines, so they go to the pty as typed. They are
-    /// never turned into a multi-line editor buffer, which the next Enter would submit whole --
-    /// to the agent, if natural-language detection took it for a query.
-    WriteHeldToPty { held: Vec<u8> },
+pub enum HeldKeysRelease {
+    /// One unfinished line (no Enter): back into the editor, for a submit that stays a shell
+    /// command.
+    ToEditor(Vec<u8>),
+    /// Shell lines (an Enter in them): to the pty as typed. Never into the editor, where the
+    /// next Enter would submit them as one multi-line buffer -- to the agent, if natural-language
+    /// detection took it for a query (#826 N1).
+    ToPty(Vec<u8>),
 }
 
 /// What a Ctrl-C written while the pty owns input means for the hand-off.
@@ -164,10 +152,6 @@ pub struct TypeaheadHandoff {
     writes_in_flight: u32,
     /// Bumped on every precmd and preexec, so a stale-count reset armed before either is void.
     activity_generation: u64,
-    /// Identifies the latest request, so a report deadline armed for an earlier one is void.
-    request_generation: u64,
-    /// The request whose report deadline the view has not armed yet.
-    deadline_to_arm: Option<u64>,
     /// The agent action (and its conversation) whose command `PtyController` holds behind the
     /// user's typeahead, if the held command is an agent's. Its block is not started yet, so
     /// this is the only place a cancel of that action, or a stop of that conversation, can find
@@ -295,7 +279,6 @@ impl TypeaheadHandoff {
             enters_written: enters_before.saturating_add(1).saturating_add(held_enters),
             precmds_seen,
         };
-        self.deadline_to_arm = None;
         held
     }
 
@@ -384,8 +367,6 @@ impl TypeaheadHandoff {
                     ActiveDecision::Committed
                 } else if no_line_queued && at_prompt && self.writes_in_flight == 0 {
                     self.state = HandoffState::AwaitingReport;
-                    self.request_generation = self.request_generation.wrapping_add(1);
-                    self.deadline_to_arm = Some(self.request_generation);
                     ActiveDecision::SendRequest
                 } else {
                     ActiveDecision::Wait {
@@ -499,59 +480,37 @@ impl TypeaheadHandoff {
         }
     }
 
-    /// Returns the request whose report deadline the view has to arm, once.
-    pub fn take_report_deadline_to_arm(&mut self) -> Option<u64> {
-        self.deadline_to_arm.take()
-    }
-
-    /// The report deadline armed for `request_generation` expired.
-    ///
-    /// `is_last` is whether this is the last deadline the view arms for the request; until then
-    /// the hand-off keeps waiting (and holding).
-    pub fn on_report_deadline(
-        &mut self,
-        request_generation: u64,
-        is_last: bool,
-    ) -> DeadlineOutcome {
-        if request_generation != self.request_generation {
-            return DeadlineOutcome::Stale;
+    /// The submit run after the report wrote no command: release the keys held behind it.
+    /// Returns `None` unless that is the state (keys held, deferred submit already run).
+    pub fn release_after_unsubmitted_enter(&mut self) -> Option<HeldKeysRelease> {
+        if self.owner() != (Owner::Hold { released: true }) {
+            return None;
         }
-        match self.owner() {
-            Owner::Editor | Owner::Pty { .. } => DeadlineOutcome::Stale,
-            Owner::AwaitingReport | Owner::Hold { .. } if !is_last => DeadlineOutcome::KeepWaiting,
-            Owner::AwaitingReport => {
-                self.state = HandoffState::EditorOwned;
-                DeadlineOutcome::ReleaseEditor
-            }
-            Owner::Hold { released: false } if self.held_keys_include_an_enter() => {
-                self.mark_released();
-                DeadlineOutcome::SubmitAsShellCommand
-            }
-            Owner::Hold { .. } => match mem::take(&mut self.state) {
-                HandoffState::HoldAfterEnter { held, .. } => {
-                    if held.iter().any(|byte| matches!(byte, b'\r' | b'\n')) {
-                        DeadlineOutcome::WriteHeldToPty { held }
-                    } else {
-                        DeadlineOutcome::GiveUp { held }
-                    }
-                }
-                other => {
-                    self.state = other;
-                    DeadlineOutcome::Stale
-                }
-            },
-        }
-    }
-
-    fn held_keys_include_an_enter(&self) -> bool {
-        match &self.state {
+        match mem::take(&mut self.state) {
             HandoffState::HoldAfterEnter { held, .. } => {
-                held.iter().any(|byte| matches!(byte, b'\r' | b'\n'))
+                if held.iter().any(|byte| matches!(byte, b'\r' | b'\n')) {
+                    Some(HeldKeysRelease::ToPty(held))
+                } else {
+                    Some(HeldKeysRelease::ToEditor(held))
+                }
             }
-            HandoffState::EditorOwned
-            | HandoffState::PtyOwned { .. }
-            | HandoffState::AwaitingReport => false,
+            other => {
+                self.state = other;
+                None
+            }
         }
+    }
+
+    /// The session ended: nothing can answer an outstanding request or run held keys.
+    pub fn reset_on_exit(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Ends the window opened by [`Self::note_editor_took_over`]: focus reached the editor, or
+    /// the user clicked or selected on the terminal, so later keys there mean what they always
+    /// did.
+    pub fn end_editor_takeover_window(&mut self) {
+        self.editor_took_over_at = None;
     }
 
     /// Records that the editor just took input over (`now`), so a non-printable key that still

@@ -305,32 +305,35 @@ Transitions out of `PtyOwned`:
 Report handling: inserted at the front of the editor (the user's cursor stays
 put relative to their own text) and the editor keeps input. Any Enter while it is
 outstanding is deferred, before menus or natural-language detection see the
-buffer (which holds only what was typed after the request); the report runs it,
-locked to shell mode, then the held keys are written after the command as its
-typeahead. The hand-off waits for the report through ten 1 s deadlines (from when
-the view handles the request, `PtyControllerEvent::TypeaheadHandoffChanged`, not
-from the Enter): a starved machine answers late, and holding keys in order is
-always safe. After the last one:
-- with no deferred Enter, the editor keeps input and a late report is inserted at
-  its front;
-- if the held keys include an Enter, they are shell lines: the deferred Enter
-  runs as a shell command and they follow it to the pty as typed; if that writes
-  no command, they go to the pty on their own. They are never put into the editor
-  (#826 N1: as a multi-line buffer, the next Enter sent them to the agent);
-- otherwise (one unfinished line) they go into the editor, applied the way the
-  shell's line editor would have (Backspace/^H, ^U and ^W edit; well-formed
-  CSI/SS3/OSC sequences are dropped whole; other control characters are dropped;
-  a lone ESC does not take the next character with it), and that submit is locked
-  to shell mode. The deferred Enter is not run, so a fragment is never submitted.
+buffer (which holds only what was typed after the request); the report runs it
+as a shell command (locked to shell for that one submit, in Universal input as in
+Classic), then the held keys are written after the command as its typeahead.
+
+A request is never given up on: the tty is FIFO, so anything written after it
+lands behind it, and submitting the editor's post-request text would run a
+fragment. Only the report, Ctrl-C (which cancels the deferred Enter and its held
+keys) or the session ending releases it. There is no waiting indicator yet.
+
+If the report arrives but its submit writes no command, the held keys are
+released at once: shell lines (any Enter in them) go to the pty as typed, never
+into the editor (#826 N1: as a multi-line buffer, the next Enter sent them to the
+agent); one unfinished line goes into the editor, applied the way the shell's
+line editor would have (Backspace/^H, ^U and ^W edit; well-formed CSI/SS3/OSC
+sequences are dropped whole; other control characters are dropped; a lone ESC
+does not take the next character with it), and the next Enter submits it as a
+shell command.
 
 A report that arrives after the next command was written is stashed and inserted
 when the editor next owns input.
 
-A non-printable key (Backspace, Delete, an arrow, Home/End, Enter) that still
-reaches the terminal within 1 s after the editor took input over, before focus
-followed, is applied to the editor rather than dropped (#826 N2).
+A non-printable key (Backspace, Delete, an arrow, Home/End) that still reaches
+the terminal within 1 s after the editor took input over, before focus followed,
+is applied to the editor rather than dropped (#826 N2). The window ends as soon
+as the editor gains focus or the terminal is clicked; Enter is not applied.
 
 Known gaps, not addressed:
+- review items S3 and S4 of the 2026-10-13 review of `fix/826-typeahead-handoff-2`
+  are deferred (recorded with that review);
 - keybindings gated on the `LongRunningCommand` context (e.g. shift-enter) are
   inactive while the pty owns input but the command is not yet long-running;
 - held keys skip `emit_non_editor_typed_event`, so synced panes and shared-session
