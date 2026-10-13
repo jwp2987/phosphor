@@ -272,6 +272,58 @@ fn re_typed_commands_still_route_to_shell_from_history() {
 fn command_not_found_entries_never_match() {
     let history = [history_entry("carg build", Some(127))];
     assert_eq!(command_history_verdict(&history, "carg build"), None);
+    // 9009 is CMD's "not recognized as an internal or external command".
+    let history = [history_entry("carg build", Some(9009))];
+    assert_eq!(command_history_verdict(&history, "carg build"), None);
+}
+
+#[test]
+fn shell_syntax_with_function_words_needs_an_exit_0_entry() {
+    // Pinned trade-off: these read as prose, so only an entry that exited 0 gives them the
+    // history shortcut; a failed or history-file entry leaves them to the classifier.
+    for command in [
+        "for i in $(seq 3); do echo $i; done",
+        "if true; then echo y; fi",
+        "scp f.txt host:",
+        "grep -r for src",
+    ] {
+        for exit_code in [Some(1), None] {
+            let history = [history_entry(command, exit_code)];
+            assert_eq!(
+                command_history_verdict(&history, command),
+                None,
+                "{command:?} with exit code {exit_code:?} must be left to the classifier",
+            );
+        }
+        let history = [history_entry(command, Some(0))];
+        assert_eq!(
+            command_history_verdict(&history, command),
+            Some(InputType::Shell),
+            "{command:?} that exited 0 must still route to Shell",
+        );
+    }
+}
+
+#[test]
+fn prose_matches_an_older_exit_0_entry_past_a_newer_failure() {
+    // Entries are filtered one by one, before matching: the newest entry's failure removes only
+    // that entry, so an older entry that exited 0 is still a candidate and wins (Shell). One
+    // successful run is the evidence the rule asks for, and a later failure does not undo it.
+    // (In production `History::commands` dedupes identical text down to the newest run, so this
+    // arises for near-variants: here `main.py` exited 0 once, `main.rs` failed afterwards.)
+    let history = [
+        history_entry("echo find the bug in main.py", Some(0)),
+        history_entry("echo find the bug in main.rs", Some(1)),
+    ];
+    assert_eq!(
+        command_history_verdict(&history, "echo find the bug in main.rs"),
+        Some(InputType::Shell),
+    );
+    // With only the failure in history, the same buffer is left to the classifier.
+    assert_eq!(
+        command_history_verdict(&history[1..], "echo find the bug in main.rs"),
+        None,
+    );
 }
 
 const AI_LOCKED: InputConfig = InputConfig {

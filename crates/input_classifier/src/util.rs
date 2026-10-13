@@ -1005,9 +1005,19 @@ pub fn is_unambiguous_shell_command(input: &ParsedTokensSnapshot) -> bool {
 /// Shell for a buffer that reads as a sentence. It never says anything is a command: `false` only
 /// means "none of these vetoes fired", and the head word is not inspected (so `ssh me` and `cargo
 /// build` are judged on their arguments alone).
+///
+/// Known trade-off: shell syntax that uses the same words or a trailing colon reads as prose too
+/// (`for i in $(seq 3); do echo $i; done`, `if true; then echo y; fi`, `grep -r for src`, `scp
+/// f.txt host:`). For the history matcher that only means a *failed* or exit-code-less entry for
+/// such a line no longer short-circuits to Shell; the line goes to the classifier, and an entry
+/// that exited 0 still matches.
+///
+/// A buffer over [`MAX_PREFILTER_BYTES`] returns `false` without being scanned: this runs
+/// synchronously on the UI thread per keystroke, and a paste that size is not going to sit within
+/// the history matcher's 0.9 similarity of a remembered command line anyway.
 pub fn reads_as_prose(buffer_text: &str) -> bool {
     let text = buffer_text.trim();
-    if text.is_empty() {
+    if text.is_empty() || text.len() > MAX_PREFILTER_BYTES {
         return false;
     }
     if text.ends_with('?') || !has_shell_safe_quoting(text) || buffer_has_prose_colon_shape(text) {

@@ -1176,6 +1176,11 @@ async fn most_recent_close_match<'a>(
 ///   sentence that hung (`yes please`) proves nothing.
 /// - A buffer with none of those prose signals keeps the original behavior, so re-running a real
 ///   command (`cargo test` that failed, `ssh host` from `.bash_history`) still routes to Shell.
+///
+/// Known trade-off: shell syntax that shares those signals (`for i in ...; do ...; done`, `if
+/// true; then ...; fi`, `grep -r for src`, `scp f.txt host:`) also reads as prose, so a failed or
+/// history-file entry for it no longer short-circuits to Shell; it goes to the classifier, and an
+/// entry for it that exited 0 still matches.
 fn shell_history_candidates<'a>(
     entries: impl Iterator<Item = &'a HistoryEntry>,
     buffer_text: &str,

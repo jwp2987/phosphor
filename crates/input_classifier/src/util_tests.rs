@@ -776,3 +776,28 @@ fn test_reads_as_prose_leaves_command_lines_alone() {
         );
     }
 }
+
+#[test]
+fn test_reads_as_prose_flags_shell_syntax_that_uses_function_words() {
+    // Pinned trade-off (#832): these are real command lines, but they carry the same signals as a
+    // sentence (`i`, `then`, `for`, a trailing `host:`), so a failed or history-file entry for
+    // them no longer short-circuits to Shell; they go to the classifier instead.
+    for text in [
+        "for i in $(seq 3); do echo $i; done",
+        "if true; then echo y; fi",
+        "scp f.txt host:",
+        "grep -r for src",
+    ] {
+        assert!(reads_as_prose(text), "expected {text:?} to read as prose");
+    }
+}
+
+#[test]
+fn test_reads_as_prose_skips_buffers_over_the_size_cap() {
+    // Over `MAX_PREFILTER_BYTES` the buffer is not scanned at all, even when it is plainly prose.
+    let sentence = "find the bug in main.rs ";
+    let long = sentence.repeat(MAX_PREFILTER_BYTES / sentence.len() + 1);
+    assert!(long.trim().len() > MAX_PREFILTER_BYTES);
+    assert!(reads_as_prose(sentence));
+    assert!(!reads_as_prose(&long));
+}
