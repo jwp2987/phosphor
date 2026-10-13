@@ -172,3 +172,43 @@ fn test_init_subshell_command_guard_is_nounset_safe_for_bash_and_zsh_only() {
         });
     });
 }
+
+fn bundled_script(path: &str) -> String {
+    let bytes = AssetProvider::get(&crate::ASSETS, path)
+        .unwrap_or_else(|_| panic!("{path} should be a bundled asset"));
+    String::from_utf8(bytes.to_vec()).expect("bootstrap scripts are UTF-8")
+}
+
+/// Assigning the hook list at the prompt (`PROMPT_COMMAND='echo pc'` in bash,
+/// `precmd_functions=(myp)` in zsh) used to drop the precmd hook after the command's Preexec
+/// had been sent, leaving its block running forever (#807, #828). The repairs live only in the
+/// shell scripts, and the pin has neither, so a re-pin that takes upstream's scripts wholesale
+/// would silently drop them. This pins the definitions and their registrations; DECLINED.md's
+/// IMPROVED row keys its `keep:` markers on these names.
+#[test]
+fn test_bootstrap_scripts_repair_a_replaced_prompt_hook() {
+    let bash = bundled_script("bundled/bootstrap/bash.sh");
+    for needle in [
+        "__bp_reinstall_prompt_command() {",
+        "__bp_reinstall_prompt_command \"$__bp_status_at_trap\"",
+    ] {
+        assert!(
+            bash.contains(needle),
+            "bash.sh lost the #807 repair: missing `{needle}`"
+        );
+    }
+
+    let zsh = bundled_script("bundled/bootstrap/zsh_body.sh");
+    for needle in [
+        "_warp_repair_hooks() {",
+        "_warp_zle_line_init() {",
+        "zle -N zle-line-init _warp_zle_line_init",
+        "_warp_repair_hooks $? || :",
+        "_WARP_PRECMD_PENDING=1",
+    ] {
+        assert!(
+            zsh.contains(needle),
+            "zsh_body.sh lost the #828 repair: missing `{needle}`"
+        );
+    }
+}
