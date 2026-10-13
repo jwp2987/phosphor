@@ -126,10 +126,23 @@ fn test_oversized_buffer_skips_background_jobs() {
         });
 
         let session_info = SessionInfo::new_for_test();
+        let session_id = session_info.session_id;
         let terminal =
             add_window_with_bootstrapped_terminal(&mut app, None, Some(session_info)).await;
         let input = terminal.read(&app, |view, _| view.input().clone());
         let editor = input.read(&app, |input, _| input.editor.clone());
+
+        // The decoration parse needs a completion session context, which needs the active
+        // block's working directory; without one `run_input_background_jobs` takes the
+        // empty-context branch and spawns nothing even for a normal buffer.
+        simulate_directory_for_completion(session_id, &terminal, &mut app, "/usr/bin");
+        assert!(
+            input.read(&app, |input, ctx| input
+                .completion_session_context(ctx)
+                .is_some()),
+            "test setup: the input should have a completion session context"
+        );
+
         let decorate = InputBackgroundJobOptions::default().with_command_decoration();
 
         input.update(&mut app, |input, ctx| {
