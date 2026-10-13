@@ -822,6 +822,23 @@ upstream's behavior is actually a defect rather than a preference.
   `GLOB_RESULT_LIMIT` cap as the sole backstop — identical to pre-fix behavior for anything
   that isn't a real tool call carrying a smaller `limit`.
 
+- **The input-report and kill-line bindings are installed in the vi command keymaps too**
+  (`#826`/`#827`, 2026-10-13, `app/assets/bundled/bootstrap/zsh_body.sh`,
+  `app/assets/bundled/bootstrap/bash_body.sh`). **Upstream:** zsh binds `\ei` with a plain
+  `bindkey` (the `main` keymap only) and bash binds `\ei` and `\C-p` with plain `bind` (the
+  current keymap only), byte-identical at `4111d08f9`. **The defect:** with vi editing, the
+  command keymap (zsh `vicmd`, bash `vi-command`) has neither. There `ESC i` is ESC (a no-op)
+  followed by `i` (insert mode), so the typeahead request switches modes and is never answered,
+  and bash's `^P` is `previous-history`, so a command written from the editor lands on top of a
+  recalled history line. Verified in a pty: before the change `ESC i` from vi command mode
+  produced no report in either shell; after it, both report the line. **We do:** bind `\ei`
+  in `main emacs viins vicmd` (zsh, like the existing `^P` loop) and in `vi-insert` and
+  `vi-command` (bash, for `\ei` and `\C-p`); zsh's `warp_report_input` also returns to
+  `viins`, as the `^P` widget does. Unconditional, unlike the typeahead hand-off it hardens
+  (`FeatureFlag::TypeaheadHandoff`, dark): the app still writes the same bytes, and the shell
+  only behaves differently in the vi command keymap, where it previously did the wrong
+  thing. <!-- markers: keep:input_reporting_sequence keep:kill_buffer_bytes -->
+
 - **A pinned block header is never drawn over a running command** (`ec2e2d227`,
   2026-09-05, `app/src/terminal/block_list_element.rs`). **Upstream:**
   `should_hide_snackbar_during_long_running_command` hides the pinned snackbar

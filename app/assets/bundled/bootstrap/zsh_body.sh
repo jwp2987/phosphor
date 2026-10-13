@@ -415,8 +415,14 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
       # by the user's zshrc.
       # This is arbitrarily bound to ESC-i in all supported shells ("i" for input).
       # Binding to ESC-1 caused bootstrap failures with vi keybindings.
+      #
+      # Bound on every standard keymap for the same reason as ^P above: in "vicmd", an
+      # unbound ESC-i is ESC (a no-op) followed by `i` (enter insert mode), so the request
+      # would switch modes instead of reporting the line, and the line would never be reported.
       bindkey -r '\ei'
-      bindkey '\ei' warp_report_input
+      for warp_keymap in main emacs viins vicmd; do
+        bindkey -M "$warp_keymap" '\ei' warp_report_input 2>/dev/null || :
+      done
 
       # Introduce keybinding to switch prompt modes (PS1 vs built-in Warp prompt).
       # This is arbitrarily bound to ESC-p in all supported shells ("p" for PS1),
@@ -742,6 +748,10 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
     warp_send_json_message "{ \"hook\": \"InputBuffer\", \"value\": { \"buffer\": \"$escaped_input\", \"session_id\": $WARP_SESSION_ID } }"
     # This prevents zsh from printing typeahead as background output after we've fetched it.
     BUFFER=""
+    # Like the ^P widget: leave the next keys (typeahead or a Warp command) in insert mode.
+    if [[ $KEYMAP == vicmd ]]; then
+      zle -K viins
+    fi
   }
   zle -N warp_report_input
 
