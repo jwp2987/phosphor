@@ -374,6 +374,7 @@ impl GridHandler {
         num_context_lines: usize,
         invert_filter: bool,
     ) {
+        self.content_generation.bump();
         let (matches, line_ranges) = if invert_filter {
             // It doesn't make sense to have matches when the filter is
             // inverted, so we return an empty vector.
@@ -424,6 +425,7 @@ impl GridHandler {
     /// might have changed after resizing or truncating rows after reaching the
     /// history limit, so we need to rescan the grid.
     pub fn refilter_lines(&mut self) {
+        self.content_generation.bump();
         if let Some(filter_state) = self.filter_state.as_ref() {
             self.filter_lines(
                 filter_state.dfas.clone(),
@@ -435,6 +437,7 @@ impl GridHandler {
 
     /// Clear the applied filter on the grid, if any.
     pub fn clear_filter(&mut self) {
+        self.content_generation.bump();
         self.displayed_output = None;
         self.filter_state = None;
     }

@@ -69,12 +69,14 @@ impl GridHandler {
         &mut self,
         obfuscate_secrets: ObfuscateSecrets,
     ) {
+        self.content_generation.bump();
         self.secret_obfuscation_mode = obfuscate_secrets;
     }
 
     /// Marks the secret identified by [`SecretHandle`] as obfuscated. Returns an `Err` if no secret
     /// is identified by [`SecretHandle`].
     pub fn obfuscate_secret(&mut self, secret_handle: SecretHandle) -> anyhow::Result<()> {
+        self.content_generation.bump();
         self.secrets
             .set_is_obfuscated(&secret_handle, IsObfuscated::Yes)
     }
@@ -82,6 +84,7 @@ impl GridHandler {
     /// Marks the secret identified by [`SecretHandle`] as unobfuscated. Returns an `Err` if no
     /// secret is identified by [`SecretHandle`].
     pub fn unobfuscate_secret(&mut self, secret_handle: SecretHandle) -> anyhow::Result<()> {
+        self.content_generation.bump();
         self.secrets
             .set_is_obfuscated(&secret_handle, IsObfuscated::No)?;
 
@@ -97,6 +100,7 @@ impl GridHandler {
         plaintext: String,
         secret_level: SecretLevel,
     ) {
+        self.content_generation.bump();
         let handle = SecretHandle::next();
 
         let range = *range.start()..=*range.end();
@@ -111,6 +115,7 @@ impl GridHandler {
 
     /// Clears any secrets currently stored in the grid.
     pub(in crate::terminal::model) fn clear_secrets(&mut self) {
+        self.content_generation.bump();
         self.secrets.clear();
         self.secrets_in_plaintext.clear();
         self.set_all_bytes_scanned_for_secrets(true);
@@ -153,6 +158,7 @@ impl GridHandler {
 
     /// Scans the entire grid (not just the dirty cells range) for secrets.
     pub fn scan_full_grid_for_secrets(&mut self) {
+        self.content_generation.bump();
         let start_point = Point::new(0, 0);
         let end_point = Point::new(self.total_rows(), self.columns());
 

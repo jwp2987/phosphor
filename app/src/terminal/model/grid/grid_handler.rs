@@ -435,6 +435,73 @@ pub(in crate::terminal) enum FullGridClearBehavior {
     Scroll,
 }
 
+/// Identifies one state of a [`GridHandler`]'s content (#817).
+///
+/// Two equal values mean "the same grid instance, and no mutating entry point
+/// has run on it since", so its cells, scrollback, dimensions and truncation
+/// offset are what they were. The converse is deliberately loose: a bump only
+/// means the content *may* have changed (a bell or a cursor move bumps too).
+///
+/// Find uses it to tell a wakeup that changed nothing in a grid apart from a
+/// change that `find_dirty_rows_range` cannot localise. That range is fed only
+/// by cursor tracking, so it is `None` both when nothing happened and when the
+/// grid was changed without a byte-processing pass (resize/reflow, a scrollback
+/// load, ...), and only the latter needs a full rescan.
+///
+/// # What bumps it
+///
+/// Every way to mutate a `GridHandler` from outside its own module family
+/// (`grid_handler.rs` and its child modules `ansi_handler`, `filtering`,
+/// `image`, `resize`, `secrets`) bumps it:
+///
+/// - every method of `impl ansi::Handler for GridHandler`, which is how all
+///   pty output reaches the grid;
+/// - every non-private `&mut self` method, except the three listed below;
+/// - `grid_storage_mut`, the only `&mut` escape hatch to the cell storage.
+///
+/// The private `grid` field can only be reached through those; the
+/// `pub(crate)` `flat_storage` field is only read outside the family; and the
+/// `pub(super)` `secrets` and `images` fields hold no searchable text.
+///
+/// The exceptions, none of which touches cells, scrollback or dimensions:
+/// `take_find_dirty_rows_range` (find's own bookkeeping),
+/// `set_track_content_length` (recomputes a cached height), and
+/// `ansi_handler` (only returns `self`; the trait methods it exposes bump).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContentGeneration {
+    /// Unique per grid instance, clones included, so that a grid that replaces
+    /// another never compares equal to it.
+    grid_id: u64,
+    /// Incremented by every mutating entry point.
+    counter: u64,
+}
+
+/// The [`GridHandler`] field behind [`GridHandler::content_generation`].
+struct ContentGenerationCounter(ContentGeneration);
+
+impl ContentGenerationCounter {
+    fn new() -> Self {
+        static NEXT_GRID_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        Self(ContentGeneration {
+            grid_id: NEXT_GRID_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            counter: 0,
+        })
+    }
+
+    #[inline]
+    fn bump(&mut self) {
+        self.0.counter = self.0.counter.wrapping_add(1);
+    }
+}
+
+/// A clone is a new grid instance whose content diverges from the original's
+/// from its first write on, so it gets a fresh id rather than a copy.
+impl Clone for ContentGenerationCounter {
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+
 /// An implementation of `ansi::Handler` that writes to a `Grid`.
 #[derive(Clone)]
 pub struct GridHandler {
@@ -495,6 +562,9 @@ pub struct GridHandler {
     /// This allows find to be updated less frequently than byte processing while still
     /// knowing exactly which rows have changed.
     find_dirty_rows_range: Option<RangeInclusive<usize>>,
+
+    /// See [`ContentGeneration`] for what bumps it.
+    content_generation: ContentGenerationCounter,
 }
 
 impl GridHandler {
@@ -547,6 +617,7 @@ impl GridHandler {
             track_content_length: false,
             full_grid_clear_behavior: FullGridClearBehavior::Scroll,
             find_dirty_rows_range: None,
+            content_generation: ContentGenerationCounter::new(),
         }
     }
 
@@ -587,6 +658,12 @@ impl GridHandler {
         self
     }
 
+    /// The current [`ContentGeneration`]: equal to an earlier value only if
+    /// nothing has mutated this grid since.
+    pub fn content_generation(&self) -> ContentGeneration {
+        self.content_generation.0
+    }
+
     pub fn set_track_content_length(&mut self, track: bool) {
         self.track_content_length = track;
         if track {
@@ -598,6 +675,7 @@ impl GridHandler {
     }
 
     pub(in crate::terminal) fn enable_full_grid_clear_behavior(&mut self) {
+        self.content_generation.bump();
         self.full_grid_clear_behavior = FullGridClearBehavior::Clear;
     }
 
@@ -605,6 +683,7 @@ impl GridHandler {
         &mut self,
         supports_emoji_presentation_selector: bool,
     ) {
+        self.content_generation.bump();
         self.ansi_handler_state.supports_emoji_presentation_selector =
             supports_emoji_presentation_selector;
     }
@@ -685,6 +764,7 @@ impl GridHandler {
             track_content_length: false,
             full_grid_clear_behavior: FullGridClearBehavior::Scroll,
             find_dirty_rows_range: None,
+            content_generation: ContentGenerationCounter::new(),
         };
 
         // Scan the full grid for secrets.  This is less performant than
@@ -695,6 +775,7 @@ impl GridHandler {
     }
 
     pub fn set_obfuscate_secrets(&mut self, obfuscate_secrets: ObfuscateSecrets) {
+        self.content_generation.bump();
         self.ansi_handler_state.obfuscate_secrets = obfuscate_secrets;
         self.obfuscate_secrets(obfuscate_secrets);
     }
@@ -704,6 +785,8 @@ impl GridHandler {
     }
 
     pub(in crate::terminal::model) fn grid_storage_mut(&mut self) -> &mut GridStorage {
+        // Callers write cells and cursors through this directly.
+        self.content_generation.bump();
         &mut self.grid
     }
 
@@ -1692,6 +1775,7 @@ impl GridHandler {
 
     /// Updates the active [`Cursor`] using the provided `update_cursor_fn`.
     pub fn update_cursor<T: FnOnce(&mut Cursor)>(&mut self, update_cursor_fn: T) {
+        self.content_generation.bump();
         // Update state before updating the cursor, in case the cursor
         // moves backwards.
         self.grid.update_max_cursor();
@@ -1859,6 +1943,7 @@ impl GridHandler {
     /// After this is called, the grid contents should be considered immutable.
     /// Note that the "layout" of the grid's content can change due to resizes.
     pub fn finish(&mut self) {
+        self.content_generation.bump();
         self.finished = true;
 
         // Clear out all content in the grid following the cursor.
@@ -1898,6 +1983,7 @@ impl GridHandler {
     /// This is primarily used when a block is finished, to drop the excess rows that are not part
     /// of the output.
     pub fn truncate_to_cursor_rows(&mut self) {
+        self.content_generation.bump();
         // Normally, when using only grid storage, truncating rows after the
         // cursor naturally pulls some rows into the visible region of the
         // grid from grid storage scrollback.  When scrollback is stored in
@@ -1954,6 +2040,7 @@ impl GridHandler {
     /// makes sense to call in the context of a 1 row grid (we are cutting off columns in every
     /// row).
     pub fn truncate_to_cursor_cols(&mut self) {
+        self.content_generation.bump();
         self.grid.truncate_to_cursor_cols();
     }
 
@@ -2370,6 +2457,7 @@ impl GridHandler {
     /// push/pop stack — `push_keyboard_mode` and `pop_keyboard_modes`
     /// manage the stack and then delegate here.
     pub fn set_keyboard_mode(&mut self, mode: KeyboardModes, apply: KeyboardModesApplyBehavior) {
+        self.content_generation.bump();
         let current = self.ansi_handler_state.keyboard_mode;
         let new_mode = match apply {
             KeyboardModesApplyBehavior::Replace => mode,
@@ -2386,12 +2474,14 @@ impl GridHandler {
 
     /// Push a keyboard mode onto the stack and make it active.
     pub fn push_keyboard_mode(&mut self, mode: KeyboardModes) {
+        self.content_generation.bump();
         self.ansi_handler_state.keyboard_mode_stack.push_back(mode);
         self.set_keyboard_mode(mode, KeyboardModesApplyBehavior::Replace);
     }
 
     /// Pop keyboard modes from the stack, restoring the previous mode.
     pub fn pop_keyboard_modes(&mut self, count: u16) {
+        self.content_generation.bump();
         let removals = (count as usize).min(self.ansi_handler_state.keyboard_mode_stack.len());
         for _ in 0..removals {
             self.ansi_handler_state.keyboard_mode_stack.pop_back();
@@ -2408,6 +2498,7 @@ impl GridHandler {
 
     /// Reset keyboard mode state to defaults.
     pub fn reset_keyboard_mode_state(&mut self) {
+        self.content_generation.bump();
         self.ansi_handler_state.keyboard_mode_stack = new_keyboard_mode_stack();
         self.set_keyboard_mode(KeyboardModes::NO_MODE, KeyboardModesApplyBehavior::Replace);
     }
@@ -2518,6 +2609,7 @@ impl GridHandler {
 
     /// Append the contents of another grid to this one, cell-by-cell.
     pub(in crate::terminal::model) fn append_cells_from_grid(&mut self, other: &GridHandler) {
+        self.content_generation.bump();
         let max_point = other.grid.max_cursor_point.convert_to_absolute(other);
 
         // We ensure that we don't copy "extra" empty cells over - only copy till the end of the "real content".
@@ -2578,6 +2670,7 @@ impl GridHandler {
         prompt_end_point: Point,
         has_extra_trailing_newline: bool,
     ) {
+        self.content_generation.bump();
         match self.storage_row(prompt_end_point.row) {
             Some(StorageRow::GridStorage(row_idx)) => self.grid[row_idx][prompt_end_point.col]
                 .mark_end_of_prompt(has_extra_trailing_newline),
@@ -2729,6 +2822,8 @@ impl GridHandler {
     pub(super) fn input_at_cursor(&mut self, text: &str) {
         use warp_terminal::model::VisiblePoint;
 
+        self.content_generation.bump();
+
         let columns = self.columns();
         let mut last_row = self.grid.cursor.point.row;
         for char in text.chars() {
@@ -2754,10 +2849,12 @@ impl GridHandler {
     }
 
     pub fn set_marked_text(&mut self, marked_text: &str, _selected_range: &Range<usize>) {
+        self.content_generation.bump();
         self.marked_text = Some(marked_text.to_string())
     }
 
     pub fn clear_marked_text(&mut self) {
+        self.content_generation.bump();
         self.marked_text = None;
     }
 
@@ -2774,14 +2871,17 @@ impl GridHandler {
     }
 
     pub fn evict_all_images(&mut self) {
+        self.content_generation.bump();
         self.images.evict_all_images();
     }
 
     pub fn evict_image(&mut self, image_id: u32) {
+        self.content_generation.bump();
         self.images.evict_image(image_id);
     }
 
     pub fn evict_placement(&mut self, image_id: u32, placement_id: u32) {
+        self.content_generation.bump();
         self.images.evict_placement(image_id, placement_id);
     }
 }

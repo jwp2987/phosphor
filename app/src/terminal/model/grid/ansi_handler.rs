@@ -158,14 +158,17 @@ enum ResetGridChecks {
 
 impl ansi::Handler for GridHandler {
     fn set_title(&mut self, _: Option<String>) {
+        self.content_generation.bump();
         log::error!("Handler method GridHandler::set_title should never be called. This should be handled by TerminalModel.");
     }
 
     fn set_hyperlink(&mut self, hyperlink: Option<warp_terminal::model::ansi::Hyperlink>) {
+        self.content_generation.bump();
         self.active_hyperlink_id = hyperlink.and_then(|h| self.hyperlink_registry.intern(h));
     }
 
     fn set_cursor_style(&mut self, style: Option<ansi::CursorStyle>) {
+        self.content_generation.bump();
         self.ansi_handler_state.cursor_style = style.unwrap_or_default();
 
         // Notify UI about blinking changes.
@@ -177,10 +180,12 @@ impl ansi::Handler for GridHandler {
     }
 
     fn set_cursor_shape(&mut self, shape: ansi::CursorShape) {
+        self.content_generation.bump();
         self.ansi_handler_state.cursor_style.shape = shape;
     }
 
     fn input(&mut self, c: char) {
+        self.content_generation.bump();
         // We disable Reset Grid checks in tests, as they are not designed to test
         // PTY integration. `not(test)` covers this crate's own unit tests, and
         // `not(feature = "test-util")` covers other crates (e.g. `warp_tui`) that
@@ -341,6 +346,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn goto(&mut self, row: VisibleRow, column: usize) {
+        self.content_generation.bump();
         log::trace!("Going to: line={row}, col={column}");
         let (y_offset, max_y) = if self.ansi_handler_state.mode.contains(TermMode::ORIGIN) {
             (
@@ -360,15 +366,18 @@ impl ansi::Handler for GridHandler {
     }
 
     fn goto_line(&mut self, row: VisibleRow) {
+        self.content_generation.bump();
         self.goto(row, self.grid.cursor().point.col);
     }
 
     fn goto_col(&mut self, column: usize) {
+        self.content_generation.bump();
         log::trace!("Going to column: {column}");
         self.goto(self.grid.cursor().point.row, column)
     }
 
     fn insert_blank(&mut self, count: usize) {
+        self.content_generation.bump();
         let cursor = &self.grid.cursor();
         let bg = cursor.template.bg;
 
@@ -408,6 +417,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn move_up(&mut self, lines: usize) {
+        self.content_generation.bump();
         log::trace!("Moving up: {lines}");
 
         let move_to = self.grid.cursor().point.row.saturating_sub(lines);
@@ -415,12 +425,14 @@ impl ansi::Handler for GridHandler {
     }
 
     fn move_down(&mut self, lines: usize) {
+        self.content_generation.bump();
         log::trace!("Moving down: {lines}");
         let move_to = self.grid.cursor().point.row + lines;
         self.goto(move_to, self.grid.cursor().point.col)
     }
 
     fn identify_terminal<W: std::io::Write>(&mut self, writer: &mut W, intermediate: Option<char>) {
+        self.content_generation.bump();
         match intermediate {
             None => {
                 log::trace!("Reporting primary device attributes");
@@ -461,12 +473,14 @@ impl ansi::Handler for GridHandler {
     }
 
     fn report_xtversion<W: std::io::Write>(&mut self, writer: &mut W) {
+        self.content_generation.bump();
         log::trace!("Reporting xtversion");
         let version = ChannelState::app_version().unwrap_or("");
         let _ = writer.write_all(format!("\x1bP>|Zap({version})\x1b\\").as_bytes());
     }
 
     fn device_status<W: std::io::Write>(&mut self, writer: &mut W, arg: usize) {
+        self.content_generation.bump();
         log::trace!("Reporting device status: {arg}");
         match arg {
             5 => {
@@ -482,6 +496,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn move_forward(&mut self, columns: usize) {
+        self.content_generation.bump();
         log::trace!("Moving forward: {columns}");
         let num_cols = self.columns();
 
@@ -492,6 +507,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn move_backward(&mut self, columns: usize) {
+        self.content_generation.bump();
         log::trace!("Moving backward: {columns}");
 
         self.update_cursor(|cursor| {
@@ -501,18 +517,21 @@ impl ansi::Handler for GridHandler {
     }
 
     fn move_down_and_cr(&mut self, lines: usize) {
+        self.content_generation.bump();
         log::trace!("Moving down and cr: {lines}");
         let move_to = self.grid.cursor().point.row + lines;
         self.goto(move_to, 0)
     }
 
     fn move_up_and_cr(&mut self, lines: usize) {
+        self.content_generation.bump();
         log::trace!("Moving up and cr: {lines}");
         self.goto(self.grid.cursor().point.row.saturating_sub(lines), 0)
     }
 
     /// Insert tab at cursor position.
     fn put_tab(&mut self, mut count: u16) {
+        self.content_generation.bump();
         // A tab after the last column is the same as a linebreak.
         if self.grid.cursor().input_needs_wrap {
             self.wrapline();
@@ -547,6 +566,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn backspace(&mut self) {
+        self.content_generation.bump();
         log::trace!("Backspace");
 
         if self.grid.cursor().point.col > 0 {
@@ -558,6 +578,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn carriage_return(&mut self) {
+        self.content_generation.bump();
         log::trace!("Carriage return");
         self.update_cursor(|cursor| {
             cursor.point.col = 0;
@@ -566,6 +587,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn linefeed(&mut self) -> ScrollDelta {
+        self.content_generation.bump();
         log::trace!("Linefeed");
         let next = self.grid.cursor().point.row + 1;
         if next == self.ansi_handler_state.scroll_region.end {
@@ -581,13 +603,16 @@ impl ansi::Handler for GridHandler {
 
     /// Ring the terminal bell.
     fn bell(&mut self) {
+        self.content_generation.bump();
         log::trace!("Bell");
         self.ansi_handler_state
             .event_proxy
             .send_terminal_event(Event::Bell);
     }
 
-    fn substitute(&mut self) {}
+    fn substitute(&mut self) {
+        self.content_generation.bump();
+    }
 
     /// Run LF/NL.
     ///
@@ -612,6 +637,7 @@ impl ansi::Handler for GridHandler {
     /// As an emulator, we need to support it since applications may still rely
     /// on it.
     fn newline(&mut self) {
+        self.content_generation.bump();
         self.linefeed();
 
         if self
@@ -624,21 +650,25 @@ impl ansi::Handler for GridHandler {
     }
 
     fn set_horizontal_tabstop(&mut self) {
+        self.content_generation.bump();
         log::trace!("Setting horizontal tabstop");
         self.ansi_handler_state.tabs[self.grid.cursor().point.col] = true;
     }
 
     fn scroll_up(&mut self, lines: usize) -> ScrollDelta {
+        self.content_generation.bump();
         let origin = self.ansi_handler_state.scroll_region.start;
         self.scroll_up_relative(origin, lines)
     }
 
     fn scroll_down(&mut self, lines: usize) -> ScrollDelta {
+        self.content_generation.bump();
         let origin = self.ansi_handler_state.scroll_region.start;
         self.scroll_down_relative(origin, lines)
     }
 
     fn insert_blank_lines(&mut self, lines: usize) -> ScrollDelta {
+        self.content_generation.bump();
         log::trace!("Inserting blank {lines} lines");
 
         let origin = self.grid.cursor().point.row;
@@ -650,6 +680,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn delete_lines(&mut self, lines: usize) -> ScrollDelta {
+        self.content_generation.bump();
         let origin = self.grid.cursor().point.row;
         let lines = min(self.visible_rows() - origin.0, lines);
 
@@ -668,6 +699,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn erase_chars(&mut self, count: usize) {
+        self.content_generation.bump();
         if count == 0 {
             return;
         }
@@ -696,6 +728,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn delete_chars(&mut self, count: usize) {
+        self.content_generation.bump();
         if count == 0 {
             return;
         }
@@ -734,6 +767,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn move_backward_tabs(&mut self, count: u16) {
+        self.content_generation.bump();
         log::trace!("Moving backward {count} tabs");
 
         for _ in 0..count {
@@ -751,16 +785,19 @@ impl ansi::Handler for GridHandler {
     }
 
     fn move_forward_tabs(&mut self, count: u16) {
+        self.content_generation.bump();
         log::trace!("[unimplemented] Moving forward {count} tabs")
     }
 
     fn save_cursor_position(&mut self) {
+        self.content_generation.bump();
         log::trace!("Saving cursor position");
 
         self.grid.saved_cursor = self.grid.cursor().clone();
     }
 
     fn restore_cursor_position(&mut self) {
+        self.content_generation.bump();
         log::trace!("Restoring cursor position");
 
         let saved_cursor = self.grid.saved_cursor.clone();
@@ -770,6 +807,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn clear_line(&mut self, mode: ansi::LineClearMode) {
+        self.content_generation.bump();
         log::trace!("Clearing line: {mode:?}");
 
         let cursor = &self.grid.cursor();
@@ -828,6 +866,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn clear_screen(&mut self, mode: ansi::ClearMode) {
+        self.content_generation.bump();
         log::trace!("Clearing screen: {mode:?}");
         let bg = self.grid.cursor().template.bg;
 
@@ -916,6 +955,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn clear_tabs(&mut self, mode: ansi::TabulationClearMode) {
+        self.content_generation.bump();
         log::trace!("Clearing tabs: {mode:?}");
         match mode {
             ansi::TabulationClearMode::Current => {
@@ -930,6 +970,7 @@ impl ansi::Handler for GridHandler {
     /// Reset all important fields in the term struct.
     #[inline]
     fn reset_state(&mut self) {
+        self.content_generation.bump();
         self.grid.reset();
         self.flat_storage.clear();
 
@@ -949,6 +990,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn reverse_index(&mut self) -> ScrollDelta {
+        self.content_generation.bump();
         log::trace!("Reversing index");
         // If cursor is at the top.
         if self.grid.cursor().point.row == self.ansi_handler_state.scroll_region.start {
@@ -965,6 +1007,7 @@ impl ansi::Handler for GridHandler {
     /// Set a terminal attribute.
     #[inline]
     fn terminal_attribute(&mut self, attr: ansi::Attr) {
+        self.content_generation.bump();
         log::trace!("Setting attribute: {attr:?}");
         let template = &mut self.grid.cursor.template;
         match attr {
@@ -1007,6 +1050,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn set_mode(&mut self, mode: ansi::Mode) {
+        self.content_generation.bump();
         log::trace!("Setting mode: {mode:?}");
         match mode {
             ansi::Mode::UrgencyHints => {
@@ -1078,6 +1122,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn unset_mode(&mut self, mode: ansi::Mode) {
+        self.content_generation.bump();
         log::trace!("Unsetting mode: {mode:?}");
         match mode {
             ansi::Mode::UrgencyHints => {
@@ -1138,6 +1183,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn set_scrolling_region(&mut self, top: usize, bottom: Option<usize>) {
+        self.content_generation.bump();
         // Fallback to the last line as default.
         let bottom = bottom.unwrap_or_else(|| self.visible_rows());
 
@@ -1161,34 +1207,42 @@ impl ansi::Handler for GridHandler {
     }
 
     fn set_keypad_application_mode(&mut self) {
+        self.content_generation.bump();
         self.ansi_handler_state.mode.insert(TermMode::APP_KEYPAD);
     }
 
     fn unset_keypad_application_mode(&mut self) {
+        self.content_generation.bump();
         self.ansi_handler_state.mode.remove(TermMode::APP_KEYPAD);
     }
 
     fn set_active_charset(&mut self, index: ansi::CharsetIndex) {
+        self.content_generation.bump();
         self.ansi_handler_state.active_charset = index;
     }
 
     fn configure_charset(&mut self, index: ansi::CharsetIndex, charset: ansi::StandardCharset) {
+        self.content_generation.bump();
         self.grid.cursor.charsets[index] = charset;
     }
 
     fn set_color(&mut self, _: usize, _: warpui::color::ColorU) {
+        self.content_generation.bump();
         log::error!("Handler method GridHandler::set_color should never be called. This should be handled by TerminalModel.");
     }
 
     fn dynamic_color_sequence<W: std::io::Write>(&mut self, _: &mut W, _: u8, _: usize, _: &str) {
+        self.content_generation.bump();
         log::error!("Handler method GridHandler::dynamic_color_sequence should never be called. This should be handled by TerminalModel.");
     }
 
     fn reset_color(&mut self, _: usize) {
+        self.content_generation.bump();
         log::error!("Handler method GridHandler::reset_color should never be called. This should be handled by TerminalModel.");
     }
 
     fn clipboard_store(&mut self, clipboard: u8, base64: &[u8]) {
+        self.content_generation.bump();
         let clipboard_type = match clipboard {
             b'c' => ClipboardType::Clipboard,
             b'p' | b's' => ClipboardType::Selection,
@@ -1205,6 +1259,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn clipboard_load(&mut self, clipboard: u8, terminator: &str) {
+        self.content_generation.bump();
         let clipboard_type = match clipboard {
             b'c' => ClipboardType::Clipboard,
             b'p' | b's' => ClipboardType::Selection,
@@ -1225,6 +1280,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn decaln(&mut self) {
+        self.content_generation.bump();
         log::trace!("Decalnning");
 
         self.grid.region_mut(..).each(|cell| {
@@ -1234,32 +1290,39 @@ impl ansi::Handler for GridHandler {
     }
 
     fn push_title(&mut self) {
+        self.content_generation.bump();
         log::error!("Handler method GridHandler::push_title should never be called. This should be handled by TerminalModel.");
     }
 
     fn pop_title(&mut self) {
+        self.content_generation.bump();
         log::error!("Handler method GridHandler::pop_title should never be called. This should be handled by TerminalModel.");
     }
 
     fn text_area_size_pixels<W: std::io::Write>(&mut self, writer: &mut W) {
+        self.content_generation.bump();
         let width = self.ansi_handler_state.cell_width * self.columns();
         let height = self.ansi_handler_state.cell_height * self.visible_rows();
         let _ = write!(writer, "\x1b[4;{height};{width}t");
     }
 
     fn text_area_size_chars<W: std::io::Write>(&mut self, writer: &mut W) {
+        self.content_generation.bump();
         let _ = write!(writer, "\x1b[8;{};{}t", self.visible_rows(), self.columns());
     }
 
     fn precmd_with_completion_metadata(&mut self, _: PrecmdValue) {
+        self.content_generation.bump();
         unreachable!("Precmd hook is handled at block layer")
     }
 
     fn preexec(&mut self, _: PreexecValue) {
+        self.content_generation.bump();
         unreachable!("Precmd hook is handled at block layer")
     }
 
     fn on_finish_byte_processing(&mut self, _: &ansi::ProcessorInput<'_>) {
+        self.content_generation.bump();
         // Make sure the max cursor and dirty cell range are up-to-date.
         self.grid.update_max_cursor();
         self.update_dirty_cells_range();
@@ -1291,6 +1354,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn on_reset_grid(&mut self) {
+        self.content_generation.bump();
         match &mut self.ansi_handler_state.reset_grid_checks {
             ResetGridChecks::Enabled { received_osc } => {
                 debug_assert!(
@@ -1304,6 +1368,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn handle_completed_iterm_image(&mut self, image: ITermImage) {
+        self.content_generation.bump();
         if !FeatureFlag::ITermImages.is_enabled() {
             return;
         }
@@ -1454,6 +1519,7 @@ impl ansi::Handler for GridHandler {
         action: KittyAction,
         metadata: &mut HashMap<u32, StoredImageMetadata>,
     ) -> Option<KittyResponse> {
+        self.content_generation.bump();
         Some(self.handle_completed_kitty_action_internal(action, metadata))
     }
 
@@ -1462,6 +1528,7 @@ impl ansi::Handler for GridHandler {
         mode: KeyboardModes,
         apply: KeyboardModesApplyBehavior,
     ) {
+        self.content_generation.bump();
         if !FeatureFlag::KittyKeyboardProtocol.is_enabled() {
             return;
         }
@@ -1469,6 +1536,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn push_keyboard_enhancement_flags(&mut self, mode: KeyboardModes) {
+        self.content_generation.bump();
         if !FeatureFlag::KittyKeyboardProtocol.is_enabled() {
             return;
         }
@@ -1476,6 +1544,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn pop_keyboard_enhancement_flags(&mut self, count: u16) {
+        self.content_generation.bump();
         if !FeatureFlag::KittyKeyboardProtocol.is_enabled() {
             return;
         }
@@ -1483,6 +1552,7 @@ impl ansi::Handler for GridHandler {
     }
 
     fn query_keyboard_enhancement_flags<W: io::Write>(&mut self, writer: &mut W) {
+        self.content_generation.bump();
         if !FeatureFlag::KittyKeyboardProtocol.is_enabled() {
             return;
         }
@@ -1551,6 +1621,7 @@ impl GridHandler {
     /// Insert a linebreak at the current cursor position.
     #[inline]
     pub(crate) fn wrapline(&mut self) {
+        self.content_generation.bump();
         if !self.ansi_handler_state.mode.contains(TermMode::LINE_WRAP) {
             return;
         }
@@ -1809,12 +1880,14 @@ impl GridHandler {
     }
 
     pub(in crate::terminal::model) fn disable_reset_grid_checks(&mut self) {
+        self.content_generation.bump();
         self.ansi_handler_state.reset_grid_checks = ResetGridChecks::Disabled;
     }
 
     /// Marks the grid as having NOT received the Reset Grid OSC.
     /// This is useful for grids that expect to receive multiple OSCs.
     pub(in crate::terminal::model) fn reset_received_osc(&mut self) {
+        self.content_generation.bump();
         if let ResetGridChecks::Enabled { received_osc } =
             &mut self.ansi_handler_state.reset_grid_checks
         {
