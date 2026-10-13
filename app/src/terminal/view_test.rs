@@ -6457,6 +6457,166 @@ fn ctrl_c_after_stop_takeover_cancels_conversation() {
     })
 }
 
+/// Shared setup for the issue #850 tests: an approved agent command (`sleep 100000`) running in
+/// the active block, still driven by the agent -- the state of a `wait_until_completion` command
+/// for its whole life: requested-command metadata, no long-running control state. Returns the
+/// recorded PTY writes and the conversation id.
+fn setup_running_agent_command(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+) -> (Rc<RefCell<Vec<Vec<u8>>>>, AIConversationId) {
+    let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+    let writes = pty_writes.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(terminal, move |_, event, _| {
+            if let Event::WriteBytesToPty { bytes } = event {
+                writes.borrow_mut().push(bytes.to_vec());
+            }
+        });
+    });
+
+    let conversation_id = terminal.update(app, |view, ctx| {
+        let conversation_id = BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+            history.start_new_conversation(view.view_id, false, false, ctx)
+        });
+        let mut model = view.model.lock();
+        model.simulate_long_running_block("sleep 100000", "");
+        let active_block = model.block_list_mut().active_block_mut();
+        active_block.set_agent_interaction_mode_for_requested_command(
+            AIAgentActionId::from("sleep-forever".to_owned()),
+            None,
+            conversation_id,
+        );
+        assert!(active_block.is_agent_driving_command());
+        assert!(!active_block.is_agent_in_control());
+        conversation_id
+    });
+    (pty_writes, conversation_id)
+}
+
+/// Issue #850: ctrl-c while an approved agent command runs must interrupt it like a user's
+/// command -- one ^C to the PTY -- and must NOT cancel the conversation: the agent's tool call is
+/// still waiting and receives the interrupted result (exit 130 + output; see
+/// `interrupted_requested_command_reports_exit_130_and_captured_output`) once the command exits.
+/// With focus on the command's card the keystroke reaches this action because the card's
+/// ctrl-c -> Reject binding no longer claims it once the command runs (see
+/// `ctrl_c_reject_tests` in `requested_command_test.rs`); a Reject that still lands on a running
+/// card is routed here via `AIBlockEvent::InterruptRunningCommand`.
+#[test]
+fn ctrl_c_interrupts_running_agent_command_without_cancelling_conversation() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, conversation_id) = setup_running_agent_command(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_action(&TerminalAction::CtrlC, ctx);
+        });
+
+        assert_eq!(
+            *pty_writes.borrow(),
+            vec![vec![warp_terminal::model::escape_sequences::C0::ETX]],
+            "ctrl-c must reach the agent command's foreground process as a single ^C"
+        );
+        terminal.read(&app, |_, ctx| {
+            let conversation = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&conversation_id)
+                .expect("conversation should exist");
+            assert_eq!(
+                conversation.status(),
+                &ConversationStatus::InProgress,
+                "ctrl-c interrupts the command only; the conversation continues with its result"
+            );
+        });
+    })
+}
+
+/// Issue #850: Escape while the agent's own command runs used to do nothing (the agent view
+/// refuses to close over a long-running command, and an ESC byte means nothing to `sleep`). It
+/// now stops the agent turn and interrupts the command.
+#[test]
+fn escape_stops_turn_and_interrupts_running_agent_command() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, conversation_id) = setup_running_agent_command(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_action(
+                &TerminalAction::MaybeDismissToolTip {
+                    from_keybinding: true,
+                },
+                ctx,
+            );
+        });
+
+        assert_eq!(
+            *pty_writes.borrow(),
+            vec![vec![warp_terminal::model::escape_sequences::C0::ETX]],
+            "Escape must interrupt the agent's command (and not forward a bare ESC byte)"
+        );
+        terminal.read(&app, |view, ctx| {
+            let conversation = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&conversation_id)
+                .expect("conversation should exist");
+            assert_eq!(conversation.status(), &ConversationStatus::Cancelled);
+            // The command is now the user's: a later keystroke goes to the program, and the
+            // conversation does not resume when it exits.
+            assert!(
+                !view
+                    .model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_agent_driving_command()
+            );
+        });
+    })
+}
+
+/// Counterpart: Escape during a user's own long-running command is input for the program and
+/// must not be turned into an interrupt.
+#[test]
+fn escape_during_user_long_running_command_is_not_an_interrupt() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("vim notes.txt", "");
+            view.handle_action(
+                &TerminalAction::MaybeDismissToolTip {
+                    from_keybinding: true,
+                },
+                ctx,
+            );
+        });
+
+        assert!(
+            !pty_writes
+                .borrow()
+                .contains(&vec![warp_terminal::model::escape_sequences::C0::ETX]),
+            "Escape in a user's command must not send ^C"
+        );
+    })
+}
+
 // Ported from Warp view_tests.rs.
 #[test]
 fn ctrl_c_after_transfer_takeover_does_not_cancel_conversation() {

@@ -467,3 +467,90 @@ fn unresolved_block_write_falls_through_to_the_pty_permission_check() {
         );
     });
 }
+
+/// Issue #850, the "result reaches the model" half: an approved, `wait_until_completion` agent
+/// command that the user interrupts with ctrl-c must still resolve its tool call -- with the
+/// interrupted exit status (130, what a shell reports for SIGINT) and the output captured up to
+/// the interrupt -- rather than leaving the model waiting or reporting a cancellation. The
+/// interrupt itself is just a ^C on the PTY (see `TerminalView::ctrl_c`), so what the executor
+/// sees is the command's block finishing with 130; this drives exactly that.
+#[test]
+fn interrupted_requested_command_reports_exit_130_and_captured_output() {
+    App::test((), |mut app| async move {
+        let terminal_view_id = EntityId::new();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let (_model_events_tx, model_events_rx) = unbounded();
+        let model_event_dispatcher =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let active_session = app.add_model(|ctx| {
+            ActiveSession::new(sessions.clone(), model_event_dispatcher.clone(), ctx)
+        });
+        let terminal_model = Arc::new(FairMutex::new(TerminalModel::mock(None, None)));
+        let executor = app.add_model(|ctx| {
+            ShellCommandExecutor::new(
+                active_session,
+                terminal_model.clone(),
+                &model_event_dispatcher,
+                terminal_view_id,
+                ctx,
+            )
+        });
+
+        let action_id = AIAgentActionId::from("sleep-forever".to_owned());
+        {
+            let mut model = terminal_model.lock();
+            model.simulate_long_running_block("sleep 100000", "tick 1\r\n");
+            model
+                .block_list_mut()
+                .active_block_mut()
+                .set_agent_interaction_mode_for_requested_command(
+                    action_id.clone(),
+                    None,
+                    AIConversationId::new(),
+                );
+        }
+
+        let result_future = executor.update(&mut app, |executor, _ctx| {
+            executor.action_result_future(
+                BlockSelector::RequestedCommandId(action_id.clone()),
+                ActionResultDelay::UntilCompletion,
+            )
+        });
+
+        // The ^C reached the foreground process group; the shell reports 130 and precmd fires.
+        terminal_model.lock().finish_block_with_exit_code(130);
+        model_event_dispatcher.update(&mut app, |_dispatcher, ctx| {
+            ctx.emit(ModelEvent::BlockMetadataReceived(
+                BlockMetadataReceivedEvent {
+                    block_metadata: BlockMetadata::new(None, Some("/tmp".to_string())),
+                    block_index: BlockIndex::zero(),
+                    is_after_in_band_command: false,
+                    is_done_bootstrapping: true,
+                },
+            ));
+        });
+
+        let result = result_future.await;
+        match action_result_for_requested_command("sleep 100000".to_owned(), result) {
+            AIAgentActionResultType::RequestCommandOutput(
+                RequestCommandOutputResult::Completed {
+                    command,
+                    output,
+                    exit_code,
+                    ..
+                },
+            ) => {
+                assert_eq!(command, "sleep 100000");
+                assert_eq!(exit_code, ExitCode::from(130));
+                assert!(
+                    output.contains("tick 1"),
+                    "the output captured before the interrupt must reach the model: {output:?}"
+                );
+            }
+            other => panic!(
+                "an interrupted command must report a completed result with its exit status, \
+                 got {other:?}"
+            ),
+        }
+    });
+}

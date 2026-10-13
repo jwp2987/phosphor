@@ -3253,6 +3253,11 @@ impl AIBlock {
             RequestedCommandViewEvent::Rejected => {
                 self.cancel_action(action_id, ctx);
             }
+            RequestedCommandViewEvent::InterruptRunningCommand => {
+                // Issue #850: hand the interrupt to the terminal, which owns the PTY. The tool
+                // call stays live and reports the interrupted result once the command exits.
+                ctx.emit(AIBlockEvent::InterruptRunningCommand);
+            }
             RequestedCommandViewEvent::UpdatedExpansionState { is_expanded } => {
                 // We only care about expansion state updates when the command
                 // is running or finished (i.e. when it has a block).
@@ -3419,6 +3424,8 @@ impl AIBlock {
             // There's nothing to do here for MCP tool calls; their expanded state
             // doesn't change the blocklist like it does for requested commands.
             RequestedCommandViewEvent::UpdatedExpansionState { .. } => {}
+            // `reject_disposition` never yields an interrupt for an MCP tool call.
+            RequestedCommandViewEvent::InterruptRunningCommand => {}
             RequestedCommandViewEvent::OpenActiveAgentProfileEditor => {
                 ctx.emit(AIBlockEvent::OpenActiveAgentProfileEditor);
             }
@@ -5637,6 +5644,9 @@ pub enum AIBlockEvent {
     OpenThemeChooser,
     #[cfg(windows)]
     WindowsCtrlC,
+    /// A Reject request landed on a requested command that is already running; the terminal
+    /// should interrupt it the way ctrl-c interrupts a user's command. Issue #850.
+    InterruptRunningCommand,
     AIOutputUpdated,
     ActionFinished,
     /// Emitted when text is selected within any `ChildView` of an `AIBlock`. This includes

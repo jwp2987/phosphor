@@ -8317,6 +8317,38 @@ impl TerminalView {
         ctx.emit(Event::ShutdownPty);
     }
 
+    /// The conversation whose agent-requested command is running in the active block while the
+    /// agent still drives it (it has not been handed to the user), if any.
+    fn conversation_driving_running_agent_command(&self) -> Option<AIConversationId> {
+        let model = self.model.lock();
+        let active_block = model.block_list().active_block();
+        (active_block.is_agent_requested_command()
+            && active_block.is_agent_driving_command()
+            && active_block.is_active_and_long_running())
+        .then(|| active_block.ai_conversation_id())
+        .flatten()
+    }
+
+    /// Escape while the agent's own command runs: stop the agent turn and interrupt the command.
+    /// Returns whether it did. Issue #850: Escape used to do nothing at all there -- the agent
+    /// view refuses to close over a long-running command, and the ESC byte forwarded to the PTY
+    /// means nothing to e.g. `sleep` -- leaving the pane stuck with no keyboard way out. Escape
+    /// is the conversation-level "stop" (ctrl-c only interrupts the command and lets the agent
+    /// see the result). Once the user holds the command (`is_agent_driving_command` is false)
+    /// Escape goes to the PTY as before, since then it is input for the program.
+    fn stop_agent_turn_and_interrupt_running_agent_command(
+        &mut self,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        let Some(conversation_id) = self.conversation_driving_running_agent_command() else {
+            return false;
+        };
+        self.stop_local_agent_conversation(conversation_id, ctx);
+        self.redetermine_global_focus(ctx);
+        ctx.notify();
+        true
+    }
+
     /// Cancels a local agent conversation and tears down the command it is driving.
     /// Used by a follow-up Ctrl-C after the user already took control via `Stop`: it cancels
     /// the conversation's progress, interrupts the still-running command, and marks the
@@ -20876,6 +20908,11 @@ impl TerminalView {
             AIBlockEvent::WindowsCtrlC => {
                 self.ctrl_c(ctx);
             }
+            AIBlockEvent::InterruptRunningCommand => {
+                // Issue #850: the same path as the terminal's own ctrl-c keybinding, so an
+                // agent-run command is interrupted exactly like a user's.
+                self.handle_ctrl_c_input_event(0, ctx);
+            }
             AIBlockEvent::AIOutputUpdated => {
                 self.model
                     .lock()
@@ -21872,6 +21909,9 @@ impl TerminalView {
 
                     // Disable escape completely for ambient agents without a parent terminal.
                     if self.can_exit_agent_view_for_terminal_view(ctx).is_err() {
+                        // ...but not as a dead key while the agent's own command runs: the view
+                        // cannot be left then, so Escape stops the turn instead (issue #850).
+                        self.stop_agent_turn_and_interrupt_running_agent_command(ctx);
                         return;
                     }
 
@@ -27046,7 +27086,10 @@ impl TypedActionView for TerminalView {
             } => self.maybe_link_hover(position, *from_editor, ctx),
             MaybeHoverSecret { secret_handle } => self.maybe_hover_secret(*secret_handle, ctx),
             MaybeDismissToolTip { from_keybinding } => {
-                if !self.dismiss_tooltips(ctx) && *from_keybinding {
+                if !self.dismiss_tooltips(ctx)
+                    && *from_keybinding
+                    && !self.stop_agent_turn_and_interrupt_running_agent_command(ctx)
+                {
                     // If we are not dismissing the link tooltip, pass the esc escape sequence
                     // down to the terminal.
                     self.keydown_on_terminal("\u{1b}", ctx)

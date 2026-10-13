@@ -1530,3 +1530,28 @@ upstream's behavior is actually a defect rather than a preference.
   The fork-only `new_keyboard_mode_stack` marker is inert at re-pin (#752), so the row is also
   anchored on `KEYBOARD_MODE_STACK_MAX_DEPTH`, which exists at both the fork and the pin
   (`4111d08f9:crates/warp_terminal/src/model/grid/grid_handler.rs:94`). <!-- markers: keep:new_keyboard_mode_stack keep:KEYBOARD_MODE_STACK_MAX_DEPTH keep:test_keyboard_mode_stack_is_still_bounded_without_preallocation -->
+
+- **Escape stops the agent turn while the agent's own command runs; ctrl-c on a running
+  command's card interrupts it** (`#850`, 2026-10-13,
+  `app/src/terminal/view.rs`, `app/src/ai/blocklist/inline_action/requested_command.rs`).
+  **Upstream, Escape:** `MaybeDismissToolTip` forwards an ESC byte to the PTY and
+  `InputEvent::Escape` returns early when `can_exit_agent_view` refuses (a long-running command
+  is active) -- byte-identical at `4111d08f9:app/src/terminal/view.rs:26935` and `:21900`. **The
+  defect:** while an approved agent command such as `sleep 100000` runs, neither path does
+  anything useful (`sleep` ignores ESC; the view cannot be left), so the pane had no keyboard way
+  out (#850). **We do:** when the active block is an agent-requested command the agent still
+  drives (`is_agent_driving_command`, not handed to the user), Escape calls
+  `stop_local_agent_conversation` -- cancels the turn and sends ^C. Once the user holds the
+  command, Escape goes to the program as before. **ctrl-c:** upstream gates the card's
+  ctrl-c -> Reject binding on `Blocked` (`REQUESTED_ACTION_BLOCKED_KEYMAP_CONTEXT`); the fork's
+  base predated that gate, so ctrl-c on a running command's card cancelled its tool call (the
+  result never reached the model) and left the process running. We restore the gate, slightly
+  wider (`REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT`: also `Queued`, whose row carries the same
+  ctrl-c Cancel, and MCP calls in every state), so a running command's ctrl-c bubbles to
+  `TerminalView`'s interrupt and the executor reports exit 130 + output to the model. A Reject
+  that still reaches a running command (the Windows code-editor fallback) is routed to the same
+  interrupt (`reject_disposition`). Covered by
+  `escape_stops_turn_and_interrupts_running_agent_command`,
+  `ctrl_c_interrupts_running_agent_command_without_cancelling_conversation`,
+  `ctrl_c_reject_tests`, and
+  `interrupted_requested_command_reports_exit_130_and_captured_output`. <!-- markers: keep:stop_agent_turn_and_interrupt_running_agent_command keep:reject_disposition keep:escape_stops_turn_and_interrupts_running_agent_command -->

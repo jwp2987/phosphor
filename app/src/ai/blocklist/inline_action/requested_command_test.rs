@@ -11,6 +11,7 @@ use super::{
     mcp_viewing_detail_title_text,
 };
 use crate::ai::agent::{CancellationReason, RequestCommandOutputResult};
+use crate::ai::blocklist::action_model::AIActionStatus;
 use crate::ai::blocklist::block::cli_controller::UserTakeOverReason;
 use warpui::{View, keymap::Context};
 
@@ -305,5 +306,105 @@ mod enter_context_predicate_tests {
         context.set.insert(EDIT_MODE_OPEN_KEYMAP_CONTEXT);
 
         assert!(!enter_accepts_requested_command_context().eval(&context));
+    }
+}
+
+// Issue #850: after an agent-proposed `sleep 100000` was approved, ctrl-c with focus still on the
+// card dispatched Reject on the *running* command. That cancelled the agent's tool call (the
+// result never reached the model) while `sleep` kept running, the ^C never reached the PTY, and
+// the pane stayed stuck. These pin both halves of the fix: the ctrl-c -> Reject binding only
+// claims the keystroke while a decision is pending, so a running command's ctrl-c bubbles up to
+// the terminal's interrupt; and a Reject that still arrives for a running command (the Windows
+// code-editor ctrl-c fallback, which bypasses the keymap) interrupts instead of cancelling.
+mod ctrl_c_reject_tests {
+    use std::sync::Arc;
+
+    use super::super::{
+        REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT, RejectDisposition,
+        ctrl_c_rejects_requested_command_context, reject_disposition,
+    };
+    use super::*;
+    use crate::ai::agent::task::TaskId;
+    use crate::ai::agent::{AIAgentActionId, AIAgentActionResult, AIAgentActionResultType};
+
+    fn finished_status() -> AIActionStatus {
+        AIActionStatus::Finished(Arc::new(AIAgentActionResult {
+            id: AIAgentActionId::from("action".to_owned()),
+            task_id: TaskId::new("task".to_owned()),
+            result: AIAgentActionResultType::InitProject,
+        }))
+    }
+
+    /// Pre-approval, ctrl-c still rejects -- the reported behavior must not regress.
+    #[test]
+    fn pre_approval_ctrl_c_still_rejects() {
+        assert_eq!(
+            reject_disposition(true, Some(&AIActionStatus::Blocked)),
+            RejectDisposition::Reject
+        );
+        // A queued command's row carries the same ctrl-c Cancel button.
+        assert_eq!(
+            reject_disposition(true, Some(&AIActionStatus::Queued)),
+            RejectDisposition::Reject
+        );
+        assert_eq!(
+            reject_disposition(true, Some(&AIActionStatus::Preprocessing)),
+            RejectDisposition::Reject
+        );
+    }
+
+    /// The bug: a running command must be interrupted, never have its tool call cancelled.
+    #[test]
+    fn ctrl_c_on_a_running_command_interrupts_instead_of_rejecting() {
+        assert_eq!(
+            reject_disposition(true, Some(&AIActionStatus::RunningAsync)),
+            RejectDisposition::InterruptRunningCommand
+        );
+    }
+
+    #[test]
+    fn ctrl_c_on_a_finished_command_does_nothing_to_it() {
+        assert_eq!(
+            reject_disposition(true, Some(&finished_status())),
+            RejectDisposition::Ignore
+        );
+    }
+
+    /// MCP tool calls have no process to interrupt; Reject keeps cancelling them in every state.
+    #[test]
+    fn mcp_tool_calls_keep_reject_in_every_state() {
+        for status in [
+            AIActionStatus::Blocked,
+            AIActionStatus::Queued,
+            AIActionStatus::RunningAsync,
+            finished_status(),
+        ] {
+            assert_eq!(
+                reject_disposition(false, Some(&status)),
+                RejectDisposition::Reject,
+                "{status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ctrl_c_binding_matches_while_a_decision_is_pending() {
+        let mut context = Context::default();
+        context.set.insert(RequestedCommandView::ui_name());
+        context
+            .set
+            .insert(REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT);
+
+        assert!(ctrl_c_rejects_requested_command_context().eval(&context));
+    }
+
+    /// With the card focused but its command running, the card must not claim ctrl-c, so the
+    /// keystroke reaches `TerminalView`'s ctrl-c binding and interrupts the command.
+    #[test]
+    fn ctrl_c_binding_does_not_match_once_the_command_is_running() {
+        let mut context = Context::default();
+        context.set.insert(RequestedCommandView::ui_name());
+
+        assert!(!ctrl_c_rejects_requested_command_context().eval(&context));
     }
 }

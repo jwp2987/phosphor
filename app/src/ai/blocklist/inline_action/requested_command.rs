@@ -168,6 +168,9 @@ const QUEUED_BEHIND_RUNNING_COMMAND_FOOTER_MESSAGE: &str =
 const EDIT_COMMAND_ACTION_NAME: &str = "requested_command:edit";
 
 const EDIT_MODE_OPEN_KEYMAP_CONTEXT: &str = "RequestedCommandViewEditModeOpen";
+/// Set on the card's keymap context while ctrl-c on it should still mean "Reject" -- i.e. while
+/// there is a decision pending on the action. See [`reject_disposition`] and issue #850.
+const REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT: &str = "RequestedActionRejectable";
 
 const SCROLLBAR_WIDTH: ScrollbarWidth = ScrollbarWidth::Auto;
 const MAX_EDITOR_HEIGHT: f32 = 500.0;
@@ -207,6 +210,57 @@ fn enter_accepts_requested_command_context() -> ContextPredicate {
     id!(RequestedCommandView::ui_name()) & !id!(EDIT_MODE_OPEN_KEYMAP_CONTEXT)
 }
 
+/// The context predicate gating the ctrl-c -> Reject keybinding: the card is on the responder
+/// chain AND a decision is still pending on its action (see [`reject_disposition`]).
+///
+/// Issue #850: this used to be the card alone, so once an approved command was *running*, a
+/// ctrl-c with focus still on the card (where approving with Enter leaves it) dispatched Reject
+/// on the running action. That cancelled the agent's tool call -- the result never reached the
+/// model -- while the process itself kept running, and the ctrl-c never reached the PTY. With the
+/// card no longer claiming ctrl-c, the keystroke bubbles up to `TerminalView`'s ctrl-c binding,
+/// which interrupts the running command exactly as it does a user's own command; the executor
+/// then reports the interrupted result (exit status 130 plus the captured output) to the model.
+///
+/// Upstream gates this binding the same way (`REQUESTED_ACTION_BLOCKED_KEYMAP_CONTEXT`, set from
+/// `is_waiting_for_user_confirmation`); the fork's base predated that gate. The fork's flag is a
+/// little wider than upstream's `Blocked`-only one -- it also covers `Queued`, whose row carries
+/// the same ctrl-c Cancel button, and MCP tool calls in any state -- so that no existing Cancel
+/// affordance loses its advertised keystroke. Recorded in DECLINED.md (IMPROVED).
+fn ctrl_c_rejects_requested_command_context() -> ContextPredicate {
+    id!(RequestedCommandView::ui_name()) & id!(REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT)
+}
+
+/// What a Reject request (ctrl-c, or the Windows code-editor ctrl-c fallback) on a requested
+/// action card should do, given the action's current status. Issue #850.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RejectDisposition {
+    /// A decision is still pending (`Blocked` / `Queued` / preprocessing / untracked): reject or
+    /// cancel the action, as before.
+    Reject,
+    /// The approved shell command is running: interrupt it (^C to the PTY) instead of cancelling
+    /// the tool call, so the interrupted result is still reported to the model.
+    InterruptRunningCommand,
+    /// The shell command already finished: there is nothing left to reject.
+    Ignore,
+}
+
+/// Pure decision behind [`RejectDisposition`], split out so it is unit-testable without a view.
+/// MCP tool calls keep `Reject` in every state: a running MCP call has no process to interrupt,
+/// and cancelling it is what Reject has always done there.
+pub(crate) fn reject_disposition(
+    is_requested_command: bool,
+    status: Option<&AIActionStatus>,
+) -> RejectDisposition {
+    if !is_requested_command {
+        return RejectDisposition::Reject;
+    }
+    match status {
+        Some(AIActionStatus::RunningAsync) => RejectDisposition::InterruptRunningCommand,
+        Some(AIActionStatus::Finished(_)) => RejectDisposition::Ignore,
+        _ => RejectDisposition::Reject,
+    }
+}
+
 pub fn init(app: &mut AppContext) {
     use warpui::keymap::macros::*;
 
@@ -214,7 +268,7 @@ pub fn init(app: &mut AppContext) {
         FixedBinding::new(
             "ctrl-c",
             RequestedCommandViewAction::Reject,
-            id!(RequestedCommandView::ui_name()),
+            ctrl_c_rejects_requested_command_context(),
         ),
         FixedBinding::new(
             "enter",
@@ -335,6 +389,9 @@ pub enum RequestedCommandViewEvent {
     Accepted,
     EnableAutoexecuteMode,
     Rejected,
+    /// A Reject request arrived while the approved command was already running: interrupt the
+    /// command (^C to the PTY) rather than cancelling the tool call. Issue #850.
+    InterruptRunningCommand,
     UpdatedExpansionState { is_expanded: bool },
     TextSelected,
     CopiedEmptyText,
@@ -740,6 +797,33 @@ impl RequestedCommandView {
         self.editor = None;
     }
 
+    /// The [`RejectDisposition`] for this card's action in its current status.
+    fn reject_disposition(&self, app: &AppContext) -> RejectDisposition {
+        let status = self
+            .action_model
+            .as_ref(app)
+            .get_action_status(&self.action_id);
+        reject_disposition(self.action_type.is_requested_command(), status.as_ref())
+    }
+
+    /// Handles a Reject request (the ctrl-c keybinding, the Cancel button, or the Windows
+    /// code-editor ctrl-c fallback). Pre-approval it rejects, as it always has. Once the approved
+    /// command is running it asks the terminal to interrupt the command instead: emitting
+    /// `Rejected` there cancelled the running tool call -- dropping the result the model was
+    /// waiting on -- while leaving the process itself running. Issue #850.
+    fn reject_or_interrupt(&mut self, ctx: &mut ViewContext<Self>) {
+        match self.reject_disposition(ctx) {
+            RejectDisposition::Reject => {
+                self.rejected_by_user = true;
+                ctx.emit(RequestedCommandViewEvent::Rejected);
+            }
+            RejectDisposition::InterruptRunningCommand => {
+                ctx.emit(RequestedCommandViewEvent::InterruptRunningCommand);
+            }
+            RejectDisposition::Ignore => {}
+        }
+    }
+
     /// Reads the editor contents into `command_text`, committing any user edits.
     fn commit_editor_contents(&mut self, ctx: &mut ViewContext<Self>) {
         if let Some(editor) = &self.editor {
@@ -789,10 +873,12 @@ impl RequestedCommandView {
             // Set `rejected_by_user` the same way `RequestedCommandViewAction::Reject` does
             // just below, or this row falls back to the generic "Cancelled by you." label
             // instead of "Rejected by you." -- see issue #692.
+            //
+            // Issue #850: routed through `reject_or_interrupt` so a running command is
+            // interrupted rather than having its tool call cancelled out from under it.
             #[cfg(windows)]
             CodeEditorEvent::WindowsCtrlC { copied_selection } if !copied_selection => {
-                self.rejected_by_user = true;
-                ctx.emit(RequestedCommandViewEvent::Rejected);
+                self.reject_or_interrupt(ctx);
             }
             _ => {}
         }
@@ -2029,8 +2115,11 @@ impl View for RequestedCommandView {
         root_stack.finish()
     }
 
-    fn keymap_context(&self, _app: &AppContext) -> Context {
+    fn keymap_context(&self, app: &AppContext) -> Context {
         let mut context = Self::default_keymap_context();
+        if self.reject_disposition(app) == RejectDisposition::Reject {
+            context.set.insert(REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT);
+        }
 
         if self.is_editing {
             context.set.insert(EDIT_MODE_OPEN_KEYMAP_CONTEXT);
@@ -2056,10 +2145,7 @@ impl TypedActionView for RequestedCommandView {
             RequestedCommandViewAction::ToggleAcceptMenu => {
                 self.toggle_accept_split_button_menu(ctx)
             }
-            RequestedCommandViewAction::Reject => {
-                self.rejected_by_user = true;
-                ctx.emit(RequestedCommandViewEvent::Rejected);
-            }
+            RequestedCommandViewAction::Reject => self.reject_or_interrupt(ctx),
             RequestedCommandViewAction::OpenEditMode => self.open_edit_mode(ctx),
             RequestedCommandViewAction::CloseEditMode => self.close_edit_mode(ctx),
             RequestedCommandViewAction::FocusEditor => {
