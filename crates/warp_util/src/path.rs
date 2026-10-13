@@ -339,8 +339,8 @@ impl ShellDialect {
     /// Input without a control character (see [`needs_control_char_quoting`]) is escaped by
     /// prefixing metacharacters, unchanged from [`ShellFamily::escape`]. Input with one never
     /// yields a raw control character:
-    /// * bash/zsh: the whole word as `$'...'`, with `\\`, `\'`, and every control character
-    ///   as its UTF-8 bytes in `\xHH` form (locale independent).
+    /// * bash/zsh: the whole word as `$'...'`, with `\\`, `'` as `\x27`, `!` as `\x21`, and
+    ///   every control character as its UTF-8 bytes in `\xHH` form (locale independent).
     /// * fish: metacharacters backslash-escaped as usual, ASCII control characters as `\xHH`
     ///   and other control characters as `\uHHHH`.
     /// * PowerShell: the whole word double-quoted, `` ` ``, `"`, `$` and the typographic double
@@ -373,6 +373,15 @@ impl ShellDialect {
                 let first_char = suffix.chars().next().expect("length already validated");
                 return if first_char != '/' && first_char != '\\' {
                     self.escape(path)
+                } else if suffix.chars().any(needs_control_char_quoting)
+                    && (first_char == '/' || self == Self::PowerShell)
+                {
+                    // The quoted form must start after the separator: bash and zsh only
+                    // expand `~` when an unquoted `/` follows it, so `~$'/a\x0Db'` would be
+                    // a literal `~` (#867). A POSIX `\` separator stays inside the quoted
+                    // word, since outside it would escape the next character.
+                    let rest = &suffix[first_char.len_utf8()..];
+                    Cow::Owned(format!("{prefix}{first_char}{}", self.escape(rest)))
                 } else {
                     let escaped_sufix = self.escape(suffix);
                     // If there was no escaping to do, we can return the original path.
@@ -396,7 +405,10 @@ fn ansi_c_quote(input: &str) -> String {
     for c in input.chars() {
         match c {
             '\\' => out.push_str("\\\\"),
-            '\'' => out.push_str("\\'"),
+            // Hex, not `\'` and a literal `!`: bash 3.2's history scanner does not know
+            // `$'...'`, so it can misread `\'` as closing the quote and expand `!`.
+            '\'' => out.push_str("\\x27"),
+            '!' => out.push_str("\\x21"),
             c if needs_control_char_quoting(c) => {
                 let mut buf = [0u8; 4];
                 for byte in c.encode_utf8(&mut buf).bytes() {

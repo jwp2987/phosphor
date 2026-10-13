@@ -21,7 +21,7 @@ use crate::ai::blocklist::{
 };
 use crate::ai::paths::{host_native_absolute_path, shell_native_absolute_path};
 use crate::terminal::model::session::ExecuteCommandOptions;
-use crate::terminal::model::session::command_executor::shell_quote_arg;
+use crate::terminal::model::session::command_executor::{sh_script_quote_arg, shell_quote_arg};
 use crate::{
     TelemetryEvent,
     ai::agent::{AIAgentActionResultType, GrepFileMatch, GrepLineMatch},
@@ -645,8 +645,8 @@ async fn run_grep_per_file_fallback(
 /// Runs via `sh -c` so the loop syntax is fixed regardless of the session's
 /// interactive shell (e.g. fish's loop syntax differs); any host reaching
 /// this fallback has `sh`. Because of that, the queries and target path
-/// embedded in the script are quoted for `sh` (`ShellType::Bash` covers
-/// POSIX-style single-quote escaping), not for `shell_type` -- the *whole*
+/// embedded in the script are quoted for `sh` (`sh_script_quote_arg`, plain
+/// POSIX single quotes), not for `shell_type` -- the *whole*
 /// script is then quoted for `shell_type` as the single argument to `sh
 /// -c`, so a query containing a single quote is escaped correctly through
 /// both layers (see the tests for this function).
@@ -658,12 +658,13 @@ fn build_grep_content_scan_command(
     target_path: &str,
     shell_type: ShellType,
 ) -> String {
-    let list_command = build_grep_list_files_command(queries, target_path, ShellType::Bash);
+    // Every word in this script is quoted for `sh`, which runs it; the script as a whole is
+    // quoted for the session's shell below.
+    let list_command = build_grep_list_files_command(queries, target_path);
 
     let mut single_file_grep = "grep --color=never -nIE --devices=skip".to_string();
     for query in queries {
-        single_file_grep
-            .push_str(format!(" -e {}", shell_quote_arg(query, ShellType::Bash)).as_str());
+        single_file_grep.push_str(format!(" -e {}", sh_script_quote_arg(query)).as_str());
     }
     single_file_grep.push_str(" -- \"$f\"");
 
@@ -826,16 +827,14 @@ fn build_grep_command(queries: &[String], target_path: &str, shell_type: ShellTy
 /// the line -- used as the first step of `run_grep_per_file_fallback`, since
 /// a bare filename has no adjacent field for the path to be confused with,
 /// unlike `{path}:{line}:{content}`.
-fn build_grep_list_files_command(
-    queries: &[String],
-    target_path: &str,
-    shell_type: ShellType,
-) -> String {
+/// Its words are quoted for `sh` (see [`sh_script_quote_arg`]): it only runs inside
+/// `build_grep_content_scan_command`'s `sh -c` script.
+fn build_grep_list_files_command(queries: &[String], target_path: &str) -> String {
     let mut grep_command = "grep --color=never -rlIE --devices=skip".to_string();
     for query in queries {
-        grep_command.push_str(format!(" -e {}", shell_quote_arg(query, shell_type)).as_str());
+        grep_command.push_str(format!(" -e {}", sh_script_quote_arg(query)).as_str());
     }
-    grep_command.push_str(format!(" {}", shell_quote_arg(target_path, shell_type)).as_str());
+    grep_command.push_str(format!(" {}", sh_script_quote_arg(target_path)).as_str());
     grep_command
 }
 

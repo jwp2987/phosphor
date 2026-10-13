@@ -1621,11 +1621,12 @@ impl Session {
             .as_deref()
             .map(|path| HashMap::from_iter([("PATH".to_string(), path.to_string())]));
 
-        let escaped_history_file =
-            shell_escape_single_quotes(history_file, self.info.shell.shell_type());
+        // `shell_quote_arg`, not bare single quotes: a control character in the path must not
+        // be typed into the PTY raw (#867).
+        let quoted_history_file = shell_quote_arg(history_file, self.info.shell.shell_type());
         let output_in_bytes = self
             .execute_command(
-                format!("cat '{escaped_history_file}'").as_str(),
+                format!("cat {quoted_history_file}").as_str(),
                 None,
                 env_vars,
                 ExecuteCommandOptions::default(),

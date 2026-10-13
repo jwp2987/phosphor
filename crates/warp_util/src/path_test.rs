@@ -297,12 +297,19 @@ const HOSTILE_NAMES: &[(&str, &str, &str, &str)] = &[
     ),
     ("\n", r"$'\x0A'", r"\x0A", r#""$([char]0x000A)""#),
     // Quotes, backslashes and expansions combined with a control character: only `\` and `'`
-    // are special inside `$'...'`; in PowerShell's double quotes, `` ` ``, `"` and `$` are.
+    // are special inside `$'...'` (`'` is written `\x27`, and `!` `\x21` so bash 3.2's history
+    // scanner never sees either); in PowerShell's double quotes, `` ` ``, `"` and `$` are.
     (
         "it's \"q\"\r$(x)`y` \\ z",
-        r#"$'it\'s "q"\x0D$(x)`y` \\ z'"#,
+        r#"$'it\x27s "q"\x0D$(x)`y` \\ z'"#,
         r#"it\'s\ \"q\"\x0D\$\(x\)\`y\`\ \\\ z"#,
         r#""it's `"q`"$([char]0x000D)`$(x)``y`` \ z""#,
+    ),
+    (
+        "hi!\r!!",
+        r"$'hi\x21\x0D\x21\x21'",
+        r"hi\!\x0D\!\!",
+        r#""hi!$([char]0x000D)!!""#,
     ),
     // A literal backslash-x in the name must not turn into a byte escape.
     (
@@ -379,6 +386,21 @@ fn test_shell_escape_keeps_home_prefix_with_control_characters() {
         ShellDialect::PowerShell.shell_escape("~/a\rb"),
         r#"~/"a$([char]0x000D)b""#
     );
+    assert_eq!(
+        ShellDialect::PowerShell.shell_escape("~\\a\rb"),
+        r#"~\"a$([char]0x000D)b""#
+    );
+    // The quoted word starts after the separator: `~$'/rc\x0Dexit'` would not expand `~` in
+    // bash or zsh, because the `/` after it is quoted.
+    assert_eq!(
+        ShellDialect::Posix.shell_escape("~/d\r/f'!"),
+        r"~/$'d\x0D/f\x27\x21'"
+    );
+    // A POSIX backslash separator stays inside the quotes; outside it would escape the `$`.
+    assert_eq!(ShellDialect::Posix.shell_escape("~\\a\rb"), r"~$'\\a\x0Db'");
+    // Without a control character, nothing changes.
+    assert_eq!(ShellDialect::Posix.shell_escape("~/a b"), r"~/a\ b");
+    assert_eq!(ShellDialect::Posix.shell_escape("~/"), "~/");
 }
 
 #[test]

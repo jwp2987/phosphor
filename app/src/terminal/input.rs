@@ -982,41 +982,24 @@ fn render_prompt_chip_shell_command(
 ) -> String {
     match command {
         PromptChipShellCommand::GitCheckout { branch_name } => {
-            format!("git checkout {}", prompt_chip_arg(branch_name, shell_type))
+            format!("git checkout {}", shell_quote_arg(branch_name, shell_type))
         }
         PromptChipShellCommand::GitCreateAndCheckoutBranch { branch_name } => {
             format!(
                 "git checkout -b {} --",
-                prompt_chip_arg(branch_name, shell_type)
+                shell_quote_arg(branch_name, shell_type)
             )
         }
         PromptChipShellCommand::ChangeDirectory { dir_name } => {
-            format!("cd {}", prompt_chip_arg(dir_name, shell_type))
+            format!("cd {}", shell_quote_arg(dir_name, shell_type))
         }
         PromptChipShellCommand::NvmUse { version } => {
-            format!("nvm use {}", prompt_chip_arg(version, shell_type))
+            format!("nvm use {}", shell_quote_arg(version, shell_type))
         }
         PromptChipShellCommand::NvmInstallLatestNode => "nvm install node".to_string(),
         PromptChipShellCommand::Echo { message } => {
-            format!("echo {}", prompt_chip_arg(message, shell_type))
+            format!("echo {}", shell_quote_arg(message, shell_type))
         }
-    }
-}
-
-/// One prompt-chip argument: `shell_quote_arg`'s single quotes, unless the value has a control
-/// character. Single quotes keep it one word but still put the character into the buffer raw,
-/// and the buffer is typed to the PTY, where a CR submits the line (#867); such a value is
-/// spelled with the shell's escape syntax instead.
-fn prompt_chip_arg(value: &str, shell_type: ShellType) -> String {
-    if value
-        .chars()
-        .any(warp_util::path::needs_control_char_quoting)
-    {
-        warp_util::path::ShellDialect::from(shell_type)
-            .escape(value)
-            .into_owned()
-    } else {
-        shell_quote_arg(value, shell_type)
     }
 }
 

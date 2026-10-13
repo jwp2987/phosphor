@@ -1507,11 +1507,17 @@ upstream's behavior is actually a defect rather than a preference.
   `needs_control_char_quoting`) is spelled per shell by `ShellDialect`, which is one level
   finer than `ShellFamily` because bash/zsh and fish have no common spelling: bash/zsh get
   `$'...'` with `\xHH` UTF-8 bytes, fish gets its unquoted `\xHH`/`\uHHHH` escapes, PowerShell
-  gets a double-quoted string with `$([char]0x..)`. Names without one escape exactly as
-  before. Callers that only know the family get the bash/zsh form, which fish rejects at
+  gets a double-quoted string with `$([char]0x..)`. Inside `$'...'`, `'` and `!` are written
+  `\x27`/`\x21` so bash 3.2's history scanner never sees them, and `shell_escape` keeps a
+  leading `~/` outside the quotes so the tilde still expands. Names without one escape exactly
+  as before. `shell_quote_arg` (AI tool probes, prompt chips, the history `cat`) applies the
+  same rule; words inside an `sh -c` script use `sh_script_quote_arg` instead, since dash has
+  no `$'...'` and the outer quoting already escapes the script. The in-band executor's fish
+  single-quote wrapper now doubles backslashes too (it collapsed `\\` and let a trailing `\`
+  swallow the closing quote). Callers that only know the family get the bash/zsh form, which fish rejects at
   parse time without running anything. Tab completion, drag-and-drop, file paste, the remote
   `ls` script, prompt-chip and repo `cd` commands, and env-var init strings pass the exact
   shell; "attach path as context" refuses such a path, since it is inserted unescaped by
   design. Round-trip checked in real bash 5.3, zsh 5.9 and fish 4.2 (`printf '%s' WORD`
   reproduces the original bytes); the PowerShell form is unverified in a real shell.
-  <!-- markers: keep:needs_control_char_quoting keep:test_escape_control_characters_per_dialect keep:POSIX_SHELL_ESCAPE_PATTERN -->
+  <!-- markers: keep:needs_control_char_quoting keep:test_escape_control_characters_per_dialect keep:sh_script_quote_arg keep:POSIX_SHELL_ESCAPE_PATTERN keep:shell_escape_single_quotes -->

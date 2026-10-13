@@ -216,11 +216,11 @@ fn renders_change_directory_prompt_chip_with_control_characters_escaped() {
 
     assert_eq!(
         render_prompt_chip_shell_command(&command, ShellType::Bash),
-        r"cd $'rc\x0Dexit \'x\''"
+        r"cd $'rc\x0Dexit \x27x\x27'"
     );
     assert_eq!(
         render_prompt_chip_shell_command(&command, ShellType::Zsh),
-        r"cd $'rc\x0Dexit \'x\''"
+        r"cd $'rc\x0Dexit \x27x\x27'"
     );
     assert_eq!(
         render_prompt_chip_shell_command(&command, ShellType::Fish),
