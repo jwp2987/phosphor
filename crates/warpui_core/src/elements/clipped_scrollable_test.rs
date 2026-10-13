@@ -161,3 +161,25 @@ fn test_scroll_to_position() {
         });
     });
 }
+
+/// `is_scrolled_to_end` is unknown before a layout, then compares the scroll position with the
+/// largest valid one recorded by the last layout (issue #847: the agent approval card offers Run
+/// for a long command only once its full view has been scrolled to the end).
+#[test]
+fn is_scrolled_to_end_tracks_the_last_layouts_maximum() {
+    let state = ClippedScrollStateHandle::new();
+    assert_eq!(state.is_scrolled_to_end(), None);
+
+    state.clipped_scroll_data.lock().max_scroll_start_px = Some(100_f32.into_pixels());
+    assert_eq!(state.is_scrolled_to_end(), Some(false));
+    state.scroll_to(99.5_f32.into_pixels());
+    assert_eq!(state.is_scrolled_to_end(), Some(true));
+
+    state.scroll_to(0_f32.into_pixels());
+    state.clipped_scroll_data.lock().max_scroll_start_px = Some(0_f32.into_pixels());
+    assert_eq!(
+        state.is_scrolled_to_end(),
+        Some(true),
+        "content that fits counts as read to the end"
+    );
+}
