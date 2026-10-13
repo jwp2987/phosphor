@@ -65,6 +65,11 @@ pub enum CommandSearchItemAction {
 
     /// The user accepted the search item to translate the query to a command using Zap AI.
     TranslateUsingWarpAI,
+
+    /// A non-interactive row (a static separator, such as the note that history results
+    /// were capped, #868). Separators cannot be selected or clicked, so this is never
+    /// dispatched; it exists because every row must name an action.
+    NoOp,
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use warp_core::ui::builder;
 use warpui::{
     elements::{
-        Align, ConstrainedBox, Container, CrossAxisAlignment, Flex, Highlight, Icon,
+        Align, ConstrainedBox, Container, CrossAxisAlignment, Empty, Flex, Highlight, Icon,
         MainAxisAlignment, MainAxisSize, ParentElement, Shrinkable, Text,
     },
     fonts::{Properties, Weight},
@@ -16,6 +16,7 @@ use crate::search::item::SearchItem;
 use crate::search::{
     command_search::searcher::AcceptedHistoryItem, result_renderer::ItemHighlightState,
 };
+use crate::util::truncation::bounded_display_text;
 use crate::{
     appearance::Appearance, terminal::rich_history::render_rich_history,
     util::time_format::format_approx_duration_from_now,
@@ -23,6 +24,97 @@ use crate::{
 use crate::{search::command_search::searcher::CommandSearchItemAction, terminal::HistoryEntry};
 
 const COMMAND_METADATA_LEFT_MARGIN_FROM_METADATA: f32 = 8.;
+
+/// The text a history row shows for `command` (#868): the command itself, or for one
+/// longer than [`super::MAX_HISTORY_MATCH_BYTES`], the part that fuzzy matching saw plus
+/// an ellipsis. The match indices all fall inside that part, so highlighting is
+/// unaffected. Accepting or executing the row still uses the full command.
+pub(crate) fn history_display_text(command: &str) -> String {
+    bounded_display_text(command, super::MAX_HISTORY_MATCH_BYTES)
+}
+
+/// Why a history result list was cut short (#868).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HistoryResultsCapped {
+    /// The empty query lists only the newest `shown` entries.
+    Newest { shown: usize },
+    /// A query matched `total` entries; only the best `shown` are listed.
+    Best { shown: usize, total: usize },
+}
+
+/// A non-interactive row at the far end of a capped history list (#868), so the cap is
+/// visible rather than silent. It sorts below every real result, which puts it at the end
+/// of the list in either menu orientation, and as a static separator it can be neither
+/// selected nor clicked.
+#[derive(Clone, Debug)]
+pub(crate) struct HistoryResultsCappedNotice {
+    pub(crate) capped: HistoryResultsCapped,
+}
+
+impl HistoryResultsCappedNotice {
+    fn message(&self) -> String {
+        match self.capped {
+            HistoryResultsCapped::Newest { shown } => {
+                crate::t!("search-history-capped-newest", shown = shown)
+            }
+            HistoryResultsCapped::Best { shown, total } => {
+                crate::t!("search-history-capped-best", shown = shown, total = total)
+            }
+        }
+    }
+}
+
+impl SearchItem for HistoryResultsCappedNotice {
+    type Action = CommandSearchItemAction;
+
+    fn render_icon(
+        &self,
+        _highlight_state: ItemHighlightState,
+        _appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        Empty::new().finish()
+    }
+
+    fn render_item(
+        &self,
+        _highlight_state: ItemHighlightState,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let appearance = Appearance::as_ref(app);
+        Text::new_inline(
+            self.message(),
+            appearance.ui_font_family(),
+            appearance.monospace_font_size() * 0.85,
+        )
+        .with_color(
+            appearance
+                .theme()
+                .disabled_text_color(appearance.theme().surface_2())
+                .into_solid(),
+        )
+        .finish()
+    }
+
+    fn score(&self) -> OrderedFloat<f64> {
+        OrderedFloat(f64::NEG_INFINITY)
+    }
+
+    fn accept_result(&self) -> CommandSearchItemAction {
+        CommandSearchItemAction::NoOp
+    }
+
+    fn execute_result(&self) -> CommandSearchItemAction {
+        CommandSearchItemAction::NoOp
+    }
+
+    fn accessibility_label(&self) -> String {
+        self.message()
+    }
+
+    fn is_static_separator(&self) -> bool {
+        true
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct HistorySearchItem {
@@ -63,7 +155,7 @@ impl SearchItem for HistorySearchItem {
 
         let command = Align::new(
             Text::new_inline(
-                self.entry.command.clone(),
+                history_display_text(&self.entry.command),
                 appearance.monospace_font_family(),
                 appearance.monospace_font_size(),
             )
@@ -159,7 +251,10 @@ impl SearchItem for HistorySearchItem {
     }
 
     fn accessibility_label(&self) -> String {
-        format!("History item: {}", self.entry.command)
+        format!(
+            "History item: {}",
+            history_display_text(&self.entry.command)
+        )
     }
 }
 

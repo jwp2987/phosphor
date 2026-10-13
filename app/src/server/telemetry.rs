@@ -557,6 +557,8 @@ impl From<&CommandSearchItemAction> for CommandSearchResultType {
             ZapAI => Self::ZapAI,
             TranslateUsingWarpAI => Self::TranslateUsingWarpAI,
             AcceptAIQuery(_) | RunAIQuery(_) => Self::AIQuery,
+            // Never accepted: the command search view returns before reporting a `NoOp`.
+            NoOp => Self::History,
         }
     }
 }

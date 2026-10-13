@@ -39,36 +39,37 @@ pub enum DedupeStrategy {
 
 /// Deduplicate the results list based on provided keys, if any, and keep the highest score,
 /// while preserving the original order of the kept items.
+///
+/// Each key keeps the position of its first occurrence; a later duplicate replaces the kept
+/// item only when its score is strictly higher. Items without a key are always kept.
+///
+/// Linear in the number of results (#868). This used to compare every keyed result with
+/// every result kept so far, which is quadratic in the number of distinct keys and runs on
+/// the main thread.
 pub fn dedupe_score<T: Action + Clone>(original: Vec<QueryResult<T>>) -> Vec<QueryResult<T>> {
-    let mut deduped_results: Vec<(Option<String>, &QueryResult<T>)> = Vec::new();
+    let mut kept: Vec<QueryResult<T>> = Vec::with_capacity(original.len());
+    let mut position_by_key: HashMap<String, usize> = HashMap::new();
 
-    for result in original.iter() {
-        let mut needs_insert = true;
-        let new_key = result.dedup_key();
-
-        if new_key.is_some() {
-            for (existing_key, existing_result) in deduped_results.iter_mut() {
-                // Note: at this point, new_key must be Some(str)
-                if new_key == *existing_key {
-                    // This does not need to be inserted - either replace or discard
-                    needs_insert = false;
-                    if result.score() > existing_result.score() {
-                        *existing_result = result;
-                    }
-                    break;
+    for result in original {
+        let Some(key) = result.dedup_key() else {
+            kept.push(result);
+            continue;
+        };
+        match position_by_key.entry(key) {
+            std::collections::hash_map::Entry::Occupied(position) => {
+                let existing = &mut kept[*position.get()];
+                if result.score() > existing.score() {
+                    *existing = result;
                 }
             }
-        }
-
-        if needs_insert {
-            deduped_results.push((new_key, result));
+            std::collections::hash_map::Entry::Vacant(position) => {
+                position.insert(kept.len());
+                kept.push(result);
+            }
         }
     }
 
-    deduped_results
-        .into_iter()
-        .map(|(_, r)| r.clone())
-        .collect()
+    kept
 }
 
 /// A structure that combines results from various data sources to produce a

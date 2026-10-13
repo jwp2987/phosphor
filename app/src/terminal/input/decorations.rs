@@ -23,6 +23,10 @@ pub use warp_completer::{
     ParsedTokensSnapshot,
 };
 
+/// Input buffers with more chars than this get no background parse: no syntax
+/// highlighting, error underlining or input-type detection (#868).
+pub(super) const MAX_BACKGROUND_JOB_BUFFER_CHARS: usize = 1024 * 1024;
+
 /// Options to enable/disable command decoration and/or AI input background tasks spawned on input
 /// edits.
 #[derive(Default, Clone, Copy)]
@@ -226,6 +230,26 @@ impl Input {
         }
 
         let mut mode = mode;
+
+        // A buffer this large is a recalled history line or a paste, not a command anyone
+        // reads token by token (#868: a 50 MB history line recalled with Up). Parsing it for
+        // highlighting, error underlining and input-type detection copies and walks the
+        // whole buffer on every edit and can start completion commands over it, so skip
+        // the jobs and leave the text plain. The size check reads the buffer's cached
+        // length, so an oversized buffer is never copied out here.
+        if self.editor.as_ref(ctx).buffer_size(ctx).as_usize() > MAX_BACKGROUND_JOB_BUFFER_CHARS {
+            if let Some(handle) = self.decorations_future_handle.take() {
+                handle.abort_handle().abort();
+            }
+            // Clearing walks the whole buffer's styles, so do it once per oversized
+            // stretch, not on every edit.
+            if !self.decorations_cleared_for_oversized_buffer {
+                self.clear_decorations(ctx);
+                self.decorations_cleared_for_oversized_buffer = true;
+            }
+            return;
+        }
+        self.decorations_cleared_for_oversized_buffer = false;
 
         // We don't show input command decorations in AI mode, but we keep slash command prefix highlighting.
         let buffer_text = self.editor.as_ref(ctx).buffer_text(ctx);
