@@ -484,19 +484,25 @@ upstream's behavior is actually a defect rather than a preference.
         Everyday CJK punctuation is not escaped.
       - Mn/Me marks after the second in a row;
       - a literal `<U+`;
-      - strong right-to-left letters on a line with an unquoted shell operator. The text element
-        has no base-direction override.
-    - Unassigned code points are not escaped, so new emoji are left alone.
+      - strong right-to-left letters on a line with an unquoted shell operator (`$` and
+        backticks count even inside double quotes). The text element has no base-direction
+        override.
+      - unassigned Default_Ignorable code points.
+    - Other unassigned code points, such as new emoji, are not escaped.
   - **Full view.** "Show full command", or Enter on an elided card, opens it. It inserts a
-    zero-width break wherever 256 display chars pass without a break opportunity. The count runs
-    across quotes, operators and escapes, so no shaped word reaches the renderer's 16,384-char
-    limit (#864). It scrolls inside a 500px cap.
+    zero-width break wherever 256 display chars pass since the last newline or inserted break.
+    Spaces do not reset the count, because UAX #14 keeps some unbroken (LB14/15/17), and
+    neither do quotes, operators or escapes. So no shaped word reaches the renderer's
+    16,384-char limit (#864). It scrolls inside a 500px cap.
   - **Reviewed gate.** For an elided command, Run is offered only after the full view has been
-    on screen for 500ms and scrolled to its end. The card then records the exact text on the
+    on screen for 500ms and scrolled to its end. Any refused attempt restarts the 500ms, so a
+    held Enter cannot accept. The scroll state is replaced whenever the view opens or the text
+    changes, so "at the end" is unknown until the new content is laid out. The card then records the exact text on the
     action model, keyed by (conversation, action id).
   - **Model gate.** `start_pending_action_by_id` refuses every `ActionInitiator::User` start of
     an elided command without that record for the exact text it would run. It also refuses
-    while the card is in edit mode, where the card shows uncommitted text.
+    while the card is in edit mode, where the card shows uncommitted text. Edit mode is checked
+    live, through a probe on the card, so a card dropped mid-edit cannot leave a command stuck.
   - **Accept paths.**
     - The AI block's Enter and the auto-execute toggle go through the card's accept.
     - The CLI subagent's accept is refused for elided commands, with a toast.

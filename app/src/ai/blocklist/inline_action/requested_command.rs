@@ -21,7 +21,6 @@ use warpui::elements::{
 };
 use warpui::r#async::Timer;
 use warpui::text_layout::TextStyle;
-use warpui::units::Pixels;
 use warpui::ui_components::components::UiComponent as _;
 use warpui::{
     elements::{
@@ -46,6 +45,7 @@ use crate::ai::blocklist::block::cli_controller::{
 };
 use crate::ai::blocklist::block::view_impl::output::action_icon;
 use crate::ai::blocklist::inline_action::inline_action_header::RightClickConfig;
+use crate::ai::blocklist::action_model::EditingProbe;
 use crate::ai::blocklist::model::{AIBlockModel, AIBlockModelHelper};
 use crate::ai::blocklist::{
     AIBlock, BlocklistAIActionEvent, BlocklistAIHistoryModel, ClientIdentifiers,
@@ -844,6 +844,7 @@ impl RequestedCommandView {
     /// shows. An earlier "show full command" mark no longer applies, because it is keyed on the
     /// exact text that was shown (issue #847).
     fn on_command_text_changed(&mut self, ctx: &mut ViewContext<Self>) {
+        self.command_preview_scroll_state = ClippedScrollStateHandle::new();
         let conversation_id = self.client_ids.conversation_id;
         let action_id = self.action_id.clone();
         let command = self.command_text.clone();
@@ -858,8 +859,16 @@ impl RequestedCommandView {
     fn set_command_being_edited(&mut self, editing: bool, ctx: &mut ViewContext<Self>) {
         let conversation_id = self.client_ids.conversation_id;
         let action_id = self.action_id.clone();
+        // The probe asks this card live, so a card dropped mid-edit stops blocking accepts.
+        let probe = editing.then(|| {
+            let card = ctx.handle();
+            Box::new(move |app: &AppContext| {
+                card.upgrade(app)
+                    .is_some_and(|card| card.as_ref(app).is_editing)
+            }) as EditingProbe
+        });
         self.action_model.update(ctx, |model, _| {
-            model.set_command_being_edited(conversation_id, &action_id, editing);
+            model.set_command_being_edited(conversation_id, &action_id, probe);
         });
     }
 
@@ -910,10 +919,19 @@ impl RequestedCommandView {
             // the full view shows the edited text.
             self.close_edit_mode(ctx);
         }
+        // A fresh scroll state: whether the view is scrolled to its end stays unknown until the
+        // new content has been laid out, so no stale measurement can offer Run for a frame.
+        self.command_preview_scroll_state = ClippedScrollStateHandle::new();
         self.full_view_opened = Some((self.command_text.clone(), Instant::now()));
-        self.command_preview_scroll_state.scroll_to(Pixels::zero());
-        // Redraw once the dwell has passed, so Run appears without further input when the full
-        // view fits on screen.
+        self.restart_full_view_dwell(ctx);
+    }
+
+    /// Restarts the full view's dwell and schedules a redraw for when it has passed, so Run
+    /// appears without further input once the view has been read.
+    fn restart_full_view_dwell(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Some((_, opened_at)) = &mut self.full_view_opened {
+            *opened_at = Instant::now();
+        }
         ctx.spawn(
             Timer::after(FULL_VIEW_DWELL + Duration::from_millis(50)),
             |_, _, ctx| ctx.notify(),
@@ -961,7 +979,9 @@ impl RequestedCommandView {
                      the end yet",
                     self.action_id
                 );
-                ctx.notify();
+                // Every refused attempt restarts the dwell, so a held or repeating Enter can
+                // never outlast it and accept.
+                self.restart_full_view_dwell(ctx);
                 return false;
             }
             ReviewState::Reviewed => {
@@ -1396,6 +1416,8 @@ impl RequestedCommandView {
         // used to be ignored or truncated by length, leaving the card showing text that was not
         // the action's (issue #847).
         if command != self.command_text {
+            // New content: whether the preview is scrolled to its end is unknown until relaid.
+            self.command_preview_scroll_state = ClippedScrollStateHandle::new();
             if command.starts_with(self.command_text.as_str()) {
                 let existing_length = self.command_text.len();
                 self.command_text.push_str(&command[existing_length..]);
@@ -1406,8 +1428,9 @@ impl RequestedCommandView {
         // No model update for streamed text: a review mark is keyed on the exact text shown, so
         // a changed text is unmarked by construction.
 
-        // If the editor exists, sync it with the updated command text.
-        if let Some(editor) = &self.editor {
+        // If the editor exists, sync it with the updated command text. Not while the user is
+        // editing: their in-progress edit is kept, and it is what commits on leaving edit mode.
+        if let Some(editor) = self.editor.as_ref().filter(|_| !self.is_editing) {
             editor.update(ctx, |editor, ctx| {
                 let editor_text = editor.text(ctx).into_string();
                 if editor_text == self.command_text {

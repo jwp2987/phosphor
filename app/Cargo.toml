@@ -421,6 +421,8 @@ http_client = { workspace = true, features = ["test-util"] }
 mockall = "0.13.1"
 mockito.workspace = true
 serial_test = "0.8.0"
+# The UAX #14 segmenter cosmic-text uses; the #847 approval-preview tests check break spacing with it.
+unicode-linebreak.workspace = true
 sum_tree = { workspace = true, features = ["test-util"] }
 virtual-fs.workspace = true
 warp_completer = { workspace = true, features = ["test-util"] }

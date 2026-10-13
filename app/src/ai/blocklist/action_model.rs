@@ -246,6 +246,10 @@ fn run_auto_accept_batch<Id>(
     attempted
 }
 
+/// Answers whether an approval card is still in edit mode. See
+/// `BlocklistAIActionModel::commands_being_edited`.
+pub type EditingProbe = Box<dyn Fn(&AppContext) -> bool>;
+
 /// Whether a user-initiated accept of `action` must be refused (issue #847). This applies to a
 /// `RequestCommandOutput` whose approval-card preview elides part of the command (a long run,
 /// blank-line padding, too many lines), unless that exact text was reviewed in full. Every
@@ -370,11 +374,12 @@ pub struct BlocklistAIActionModel {
     /// the card.
     full_command_shown: HashMap<(AIConversationId, AIAgentActionId), String>,
 
-    /// Requested commands whose approval card is in edit mode. There, the card shows the editor's
-    /// uncommitted text, not the pending action's, so no user accept may run the pending text
-    /// until the card commits or leaves edit mode (issue #847). The card's own accept leaves
-    /// edit mode first.
-    commands_being_edited: HashSet<(AIConversationId, AIAgentActionId)>,
+    /// Requested commands whose approval card is (or was) in edit mode, each with a probe that
+    /// says whether it still is. In edit mode the card shows the editor's uncommitted text, not
+    /// the pending action's, so no user accept may run the pending text then (issue #847). The
+    /// card's own accept leaves edit mode first. The probe is checked live, not just recorded:
+    /// a card that was dropped mid-edit never leaves a command stuck.
+    commands_being_edited: HashMap<(AIConversationId, AIAgentActionId), EditingProbe>,
 }
 
 impl BlocklistAIActionModel {
@@ -435,7 +440,7 @@ impl BlocklistAIActionModel {
             is_view_only: false,
             ambient_agent_task_id: None,
             full_command_shown: HashMap::new(),
-            commands_being_edited: HashSet::new(),
+            commands_being_edited: HashMap::new(),
         }
     }
 
@@ -483,20 +488,35 @@ impl BlocklistAIActionModel {
         hidden_command_blocks_user_accept(conversation_id, action, &self.full_command_shown)
     }
 
-    /// Records whether the approval card of `action_id` is in edit mode. See
-    /// `commands_being_edited`.
+    /// Records that the approval card of `action_id` entered edit mode (`Some(probe)`, where the
+    /// probe answers "is it still editing?") or left it (`None`). See `commands_being_edited`.
     pub fn set_command_being_edited(
         &mut self,
         conversation_id: AIConversationId,
         action_id: &AIAgentActionId,
-        editing: bool,
+        probe: Option<EditingProbe>,
     ) {
         let key = (conversation_id, action_id.clone());
-        if editing {
-            self.commands_being_edited.insert(key);
-        } else {
-            self.commands_being_edited.remove(&key);
+        match probe {
+            Some(probe) => {
+                self.commands_being_edited.insert(key, probe);
+            }
+            None => {
+                self.commands_being_edited.remove(&key);
+            }
         }
+    }
+
+    /// Whether a user accept of `action_id` must wait because its approval card is in edit mode.
+    pub fn is_command_being_edited(
+        &self,
+        conversation_id: AIConversationId,
+        action_id: &AIAgentActionId,
+        app: &AppContext,
+    ) -> bool {
+        self.commands_being_edited
+            .get(&(conversation_id, action_id.clone()))
+            .is_some_and(|still_editing| still_editing(app))
     }
 
     /// Replaces the text of pending requested command `action_id` with the user's edit. The card
@@ -1095,9 +1115,7 @@ impl BlocklistAIActionModel {
             .and_then(|queue| queue.iter().position(|action| &action.id == action_id))?;
 
         if initiator == ActionInitiator::User
-            && self
-                .commands_being_edited
-                .contains(&(conversation_id, action_id.clone()))
+            && self.is_command_being_edited(conversation_id, action_id, ctx)
         {
             // The card shows uncommitted edits; the pending text is not what is on screen.
             log::info!(
@@ -1476,7 +1494,7 @@ impl BlocklistAIActionModel {
         self.full_command_shown
             .retain(|(conversation, _), _| *conversation != conversation_id);
         self.commands_being_edited
-            .retain(|(conversation, _)| *conversation != conversation_id);
+            .retain(|(conversation, _), _| *conversation != conversation_id);
 
         let Some(actions_to_cancel) = self.pending_actions.get_mut(&conversation_id) else {
             return;

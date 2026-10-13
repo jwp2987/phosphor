@@ -969,7 +969,11 @@ fn user_accept_is_refused_while_the_approval_card_is_editing() {
         });
         action_model.update(&mut app, |model, ctx| {
             queue_tui_permission_action(model, action.clone(), conversation_id, ctx);
-            model.set_command_being_edited(conversation_id, &action.id, true);
+            model.set_command_being_edited(
+                conversation_id,
+                &action.id,
+                Some(Box::new(|_: &AppContext| true)),
+            );
             model.execute_next_action_for_user(conversation_id, ctx);
             model.execute_action(&action.id, conversation_id, ctx);
         });
@@ -981,6 +985,20 @@ fn user_accept_is_refused_while_the_approval_card_is_editing() {
                     .any(|pending| pending.id == action.id)
             );
             assert!(model.get_action_result(&action.id).is_none());
+        });
+
+        // The probe is checked live: a card that was dropped, or left edit mode without
+        // reporting it, stops blocking.
+        action_model.update(&mut app, |model, ctx| {
+            assert!(model.is_command_being_edited(conversation_id, &action.id, ctx));
+            model.set_command_being_edited(
+                conversation_id,
+                &action.id,
+                Some(Box::new(|_: &AppContext| false)),
+            );
+            assert!(!model.is_command_being_edited(conversation_id, &action.id, ctx));
+            model.set_command_being_edited(conversation_id, &action.id, None);
+            assert!(!model.is_command_being_edited(conversation_id, &action.id, ctx));
         });
     });
 }

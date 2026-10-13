@@ -99,12 +99,7 @@ fn full_view_never_hands_the_renderer_a_word_over_its_limit() {
     // every run well below that.
     let command = issue_847_command(100_000);
     let preview = command_approval_preview(&command, PreviewMode::Full);
-    let longest_word = preview
-        .text
-        .split(|c: char| c.is_whitespace() || c == '\u{200B}')
-        .map(|w| w.chars().count())
-        .max()
-        .unwrap_or(0);
+    let longest_word = longest_unbroken_stretch(&preview.text);
     assert!(
         longest_word <= 1_024,
         "longest unbroken word is {longest_word}"
@@ -482,13 +477,17 @@ fn format_characters_are_escaped_by_category() {
     }
 }
 
-/// The longest stretch of the display between two line-break opportunities: whitespace, a
-/// newline, or a zero-width break. The shaper treats such a stretch as one word.
+/// The longest segment of `text` between two UAX #14 line-break opportunities, measured with
+/// the same segmenter cosmic-text uses. The shaper treats such a segment as one word. Spaces are
+/// not assumed to be breaks: `( (`, `"( "(` and `— —` keep theirs unbroken.
 fn longest_unbroken_stretch(text: &str) -> usize {
-    text.split(|c: char| c.is_whitespace() || c == '\u{200B}')
-        .map(|stretch| stretch.chars().count())
-        .max()
-        .unwrap_or(0)
+    let mut previous = 0;
+    let mut longest = 0;
+    for (position, _) in unicode_linebreak::linebreaks(text) {
+        longest = longest.max(text[previous..position].chars().count());
+        previous = position;
+    }
+    longest
 }
 
 /// #847 round 3, N1 (#864): quotes, operators and escapes glued to letters give the shaper no
@@ -504,6 +503,12 @@ fn full_view_breaks_words_glued_together_from_many_pieces() {
         "a\u{202E}".repeat(10_000),
         "a$(b)".repeat(4_000),
         format!("x{}", "<U+".repeat(6_000)),
+        // Spaces that UAX #14 does not break at (LB14, LB15, LB17).
+        "( ".repeat(10_000),
+        "\"( ".repeat(7_000),
+        "\u{2014} ".repeat(10_000),
+        // Combining marks: a break must not separate a base from its mark.
+        "e\u{0301}".repeat(10_000),
     ];
     for command in cases {
         assert!(command.chars().count() > 16_384);
@@ -512,7 +517,7 @@ fn full_view_breaks_words_glued_together_from_many_pieces() {
         assert!(
             longest <= 1_024,
             "unbroken stretch of {longest} chars in the full view of {}…",
-            &command[..20]
+            command.chars().take(10).collect::<String>()
         );
         assert_eq!(full.hidden_chars, 0);
     }
@@ -574,4 +579,26 @@ fn unassigned_code_points_are_not_escaped() {
     // is not a hiding character.
     let preview = command_approval_preview("echo \u{1FAE9}", PreviewMode::Collapsed);
     assert_eq!(preview.text, "echo \u{1FAE9}");
+}
+
+#[test]
+fn full_view_never_puts_a_break_between_a_base_and_its_combining_mark() {
+    let command = "e\u{0301}".repeat(10_000);
+    let full = command_approval_preview(&command, PreviewMode::Full);
+    assert!(!full.text.contains("\u{200B}\u{0301}"));
+    assert!(full.text.contains('\u{200B}'));
+}
+
+#[test]
+fn rtl_letters_next_to_live_expansions_inside_double_quotes_are_escaped() {
+    // `$` and backticks still expand inside double quotes, so the line counts as having an
+    // operator.
+    let preview = command_approval_preview("echo \"\u{05D0} $(id)\"", PreviewMode::Collapsed);
+    assert_eq!(preview.text, "echo \"<U+05D0> $(id)\"");
+}
+
+#[test]
+fn unassigned_default_ignorables_are_escaped() {
+    let preview = command_approval_preview("a\u{2065}b\u{FFF0}c\u{E0FFF}d", PreviewMode::Collapsed);
+    assert_eq!(preview.text, "a<U+2065>b<U+FFF0>c<U+E0FFF>d");
 }

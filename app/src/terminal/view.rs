@@ -27476,9 +27476,12 @@ impl TypedActionView for TerminalView {
                     turning_on = !BlocklistAIHistoryModel::as_ref(ctx)
                         .conversation(&conversation_id)
                         .is_some_and(|conversation| conversation.autoexecute_any_action());
-                    accepted = ai_block.update(ctx, |ai_block, ctx| {
-                        ai_block.accept_pending_action(ctx)
-                    });
+                    // Turning autoexecute off accepts nothing.
+                    if turning_on {
+                        accepted = ai_block.update(ctx, |ai_block, ctx| {
+                            ai_block.accept_pending_action(ctx)
+                        });
+                    }
                 }
 
                 // A pending command whose approval card elides part of it was refused (issue

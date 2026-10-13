@@ -36,10 +36,11 @@
 //!   stretches and blank-line runs stay collapsed, because they hide nothing else and would
 //!   otherwise push the end out of sight. The card echoes the end in an "Ends with" note.
 //!   A zero-width space is inserted wherever [`FULL_VIEW_BREAK_EVERY_CHARS`] display chars have
-//!   gone by without a line-break opportunity (whitespace, newline, or an earlier insertion).
-//!   The count runs across operators, quotes, escapes and markers, which give no break when
-//!   glued to letters (#864). The breaks are display-only, so no shaped word reaches the
-//!   renderer's limit, and the text soft-wraps instead of clipping. U+200B is a
+//!   gone by without a guaranteed break (a newline or an earlier insertion). Whitespace does
+//!   not count as one, because UAX #14 keeps some spaces unbroken, and neither do operators,
+//!   quotes, escapes or markers glued to letters (#864). The breaks are display-only, so no
+//!   shaped word reaches the renderer's limit, and the text soft-wraps instead of clipping.
+//!   U+200B is a
 //!   Default_Ignorable code point, so the shaper hides it rather than drawing a missing-glyph box.
 //!   `layout_line` in `fonts.rs` already relies on that. Still, this needs a manual check on a
 //!   real X11 build with a 100K word.
@@ -170,7 +171,12 @@ fn must_escape(c: char) -> bool {
             | '\u{FF40}'..='\u{FF5E}'
             | '\u{FFA0}'
             | '\u{FFFC}'
-            | '\u{E0100}'..='\u{E01EF}'
+            // Default_Ignorable code points that are unassigned (in some Unicode version this
+            // crate's tables may predate) render as nothing, so they are escaped too. Ordinary
+            // unassigned code points, such as emoji newer than the tables, are left alone.
+            | '\u{2065}'
+            | '\u{FFF0}'..='\u{FFF8}'
+            | '\u{E0000}'..='\u{E0FFF}'
     )
 }
 
@@ -364,7 +370,8 @@ fn rtl_escape_flags(chars: &[char]) -> Vec<bool> {
             in_single = true;
         } else if c == '"' {
             in_double = !in_double;
-        } else if !in_double && is_reorderable_operator(c) {
+        } else if is_reorderable_operator(c) && (!in_double || matches!(c, '$' | '`')) {
+            // `$` and backticks stay live inside double quotes (expansion, substitution).
             line_has_operator = true;
         }
         if c == '\n' || i + 1 == chars.len() {
@@ -569,21 +576,31 @@ pub(crate) fn command_approval_preview(command: &str, mode: PreviewMode) -> Comm
 
     let mut preview = CommandApprovalPreview::default();
     let mut char_index = 0;
-    // Display chars since the last real line-break opportunity: whitespace, a newline, or an
-    // inserted zero-width break. The shaper treats everything between two such opportunities as
-    // one word. The full view can be any length, so a break is inserted whenever this reaches
-    // `FULL_VIEW_BREAK_EVERY_CHARS`. The count carries across pieces, because quotes, operators,
-    // escapes and markers glued to letters give no break of their own (`a"a"a"…`, `a;a;a;…`).
+    // Display chars since the last guaranteed line break: a newline, or an inserted zero-width
+    // space (UAX #14 LB8, `ZW SP* ÷`, always breaks after it). The shaper treats everything
+    // between two breaks as one word, and in the full view a word can be any length. So a break
+    // is inserted whenever this reaches `FULL_VIEW_BREAK_EVERY_CHARS`.
+    //
+    // Whitespace does NOT reset the count. A space is not always a break opportunity: LB14
+    // `OP SP* ×`, LB15 `QU SP* × OP`, and LB17 `B2 SP* × B2` (em dashes) keep `( ( ( …`,
+    // `"( "( …` and `— — …` unbroken across their spaces. cosmic-text also keeps interior
+    // spaces inside such a segment. Nor do quotes, operators, escapes or markers glued to letters
+    // break anything (`a"a"…`, `a;a;…`, #864). A break is never put between a base character
+    // and its combining mark; it waits for the next base character.
+    //
     // The collapsed preview needs no breaks: its whole display is bounded by
     // `COLLAPSED_PREVIEW_MAX_CHARS` plus a marker, far below the renderer's 16,384-char limit.
     let mut since_break = 0usize;
     for piece in &pieces {
         preview.hidden_chars += piece.hidden_chars;
         for c in piece.text.chars() {
-            if c.is_whitespace() || c == ZERO_WIDTH_BREAK {
+            if c == '\n' || c == ZERO_WIDTH_BREAK {
                 since_break = 0;
             } else {
-                if mode == PreviewMode::Full && since_break >= FULL_VIEW_BREAK_EVERY_CHARS {
+                if mode == PreviewMode::Full
+                    && since_break >= FULL_VIEW_BREAK_EVERY_CHARS
+                    && !is_combining_mark(c)
+                {
                     preview.text.push(ZERO_WIDTH_BREAK);
                     char_index += 1;
                     since_break = 0;
