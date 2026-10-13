@@ -706,6 +706,91 @@ upstream's behavior is actually a defect rather than a preference.
   renderer lays out the whole message every frame, extending parsed text a renderer still
   holds copies it, and a table or single line that is still streaming is re-parsed whole.
 
+- **The agent command approval card shows every part of the command, and no user accept runs
+  a command while part of it is elided** (`#847`, 2026-10-13,
+  `app/src/ai/blocklist/inline_action/command_approval_preview.rs`,
+  `app/src/ai/blocklist/inline_action/requested_command.rs`,
+  `app/src/ai/blocklist/action_model.rs`).
+
+  **Upstream:** the blocked card renders the raw command in a `CodeEditorView`, which lays a
+  line out unwrapped at infinite width
+  (`4111d08f9:app/src/ai/blocklist/inline_action/requested_command.rs:1652`). Accept commits
+  the editor text and runs it with no other check (`:2056`). The AI block's Enter key
+  (`ExecuteNextPendingAction`) runs the pending command without the card at all. The Linux
+  text stack is also the same at the pin
+  (`4111d08f9:crates/warpui/src/windowing/winit/fonts.rs:1089`,
+  `AttrsList::new(Attrs::new())`).
+
+  **The defect:** that renderer drops any single word longer than 16,384 chars. The list's
+  default attrs never match a span, so cosmic-text shapes an empty run at the start of every
+  word. rustybuzz `enter()` then leaves the reused buffer at `max_len = 16384` (its `leave()`
+  is skipped for an empty buffer), and `push_str` silently discards the longer word.
+  - `echo <100K A>; touch ~/hidden-payload.txt` is shown as `echo  touch
+    ~/hidden-payload.txt`, with the `;` gone.
+  - A 3,000-char word is clipped off the right edge instead, so the payload is not visible at
+    all.
+  - Blank-line padding pushes a payload below the card's fold.
+
+  Approve runs the full text in every case. Reproduced on 0.1.11 and at `beee34583`.
+
+  **We do (GUI agent approval card):**
+  - **Preview.** Outside edit mode, the card draws `command_approval_preview`, even when no
+    editor exists:
+    - Shell operators and separators are always visible and highlighted.
+    - Over-long words are elided only in their middle, behind a marker with the exact hidden
+      count.
+    - Whitespace stretches over 32 chars and runs of 3 or more blank lines collapse behind
+      counted markers, in both views.
+    - Over 1,500 chars or 20 lines, the middle is cut behind a counted marker.
+    - The collapsed preview has no height cap of its own. An "Ends with: ..." note echoes the
+      last 120 chars.
+    - The following are drawn as `<U+XXXX>` on a marker background:
+      - controls;
+      - Cf, Zl, Zp and Co code points;
+      - non-ASCII spaces;
+      - blank-rendering glyphs and variation selectors;
+      - fullwidth Latin letters and digits, and fullwidth look-alikes of shell operators.
+        Everyday CJK punctuation is not escaped.
+      - Mn/Me marks after the second in a row;
+      - a literal `<U+`;
+      - strong right-to-left letters on a line with an unquoted shell operator (`$` and
+        backticks count even inside double quotes). The text element has no base-direction
+        override.
+      - unassigned Default_Ignorable code points.
+    - Other unassigned code points, such as new emoji, are not escaped.
+  - **Full view.** "Show full command", or Enter on an elided card, opens it. It inserts a
+    zero-width break wherever 256 display chars pass since the last newline or inserted break.
+    Spaces do not reset the count, because UAX #14 keeps some unbroken (LB14/15/17), and
+    neither do quotes, operators or escapes. So no shaped word reaches the renderer's
+    16,384-char limit (#864). It scrolls inside a 500px cap.
+  - **Reviewed gate.** For an elided command, Run is offered only after the full view has been
+    on screen for 500ms and scrolled to its end. Any refused attempt restarts the 500ms, so a
+    held Enter cannot accept. The scroll state is replaced whenever the view opens or the text
+    changes, so "at the end" is unknown until the new content is laid out. The card then records the exact text on the
+    action model, keyed by (conversation, action id).
+  - **Model gate.** `start_pending_action_by_id` refuses every `ActionInitiator::User` start of
+    an elided command without that record for the exact text it would run. It also refuses
+    while the card is in edit mode, where the card shows uncommitted text. Edit mode is checked
+    live, through a probe on the card, so a card dropped mid-edit cannot leave a command stuck.
+  - **Accept paths.**
+    - The AI block's Enter and the auto-execute toggle go through the card's accept.
+    - The CLI subagent's accept is refused for elided commands, with a toast.
+    - Committed edits and Done/Escape out of edit mode write the text into the pending action.
+    - A collapsed card expands instead of accepting.
+    - Streamed updates replace any differing text, not only longer text.
+    - Turning autoexecute on is skipped when the accept was refused. Turning it off always
+      works.
+
+  **Not done here:**
+  - The renderer bug itself (in `fonts.rs` / cosmic-text) still affects any other text with a
+    word over 16,384 chars, including the card's edit-mode editor.
+  - This entry covers the GUI card only. The TUI shell command view draws its own editor in
+    terminal cells, and its accept marks the text it runs as shown. Whether it can hide part
+    of a command is tracked in #865.
+  - The alt-screen tag-in override (`ActionInitiator::AutoAcceptedTagIn`) runs commands with
+    no card at all. That is pre-existing and deliberate, and this gate does not apply to it.
+  - Neither does profile auto-execution (`ActionInitiator::Agent`).
+
 - **An incremental find rescan does not flash the find bar's scanning label**
   (`#815`, 2026-10-12, `app/src/terminal/find/model/async_find.rs`). **Upstream:**
   `AsyncFindController::invalidate_block` sets `status = Scanning` for every

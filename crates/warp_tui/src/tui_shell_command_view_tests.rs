@@ -864,3 +864,141 @@ fn second_escape_after_editor_exit_cancels_tool_call() {
         });
     });
 }
+
+/// #847 (review H1): the gate on an elided command sits in the action model, where every user
+/// accept ends up. It is not only on the GUI card. The AI block's Enter
+/// (`execute_next_action_for_user`) and an accept by id (`execute_action`) both bypass the card.
+/// Both must leave a command pending while the card would elide part of it and the user has not
+/// shown it in full. A short command is never gated.
+#[test]
+fn user_accept_of_an_elided_command_is_refused_until_shown_in_full() {
+    App::test((), |mut app| async move {
+        app.update(super::init);
+        let hidden = format!("echo {}; touch ~/hidden-payload.txt", "A".repeat(100_000));
+        let action = command_action("action-hidden", &hidden);
+        let view = add_shell_view(
+            &mut app,
+            action.clone(),
+            Arc::new(FairMutex::new(TerminalModel::mock(None, None))),
+        );
+        let (action_model, conversation_id) = app.read(|ctx| {
+            let view = view.as_ref(ctx);
+            (view.action_model.clone(), view.conversation_id)
+        });
+        action_model.update(&mut app, |model, ctx| {
+            queue_tui_permission_action(model, action.clone(), conversation_id, ctx);
+        });
+
+        action_model.update(&mut app, |model, ctx| {
+            assert!(model.user_accept_blocked_by_hidden_command(conversation_id, &action));
+            model.execute_next_action_for_user(conversation_id, ctx);
+            model.execute_action(&action.id, conversation_id, ctx);
+        });
+        app.read(|ctx| {
+            let model = action_model.as_ref(ctx);
+            assert!(
+                model
+                    .get_pending_actions_for_conversation(&conversation_id)
+                    .any(|pending| pending.id == action.id),
+                "a refused accept must leave the command pending"
+            );
+            assert!(model.get_action_result(&action.id).is_none());
+        });
+
+        // Showing exactly this text lifts the gate. A mark for another text (an edit), or in
+        // another conversation, does not. Clearing restores the gate.
+        action_model.update(&mut app, |model, _| {
+            model.mark_full_command_shown(conversation_id, &action.id, &format!("{hidden} #e"));
+            assert!(model.user_accept_blocked_by_hidden_command(conversation_id, &action));
+            model.mark_full_command_shown(AIConversationId::new(), &action.id, &hidden);
+            assert!(model.user_accept_blocked_by_hidden_command(conversation_id, &action));
+            model.mark_full_command_shown(conversation_id, &action.id, &hidden);
+            assert!(!model.user_accept_blocked_by_hidden_command(conversation_id, &action));
+            model.clear_full_command_shown(conversation_id, &action.id);
+            assert!(model.user_accept_blocked_by_hidden_command(conversation_id, &action));
+        });
+
+        // Review B1: the card writes committed edits into the pending action, so an accept path
+        // that bypasses the card runs the edited text, and the gate judges that text.
+        let edited = format!("{hidden} && rm -rf ~");
+        action_model.update(&mut app, |model, ctx| {
+            model.mark_full_command_shown(conversation_id, &action.id, &hidden);
+            model.set_pending_command_text(conversation_id, &action.id, edited.clone());
+            let pending = model
+                .get_pending_actions_for_conversation(&conversation_id)
+                .find(|pending| pending.id == action.id)
+                .cloned()
+                .expect("still pending");
+            assert!(matches!(
+                &pending.action,
+                AIAgentActionType::RequestCommandOutput { command, .. } if *command == edited
+            ));
+            assert!(model.user_accept_blocked_by_hidden_command(conversation_id, &pending));
+            model.execute_next_action_for_user(conversation_id, ctx);
+        });
+        app.read(|ctx| {
+            assert!(action_model.as_ref(ctx).get_action_result(&action.id).is_none());
+        });
+
+        let plain = command_action("action-plain", "echo hi; ls");
+        app.read(|ctx| {
+            assert!(
+                !action_model
+                    .as_ref(ctx)
+                    .user_accept_blocked_by_hidden_command(conversation_id, &plain)
+            );
+        });
+    });
+}
+
+/// #847 round 3: while a GUI approval card is in edit mode it shows uncommitted text, so a user
+/// accept that bypasses the card must not run the pending text. Leaving edit mode lifts this.
+#[test]
+fn user_accept_is_refused_while_the_approval_card_is_editing() {
+    App::test((), |mut app| async move {
+        app.update(super::init);
+        let action = command_action("action-editing", "echo short");
+        let view = add_shell_view(
+            &mut app,
+            action.clone(),
+            Arc::new(FairMutex::new(TerminalModel::mock(None, None))),
+        );
+        let (action_model, conversation_id) = app.read(|ctx| {
+            let view = view.as_ref(ctx);
+            (view.action_model.clone(), view.conversation_id)
+        });
+        action_model.update(&mut app, |model, ctx| {
+            queue_tui_permission_action(model, action.clone(), conversation_id, ctx);
+            model.set_command_being_edited(
+                conversation_id,
+                &action.id,
+                Some(Box::new(|_: &AppContext| true)),
+            );
+            model.execute_next_action_for_user(conversation_id, ctx);
+            model.execute_action(&action.id, conversation_id, ctx);
+        });
+        app.read(|ctx| {
+            let model = action_model.as_ref(ctx);
+            assert!(
+                model
+                    .get_pending_actions_for_conversation(&conversation_id)
+                    .any(|pending| pending.id == action.id)
+            );
+            assert!(model.get_action_result(&action.id).is_none());
+        });
+
+        // The probe is checked live: a card that was dropped, or left edit mode without
+        // reporting it, stops blocking.
+        action_model.update(&mut app, |model, ctx| {
+            assert!(model.is_command_being_edited(conversation_id, &action.id, ctx));
+            model.set_command_being_edited(
+                conversation_id,
+                &action.id,
+                Some(Box::new(|_: &AppContext| false)),
+            );
+            assert!(!model.is_command_being_edited(conversation_id, &action.id, ctx));
+            model.set_command_being_edited(conversation_id, &action.id, None);
+            assert!(!model.is_command_being_edited(conversation_id, &action.id, ctx));
+        });
+    });
+}

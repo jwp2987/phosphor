@@ -280,6 +280,14 @@ impl TuiShellCommandView {
         }
         let action_id = self.action.id.clone();
         self.action_model.update(ctx, |action_model, ctx| {
+            // The action model refuses a user accept of a command that the GUI approval card
+            // would elide, until that card's "Show full command" was used (issue #847). This view
+            // does not use that card. It puts the exact text in its own editor, which is drawn in
+            // terminal cells rather than through the GUI text shaper that dropped long words.
+            // Accepting here therefore vouches for the text itself. Whether the 4-row editor can
+            // still scroll part of a command out of view is tracked as a separate TUI follow-up
+            // to #847.
+            action_model.mark_full_command_shown(self.conversation_id, &action_id, &command);
             action_model.handle_requested_command_accepted(&action_id, command, ctx);
         });
     }

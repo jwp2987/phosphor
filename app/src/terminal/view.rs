@@ -7710,6 +7710,10 @@ impl TerminalView {
                 .get_pending_action(app)
                 .map(|action| match &action.action {
                     AIAgentActionType::RequestCommandOutput { command, .. } => {
+                        // Same one-line form as the card header: long runs elided with a count,
+                        // invisible characters escaped, `…` for more lines (issue #847).
+                        use crate::ai::blocklist::inline_action::requested_command::format_command_text;
+                        let command = format_command_text(command);
                         format!("Phosphor Agent needs your permission to run `{command}`")
                     }
                     AIAgentActionType::ReadFiles(..) => {
@@ -27789,15 +27793,30 @@ impl TypedActionView for TerminalView {
             }
             ToggleAutoexecuteMode => {
                 // If there's a pending (blocked) requested code diff, accept it first.
+                let mut accepted = true;
+                let mut turning_on = true;
                 if let Some(ai_block) = self.last_ai_block() {
-                    ai_block.update(ctx, |ai_block, ctx| {
-                        ai_block.accept_pending_action(ctx);
-                    });
+                    let conversation_id = ai_block.as_ref(ctx).conversation_id();
+                    turning_on = !BlocklistAIHistoryModel::as_ref(ctx)
+                        .conversation(&conversation_id)
+                        .is_some_and(|conversation| conversation.autoexecute_any_action());
+                    // Turning autoexecute off accepts nothing.
+                    if turning_on {
+                        accepted = ai_block.update(ctx, |ai_block, ctx| {
+                            ai_block.accept_pending_action(ctx)
+                        });
+                    }
                 }
 
-                self.ai_context_model.update(ctx, |context_model, ctx| {
-                    context_model.toggle_pending_query_autoexecute(ctx);
-                });
+                // A pending command whose approval card elides part of it was refused (issue
+                // #847). Do not switch autoexecute ON over it: the card stays blocked, and the
+                // user can enable autoexecute from it after showing the full command. Turning
+                // autoexecute OFF is always honoured.
+                if accepted || !turning_on {
+                    self.ai_context_model.update(ctx, |context_model, ctx| {
+                        context_model.toggle_pending_query_autoexecute(ctx);
+                    });
+                }
                 ctx.notify();
             }
             ToggleQueueNextPrompt => {
