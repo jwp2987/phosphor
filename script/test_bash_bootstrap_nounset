@@ -26,7 +26,13 @@ the DCS hook messages the shell writes, and checks, per scenario:
   * an in-band generator under `set -u` still ends with its Precmd;
   * the hooks hand the user's own options back: `set -u`/`set -o pipefail`
     stay on, whether set at the prompt or in an rcfile;
-  * `$?` and `$_` still reach the next command line unchanged.
+  * `$?` and `$_` still reach the next command line unchanged;
+  * under `set -e` and under `set -o noclobber` generators and commands keep
+    working and the shell stays alive.
+
+A check that waits for a block stops the scenario's waiting once one block has
+not finished: the remaining checks report FAIL at once instead of each running
+out its timeout.
 
 USAGE
     script/test_bash_bootstrap_nounset [path/to/bash]
@@ -106,6 +112,7 @@ class Shell:
             os.execve(BASH, [BASH, "--noprofile", "--rcfile", rc, "-i"], env)
         self.buf = b""
         self.dead = False
+        self.broken = False
 
     def pump(self, timeout, until=None):
         end = time.time() + timeout
@@ -141,17 +148,42 @@ class Shell:
         return raw.decode(errors="replace")
 
     def wait_bootstrapped(self):
-        return self.pump(20, lambda: "Bootstrapped" in self.hooks())
+        ok = self.pump(20, lambda: "Bootstrapped" in self.hooks())
+        self.broken = not ok
+        return ok
+
+    def _wait(self, cmd, until, timeout):
+        # Fail fast: once one block has not finished, the shell is locked or
+        # dead and every later wait would just run out its timeout.
+        if getattr(self, "broken", False):
+            return False
+        os.write(self.fd, (cmd + "\r").encode())
+        ok = self.pump(timeout, until)
+        if not ok:
+            self.broken = True
+        return ok
 
     def run(self, cmd, expect=None, timeout=10):
         """Type a command; wait for the Precmd that ends its block (and for
         `expect`, a regex over the output, when given)."""
         before = self.hooks().count("Precmd")
-        os.write(self.fd, (cmd + "\r").encode())
-        return self.pump(
-            timeout,
+        return self._wait(
+            cmd,
             lambda: self.hooks().count("Precmd") > before
             and (expect is None or re.search(expect, self.text()) is not None),
+            timeout,
+        )
+
+    def generator(self, n, timeout=10):
+        """Run an in-band generator the way the app does; wait for its output
+        and the Precmd that ends it."""
+        before = self.hooks().count("Precmd")
+        outputs = self.buf.count(b"\x1b]9277;A")
+        return self._wait(
+            f"warp_run_generator_command {n} 'echo gen{n}'",
+            lambda: self.hooks().count("Precmd") > before
+            and self.buf.count(b"\x1b]9277;A") > outputs,
+            timeout,
         )
 
     def close(self):
@@ -208,10 +240,7 @@ def scenario_set_u_at_prompt():
         check(sh.run('echo "underscore=$_"', r"underscore=[a-z0-9]"), "`$_` probe finishes", sh)
         check(has(sh, r"underscore=lastarg42"), "`$_` reaches the next command unchanged", sh)
 
-        before = sh.hooks().count("Precmd")
-        os.write(sh.fd, b"warp_run_generator_command 7 'echo gen'\r")
-        ok = sh.pump(10, lambda: sh.hooks().count("Precmd") > before and b"\x1b]9277;A" in sh.buf)
-        check(ok, "an in-band generator under set -u emits its output and its Precmd", sh)
+        check(sh.generator(7), "an in-band generator under set -u emits its output and its Precmd", sh)
         check(sh.run("echo after$((1+2))gen", r"after3gen"), "a command after the generator finishes", sh)
         check(has(sh, r"after3gen"), "its output arrives", sh)
         check(sh.run('[[ $- == *u* ]] && echo still-$((2+2))-on || echo still-$((2+2))-off', r"still-4-o"), "option probe finishes", sh)
@@ -231,6 +260,67 @@ def scenario_set_u_in_rcfile():
         check(has(sh, r"rc-nounset-10-on"), "the rcfile's nounset is in force after bootstrap", sh)
         check(sh.run('[[ -o pipefail ]] && echo rc-pipefail-$((5+6))-on || echo rc-pipefail-$((5+6))-off', r"rc-pipefail-11-o"), "pipefail probe finishes", sh)
         check(has(sh, r"rc-pipefail-11-on"), "the rcfile's pipefail is in force after bootstrap", sh)
+    finally:
+        sh.close()
+
+
+NOISE = r"unbound variable|cannot overwrite existing file|syntax error"
+
+
+def scenario_set_e_at_prompt():
+    print("set -e typed at the prompt")
+    sh = Shell()
+    try:
+        check(sh.wait_bootstrapped(), "bootstraps", sh)
+        check(sh.run("set -e"), "the `set -e` block finishes (Precmd)", sh)
+        check(sh.run("echo e$((1+1))", r"e2"), "the next command finishes (Precmd)", sh)
+        # Two generators: the second one's warp_preexec finds the first one's
+        # PID already finished, and the kill's non-zero status used to escape
+        # warp_preexec and exit the shell.
+        check(sh.generator(11), "a generator under set -e emits its output and its Precmd", sh)
+        check(sh.run("echo g$((2+3))", r"g5"), "a command after it finishes", sh)
+        check(sh.generator(12), "a second generator finishes", sh)
+        # Deterministic version of the race: a generator PID recorded as
+        # started but already gone. The next user command's warp_preexec
+        # tries to kill it, kill fails, and that status used to become
+        # warp_preexec's -- exiting the shell under set -e. The generator's own
+        # precmd does not reset the PID files, so the bogus PID survives to it.
+        before = sh.hooks().count("Precmd")
+        outputs = sh.buf.count(b"\x1b]9277;A")
+        check(
+            sh._wait(
+                'echo 2147483646 >> "$_WARP_GENERATOR_PIDS_STARTED_TMP_FILE"; '
+                "warp_run_generator_command 13 'echo gen13'",
+                lambda: sh.hooks().count("Precmd") > before
+                and sh.buf.count(b"\x1b]9277;A") > outputs,
+                10,
+            ),
+            "a stale generator PID is planted",
+            sh,
+        )
+        check(sh.run("echo alive$((9*9))", r"alive81"), "the shell is still alive afterwards", sh)
+        check(not sh.dead, "the shell did not exit", sh)
+        check(sh.run('[[ $- == *e* ]] && echo errexit-$((3+4))-on || echo errexit-$((3+4))-off',
+                     r"errexit-7-o"), "option probe finishes", sh)
+        check(has(sh, r"errexit-7-on"), "errexit is still on for the user afterwards", sh)
+        check(not has(sh, NOISE), "no hook reports an error", sh)
+    finally:
+        sh.close()
+
+
+def scenario_noclobber():
+    print("set -o noclobber typed at the prompt")
+    sh = Shell()
+    try:
+        check(sh.wait_bootstrapped(), "bootstraps", sh)
+        check(sh.run("set -o noclobber"), "the `set -o noclobber` block finishes (Precmd)", sh)
+        # warp_precmd truncates the generator PID files after every command;
+        # with plain `>` that fails under noclobber once the files exist.
+        check(sh.generator(21), "a generator under noclobber finishes", sh)
+        check(sh.run("echo n$((4*4))", r"n16"), "a command after it finishes", sh)
+        check(sh.generator(22), "a second generator finishes", sh)
+        check(sh.run("echo m$((5*5))", r"m25"), "a command after that finishes", sh)
+        check(not has(sh, NOISE), "no hook reports an error", sh)
     finally:
         sh.close()
 
@@ -255,6 +345,8 @@ def main():
     print(f"bash: {BASH}")
     scenario_set_u_at_prompt()
     scenario_set_u_in_rcfile()
+    scenario_set_e_at_prompt()
+    scenario_noclobber()
     scenario_options_untouched_without_set_u()
     if failures:
         print(f"\ntest_bash_bootstrap_nounset: {len(failures)} check(s) FAILED")

@@ -398,19 +398,26 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
                 break
               fi
             done
-            if (( found == 0 )); then
+            # The files start with the blank line warp_precmd resets them to.
+            if (( found == 0 )) && [[ -n "$pid" ]]; then
               pids+=("$pid")
             fi
           done < $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE
 
-          # If the array is not empty, kill the ongoing pids.
-          if [[ ! -z ${pids:-} ]]; then
+          # If the array is not empty, kill the ongoing pids -- all of them (#838:
+          # this used to expand `$pids`, i.e. only the first element).
+          if (( ${#pids[@]} > 0 )); then
             # Suppress stderr output; kill writes to stderr if any of the given
             # PIDS are not running (which might rarely be the case due to race
             # conditions in checking which PIDS to cancel and this kill command.
-            kill -9 $pids >/dev/null 2>/dev/null
-          fi 
+            kill -9 "${pids[@]}" >/dev/null 2>/dev/null || :
+          fi
         fi
+
+        # Warp's preexec never vetoes the user's command: bash-preexec makes a
+        # preexec's non-zero status skip the command under `extdebug`, and under
+        # the user's `set -e` it would exit the shell (#825).
+        return 0
     }
     function warp_preexec { __warp_run_relaxed __warp_preexec_impl "$@"; }
 
@@ -570,10 +577,10 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
 
         # If the files for tracking generator PIDs exist, clear them.
         if [[ -n ${_WARP_GENERATOR_PIDS_STARTED_TMP_FILE:-} && -f $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE ]]; then
-          echo "" > "$_WARP_GENERATOR_PIDS_STARTED_TMP_FILE"
+          echo "" >| "$_WARP_GENERATOR_PIDS_STARTED_TMP_FILE"
         fi
         if [[ -n ${_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE:-} && -f $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE ]]; then
-          echo "" > "$_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE"
+          echo "" >| "$_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE"
         fi
 
         if [[ -z ${WARP_INPUT_REPORTING_SUPPORTED:-} ]]; then

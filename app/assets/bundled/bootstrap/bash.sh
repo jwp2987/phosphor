@@ -488,7 +488,10 @@
  # we notify the terminal to input these characters in. For the remote case,
  # we actually start in an interactive non-login shell (i.e. it runs ~/.bashrc),
  # but it gets replaced by a new shell that we fully control.
- read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM'
+ # `read -d ''` returns 1 at end of input even though it read everything; in a
+ # subshell bootstrap this runs in a shell whose rcfiles may have set `set -e`,
+ # before bash_body.sh relaxes anything, so that status must not escape (#825).
+ read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :
 #include bundled/bootstrap/bash_body.sh
 EOM
  # We need to restore the line editor before we evaluate the bootstrap logic
