@@ -341,7 +341,10 @@ fn push_code_or_mermaid_section(
 /// by the chunk and the lines around it, not by the answer. Other O(answer) costs remain outside
 /// it (#872): when a renderer still holds the open piece's parsed text, extending it copies it
 /// once (`Arc::make_mut`), and a table or a single line that is still streaming is re-parsed
-/// whole on every chunk.
+/// whole on every chunk. For a table that includes its Markdown: while its last row is partial
+/// the full conversion rejects the table and renders its lines as plain text, which is parsed
+/// whole (a table's verdict depends on its last row, so its rows cannot be committed early
+/// without changing what is shown).
 ///
 /// The feature flags that shape the result (`BlocklistMarkdownTableRendering`,
 /// `MarkdownTables`) are read on each update. Toggling one mid-stream leaves the sections

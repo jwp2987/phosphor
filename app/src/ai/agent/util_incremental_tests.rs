@@ -238,30 +238,49 @@ fn a_piece_ending_in_a_blank_line_keeps_resuming_while_a_table_streams() {
     // Two blank lines leave the plain-text piece ending in a line break that `parse_markdown`
     // trims. While the table after it streams, the commit point stays before the table, so
     // every chunk reopens that piece; it must resume, not re-parse the whole piece.
+    //
+    // Chunks end on row boundaries. A chunk that ends inside a row leaves a partial last row
+    // that the table parser rejects, so the full conversion renders the table's lines as plain
+    // text for that chunk — and parsing that plain text costs O(table) per chunk. That is the
+    // documented cost of a table that is still streaming (#872), not the piece before it,
+    // which is what this test measures.
     let _rendering = FeatureFlag::BlocklistMarkdownTableRendering.override_enabled(true);
     let _tables = FeatureFlag::MarkdownTables.override_enabled(true);
+    let row = "| 1 | 2 |\n";
     let mut text = "prose line with *some* markup\n".repeat(2048);
     let prose_len = text.len();
     text.push_str("\n\n| A | B |\n| --- | --- |\n");
-    text.push_str(&"| 1 | 2 |\n".repeat(2000));
+    let header_end = text.len();
+    text.push_str(&row.repeat(2000));
 
     let mut parser = IncrementalTextSections::default();
     let mut sections = Vec::new();
     parser.update(&text[..prose_len], &mut sections);
-    let mut end = prose_len;
+    parser.update(&text[..header_end], &mut sections);
+    let after_header = parser.markdown_bytes_parsed();
+    let mut end = header_end;
+    let mut chunks = 0;
     while end < text.len() {
-        end = (end + 64).min(text.len());
+        end = (end + 6 * row.len()).min(text.len());
+        chunks += 1;
         parser.update(&text[..end], &mut sections);
+        if chunks % 50 == 0 {
+            assert_same_sections(
+                &sections,
+                &parse_markdown_into_text_and_code_sections(&text[..end]),
+                &format!("at byte {end}"),
+            );
+        }
     }
     assert_same_sections(
         &sections,
         &parse_markdown_into_text_and_code_sections(&text),
         "after streaming",
     );
+    // Without the reopen fix each of these chunks re-parsed the ~60 KB piece.
+    let while_table_streamed = parser.markdown_bytes_parsed() - after_header;
     assert!(
-        parser.markdown_bytes_parsed() <= 2 * text.len(),
-        "parsed {} Markdown bytes to stream {} bytes",
-        parser.markdown_bytes_parsed(),
-        text.len()
+        while_table_streamed <= 64 * chunks,
+        "parsed {while_table_streamed} Markdown bytes over {chunks} table chunks"
     );
 }
