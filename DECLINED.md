@@ -465,8 +465,11 @@ upstream's behavior is actually a defect rather than a preference.
   lost with no backup. **We do:** an unreadable or unparsable file is distinct from a
   missing one; it is never written while broken (the change applies for the session
   only), and a persistent error toast with an "Open file" link names the file and the
-  parse error, at launch and on every refused write. An empty or comment-only file still
-  means "no customizations".
+  parse error, at launch and on every refused write (re-shown even if dismissed). A new
+  window re-reads the file before replaying a recorded error, so a file fixed by hand
+  stops warning; there is no watcher on keybindings.yaml, so the toast says a restart is
+  needed to load the fixed bindings. An empty or comment-only file (with or without a
+  leading UTF-8 BOM) still means "no customizations".
 
 - **A stored setting value goes through the setting's `validate`, and an out-of-range
   `font_size` is rejected and reported** (`#857`, 2026-10-13,

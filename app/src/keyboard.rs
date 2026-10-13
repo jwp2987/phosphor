@@ -122,7 +122,7 @@ fn persist_keybindings_change(ctx: &mut AppContext, change: impl FnOnce(&mut Cus
                     // failure: windows opened from now on need no warning.
                     use warpui::SingletonEntity as _;
                     crate::user_config::WarpConfig::handle(ctx).update(ctx, |config, _| {
-                        config.clear_keybindings_file_error();
+                        config.record_keybindings_file_error_quietly(None);
                     });
                 }
                 Err(KeybindingsWriteError::ExistingFileInvalid(reason)) => {
@@ -191,6 +191,10 @@ fn read_keybindings_file(path: &std::path::Path) -> KeybindingsFile {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return KeybindingsFile::Missing,
         Err(e) => return KeybindingsFile::Invalid(format!("could not be read: {e}")),
     };
+    // Editors on Windows commonly save UTF-8 with a byte-order mark; it is
+    // not part of the YAML and must not make an otherwise valid (or empty)
+    // file read as broken.
+    let contents = contents.strip_prefix('\u{feff}').unwrap_or(&contents);
     // An empty (or comment-only) file means "no customizations". serde_yaml
     // does not deserialize an empty document into a map, so without this an
     // empty file would be reported as broken (before #858 it was silently
@@ -200,10 +204,41 @@ fn read_keybindings_file(path: &std::path::Path) -> KeybindingsFile {
     }) {
         return KeybindingsFile::Parsed(CustomKeybindings::default());
     }
-    match serde_yaml::from_str(&contents) {
+    match serde_yaml::from_str(contents) {
         Ok(map) => KeybindingsFile::Parsed(map),
         Err(e) => KeybindingsFile::Invalid(format!("could not be parsed: {e}")),
     }
+}
+
+/// The reason the keybindings file at `path` is unusable right now, or `None`
+/// if it is missing or parses.
+fn current_keybindings_file_error(path: &std::path::Path) -> Option<String> {
+    match read_keybindings_file(path) {
+        KeybindingsFile::Invalid(reason) => Some(reason),
+        KeybindingsFile::Missing | KeybindingsFile::Parsed(_) => None,
+    }
+}
+
+/// Returns the keybindings-file error a new window should show, re-reading
+/// the file first when one was recorded: there is no watcher on
+/// keybindings.yaml, so a file the user fixed by hand would otherwise keep
+/// replaying a stale error in every window opened afterwards. Updates the
+/// recorded error (without re-announcing it) to match the file. Only reads
+/// the disk when an error was recorded.
+#[cfg(not(test))]
+pub fn recheck_keybindings_file_error(ctx: &mut AppContext) -> Option<String> {
+    use warpui::SingletonEntity as _;
+
+    let config = crate::user_config::WarpConfig::handle(ctx);
+    let stored = config.as_ref(ctx).keybindings_file_error()?.to_owned();
+    let current = current_keybindings_file_error(&keybinding_file_path());
+    if current.as_deref() != Some(stored.as_str()) {
+        let recorded = current.clone();
+        config.update(ctx, |config, _| {
+            config.record_keybindings_file_error_quietly(recorded)
+        });
+    }
+    current
 }
 
 /// Applies `change` to the keybindings file at `path` and writes it back.
@@ -238,6 +273,13 @@ fn update_keybindings_file(
 // Unit tests are run with #[cfg(test)] enabled, so we can define custom no-op implementations
 #[cfg(test)]
 pub fn load_custom_keybindings(_: &mut AppContext) {}
+#[cfg(test)]
+pub fn recheck_keybindings_file_error(ctx: &mut AppContext) -> Option<String> {
+    use warpui::SingletonEntity as _;
+    crate::user_config::WarpConfig::as_ref(ctx)
+        .keybindings_file_error()
+        .map(str::to_owned)
+}
 #[cfg(test)]
 pub fn write_custom_keybinding(_: String, _: UserDefinedKeybinding, _: &mut AppContext) {}
 #[cfg(test)]

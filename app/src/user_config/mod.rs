@@ -129,18 +129,19 @@ impl WarpConfig {
         self.keybindings_file_error.as_deref()
     }
 
-    /// Forgets a previously recorded `keybindings.yaml` error (the file has
-    /// since been read successfully). Toasts already shown stay until dismissed.
-    pub fn clear_keybindings_file_error(&mut self) {
-        self.keybindings_file_error = None;
+    /// Replaces the recorded `keybindings.yaml` error without announcing it:
+    /// `None` once the file has been read successfully again, or the current
+    /// reason when a re-read found a different one. Toasts already shown stay
+    /// until dismissed.
+    pub fn record_keybindings_file_error_quietly(&mut self, reason: Option<String>) {
+        self.keybindings_file_error = reason;
     }
 
     /// Records that `keybindings.yaml` could not be used and tells every
-    /// workspace. Repeats of the same reason are not re-announced.
+    /// workspace. Always announced, even when the reason is unchanged: each
+    /// refused write must re-show the toast, which the user may have
+    /// dismissed.
     pub fn set_keybindings_file_error(&mut self, reason: String, ctx: &mut ModelContext<Self>) {
-        if self.keybindings_file_error.as_deref() == Some(reason.as_str()) {
-            return;
-        }
         self.keybindings_file_error = Some(reason.clone());
         ctx.emit(WarpConfigUpdateEvent::KeybindingsFileError(reason));
     }

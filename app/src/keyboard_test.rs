@@ -84,7 +84,7 @@ mod keybindings_file {
 
     use crate::keyboard::{
         CustomKeybindings, KeybindingsFile, KeybindingsWriteError, PersistedTrigger,
-        read_keybindings_file, update_keybindings_file,
+        current_keybindings_file_error, read_keybindings_file, update_keybindings_file,
     };
 
     // The broken file from the torture run (`logs/kb-garbage.yaml`): four
@@ -203,5 +203,45 @@ mod keybindings_file {
             update_keybindings_file(&path, |_| {}),
             Err(KeybindingsWriteError::ExistingFileInvalid(_))
         ));
+    }
+
+    #[test]
+    fn leading_byte_order_mark_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keybindings.yaml");
+
+        std::fs::write(&path, "\u{feff}\"terminal:clear\": ctrl-alt-l\n").unwrap();
+        let KeybindingsFile::Parsed(map) = read_keybindings_file(&path) else {
+            panic!("a BOM before valid YAML must not make it unparsable");
+        };
+        assert_eq!(
+            map.0.get("terminal:clear"),
+            Some(&PersistedTrigger("ctrl-alt-l".to_owned()))
+        );
+
+        for contents in ["\u{feff}", "\u{feff}# only a comment\n"] {
+            std::fs::write(&path, contents).unwrap();
+            match read_keybindings_file(&path) {
+                KeybindingsFile::Parsed(map) => assert!(map.0.is_empty()),
+                _ => panic!("{contents:?} must read as an empty map"),
+            }
+        }
+    }
+
+    /// A new window re-checks a recorded error, so a file fixed by hand stops
+    /// producing the toast (there is no watcher on keybindings.yaml).
+    #[test]
+    fn recheck_reports_only_a_currently_broken_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keybindings.yaml");
+
+        std::fs::write(&path, BROKEN).unwrap();
+        assert!(current_keybindings_file_error(&path).is_some());
+
+        std::fs::write(&path, "\"terminal:clear\": ctrl-alt-l\n").unwrap();
+        assert_eq!(current_keybindings_file_error(&path), None, "fixed by hand");
+
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(current_keybindings_file_error(&path), None, "deleted");
     }
 }

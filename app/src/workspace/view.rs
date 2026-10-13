@@ -2627,7 +2627,8 @@ impl Workspace {
             );
             let message = format!(
                 "Custom keybindings in {friendly_path} are not in effect: the file {reason}. \
-                 It will not be changed until you fix it."
+                 Phosphor will not change it until it is fixed. After fixing it, restart \
+                 Phosphor to load your bindings."
             );
             let toast = DismissibleToast::error(message)
                 .with_object_id(OBJECT_ID.to_owned())
@@ -2645,10 +2646,9 @@ impl Workspace {
             });
         }
 
-        if let Some(reason) = WarpConfig::as_ref(ctx)
-            .keybindings_file_error()
-            .map(str::to_owned)
-        {
+        // Re-reads the file if an error was recorded, so a file fixed by hand
+        // since does not replay a stale toast in every new window.
+        if let Some(reason) = crate::keyboard::recheck_keybindings_file_error(ctx) {
             show(&reason, &toast_stack, ctx);
         }
         ctx.subscribe_to_model(&WarpConfig::handle(ctx), move |_me, _, event, ctx| {
