@@ -32,11 +32,26 @@
 //! user, which for a file in the user's own config directory is what it
 //! already was. Hard links to the original are not updated -- they keep the
 //! old contents, as with any editor that saves by rename.
+//!
+//! # Where a rename is impossible
+//!
+//! A writable file in a directory the user cannot create files in, or a file
+//! that is itself a mount point (single-file bind mounts in containers), cannot
+//! be replaced by rename. Only in those cases -- see `should_write_in_place` --
+//! the write falls back to the old truncate-and-write, which is no worse than
+//! before. A full disk or an I/O error never falls back.
+//!
+//! # Leftovers
+//!
+//! A crash or kill between creating the temp file and renaming it leaves a
+//! `.{name}.tmp-*` file next to the target. Every write sweeps that target's
+//! temp files older than an hour.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 /// Symlink hops followed before giving up, matching the kernel's `MAXSYMLINKS`.
 const MAX_SYMLINK_HOPS: usize = 40;
@@ -51,9 +66,10 @@ pub fn write(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> io::Result<(
 }
 
 /// Like [`write`], but the contents are produced by `fill`, which writes into
-/// the temporary file. Exposed to tests so a write that fails part-way (as on
-/// a full disk) can be simulated.
-fn write_with(path: &Path, fill: impl FnOnce(&mut File) -> io::Result<()>) -> io::Result<()> {
+/// the file. Exposed to tests so a write that fails part-way (as on a full
+/// disk) can be simulated. `fill` may run twice: once into the temporary file
+/// and, only on the in-place fallback, once more into the target.
+fn write_with(path: &Path, fill: impl Fn(&mut File) -> io::Result<()>) -> io::Result<()> {
     let target = resolve_symlinks(path)?;
     let dir = match target.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
@@ -75,20 +91,26 @@ fn write_with(path: &Path, fill: impl FnOnce(&mut File) -> io::Result<()>) -> io
         // opening for writing, without truncating, modifies nothing.
         OpenOptions::new().write(true).open(&target)?;
     }
+    // The probe above returned early unless an existing target is writable.
+    let target_writable = existing_permissions.is_some();
 
-    let (temp_path, mut temp_file) = create_temp_file(&dir, &target)?;
-    let result = (|| {
-        if let Some(permissions) = existing_permissions {
-            temp_file.set_permissions(permissions)?;
-        }
-        fill(&mut temp_file)?;
-        temp_file.sync_all()?;
-        drop(temp_file);
-        fs::rename(&temp_path, &target)
-    })();
-    if let Err(err) = result {
+    sweep_stale_temp_files(&dir, &target);
+
+    let (temp_path, mut temp_file) = match create_temp_file(&dir, &target) {
+        Ok(created) => created,
+        Err(err) => return write_in_place_or_fail(err, &target, target_writable, &fill),
+    };
+    let prepared = prepare_temp_file(&mut temp_file, existing_permissions, &fill);
+    drop(temp_file);
+    if let Err(err) = prepared {
+        // Never falls back: this is where a full disk or an I/O error shows
+        // up, and writing in place is exactly what truncated the file.
         let _ = fs::remove_file(&temp_path);
         return Err(err);
+    }
+    if let Err(err) = fs::rename(&temp_path, &target) {
+        let _ = fs::remove_file(&temp_path);
+        return write_in_place_or_fail(err, &target, target_writable, &fill);
     }
 
     // Make the rename itself durable. Best effort: some filesystems refuse to
@@ -98,6 +120,105 @@ fn write_with(path: &Path, fill: impl FnOnce(&mut File) -> io::Result<()>) -> io
         let _ = dir_handle.sync_all();
     }
     Ok(())
+}
+
+fn prepare_temp_file(
+    temp_file: &mut File,
+    permissions: Option<fs::Permissions>,
+    fill: &impl Fn(&mut File) -> io::Result<()>,
+) -> io::Result<()> {
+    if let Some(permissions) = permissions {
+        temp_file.set_permissions(permissions)?;
+    }
+    fill(temp_file)?;
+    temp_file.sync_all()
+}
+
+/// Whether a failure to create the temporary file, or to rename it over the
+/// target, should be retried as a plain in-place write.
+///
+/// Only for errors that mean "this location cannot be replaced by rename",
+/// never "the write itself cannot succeed":
+/// - `PermissionDenied` (EACCES/EPERM): a writable file in a directory the
+///   user cannot create files in.
+/// - `ResourceBusy` (EBUSY): the target is a mount point -- a single-file
+///   bind mount, as container setups use for config files.
+/// - `CrossesDevices` (EXDEV): same cause, reported by some kernels.
+///
+/// And only when the target already exists and is writable; otherwise an
+/// in-place write would fail too. `StorageFull`, I/O errors, quotas and
+/// everything else return the original error: an in-place write is what
+/// truncated the file on a full disk (#859).
+fn should_write_in_place(err: &io::Error, target_writable: bool) -> bool {
+    target_writable
+        && matches!(
+            err.kind(),
+            io::ErrorKind::PermissionDenied
+                | io::ErrorKind::ResourceBusy
+                | io::ErrorKind::CrossesDevices
+        )
+}
+
+/// The fallback: the pre-#859 truncate-and-write, used only where an atomic
+/// replace is impossible (see [`should_write_in_place`]).
+fn write_in_place_or_fail(
+    err: io::Error,
+    target: &Path,
+    target_writable: bool,
+    fill: &impl Fn(&mut File) -> io::Result<()>,
+) -> io::Result<()> {
+    if !should_write_in_place(&err, target_writable) {
+        return Err(err);
+    }
+    log::warn!(
+        "Cannot atomically replace {} ({err}); writing it in place instead",
+        target.display()
+    );
+    let mut file = OpenOptions::new().write(true).truncate(true).open(target)?;
+    fill(&mut file)?;
+    file.sync_all()
+}
+
+/// Temp files older than this are leftovers of a crash (or a kill between
+/// creating and renaming) and are removed on the next write to the same file.
+const STALE_TEMP_AGE: Duration = Duration::from_secs(60 * 60);
+
+/// Whether `name` is a temp file [`create_temp_file`] makes for `file_name`.
+fn is_temp_file_for(name: &str, file_name: &str) -> bool {
+    name.strip_prefix('.')
+        .and_then(|rest| rest.strip_prefix(file_name))
+        .is_some_and(|rest| rest.starts_with(".tmp-"))
+}
+
+/// Best-effort removal of this file's temp files left behind by a crashed
+/// write. Only names this module creates for this target, and only ones older
+/// than [`STALE_TEMP_AGE`], so a concurrent writer's in-flight file is safe.
+fn sweep_stale_temp_files(dir: &Path, target: &Path) {
+    let Some(file_name) = target.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name
+            .to_str()
+            .is_some_and(|name| is_temp_file_for(name, file_name))
+        {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > STALE_TEMP_AGE);
+        if stale {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Follows `path` through any chain of symlinks to the path that will

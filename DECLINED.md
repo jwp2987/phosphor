@@ -448,7 +448,15 @@ upstream's behavior is actually a defect rather than a preference.
   directory, fsync, rename over the target, fsync the directory; on failure the original
   is untouched and the error is returned. A symlinked target is written *through* (the
   link survives; dotfile managers rely on it), permission bits are kept, and a file the
-  user cannot write is refused exactly as `std::fs::write` refused it. Applied to
+  user cannot write is refused exactly as `std::fs::write` refused it. **Limits:** hard
+  links to the file diverge (they keep the old contents, as with any save-by-rename
+  editor); ownership, ACLs and xattrs are not carried over (the new file belongs to the
+  writing user); where a rename is impossible -- a writable file in a directory the user
+  cannot create files in (EACCES/EPERM), or a single-file bind mount (EBUSY/EXDEV) --
+  the write falls back to the old in-place write, only when the target exists and is
+  writable, and never for ENOSPC, EIO or any other error. A crash between creating and
+  renaming the temp file leaves a `.{name}.tmp-*` file, swept on the next write once it
+  is over an hour old. Applied to
   settings.toml, user_preferences.json, keybindings.yaml and theme YAML. Not applied to
   files the app only ever creates fresh (new launch/tab configs, the default worktree
   template) or to the secure-storage fallback blobs (0600 semantics need their own

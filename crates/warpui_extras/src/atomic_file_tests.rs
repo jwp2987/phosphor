@@ -5,7 +5,7 @@ use std::fs;
 use std::io::{self, Write as _};
 use std::path::Path;
 
-use super::{write, write_with};
+use super::{is_temp_file_for, should_write_in_place, sweep_stale_temp_files, write, write_with};
 
 fn entries(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(dir)
@@ -140,6 +140,30 @@ mod unix {
         assert_eq!(entries(&config), vec!["settings.toml"]);
     }
 
+    /// A writable file in a directory the user cannot create files in: the
+    /// temp file cannot be created (EACCES), so the write falls back to an
+    /// in-place write rather than failing. (Skipped as root.)
+    #[test]
+    fn a_writable_file_in_a_read_only_directory_is_written_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        fs::create_dir(&locked).unwrap();
+        let path = locked.join("settings.toml");
+        fs::write(&path, "old\n").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+        let running_as_root = fs::File::create(locked.join("probe")).is_ok();
+
+        let result = write(&path, "new\n");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        if running_as_root {
+            return;
+        }
+
+        result.unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new\n");
+        assert_eq!(entries(&locked), vec!["settings.toml"]);
+    }
+
     #[test]
     fn a_dangling_symlink_creates_its_target() {
         let dir = tempfile::tempdir().unwrap();
@@ -188,4 +212,105 @@ mod unix {
         assert_eq!(fs::read_to_string(&path).unwrap(), "keep\n");
         assert_eq!(entries(dir.path()), vec!["settings.toml"]);
     }
+}
+
+#[test]
+fn falls_back_in_place_only_for_cannot_rename_errors_on_a_writable_target() {
+    use io::ErrorKind::*;
+
+    for kind in [PermissionDenied, ResourceBusy, CrossesDevices] {
+        assert!(
+            should_write_in_place(&io::Error::from(kind), true),
+            "{kind:?}"
+        );
+        assert!(
+            !should_write_in_place(&io::Error::from(kind), false),
+            "{kind:?} on a missing or unwritable target must not fall back"
+        );
+    }
+    for kind in [
+        StorageFull,
+        QuotaExceeded,
+        Other,
+        Interrupted,
+        NotFound,
+        IsADirectory,
+    ] {
+        assert!(
+            !should_write_in_place(&io::Error::from(kind), true),
+            "{kind:?} must never fall back to a truncating write"
+        );
+    }
+    #[cfg(unix)]
+    {
+        // The raw errnos the kinds above stand for, as the kernel reports them.
+        const EPERM: i32 = 1;
+        const EIO: i32 = 5;
+        const EACCES: i32 = 13;
+        const EBUSY: i32 = 16;
+        const EXDEV: i32 = 18;
+        const ENOSPC: i32 = 28;
+        for errno in [EPERM, EACCES, EBUSY, EXDEV] {
+            assert!(
+                should_write_in_place(&io::Error::from_raw_os_error(errno), true),
+                "{errno}"
+            );
+        }
+        for errno in [EIO, ENOSPC] {
+            assert!(
+                !should_write_in_place(&io::Error::from_raw_os_error(errno), true),
+                "{errno}"
+            );
+        }
+    }
+}
+
+#[test]
+fn temp_file_names_are_matched_exactly() {
+    assert!(is_temp_file_for(
+        ".settings.toml.tmp-123-0",
+        "settings.toml"
+    ));
+    assert!(!is_temp_file_for("settings.toml", "settings.toml"));
+    assert!(!is_temp_file_for(".settings.toml", "settings.toml"));
+    assert!(!is_temp_file_for(".settings.toml.bak", "settings.toml"));
+    assert!(!is_temp_file_for(
+        ".keybindings.yaml.tmp-1-0",
+        "settings.toml"
+    ));
+    assert!(!is_temp_file_for(
+        ".settings.tomlx.tmp-1-0",
+        "settings.toml"
+    ));
+}
+
+#[test]
+fn sweep_removes_only_stale_temp_files_of_the_target() {
+    use std::time::{Duration, SystemTime};
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("settings.toml");
+    fs::write(&target, "x").unwrap();
+    let two_hours_ago = SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+    let age = |name: &str, modified: SystemTime| {
+        let path = dir.path().join(name);
+        let file = fs::File::create(&path).unwrap();
+        file.set_modified(modified).unwrap();
+    };
+    age(".settings.toml.tmp-1-0", two_hours_ago); // stale: removed
+    age(".settings.toml.tmp-2-0", SystemTime::now()); // in flight: kept
+    age(".other.toml.tmp-1-0", two_hours_ago); // another file's: kept
+    age("notes.txt", two_hours_ago); // unrelated: kept
+
+    sweep_stale_temp_files(dir.path(), &target);
+
+    assert_eq!(
+        entries(dir.path()),
+        vec![
+            ".other.toml.tmp-1-0",
+            ".settings.toml.tmp-2-0",
+            "notes.txt",
+            "settings.toml"
+        ]
+    );
 }
