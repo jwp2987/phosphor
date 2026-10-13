@@ -2230,6 +2230,84 @@ mod typeahead_handoff {
         });
     }
 
+    /// #848's discard (tab close, an agent interrupt) drops every parked command, a held one
+    /// included, and forgets it: the next command can be held again rather than coalesced
+    /// behind a command that is gone.
+    #[test]
+    fn a_discard_drops_and_forgets_a_held_command() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            submit(&mut app, &harness, "sleep 2");
+            user_types(&mut app, &harness, b"foo");
+            shell_runs_a_command(&harness.model, "sleep 2");
+            fire_queued_command(&mut app, &harness);
+
+            harness.controller.update(&mut app, |controller, _| {
+                controller.discard_pending_command_writes();
+                assert!(controller.pending_writes.is_empty());
+                assert!(!controller.handoff_held_command_pending);
+                assert!(!controller.is_user_command_executing);
+            });
+
+            fire_queued_command(&mut app, &harness);
+            harness.controller.read(&app, |controller, _| {
+                assert!(controller.handoff_held_command_pending);
+                assert_eq!(controller.pending_writes.len(), 1);
+            });
+        });
+    }
+
+    /// A held agent command records its action, so a cancel of that action can find the
+    /// command although no block holds it yet; writing it forgets the action.
+    #[test]
+    fn a_held_agent_command_records_its_action_until_written() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            submit(&mut app, &harness, "sleep 2");
+            user_types(&mut app, &harness, b"foo");
+            shell_runs_a_command(&harness.model, "sleep 2");
+
+            let action_id = crate::ai::agent::AIAgentActionId::from("agent-command".to_owned());
+            let metadata = crate::terminal::model::block::AgentInteractionMetadata::new_hidden(
+                action_id.clone(),
+                crate::ai::agent::conversation::AIConversationId::new(),
+            );
+            let outcome = harness.controller.update(&mut app, |controller, ctx| {
+                controller.write_command(
+                    "agent",
+                    SHELL,
+                    CommandExecutionSource::AI { metadata },
+                    ctx,
+                )
+            });
+            assert_eq!(outcome, StartCommandOutcome::Accepted);
+            assert_eq!(
+                harness
+                    .model
+                    .lock()
+                    .typeahead_handoff()
+                    .held_command_action(),
+                Some(&action_id)
+            );
+
+            line_editor_becomes_active(&mut app, &harness);
+            assert_eq!(
+                written(&harness).last(),
+                Some(&bytes_to_execute_command("agent", SHELL, false))
+            );
+            assert_eq!(
+                harness
+                    .model
+                    .lock()
+                    .typeahead_handoff()
+                    .held_command_action(),
+                None
+            );
+        });
+    }
+
     /// A shell that cannot report its line keeps the pre-hand-off routing: nothing could hand
     /// keys left in its line back to the editor.
     #[test]

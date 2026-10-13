@@ -14,6 +14,8 @@
 
 use std::mem;
 
+use crate::ai::agent::AIAgentActionId;
+
 /// Who owns the user's keystrokes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum HandoffState {
@@ -149,6 +151,10 @@ pub struct TypeaheadHandoff {
     request_generation: u64,
     /// The request whose report deadline the view has not armed yet.
     deadline_to_arm: Option<u64>,
+    /// The agent action whose command `PtyController` holds behind the user's typeahead, if
+    /// the held command is an agent's. Its block is not started yet, so this is the only place
+    /// a cancel of that action can find it.
+    held_command_action: Option<AIAgentActionId>,
 }
 
 impl TypeaheadHandoff {
@@ -206,6 +212,14 @@ impl TypeaheadHandoff {
                 ..
             } if enters_written > precmds_seen
         )
+    }
+
+    pub fn held_command_action(&self) -> Option<&AIAgentActionId> {
+        self.held_command_action.as_ref()
+    }
+
+    pub fn set_held_command_action(&mut self, action: Option<AIAgentActionId>) {
+        self.held_command_action = action;
     }
 
     pub fn writes_in_flight(&self) -> u32 {

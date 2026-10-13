@@ -802,6 +802,10 @@ impl<T: EventLoopSender> PtyController<T> {
             let did_write = self.send_write_to_event_loop(write, ctx);
             if is_held_handoff_command {
                 self.handoff_held_command_pending = false;
+                self.terminal_model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .set_held_command_action(None);
                 if !did_write {
                     log::warn!(
                         "A command held behind the user's typeahead could not start when it was \
@@ -1204,6 +1208,11 @@ impl<T: EventLoopSender> PtyController<T> {
                 }
             )
         });
+        // A command held behind the user's typeahead is parked like any other and goes with
+        // them; forget it, or the next one would be coalesced behind a command that is gone.
+        if self.handoff_held_command_pending {
+            self.forget_held_handoff_command();
+        }
     }
 
     /// [`Self::write_command`], also applying `annotate_block` (e.g. recording the cloud
@@ -1268,6 +1277,21 @@ impl<T: EventLoopSender> PtyController<T> {
         annotate_block: Option<Box<dyn FnOnce(&mut TerminalModel) + Send>>,
         ctx: &mut ModelContext<Self>,
     ) {
+        let held_action = match &source {
+            CommandExecutionSource::AI { metadata } => {
+                metadata.requested_command_action_id().cloned()
+            }
+            CommandExecutionSource::SharedSession { ai_metadata, .. } => ai_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.requested_command_action_id().cloned()),
+            CommandExecutionSource::User
+            | CommandExecutionSource::QueuedCommand
+            | CommandExecutionSource::EnvVarCollection { .. } => None,
+        };
+        self.terminal_model
+            .lock()
+            .typeahead_handoff_mut()
+            .set_held_command_action(held_action);
         let terminal_model = self.terminal_model.clone();
         self.pending_writes.clear();
         self.is_user_command_executing = true;
@@ -1298,9 +1322,18 @@ impl<T: EventLoopSender> PtyController<T> {
     fn drop_held_handoff_command(&mut self) {
         self.pending_writes
             .retain(|write| !is_held_handoff_command(write));
+        self.forget_held_handoff_command();
+        log::warn!("Dropped a command held behind the user's typeahead: the shell exited.");
+    }
+
+    /// Clears the bookkeeping of a held command that was dropped without being written.
+    fn forget_held_handoff_command(&mut self) {
         self.handoff_held_command_pending = false;
         self.is_user_command_executing = false;
-        log::warn!("Dropped a command held behind the user's typeahead: the shell exited.");
+        self.terminal_model
+            .lock()
+            .typeahead_handoff_mut()
+            .set_held_command_action(None);
     }
 
     /// Typeahead hand-off: whether the next queued write is a command that starts its own block

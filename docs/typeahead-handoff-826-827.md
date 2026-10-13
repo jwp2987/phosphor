@@ -275,6 +275,12 @@ Transitions out of `PtyOwned`:
   prompt after it. If the shell exits, a held command is dropped (with a log
   line; commands carry no completion channel, so an agent that sent it gets no
   result).
+- With #848/#850: a discard of parked commands (tab close, an agent interrupt)
+  drops a held command like any other parked command and forgets it. A held
+  agent command records its action, so cancelling that action discards it even
+  though no block holds it yet. An agent interrupt (ctrl-c on an agent command in
+  flight, a conversation stop) cancels a deferred Enter and its held keys first,
+  so its single ^C is written rather than held.
 - A command that starts its own block when written (an in-band or held command)
   waits while an Enter the user typed is unanswered by a prompt, so the output of
   the user's lines does not land in its block.

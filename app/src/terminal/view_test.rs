@@ -13132,3 +13132,84 @@ fn typeahead_handoff_ctrl_c_settle_asks_for_a_new_decision() {
         assert_eq!(*retries.borrow(), 1);
     })
 }
+
+/// Drives the hand-off to "Enter deferred while the report is outstanding".
+fn hold_after_deferred_enter(view: &TerminalView) {
+    let mut model = view.model.lock();
+    let handoff = model.typeahead_handoff_mut();
+    handoff.on_command_written();
+    handoff.on_user_bytes(b"ec");
+    handoff.on_user_write_flushed();
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert!(handoff.defer_enter());
+}
+
+/// #850 x the typeahead hand-off: ctrl-c on an agent command in flight while keys are held
+/// behind a deferred Enter still discards the parked copy and sends exactly one ^C -- it is not
+/// swallowed by the hold. The deferred Enter is dropped.
+#[test]
+fn typeahead_handoff_ctrl_c_on_an_agent_command_is_not_held() {
+    App::test((), |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let (terminal, _conversation_id, _action_id) =
+            terminal_with_real_async_agent_command(&mut app, false);
+        terminal.update(&mut app, |view, _| {
+            view.model
+                .lock()
+                .block_list_mut()
+                .active_block_mut()
+                .start();
+            hold_after_deferred_enter(view);
+        });
+        let (etx, discards) = count_close_pty_effects(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_action(&TerminalAction::CtrlC, ctx);
+        });
+
+        assert_eq!(*etx.borrow(), 1);
+        assert_eq!(*discards.borrow(), 1);
+        terminal.read(&app, |view, _| {
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::AwaitingReport
+            );
+        });
+    })
+}
+
+/// A cancel of an agent action whose command is held behind the user's typeahead (no block
+/// holds it yet) discards it and sends no ^C; a cancel of another action does neither.
+#[test]
+fn typeahead_handoff_cancel_of_a_held_agent_command_discards_it() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let held = AIAgentActionId::from("held-command".to_owned());
+        terminal.update(&mut app, |view, _| {
+            view.model
+                .lock()
+                .typeahead_handoff_mut()
+                .set_held_command_action(Some(held.clone()));
+        });
+        let (etx, discards) = count_close_pty_effects(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.interrupt_cancelled_agent_command(
+                &AIAgentActionId::from("other-command".to_owned()),
+                ctx,
+            );
+        });
+        assert_eq!((*etx.borrow(), *discards.borrow()), (0, 0));
+
+        terminal.update(&mut app, |view, ctx| {
+            view.interrupt_cancelled_agent_command(&held, ctx);
+        });
+        assert_eq!((*etx.borrow(), *discards.borrow()), (0, 1));
+    })
+}

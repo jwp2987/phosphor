@@ -8398,15 +8398,25 @@ impl TerminalView {
         action_id: &AIAgentActionId,
         ctx: &mut ViewContext<Self>,
     ) {
-        {
+        let holds_unwritten_copy = {
             let mut model = self.model.lock();
+            // Held behind the user's typeahead (`FeatureFlag::TypeaheadHandoff`): not written
+            // and its block not started, so no block holds it -- but it must still not run.
+            let holds_unwritten_copy = FeatureFlag::TypeaheadHandoff.is_enabled()
+                && model.typeahead_handoff().held_command_action() == Some(action_id);
             let active_block = model.block_list_mut().active_block_mut();
             if !active_block.agent_holds_in_flight_command(action_id) {
-                return;
+                Some(holds_unwritten_copy)
+            } else {
+                active_block.set_user_control_with_stop_reason();
+                None
             }
-            active_block.set_user_control_with_stop_reason();
+        };
+        match holds_unwritten_copy {
+            Some(true) => ctx.emit(Event::DiscardPendingCommandWrites),
+            Some(false) => {}
+            None => self.interrupt_agent_command(ctx),
         }
-        self.interrupt_agent_command(ctx);
     }
 
     /// Interrupts the agent's command in the active block: first drops any copy of it still
@@ -8415,6 +8425,14 @@ impl TerminalView {
     /// overtakes the queue; without the discard, the parked command would run once the line
     /// editor became active, after the interrupt it was meant to receive (#850).
     fn interrupt_agent_command(&mut self, ctx: &mut ViewContext<Self>) {
+        // Keys held behind a deferred Enter (`FeatureFlag::TypeaheadHandoff`) would hold this
+        // ^C too; the interrupt cancels that Enter and its keys instead, so the ^C is written.
+        if FeatureFlag::TypeaheadHandoff.is_enabled() {
+            self.model
+                .lock()
+                .typeahead_handoff_mut()
+                .cancel_deferred_enter();
+        }
         ctx.emit(Event::DiscardPendingCommandWrites);
         self.user_write_ctrl_c_to_pty(ctx);
     }
@@ -8655,13 +8673,19 @@ impl TerminalView {
     fn ctrl_c(&mut self, ctx: &mut ViewContext<Self>) {
         // Ctrl-C after an Enter that waits for the typeahead report cancels that Enter and the
         // keys held behind it, instead of being held and replayed after the deferred command.
+        // An agent command in flight still gets its single ^C below (#850); only the deferred
+        // Enter and its keys are dropped.
         if FeatureFlag::TypeaheadHandoff.is_enabled() {
-            let cancelled = self
-                .model
-                .lock()
-                .typeahead_handoff_mut()
-                .cancel_deferred_enter();
-            if cancelled {
+            let (cancelled, agent_command_in_flight) = {
+                let mut model = self.model.lock();
+                let cancelled = model.typeahead_handoff_mut().cancel_deferred_enter();
+                let agent_command_in_flight = model
+                    .block_list()
+                    .active_block()
+                    .is_agent_requested_command_in_flight();
+                (cancelled, agent_command_in_flight)
+            };
+            if cancelled && !agent_command_in_flight {
                 self.redetermine_terminal_focus(ctx);
                 ctx.notify();
                 return;
