@@ -1005,9 +1005,7 @@ fn make_new_elements_menu_items(ctx: &AppContext) -> Vec<MenuItem> {
     new_elements_menu.push(MenuItem::Custom(CustomMenuItem::new(
         &crate::t!("workspace-reopen-closed-session"),
         |ctx| {
-            UndoCloseStack::handle(ctx).update(ctx, |stack, ctx| {
-                stack.undo_close(ctx);
-            });
+            UndoCloseStack::undo_close(ctx);
         },
         move |props, ctx| {
             let mut changes = reopen_session_action_updater(props, ctx);

@@ -437,6 +437,28 @@ these as expected, not as drift to reconcile.
 Each entry must say what upstream does, what we do instead, and the evidence that
 upstream's behavior is actually a defect rather than a preference.
 
+- **Reopening a closed item runs the restore with `UndoCloseStack` free**
+  (`#840`, 2026-10-13, `app/src/undo_close/stack.rs`,
+  `app/src/ai/conversation_navigation/mod.rs`, `crates/warpui_core/src/core/entity.rs`).
+  **Upstream:** the `app:undo_close` global action runs
+  `UndoCloseStack::handle(ctx).update(ctx, |stack, ctx| stack.undo_close(ctx))`, and
+  `undo_close` pops the item *and restores it* inside that update
+  (`4111d08f9:app/src/workspace/global_actions.rs:198`,
+  `4111d08f9:app/src/undo_close/stack.rs:249`, byte-identical in shape).
+  **The defect:** restoring a tab activates it, and with the Tools panel on the
+  conversation list that re-syncs `AgentConversationsModel`;
+  `ConversationNavigationData::all_conversations` then walks every other window's
+  terminals and calls `UndoCloseStack::as_ref` (`4111d08f9:.../conversation_navigation/mod.rs:180`)
+  while the stack is checked out, which panics ("downcast should be type safe"). Any
+  user with the conversation list open and a second window crashes on ctrl+alt+t.
+  **We do:** `UndoCloseStack::undo_close(ctx)` is an associated function that pops the
+  item in a short update and calls `ClosedItem::restore` after it returns;
+  `all_conversations` reads the stack through a new non-panicking
+  `SingletonEntity::try_as_ref` as a defensive measure (it only visits live tabs, and a
+  closed tab is never both in `tab_views()` and on the stack, so a missing stack loses
+  nothing there); and the checked-out case now panics with a message naming the
+  re-entrancy instead of a misleading downcast failure.
+
 - **An incremental find rescan does not flash the find bar's scanning label**
   (`#815`, 2026-10-12, `app/src/terminal/find/model/async_find.rs`). **Upstream:**
   `AsyncFindController::invalidate_block` sets `status = Scanning` for every

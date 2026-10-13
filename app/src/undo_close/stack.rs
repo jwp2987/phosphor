@@ -67,6 +67,92 @@ pub enum ClosedItem {
 }
 
 impl ClosedItem {
+    /// Reopens this item. Must be called with [`UndoCloseStack`] *not* checked
+    /// out for update: restoring reaches code that reads the stack (#840). See
+    /// [`UndoCloseStack::undo_close`].
+    fn restore(self, ctx: &mut AppContext) {
+        match self {
+            ClosedItem::Window(data) => {
+                send_telemetry_from_app_ctx!(
+                    TelemetryEvent::UndoClose {
+                        item_type: UndoCloseItemType::Window,
+                    },
+                    ctx
+                );
+
+                let window_id = data.window_id;
+                ctx.reopen_closed_window(*data);
+
+                if let Some(workspace) = window_workspace(window_id, ctx) {
+                    workspace.update(ctx, |workspace, ctx| {
+                        workspace.handle_reopen(ctx);
+                    });
+                }
+
+                // Make sure we update our session restoration state now that the
+                // window has been reopened.
+                ctx.dispatch_global_action("workspace:save_app", &());
+            }
+            ClosedItem::Tab {
+                workspace,
+                tab_index,
+                data,
+            } => {
+                if let Some(workspace) = workspace.upgrade(ctx) {
+                    send_telemetry_from_app_ctx!(
+                        TelemetryEvent::UndoClose {
+                            item_type: UndoCloseItemType::Tab,
+                        },
+                        ctx
+                    );
+                    workspace.update(ctx, |workspace, ctx| {
+                        workspace.restore_closed_tab(tab_index, data, ctx);
+                    });
+                    ctx.windows()
+                        .show_window_and_focus_app(workspace.window_id(ctx));
+                }
+                // Make sure we update our session restoration state now that the
+                // tab has been reopened.
+                ctx.dispatch_global_action("workspace:save_app", &());
+            }
+            ClosedItem::Pane { data } => {
+                if let Some(pane_group) = data.pane_group.upgrade(ctx) {
+                    let pane_id = data.pane_id;
+                    let window_id = pane_group.window_id(ctx);
+                    let pane_group_id = pane_group.id();
+                    let restored = pane_group.update(ctx, |pane_group, ctx| {
+                        pane_group.restore_closed_pane(pane_id, ctx)
+                    });
+
+                    if restored {
+                        send_telemetry_from_app_ctx!(
+                            TelemetryEvent::UndoClose {
+                                item_type: UndoCloseItemType::Pane,
+                            },
+                            ctx
+                        );
+
+                        // Focus the window first
+                        ctx.windows().show_window_and_focus_app(window_id);
+
+                        // Now properly focus the restored pane by activating its tab and focusing the pane
+                        if let Some(workspace) = window_workspace(window_id, ctx) {
+                            workspace.update(ctx, |workspace, ctx| {
+                                let locator = crate::workspace::PaneViewLocator {
+                                    pane_group_id,
+                                    pane_id,
+                                };
+                                workspace.focus_pane(locator, ctx);
+                            });
+                        }
+
+                        ctx.dispatch_global_action("workspace:save_app", &());
+                    }
+                }
+            }
+        }
+    }
+
     fn discard(self, ctx: &mut ModelContext<UndoCloseStack>) {
         let history_model = BlocklistAIHistoryModel::handle(ctx);
 
@@ -240,92 +326,29 @@ impl UndoCloseStack {
         self.push_item(ClosedItem::Pane { data: pane_data }, ctx);
     }
 
-    /// Undoes the last close action in the stack, if possible.
-    pub fn undo_close(&mut self, ctx: &mut AppContext) {
-        let Some(UndoData { closed_item, .. }) = self.stack.pop() else {
-            return;
-        };
-
-        match closed_item {
-            ClosedItem::Window(data) => {
-                send_telemetry_from_app_ctx!(
-                    TelemetryEvent::UndoClose {
-                        item_type: UndoCloseItemType::Window,
-                    },
-                    ctx
-                );
-
-                let window_id = data.window_id;
-                ctx.reopen_closed_window(*data);
-
-                if let Some(workspace) = window_workspace(window_id, ctx) {
-                    workspace.update(ctx, |workspace, ctx| {
-                        workspace.handle_reopen(ctx);
-                    });
-                }
-
-                // Make sure we update our session restoration state now that the
-                // window has been reopened.
-                ctx.dispatch_global_action("workspace:save_app", &());
-            }
-            ClosedItem::Tab {
-                workspace,
-                tab_index,
-                data,
-            } => {
-                if let Some(workspace) = workspace.upgrade(ctx) {
-                    send_telemetry_from_app_ctx!(
-                        TelemetryEvent::UndoClose {
-                            item_type: UndoCloseItemType::Tab,
-                        },
-                        ctx
-                    );
-                    workspace.update(ctx, |workspace, ctx| {
-                        workspace.restore_closed_tab(tab_index, data, ctx);
-                    });
-                    ctx.windows()
-                        .show_window_and_focus_app(workspace.window_id(ctx));
-                }
-                // Make sure we update our session restoration state now that the
-                // tab has been reopened.
-                ctx.dispatch_global_action("workspace:save_app", &());
-            }
-            ClosedItem::Pane { data } => {
-                if let Some(pane_group) = data.pane_group.upgrade(ctx) {
-                    let pane_id = data.pane_id;
-                    let window_id = pane_group.window_id(ctx);
-                    let pane_group_id = pane_group.id();
-                    let restored = pane_group.update(ctx, |pane_group, ctx| {
-                        pane_group.restore_closed_pane(pane_id, ctx)
-                    });
-
-                    if restored {
-                        send_telemetry_from_app_ctx!(
-                            TelemetryEvent::UndoClose {
-                                item_type: UndoCloseItemType::Pane,
-                            },
-                            ctx
-                        );
-
-                        // Focus the window first
-                        ctx.windows().show_window_and_focus_app(window_id);
-
-                        // Now properly focus the restored pane by activating its tab and focusing the pane
-                        if let Some(workspace) = window_workspace(window_id, ctx) {
-                            workspace.update(ctx, |workspace, ctx| {
-                                let locator = crate::workspace::PaneViewLocator {
-                                    pane_group_id,
-                                    pane_id,
-                                };
-                                workspace.focus_pane(locator, ctx);
-                            });
-                        }
-
-                        ctx.dispatch_global_action("workspace:save_app", &());
-                    }
-                }
-            }
+    /// Reopens the most recently closed item (window, tab or pane), if any.
+    ///
+    /// This is an associated function rather than a `&mut self` method on
+    /// purpose. Restoring an item runs arbitrary view code -- activating the
+    /// restored tab re-syncs the Tools panel's conversation list, which walks
+    /// every window's terminals and asks this stack whether each tab is still
+    /// closed (`ConversationNavigationData::all_conversations`). If the restore
+    /// ran inside `UndoCloseStack::handle(ctx).update(..)`, the stack would be
+    /// checked out at that point and the read panicked (#840). So the item is
+    /// popped in a short update that returns before the restore begins.
+    pub fn undo_close(ctx: &mut AppContext) {
+        let closed_item = Self::handle(ctx).update(ctx, |stack, _| stack.pop_last());
+        if let Some(closed_item) = closed_item {
+            closed_item.restore(ctx);
         }
+    }
+
+    /// Removes the most recently closed item from the stack and returns it.
+    /// Dropping its expiry data aborts the pending expiry task.
+    fn pop_last(&mut self) -> Option<ClosedItem> {
+        self.stack
+            .pop()
+            .map(|UndoData { closed_item, .. }| closed_item)
     }
 
     /// Handles a change to the undo close settings.

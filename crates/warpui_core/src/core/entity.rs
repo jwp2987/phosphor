@@ -58,6 +58,25 @@ pub trait SingletonEntity: Entity + Sized {
     fn as_ref(ctx: &crate::AppContext) -> &Self {
         ctx.get_singleton_model_as_ref()
     }
+
+    /// Returns the single model of this type, or `None` if it is currently
+    /// being updated further up the call stack (and so cannot be borrowed).
+    ///
+    /// Use this from code that can run re-entrantly inside an arbitrary model
+    /// update and can tolerate missing this model's state for one call.
+    ///
+    /// Still panics if no model of this type was ever registered: that is a
+    /// programming error, not a transient state.
+    fn try_as_ref(ctx: &crate::AppContext) -> Option<&Self> {
+        let model = ctx.try_get_singleton_model_as_ref();
+        if model.is_none() {
+            log::debug!(
+                "singleton model {} is being updated; skipping re-entrant read",
+                std::any::type_name::<Self>()
+            );
+        }
+        model
+    }
 }
 
 /// A trait for retrieving a handle to a singleton model by type.
