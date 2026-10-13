@@ -512,6 +512,9 @@ impl<T: EventLoopSender> PtyController<T> {
         bytes: Cow<'static, [u8]>,
         ctx: &mut ModelContext<Self>,
     ) {
+        // An Enter voids any quiet-period reset armed before it, so decide again (which arms a
+        // fresh one) rather than leave nobody to.
+        let has_enter = bytes.iter().any(|byte| matches!(byte, b'\r' | b'\n'));
         if self.handoff_command_pending {
             self.handoff_bytes_after_command.extend_from_slice(&bytes);
         } else {
@@ -522,7 +525,7 @@ impl<T: EventLoopSender> PtyController<T> {
             .lock()
             .typeahead_handoff_mut()
             .on_user_write_flushed();
-        if writes_in_flight == 0 && self.handoff_request_waiting {
+        if writes_in_flight == 0 && (self.handoff_request_waiting || has_enter) {
             self.retry_typeahead_handoff_request(ctx);
         }
     }
@@ -1077,30 +1080,18 @@ impl<T: EventLoopSender> PtyController<T> {
         source: CommandExecutionSource,
         ctx: &mut ModelContext<Self>,
     ) -> StartCommandOutcome {
+        if self.must_hold_command_behind_unreported_user_line(&source) {
+            self.hold_command_behind_unreported_user_line(command, shell_type, source, ctx);
+            return StartCommandOutcome::Accepted;
+        }
         let is_editor_command = matches!(source, CommandExecutionSource::User);
         let mut engages_typeahead_handoff = false;
-        let mut holds_behind_unreported_user_line = false;
         let mut handoff_held_bytes: Vec<u8> = Vec::new();
         {
             let mut model = self.terminal_model.lock();
 
             // Explicitly start the block now that the command is executed.
-            let outcome = match source {
-                CommandExecutionSource::AI { metadata } => {
-                    model.start_command_execution_with_ai_metadata(metadata)
-                }
-                CommandExecutionSource::SharedSession {
-                    participant_id,
-                    ai_metadata,
-                    ..
-                } => model.start_command_execution_for_shared_session(participant_id, ai_metadata),
-                CommandExecutionSource::User | CommandExecutionSource::QueuedCommand => {
-                    model.start_command_execution()
-                }
-                CommandExecutionSource::EnvVarCollection { metadata } => {
-                    model.start_command_execution_from_env_var_collection(metadata)
-                }
-            };
+            let outcome = start_command_execution_for_source(&mut model, source);
             if !outcome.is_accepted() {
                 return outcome;
             }
@@ -1122,11 +1113,6 @@ impl<T: EventLoopSender> PtyController<T> {
                         .block_list_mut()
                         .early_output_mut()
                         .clear_typeahead_for_new_command();
-                } else if model.typeahead_handoff().holds_queued_writes() {
-                    // Not the hand-off's command (a queued-prompt-panel or agent command), and
-                    // the shell's line may hold user bytes its kill prefix would destroy: it
-                    // waits for the request, which is written ahead of it.
-                    holds_behind_unreported_user_line = true;
                 } else {
                     // Not the hand-off's command, but its prompt will still be counted.
                     model.typeahead_handoff_mut().on_uncounted_command_written();
@@ -1144,11 +1130,7 @@ impl<T: EventLoopSender> PtyController<T> {
             in_band_command_id: None,
             before_write_fn: None,
         };
-        if holds_behind_unreported_user_line {
-            self.pending_writes.push_back(write);
-            self.handoff_request_waiting = true;
-            self.retry_typeahead_handoff_request(ctx);
-        } else if self.can_write_to_pty(ctx) {
+        if self.can_write_to_pty(ctx) {
             // Cancel the async writer task and clear the async write queue.
             // Check if line editor is active
             self.send_write_to_event_loop(write, ctx);
@@ -1183,6 +1165,55 @@ impl<T: EventLoopSender> PtyController<T> {
                 }
             )
         });
+    }
+
+    /// Typeahead hand-off: whether a command the hand-off does not own (a queued-prompt-panel or
+    /// agent command) must wait, because the shell's line may hold user bytes its kill prefix
+    /// would destroy before they were reported. Decided before the command's block is started.
+    fn must_hold_command_behind_unreported_user_line(
+        &self,
+        source: &CommandExecutionSource,
+    ) -> bool {
+        if !FeatureFlag::TypeaheadHandoff.is_enabled() {
+            return false;
+        }
+        let model = self.terminal_model.lock();
+        let engages_typeahead_handoff = matches!(source, CommandExecutionSource::User)
+            && model.block_list().early_output().typeahead_mode() == TypeaheadMode::ShellReported;
+        !engages_typeahead_handoff && model.typeahead_handoff().holds_queued_writes()
+    }
+
+    /// Queues a command behind the user's unreported line. Its block is started only when it is
+    /// written -- after the request, which goes out ahead of it -- so the shell's prompt still
+    /// reads as a prompt (the request needs one), and a command that never goes out leaves no
+    /// started block behind. Its Enter is counted at that point, like any command the hand-off
+    /// does not own.
+    fn hold_command_behind_unreported_user_line(
+        &mut self,
+        command: &str,
+        shell_type: ShellType,
+        source: CommandExecutionSource,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let terminal_model = self.terminal_model.clone();
+        self.pending_writes.clear();
+        self.is_user_command_executing = true;
+        self.pending_writes.push_back(PtyWrite::Command {
+            command: command.to_owned(),
+            shell_type,
+            in_band_command_id: None,
+            before_write_fn: Some(Box::new(move || {
+                let mut model = terminal_model.lock();
+                let outcome = start_command_execution_for_source(&mut model, source);
+                if outcome.is_accepted() {
+                    model.end_in_band_command_output(false);
+                    model.typeahead_handoff_mut().on_uncounted_command_written();
+                }
+                outcome
+            })),
+        });
+        self.handoff_request_waiting = true;
+        self.retry_typeahead_handoff_request(ctx);
     }
 
     /// Synchronously writes the EOT (End-of-Transmission) char to the PTY.
@@ -1424,6 +1455,29 @@ pub enum PtyControllerEvent {
 
 impl<T: EventLoopSender> Entity for PtyController<T> {
     type Event = PtyControllerEvent;
+}
+
+/// Starts the active block for a command from `source`, attaching the source's metadata.
+fn start_command_execution_for_source(
+    model: &mut TerminalModel,
+    source: CommandExecutionSource,
+) -> StartCommandOutcome {
+    match source {
+        CommandExecutionSource::AI { metadata } => {
+            model.start_command_execution_with_ai_metadata(metadata)
+        }
+        CommandExecutionSource::SharedSession {
+            participant_id,
+            ai_metadata,
+            ..
+        } => model.start_command_execution_for_shared_session(participant_id, ai_metadata),
+        CommandExecutionSource::User | CommandExecutionSource::QueuedCommand => {
+            model.start_command_execution()
+        }
+        CommandExecutionSource::EnvVarCollection { metadata } => {
+            model.start_command_execution_from_env_var_collection(metadata)
+        }
+    }
 }
 
 /// Splits `shell_type`'s kill-buffer chord off the front of `bytes` (the output of

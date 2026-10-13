@@ -13081,3 +13081,39 @@ fn typeahead_handoff_does_not_count_full_screen_enters() {
         });
     })
 }
+
+/// After a Ctrl-C the settle timer asks the controller to decide again while the pty still owns
+/// input, for a killed command as much as at the prompt: if the counts were off (an Enter a
+/// program consumed), no precmd would otherwise hand input back.
+#[test]
+fn typeahead_handoff_ctrl_c_settle_asks_for_a_new_decision() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let retries = Rc::new(RefCell::new(0));
+        let retries_seen = retries.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::RetryTypeaheadHandoffRequest = event {
+                    *retries_seen.borrow_mut() += 1;
+                }
+            });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.start_command_execution();
+                model.typeahead_handoff_mut().on_command_written();
+            }
+            view.ctrl_c(ctx);
+            let model = view.model.lock();
+            assert!(model.typeahead_handoff().is_pty_owned());
+        });
+        assert_eq!(*retries.borrow(), 0);
+
+        Timer::after(Duration::from_millis(400)).await;
+        assert_eq!(*retries.borrow(), 1);
+    })
+}

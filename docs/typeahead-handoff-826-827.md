@@ -263,7 +263,14 @@ Transitions out of `PtyOwned`:
   command) written while the pty owns input still has its Enter counted, so its
   precmd cannot make lines the user queued ahead of it look answered. If the
   shell's line may hold unreported user bytes, it is queued until the request,
-  which is written ahead of it, instead of killing them.
+  which is written ahead of it, instead of killing them; its block is started and
+  its Enter counted only when it is written, so the prompt still reads as a
+  prompt meanwhile. Ctrl-C discards the shell's line and so releases it (it goes
+  out behind the Ctrl-C, and an agent still gets its command run).
+- A precmd that leaves the pty owning input (an empty Enter, a prompt cycle after
+  Ctrl-C) brings no line-editor activation, so the view asks the controller to
+  decide again. Every Enter typed also counts as activity for the quiet period,
+  and a flushed Enter re-decides (re-arming it).
 - Ctrl-C while keys are held behind a deferred Enter cancels the deferred Enter
   and drops the held keys; nothing is written to the pty.
 - Ctrl-D goes to the pty only when something reads it (a command running or
@@ -281,8 +288,11 @@ comes. The deadline runs from when the view handles the request
 (`PtyControllerEvent::TypeaheadHandoffChanged`), not from the Enter. A report that
 arrives after the next command was written is stashed and inserted when the editor
 next owns input; a deferred Enter that wrote no command hands the held keys back
-too. Keys handed back keep printable characters only (escape sequences are
-dropped whole).
+too. Keys handed back are applied the way the shell's line editor would have:
+Backspace/^H, ^U and ^W edit, Enter becomes a newline and Tab stays (so a
+multi-line paste survives), well-formed CSI/SS3/OSC sequences are dropped whole,
+other control characters are dropped, and a lone ESC does not take the next
+character with it.
 
 Known gaps, not addressed:
 - keybindings gated on the `LongRunningCommand` context (e.g. shift-enter) are

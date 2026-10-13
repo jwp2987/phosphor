@@ -3542,21 +3542,29 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
     // the flags listed in `UNSTABLE_FEATURES`. This env var is the only enable path
     // for them, in dev builds and release builds alike.
     if let Ok(raw) = std::env::var("ZAP_UNSTABLE_FEATURES") {
-        let normalized = raw.trim().to_ascii_lowercase();
-        let enable_all = matches!(normalized.as_str(), "all" | "*");
-        let requested: HashSet<&str> = normalized
-            .split(|c: char| c == ',' || c.is_whitespace())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .collect();
-        for (name, flag) in UNSTABLE_FEATURES {
-            let included_in_all = !UNSTABLE_FEATURES_NAMED_ONLY.contains(flag);
-            if (enable_all && included_in_all) || requested.contains(name) {
-                flags.insert(*flag);
-            }
-        }
+        flags.extend(unstable_features_from_env_value(&raw));
     }
 
+    flags
+}
+
+/// The flags a `ZAP_UNSTABLE_FEATURES` value enables: comma- or whitespace-separated names from
+/// `UNSTABLE_FEATURES`, or `all` / `*` for every one except `UNSTABLE_FEATURES_NAMED_ONLY`.
+fn unstable_features_from_env_value(raw: &str) -> HashSet<FeatureFlag> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    let enable_all = matches!(normalized.as_str(), "all" | "*");
+    let requested: HashSet<&str> = normalized
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    let mut flags = HashSet::new();
+    for (name, flag) in UNSTABLE_FEATURES {
+        let included_in_all = !UNSTABLE_FEATURES_NAMED_ONLY.contains(flag);
+        if (enable_all && included_in_all) || requested.contains(name) {
+            flags.insert(*flag);
+        }
+    }
     flags
 }
 

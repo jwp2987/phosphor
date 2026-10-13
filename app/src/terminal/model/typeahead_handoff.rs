@@ -357,10 +357,18 @@ impl TypeaheadHandoff {
                 enters_written,
                 ..
             } => {
+                let mut wrote_an_enter = false;
                 if reaches_shell_line {
                     let (enters, dirty) = scan_line_terminators(bytes, *wrote_user_bytes);
                     *enters_written = enters_written.saturating_add(enters);
                     *wrote_user_bytes = dirty;
+                    wrote_an_enter = enters > 0;
+                }
+                // An Enter is activity too: a quiet-period reset armed before it must not
+                // treat the line it ends as answered (a password typed after the timer was
+                // armed could otherwise land in the editor).
+                if wrote_an_enter {
+                    self.activity_generation = self.activity_generation.wrapping_add(1);
                 }
                 self.writes_in_flight = self.writes_in_flight.saturating_add(1);
                 UserBytesRoute::WriteCounted
@@ -543,31 +551,85 @@ impl TypeaheadHandoff {
     }
 }
 
-/// The text of keys handed back to the editor: printable characters only. Escape sequences
-/// (arrow and function keys) are dropped whole rather than leaving their `[D` behind.
-pub fn printable_text(bytes: &[u8]) -> String {
+/// The text of keys handed back to the editor, as the shell's line editor would have left it:
+/// Backspace (DEL, ^H) erases a character, ^U the line, ^W a word; Enter (`\r`, `\n`) becomes
+/// a newline and Tab stays, so a multi-line paste survives; well-formed escape sequences (CSI,
+/// SS3, OSC, as sent by arrow and function keys) are dropped whole; any other control character
+/// is dropped, and a lone ESC is dropped without taking the character after it.
+pub fn text_for_editor(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
-    let mut printable = String::with_capacity(text.len());
-    let mut chars = text.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '\u{1b}' {
-            // CSI (`ESC [`) and SS3 (`ESC O`) run to a final byte in `@`..=`~`; any other escape
-            // is ESC plus one character.
-            match chars.next() {
-                Some('[') | Some('O') => {
-                    for next in chars.by_ref() {
-                        if ('@'..='~').contains(&next) {
-                            break;
-                        }
-                    }
-                }
-                Some(_) | None => {}
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        i += 1;
+        match ch {
+            '\u{7f}' | '\u{8}' => {
+                out.pop();
             }
-        } else if !ch.is_control() {
-            printable.push(ch);
+            // ^U: back to the start of the line.
+            '\u{15}' => {
+                let line_start = out.rfind('\n').map_or(0, |index| index + 1);
+                out.truncate(line_start);
+            }
+            // ^W: trailing whitespace, then the word before it.
+            '\u{17}' => {
+                while out.ends_with(|last: char| last == ' ' || last == '\t') {
+                    out.pop();
+                }
+                while out.chars().last().is_some_and(|last| !last.is_whitespace()) {
+                    out.pop();
+                }
+            }
+            '\r' | '\n' => out.push('\n'),
+            '\t' => out.push('\t'),
+            '\u{1b}' => i = skip_escape_sequence(&chars, i),
+            ch if ch.is_control() => {}
+            ch => out.push(ch),
         }
     }
-    printable
+    out
+}
+
+/// Given `chars[start]` is the character after an ESC, returns the index after a well-formed
+/// CSI (`ESC [` .. final byte), SS3 (`ESC O` + one character) or OSC (`ESC ]` .. BEL or ST)
+/// sequence, or `start` itself when the ESC starts none of them.
+fn skip_escape_sequence(chars: &[char], start: usize) -> usize {
+    match chars.get(start) {
+        Some('[') => {
+            let mut index = start + 1;
+            while let Some(ch) = chars.get(index) {
+                index += 1;
+                if ('@'..='~').contains(ch) {
+                    return index;
+                }
+                if !(' '..='?').contains(ch) {
+                    // Not a parameter or intermediate byte: not a CSI after all.
+                    return start;
+                }
+            }
+            start
+        }
+        Some('O') => match chars.get(start + 1) {
+            Some(ch) if ('@'..='~').contains(ch) => start + 2,
+            Some(_) | None => start,
+        },
+        Some(']') => {
+            let mut index = start + 1;
+            while let Some(ch) = chars.get(index) {
+                index += 1;
+                if *ch == '\u{7}' {
+                    return index;
+                }
+                if *ch == '\u{1b}' && chars.get(index) == Some(&'\\') {
+                    return index + 1;
+                }
+            }
+            start
+        }
+        Some(_) | None => start,
+    }
 }
 
 /// Counts line terminators in `bytes` and returns them with whether the line is still dirty

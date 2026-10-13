@@ -489,7 +489,7 @@ use crate::terminal::model::terminal_model::{
     BlockSelectionCardinality, SelectedBlocks, WithinModel,
 };
 use crate::terminal::model::typeahead_handoff::{
-    DeadlineOutcome, InterruptOutcome, ReportDisposition, UserBytesRoute, printable_text,
+    DeadlineOutcome, InterruptOutcome, ReportDisposition, UserBytesRoute, text_for_editor,
 };
 use crate::terminal::model::{
     ansi::{ClearMode, Handler},
@@ -9656,14 +9656,22 @@ impl TerminalView {
     /// The shell reached a prompt: hand input back to the editor if nothing the user typed can be
     /// in the shell's line. The finished block's `BlockCompleted`, which reinitializes the editor,
     /// is delivered before this precmd, so nothing typed into the editor from here on is wiped.
+    ///
+    /// A prompt that leaves the pty owning input (the shell ran no command: an empty Enter, a
+    /// prompt cycle after Ctrl-C) voids any quiet-period reset armed before it, and no
+    /// line-editor activation follows, since the line editor never went inactive. So the
+    /// controller is asked to decide again; it only does while the line editor is active.
     fn commit_typeahead_handoff_at_prompt(&mut self, ctx: &mut ViewContext<Self>) {
-        let committed = self
-            .model
-            .lock()
-            .typeahead_handoff_mut()
-            .try_commit_at_prompt();
+        let (committed, still_pty_owned) = {
+            let mut model = self.model.lock();
+            let handoff = model.typeahead_handoff_mut();
+            let committed = handoff.try_commit_at_prompt();
+            (committed, handoff.is_pty_owned())
+        };
         if committed {
             self.handle_typeahead_handoff_changed(ctx);
+        } else if still_pty_owned {
+            ctx.emit(Event::RetryTypeaheadHandoffRequest);
         }
     }
 
@@ -9751,7 +9759,7 @@ impl TerminalView {
                 self.redetermine_terminal_focus(ctx);
             }
             DeadlineOutcome::GiveUp { held } => {
-                let text = printable_text(&held);
+                let text = text_for_editor(&held);
                 if !text.is_empty() {
                     self.input
                         .update(ctx, |input, ctx| input.system_insert(&text, ctx));
@@ -9770,16 +9778,11 @@ impl TerminalView {
         if outcome == InterruptOutcome::NotOwned {
             return;
         }
+        // zsh usually runs no prompt cycle after ^C at the prompt, so no precmd or line-editor
+        // activation would otherwise come to hand input back, ask for keys typed since, or
+        // notice that the counts were off because an earlier Enter was consumed by a program.
         ctx.spawn(Timer::after(INTERRUPT_SETTLE), |me, _, ctx| {
             me.commit_typeahead_handoff_at_prompt(ctx);
-            // zsh usually runs no prompt cycle after ^C at the prompt, so no line-editor
-            // activation will come to ask for keys typed since, or to notice that the counts were
-            // off because an earlier Enter was consumed by a program. The controller re-decides
-            // only if the shell's line editor is active, i.e. no command is running.
-            let still_pty_owned = me.model.lock().typeahead_handoff().is_pty_owned();
-            if still_pty_owned {
-                ctx.emit(Event::RetryTypeaheadHandoffRequest);
-            }
         });
     }
 

@@ -1529,6 +1529,14 @@ mod typeahead_handoff {
         assert_eq!(outcome, StartCommandOutcome::Accepted);
     }
 
+    /// The queued-prompts panel runs a command.
+    fn fire_queued_command(app: &mut App, harness: &Harness) {
+        let outcome = harness.controller.update(app, |controller, ctx| {
+            controller.write_command("queued", SHELL, CommandExecutionSource::QueuedCommand, ctx)
+        });
+        assert_eq!(outcome, StartCommandOutcome::Accepted);
+    }
+
     fn written(harness: &Harness) -> Vec<Vec<u8>> {
         harness
             .sender
@@ -1822,6 +1830,95 @@ mod typeahead_handoff {
                 harness.model.lock().typeahead_handoff().state(),
                 &HandoffState::AwaitingReport
             );
+        });
+    }
+
+    /// The queued-prompts panel (or the agent) fires right after the prompt, before the line
+    /// editor is active, while `foo` -- typed during the last command, no Enter -- sits in the
+    /// shell's line. The command waits without starting its block, so the prompt still reads as
+    /// a prompt and the request goes out at activation, ahead of the command.
+    #[test]
+    fn a_command_fired_before_activation_waits_for_the_request() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            submit(&mut app, &harness, "sleep 2");
+            user_types(&mut app, &harness, b"foo");
+            shell_runs_a_command(&harness.model, "sleep 2");
+
+            fire_queued_command(&mut app, &harness);
+            assert_eq!(written(&harness).len(), 2);
+            assert!(
+                !harness.model.lock().block_list().active_block().started(),
+                "a held command must not start its block before it is written"
+            );
+
+            line_editor_becomes_active(&mut app, &harness);
+            let written = written(&harness);
+            assert_eq!(
+                &written[2..],
+                &[
+                    REQUEST.to_vec(),
+                    bytes_to_execute_command("queued", SHELL, false)
+                ]
+            );
+            assert!(harness.model.lock().block_list().active_block().started());
+        });
+    }
+
+    /// Ctrl-C discards the shell's line, so the reason to hold the command is gone: it goes out
+    /// behind the Ctrl-C (and so the agent or panel still gets its command run) with no request.
+    #[test]
+    fn ctrl_c_releases_a_command_held_behind_the_user_line() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            submit(&mut app, &harness, "sleep 2");
+            user_types(&mut app, &harness, b"foo");
+            shell_runs_a_command(&harness.model, "sleep 2");
+            fire_queued_command(&mut app, &harness);
+
+            user_types(&mut app, &harness, &[escape_sequences::C0::ETX]);
+            assert_eq!(
+                harness.model.lock().typeahead_handoff_mut().on_interrupt(),
+                InterruptOutcome::AtPrompt
+            );
+            line_editor_becomes_active(&mut app, &harness);
+            let written = written(&harness);
+            assert_eq!(
+                &written[2..],
+                &[
+                    vec![escape_sequences::C0::ETX],
+                    bytes_to_execute_command("queued", SHELL, false)
+                ]
+            );
+            assert_eq!(
+                harness.model.lock().typeahead_handoff().state(),
+                &HandoffState::EditorOwned
+            );
+        });
+    }
+
+    /// An Enter consumed by a program (`read x` answered `y` Enter) is answered by no prompt.
+    /// The quiet period resets the counts and the controller decides again on its own, handing
+    /// input back to the editor.
+    #[test]
+    fn a_consumed_enter_is_released_by_the_quiet_period() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            submit(&mut app, &harness, "read x");
+            user_types(&mut app, &harness, b"y\r");
+            shell_runs_a_command(&harness.model, "read x");
+            line_editor_becomes_active(&mut app, &harness);
+            assert!(harness.model.lock().typeahead_handoff().is_pty_owned());
+
+            Timer::after(TYPEAHEAD_HANDOFF_STALE_COUNT_RESET + Duration::from_millis(150)).await;
+            assert_eq!(
+                harness.model.lock().typeahead_handoff().state(),
+                &HandoffState::EditorOwned
+            );
+            assert!(!written(&harness).contains(&REQUEST.to_vec()));
         });
     }
 

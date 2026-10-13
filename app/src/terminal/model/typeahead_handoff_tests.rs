@@ -608,7 +608,23 @@ fn ctrl_d_reaches_the_pty_only_when_something_reads_it() {
 }
 
 #[test]
-fn given_back_keys_drop_escape_sequences_and_controls() {
-    assert_eq!(printable_text(b"ls\x1b[D-l\x1bOA\r\x7f\x1bbx"), "ls-lx");
-    assert_eq!(printable_text("é\x1b[1;5C".as_bytes()), "é");
+fn given_back_keys_apply_line_edits_and_drop_escape_sequences() {
+    // Arrow keys (CSI, SS3) and a cursor-key report with parameters are dropped whole.
+    assert_eq!(text_for_editor(b"ls\x1b[D -l\x1bOA"), "ls -l");
+    assert_eq!(text_for_editor("é\x1b[1;5C".as_bytes()), "é");
+    // An OSC sequence, terminated by BEL or by ST.
+    assert_eq!(text_for_editor(b"a\x1b]0;title\x07b\x1b]0;t\x1b\\c"), "abc");
+    // Line edits apply instead of vanishing: Backspace, ^H, ^U, ^W.
+    assert_eq!(text_for_editor(b"lss\x7f -la\x08"), "ls -l");
+    assert_eq!(text_for_editor(b"rm -rf /\x15echo ok"), "echo ok");
+    assert_eq!(
+        text_for_editor(b"git commit --amend \x17-m"),
+        "git commit -m"
+    );
+    // Enter becomes a newline and Tab stays, so a multi-line paste survives.
+    assert_eq!(text_for_editor(b"one\rtwo\n\tthree"), "one\ntwo\n\tthree");
+    // ^U only erases the current line.
+    assert_eq!(text_for_editor(b"one\ntwo\x15"), "one\n");
+    // A lone ESC does not take the next character with it; other controls are dropped.
+    assert_eq!(text_for_editor(b"a\x1bb\x03c\x1b"), "abc");
 }
