@@ -454,9 +454,10 @@ upstream's behavior is actually a defect rather than a preference.
   **We do:** `UndoCloseStack::undo_close(ctx)` is an associated function that pops the
   item in a short update and calls `ClosedItem::restore` after it returns;
   `all_conversations` reads the stack through a new non-panicking
-  `SingletonEntity::try_as_ref`, treating tabs as not closed for one call if it is ever
-  reached re-entrantly again (e.g. from a discard); and the checked-out case now panics
-  with a message naming the re-entrancy instead of a misleading downcast failure.
+  `SingletonEntity::try_as_ref` as a defensive measure (it only visits live tabs, and a
+  closed tab is never both in `tab_views()` and on the stack, so a missing stack loses
+  nothing there); and the checked-out case now panics with a message naming the
+  re-entrancy instead of a misleading downcast failure.
 
 - **An incremental find rescan does not flash the find bar's scanning label**
   (`#815`, 2026-10-12, `app/src/terminal/find/model/async_find.rs`). **Upstream:**

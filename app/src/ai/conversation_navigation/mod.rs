@@ -173,8 +173,11 @@ impl ConversationNavigationData {
         let active_window_id = app.windows().active_window();
         let registry = WorkspaceRegistry::as_ref(app);
         // `None` when this runs re-entrantly inside an `UndoCloseStack` update
-        // (#840). Tabs are then treated as not closed for this one call; the
-        // next sync, once the update has returned, corrects them.
+        // (#840). Nothing is lost then: this loop only visits tabs still in
+        // `tab_views()`, and a closed tab is removed from those before it is
+        // pushed onto the stack and popped before it is reinserted, so
+        // `is_pane_group_tab_in_stack` cannot be true here. The read is kept
+        // defensive rather than panicking.
         let undo_close_stack = UndoCloseStack::try_as_ref(app);
         for (window_id, workspace_handle) in registry.all_workspaces(app) {
             let workspace = workspace_handle.as_ref(app);

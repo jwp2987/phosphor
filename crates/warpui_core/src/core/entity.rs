@@ -64,8 +64,18 @@ pub trait SingletonEntity: Entity + Sized {
     ///
     /// Use this from code that can run re-entrantly inside an arbitrary model
     /// update and can tolerate missing this model's state for one call.
+    ///
+    /// Still panics if no model of this type was ever registered: that is a
+    /// programming error, not a transient state.
     fn try_as_ref(ctx: &crate::AppContext) -> Option<&Self> {
-        ctx.try_get_singleton_model_as_ref()
+        let model = ctx.try_get_singleton_model_as_ref();
+        if model.is_none() {
+            log::debug!(
+                "singleton model {} is being updated; skipping re-entrant read",
+                std::any::type_name::<Self>()
+            );
+        }
+        model
     }
 }
 

@@ -4129,6 +4129,14 @@ fn test_reopening_a_closed_tab_with_conversation_list_open_and_second_window() {
         let workspace = mock_workspace(&mut app);
 
         workspace.update(&mut app, |workspace, ctx| {
+            // The crashing read is only reached when the restored tab's left
+            // panel is open: `set_active_pane_group` calls
+            // `on_left_panel_visibility_changed(pane_group.left_panel_open)`, and
+            // only `true` registers the conversation list and re-syncs. With
+            // visibility shared across tabs, activation copies the workspace's
+            // open state onto the restored pane group.
+            set_left_panel_visibility_across_tabs(true, ctx);
+            workspace.open_left_panel(ctx);
             workspace.left_panel_view.update(ctx, |left_panel, ctx| {
                 left_panel.handle_action(&LeftPanelAction::ConversationListView, ctx);
             });
@@ -4152,11 +4160,20 @@ fn test_reopening_a_closed_tab_with_conversation_list_open_and_second_window() {
         // the pre-fix code, where it panics inside the restore.
         app.update(|ctx| ctx.dispatch_global_action("app:undo_close", &()));
 
-        workspace.read(&app, |workspace, _| {
+        workspace.read(&app, |workspace, ctx| {
             assert_eq!(
                 workspace.tab_count(),
                 2,
                 "the closed tab should be reopened"
+            );
+            // Guards that the restore went down the path that re-syncs the
+            // conversation list (and so reads `UndoCloseStack`).
+            assert!(
+                workspace
+                    .active_tab_pane_group()
+                    .as_ref(ctx)
+                    .left_panel_open,
+                "the restored tab should have the left panel open"
             );
         });
         app.update(|ctx| {
