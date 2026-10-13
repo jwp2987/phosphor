@@ -668,4 +668,124 @@ mod streamed_text {
         assert!(task.streaming_text.is_empty());
         assert_shows_full_conversion(&task, exchange_id, "m1");
     }
+
+    /// A message with every field set, so a fast path that dropped or altered one would show.
+    fn full_message(id: &str, body: api::message::Message) -> api::Message {
+        api::Message {
+            id: id.to_string(),
+            task_id: format!("{id}-task"),
+            server_message_data: format!("{id}-server-data"),
+            citations: vec![],
+            fetched_memories: vec![],
+            message: Some(body),
+            request_id: format!("{id}-request"),
+            timestamp: Some(prost_types::Timestamp {
+                seconds: 1_700_000_000,
+                nanos: 7,
+            }),
+        }
+    }
+
+    fn output(text: &str) -> api::message::Message {
+        api::message::Message::AgentOutput(api::message::AgentOutput {
+            text: text.to_string(),
+        })
+    }
+
+    fn reasoning(text: &str, seconds: i64) -> api::message::Message {
+        api::message::Message::AgentReasoning(api::message::AgentReasoning {
+            reasoning: text.to_string(),
+            finished_duration: Some(prost_types::Duration { seconds, nanos: 3 }),
+        })
+    }
+
+    #[test]
+    fn in_place_text_append_matches_the_field_mask_append() {
+        let cases = [
+            ("agent_output.text", output("stored "), output("chunk")),
+            ("agent_output.text", output(""), output("chunk")),
+            ("agent_output.text", output("stored"), output("")),
+            ("agent_output.text", output(""), output("")),
+            (
+                "agent_reasoning.reasoning",
+                reasoning("thinking ", 5),
+                reasoning("more", 9),
+            ),
+            (
+                "agent_reasoning.reasoning",
+                reasoning("", 5),
+                reasoning("", 9),
+            ),
+        ];
+        for (path, stored_body, patch_body) in cases {
+            let stored = full_message("stored", stored_body);
+            let patch = full_message("patch", patch_body);
+            let mask = FieldMask {
+                paths: vec![path.to_string()],
+            };
+            assert!(super::super::is_in_place_text_append(
+                &stored, &patch, &mask
+            ));
+
+            let general = field_mask::FieldMaskOperation::append(
+                &api::MESSAGE_DESCRIPTOR,
+                &stored,
+                &patch,
+                mask,
+            )
+            .apply()
+            .expect("general append applies");
+            let mut in_place = stored.clone();
+            super::super::push_appended_text(&mut in_place, &patch);
+            assert_eq!(in_place, general, "{path}");
+        }
+    }
+
+    #[test]
+    fn other_masks_and_mismatched_messages_take_the_general_path() {
+        let stored = full_message("stored", output("a"));
+        for (path, patch) in [
+            ("agent_reasoning.reasoning", full_message("p", output("b"))),
+            ("agent_output.text", full_message("p", reasoning("b", 1))),
+            ("server_message_data", full_message("p", output("b"))),
+        ] {
+            let mask = FieldMask {
+                paths: vec![path.to_string()],
+            };
+            assert!(!super::super::is_in_place_text_append(
+                &stored, &patch, &mask
+            ));
+        }
+        let two_paths = FieldMask {
+            paths: vec![
+                "agent_output.text".to_string(),
+                "server_message_data".to_string(),
+            ],
+        };
+        assert!(!super::super::is_in_place_text_append(
+            &stored,
+            &full_message("p", output("b")),
+            &two_paths
+        ));
+    }
+
+    #[test]
+    fn a_failed_in_place_append_leaves_the_stored_message_unchanged() {
+        let exchange = streaming_exchange();
+        let mut task = Task::new_restored_root(
+            create_api_task(TASK_ID, vec![text_message("m1", "kept")]),
+            std::iter::once(exchange),
+        );
+        let result = task.append_to_message_content(
+            text_message("m1", " dropped"),
+            AIAgentExchangeId::new(),
+            None,
+            None,
+            &SkillPathOrigin::Local,
+            text_mask(),
+        );
+        assert!(result.is_err());
+        assert_eq!(stored_text(&task, "m1"), "kept");
+        assert!(task.streaming_text.is_empty());
+    }
 }

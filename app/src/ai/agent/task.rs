@@ -178,6 +178,13 @@ pub struct Task {
     /// Incremental Markdown state for this task's text messages that are still streaming,
     /// keyed by message id, so each appended chunk re-parses only what it can have changed
     /// (#849). Dropped when the exchange finishes.
+    ///
+    /// The state assumes the message's text only ever grows at its end. Any code that rewrites
+    /// a message's text any other way — replaces it, re-adds the id, splices it — must remove
+    /// that message's entry, as `upsert_message`, `update_exchange_from_messages`,
+    /// `remove_messages` and `splice_messages` do. The fingerprint `IncrementalTextSections`
+    /// checks covers only the length and last 64 bytes before its commit point, so it will not
+    /// catch every rewrite.
     streaming_text: HashMap<String, IncrementalTextSections>,
 }
 
