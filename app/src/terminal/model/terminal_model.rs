@@ -4044,3 +4044,7 @@ pub enum ExitReason {
 #[cfg(test)]
 #[path = "terminal_model_test.rs"]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "fuzz_tests.rs"]
+mod fuzz_tests;
