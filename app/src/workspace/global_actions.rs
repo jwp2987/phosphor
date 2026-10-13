@@ -238,9 +238,7 @@ fn toggle_debug_network_status(_: &(), ctx: &mut AppContext) {
 
 /// Reopens the last closed item (window or tab).
 fn undo_close(_: &(), ctx: &mut AppContext) {
-    UndoCloseStack::handle(ctx).update(ctx, |stack, ctx| {
-        stack.undo_close(ctx);
-    });
+    UndoCloseStack::undo_close(ctx);
 }
 
 /// Dispatches an action to the active workspace, if one exists.

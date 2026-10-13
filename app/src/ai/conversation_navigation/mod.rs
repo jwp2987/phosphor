@@ -193,9 +193,18 @@ impl ConversationNavigationData {
                         continue;
                     };
 
+                    // `try_as_ref` is `None` when this runs re-entrantly inside an
+                    // `UndoCloseStack` update (#840). Nothing is lost then: this loop
+                    // only visits tabs still in `tab_views()`, and a closed tab is
+                    // removed from those before it is pushed onto the stack and popped
+                    // before it is reinserted, so `is_pane_group_tab_in_stack` cannot be
+                    // true here. The read stays lazy (only after the hidden-pane check),
+                    // as before #840, so callers without an `UndoCloseStack` -- unit
+                    // tests -- never reach it.
                     let is_closed = pane_group.is_pane_hidden_for_close(pane_id)
-                        || UndoCloseStack::as_ref(app)
-                            .is_pane_group_tab_in_stack(pane_group_handle.id());
+                        || UndoCloseStack::try_as_ref(app).is_some_and(|stack| {
+                            stack.is_pane_group_tab_in_stack(pane_group_handle.id())
+                        });
 
                     let terminal_view_id = terminal_view.id();
                     open_terminal_views.insert(terminal_view_id);
