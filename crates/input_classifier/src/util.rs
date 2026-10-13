@@ -1065,6 +1065,39 @@ pub fn reads_as_prose(buffer_text: &str) -> bool {
         .is_some_and(|remaining| has_prose_veto_word(head, remaining))
 }
 
+/// Fork-original (#886): true iff `buffer_text` carries no prose evidence anywhere, the head word
+/// included: it does not end in `?`, its quoting is shell-safe, it has no prose colon shape, and
+/// no unquoted word is a [`PROSE_FUNCTION_WORDS`] member, the article `a` before a word, a word
+/// ending in a sentence comma or period, or a prose word ([`is_prose_word`]: dictionary English,
+/// Capitalised, an acronym used as a noun).
+///
+/// This is stricter than both [`is_unambiguous_shell_command`] (which needs a command head and
+/// exempts it) and [`reads_as_prose`] (which skips the head and the Rule-2 body test): it is the
+/// gate for treating shell *typeahead* as Shell without a command head. The pieces a typing burst
+/// splits or merges (`ho b199 >> ~/blk.txt`, `b22 b23`, `b11 blk.txtecho b12`,
+/// `xtecho b5 >> ~/blk.txt`) pass; any line a person might type as a question while a command
+/// runs (`exit vim`, `rm the temp files`, `mv files to backup`, `kill server process`) does not,
+/// and so does a well-formed command made of English words (`echo hello world`) -- the pre-filter
+/// and the classifier decide those as they would any buffer.
+///
+/// A buffer over [`MAX_PREFILTER_BYTES`] returns `false` without being scanned.
+pub fn has_no_prose_evidence(buffer_text: &str) -> bool {
+    let text = buffer_text.trim();
+    if text.is_empty()
+        || text.len() > MAX_PREFILTER_BYTES
+        || text.ends_with('?')
+        || !has_shell_safe_quoting(text)
+        || buffer_has_prose_colon_shape(text)
+    {
+        return false;
+    }
+    let words = split_shell_words(text);
+    !(words.iter().any(is_function_word)
+        || (0..words.len()).any(|index| is_prose_article(&words, index))
+        || words.iter().any(ends_in_sentence_punctuation)
+        || words.iter().any(is_prose_word))
+}
+
 #[cfg(test)]
 #[path = "util_tests.rs"]
 mod tests;

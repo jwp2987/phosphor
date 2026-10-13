@@ -7643,14 +7643,12 @@ impl Input {
         self.note_typeahead_inserted(typeahead, ctx);
     }
 
-    /// Tells input-type detection the buffer now holds shell typeahead (#886): it was typed at
-    /// the shell, so it defaults to Shell rather than being classified as prose.
+    /// Tells input-type detection the buffer now starts with shell typeahead (#886): typed at the
+    /// shell, so a prose-free piece of it is decided Shell rather than classified as prose.
     fn note_typeahead_inserted(&mut self, typeahead: &str, ctx: &mut ViewContext<Self>) {
-        if typeahead.trim().is_empty() {
-            return;
-        }
+        let typeahead = typeahead.to_owned();
         self.ai_input_model
-            .update(ctx, |model, _| model.note_typeahead_inserted());
+            .update(ctx, |model, _| model.note_typeahead_inserted(typeahead));
     }
 
     /// Like [`Self::insert_typeahead_text`], but a cursor the user moved into their own text
@@ -9139,11 +9137,18 @@ impl Input {
                 // `BlocklistAIInputModel::is_detection_requested_for`.
                 let buffer_text_for_detection =
                     should_run_ai_input_detection.then(|| self.buffer_text(ctx));
-                let is_buffer_empty = self.editor.as_ref(ctx).buffer_size(ctx).as_usize() == 0;
+                // Typeahead provenance (#886) ends when its text leaves the front of the buffer.
+                // Checked on every edit, not only those that request detection; the buffer is
+                // only copied while there is provenance to check.
+                let buffer_text_for_typeahead = self
+                    .ai_input_model
+                    .as_ref(ctx)
+                    .has_typeahead_provenance()
+                    .then(|| self.buffer_text(ctx));
                 self.ai_input_model.update(ctx, |controller, _| {
                     controller.abort_in_progress_detection();
-                    if is_buffer_empty {
-                        controller.note_buffer_emptied();
+                    if let Some(buffer_text) = buffer_text_for_typeahead {
+                        controller.note_buffer_edited(&buffer_text);
                     }
                     if let Some(buffer_text) = buffer_text_for_detection {
                         controller.note_detection_requested(buffer_text);
@@ -12107,7 +12112,6 @@ impl Input {
         if self.defer_enter_for_typeahead_report(ctx) {
             return;
         }
-        self.settle_pending_input_detection_for_submit(ctx);
         let command = self.editor.as_ref(ctx).buffer_text(ctx);
 
         ctx.emit(Event::Enter);
@@ -12225,7 +12229,7 @@ impl Input {
                 self.send_queued_row_immediately(conversation_id, query_id, text, is_command, ctx);
             }
             return;
-        } else if self.maybe_queue_input_for_in_progress_conversation(ctx)
+        } else if self.settle_detection_and_maybe_queue_input(ctx)
             || self.maybe_handle_enter_for_slash_command(ctx)
         {
             return;
@@ -12960,6 +12964,14 @@ impl Input {
     /// on and the active conversation is still in progress.
     /// Only queues when AI input is active — if the user is in shell mode the
     /// input is not queued (so e.g. `ls` still runs in the terminal).
+    /// Runs once no inline menu took the Enter, so it submits the buffer: settles a pending
+    /// input-type detection first (#886), since queueing and everything after it route on the
+    /// input type.
+    fn settle_detection_and_maybe_queue_input(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        self.settle_pending_input_detection_for_submit(ctx);
+        self.maybe_queue_input_for_in_progress_conversation(ctx)
+    }
+
     fn maybe_queue_input_for_in_progress_conversation(
         &mut self,
         ctx: &mut ViewContext<Self>,

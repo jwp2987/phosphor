@@ -889,11 +889,18 @@ upstream's behavior is actually a defect rather than a preference.
   0-3 before). **We do:** Enter settles a still-pending detection from the *whole* text, Shell-ward
   only, by rules that need no parse and are precision-first for the full line -- the denylist and
   `is_unambiguous_shell_command` (whose prose vetoes are the #831 holes) -- so prose is never
-  decided here and keeps the old F6 behaviour. A buffer holding shell **typeahead** (keys typed
-  while a command ran, reported back by the shell) defaults to Shell both at Enter and in
-  detection, because it was typed at the shell and its split/merged pieces (`ho b199 >> ~/blk.txt`,
-  `b22 b23`, `b11 blk.txtecho b12`) have no head the pre-filter can see; choosing AI explicitly
-  clears that provenance. Upstream classifies typeahead like any other buffer.
+  decided here and keeps the old F6 behaviour. Shell **typeahead** (keys typed while a command
+  ran, reported back by the shell and inserted at the front of the editor) is decided Shell, at
+  Enter and in detection, **only** while the buffer still starts with that typeahead **and** the
+  whole buffer, head word included, has no prose evidence (`has_no_prose_evidence`: no `?` ending,
+  safe quoting, no colon shape, no function word, article, sentence comma/period or prose word).
+  That accepts the split/merged pieces a burst leaves (`ho b199 >> ~/blk.txt`, `b22 b23`,
+  `b11 blk.txtecho b12`), which have no head the pre-filter can see, and refuses anything a person
+  might type as a question while a command runs (`exit vim`, `rm the temp files`,
+  `mv files to backup`): those go through the normal pipeline. Provenance never routes anything
+  to the agent. It ends on submit, when the typeahead leaves the front of the buffer
+  (select-all + paste, emptying it), or when the user chooses AI. Upstream classifies typeahead
+  like any other buffer.
 
 - **Kitty/iTerm image dimensions from the pty are computed without overflow, and kitty
   placements are capped at `MAX_IMAGE_CELL_HEIGHT`** (`#876`, 2026-10-13,

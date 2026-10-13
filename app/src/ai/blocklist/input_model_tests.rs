@@ -942,7 +942,7 @@ fn settle_for_submit(
 fn inherit_ai(app: &mut App, input_model: &ModelHandle<BlocklistAIInputModel>) {
     input_model.update(app, |model, ctx| {
         model.apply_autodetected_input_type(InputType::AI, ctx);
-        model.note_buffer_emptied();
+        model.note_buffer_edited("");
     });
 }
 
@@ -1020,6 +1020,18 @@ fn settled_or_locked_type_is_not_overridden_at_submit() {
     });
 }
 
+/// Questions a person might type while a command runs, which reach the editor as typeahead. The
+/// provenance must not decide any of them: they go through the normal pipeline.
+const TYPEAHEAD_PROSE: &[&str] = &[
+    "exit vim",
+    "rm the temp files",
+    "mv files to backup",
+    "rm -rf node_modules and reinstall",
+    "kill server process",
+    "echo this is prose",
+    "cargo build fails why",
+];
+
 #[test]
 fn typeahead_fragments_default_to_shell() {
     App::test((), |mut app| async move {
@@ -1029,7 +1041,7 @@ fn typeahead_fragments_default_to_shell() {
             // At Enter, before any verdict.
             inherit_ai(&mut app, &input_model);
             input_model.update(&mut app, |model, _| {
-                model.note_typeahead_inserted();
+                model.note_typeahead_inserted((*fragment).to_owned());
                 model.note_detection_requested((*fragment).to_owned());
             });
             assert!(
@@ -1043,13 +1055,57 @@ fn typeahead_fragments_default_to_shell() {
             // And in detection: settled synchronously, the classifier never sees it.
             inherit_ai(&mut app, &input_model);
             let snapshot = parsed(fragment).await;
-            input_model.update(&mut app, |model, _| model.note_typeahead_inserted());
+            input_model.update(&mut app, |model, _| {
+                model.note_typeahead_inserted((*fragment).to_owned())
+            });
             request_detection(&mut app, &input_model, snapshot);
             input_model.read(&app, |model, ctx| {
                 assert_eq!(model.input_type(), InputType::Shell, "{fragment}");
                 assert!(!model.is_detection_pending_for(fragment, ctx), "{fragment}");
             });
         }
+    });
+}
+
+#[test]
+fn typeahead_prose_is_not_forced_to_shell() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, AI_UNLOCKED);
+        for prose in TYPEAHEAD_PROSE {
+            // At Enter: not settled, the inherited type stands.
+            inherit_ai(&mut app, &input_model);
+            input_model.update(&mut app, |model, _| {
+                model.note_typeahead_inserted((*prose).to_owned());
+                model.note_detection_requested((*prose).to_owned());
+            });
+            assert!(!settle_for_submit(&mut app, &input_model, prose), "{prose}");
+            input_model.read(&app, |model, ctx| {
+                assert_eq!(model.input_type(), InputType::AI, "{prose}");
+                assert!(model.is_detection_pending_for(prose, ctx), "{prose}");
+                // The provenance is kept (the buffer still starts with it); it just does not
+                // decide prose.
+                assert!(model.typeahead_prefix.is_some(), "{prose}");
+            });
+        }
+    });
+}
+
+#[test]
+fn typeahead_text_extended_with_prose_is_not_forced_to_shell() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, AI_UNLOCKED);
+        // The whole buffer is checked, not just the typeahead at its front.
+        let buffer = "b22 b23 what does this do";
+        input_model.update(&mut app, |model, _| {
+            model.note_typeahead_inserted("b22 b23".to_owned());
+            model.note_detection_requested(buffer.to_owned());
+        });
+        assert!(!settle_for_submit(&mut app, &input_model, buffer));
+        input_model.read(&app, |model, _| {
+            assert_eq!(model.input_type(), InputType::AI);
+        });
     });
 }
 
@@ -1067,25 +1123,41 @@ fn typeahead_provenance_ends_with_its_buffer() {
         });
         assert!(!settle_for_submit(&mut app, &input_model, fragment));
 
-        // Choosing Shell keeps the provenance...
+        // Typing after the typeahead, or choosing Shell, keeps the provenance...
         input_model.update(&mut app, |model, ctx| {
-            model.note_typeahead_inserted();
+            model.note_typeahead_inserted(fragment.to_owned());
+            model.note_detection_requested(format!("{fragment} b24"));
             model.set_input_type(InputType::Shell, ctx);
         });
-        input_model.read(&app, |model, _| assert!(model.buffer_has_typeahead));
+        input_model.read(&app, |model, _| {
+            assert_eq!(model.typeahead_prefix.as_deref(), Some(fragment))
+        });
 
-        // ...while choosing AI, emptying the buffer, or submitting it each end it.
+        // ...a select-all and paste that replaces it drops it, so the pasted text is classified
+        // as the user's own...
+        input_model.update(&mut app, |model, _| {
+            model.note_typeahead_inserted(fragment.to_owned());
+            model.note_detection_requested("b9 b10".to_owned());
+        });
+        input_model.read(&app, |model, _| assert!(model.typeahead_prefix.is_none()));
+        // ...and choosing AI, emptying the buffer, or submitting it each end it.
         let ends: [fn(&mut BlocklistAIInputModel, &mut ModelContext<BlocklistAIInputModel>); 3] = [
             |model, ctx| model.set_input_type(InputType::AI, ctx),
-            |model, _| model.note_buffer_emptied(),
+            |model, _| model.note_buffer_edited(""),
             |model, ctx| model.handle_input_buffer_submitted(ctx),
         ];
         for end in ends {
             input_model.update(&mut app, |model, ctx| {
-                model.note_typeahead_inserted();
+                model.note_typeahead_inserted(fragment.to_owned());
                 end(model, ctx);
             });
-            input_model.read(&app, |model, _| assert!(!model.buffer_has_typeahead));
+            input_model.read(&app, |model, _| assert!(model.typeahead_prefix.is_none()));
         }
+
+        // Whitespace-only typeahead is no provenance.
+        input_model.update(&mut app, |model, _| {
+            model.note_typeahead_inserted("  ".to_owned())
+        });
+        input_model.read(&app, |model, _| assert!(model.typeahead_prefix.is_none()));
     });
 }

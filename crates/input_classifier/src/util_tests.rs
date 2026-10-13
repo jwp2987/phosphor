@@ -538,6 +538,81 @@ fn test_is_unambiguous_shell_command_forces_shell_for_clear_commands() {
     });
 }
 
+// #886: the gate for deciding shell typeahead as Shell without a command head. The pieces a burst
+// splits or merges pass; every line a person might type as a question while a command runs is
+// refused, and so is any command made of English words (left to the pre-filter and classifier).
+#[test]
+fn test_has_no_prose_evidence_accepts_burst_fragments_only() {
+    for buffer in [
+        "ho b199 >> ~/blk.txt",
+        "b22 b23",
+        "b11 blk.txtecho b12",
+        "xtecho b5 >> ~/blk.txt",
+        "b29 >> ~/blk.txt",
+        "reboot",
+        "dd if=/dev/zero of=/dev/sda",
+    ] {
+        assert!(has_no_prose_evidence(buffer), "{buffer:?} should pass");
+    }
+    for buffer in [
+        "find the bug in main.rs",
+        "git status of the repo",
+        "export data > backup.csv",
+        "exit vim",
+        "read RFC 9110",
+        "explain this; rm -rf target",
+        "fix the tests; rm -rf target",
+        "echo b30 >> ~/blk.txt",
+        "rm the temp files",
+        "rm temp files",
+        "kill the server",
+        "kill server process",
+        "delete old logs",
+        "make it faster",
+        "make tests pass",
+        "cat the file",
+        "ls files here",
+        "cd into src",
+        "sort these results",
+        "find large files",
+        "grep for TODO",
+        "touch base with bob",
+        "time to refactor",
+        "which file has main",
+        "history of this function",
+        "git push the changes",
+        "cargo build fails why",
+        "ssh into prod and restart nginx",
+        "kill all node processes",
+        "rm -rf node_modules and reinstall",
+        "mv files to backup",
+        "cp config to prod",
+        "find . -name foo",
+        "top processes by memory",
+        "echo hello world",
+        "echo this is prose",
+        "sudo reboot the server",
+        "shutdown now",
+        "chmod everything to 777",
+        "chown files to root",
+        "less is more",
+        "yes please",
+        "true story",
+        "history",
+        "nice work",
+        "env vars explained",
+        "test the login flow",
+        "watch the logs",
+        "tail the logs",
+        "head over to docs",
+        "b22 b23 what does this do",
+        "b22 b23?",
+        "",
+    ] {
+        assert!(!has_no_prose_evidence(buffer), "{buffer:?} reads as prose");
+    }
+}
+
 // #886: Enter settles a pending detection with this pre-filter alone (no parse has landed under
 // burst typing). These are the lines the burst torture sent to the agent, including the shapes a
 // burst merges -- they all have a command head, so the text alone settles them.

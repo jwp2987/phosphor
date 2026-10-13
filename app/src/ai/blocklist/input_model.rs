@@ -178,14 +178,15 @@ pub struct BlocklistAIInputModel {
     /// being replaced cannot apply its verdict (or clear the handle) over its replacement.
     detection_generation: u64,
 
-    /// Whether the buffer holds text the shell handed back as typeahead (#886): keys typed while
-    /// a command was running, or before the editor regained focus, went to the shell's tty and
-    /// were reported back into the editor. That text was typed *at the shell*, and when a burst
-    /// splits or merges it the pieces (`ho b199 >> ~/blk.txt`, `b22 b23`,
+    /// The shell typeahead the view last inserted at the front of the buffer, while the buffer
+    /// still starts with it (#886): keys typed while a command was running, or before the editor
+    /// regained focus, went to the shell's tty and were reported back into the editor. When a
+    /// burst splits or merges that text, the pieces (`ho b199 >> ~/blk.txt`, `b22 b23`,
     /// `xtecho b5 >> ~/blk.txt`) carry no command head the pre-filter could recognise, so the
-    /// classifier read them as prose. Set by the view when it inserts typeahead; cleared by a
-    /// submit, an emptied buffer, or the user choosing AI explicitly.
-    buffer_has_typeahead: bool,
+    /// classifier read them as prose. See [`Self::is_shell_typeahead`] for what this decides.
+    /// Dropped by a submit, an emptied buffer, an edit that removes the typeahead from the front
+    /// (select-all and paste), or the user choosing AI explicitly.
+    typeahead_prefix: Option<String>,
 
     /// Whether the input buffer was empty at the time the lock was set.  This will be true
     /// if a persistent lock is in place and a buffer is submitted.
@@ -248,7 +249,7 @@ impl BlocklistAIInputModel {
             non_autodetected_input_type: input_config.input_type,
             pending_detection_buffer: None,
             detection_generation: 0,
-            buffer_has_typeahead: false,
+            typeahead_prefix: None,
             was_lock_set_with_empty_buffer: false,
             agent_view_controller: None,
             ai_context_model,
@@ -457,7 +458,7 @@ impl BlocklistAIInputModel {
             non_autodetected_input_type: input_config.input_type,
             pending_detection_buffer: None,
             detection_generation: 0,
-            buffer_has_typeahead: false,
+            typeahead_prefix: None,
             was_lock_set_with_empty_buffer: false,
             autodetect_abort_handle: None,
             model,
@@ -586,7 +587,7 @@ impl BlocklistAIInputModel {
             self.non_autodetected_input_type = new_config.input_type;
             // Choosing AI for a typeahead buffer overrides its shell provenance (#886).
             if new_config.input_type.is_ai() {
-                self.buffer_has_typeahead = false;
+                self.typeahead_prefix = None;
             }
         }
 
@@ -737,6 +738,7 @@ impl BlocklistAIInputModel {
             }
             Some((true, false)) | None => {}
         }
+        self.drop_typeahead_prefix_unless_leading(&buffer_text);
         self.pending_detection_buffer = Some(buffer_text);
     }
 
@@ -776,15 +778,52 @@ impl BlocklistAIInputModel {
         self.pending_detection_buffer.as_deref() == Some(buffer_text)
     }
 
-    /// Records that the view inserted shell typeahead into the buffer (#886); see
-    /// [`Self::buffer_has_typeahead`].
-    pub fn note_typeahead_inserted(&mut self) {
-        self.buffer_has_typeahead = true;
+    /// Records that the view inserted `typeahead` at the front of the buffer (#886); see
+    /// [`Self::typeahead_prefix`].
+    pub fn note_typeahead_inserted(&mut self, typeahead: String) {
+        self.typeahead_prefix = (!typeahead.trim().is_empty()).then_some(typeahead);
     }
 
-    /// Records that the buffer was emptied: whatever is typed next is not typeahead (#886).
-    pub fn note_buffer_emptied(&mut self) {
-        self.buffer_has_typeahead = false;
+    /// The typeahead provenance currently held (#886), for view tests.
+    #[cfg(test)]
+    pub(crate) fn typeahead_prefix(&self) -> Option<&str> {
+        self.typeahead_prefix.as_deref()
+    }
+
+    /// Whether the buffer carries typeahead provenance (#886) for an edit to re-check.
+    pub fn has_typeahead_provenance(&self) -> bool {
+        self.typeahead_prefix.is_some()
+    }
+
+    /// Records an edit of the buffer, now `buffer_text`: provenance survives only while the
+    /// typeahead is still at its front (#886).
+    pub fn note_buffer_edited(&mut self, buffer_text: &str) {
+        self.drop_typeahead_prefix_unless_leading(buffer_text);
+    }
+
+    /// Drops the typeahead provenance once `buffer_text` no longer starts with the typeahead: the
+    /// user replaced it (select-all and paste, a history pick) or emptied the buffer, so the text
+    /// is theirs (#886).
+    fn drop_typeahead_prefix_unless_leading(&mut self, buffer_text: &str) {
+        if self
+            .typeahead_prefix
+            .as_deref()
+            .is_some_and(|prefix| !buffer_text.starts_with(prefix))
+        {
+            self.typeahead_prefix = None;
+        }
+    }
+
+    /// Whether `buffer_text` is shell typeahead that may be decided Shell without a command head
+    /// (#886): it still starts with the typeahead the shell handed back, and the *whole* buffer
+    /// carries no prose evidence at all ([`input_classifier::util::has_no_prose_evidence`] --
+    /// stricter than the pre-filter, the head word included). A question typed while a command
+    /// ran (`exit vim`, `rm the temp files`, `mv files to backup`) is not decided here and goes
+    /// through the normal pipeline; provenance never routes anything to the agent.
+    fn is_shell_typeahead(&mut self, buffer_text: &str) -> bool {
+        self.drop_typeahead_prefix_unless_leading(buffer_text);
+        self.typeahead_prefix.is_some()
+            && input_classifier::util::has_no_prose_evidence(buffer_text)
     }
 
     /// Settles a detection still pending for the buffer being submitted, from what can be
@@ -801,7 +840,8 @@ impl BlocklistAIInputModel {
     ///
     /// Only Shell is decided here, and only by rules that are already precision-first for the
     /// whole text: the user's denylist, [`input_classifier::util::is_unambiguous_shell_command`]
-    /// (whose prose vetoes are the #831 holes), or shell typeahead provenance. Anything else keeps
+    /// (whose prose vetoes are the #831 holes), or prose-free shell typeahead
+    /// ([`Self::is_shell_typeahead`]). Anything else keeps
     /// the live type, as before. A locked or explicitly chosen type is never pending, so it is
     /// never overridden. Returns `true` if the input type was settled to Shell.
     pub fn settle_pending_detection_for_submit(
@@ -812,7 +852,7 @@ impl BlocklistAIInputModel {
         if !self.is_detection_pending_for(&input.buffer_text, ctx) {
             return false;
         }
-        let is_shell = self.buffer_has_typeahead
+        let is_shell = self.is_shell_typeahead(&input.buffer_text)
             || self.is_first_word_denylisted(&input.buffer_text, ctx)
             || input_classifier::util::is_unambiguous_shell_command(input);
         if !is_shell {
@@ -900,7 +940,7 @@ impl BlocklistAIInputModel {
         // parse whose text is still `is_detection_requested_for`.
         self.pending_detection_buffer = None;
         // The typeahead, if any, went with the submitted text (#886).
-        self.buffer_has_typeahead = false;
+        self.typeahead_prefix = None;
     }
 
     pub fn was_lock_set_with_empty_buffer(&self) -> bool {
@@ -990,9 +1030,9 @@ impl BlocklistAIInputModel {
         // #886: text the shell handed back as typeahead was typed at the shell. A burst that the
         // tty split or merged leaves pieces with no recognisable head (`ho b199 >> ~/blk.txt`,
         // `b22 b23`, `b11 blk.txtecho b12`) that the classifier reads as prose, and an AI verdict
-        // here is the mode the rest of the burst is then typed into. Choosing AI explicitly
-        // clears the provenance, so the user can still send such a buffer to the agent.
-        if self.buffer_has_typeahead {
+        // here is the mode the rest of the burst is then typed into. Only a buffer with no prose
+        // evidence anywhere is decided here; anything that could be a question falls through.
+        if self.is_shell_typeahead(&input.buffer_text) {
             self.apply_autodetected_input_type(InputType::Shell, ctx);
             self.settle_detection(&input.buffer_text);
             return;
