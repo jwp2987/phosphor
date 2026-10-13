@@ -13,6 +13,9 @@
 //! terminal view, the input editor and `PtyController` feed it events and act on its decisions.
 
 use std::mem;
+use std::time::Duration;
+
+use instant::Instant;
 
 use crate::ai::agent::AIAgentActionId;
 use crate::ai::agent::conversation::AIConversationId;
@@ -105,11 +108,24 @@ pub enum ReportDisposition {
 pub enum DeadlineOutcome {
     /// The deadline belongs to an earlier request, or the report already arrived.
     Stale,
-    /// No report and no Enter: the editor simply keeps input.
+    /// Not the last deadline: keep waiting for the report. A late report is most often a busy
+    /// machine, not a dead shell, and nothing goes anywhere wrong while the hand-off waits.
+    KeepWaiting,
+    /// The last deadline, no report and no Enter: the editor simply keeps input.
     ReleaseEditor,
-    /// No report in time, or the deferred Enter ran but wrote no command. Hand the held keys back
-    /// to the editor; the deferred Enter is not run, so a fragment is never submitted.
+    /// The last deadline, no report, and the keys held behind the deferred Enter include an
+    /// Enter: they are shell lines. Run the deferred Enter as a shell command (never classified
+    /// as an agent query); the held keys follow it to the pty as typed.
+    SubmitAsShellCommand,
+    /// The last deadline, and the held keys are a fragment of one line (no Enter): hand them
+    /// back to the editor, for a submit that stays a shell command. The deferred Enter is not
+    /// run, so a fragment is never submitted.
     GiveUp { held: Vec<u8> },
+    /// The last deadline after the deferred Enter ran without writing a command, and the held
+    /// keys include an Enter: they are shell lines, so they go to the pty as typed. They are
+    /// never turned into a multi-line editor buffer, which the next Enter would submit whole --
+    /// to the agent, if natural-language detection took it for a query.
+    WriteHeldToPty { held: Vec<u8> },
 }
 
 /// What a Ctrl-C written while the pty owns input means for the hand-off.
@@ -157,6 +173,8 @@ pub struct TypeaheadHandoff {
     /// this is the only place a cancel of that action, or a stop of that conversation, can find
     /// it.
     held_agent_command: Option<HeldAgentCommand>,
+    /// When the editor last took input over from the pty.
+    editor_took_over_at: Option<Instant>,
 }
 
 /// Identifies an agent's command held behind the user's typeahead.
@@ -487,24 +505,67 @@ impl TypeaheadHandoff {
     }
 
     /// The report deadline armed for `request_generation` expired.
-    pub fn on_report_deadline(&mut self, request_generation: u64) -> DeadlineOutcome {
+    ///
+    /// `is_last` is whether this is the last deadline the view arms for the request; until then
+    /// the hand-off keeps waiting (and holding).
+    pub fn on_report_deadline(
+        &mut self,
+        request_generation: u64,
+        is_last: bool,
+    ) -> DeadlineOutcome {
         if request_generation != self.request_generation {
             return DeadlineOutcome::Stale;
         }
         match self.owner() {
+            Owner::Editor | Owner::Pty { .. } => DeadlineOutcome::Stale,
+            Owner::AwaitingReport | Owner::Hold { .. } if !is_last => DeadlineOutcome::KeepWaiting,
             Owner::AwaitingReport => {
                 self.state = HandoffState::EditorOwned;
                 DeadlineOutcome::ReleaseEditor
             }
+            Owner::Hold { released: false } if self.held_keys_include_an_enter() => {
+                self.mark_released();
+                DeadlineOutcome::SubmitAsShellCommand
+            }
             Owner::Hold { .. } => match mem::take(&mut self.state) {
-                HandoffState::HoldAfterEnter { held, .. } => DeadlineOutcome::GiveUp { held },
+                HandoffState::HoldAfterEnter { held, .. } => {
+                    if held.iter().any(|byte| matches!(byte, b'\r' | b'\n')) {
+                        DeadlineOutcome::WriteHeldToPty { held }
+                    } else {
+                        DeadlineOutcome::GiveUp { held }
+                    }
+                }
                 other => {
                     self.state = other;
                     DeadlineOutcome::Stale
                 }
             },
-            Owner::Editor | Owner::Pty { .. } => DeadlineOutcome::Stale,
         }
+    }
+
+    fn held_keys_include_an_enter(&self) -> bool {
+        match &self.state {
+            HandoffState::HoldAfterEnter { held, .. } => {
+                held.iter().any(|byte| matches!(byte, b'\r' | b'\n'))
+            }
+            HandoffState::EditorOwned
+            | HandoffState::PtyOwned { .. }
+            | HandoffState::AwaitingReport => false,
+        }
+    }
+
+    /// Records that the editor just took input over (`now`), so a non-printable key that still
+    /// reaches the terminal before focus follows can be applied to the editor.
+    pub fn note_editor_took_over(&mut self, now: Instant) {
+        self.editor_took_over_at = Some(now);
+    }
+
+    /// Whether the editor took input over within `window` before `now`.
+    pub fn editor_took_over_within(&self, window: Duration, now: Instant) -> bool {
+        self.editor_owns_input()
+            && self
+                .editor_took_over_at
+                .is_some_and(|at| now.saturating_duration_since(at) <= window)
     }
 
     /// A Ctrl-C was written while the pty owned input. The tty discards queued typeahead and the

@@ -13420,3 +13420,132 @@ fn typeahead_handoff_stopping_a_conversation_drops_its_held_command() {
         assert_eq!(*counts.borrow(), (1, 0, 0));
     })
 }
+
+/// Puts keys behind a deferred Enter and returns the request's generation, as a deadline sees it.
+fn hold_keys_after_deferred_enter(view: &TerminalView, keys: &[u8]) -> u64 {
+    hold_after_deferred_enter(view);
+    let mut model = view.model.lock();
+    let handoff = model.typeahead_handoff_mut();
+    assert_eq!(handoff.on_user_bytes(keys), UserBytesRoute::Held);
+    handoff
+        .take_report_deadline_to_arm()
+        .expect("the request armed a deadline")
+}
+
+fn input_is_locked_to_shell(view: &TerminalView, ctx: &AppContext) -> bool {
+    let input_model = view.ai_input_model.as_ref(ctx);
+    input_model.input_type() == InputType::Shell && input_model.is_input_type_locked()
+}
+
+/// #826 N1: under CPU starvation the report missed its deadline and the held keys -- shell lines
+/// the user typed -- came back into the editor with each Enter as a newline; the next Enter
+/// submitted them as one buffer, which natural-language detection sent to the agent. Now the last
+/// deadline runs the deferred Enter as a shell command, and if that writes no command the held
+/// lines go to the pty as typed. They never reach the editor.
+#[test]
+fn typeahead_handoff_last_deadline_never_puts_held_shell_lines_in_the_editor() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            let generation = hold_keys_after_deferred_enter(view, b"echo 1\recho 2\r");
+            // Earlier deadlines only keep waiting.
+            view.on_typeahead_report_deadline(generation, 3, ctx);
+            assert!(matches!(
+                view.model.lock().typeahead_handoff().state(),
+                HandoffState::HoldAfterEnter {
+                    released: false,
+                    ..
+                }
+            ));
+
+            // The last one runs the deferred Enter, locked to shell mode. (The test view is not
+            // bootstrapped, so that submit writes no command.)
+            view.on_typeahead_report_deadline(generation, 0, ctx);
+            assert!(input_is_locked_to_shell(view, ctx));
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+
+            // It wrote no command, so the held lines go to the shell, as typed.
+            view.on_typeahead_report_deadline(generation, 0, ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::EditorOwned
+            );
+        });
+
+        assert_eq!(*pty_writes.borrow(), vec![b"echo 1\recho 2\r".to_vec()]);
+    })
+}
+
+/// Held keys without an Enter are one unfinished line: they come back into the editor, and the
+/// submit that follows stays a shell command.
+#[test]
+fn typeahead_handoff_last_deadline_hands_a_held_fragment_back_locked_to_shell() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            let generation = hold_keys_after_deferred_enter(view, b"ls -l");
+            view.on_typeahead_report_deadline(generation, 0, ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls -l");
+            assert!(input_is_locked_to_shell(view, ctx));
+        });
+    })
+}
+
+/// #826 N2: Backspace (or an arrow) typed just after the editor took input over, before focus
+/// left the terminal, is applied to the editor instead of being dropped.
+#[test]
+fn typeahead_handoff_applies_a_key_that_beat_the_focus_change_to_the_editor() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.input.update(ctx, |input, ctx| {
+                input.replace_buffer_content("lss", ctx);
+                input
+                    .editor()
+                    .update(ctx, |editor, ctx| editor.move_to_buffer_end(ctx));
+            });
+            // Not right after a hand-off: the key keeps its old meaning (dropped).
+            view.control_sequence_on_terminal(&[0x7f], ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "lss");
+
+            view.note_editor_took_over();
+            view.control_sequence_on_terminal(&[0x7f], ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+            view.control_sequence_on_terminal(b"\x1b[D", ctx);
+            view.control_sequence_on_terminal(&[0x7f], ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "s");
+        });
+    })
+}
+
+/// Without the flag a key on the terminal at the prompt is still dropped.
+#[test]
+fn without_typeahead_handoff_a_key_on_the_terminal_at_the_prompt_is_dropped() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(false);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.input
+                .update(ctx, |input, ctx| input.replace_buffer_content("lss", ctx));
+            view.model
+                .lock()
+                .typeahead_handoff_mut()
+                .note_editor_took_over(Instant::now());
+            view.control_sequence_on_terminal(&[0x7f], ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "lss");
+        });
+    })
+}

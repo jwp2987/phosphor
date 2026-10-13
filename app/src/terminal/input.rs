@@ -12429,6 +12429,21 @@ impl Input {
         });
     }
 
+    /// Locks the input to shell mode for the next submit, so natural-language detection does not
+    /// send text the user typed as shell lines to the agent (`FeatureFlag::TypeaheadHandoff`).
+    /// Submitting a shell command restores the usual configuration.
+    pub(crate) fn lock_input_to_shell(&mut self, ctx: &mut ViewContext<Self>) {
+        self.ai_input_model.update(ctx, |input, ctx| {
+            input.set_input_config_for_classic_mode(
+                InputConfig {
+                    input_type: InputType::Shell,
+                    is_locked: true,
+                },
+                ctx,
+            );
+        });
+    }
+
     /// Defers this Enter while the typeahead hand-off waits for the shell's report of what the
     /// user typed before the editor took over, so the buffer is submitted (or accepted by an open
     /// menu, or sent to the agent) with that text in front of it rather than as a fragment

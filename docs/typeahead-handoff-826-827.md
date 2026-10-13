@@ -306,18 +306,29 @@ Report handling: inserted at the front of the editor (the user's cursor stays
 put relative to their own text) and the editor keeps input. Any Enter while it is
 outstanding is deferred, before menus or natural-language detection see the
 buffer (which holds only what was typed after the request); the report runs it,
-then the held keys are written after the command as its typeahead. If no report
-arrives within 1 s the deferred Enter is not run (it would submit a fragment): the
-held keys go into the editor and the late report is inserted at its front when it
-comes. The deadline runs from when the view handles the request
-(`PtyControllerEvent::TypeaheadHandoffChanged`), not from the Enter. A report that
-arrives after the next command was written is stashed and inserted when the editor
-next owns input; a deferred Enter that wrote no command hands the held keys back
-too. Keys handed back are applied the way the shell's line editor would have:
-Backspace/^H, ^U and ^W edit, Enter becomes a newline and Tab stays (so a
-multi-line paste survives), well-formed CSI/SS3/OSC sequences are dropped whole,
-other control characters are dropped, and a lone ESC does not take the next
-character with it.
+locked to shell mode, then the held keys are written after the command as its
+typeahead. The hand-off waits for the report through ten 1 s deadlines (from when
+the view handles the request, `PtyControllerEvent::TypeaheadHandoffChanged`, not
+from the Enter): a starved machine answers late, and holding keys in order is
+always safe. After the last one:
+- with no deferred Enter, the editor keeps input and a late report is inserted at
+  its front;
+- if the held keys include an Enter, they are shell lines: the deferred Enter
+  runs as a shell command and they follow it to the pty as typed; if that writes
+  no command, they go to the pty on their own. They are never put into the editor
+  (#826 N1: as a multi-line buffer, the next Enter sent them to the agent);
+- otherwise (one unfinished line) they go into the editor, applied the way the
+  shell's line editor would have (Backspace/^H, ^U and ^W edit; well-formed
+  CSI/SS3/OSC sequences are dropped whole; other control characters are dropped;
+  a lone ESC does not take the next character with it), and that submit is locked
+  to shell mode. The deferred Enter is not run, so a fragment is never submitted.
+
+A report that arrives after the next command was written is stashed and inserted
+when the editor next owns input.
+
+A non-printable key (Backspace, Delete, an arrow, Home/End, Enter) that still
+reaches the terminal within 1 s after the editor took input over, before focus
+followed, is applied to the editor rather than dropped (#826 N2).
 
 Known gaps, not addressed:
 - keybindings gated on the `LongRunningCommand` context (e.g. shift-enter) are
