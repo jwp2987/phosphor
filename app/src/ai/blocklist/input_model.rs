@@ -5,7 +5,6 @@
 //! exposes methods for running query autodetection, where an algorithm determines if the current
 //! input contents are an AI query or shell command, which is then used to update the input mode.
 
-use std::future::Future;
 use std::sync::Arc;
 
 use chrono::{DateTime, Local};
@@ -76,32 +75,6 @@ impl ExplicitInputTypeSet {
         Instant::now()
             < self.at + std::time::Duration::from_millis(AUTODETECTION_DISABLE_DURATION_MS)
     }
-}
-
-/// Which steps of the detection pipeline run after the synchronous stage.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PipelineSteps {
-    /// Shortcut, follow-up, history, alias expansion and the classifier (the background path).
-    Full,
-    /// As `Full`, but classify the unexpanded buffer (the Enter-time path; alias expansion can
-    /// await the completer).
-    ClassifierWithoutAliasExpansion,
-    /// Only the steps that need nothing but the buffer text: shortcut, follow-up, history.
-    TextOnly,
-}
-
-/// Result of [`BlocklistAIInputModel::settle_detection_synchronously`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SyncDetectionOutcome {
-    /// Nothing to settle: no detection is pending for this buffer (autodetection locked or
-    /// disabled, an explicit choice covers it, or its verdict already landed).
-    NotPending,
-    /// A verdict for this buffer was reached (and applied).
-    Settled(InputType),
-    /// The steps available synchronously did not decide; the input type was left alone.
-    Undecided,
-    /// The pipeline did not finish within the budget; the input type was left alone.
-    BudgetExhausted { elapsed: std::time::Duration },
 }
 
 /// Configuration for the terminal pane's input.
@@ -900,28 +873,207 @@ impl BlocklistAIInputModel {
         // Abort the last autodetect handle if exists.
         self.abort_in_progress_detection();
 
-        let Some(first_token_str) = self.run_synchronous_detection_stage(&input, ctx) else {
+        // If the input mode is locked, there's no point in running autodetection.
+        if !self.should_run_input_autodetection(ctx) {
+            self.settle_detection(&input.buffer_text);
+            return;
+        }
+
+        // An explicit write in the last 250 ms keeps its input type -- for the buffer it was made
+        // for only; new text is classified (#833).
+        if self.is_detection_suppressed_by_explicit_set(&input.buffer_text) {
+            self.settle_detection(&input.buffer_text);
+            return;
+        }
+        if self
+            .explicit_input_type_set
+            .as_ref()
+            .is_some_and(|explicit| !explicit.is_within_window())
+        {
+            self.explicit_input_type_set = None;
+        }
+
+        let first_token_str = input.parsed_tokens.first().map(|t| t.token.clone());
+        let Some(first_token_str) = first_token_str else {
+            // If the buffer is empty, short-circuit and leave input type unchanged.
+            //
+            // We don't know enough (anything) to be able to change the input type one way or
+            // another.
+            self.settle_detection(&input.buffer_text);
             return;
         };
 
-        let buffer_text = input.buffer_text.clone();
-        let other_buffer_cloned = buffer_text.clone();
+        let denylist: Vec<&str> = AISettings::as_ref(ctx)
+            .autodetection_command_denylist
+            .value()
+            .split(',')
+            .collect();
+
+        // Early return if the first token is included in the denylist. No need to parse history.
+        if denylist.contains(&first_token_str.as_str()) {
+            self.apply_autodetected_input_type(InputType::Shell, ctx);
+            self.settle_detection(&input.buffer_text);
+            return;
+        }
+
+        // #808: if the buffer is unambiguously a shell command line (`yes | head -c 50000000 >
+        // /dev/null`, `trap 'echo t' DEBUG`), force Shell right here, synchronously, before the
+        // one-off natural-language shortcut, the history matcher and the classifier get a say.
+        // The ONNX model routed both of those to the agent (and with no reachable model the user
+        // got a stream error instead of their command); the rules are precision-first, so
+        // anything merely *probably* a command still goes through the pipeline below. See
+        // `input_classifier::util::is_unambiguous_shell_command`.
+        if input_classifier::util::is_unambiguous_shell_command(&input) {
+            self.apply_autodetected_input_type(InputType::Shell, ctx);
+            self.settle_detection(&input.buffer_text);
+            return;
+        }
+
+        // If we have a session, gather command history entries. `History::commands`
+        // returns entries in ascending (oldest-first) order, so downstream matching
+        // reverses them to iterate newest-first.
+        let history_entries = session_id.map(|sid| {
+            History::as_ref(ctx)
+                .commands(sid)
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| {
+                    if entry
+                        .exit_code
+                        .is_some_and(|code| code.was_command_not_found())
+                    {
+                        return None;
+                    }
+                    Some((entry.command.to_string(), entry.start_ts))
+                })
+                .collect::<Vec<(String, Option<DateTime<Local>>)>>()
+        });
+
+        // Gather agent prompt history (ascending / oldest-first). Ported from the pin
+        // (`02b53fcd8`) for #312; off by default, matching the pin's own default-off
+        // state (see `FeatureFlag::NldPromptHistoryMatch`'s doc comment).
+        let prompt_entries = FeatureFlag::NldPromptHistoryMatch
+            .is_enabled()
+            .then(|| BlocklistAIHistoryModel::as_ref(ctx).prompt_history_candidates());
+
+        let buffer_cloned = input.buffer_text.clone();
+        let other_buffer_cloned = buffer_cloned.clone();
+        let input_buffer_text = buffer_cloned.clone();
         self.detection_generation = self.detection_generation.wrapping_add(1);
         let detection_generation = self.detection_generation;
         let current_input_type = self.input_type();
+        // The one-off natural-language shortcut asks "is the user already talking to the agent?".
+        // Answer it from the last input type the user (or a flow acting for them) chose, not the
+        // live one: the live type is whatever autodetection guessed for the previous keystroke, so
+        // it made the verdict for the final text depend on typing speed (#833, F8).
+        let shortcut_input_type = self.non_autodetected_input_type;
+
         let is_udi_enabled = InputSettings::as_ref(ctx).is_universal_developer_input_enabled(ctx);
-        let pipeline = self.detection_pipeline(
-            input,
-            first_token_str,
-            completion_context,
-            session_id,
-            PipelineSteps::Full,
-            ctx,
-        );
+
+        // Determine if the input is a follow-up to an AI block.
+        let is_agent_follow_up = {
+            let model = self.model.lock();
+            let block_list = model.block_list();
+            let block_index = block_list.last_non_hidden_block_by_index();
+            match block_list.last_non_hidden_rich_content_block_after_block(block_index) {
+                Some((_, content)) => content.content_type == Some(RichContentType::AIBlock),
+                _ => false,
+            }
+        };
+
+        let classifier = InputClassifierModel::as_ref(ctx).classifier();
         let handle = ctx
             .spawn(
-                // With the classifier enabled the pipeline always reaches a verdict.
-                async move { pipeline.await.unwrap_or(current_input_type) },
+                async move {
+                    // First check if the token is a natural language word, if the user was already
+                    // in AI mode before this buffer's autodetection began.
+                    if matches!(shortcut_input_type, InputType::AI)
+                        && is_one_off_natural_language_word(first_token_str.to_lowercase().as_str())
+                    {
+                        return InputType::AI;
+                    }
+
+                    // If this is clearly intended to be a follow-up to an AI block, classify it as AI.
+                    if is_agent_follow_up
+                        && is_agent_follow_up_input(&buffer_cloned.trim().to_lowercase())
+                    {
+                        return InputType::AI;
+                    }
+
+                    // If we have history entries (i.e., a live session), check for
+                    // close matches against command history and agent prompt history.
+                    // TODO(vorporeal): decide if we still want to do this with NldImprovements.
+                    if let Some(history_entries) = history_entries {
+                        // Iterate commands newest-first so the first match is the
+                        // most-recent matching command.
+                        let command_match = most_recent_close_match(
+                            &buffer_cloned,
+                            history_entries
+                                .iter()
+                                .rev()
+                                .map(|(command, start_ts)| (command.as_str(), *start_ts)),
+                            HISTORY_ENTRY_MATCH_CUTOFF,
+                        )
+                        .await;
+
+                        if let Some(prompt_entries) = &prompt_entries {
+                            // `prompt_entries` is ascending (oldest-first); reverse it so the
+                            // matcher iterates newest-first and the first match is most-recent.
+                            let prompt_match = most_recent_close_match(
+                                &buffer_cloned,
+                                prompt_entries
+                                    .iter()
+                                    .rev()
+                                    .map(|entry| (&*entry.text, Some(entry.start_ts))),
+                                HISTORY_ENTRY_MATCH_CUTOFF,
+                            )
+                            .await;
+
+                            // The `InputTypeAutoDetectionSource` half of the decision is
+                            // discarded here: this model does not thread a decision source
+                            // through its own input-type state (that's the separate, larger
+                            // port tracked in #399/#254, same as the classifier path above).
+                            if let Some((input_type, _source)) =
+                                resolve_history_match(command_match, prompt_match)
+                            {
+                                return input_type;
+                            }
+                        } else if let Some((input_type, _source)) =
+                            resolve_history_match(command_match, HistoryMatch::NoMatch)
+                        {
+                            // Feature disabled: preserve the command-only behavior.
+                            return input_type;
+                        }
+                    }
+
+                    // Yield so that an attempt to abort the classification is handled.  We do this periodically
+                    // so that we can skip doing additional expensive work if the classification is aborted.
+                    futures_lite::future::yield_now().await;
+
+                    let input =
+                        warp_completer::util::expand_aliases(input, &completion_context).await;
+
+                    futures_lite::future::yield_now().await;
+
+                    let context = input_classifier::Context {
+                        current_input_type,
+                        is_agent_follow_up,
+                        commands_fully_loaded: completion_context.top_level_commands_fully_loaded(),
+                    };
+                    // The classifier now also reports *why* it decided (an
+                    // `InputClassifierDecisionSource`, #428); this model does not
+                    // yet thread a decision source through its own input-type
+                    // state (that's the separate, larger `InputTypeAutoDetectionSource`
+                    // port tracked in #399/#254), so only the `InputType` is kept here.
+                    let new_input_type = classifier
+                        .detect_input_type(input.clone(), &context)
+                        .await
+                        .input_type;
+
+                    futures_lite::future::yield_now().await;
+
+                    new_input_type
+                },
                 move |me, new_input_type, ctx| {
                     // In theory, we shouldn't need to check this, as we only run autodetection if the input
                     // is not locked, and we should abort the autodetect future if the input is locked, but
@@ -973,346 +1125,7 @@ impl BlocklistAIInputModel {
             )
             .abort_handle();
         self.autodetect_abort_handle = Some(handle);
-        self.in_flight_detection_buffer = Some(buffer_text);
-    }
-
-    /// Settles a pending detection for `buffer_text` right now, on the calling (UI) thread, for
-    /// an Enter keypress that would otherwise route on the previous buffer's verdict (#833, F6).
-    ///
-    /// Inputs available synchronously, and therefore the only ones used:
-    /// - `described`: the view's completed parse, if it is for exactly `buffer_text`. It carries
-    ///   the completer's token descriptions, so the classifier can run on it.
-    /// - `undescribed`: a description-less tokenization of `buffer_text`
-    ///   ([`warp_completer::util::parse_current_commands_and_tokens_without_descriptions`]), used
-    ///   when there is no matching parse. Producing descriptions runs the completer, which can
-    ///   await filesystem listings and generator commands, so it is never done here.
-    ///
-    /// Steps, in the background path's order:
-    /// 1. lock / explicit-window / empty checks, the denylist and the #808 pre-filter (token text
-    ///    only);
-    /// 2. the one-off natural-language shortcut, the agent follow-up check and the command /
-    ///    prompt history match (buffer text only);
-    /// 3. the classifier -- only with `described`, and not when the first token is an alias:
-    ///    alias expansion re-parses through the completer, and classifying the unexpanded alias
-    ///    would be guessing. Without descriptions the classifier is skipped entirely: it reads
-    ///    the token descriptions as command evidence, so an undescribed `git status` would look
-    ///    like prose.
-    ///
-    /// Steps 2-3 are the background pipeline's own future, polled here with a no-op waker until
-    /// it resolves or `budget` elapses (the pipeline only yields between steps; a single
-    /// classifier poll is not interruptible, so `elapsed` can exceed `budget`).
-    ///
-    /// On a verdict the background task for this buffer is aborted and the verdict applied and
-    /// settled, exactly as the task would have. Otherwise the input type is left alone -- the
-    /// caller routes in the current mode, as before #833 -- and the background task keeps
-    /// running.
-    pub fn settle_detection_synchronously<C: CompletionContext + Clone + Send + 'static>(
-        &mut self,
-        buffer_text: &str,
-        described: Option<ParsedTokensSnapshot>,
-        undescribed: ParsedTokensSnapshot,
-        completion_context: C,
-        session_id: Option<SessionId>,
-        budget: std::time::Duration,
-        ctx: &mut ModelContext<Self>,
-    ) -> SyncDetectionOutcome {
-        let started = Instant::now();
-        if !self.is_detection_pending_for(buffer_text, ctx) {
-            return SyncDetectionOutcome::NotPending;
-        }
-        let has_descriptions = described
-            .as_ref()
-            .is_some_and(|described| described.buffer_text == buffer_text);
-        let input = match described {
-            Some(described) if has_descriptions => described,
-            _ => undescribed,
-        };
-        debug_assert_eq!(input.buffer_text, buffer_text);
-
-        let Some(first_token_str) = self.run_synchronous_detection_stage(&input, ctx) else {
-            // Settled (or nothing to decide). The background task for this text is moot.
-            self.abort_in_progress_detection();
-            return SyncDetectionOutcome::Settled(self.input_type());
-        };
-
-        let first_token_is_alias = input
-            .parsed_tokens
-            .iter()
-            .filter(|token| token.token_index == 0)
-            .any(|token| {
-                completion_context
-                    .alias_command(token.token.as_str())
-                    .is_some()
-            });
-        let steps = if has_descriptions && !first_token_is_alias {
-            PipelineSteps::ClassifierWithoutAliasExpansion
-        } else {
-            PipelineSteps::TextOnly
-        };
-        let pipeline = self.detection_pipeline(
-            input,
-            first_token_str,
-            completion_context,
-            session_id,
-            steps,
-            ctx,
-        );
-        let mut pipeline = std::pin::pin!(pipeline);
-        let waker = futures::task::noop_waker();
-        let mut poll_context = std::task::Context::from_waker(&waker);
-        let verdict = loop {
-            match pipeline.as_mut().poll(&mut poll_context) {
-                std::task::Poll::Ready(verdict) => break Some(verdict),
-                std::task::Poll::Pending if started.elapsed() >= budget => break None,
-                std::task::Poll::Pending => {}
-            }
-        };
-        match verdict {
-            Some(Some(input_type)) => {
-                self.abort_in_progress_detection();
-                self.apply_autodetected_input_type(input_type, ctx);
-                self.settle_detection(buffer_text);
-                SyncDetectionOutcome::Settled(input_type)
-            }
-            Some(None) => SyncDetectionOutcome::Undecided,
-            None => SyncDetectionOutcome::BudgetExhausted {
-                elapsed: started.elapsed(),
-            },
-        }
-    }
-
-    /// The synchronous stage of detection, shared by the background path
-    /// ([`Self::detect_and_set_input_type`]) and the Enter-time path
-    /// ([`Self::settle_detection_synchronously`]): lock / explicit-window / empty-buffer checks,
-    /// the denylist and the #808 pre-filter. Every one of these needs only token *text*.
-    ///
-    /// Returns `None` when this stage settled the buffer (applying a verdict, or leaving the type
-    /// alone for a reason that settles it); otherwise the first token, for the pipeline.
-    fn run_synchronous_detection_stage(
-        &mut self,
-        input: &ParsedTokensSnapshot,
-        ctx: &mut ModelContext<Self>,
-    ) -> Option<String> {
-        // If the input mode is locked, there's no point in running autodetection.
-        if !self.should_run_input_autodetection(ctx) {
-            self.settle_detection(&input.buffer_text);
-            return None;
-        }
-
-        // An explicit write in the last 250 ms keeps its input type -- for the buffer it was made
-        // for only; new text is classified (#833).
-        if self.is_detection_suppressed_by_explicit_set(&input.buffer_text) {
-            self.settle_detection(&input.buffer_text);
-            return None;
-        }
-        if self
-            .explicit_input_type_set
-            .as_ref()
-            .is_some_and(|explicit| !explicit.is_within_window())
-        {
-            self.explicit_input_type_set = None;
-        }
-
-        let first_token_str = input.parsed_tokens.first().map(|t| t.token.item.clone());
-        let Some(first_token_str) = first_token_str else {
-            // If the buffer is empty, short-circuit and leave input type unchanged.
-            //
-            // We don't know enough (anything) to be able to change the input type one way or
-            // another.
-            self.settle_detection(&input.buffer_text);
-            return None;
-        };
-
-        let denylist: Vec<&str> = AISettings::as_ref(ctx)
-            .autodetection_command_denylist
-            .value()
-            .split(',')
-            .collect();
-
-        // Early return if the first token is included in the denylist. No need to parse history.
-        if denylist.contains(&first_token_str.as_str()) {
-            self.apply_autodetected_input_type(InputType::Shell, ctx);
-            self.settle_detection(&input.buffer_text);
-            return None;
-        }
-
-        // #808: if the buffer is unambiguously a shell command line (`yes | head -c 50000000 >
-        // /dev/null`, `trap 'echo t' DEBUG`), force Shell right here, synchronously, before the
-        // one-off natural-language shortcut, the history matcher and the classifier get a say.
-        // The ONNX model routed both of those to the agent (and with no reachable model the user
-        // got a stream error instead of their command); the rules are precision-first, so
-        // anything merely *probably* a command still goes through the pipeline below. See
-        // `input_classifier::util::is_unambiguous_shell_command`.
-        if input_classifier::util::is_unambiguous_shell_command(input) {
-            self.apply_autodetected_input_type(InputType::Shell, ctx);
-            self.settle_detection(&input.buffer_text);
-            return None;
-        }
-
-        Some(first_token_str)
-    }
-
-    /// Builds the asynchronous part of detection: the one-off natural-language shortcut, the
-    /// agent follow-up check, the command/prompt history match and then, depending on `steps`,
-    /// alias expansion and the classifier. Resolves to `None` only when `steps` excludes the
-    /// classifier and no earlier step decided.
-    ///
-    /// Everything before the classifier needs only the buffer text; the classifier relies on the
-    /// completer's token descriptions in `input`. The future does no I/O itself (it yields
-    /// between steps so it can be aborted), with one exception: alias expansion re-parses an
-    /// expanded buffer through the completer, which can await filesystem and generator work.
-    fn detection_pipeline<C: CompletionContext + Clone + Send + 'static>(
-        &mut self,
-        input: ParsedTokensSnapshot,
-        first_token_str: String,
-        completion_context: C,
-        session_id: Option<SessionId>,
-        steps: PipelineSteps,
-        ctx: &mut ModelContext<Self>,
-    ) -> impl Future<Output = Option<InputType>> + 'static {
-        // If we have a session, gather command history entries. `History::commands`
-        // returns entries in ascending (oldest-first) order, so downstream matching
-        // reverses them to iterate newest-first.
-        let history_entries = session_id.map(|sid| {
-            History::as_ref(ctx)
-                .commands(sid)
-                .into_iter()
-                .flatten()
-                .filter_map(|entry| {
-                    if entry
-                        .exit_code
-                        .is_some_and(|code| code.was_command_not_found())
-                    {
-                        return None;
-                    }
-                    Some((entry.command.to_string(), entry.start_ts))
-                })
-                .collect::<Vec<(String, Option<DateTime<Local>>)>>()
-        });
-
-        // Gather agent prompt history (ascending / oldest-first). Ported from the pin
-        // (`02b53fcd8`) for #312; off by default, matching the pin's own default-off
-        // state (see `FeatureFlag::NldPromptHistoryMatch`'s doc comment).
-        let prompt_entries = FeatureFlag::NldPromptHistoryMatch
-            .is_enabled()
-            .then(|| BlocklistAIHistoryModel::as_ref(ctx).prompt_history_candidates());
-
-        let buffer_cloned = input.buffer_text.clone();
-        let current_input_type = self.input_type();
-        // The one-off natural-language shortcut asks "is the user already talking to the agent?".
-        // Answer it from the last input type the user (or a flow acting for them) chose, not the
-        // live one: the live type is whatever autodetection guessed for the previous keystroke, so
-        // it made the verdict for the final text depend on typing speed (#833, F8).
-        let shortcut_input_type = self.non_autodetected_input_type;
-
-        // Determine if the input is a follow-up to an AI block.
-        let is_agent_follow_up = {
-            let model = self.model.lock();
-            let block_list = model.block_list();
-            let block_index = block_list.last_non_hidden_block_by_index();
-            match block_list.last_non_hidden_rich_content_block_after_block(block_index) {
-                Some((_, content)) => content.content_type == Some(RichContentType::AIBlock),
-                _ => false,
-            }
-        };
-
-        let classifier = InputClassifierModel::as_ref(ctx).classifier();
-        async move {
-            // First check if the token is a natural language word, if the user was already
-            // in AI mode before this buffer's autodetection began.
-            if matches!(shortcut_input_type, InputType::AI)
-                && is_one_off_natural_language_word(first_token_str.to_lowercase().as_str())
-            {
-                return Some(InputType::AI);
-            }
-
-            // If this is clearly intended to be a follow-up to an AI block, classify it as AI.
-            if is_agent_follow_up && is_agent_follow_up_input(&buffer_cloned.trim().to_lowercase())
-            {
-                return Some(InputType::AI);
-            }
-
-            // If we have history entries (i.e., a live session), check for
-            // close matches against command history and agent prompt history.
-            // TODO(vorporeal): decide if we still want to do this with NldImprovements.
-            if let Some(history_entries) = history_entries {
-                // Iterate commands newest-first so the first match is the
-                // most-recent matching command.
-                let command_match = most_recent_close_match(
-                    &buffer_cloned,
-                    history_entries
-                        .iter()
-                        .rev()
-                        .map(|(command, start_ts)| (command.as_str(), *start_ts)),
-                    HISTORY_ENTRY_MATCH_CUTOFF,
-                )
-                .await;
-
-                if let Some(prompt_entries) = &prompt_entries {
-                    // `prompt_entries` is ascending (oldest-first); reverse it so the
-                    // matcher iterates newest-first and the first match is most-recent.
-                    let prompt_match = most_recent_close_match(
-                        &buffer_cloned,
-                        prompt_entries
-                            .iter()
-                            .rev()
-                            .map(|entry| (&*entry.text, Some(entry.start_ts))),
-                        HISTORY_ENTRY_MATCH_CUTOFF,
-                    )
-                    .await;
-
-                    // The `InputTypeAutoDetectionSource` half of the decision is
-                    // discarded here: this model does not thread a decision source
-                    // through its own input-type state (that's the separate, larger
-                    // port tracked in #399/#254, same as the classifier path above).
-                    if let Some((input_type, _source)) =
-                        resolve_history_match(command_match, prompt_match)
-                    {
-                        return Some(input_type);
-                    }
-                } else if let Some((input_type, _source)) =
-                    resolve_history_match(command_match, HistoryMatch::NoMatch)
-                {
-                    // Feature disabled: preserve the command-only behavior.
-                    return Some(input_type);
-                }
-            }
-
-            if steps == PipelineSteps::TextOnly {
-                return None;
-            }
-
-            // Yield so that an attempt to abort the classification is handled.  We do this periodically
-            // so that we can skip doing additional expensive work if the classification is aborted.
-            futures_lite::future::yield_now().await;
-
-            let input = if steps == PipelineSteps::Full {
-                warp_completer::util::expand_aliases(input, &completion_context).await
-            } else {
-                input
-            };
-
-            futures_lite::future::yield_now().await;
-
-            let context = input_classifier::Context {
-                current_input_type,
-                is_agent_follow_up,
-                commands_fully_loaded: completion_context.top_level_commands_fully_loaded(),
-            };
-            // The classifier now also reports *why* it decided (an
-            // `InputClassifierDecisionSource`, #428); this model does not
-            // yet thread a decision source through its own input-type
-            // state (that's the separate, larger `InputTypeAutoDetectionSource`
-            // port tracked in #399/#254), so only the `InputType` is kept here.
-            let new_input_type = classifier
-                .detect_input_type(input.clone(), &context)
-                .await
-                .input_type;
-
-            futures_lite::future::yield_now().await;
-
-            Some(new_input_type)
-        }
+        self.in_flight_detection_buffer = Some(input_buffer_text);
     }
 }
 

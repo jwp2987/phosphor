@@ -299,7 +299,6 @@ pub use warpui::{
 };
 
 use self::decorations::InputBackgroundJobOptions;
-use crate::ai::blocklist::input_model::SyncDetectionOutcome;
 use super::{
     alias::is_expandable_alias,
     block_list_viewport::InputMode,
@@ -379,19 +378,6 @@ impl DropTargetData for InputDropTargetData {
 
 pub const DEBOUNCE_INPUT_DECORATION_PERIOD: Duration = Duration::from_millis(10);
 pub const DEBOUNCE_AI_QUERY_PREDICTION_PERIOD: Duration = Duration::from_millis(250);
-
-/// Upper bound on the time a user's Enter keypress spends settling the input type (shell vs
-/// agent) of a buffer whose autodetection has not finished yet (#833, F6).
-///
-/// Detection is asynchronous (a 10 ms debounce, a completer parse, then a background classifier
-/// task), and Enter used to route on whatever type was current at the keypress: prose pasted or
-/// fast-typed and submitted at once ran in the shell on the previous buffer's verdict. Enter now
-/// evaluates the verdict synchronously, on the UI thread, from what is available without
-/// awaiting the completer (see `BlocklistAIInputModel::settle_detection_synchronously`), and
-/// gives up after this long, routing in the current mode exactly as before #833. Enter stays
-/// synchronous, so the editor is never frozen and keystroke order is preserved; the cost is a
-/// UI stall of up to roughly this budget on such an Enter.
-const ENTER_SYNC_DETECTION_BUDGET: Duration = Duration::from_millis(60);
 pub(super) const CLI_AGENT_RICH_INPUT_EDITOR_MAX_HEIGHT: f32 = 236.;
 pub(super) const CLI_AGENT_RICH_INPUT_EDITOR_TOP_PADDING: f32 = 10.;
 pub(super) const CLI_AGENT_RICH_INPUT_EDITOR_BOTTOM_PADDING: f32 = 8.;
@@ -9748,7 +9734,7 @@ impl Input {
                     });
                 }
             }
-            EditorEvent::Enter => self.input_enter_from_keypress(ctx),
+            EditorEvent::Enter => self.input_enter(ctx),
             EditorEvent::CmdEnter => self.input_cmd_enter(ctx),
             EditorEvent::CtrlEnter => self.input_ctrl_enter(ctx),
             EditorEvent::Escape => self.editor_escape(ctx),
@@ -11963,112 +11949,6 @@ impl Input {
         self.ai_controller.update(ctx, move |controller, ctx| {
             controller.send_slash_command_request(SlashCommandRequest::CloneRepository { url }, ctx)
         });
-    }
-
-    /// Handles an Enter keypress from the input editor: settles the input type of the buffer if
-    /// its autodetection is still pending (#833), then runs the unchanged [`Self::input_enter`].
-    /// Programmatic submissions call [`Self::input_enter`] directly; they set the input type
-    /// themselves.
-    pub(crate) fn input_enter_from_keypress(&mut self, ctx: &mut ViewContext<Self>) {
-        self.settle_input_detection_before_enter(ctx);
-        self.input_enter(ctx);
-    }
-
-    /// Whether Enter would route the buffer by input type. Enter that accepts a menu item,
-    /// inserts a newline, submits CLI agent rich input or runs a detected slash command does not
-    /// depend on it.
-    fn enter_routes_buffer_by_input_type(&self, ctx: &AppContext) -> bool {
-        if CLIAgentSessionsModel::as_ref(ctx).is_input_open(self.terminal_view_id) {
-            return false;
-        }
-        let suggestions_mode = self.suggestions_mode_model.as_ref(ctx);
-        let enter_routes_buffer = suggestions_mode.is_closed()
-            || (suggestions_mode.is_completion_suggestions()
-                && !self.should_enter_accept_completion_suggestion(ctx));
-        enter_routes_buffer
-            && !self
-                .slash_command_model
-                .as_ref(ctx)
-                .state()
-                .is_detected_command_or_skill()
-            && !self.should_insert_newline_on_enter(ctx)
-    }
-
-    /// If the buffer's input-type detection is still pending, evaluates it synchronously within
-    /// [`ENTER_SYNC_DETECTION_BUDGET`]. Locked input (ctrl-I, `!`/`*` prefixes, attachments) and
-    /// explicit choices are never pending, so they are never re-evaluated here. On no verdict
-    /// the input type is left as it is.
-    fn settle_input_detection_before_enter(&mut self, ctx: &mut ViewContext<Self>) {
-        if !self.enter_routes_buffer_by_input_type(ctx) {
-            return;
-        }
-        let buffer_text = self.buffer_text(ctx);
-        if !self
-            .ai_input_model
-            .as_ref(ctx)
-            .is_detection_pending_for(&buffer_text, ctx)
-        {
-            return;
-        }
-        // The view's own parse carries the completer's token descriptions; it is only usable if
-        // it is for exactly this text.
-        let described = self
-            .last_parsed_tokens
-            .clone()
-            .filter(|parsed| parsed.buffer_text == buffer_text);
-        let outcome = match self.completion_session_context(ctx) {
-            Some(completion_context) => {
-                let session_id = completion_context.session.id();
-                let undescribed =
-                    warp_completer::util::parse_current_commands_and_tokens_without_descriptions(
-                        buffer_text.clone(),
-                        &completion_context,
-                    );
-                self.ai_input_model.update(ctx, |model, ctx| {
-                    model.settle_detection_synchronously(
-                        &buffer_text,
-                        described,
-                        undescribed,
-                        completion_context,
-                        Some(session_id),
-                        ENTER_SYNC_DETECTION_BUDGET,
-                        ctx,
-                    )
-                })
-            }
-            None => {
-                // No session (e.g. a shared-session viewer): mirror the background path, which
-                // classifies against an empty completion context without history.
-                let completion_context = crate::completer::EmptyCompletionContext::new();
-                let undescribed =
-                    warp_completer::util::parse_current_commands_and_tokens_without_descriptions(
-                        buffer_text.clone(),
-                        &completion_context,
-                    );
-                self.ai_input_model.update(ctx, |model, ctx| {
-                    model.settle_detection_synchronously(
-                        &buffer_text,
-                        described,
-                        undescribed,
-                        completion_context,
-                        None,
-                        ENTER_SYNC_DETECTION_BUDGET,
-                        ctx,
-                    )
-                })
-            }
-        };
-        match outcome {
-            SyncDetectionOutcome::BudgetExhausted { elapsed } => log::debug!(
-                "Enter-time input-type detection hit its {ENTER_SYNC_DETECTION_BUDGET:?} budget \
-                 after {elapsed:?}; routing in the current mode"
-            ),
-            SyncDetectionOutcome::Undecided => log::debug!(
-                "Enter-time input-type detection was undecided without the completer's token \
-                 descriptions; routing in the current mode"
-            ),
-            SyncDetectionOutcome::NotPending | SyncDetectionOutcome::Settled(_) => {}
-        }
     }
 
     /// Handles the user's 'Enter' keypress.
