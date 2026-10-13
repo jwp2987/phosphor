@@ -6489,6 +6489,19 @@ impl TerminalView {
         initial_requested_command_action_id: Option<&AIAgentActionId>,
         ctx: &mut ViewContext<Self>,
     ) {
+        // #881: a subagent whose only request failed before an exchange was appended
+        // (`UpdateTask(TaskNotInitialized)`) has nothing to render. The read-only card
+        // rebuilt on `FinishedSubagent`, and the one restored from history, used to
+        // panic on the main thread here and take the whole app down; skip the card
+        // instead. The block itself, and its persisted snapshot, are unaffected.
+        if CLISubagentView::initial_exchange(&conversation_id, &task_id, ctx).is_none() {
+            log::warn!(
+                "Not creating {mode:?} CLI subagent view for block {block_id:?}: \
+                 conversation {conversation_id:?} task {task_id:?} has no exchange \
+                 (its request likely failed before one was appended)"
+            );
+            return;
+        }
         let is_live = mode == CLISubagentViewMode::Live;
         let block_id_for_view = block_id.clone();
         let task_id_for_view = task_id.clone();

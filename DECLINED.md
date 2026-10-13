@@ -2078,3 +2078,20 @@ upstream's behavior is actually a defect rather than a preference.
   design. Round-trip checked in real bash 5.3, zsh 5.9 and fish 4.2 (`printf '%s' WORD`
   reproduces the original bytes); the PowerShell form is unverified in a real shell.
   <!-- markers: keep:needs_control_char_quoting keep:test_escape_control_characters_per_dialect keep:sh_script_quote_arg keep:POSIX_SHELL_ESCAPE_PATTERN keep:shell_escape_single_quotes -->
+
+
+- **A CLI subagent with no exchange gets no card, not a crash** (`#881`, 2026-10-13,
+  `app/src/ai/blocklist/block/cli.rs`, `app/src/terminal/view.rs`). **Upstream:**
+  `CLISubagentView::new` looks up the task's last exchange and calls
+  `.expect("Exchange exists.")` twice (`4111d08f9:app/src/ai/blocklist/block/cli.rs:441,449`,
+  byte-identical); the fork's `RestoredReadOnly` rebuild on `FinishedSubagent` and its restore
+  from history inherited the same expects. **The defect:** a subagent whose only request failed
+  before an exchange was appended (`UpdateTask(TaskNotInitialized)`, provider unreachable) has
+  no exchange on the task or the root task, so the rebuild panicked on the main thread and
+  killed every tab (torture run 2026-10-13, CPU starvation, reproduced on the baseline too).
+  **We do:** `CLISubagentView::initial_exchange` resolves the exchange (task's last, else the
+  BYOP root-task placeholder) and checks it exists in the conversation;
+  `TerminalView::create_cli_subagent_view` calls it first and, on `None`, logs a warning and
+  creates no view, for both Live and RestoredReadOnly. The constructor uses the same resolver,
+  so the check and the construction can't disagree.
+  <!-- markers: keep:initial_exchange keep:finished_cli_subagent_without_exchange_does_not_panic_or_create_card -->

@@ -534,6 +534,51 @@ impl CLISubagentView {
         )
     }
 
+    /// The exchange a `CLISubagentView` for `task_id` would open on, plus the task's
+    /// own exchange ids for its history. `None` when there is nothing to render: the
+    /// conversation is gone, or neither the task nor the root task has an exchange.
+    /// That happens when the subagent's only request failed before an exchange was
+    /// appended (`UpdateTask(TaskNotInitialized)`, #881); callers must then skip
+    /// creating the view rather than construct one.
+    ///
+    /// When the task has no exchange of its own, the root task's last exchange is
+    /// used as a placeholder (Zap BYOP fallback): when the agent self-starts an LRC,
+    /// `cli_controller::FinishedAction` creates the subtask via
+    /// `create_silent_cli_subagent_task_for_conversation` but has not appended an
+    /// exchange to it yet. Once the user's follow-up query routes to this task, the
+    /// view's `AppendedExchange` subscription switches to the real exchange. The
+    /// placeholder is not added to history (the returned list is empty), so a root
+    /// exchange that doesn't belong to this subtask is never shown there.
+    pub(crate) fn initial_exchange(
+        conversation_id: &AIConversationId,
+        task_id: &TaskId,
+        app: &AppContext,
+    ) -> Option<(AIAgentExchangeId, Vec<AIAgentExchangeId>)> {
+        let conversation = BlocklistAIHistoryModel::as_ref(app).conversation(conversation_id)?;
+        let (exchange_id, history_ids) = conversation
+            .get_task(task_id)
+            .and_then(|task| {
+                task.last_exchange().map(|last_exchange| {
+                    (
+                        last_exchange.id,
+                        task.exchanges()
+                            .map(|exchange| exchange.id)
+                            .collect::<Vec<_>>(),
+                    )
+                })
+            })
+            .or_else(|| {
+                conversation
+                    .root_task_exchanges()
+                    .last()
+                    .map(|exchange| (exchange.id, Vec::new()))
+            })?;
+        // `AIBlockModelImpl::new` looks the exchange up by id; check the same lookup
+        // here so the constructor can't fail after this returned `Some`.
+        conversation.exchange_with_id(exchange_id)?;
+        Some((exchange_id, history_ids))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn new_with_mode(
         block_id: BlockId,
@@ -731,46 +776,23 @@ impl CLISubagentView {
                 }
             },
         );
-        let (exchange_id, initial_history_exchange_ids) = history_model
-            .as_ref(ctx)
-            .conversation(&conversation_id)
-            .and_then(|c| {
-                c.get_task(&task_id)
-                    .and_then(|t| {
-                        t.last_exchange().map(|last_exchange| {
-                            (
-                                last_exchange.id,
-                                t.exchanges()
-                                    .map(|exchange| exchange.id)
-                                    .collect::<Vec<_>>(),
-                            )
-                        })
-                    })
-                    .or_else(|| {
-                        // Zap BYOP fallback: when the agent self-starts an LRC,
-                        // `cli_controller::FinishedAction` genuinely creates the
-                        // subtask via
-                        // `create_silent_cli_subagent_task_for_conversation`, but
-                        // hasn't appended an exchange to it yet (no new query has
-                        // triggered `update_for_new_request_input`), so the root
-                        // task's last exchange is used as a placeholder. Once the
-                        // user's follow-up query later routes to this task →
-                        // `AppendedExchange` → the subscription above (line 365-394)
-                        // automatically switches to the real exchange. The
-                        // placeholder isn't added to history, to avoid showing a root
-                        // exchange that doesn't belong to this subtask.
-                        let fallback = c.root_task_exchanges().last().map(|e| (e.id, Vec::new()));
-                        if fallback.is_some() {
-                            log::warn!(
-                                "[byop] CLISubagentView::new task={task_id:?} has no \
-                                 exchange yet, falling back to root_task last_exchange; \
-                                 waiting for AppendedExchange to trigger the switch."
-                            );
-                        }
-                        fallback
-                    })
-            })
-            .expect("Exchange exists.");
+        // #881: callers must check `CLISubagentView::initial_exchange` first (see
+        // `TerminalView::create_cli_subagent_view`) -- a view can't be constructed
+        // without an exchange to render, and a subagent whose only request failed
+        // (`UpdateTask(TaskNotInitialized)`) never gets one. Both lookups run
+        // synchronously on the main thread with no event dispatch in between, so the
+        // caller's check still holds here.
+        let (exchange_id, initial_history_exchange_ids) =
+            Self::initial_exchange(&conversation_id, &task_id, ctx).expect(
+                "caller checked CLISubagentView::initial_exchange before constructing the view",
+            );
+        if initial_history_exchange_ids.is_empty() {
+            log::warn!(
+                "[byop] CLISubagentView::new task={task_id:?} has no exchange yet, falling \
+                 back to root_task last_exchange; waiting for AppendedExchange to trigger \
+                 the switch."
+            );
+        }
         let model = AIBlockModelImpl::<CLISubagentView>::new(
             exchange_id,
             conversation_id,
@@ -778,7 +800,7 @@ impl CLISubagentView {
             false,
             ctx,
         )
-        .expect("Exchange exists.");
+        .expect("initial_exchange only returns exchanges present in the conversation");
         model.on_updated_output(
             Box::new(move |me, ctx| {
                 me.handle_updated_exchange_output(exchange_id, ctx);
