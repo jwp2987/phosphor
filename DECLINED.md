@@ -956,9 +956,10 @@ upstream's behavior is actually a defect rather than a preference.
   typed ahead into zle -- while a command runs, or after Enter with the typeahead hand-off --
   reach it unbound, so `echo ac` Left `b` End ` > f` ran a different command than typed. bash
   is unaffected: readline binds the CSI/SS3 forms and `\e[3~` in emacs, vi-insert and
-  vi-command by default. **We do:** bind them once at bootstrap in emacs, viins and vicmd to
-  beginning-of-line, end-of-line and delete-char; a user's zshrc, sourced after, can rebind
-  them. <!-- markers: keep:input_reporting_sequence -->
+  vi-command by default. **We do:** bind them once at bootstrap in emacs and viins to
+  beginning-of-line, end-of-line and delete-char (vicmd: the vi- widgets), only where the
+  sequence is still unbound -- a warpified subshell does not re-source the user's rc files
+  afterwards, so overwriting would lose their own bindings. <!-- markers: keep:input_reporting_sequence -->
 
 - **The input-report and kill-line bindings are installed in the vi command keymaps too**
   (`#826`/`#827`, 2026-10-13, `app/assets/bundled/bootstrap/zsh_body.sh`,
