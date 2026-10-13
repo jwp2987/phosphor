@@ -1548,22 +1548,29 @@ upstream's behavior is actually a defect rather than a preference.
   generated commands bake the base branch in), and outside those literals no `$(`, `${`,
   `((`, `<<`, backtick, backslash, line break or word-initial `#`, nor `$` or `[` directly before a placeholder, nor `$[` or
   a zsh `(e:` glob qualifier. Then a best-effort structural check of every segment
-  (split at `; & | ( )`): after leading keywords (`if`, `!`, `{`, fish `and`/`not`, ...),
+  (split at `; & | ( )` and standalone `{`/`}`): after leading keywords (`if`, `!`,
+  `coproc`, fish `and`/`not`, ...),
   redirections and `VAR=value`, the command word must be a plain word
   (`[A-Za-z0-9_./:-]+`, so no brace expansion or glob can turn it into another command), must
   not start with `$` or be a placeholder, and must not be a shell or interpreter (`sh`, `bash`,
-  `zsh`, `fish`, `pwsh`, `cmd`, `python`, `node`, `awk`, `sed`, `vim`, ...), an evaluator
+  `zsh`, `fish`, `pwsh`, `cmd`, `python`, `node`, `awk`, `sed`, `vim`, ..., also versioned
+  like `python3.14`), an evaluator
   (`eval`, `ssh`, `xargs`, `source`, `.`, `iex`, `Start-Process`, ...) or a builtin that reads an
   argument as arithmetic or a variable name (`let`, `read`, `unset`, `declare`, `kill`,
   `ulimit`, ...) — in any segment, however invoked (`| sh`, `bash script.sh {{v}}`). After a
-  precommand (`sudo`, `env`, `command`, `builtin`, `nohup`, `timeout`, `flock`, ...) every later
-  word is held to the same rules, and `flock -c`, `sudo -s`/`-i`, `env -S` are refused; so are
-  `docker`/`podman`/`kubectl exec`, `find -exec`, `script -c`, `git -c alias.*` or a
+  precommand (`sudo`, `env`, `time`, `command`, `builtin`, `nohup`, `timeout`, `flock`, ...)
+  its options (with their values) and positional words are skipped and the command it runs is
+  checked the same way; `flock -c`, `sudo -s`/`-i`, `doas -s` and `env -S` are refused also in
+  option clusters, long or abbreviated forms and with a placeholder attached; so are
+  `docker`/`podman`/`kubectl exec`, `find -exec`, `script -c` (any cluster) or `--command`,
+  `git -c alias.*` or a
   placeholder as a `git -c` value, `test`/`[`/`[[` with `-eq`-style, `-v` or `-nt`/`-ot`/`-ef`
   operators, `printf`/`print` with `-v` or a numeric conversion, `export -i`, `wait -p`,
   `set -A`, PowerShell's `--%` and a placeholder inside `[...]`. Quoted command names and flags
-  are seen unquoted (`'ssh'`, `e''val`, `bash '-c'`). This is not a shell parser: aliases,
-  functions and scripts that evaluate their arguments are invisible to it. Placeholders are
+  are seen unquoted (`'ssh'`, `e''val`, `bash '-c'`). This is not a shell parser: wrappers it
+  does not model (`strace`, `dbus-run-session`, `/proc/self/exe`, ...), aliases, functions and
+  scripts that evaluate their arguments, and values a shell evaluates later (`PS1`,
+  `PROMPT_COMMAND`, `GIT_SSH_COMMAND=` prefixes) are invisible to it. Placeholders are
   supported only as ordinary arguments to ordinary commands; anything that evaluates its
   arguments as code is unsupported, and mostly refused. A command outside
   the whitelist, or whose value has no portable spelling (a control character, or `'` with

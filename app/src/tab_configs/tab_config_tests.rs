@@ -1620,3 +1620,90 @@ fn test_ordinary_commands_with_placeholders_still_render() {
         );
     }
 }
+
+#[test]
+fn test_round_six_command_word_bypasses_are_refused() {
+    for command in [
+        // A: shell-running precommand options in clusters, long forms and with a placeholder
+        // attached.
+        "env -S{{x}}",
+        "env -iS {{x}}",
+        "env --split-string={{x}}",
+        "env --sp {{x}}",
+        "sudo -Es {{x}}",
+        "sudo --sh {{x}}",
+        "sudo -i {{x}}",
+        "flock /tmp/l -xc {{x}}",
+        "flock /tmp/l -c{{x}}",
+        "flock /tmp/l --comm {{x}}",
+        // B: `script` with `c` in any short-option cluster, or --command.
+        "script -qc {{x}} /dev/null",
+        "script -q -c{{x}} /dev/null",
+        "script -q --command {{x}} /dev/null",
+        // C: `time` is a precommand with options.
+        "time -p sh -c {{x}}",
+        "time -p eval {{x}}",
+        // D: `{`/`}` start a new segment.
+        "function f { eval {{x}}; }; f",
+        "if true { eval {{x}} }",
+        "{ true } always { eval {{x}} }",
+        "coproc N { eval {{x}}; }",
+        // Versioned interpreter names and more evaluating builtins.
+        "python3.14 -c {{x}}",
+        "perl5.40.1 -e {{x}}",
+        "node-18 {{x}}",
+        "rbash -c {{x}}",
+        "emulate sh -c {{x}}",
+        "sched +0 {{x}}",
+        "fc -e {{x}} -1",
+        "alias q={{x}}",
+        "bind -x {{x}}",
+        "complete -C {{x}} foo",
+    ] {
+        assert!(
+            render_single_command(command, "touch pwned").is_err(),
+            "{command:?} must be refused"
+        );
+    }
+}
+
+#[test]
+fn test_round_six_over_refusals_render() {
+    for (command, expected) in [
+        ("[ -d /tmp ] && cd {{x}}", "[ -d /tmp ] && cd main"),
+        ("[[ -d /tmp ]] && cd {{x}}", "[[ -d /tmp ]] && cd main"),
+        (
+            "timeout -s KILL 300 cargo test {{x}}",
+            "timeout -s KILL 300 cargo test main",
+        ),
+        ("nice -n 5 make {{x}}", "nice -n 5 make main"),
+        ("sudo -u me ls {{x}}", "sudo -u me ls main"),
+        (
+            "sudo apt install python {{x}}",
+            "sudo apt install python main",
+        ),
+        ("env FOO=1 npm start {{x}}", "env FOO=1 npm start main"),
+        ("time make {{x}}", "time make main"),
+        ("exec -a name ls {{x}}", "exec -a name ls main"),
+        ("flock /tmp/l make {{x}}", "flock /tmp/l make main"),
+        ("ls2 {{x}}", "ls2 main"),
+    ] {
+        assert_eq!(
+            render_single_command(command, "main"),
+            Ok(vec![expected.to_string()]),
+            "{command:?}"
+        );
+    }
+    // The word after a precommand's options is still checked, and `[`'s arithmetic arm works.
+    for command in [
+        "timeout -s KILL 300 sh -c {{x}}",
+        "sudo -u me bash -c {{x}}",
+        "nice -n 5 eval {{x}}",
+        "[ 1 -eq 1 ] && cd {{x}}",
+    ] {
+        assert!(
+            render_single_command(command, "main").is_err(),
+            "{command:?}"
+        );
+    }
+}

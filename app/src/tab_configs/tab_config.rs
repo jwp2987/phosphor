@@ -560,10 +560,11 @@ fn forbidden_syntax_around_placeholders(residual: &[char]) -> Option<&'static st
     None
 }
 
-/// Shell keywords and fish combinators that may precede a command word.
-const LEADING_KEYWORDS: [&str; 17] = [
-    "if", "then", "elif", "else", "do", "while", "until", "!", "{", "}", "time", "coproc", "and",
-    "or", "not", "begin", "function",
+/// Shell keywords and fish combinators that may precede a command word. `time` is not here:
+/// it is also an external command with options (`time -p ...`), so it is a precommand.
+const LEADING_KEYWORDS: [&str; 14] = [
+    "if", "then", "elif", "else", "do", "while", "until", "!", "coproc", "and", "or", "not",
+    "begin", "function",
 ];
 
 /// Commands that run another command named in their arguments.
@@ -593,11 +594,13 @@ const PRECOMMANDS: [&str; 20] = [
 /// Command words refused in any segment of a command that substitutes a placeholder: shells
 /// and interpreters (which run their input or arguments as code however they are invoked),
 /// commands that evaluate or forward their arguments as code, and builtins that read an
-/// argument as arithmetic or a variable name (where `a[$(...)]` runs).
-const DENIED_COMMANDS: [&str; 70] = [
+/// argument as arithmetic, a variable name or code to run later. Matched by basename,
+/// case-insensitively, also with a version suffix removed (`python3.14`, `perl5.40.1`).
+const DENIED_COMMANDS: [&str; 81] = [
     // Shells and interpreters.
     "sh",
     "bash",
+    "rbash",
     "zsh",
     "fish",
     "dash",
@@ -614,8 +617,6 @@ const DENIED_COMMANDS: [&str; 70] = [
     "cmd",
     "perl",
     "python",
-    "python2",
-    "python3",
     "ruby",
     "node",
     "php",
@@ -632,7 +633,7 @@ const DENIED_COMMANDS: [&str; 70] = [
     "osascript",
     "deno",
     "bun",
-    // Evaluate, source or forward their arguments as code.
+    // Evaluate, source or forward their arguments as code, or store it to run later.
     "eval",
     "ssh",
     "watch",
@@ -650,6 +651,18 @@ const DENIED_COMMANDS: [&str; 70] = [
     "start",
     "source",
     ".",
+    "emulate",
+    "sched",
+    "fc",
+    "enable",
+    "bind",
+    "complete",
+    "compgen",
+    "zle",
+    "autoload",
+    "functions",
+    "alias",
+    "hash",
     // Read an argument as arithmetic or a variable name.
     "let",
     "read",
@@ -670,18 +683,105 @@ const DENIED_COMMANDS: [&str; 70] = [
     "kill",
 ];
 
+/// How a precommand's own options are laid out: the short options and long options that
+/// take a value (`timeout -s KILL`, `sudo -u me`), and how many positional words come before
+/// the command it runs (`timeout DURATION`, `flock FILE`).
+struct PrecommandOptions {
+    short_with_value: &'static str,
+    long_with_value: &'static [&'static str],
+    positional: usize,
+}
+
+fn precommand_options(command: &str) -> PrecommandOptions {
+    let (short_with_value, long_with_value, positional): (&str, &[&str], usize) = match command {
+        "timeout" => ("sk", &["signal", "kill-after"], 1),
+        "nice" => ("n", &["adjustment"], 0),
+        "sudo" => (
+            "ugCDhprtUTR",
+            &[
+                "user",
+                "group",
+                "close-from",
+                "chdir",
+                "host",
+                "prompt",
+                "role",
+                "type",
+                "other-user",
+                "command-timeout",
+                "chroot",
+            ],
+            0,
+        ),
+        "doas" => ("uC", &[], 0),
+        "env" => ("uC", &["unset", "chdir"], 0),
+        "exec" => ("a", &[], 0),
+        "ionice" => ("cnp", &["class", "classdata", "pid"], 0),
+        "stdbuf" => ("ioe", &["input", "output", "error"], 0),
+        "flock" => ("wE", &["wait", "timeout", "conflict-exit-code"], 1),
+        "time" => ("fo", &["format", "output"], 0),
+        "chrt" | "taskset" => ("", &[], 1),
+        _ => ("", &[], 0),
+    };
+    PrecommandOptions {
+        short_with_value,
+        long_with_value,
+        positional,
+    }
+}
+
+/// The letters of a short-option cluster (`-iS` → `iS`, `-c{{x}}` → `c`); empty for anything
+/// else.
+fn short_option_letters(word: &str) -> &str {
+    match word.strip_prefix('-') {
+        Some(rest) if !rest.starts_with('-') => {
+            let end = rest
+                .find(|c: char| !c.is_ascii_alphabetic())
+                .unwrap_or(rest.len());
+            &rest[..end]
+        }
+        _ => "",
+    }
+}
+
+/// Whether `word` is `long` or a getopt abbreviation of it at least `minimum` characters long,
+/// with or without `=value` (`--sp`, `--split-string=x`).
+fn is_long_option(word: &str, long: &str, minimum: usize) -> bool {
+    let flag = word.split_once('=').map_or(word, |(flag, _)| flag);
+    flag.starts_with("--") && flag.len() >= minimum && long.starts_with(flag)
+}
+
+/// A precommand option that makes it run a shell or split a string into a command: `env -S`,
+/// `sudo -s`/`-i`, `doas -s`, `flock -c`. Matched inside short-option clusters (`env -iS`,
+/// `sudo -Es`, `flock -xc`) and as long options or their abbreviations.
+fn is_shell_running_option(command: &str, word: &str) -> bool {
+    let letters = short_option_letters(word);
+    match command {
+        "env" => letters.contains('S') || is_long_option(word, "--split-string", 3),
+        "sudo" => {
+            letters.contains(|c: char| c == 's' || c == 'i')
+                || is_long_option(word, "--shell", 4)
+                || is_long_option(word, "--login", 3)
+        }
+        "doas" => letters.contains('s'),
+        "flock" => letters.contains('c') || is_long_option(word, "--command", 4),
+        _ => false,
+    }
+}
+
 /// `test`/`[`/`[[` operators whose operands are arithmetic or variable names.
 const TEST_OPERATORS: [&str; 10] = [
     "-eq", "-ne", "-lt", "-le", "-gt", "-ge", "-v", "-nt", "-ot", "-ef",
 ];
 
 /// A command word made only of these characters cannot be a brace expansion, glob, variable
-/// or quoting trick: `^[A-Za-z0-9_./:-]+$`.
+/// or quoting trick: `^[A-Za-z0-9_./:-]+$`, plus the test commands `[` and `[[`.
 fn is_plain_command_word(word: &str) -> bool {
-    !word.is_empty()
-        && word
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | ':' | '-'))
+    matches!(word, "[" | "[[")
+        || (!word.is_empty()
+            && word
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | ':' | '-')))
 }
 
 /// `NAME=value` or `NAME+=value`.
@@ -716,24 +816,59 @@ fn command_name(word: &str) -> String {
         .unwrap_or(base)
 }
 
+/// Whether `name` (a [`command_name`]) is denied, also without a trailing version
+/// (`python3.14` → `python`, `perl5.40.1` → `perl`, `node-18` → `node`).
+fn is_denied_command(name: &str) -> bool {
+    let unversioned = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    let unversioned = if unversioned.len() < name.len() {
+        unversioned.strip_suffix('-').unwrap_or(unversioned)
+    } else {
+        name
+    };
+    DENIED_COMMANDS.contains(&name)
+        || (!unversioned.is_empty() && DENIED_COMMANDS.contains(&unversioned))
+}
+
+/// Why `word` may not be a command word, if it may not.
+fn command_word_problem(word: &str) -> Option<&'static str> {
+    if word.starts_with('$') {
+        Some("a variable as the command name")
+    } else if word.contains(PLACEHOLDER_MARK) {
+        Some("a placeholder as the command name")
+    } else if !is_plain_command_word(word) {
+        Some("a command name that is not a plain word")
+    } else if is_denied_command(&command_name(word)) {
+        Some("a command that runs its input or arguments as code")
+    } else {
+        None
+    }
+}
+
 /// Checks the command word of every segment of a command that substitutes a placeholder.
 ///
 /// Best-effort and structural, not a shell parser. The command is split into segments at
-/// `; & | ( )`; in each, leading keywords (`if`, `!`, `{`, fish `and`/`not`, ...), redirections
-/// and `VAR=value` assignments are skipped and the next word is the command word. It is
-/// refused when it starts with `$`, contains a placeholder, is not a plain word (see
-/// [`is_plain_command_word`]: no brace expansion or glob can make it another command), or is
-/// in [`DENIED_COMMANDS`]. After a precommand ([`PRECOMMANDS`]: `sudo`, `env`, `command`,
-/// `nohup`, ...) every later non-option, non-placeholder word is held to the same rules, and
-/// `flock -c`, `sudo`/`doas -s`/`-i` and `env -S` are refused. A few commands are refused
-/// only with the arguments that make them evaluate code: `docker`/`podman`/`kubectl exec`,
-/// `find -exec`, `script -c`, `git -c alias.*` or a `git -c` whose value is a placeholder,
-/// `test`/`[`/`[[` with an arithmetic or name operator, `printf`/`print` with `-v` or a
-/// numeric conversion, `export -i`, `wait -p` and `set -A`.
+/// `; & | ( )` and at standalone `{`/`}` words. In each, leading keywords (`if`, `!`,
+/// `coproc`, fish `and`/`not`, ...), redirections and `VAR=value` assignments are skipped and
+/// the next word is the command word. It is refused when it starts with `$`, contains a
+/// placeholder, is not a plain word (see [`is_plain_command_word`]: no brace expansion or
+/// glob can make it another command), or is in [`DENIED_COMMANDS`] (also with a version
+/// suffix). A precommand ([`PRECOMMANDS`]: `sudo`, `env`, `time`, `timeout`, `nohup`, ...)
+/// has its own options skipped — with their values, per [`precommand_options`] — and its
+/// positional words (`timeout DURATION`, `flock FILE`), and the word after them is checked as
+/// a command word in turn. Options that make a precommand run a shell are refused
+/// ([`is_shell_running_option`]), including when a placeholder is attached (`env -S{{x}}`);
+/// `flock` permutes its arguments, so all its words are checked for `-c`. A few commands are
+/// refused only with the arguments that make them evaluate code: `docker`/`podman`/`kubectl
+/// exec`, `find -exec`, `script -c` (in any short-option cluster) or `--command`, `git -c
+/// alias.*` or a `git -c` whose value is a placeholder, `test`/`[`/`[[` with an arithmetic or
+/// name operator, `printf`/`print` with `-v` or a numeric conversion, `export -i`, `wait -p`
+/// and `set -A`.
 ///
 /// `residual` is the [`StrippedCommand::words`] form, so a quoted command name is seen
-/// unquoted. Aliases, functions and scripts that evaluate their arguments are invisible here;
-/// placeholders are supported only as ordinary arguments to ordinary commands.
+/// unquoted. Wrappers it does not model (`strace`, `dbus-run-session`, ...), aliases,
+/// functions and scripts, and values that a shell evaluates later (`PS1`, `PROMPT_COMMAND`,
+/// `GIT_SSH_COMMAND`) are invisible here; placeholders are supported only as ordinary
+/// arguments to ordinary commands.
 fn reparsing_command(residual: &[char]) -> Option<&'static str> {
     let text: String = residual
         .iter()
@@ -745,8 +880,24 @@ fn reparsing_command(residual: &[char]) -> Option<&'static str> {
             }
         })
         .collect();
-    for segment in text.lines() {
-        let words: Vec<&str> = segment.split_whitespace().collect();
+    let mut segments: Vec<Vec<&str>> = Vec::new();
+    for line in text.lines() {
+        let mut current = Vec::new();
+        for word in line.split_whitespace() {
+            if matches!(word, "{" | "}") {
+                if !current.is_empty() {
+                    segments.push(std::mem::take(&mut current));
+                }
+            } else {
+                current.push(word);
+            }
+        }
+        if !current.is_empty() {
+            segments.push(current);
+        }
+    }
+
+    for words in segments {
         let mut index = 0;
         while let Some(&word) = words.get(index) {
             if LEADING_KEYWORDS.contains(&word) || is_assignment(word) {
@@ -757,90 +908,91 @@ fn reparsing_command(residual: &[char]) -> Option<&'static str> {
                 break;
             }
         }
-        let Some(&command_word) = words.get(index) else {
-            continue;
-        };
-        if command_word.starts_with('$') {
-            return Some("a variable as the command name");
-        }
-        if command_word.contains(PLACEHOLDER_MARK) {
-            return Some("a placeholder as the command name");
-        }
-        if !is_plain_command_word(command_word) {
-            return Some("a command name that is not a plain word");
-        }
-        let command = command_name(command_word);
-        if DENIED_COMMANDS.contains(&command.as_str()) {
-            return Some("a command that runs its input or arguments as code");
-        }
-        let rest = &words[index + 1..];
-        let has = |flag: &str| rest.iter().any(|word| *word == flag);
 
-        if PRECOMMANDS.contains(&command.as_str()) {
-            for &word in rest {
-                if word.contains(PLACEHOLDER_MARK) || redirection_takes_next_word(word).is_some() {
-                    continue;
-                }
-                if word.starts_with('-') && word != "-" {
-                    let flag = word.to_ascii_lowercase();
-                    let dangerous = match command.as_str() {
-                        "flock" => matches!(flag.as_str(), "-c" | "--command"),
-                        "sudo" => matches!(flag.as_str(), "-s" | "-i" | "--shell" | "--login"),
-                        "doas" => flag == "-s",
-                        "env" => word.starts_with("-S") || flag.starts_with("--split-string"),
-                        _ => false,
-                    };
-                    if dangerous {
-                        return Some("a precommand option that runs a shell");
-                    }
-                    continue;
-                }
-                if word.starts_with('$') {
-                    return Some("a variable as the command name");
-                }
-                if is_assignment(word) {
-                    continue;
-                }
-                if !is_plain_command_word(word) {
-                    return Some("a command name that is not a plain word");
-                }
-                if DENIED_COMMANDS.contains(&command_name(word).as_str()) {
-                    return Some("a command that runs its input or arguments as code");
-                }
+        while let Some(&command_word) = words.get(index) {
+            if let Some(problem) = command_word_problem(command_word) {
+                return Some(problem);
             }
-            continue;
-        }
+            let command = command_name(command_word);
+            if !PRECOMMANDS.contains(&command.as_str()) {
+                if arguments_evaluate_code(&command, &words[index + 1..]) {
+                    return Some("arguments that make the command evaluate code or arithmetic");
+                }
+                break;
+            }
 
-        let evaluates = match command.as_str() {
-            "docker" | "podman" | "kubectl" => has("exec"),
-            "find" => ["-exec", "-execdir", "-ok", "-okdir"]
-                .iter()
-                .any(|flag| has(*flag)),
-            "script" => has("-c"),
-            "git" => {
-                rest.iter().any(|word| word.starts_with("alias."))
-                    || rest
-                        .windows(2)
-                        .any(|pair| pair[0] == "-c" && pair[1].contains(PLACEHOLDER_MARK))
+            // A precommand: skip its options (refusing the shell-running ones) and
+            // positional words; the next word is the command it runs.
+            if command == "flock"
+                && words[index + 1..]
+                    .iter()
+                    .any(|word| is_shell_running_option(&command, word))
+            {
+                return Some("a precommand option that runs a shell");
             }
-            "test" | "[" | "[[" => TEST_OPERATORS.iter().any(|flag| has(*flag)),
-            "printf" | "print" => has("-v") || rest.iter().any(|word| has_numeric_conversion(word)),
-            "export" => rest
-                .iter()
-                .any(|word| word.starts_with('-') && word.contains('i')),
-            "wait" => has("-p"),
-            "set" => has("-A") || has("+A"),
-            _ => false,
-        };
-        if evaluates {
-            return Some("arguments that make the command evaluate code or arithmetic");
+            let options = precommand_options(&command);
+            index += 1;
+            while let Some(&option) = words.get(index) {
+                if !option.starts_with('-') || option == "-" {
+                    break;
+                }
+                if is_shell_running_option(&command, option) {
+                    return Some("a precommand option that runs a shell");
+                }
+                if option == "--" {
+                    index += 1;
+                    break;
+                }
+                let takes_value = if let Some(long) = option.strip_prefix("--") {
+                    !long.contains('=') && options.long_with_value.contains(&long)
+                } else {
+                    let letters = short_option_letters(option);
+                    // The value is the next word only when the value-taking letter ends the
+                    // word (`-n 5`); `-n5` carries it attached.
+                    letters
+                        .char_indices()
+                        .find(|(_, letter)| options.short_with_value.contains(*letter))
+                        .is_some_and(|(at, _)| at + 1 == option.len() - 1)
+                };
+                index += if takes_value { 2 } else { 1 };
+            }
+            while words.get(index).is_some_and(|word| is_assignment(word)) {
+                index += 1;
+            }
+            index += options.positional;
         }
     }
     None
 }
 
-/// Whether a `printf` format word has a numeric conversion (`%d`, `%5.2f`, ...), whose
-/// argument zsh evaluates as arithmetic.
+/// Arguments that make an ordinary command evaluate code, arithmetic or a variable name.
+fn arguments_evaluate_code(command: &str, rest: &[&str]) -> bool {
+    let has = |flag: &str| rest.iter().any(|word| *word == flag);
+    match command {
+        "docker" | "podman" | "kubectl" => has("exec"),
+        "find" => ["-exec", "-execdir", "-ok", "-okdir"]
+            .iter()
+            .any(|flag| has(*flag)),
+        "script" => rest.iter().any(|word| {
+            short_option_letters(word).contains('c') || is_long_option(word, "--command", 4)
+        }),
+        "git" => {
+            rest.iter().any(|word| word.starts_with("alias."))
+                || rest
+                    .windows(2)
+                    .any(|pair| pair[0] == "-c" && pair[1].contains(PLACEHOLDER_MARK))
+        }
+        "test" | "[" | "[[" => TEST_OPERATORS.iter().any(|flag| has(*flag)),
+        "printf" | "print" => has("-v") || rest.iter().any(|word| has_numeric_conversion(word)),
+        "export" => rest
+            .iter()
+            .any(|word| word.starts_with('-') && word.contains('i')),
+        "wait" => has("-p"),
+        "set" => has("-A") || has("+A"),
+        _ => false,
+    }
+}
+
 fn has_numeric_conversion(word: &str) -> bool {
     let mut chars = word.chars().peekable();
     while let Some(c) = chars.next() {
