@@ -1722,3 +1722,26 @@ upstream's behavior is actually a defect rather than a preference.
   scripts still define and register these functions -- a re-pin that takes upstream's scripts
   wholesale fails it -- and the `keep:` markers below hold the test and its names in place.
   <!-- markers: keep:test_bootstrap_scripts_repair_a_replaced_prompt_hook keep:_warp_repair_hooks keep:_warp_zle_line_init keep:__bp_reinstall_prompt_command -->
+
+- **A hook payload built from hostile values no longer wedges the tab** (`#866`, 2026-10-13,
+  `app/assets/bundled/bootstrap/{bash_body,zsh_body}.sh`, `fish.sh`,
+  `app/src/terminal/model/ansi/mod.rs`, `app/src/terminal/model/ansi/dcs_hooks.rs`).
+  **Upstream:** `warp_escape_json` escapes only `" \ \b \t \f \r \n`
+  (`4111d08f9:app/assets/bundled/bootstrap/bash_body.sh:732`, `zsh_body.sh:549`, `fish.sh:504`,
+  byte-identical), and `handle_decoded_data` parses with a strict
+  `serde_json::from_slice::<DProtoHook>` (`4111d08f9:crates/warp_terminal/src/model/ansi/mod.rs:668`).
+  **The defect:** `cd` into a directory whose name holds ESC, BEL or any other C0 byte, or
+  bytes that are not UTF-8, or an `$VIRTUAL_ENV`/`$CONDA_DEFAULT_ENV` like that, puts raw
+  control characters or invalid UTF-8 into the Precmd JSON. The strict parse rejects it, the
+  fresh active block never receives its session ID, and the input refuses every command from
+  then on (`HistoryNotAppendable`). Enter and ctrl-c do nothing; only a new tab recovers. The
+  0.1.11 baseline wedges identically. Git allows such names, so one cloned repo or extracted
+  tarball is enough. **We do:** the three shell helpers escape every remaining C0 character and
+  DEL as `\u00XX` and run sed/tr under `LC_ALL=C`, so they work byte by byte. On the app side,
+  `parse_decoded_hook` still tries the strict parse first. When that fails it repairs the payload
+  (`repair_hook_json`: raw control characters inside strings are escaped, invalid UTF-8 becomes
+  U+FFFD). For `Precmd` it then salvages field by field (`salvage_precmd`): a display field of
+  the wrong type is dropped, while `exit_code`, `next_block_id` and `session_id` are never dropped.
+  **Known limit:** a non-UTF-8 path is shown lossily, so features that need the exact bytes cannot
+  find that directory. The hook schema is `String`-typed. pwsh is unaffected: `ConvertTo-Json`
+  escapes control characters. <!-- markers: keep:repair_hook_json keep:salvage_precmd keep:parse_dcs_precmd_repairs_raw_control_characters_and_invalid_utf8 keep:precmd_with_control_characters_and_invalid_utf8_still_reaches_a_usable_prompt keep:handle_decoded_data -->
