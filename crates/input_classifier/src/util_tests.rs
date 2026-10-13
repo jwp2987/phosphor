@@ -481,6 +481,54 @@ fn test_is_unambiguous_shell_command_forces_shell_for_clear_commands() {
             "exit 1",
             "exit 1 && echo bye",
             "echo $TS > ~/t.txt",
+            // #831: ALL-CAPS signal, variable, ref and file names stay arguments; only acronyms
+            // used as nouns (`PR`, `CPU`, `TODOs`) read as prose.
+            "trap cleanup EXIT INT TERM",
+            "kill -s TERM 1234",
+            "echo $HOME",
+            "make VERBOSE=1",
+            "ls -la A",
+            "cat README",
+            "vim TODO",
+            "git diff HEAD",
+            "printenv PATH",
+            // #831: a comma that is a flag's value, a bare argument, quoted, or inside a word is
+            // not a sentence comma.
+            "sort -t, -k2 data.csv",
+            "cut -d, -f1 data.csv",
+            "cut -d , -f1 data.csv",
+            "awk -F, '{print $1}' data.csv",
+            "tr , ';' < in.csv",
+            "printf 'a,b'",
+            "mount -o remount,rw /",
+            "cp file{,.bak}",
+            // #831: `a` as a one-letter file name (last, or before a single letter / file name),
+            // and a `re-` word whose remainder is not English.
+            "touch a",
+            "make a",
+            "grep a file.txt",
+            "ls a b c",
+            "tar -cf a.tar a",
+            "git reflog",
+            // #831: `re-` words that are commands or subcommands are not derived prose, and an
+            // acronym that could be a directory name is an argument.
+            "sudo reboot",
+            "systemctl reboot",
+            "brew reinstall foo",
+            "make reinstall",
+            "mount -o remount /",
+            "git repack -ad",
+            "sudo apt reinstall vim",
+            "make -j8 reinstall",
+            "cd API",
+            "ls SDK",
+            "mkdir VM",
+            "cd UX",
+            "cd LLM",
+            // #831: a bare `.` / `..` argument is not a sentence period.
+            "cd ..",
+            "ls .",
+            "find . -name x",
         ] {
             assert!(
                 is_unambiguous_shell_command_for(buffer).await,
@@ -569,6 +617,42 @@ fn test_is_unambiguous_shell_command_leaves_prose_and_ambiguous_input_to_the_cla
             // An assignment-prefixed unknown head must itself be non-prose.
             "DEBUG=1 why",
             "x=3 squared",
+            // #831: the article `a` before a word, and acronyms used as English nouns. `kill -9
+            // PID` is a placeholder copied from documentation, not a runnable line.
+            "make a PR",
+            "make a README",
+            "make a CHANGELOG",
+            "open a PR",
+            "test PR 42",
+            "find TODOs",
+            "kill PID 4242",
+            "kill -9 PID",
+            "watch CPU",
+            "top 10 CPU hogs",
+            "free RAM",
+            // #831: a word ending in a sentence comma (bash would run `rm -rf "node_modules,"
+            // reinstall`) or period, and `re-` / `-ly` derivations the dictionaries miss.
+            "rm -rf node_modules, reinstall",
+            "rm -rf dist, redeploy",
+            "rm -rf ~/proj, reclone",
+            "rm -rf .venv, recreate",
+            "rm *.log, regenerate",
+            "mv main.rs lib.rs, refactor",
+            "chmod -R 777 ~, fixperms",
+            "rm -rf build, rebuild",
+            "rm node_modules recursively",
+            "rm -rf node_modules. reinstall",
+            "rm -rf node_modules reinstall.",
+            "rm -rf ~/x... retry",
+            // #831: a command-like `re-` word outside subcommand position (`brew reinstall foo`
+            // is in it) is the verb of a request, not an argument to delete.
+            "rm -rf node_modules reinstall",
+            "rm -rf node_modules reinstall deps",
+            "rm -rf node_modules; reinstall",
+            "rm -rf node_modules + reinstall",
+            "rm -rf node_modules -> reinstall",
+            "rm -rf node_modules & reinstall",
+            "rm -rf dist reboot",
         ] {
             assert!(
                 !is_unambiguous_shell_command_for(buffer).await,
@@ -647,4 +731,94 @@ fn test_is_unambiguous_shell_command_ignores_pasted_buffers() {
         assert!(is_unambiguous_shell_command_for("ls -a -a").await);
         assert!(!is_unambiguous_shell_command_for(&long).await);
     });
+}
+
+#[test]
+fn test_reads_as_prose_flags_sentences_that_start_with_a_command_word() {
+    // #832: each of these ran in the shell once by mistake (the head is a real command, so the
+    // failure was not exit 127) and then routed to the shell forever through history matching.
+    for text in [
+        "find the bug in main.rs",
+        "find the bugs in main.py",
+        "find where config is loaded",
+        "make the tests pass please",
+        "cat the logs and tell me why",
+        "git is broken, help",
+        "what does ls -la do?",
+        "find Josh's PR",
+        "run exactly this: sleep 1",
+        "  FOO=1 make it faster  ",
+        // The #831 word-level vetoes, shared with the pre-filter through `has_prose_veto_word`.
+        "make a PR",
+        "rm -rf node_modules, reinstall",
+        "rm -rf node_modules reinstall",
+    ] {
+        assert!(reads_as_prose(text), "expected {text:?} to read as prose");
+    }
+}
+
+#[test]
+fn test_reads_as_prose_leaves_command_lines_alone() {
+    for text in [
+        "",
+        "   ",
+        "ls -la",
+        "cargo build --release",
+        "git push origin main",
+        "find . -name test",
+        "make install",
+        "git commit -m \"fix the bug in main.rs\"",
+        "echo 'is it the cache'",
+        "docker exec -it web sh",
+        "FOO=bar mycmd --flag",
+        // A `re-` command word in subcommand position is not the misplaced-verb veto.
+        "brew reinstall foo",
+        // The head is never inspected; only the words after it are.
+        "this",
+    ] {
+        assert!(
+            !reads_as_prose(text),
+            "expected {text:?} not to read as prose"
+        );
+    }
+}
+
+#[test]
+fn test_reads_as_prose_flags_shell_syntax_that_uses_function_words() {
+    // Pinned trade-off (#832): these are real command lines, but they carry the same signals as a
+    // sentence (`i`, `then`, `for`, a trailing `host:`), so a failed or history-file entry for
+    // them no longer short-circuits to Shell; they go to the classifier instead.
+    for text in [
+        "for i in $(seq 3); do echo $i; done",
+        "if true; then echo y; fi",
+        "scp f.txt host:",
+        "grep -r for src",
+        // The colon-shape test splits on whitespace without honouring quotes.
+        "git commit -m \"feat: x\"",
+        "curl -H \"Accept: application/json\" https://example.com",
+    ] {
+        assert!(reads_as_prose(text), "expected {text:?} to read as prose");
+    }
+}
+
+#[test]
+fn test_reads_as_prose_misses_command_headed_prose_without_a_veto_word() {
+    // Pinned residual (#832): no function word, article, sentence punctuation or misplaced `re-`
+    // word, so a failed history entry for these can still route them to Shell.
+    for text in ["find large files", "install docker", "free up disk space"] {
+        assert!(
+            !reads_as_prose(text),
+            "expected {text:?} not to read as prose"
+        );
+    }
+}
+
+#[test]
+fn test_reads_as_prose_skips_buffers_over_the_size_cap() {
+    // Over `MAX_PREFILTER_BYTES` the buffer is not scanned at all, even when it is plainly prose.
+    let sentence = "find the bug in main.rs ";
+    let long = sentence.repeat(MAX_PREFILTER_BYTES / sentence.len() + 1);
+    assert!(long.trim().len() > MAX_PREFILTER_BYTES);
+    assert!(reads_as_prose(sentence));
+    assert!(!reads_as_prose(&long));
 }

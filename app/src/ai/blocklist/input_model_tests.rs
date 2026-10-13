@@ -178,6 +178,183 @@ fn both_match_prompt_without_timestamp_prefer_shell() {
     );
 }
 
+/// A history entry for `command` that exited with `exit_code` (`None`: a line imported from the
+/// shell's history file that this app never ran, so no exit code and no timestamp).
+fn history_entry(command: &str, exit_code: Option<i32>) -> HistoryEntry {
+    let mut entry = HistoryEntry::command_only(command);
+    if let Some(code) = exit_code {
+        entry.exit_code = Some(warp_core::command::ExitCode::from(code));
+        entry.start_ts = Some(Local::now());
+    }
+    entry
+}
+
+/// The command-history half of `detect_and_set_input_type`, end to end: filter the entries
+/// (`shell_history_candidates`), match the buffer newest-first at the production cutoff, and
+/// resolve with no prompt-history match. `None` means history had no say and the buffer goes on
+/// to the classifier.
+fn command_history_verdict(entries: &[HistoryEntry], buffer: &str) -> Option<InputType> {
+    let candidates = shell_history_candidates(entries.iter(), buffer);
+    let command_match = futures::executor::block_on(most_recent_close_match(
+        buffer,
+        candidates
+            .iter()
+            .rev()
+            .map(|(command, start_ts)| (command.as_str(), *start_ts)),
+        HISTORY_ENTRY_MATCH_CUTOFF,
+    ));
+    resolve_history_match(command_match, HistoryMatch::NoMatch).map(|(input_type, _)| input_type)
+}
+
+#[test]
+fn mis_run_prose_in_history_does_not_force_shell() {
+    // #832: the sentence ran in the shell once; `find` exited 1, not 127, so it was kept. It and
+    // its near-variants used to match at the 0.9 cutoff and route to the shell forever.
+    let history = [
+        history_entry("git status", Some(0)),
+        history_entry("find the bug in main.rs", Some(1)),
+    ];
+    for buffer in [
+        "find the bug in main.rs",
+        "find the bug in main.py",
+        "find the bugs in main.rs",
+    ] {
+        assert_eq!(
+            command_history_verdict(&history, buffer),
+            None,
+            "{buffer:?} must be left to the classifier",
+        );
+    }
+}
+
+#[test]
+fn prose_from_the_history_file_or_interrupted_does_not_force_shell() {
+    // No exit code: a line read from `.bash_history` that this app never ran. That is how one
+    // mistake persists across restarts, so it is not evidence of a command either.
+    let histfile = [history_entry("make the tests pass please", None)];
+    assert_eq!(
+        command_history_verdict(&histfile, "make the tests pass please"),
+        None
+    );
+    // ctrl-c (130) counts as "successful" for block decorations, but interrupting a sentence
+    // that hung proves nothing about it.
+    let interrupted = [history_entry("yes please", Some(130))];
+    assert_eq!(command_history_verdict(&interrupted, "yes please"), None);
+}
+
+#[test]
+fn re_typed_commands_still_route_to_shell_from_history() {
+    let history = [
+        // A real command that failed last time.
+        history_entry("cargo test --workspace", Some(101)),
+        // A real command from the shell's history file (no exit code).
+        history_entry("ssh deploy@build-box", None),
+        // A prose-shaped line that genuinely ran and succeeded.
+        history_entry("echo is it the cache", Some(0)),
+    ];
+    for buffer in [
+        "cargo test --workspace",
+        // Near-variants still match.
+        "cargo test --workspaces",
+        "ssh deploy@build-box",
+        "ssh deploy@build-box2",
+        "echo is it the cache",
+    ] {
+        assert_eq!(
+            command_history_verdict(&history, buffer),
+            Some(InputType::Shell),
+            "{buffer:?} must still route to Shell from history",
+        );
+    }
+}
+
+#[test]
+fn command_not_found_entries_never_match() {
+    let history = [history_entry("carg build", Some(127))];
+    assert_eq!(command_history_verdict(&history, "carg build"), None);
+    // 9009 is CMD's "not recognized as an internal or external command".
+    let history = [history_entry("carg build", Some(9009))];
+    assert_eq!(command_history_verdict(&history, "carg build"), None);
+}
+
+#[test]
+fn shell_syntax_with_function_words_needs_an_exit_0_entry() {
+    // Pinned trade-off: these read as prose, so only an entry that exited 0 gives them the
+    // history shortcut; a failed or history-file entry leaves them to the classifier.
+    for command in [
+        "for i in $(seq 3); do echo $i; done",
+        "if true; then echo y; fi",
+        "scp f.txt host:",
+        "grep -r for src",
+    ] {
+        for exit_code in [Some(1), None] {
+            let history = [history_entry(command, exit_code)];
+            assert_eq!(
+                command_history_verdict(&history, command),
+                None,
+                "{command:?} with exit code {exit_code:?} must be left to the classifier",
+            );
+        }
+        let history = [history_entry(command, Some(0))];
+        assert_eq!(
+            command_history_verdict(&history, command),
+            Some(InputType::Shell),
+            "{command:?} that exited 0 must still route to Shell",
+        );
+    }
+}
+
+#[test]
+fn prose_needs_an_exact_exit_0_entry_not_a_near_variant() {
+    // A prose-shaped line that genuinely ran still re-runs from history, but only verbatim
+    // (whitespace runs aside): its near-variants go to the classifier instead of riding on it.
+    let history = [history_entry("echo is it the cache", Some(0))];
+    assert_eq!(
+        command_history_verdict(&history, "echo  is it the cache "),
+        Some(InputType::Shell),
+    );
+    assert_eq!(
+        command_history_verdict(&history, "echo is it the caches"),
+        None
+    );
+    // Same for a sentence one word away from an exit-0 entry: `main.py` once ran fine, the
+    // `main.rs` buffer is left to the classifier.
+    let history = [history_entry("echo find the bug in main.py", Some(0))];
+    assert_eq!(
+        command_history_verdict(&history, "echo find the bug in main.rs"),
+        None
+    );
+}
+
+#[test]
+fn prose_matches_an_older_exit_0_entry_past_a_newer_failure() {
+    // Entries are filtered one by one, before matching: the newest entry's failure removes only
+    // that entry, so an older exit-0 entry with the same text is still a candidate and wins
+    // (Shell) here. In production the case does not arise: `History::commands` dedupes identical
+    // text down to its newest run (and the history-file join keeps the latest run's exit code),
+    // so the verdict there follows the newest run -- a failure, so the classifier decides.
+    let history = [
+        history_entry("echo find the bug in main.rs", Some(0)),
+        history_entry("echo find the bug in main.rs", Some(1)),
+    ];
+    assert_eq!(
+        command_history_verdict(&history, "echo find the bug in main.rs"),
+        Some(InputType::Shell),
+    );
+    // With only the failure in history, the same buffer is left to the classifier.
+    assert_eq!(
+        command_history_verdict(&history[1..], "echo find the bug in main.rs"),
+        None,
+    );
+}
+
+#[test]
+fn failed_article_prose_does_not_force_shell() {
+    // `make a PR` reads as prose through the #831 article veto, shared with the pre-filter.
+    let history = [history_entry("make a PR", Some(2))];
+    assert_eq!(command_history_verdict(&history, "make a PR"), None);
+}
+
 const AI_LOCKED: InputConfig = InputConfig {
     input_type: InputType::AI,
     is_locked: true,
