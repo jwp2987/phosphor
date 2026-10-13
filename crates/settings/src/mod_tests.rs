@@ -449,6 +449,159 @@ mod reload_all_public_settings_tests {
     }
 }
 
+/// A stored value that deserializes but that the setting's `validate`
+/// rejects (#857: `font_size = 1000` in settings.toml) must be validated on
+/// every load path and reported, not used as-is.
+mod validated_load_tests {
+    use warpui::SingletonEntity;
+
+    use crate::manager::SettingsManager;
+    use crate::{Setting, SupportedPlatforms, SyncToCloud};
+
+    use crate::*;
+
+    const BOUNDED_DEFAULT: f32 = 13.0;
+
+    define_settings_group!(BoundedTestSettings, settings: [
+        bounded_size: BoundedSize {
+            type: f32,
+            default: BOUNDED_DEFAULT,
+            supported_platforms: SupportedPlatforms::ALL,
+            sync_to_cloud: SyncToCloud::Never,
+            private: false,
+            toml_path: "test.bounded_size",
+        },
+    ]);
+
+    impl BoundedSize {
+        fn validate(&self, new_value: f32) -> f32 {
+            if new_value.is_finite() && (1.0..=120.0).contains(&new_value) {
+                new_value
+            } else {
+                BOUNDED_DEFAULT
+            }
+        }
+    }
+
+    fn init_prefs(ctx: &mut AppContext) {
+        ctx.add_singleton_model(move |_| -> crate::PublicPreferences {
+            crate::PublicPreferences::new(Box::<
+                warpui_extras::user_preferences::in_memory::InMemoryPreferences,
+            >::default())
+        });
+        ctx.add_singleton_model(move |_| -> crate::PrivatePreferences {
+            crate::PrivatePreferences(Box::<
+                warpui_extras::user_preferences::in_memory::InMemoryPreferences,
+            >::default())
+        });
+    }
+
+    fn write_bounded(ctx: &mut AppContext, raw: &str) {
+        let public = <crate::PublicPreferences as SingletonEntity>::as_ref(ctx).as_preferences();
+        public.write_value("bounded_size", raw.to_string()).unwrap();
+    }
+
+    /// The startup path constructs settings with `new(Some(stored))`; before
+    /// #857 that was the one path that skipped `validate`.
+    #[test]
+    fn test_new_validates_stored_value() {
+        assert_eq!(*BoundedSize::new(Some(1000.0)).value(), BOUNDED_DEFAULT);
+        assert_eq!(*BoundedSize::new(Some(0.0)).value(), BOUNDED_DEFAULT);
+        assert_eq!(
+            *BoundedSize::new(Some(f32::INFINITY)).value(),
+            BOUNDED_DEFAULT
+        );
+        assert_eq!(*BoundedSize::new(Some(f32::NAN)).value(), BOUNDED_DEFAULT);
+        assert_eq!(*BoundedSize::new(Some(42.0)).value(), 42.0);
+        assert!(BoundedSize::new(Some(1000.0)).is_value_explicitly_set());
+        assert!(!BoundedSize::new(None).is_value_explicitly_set());
+    }
+
+    #[test]
+    fn test_validate_all_reports_rejected_values() {
+        for raw in ["1000.0", "1e308", "0.0", "-5.0"] {
+            warpui::App::test((), |mut app| async move {
+                crate::set_settings_file_enabled(true);
+                app.update(init_prefs);
+                app.add_singleton_model(|_| SettingsManager::default());
+                BoundedTestSettings::register(&mut app);
+                app.update(|ctx| write_bounded(ctx, raw));
+
+                let invalid_keys =
+                    app.read(|ctx| SettingsManager::as_ref(ctx).validate_all_public_settings(ctx));
+                assert_eq!(
+                    invalid_keys,
+                    vec!["bounded_size".to_string()],
+                    "{raw} deserializes but is out of range, so it must be reported"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn test_validate_all_accepts_in_range_value() {
+        warpui::App::test((), |mut app| async move {
+            crate::set_settings_file_enabled(true);
+            app.update(init_prefs);
+            app.add_singleton_model(|_| SettingsManager::default());
+            BoundedTestSettings::register(&mut app);
+            app.update(|ctx| write_bounded(ctx, "120.0"));
+
+            let invalid_keys =
+                app.read(|ctx| SettingsManager::as_ref(ctx).validate_all_public_settings(ctx));
+            assert!(invalid_keys.is_empty(), "120 is in range: {invalid_keys:?}");
+        });
+    }
+
+    /// Hot reload of an out-of-range value: the in-memory value is the
+    /// validated one, the key is reported, and a later UI change still
+    /// persists (the reload path must not treat it as a parse failure and
+    /// write-inhibit the key).
+    #[test]
+    fn test_reload_validates_reports_and_does_not_inhibit() {
+        warpui::App::test((), |mut app| async move {
+            app.update(init_prefs);
+            app.add_singleton_model(|_| SettingsManager::default());
+            BoundedTestSettings::register(&mut app);
+            app.update(|ctx| write_bounded(ctx, "1000.0"));
+
+            let failed_keys = app.update(|ctx| {
+                SettingsManager::handle(ctx)
+                    .update(ctx, |manager, ctx| manager.reload_all_public_settings(ctx))
+            });
+            assert_eq!(failed_keys, vec!["bounded_size".to_string()]);
+
+            app.read(|ctx| {
+                assert_eq!(
+                    *BoundedTestSettings::as_ref(ctx).bounded_size.value(),
+                    BOUNDED_DEFAULT,
+                    "the out-of-range value must never be in effect"
+                );
+            });
+
+            app.update(|ctx| {
+                BoundedTestSettings::handle(ctx).update(ctx, |settings, ctx| {
+                    settings.bounded_size.set_value(14.0, ctx).unwrap();
+                });
+            });
+            app.read(|ctx| {
+                assert_eq!(*BoundedTestSettings::as_ref(ctx).bounded_size.value(), 14.0);
+                let public =
+                    <crate::PublicPreferences as SingletonEntity>::as_ref(ctx).as_preferences();
+                let stored = public
+                    .read_value(BoundedSize::storage_key())
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    stored.parse::<f32>().unwrap(),
+                    14.0,
+                    "a UI change must be persisted after a rejected value was reported"
+                );
+            });
+        });
+    }
+}
+
 mod write_to_preferences_tests {
     use crate::*;
 

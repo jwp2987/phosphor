@@ -19,6 +19,10 @@ type LoadFn = Box<dyn FnMut(String, bool, &mut AppContext) -> Result<()>>;
 
 type EqualsFn = Box<dyn Fn(&str, &str) -> Result<bool>>;
 
+/// Checks a serialized stored value: `Err` when it does not deserialize, or
+/// when it deserializes but the setting's `validate` replaces it.
+type ValidFn = Box<dyn Fn(&str) -> Result<()>>;
+
 type IsSyncableFn = Box<dyn Fn(&AppContext) -> bool>;
 
 /// Intermediate data collected for each setting during reload, before
@@ -80,6 +84,12 @@ pub struct SettingsManager {
     /// a defined order.
     equals_fns: HashMap<String, EqualsFn>,
 
+    /// Functions for checking whether a serialized stored value is one the
+    /// setting accepts as-is. Used to report invalid values in the settings
+    /// file — both values that fail to deserialize and values that
+    /// deserialize but are rejected by the setting's `validate` (#857).
+    valid_fns: HashMap<String, ValidFn>,
+
     /// Functions for checking whether a setting is currently syncable
     /// based on its value. Settings that want custom logic here should define
     /// the current_value_is_syncable method.
@@ -113,6 +123,7 @@ impl SettingsManager {
         clear_fn: impl FnMut(&mut AppContext) -> Result<()> + 'static,
         load_fn: impl FnMut(String, bool, &mut AppContext) -> Result<()> + 'static,
         equals_fn: impl Fn(&str, &str) -> Result<bool> + 'static,
+        valid_fn: impl Fn(&str) -> Result<()> + 'static,
         is_syncable_fn: impl Fn(&AppContext) -> bool + 'static,
     ) {
         self.update_fns
@@ -123,6 +134,8 @@ impl SettingsManager {
             .insert(storage_key.to_owned(), Box::new(load_fn));
         self.equals_fns
             .insert(storage_key.to_owned(), Box::new(equals_fn));
+        self.valid_fns
+            .insert(storage_key.to_owned(), Box::new(valid_fn));
         self.is_syncable_fns
             .insert(storage_key.to_owned(), Box::new(is_syncable_fn));
         self.settings.insert(
@@ -383,6 +396,18 @@ impl SettingsManager {
 
         let mut failed_keys = Vec::new();
         for entry in updates {
+            // A value that deserializes but that the setting's `validate`
+            // replaces (e.g. `font_size = 1000`) loads fine — the in-memory
+            // setting holds the validated value — but the user's file still
+            // says something that is not in effect, so it is reported like a
+            // value that failed to parse (#857). It is deliberately *not*
+            // write-inhibited: the in-memory value is valid, and a change the
+            // user makes in the UI should be allowed to replace the bad line.
+            let rejected_by_validation = entry.read_value.as_deref().is_some_and(|value| {
+                self.valid_fns
+                    .get(&entry.storage_key)
+                    .is_some_and(|valid_fn| valid_fn(value).is_err())
+            });
             let (effective_value, explicitly_set) = match entry.read_value {
                 Some(v) => (v, true),
                 None => (entry.serialized_default, false),
@@ -397,6 +422,12 @@ impl SettingsManager {
                     <super::PublicPreferences as SingletonEntity>::as_ref(ctx).as_preferences();
                 prefs.inhibit_writes_for_key(entry.toml_key, entry.hierarchy);
                 failed_keys.push(entry.toml_key.to_string());
+            } else if rejected_by_validation {
+                log::warn!(
+                    "Setting {} has an out-of-range value in the settings file; using a valid value instead",
+                    entry.storage_key
+                );
+                failed_keys.push(entry.toml_key.to_string());
             }
         }
         failed_keys
@@ -404,7 +435,8 @@ impl SettingsManager {
 
     /// Validates all public settings by reading each from the preferences
     /// backend and attempting deserialization. Returns the storage keys of
-    /// any settings whose stored value cannot be deserialized.
+    /// any settings whose stored value cannot be deserialized, or that
+    /// deserializes but is rejected by the setting's `validate` (#857).
     ///
     /// This is a read-only check — it does not modify in-memory state.
     /// Call after [`register_all_settings`] on startup to detect invalid
@@ -421,10 +453,10 @@ impl SettingsManager {
                     .ok()
                     .flatten()?;
 
-                // Try deserializing through the equals_fn — if serde_json
-                // can't parse both sides, the value is invalid.
-                if let Some(equals_fn) = self.equals_fns.get(key)
-                    && equals_fn(&value, &value).is_err()
+                // A value is invalid if it cannot be deserialized, or if the
+                // setting's `validate` would replace it with something else.
+                if let Some(valid_fn) = self.valid_fns.get(key)
+                    && valid_fn(&value).is_err()
                 {
                     return Some(info.toml_key.to_string());
                 }

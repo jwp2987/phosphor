@@ -437,6 +437,23 @@ these as expected, not as drift to reconcile.
 Each entry must say what upstream does, what we do instead, and the evidence that
 upstream's behavior is actually a defect rather than a preference.
 
+- **A stored setting value goes through the setting's `validate`, and an out-of-range
+  `font_size` is rejected and reported** (`#857`, 2026-10-13,
+  `crates/settings/src/macros.rs`, `crates/settings/src/manager.rs`,
+  `app/src/settings/font.rs`). **Upstream:** the macro-generated `Setting::new(Some(v))`
+  stores `v` as-is (`42effe840:crates/settings/src/macros.rs:255`), so the value read at
+  startup is the one path that never reaches `validate`; `MonospaceFontSize` has no
+  validator at all, although the settings UI only accepts 1..=120. **The defect:**
+  `font_size = 1000` in settings.toml closed windows, killed running commands and pruned
+  the saved session to one window for good; `1e308` blanked the terminal; `0` cost ~2.7
+  GB of RSS. None of these was named by the settings-errors banner, because it reported
+  only values that failed to *deserialize*. **We do:** `new` validates; `font_size` and
+  `notebook_font_size` outside 1..=120 (or non-finite) fall back to the default; the
+  banner (startup and hot reload) lists any key whose value `validate` replaced. The pty
+  `winsize` is also clamped to 1..=65535 rows/cols instead of `usize as u16`.
+  Side effect, intended: `BackgroundOpacity`/`BackgroundBlurRadius`, whose validators
+  were likewise skipped at startup, are now clamped (and reported) at startup too.
+
 - **An incremental find rescan does not flash the find bar's scanning label**
   (`#815`, 2026-10-12, `app/src/terminal/find/model/async_find.rs`). **Upstream:**
   `AsyncFindController::invalidate_block` sets `status = Scanning` for every

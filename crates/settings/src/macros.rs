@@ -247,10 +247,18 @@ macro_rules! define_setting {
             /// set or not.
             fn new(value: Option<Self::Value>) -> Self {
                 match value {
-                    Some(v) => Self {
-                        inner: v,
-                        is_explicitly_set: true,
-                    },
+                    // A stored value goes through the same `validate` as a value
+                    // set at runtime. Without this, the value read from the
+                    // settings file at startup was the one path that skipped
+                    // validation entirely (#857).
+                    Some(v) => {
+                        let mut setting = Self {
+                            inner: Self::default_value(),
+                            is_explicitly_set: true,
+                        };
+                        setting.inner = setting.validate(v);
+                        setting
+                    }
                     None => {
                         let default_value = Self::default_value();
                         log::debug!(
@@ -531,7 +539,8 @@ macro_rules! implement_setting_for_enum {
 
             fn new(value: Option<Self::Value>) -> Self {
                 match value {
-                    Some(v) => v,
+                    // Stored values are validated like runtime ones (#857).
+                    Some(v) => Self::default_value().validate(v),
                     None => Self::default_value()
                 }
             }
@@ -935,6 +944,34 @@ macro_rules! generate_settings_event_fn {
                             let left_setting = $setting::new(Some(parse(left)?));
                             let right_setting = $setting::new(Some(parse(right)?));
                             Ok(left_setting.value() == right_setting.value())
+                        },
+                        |value| {
+                            use $crate::_settings_value::SettingsValue as _;
+                            let parse =
+                                |s: &str| -> anyhow::Result<<$setting as $crate::Setting>::Value> {
+                                    let json_val = serde_json::from_str::<serde_json::Value>(s)?;
+                                    <$setting as $crate::Setting>::Value::from_file_value(&json_val)
+                                        .or_else(|| serde_json::from_str(s).ok())
+                                        .ok_or_else(|| {
+                                            anyhow!(
+                                                "Failed to parse value for {}",
+                                                $setting::storage_key()
+                                            )
+                                        })
+                                };
+                            // `new` runs the setting's `validate`; a value it
+                            // changed is one the setting rejected (out of range,
+                            // non-finite, ...), even though it deserialized.
+                            let stored = parse(value)?;
+                            let loaded = $setting::new(Some(parse(value)?));
+                            if loaded.value() == &stored {
+                                Ok(())
+                            } else {
+                                Err(anyhow!(
+                                    "Value for {} was rejected by validation: {value}",
+                                    $setting::storage_key()
+                                ))
+                            }
                         },
                         move |ctx| {
                             settings_group_is_syncable_clone
