@@ -9359,3 +9359,157 @@ fn keeps_the_hashtag_for_a_non_empty_query_under_a_different_filter() {
         &Some(QueryFilter::History)
     ));
 }
+
+// #833: a user's Enter keypress routes on the input-type verdict for the text being submitted,
+// not on whatever the previous buffer left behind.
+
+/// Sets up a bootstrapped terminal with autodetection live and returns its input.
+async fn input_with_live_autodetection(app: &mut App) -> ViewHandle<Input> {
+    initialize_app(app);
+    AISettings::handle(app).update(app, |ai_settings, ctx| {
+        let _ = ai_settings
+            .ai_autodetection_enabled_internal
+            .set_value(true, ctx);
+        let _ = ai_settings
+            .nld_in_terminal_enabled_internal
+            .set_value(true, ctx);
+    });
+    let terminal = add_window_with_bootstrapped_terminal(app, None, None).await;
+    terminal.read(&*app, |terminal, _| terminal.input().clone())
+}
+
+/// Pastes `text` into the input the way `insert_clipboard_text_content` does.
+fn paste_into_input(app: &mut App, input: &ViewHandle<Input>, text: &str) {
+    let editor = input.read(&*app, |input, _| input.editor().clone());
+    editor.update(app, |editor, ctx| {
+        editor.user_initiated_insert(text, PlainTextEditorViewAction::Paste, ctx);
+    });
+}
+
+#[test]
+fn test_paste_requests_input_detection_inside_submit_window() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let input = input_with_live_autodetection(&mut app).await;
+        let text = "summarize the readme for me";
+
+        // F7: a command was just submitted (opening the 250 ms explicit-set window for the empty
+        // buffer), then prose is pasted.
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |model, ctx| {
+                model.handle_input_buffer_submitted(ctx);
+            });
+        });
+        paste_into_input(&mut app, &input, text);
+
+        // The paste asked for a verdict on its own text, and the window does not claim it: an
+        // Enter now must wait for that verdict rather than route on the submit's reset.
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), text);
+            assert!(
+                input
+                    .ai_input_model()
+                    .as_ref(ctx)
+                    .is_detection_pending_for(text, ctx)
+            );
+        });
+    });
+}
+
+#[test]
+fn test_enter_waits_for_the_verdict_on_the_submitted_buffer() {
+    use crate::ai::blocklist::agent_view::AgentViewState;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let input = input_with_live_autodetection(&mut app).await;
+        let terminal_is_in_agent_view = |app: &App, input: &ViewHandle<Input>| {
+            input.read(app, |input, _| {
+                matches!(
+                    input.model.lock().block_list().agent_view_state(),
+                    AgentViewState::Active { .. }
+                )
+            })
+        };
+
+        // The previous buffer was autodetected as AI; the user then pastes a command and presses
+        // Enter at once (F6, reverse direction of the reported prose case).
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |model, ctx| {
+                model.enable_autodetection(InputType::AI, ctx);
+            });
+        });
+        let command = "cat foo.txt | grep -i error";
+        paste_into_input(&mut app, &input, command);
+
+        let ai_query_count = Rc::new(RefCell::new(0));
+        let ai_query_count_for_subscription = ai_query_count.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                if matches!(event, super::Event::ExecuteAIQuery) {
+                    *ai_query_count_for_subscription.borrow_mut() += 1;
+                }
+            });
+        });
+
+        input.update(&mut app, |input, ctx| input.input_enter_from_keypress(ctx));
+
+        // Either the verdict was already available synchronously (the parse had landed and the
+        // #808 pre-filter settled it), or Enter is waiting with the editor read-only; it must
+        // not have routed the command on the stale AI verdict.
+        assert_eq!(*ai_query_count.borrow(), 0);
+        for _ in 0..400 {
+            if input.read(&app, |input, _| input.pending_enter.is_none()) {
+                break;
+            }
+            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+        }
+
+        input.read(&app, |input, ctx| {
+            assert!(
+                input.pending_enter.is_none(),
+                "the deferred Enter never resumed"
+            );
+            assert_eq!(
+                input.editor().as_ref(ctx).interaction_state(ctx),
+                InteractionState::Editable
+            );
+            assert_eq!(
+                input.ai_input_model().as_ref(ctx).input_type(),
+                InputType::Shell
+            );
+        });
+        assert_eq!(*ai_query_count.borrow(), 0);
+        assert!(!terminal_is_in_agent_view(&app, &input));
+    });
+}
+
+#[test]
+fn test_enter_does_not_wait_when_input_type_is_locked() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let input = input_with_live_autodetection(&mut app).await;
+
+        // ctrl-I style explicit lock to shell, then prose: the lock is the user's decision, so
+        // Enter neither waits nor reclassifies.
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |model, ctx| {
+                model.set_input_config(
+                    InputConfig {
+                        input_type: InputType::Shell,
+                        is_locked: true,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+        });
+        paste_into_input(&mut app, &input, "find the bug in main.rs");
+
+        input.update(&mut app, |input, ctx| {
+            assert!(!input.should_wait_for_input_detection_on_enter(ctx));
+            input.input_enter_from_keypress(ctx);
+            assert!(input.pending_enter.is_none());
+        });
+    });
+}

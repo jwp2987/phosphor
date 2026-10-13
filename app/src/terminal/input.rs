@@ -378,6 +378,32 @@ impl DropTargetData for InputDropTargetData {
 
 pub const DEBOUNCE_INPUT_DECORATION_PERIOD: Duration = Duration::from_millis(10);
 pub const DEBOUNCE_AI_QUERY_PREDICTION_PERIOD: Duration = Duration::from_millis(250);
+
+/// Upper bound on how long a user's Enter keypress waits for the input-type (shell vs agent)
+/// detection of the buffer it submits (#833).
+///
+/// Detection is asynchronous: the buffer is parsed (token descriptions come from the completer)
+/// and then classified on a background task. Upstream's Enter routed on whatever input type was
+/// current at the keypress, so prose pasted or typed fast and submitted at once ran in the shell
+/// on the previous buffer's verdict (3/3 in the routing torture run), while with 0.35 s between
+/// the text and Enter it reached the agent. Parsing plus classification normally settles well
+/// inside this bound; if it does not, Enter submits in the then-current mode -- the pre-#833
+/// behavior -- so a stuck classifier can delay a submission but never swallow it.
+const ENTER_INPUT_DETECTION_WAIT: Duration = Duration::from_millis(200);
+
+/// A user Enter keypress deferred until input-type detection settles for the buffer it submits.
+/// See [`ENTER_INPUT_DETECTION_WAIT`].
+struct PendingEnterSubmission {
+    id: u64,
+    /// The buffer the user pressed Enter on. If the buffer differs when the wait ends, the
+    /// submission is dropped rather than submitting text the user did not press Enter on.
+    buffer_text: String,
+    deadline: instant::Instant,
+    /// The editor's interaction state before the wait made it read-only, if the wait changed it.
+    /// Typing ahead during the wait would otherwise be appended to the buffer being submitted.
+    interaction_state_to_restore: Option<InteractionState>,
+}
+
 pub(super) const CLI_AGENT_RICH_INPUT_EDITOR_MAX_HEIGHT: f32 = 236.;
 pub(super) const CLI_AGENT_RICH_INPUT_EDITOR_TOP_PADDING: f32 = 10.;
 pub(super) const CLI_AGENT_RICH_INPUT_EDITOR_BOTTOM_PADDING: f32 = 8.;
@@ -1583,6 +1609,9 @@ pub struct Input {
     is_voltron_open: bool,
     command_x_ray_description: Option<Arc<Description>>,
     last_parsed_tokens: Option<decorations::ParsedTokensSnapshot>,
+    /// A user Enter keypress waiting for the input-type detection of its buffer (#833).
+    pending_enter: Option<PendingEnterSubmission>,
+    next_pending_enter_id: u64,
     debounce_input_background_tx: Sender<InputBackgroundJobOptions>,
     debounce_ai_query_prediction_tx: Sender<()>,
     /// If true, will submit the command in the editor to the shell upon receiving the
@@ -3305,6 +3334,8 @@ impl Input {
             is_voltron_open: false,
             command_x_ray_description: None,
             last_parsed_tokens: None,
+            pending_enter: None,
+            next_pending_enter_id: 0,
             debounce_input_background_tx,
             debounce_ai_query_prediction_tx,
             has_pending_command: false,
@@ -9087,9 +9118,17 @@ impl Input {
                     EditOrigin::SystemEdit => false,
                 };
 
-                // Abort any autodetection work on the old buffer state.
+                // Abort any autodetection work on the old buffer state, and record that this
+                // buffer's input type is now undecided, so an Enter that arrives before the
+                // verdict waits for it instead of routing on the previous buffer's verdict
+                // (#833).
+                let buffer_text_for_detection =
+                    should_run_ai_input_detection.then(|| self.buffer_text(ctx));
                 self.ai_input_model.update(ctx, |controller, _| {
                     controller.abort_in_progress_detection();
+                    if let Some(buffer_text) = buffer_text_for_detection {
+                        controller.note_detection_requested(buffer_text);
+                    }
                 });
                 // Abort any inflight request to generate a Next Command suggestion.
                 self.next_command_model.update(ctx, |model, _| {
@@ -9726,7 +9765,7 @@ impl Input {
                     });
                 }
             }
-            EditorEvent::Enter => self.input_enter(ctx),
+            EditorEvent::Enter => self.input_enter_from_keypress(ctx),
             EditorEvent::CmdEnter => self.input_cmd_enter(ctx),
             EditorEvent::CtrlEnter => self.input_ctrl_enter(ctx),
             EditorEvent::Escape => self.editor_escape(ctx),
@@ -11941,6 +11980,185 @@ impl Input {
         self.ai_controller.update(ctx, move |controller, ctx| {
             controller.send_slash_command_request(SlashCommandRequest::CloneRepository { url }, ctx)
         });
+    }
+
+    /// Handles an Enter keypress from the input editor.
+    ///
+    /// Identical to [`Self::input_enter`] except that, when Enter is about to route the buffer by
+    /// input type (shell vs agent) and that buffer's autodetection has not settled yet, the
+    /// submission waits for the verdict -- bounded by [`ENTER_INPUT_DETECTION_WAIT`] -- so the
+    /// routing reflects the text actually being submitted (#833). Programmatic submissions call
+    /// [`Self::input_enter`] directly: they set the input type themselves before submitting.
+    pub(crate) fn input_enter_from_keypress(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.pending_enter.is_some() {
+            // An earlier Enter is already waiting to submit this buffer.
+            return;
+        }
+        if self.should_wait_for_input_detection_on_enter(ctx) {
+            self.defer_enter_until_input_detected(ctx);
+            return;
+        }
+        self.input_enter(ctx);
+    }
+
+    /// Whether this Enter would route the buffer by input type while the detection for that
+    /// buffer is still unsettled. Enter that accepts a menu item, inserts a newline, submits CLI
+    /// agent rich input or runs a detected slash command does not depend on the input type, and
+    /// a locked input type (ctrl-I, an explicit toggle, an attachment) never runs detection, so
+    /// none of those wait.
+    fn should_wait_for_input_detection_on_enter(&self, ctx: &mut ViewContext<Self>) -> bool {
+        if CLIAgentSessionsModel::as_ref(ctx).is_input_open(self.terminal_view_id) {
+            return false;
+        }
+        let suggestions_mode = self.suggestions_mode_model.as_ref(ctx);
+        let enter_routes_buffer = suggestions_mode.is_closed()
+            || (suggestions_mode.is_completion_suggestions()
+                && !self.should_enter_accept_completion_suggestion(ctx));
+        if !enter_routes_buffer {
+            return false;
+        }
+        if self
+            .slash_command_model
+            .as_ref(ctx)
+            .state()
+            .is_detected_command_or_skill()
+        {
+            return false;
+        }
+        if self.should_insert_newline_on_enter(ctx) {
+            return false;
+        }
+        let buffer_text = self.buffer_text(ctx);
+        self.ai_input_model
+            .as_ref(ctx)
+            .is_detection_pending_for(&buffer_text, ctx)
+    }
+
+    /// Defers an Enter keypress until the input-type detection for the current buffer settles,
+    /// or [`ENTER_INPUT_DETECTION_WAIT`] elapses.
+    fn defer_enter_until_input_detected(&mut self, ctx: &mut ViewContext<Self>) {
+        let buffer_text = self.buffer_text(ctx);
+
+        // Unless the classifier is already working on exactly this text, (re)start detection
+        // now rather than after the input debounce. When the buffer is already parsed this runs
+        // the synchronous stage on the spot -- the denylist and the #808 pre-filter -- which
+        // settles clear commands without waiting at all; otherwise it starts the parse that
+        // feeds it. It also recovers a detection request the debounce coalesced into a
+        // decoration-only job.
+        if !self
+            .ai_input_model
+            .as_ref(ctx)
+            .is_detection_in_flight_for(&buffer_text)
+        {
+            let mut mode = InputBackgroundJobOptions::default().with_ai_input_detection();
+            if self.should_apply_decorations(ctx) {
+                mode = mode.with_command_decoration();
+            }
+            self.run_input_background_jobs(mode, ctx);
+        }
+        if !self
+            .ai_input_model
+            .as_ref(ctx)
+            .is_detection_pending_for(&buffer_text, ctx)
+        {
+            self.input_enter(ctx);
+            return;
+        }
+
+        let interaction_state_to_restore = self.editor.update(ctx, |editor, ctx| {
+            let state = editor.interaction_state(ctx);
+            (state == InteractionState::Editable).then(|| {
+                editor.set_interaction_state(InteractionState::Selectable, ctx);
+                state
+            })
+        });
+        self.next_pending_enter_id = self.next_pending_enter_id.wrapping_add(1);
+        let id = self.next_pending_enter_id;
+        self.pending_enter = Some(PendingEnterSubmission {
+            id,
+            buffer_text,
+            deadline: instant::Instant::now() + ENTER_INPUT_DETECTION_WAIT,
+            interaction_state_to_restore,
+        });
+        self.arm_pending_enter_wait(id, ENTER_INPUT_DETECTION_WAIT, ctx);
+    }
+
+    /// Wakes [`Self::resume_pending_enter`] when a detection settles or `wait` elapses.
+    fn arm_pending_enter_wait(&mut self, id: u64, wait: Duration, ctx: &mut ViewContext<Self>) {
+        let settled = self
+            .ai_input_model
+            .update(ctx, |model, _| model.detection_settled_receiver());
+        let _ = ctx.spawn(
+            async move {
+                futures_lite::future::or(
+                    async move {
+                        let _ = settled.await;
+                        false
+                    },
+                    async move {
+                        warpui::r#async::Timer::after(wait).await;
+                        true
+                    },
+                )
+                .await
+            },
+            move |input, timed_out, ctx| input.resume_pending_enter(id, timed_out, ctx),
+        );
+    }
+
+    /// Finishes (or keeps waiting on) the deferred Enter `id`.
+    fn resume_pending_enter(&mut self, id: u64, timed_out: bool, ctx: &mut ViewContext<Self>) {
+        let Some(pending) = self
+            .pending_enter
+            .as_ref()
+            .filter(|pending| pending.id == id)
+        else {
+            return;
+        };
+        let buffer_text = self.buffer_text(ctx);
+        let is_buffer_unchanged = buffer_text == pending.buffer_text;
+        let is_still_pending = is_buffer_unchanged
+            && self
+                .ai_input_model
+                .as_ref(ctx)
+                .is_detection_pending_for(&buffer_text, ctx);
+        if is_still_pending && !timed_out {
+            // A detection settled, but not this buffer's (or not yet): keep waiting for the rest
+            // of the bound.
+            let now = instant::Instant::now();
+            if now < pending.deadline {
+                let remaining = pending.deadline - now;
+                self.arm_pending_enter_wait(id, remaining, ctx);
+                return;
+            }
+        }
+
+        let Some(pending) = self.pending_enter.take() else {
+            return;
+        };
+        if let Some(state) = pending.interaction_state_to_restore {
+            self.editor.update(ctx, |editor, ctx| {
+                // Only undo our own change; leave a state someone else set meanwhile alone.
+                if editor.interaction_state(ctx) == InteractionState::Selectable {
+                    editor.set_interaction_state(state, ctx);
+                }
+            });
+        }
+        if !is_buffer_unchanged {
+            log::info!(
+                "Dropping a deferred Enter: the input changed while it waited for input-type \
+                 detection"
+            );
+            return;
+        }
+        if is_still_pending {
+            // Fallback: submit in whatever mode the input is in now (the pre-#833 behavior).
+            log::info!(
+                "Input-type detection did not settle within {ENTER_INPUT_DETECTION_WAIT:?}; \
+                 submitting in the current mode"
+            );
+        }
+        self.input_enter(ctx);
     }
 
     /// Handles the user's 'Enter' keypress.

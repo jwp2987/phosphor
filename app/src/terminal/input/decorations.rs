@@ -111,6 +111,15 @@ impl Input {
         ctx: &mut ViewContext<Self>,
     ) {
         if let Some(parsed_token) = self.last_parsed_tokens.clone() {
+            // A parse that finished after the buffer moved on describes text that is no longer
+            // there; classifying it would set the input type for the wrong buffer. (The newer
+            // buffer's own detection, if it needs one, was requested by the edit that changed
+            // it.) This matters since #833 narrowed the explicit-set window to the buffer it was
+            // made for: a parse of a just-submitted command landing after the submit is no
+            // longer swallowed by that window.
+            if parsed_token.buffer_text != self.editor.as_ref(ctx).buffer_text(ctx) {
+                return;
+            }
             let session_id = completion_context.session.id();
             self.ai_input_model.update(ctx, |ai_input_model, ctx| {
                 ai_input_model.detect_and_set_input_type(
@@ -290,7 +299,12 @@ impl Input {
                         async move {
                             parse_current_commands_and_tokens(buffer_text, &detection_ctx).await
                         },
-                        move |_input, parsed_tokens, ctx| {
+                        move |input, parsed_tokens, ctx| {
+                            // Stale parse: see `run_input_mode_detection`.
+                            let buffer_text = input.editor.as_ref(ctx).buffer_text(ctx);
+                            if parsed_tokens.buffer_text != buffer_text {
+                                return;
+                            }
                             ai_input_model.update(ctx, |model, ctx| {
                                 model.detect_and_set_input_type(
                                     parsed_tokens,
