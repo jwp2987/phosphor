@@ -1019,8 +1019,23 @@ impl CLISubagentView {
         if action_model
             .get_pending_actions_for_conversation(&self.conversation_id)
             .next()
-            .is_some_and(|action| action_model.user_accept_blocked_by_hidden_command(action))
+            .is_some_and(|action| {
+                action_model.user_accept_blocked_by_hidden_command(self.conversation_id, action)
+            })
         {
+            // Say why nothing happened rather than ignoring the keypress.
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(
+                    DismissibleToast::error(
+                        "Part of this command is hidden on its approval card. Leave the \
+                         full-screen view and use Show full command before running it."
+                            .to_owned(),
+                    ),
+                    window_id,
+                    ctx,
+                );
+            });
             return;
         }
         self.execute_pending_action(ctx);

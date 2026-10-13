@@ -464,37 +464,58 @@ upstream's behavior is actually a defect rather than a preference.
 
   Approve runs the full text in every case. Reproduced on 0.1.11 and at `beee34583`.
 
-  **We do:**
+  **We do (GUI agent approval card):**
   - **Preview.** Outside edit mode, the card draws `command_approval_preview`:
     - Shell operators and separators are always visible and highlighted.
-    - Over-long words and whitespace stretches are elided only in their middle, behind a
-      marker with the exact hidden count, so the tail stays visible.
-    - Runs of 3 or more blank lines collapse behind a counted marker.
-    - Over 4,000 chars or 20 lines, the middle is cut behind a marker that counts the hidden
+    - Over-long words are elided only in their middle, behind a marker with the exact hidden
+      count, so the tail stays visible.
+    - Whitespace stretches over 32 chars and runs of 3 or more blank lines collapse behind
+      counted markers. They stay collapsed in the full view too, since they hide only
+      whitespace.
+    - Over 1,500 chars or 20 lines, the middle is cut behind a marker that counts the hidden
       chars and separators.
-    - Control characters, invisible and blank-rendering characters, non-ASCII whitespace,
-      stacked combining marks, and a literal `<U+` are drawn as `<U+XXXX>`. Markers have
-      their own background.
-    - Notes say how many characters are hidden, how many commands the line runs, whether it
-      uses command substitution, and whether it contains non-ASCII characters.
-  - **Gate.** While anything is elided, Run is replaced by "Show full command". The gate
-    lives in the action model, not the card. `start_pending_action_by_id` refuses every
-    `ActionInitiator::User` start of such a command until the card's "Show full command" has
-    been used. That covers the card's Run, Enter on the card, the AI block's Enter, the CLI
-    subagent's accept and the auto-execute toggle. The auto-execute toggle and the CLI
-    subagent's auto-approve also do not switch the autoexecute override on when that accept
-    was refused. Edited or re-streamed text withdraws "shown".
-  - **Full view.** It breaks long runs with zero-width spaces, so no shaped word reaches the
-    renderer limit.
-  - **Header and notification.** The header title and the blocked-conversation notification
-    use the same elided one-line form.
+    - The collapsed preview has no height cap or scroll container. Soft-wrapped height depends
+      on the card width, which a char budget cannot bound, so a cap could fold its end out of
+      sight.
+    - An "Ends with: ..." note echoes the last 120 chars in both views. The full view scrolls
+      inside a 500px cap.
+    - The following are drawn as `<U+XXXX>` on a marker background:
+      - controls;
+      - Cf, Zl, Zp, Co and unassigned code points;
+      - non-ASCII spaces;
+      - blank-rendering glyphs and variation selectors;
+      - fullwidth ASCII look-alikes;
+      - Mn/Me marks after the second in a row;
+      - a literal `<U+`;
+      - strong right-to-left letters, when the command also contains shell operators, because
+        the text element has no base-direction override.
+    - Notes cover hidden counts, the command count, command substitution, non-ASCII text,
+      words that mix Latin with Cyrillic or Greek letters, and escaped RTL letters.
+  - **Gate.** The gate lives in the action model. `start_pending_action_by_id` refuses every
+    `ActionInitiator::User` start of an elided command unless the exact text that would run
+    was shown in full. The mark is keyed by (conversation, action id) and holds the shown
+    text, so an edit made after "Show full command" is not covered, and neither is the same id
+    in another conversation. That covers:
+    - the card's Run and Enter;
+    - the AI block's Enter, which expands the card;
+    - the CLI subagent's accept, which shows a toast;
+    - the auto-execute toggle, which does not switch autoexecute on when the accept was
+      refused. Switching it off always works.
+  - **Card behaviour.**
+    - Enter on an elided card shows the full command instead of running it.
+    - Committed edits, including leaving edit mode with Done or Escape, are written into the
+      pending action, so every accept path runs exactly what the card shows.
+    - The header title and the blocked-conversation notification use the same elided form.
 
   **Not done here:**
   - The renderer bug itself (in `fonts.rs` / cosmic-text) still affects any other text with a
     word over 16,384 chars, including the card's edit-mode editor.
-  - The TUI shell command view draws its own 4-row editor in terminal cells. Its accept marks
-    the command as shown; whether it can scroll part of a command out of view is a TUI
-    follow-up.
+  - This entry covers the GUI card only. The TUI shell command view draws its own editor in
+    terminal cells, and its accept marks the text it runs as shown. Whether it can hide part
+    of a command is tracked in #865.
+  - The alt-screen tag-in override (`ActionInitiator::AutoAcceptedTagIn`) runs commands with
+    no card at all. That is pre-existing and deliberate, and this gate does not apply to it.
+  - Neither does profile auto-execution (`ActionInitiator::Agent`).
 
 - **An incremental find rescan does not flash the find bar's scanning label**
   (`#815`, 2026-10-12, `app/src/terminal/find/model/async_find.rs`). **Upstream:**

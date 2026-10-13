@@ -32,9 +32,11 @@
 //!   [`CommandApprovalPreview::is_truncated`] true. The card then withholds Run until the user
 //!   asks for the full command (see [`approval_requires_full_view`]). The action model refuses
 //!   every user-initiated accept of such a command, whichever path it comes from.
-//! * [`PreviewMode::Full`] shows the whole command with nothing elided. Long runs get
-//!   zero-width-space break opportunities. These are display-only, so no shaped word reaches the
-//!   renderer's limit, and the text soft-wraps instead of clipping. U+200B is a
+//! * [`PreviewMode::Full`] shows every non-whitespace character of the command. Only whitespace
+//!   stretches and blank-line runs stay collapsed, because they hide nothing else and would
+//!   otherwise push the end out of sight. The card echoes the end in an "Ends with" note.
+//!   Long runs get zero-width-space break opportunities. These are display-only, so no shaped
+//!   word reaches the renderer's limit, and the text soft-wraps instead of clipping. U+200B is a
 //!   Default_Ignorable code point, so the shaper hides it rather than drawing a missing-glyph box.
 //!   `layout_line` in `fonts.rs` already relies on that. Still, this needs a manual check on a
 //!   real X11 build with a 100K word.
@@ -51,6 +53,8 @@
 
 use std::cell::OnceCell;
 
+use unicode_general_category::{GeneralCategory, get_general_category};
+
 /// Words longer than this many chars are elided in the collapsed preview. This is far below the
 /// renderer's 16,384-char per-word limit.
 pub(crate) const LONG_RUN_CHARS: usize = 160;
@@ -66,9 +70,13 @@ const WHITESPACE_KEEP_CHARS: usize = 2;
 /// This many or more consecutive blank lines are collapsed behind a marker.
 pub(crate) const BLANK_LINE_RUN_COLLAPSE: usize = 3;
 /// Upper bound on the collapsed preview's displayed length, in chars, before its middle is cut.
-pub(crate) const COLLAPSED_PREVIEW_MAX_CHARS: usize = 4_000;
-/// Upper bound on the collapsed preview's line count before its middle is cut, so the end of the
-/// command never sits below the card's scroll fold.
+///
+/// The collapsed preview is drawn with no height limit and no scroll container: with soft wrap,
+/// laid-out height depends on the card width, which a char or line budget cannot bound. So
+/// nothing in it can sit below a fold. This budget, and the line budget below, only keep the
+/// card a reasonable size.
+pub(crate) const COLLAPSED_PREVIEW_MAX_CHARS: usize = 1_500;
+/// Upper bound on the collapsed preview's line count before its middle is cut.
 pub(crate) const COLLAPSED_PREVIEW_MAX_LINES: usize = 20;
 /// Lines kept above a line-count cut.
 const CUT_HEAD_LINES: usize = 12;
@@ -89,61 +97,71 @@ fn is_operator_char(c: char) -> bool {
     )
 }
 
-/// Combining marks. A long stack of them can paint over neighbouring text, so after the second
-/// in a row each is escaped.
+/// Combining marks (general categories Mn and Me). A long stack of them can paint over
+/// neighbouring text, so after the second in a row each is escaped.
 fn is_combining_mark(c: char) -> bool {
     matches!(
-        c,
-        '\u{0300}'..='\u{036F}'
-            | '\u{0483}'..='\u{0489}'
-            | '\u{0591}'..='\u{05BD}'
-            | '\u{0610}'..='\u{061A}'
-            | '\u{064B}'..='\u{065F}'
-            | '\u{1AB0}'..='\u{1AFF}'
-            | '\u{1DC0}'..='\u{1DFF}'
-            | '\u{20D0}'..='\u{20FF}'
-            | '\u{FE20}'..='\u{FE2F}'
+        get_general_category(c),
+        GeneralCategory::NonspacingMark | GeneralCategory::EnclosingMark
     )
 }
 
-/// Characters that must never reach the screen raw. These are controls (C0 other than
-/// `\n`/`\t`, DEL, C1), invisible or format characters that can hide or reorder text, glyphs
-/// that render as blank, and non-ASCII whitespace, which looks like a word break but is part of
-/// a word to the shell.
+/// Characters that are written right to left (Hebrew, Arabic, Syriac, Thaana, NKo, Samaritan,
+/// Mandaic, their presentation forms, and the RTL supplementary blocks). Between ASCII operators
+/// they reorder the neutrals and brackets around them, so the displayed order would no longer be
+/// the order the shell reads.
+fn is_strong_rtl(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0590}'..='\u{08FF}'
+            | '\u{FB1D}'..='\u{FDFF}'
+            | '\u{FE70}'..='\u{FEFF}'
+            | '\u{10800}'..='\u{10FFF}'
+            | '\u{1E800}'..='\u{1EFFF}'
+    )
+}
+
+/// Characters that must never reach the screen raw:
+/// * controls, other than `\n` and `\t`;
+/// * format characters (category Cf), which are invisible and can hide or reorder text;
+/// * line and paragraph separators, private-use and unassigned code points;
+/// * non-ASCII whitespace, which looks like a word break but is part of a word to the shell;
+/// * glyphs that render blank (Hangul fillers, braille blank, object replacement), and variation
+///   selectors;
+/// * fullwidth ASCII look-alikes (U+FF01-FF5E).
 fn must_escape(c: char) -> bool {
     if c == '\n' || c == '\t' {
         return false;
     }
-    c.is_control()
-        || matches!(
-            c,
-            '\u{00A0}'
-                | '\u{00AD}'
-                | '\u{034F}'
-                | '\u{0600}'..='\u{0605}'
-                | '\u{061C}'
-                | '\u{06DD}'
-                | '\u{070F}'
-                | '\u{08E2}'
-                | '\u{115F}'
-                | '\u{1160}'
-                | '\u{1680}'
-                | '\u{17B4}'
-                | '\u{17B5}'
-                | '\u{180B}'..='\u{180E}'
-                | '\u{2000}'..='\u{200F}'
-                | '\u{2028}'..='\u{202F}'
-                | '\u{205F}'..='\u{206F}'
-                | '\u{2800}'
-                | '\u{3000}'
-                | '\u{3164}'
-                | '\u{FE00}'..='\u{FE0F}'
-                | '\u{FEFF}'
-                | '\u{FFA0}'
-                | '\u{FFF9}'..='\u{FFFC}'
-                | '\u{1D173}'..='\u{1D17A}'
-                | '\u{E0000}'..='\u{E0FFF}'
-        )
+    if c.is_control() {
+        return true;
+    }
+    match get_general_category(c) {
+        GeneralCategory::Format
+        | GeneralCategory::LineSeparator
+        | GeneralCategory::ParagraphSeparator
+        | GeneralCategory::PrivateUse
+        | GeneralCategory::Unassigned
+        | GeneralCategory::Surrogate => return true,
+        GeneralCategory::SpaceSeparator if c != ' ' => return true,
+        _ => {}
+    }
+    matches!(
+        c,
+        '\u{034F}'
+            | '\u{115F}'
+            | '\u{1160}'
+            | '\u{17B4}'
+            | '\u{17B5}'
+            | '\u{180B}'..='\u{180F}'
+            | '\u{2800}'
+            | '\u{3164}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{FF01}'..='\u{FF5E}'
+            | '\u{FFA0}'
+            | '\u{FFFC}'
+            | '\u{E0100}'..='\u{E01EF}'
+    )
 }
 
 fn escape_char(c: char) -> String {
@@ -172,7 +190,8 @@ pub(crate) enum PreviewMode {
     /// Bounded length and line count. Long runs, blank-line runs and, if needed, the middle of
     /// the command are elided behind markers.
     Collapsed,
-    /// The entire command. Nothing is elided.
+    /// Every non-whitespace character of the command. Only long whitespace and blank-line
+    /// runs stay collapsed.
     Full,
 }
 
@@ -271,55 +290,59 @@ fn push_run(pieces: &mut Vec<Piece>, run: &[char], is_whitespace: bool, mode: Pr
     } else {
         (LONG_RUN_CHARS, LONG_RUN_HEAD_CHARS, LONG_RUN_TAIL_CHARS)
     };
-    match mode {
-        PreviewMode::Collapsed if run.len() > limit => {
-            let hidden = run.len() - head - tail;
-            pieces.push(
-                Piece::new(PieceKind::Text, run[..head].iter().collect(), head)
-                    .blank(is_whitespace),
-            );
-            let what = if is_whitespace {
-                plural(hidden, "whitespace char", "whitespace chars")
-            } else {
-                plural(hidden, "char", "chars")
-            };
-            pieces.push(
-                Piece::marker(
-                    format!("…[{} more {what}]…", group_thousands(hidden)),
-                    hidden,
-                )
-                .blank(is_whitespace),
-            );
-            pieces.push(
-                Piece::new(
-                    PieceKind::Text,
-                    run[run.len() - tail..].iter().collect(),
-                    tail,
-                )
-                .blank(is_whitespace),
-            );
-        }
-        PreviewMode::Collapsed => {
-            pieces.push(
-                Piece::new(PieceKind::Text, run.iter().collect(), run.len()).blank(is_whitespace),
-            );
-        }
-        PreviewMode::Full => {
-            let mut text =
-                String::with_capacity(run.len() + run.len() / FULL_VIEW_BREAK_EVERY_CHARS);
-            for (i, c) in run.iter().enumerate() {
-                if i > 0 && i % FULL_VIEW_BREAK_EVERY_CHARS == 0 {
-                    text.push(ZERO_WIDTH_BREAK);
-                }
-                text.push(*c);
+    // Whitespace is elided in both modes: it hides nothing but whitespace, and in the full view
+    // it would otherwise push the rest of the command out of sight. Words are elided only in the
+    // collapsed preview.
+    let elide = run.len() > limit && (is_whitespace || mode == PreviewMode::Collapsed);
+    if elide {
+        let hidden = run.len() - head - tail;
+        pieces.push(
+            Piece::new(PieceKind::Text, run[..head].iter().collect(), head).blank(is_whitespace),
+        );
+        let what = if is_whitespace {
+            plural(hidden, "whitespace char", "whitespace chars")
+        } else {
+            plural(hidden, "char", "chars")
+        };
+        pieces.push(
+            Piece::marker(
+                format!("…[{} more {what}]…", group_thousands(hidden)),
+                hidden,
+            )
+            .blank(is_whitespace),
+        );
+        pieces.push(
+            Piece::new(
+                PieceKind::Text,
+                run[run.len() - tail..].iter().collect(),
+                tail,
+            )
+            .blank(is_whitespace),
+        );
+    } else if mode == PreviewMode::Collapsed || is_whitespace {
+        pieces.push(
+            Piece::new(PieceKind::Text, run.iter().collect(), run.len()).blank(is_whitespace),
+        );
+    } else {
+        // Full view: zero-width break opportunities keep every shaped word short.
+        let mut text = String::with_capacity(run.len() + run.len() / FULL_VIEW_BREAK_EVERY_CHARS);
+        for (i, c) in run.iter().enumerate() {
+            if i > 0 && i % FULL_VIEW_BREAK_EVERY_CHARS == 0 {
+                text.push(ZERO_WIDTH_BREAK);
             }
-            pieces.push(Piece::new(PieceKind::Text, text, run.len()).blank(is_whitespace));
+            text.push(*c);
         }
+        pieces.push(Piece::new(PieceKind::Text, text, run.len()));
     }
 }
 
 fn tokenize(command: &str, mode: PreviewMode) -> Vec<Piece> {
     let chars: Vec<char> = command.chars().collect();
+    // Right-to-left letters reorder the operators, neutrals and brackets around them, so the
+    // displayed order would differ from the order the shell reads. The text element has no
+    // base-direction override, so when a command mixes them with shell operators, the RTL letters
+    // are escaped instead.
+    let escape_rtl = chars.iter().any(|c| is_operator_char(*c));
     let mut pieces = Vec::new();
     let mut run: Vec<char> = Vec::new();
     let mut run_is_whitespace = false;
@@ -333,7 +356,10 @@ fn tokenize(command: &str, mode: PreviewMode) -> Vec<Piece> {
         };
         let poses_as_escape =
             c == '<' && chars.get(i + 1) == Some(&'U') && chars.get(i + 2) == Some(&'+');
-        let escape = must_escape(c) || combining_run > 2 || poses_as_escape;
+        let escape = must_escape(c)
+            || combining_run > 2
+            || poses_as_escape
+            || (escape_rtl && is_strong_rtl(c));
 
         if !escape && c != '\n' && !is_operator_char(c) {
             let is_whitespace = c.is_whitespace();
@@ -493,9 +519,11 @@ fn cut_middle(mut pieces: Vec<Piece>) -> Vec<Piece> {
 
 /// Builds the approval-card display of `command`. See the module docs for the guarantees.
 pub(crate) fn command_approval_preview(command: &str, mode: PreviewMode) -> CommandApprovalPreview {
-    let mut pieces = tokenize(command, mode);
+    // Blank-line runs collapse in both modes: they hide no command content, and in the full
+    // view they would otherwise push the rest of the command below the fold.
+    let mut pieces = collapse_blank_lines(tokenize(command, mode));
     if mode == PreviewMode::Collapsed {
-        pieces = cut_middle(collapse_blank_lines(pieces));
+        pieces = cut_middle(pieces);
     }
 
     let mut preview = CommandApprovalPreview::default();
@@ -612,6 +640,39 @@ pub(crate) fn command_shape_summary(command: &str) -> CommandShapeSummary {
     summary
 }
 
+/// How many trailing chars of the command the "Ends with" note shows.
+const ENDS_WITH_CHARS: usize = 120;
+
+/// Whether the word mixes ASCII Latin letters with Cyrillic or Greek letters. Many of those look
+/// exactly like ASCII letters (`а` U+0430 / `a`, `ο` U+03BF / `o`).
+fn mixes_latin_with_lookalike_script(word: &str) -> bool {
+    let has_latin = word.chars().any(|c| c.is_ascii_alphabetic());
+    let has_lookalike = word
+        .chars()
+        .any(|c| matches!(c, '\u{0370}'..='\u{03FF}' | '\u{0400}'..='\u{052F}'));
+    has_latin && has_lookalike
+}
+
+/// The "Ends with" note: the last [`ENDS_WITH_CHARS`] visible chars of the command, escaped like
+/// the preview, with newlines drawn as `↵`. `None` for a short single-line command, which the
+/// preview always shows whole.
+fn ends_with_note(command: &str) -> Option<String> {
+    let trimmed = command.trim_end();
+    let chars = trimmed.chars().count();
+    if chars <= ENDS_WITH_CHARS && !trimmed.contains('\n') {
+        return None;
+    }
+    let tail_start = trimmed
+        .char_indices()
+        .nth(chars.saturating_sub(ENDS_WITH_CHARS))
+        .map_or(0, |(i, _)| i);
+    let tail = command_approval_preview(&trimmed[tail_start..], PreviewMode::Collapsed)
+        .text
+        .replace('\n', " ↵ ");
+    let ellipsis = if tail_start > 0 { "…" } else { "" };
+    Some(format!("Ends with: {ellipsis}{tail}"))
+}
+
 /// Everything the approval card draws for one command text, computed once per text change rather
 /// than on every frame. The full preview is built lazily, the first time it is needed.
 #[derive(Debug, Default)]
@@ -622,6 +683,9 @@ pub(crate) struct ApprovalPreviewCache {
     shape: CommandShapeSummary,
     command_chars: usize,
     has_non_ascii: bool,
+    mixes_scripts: bool,
+    has_escaped_rtl: bool,
+    ends_with: Option<String>,
 }
 
 impl ApprovalPreviewCache {
@@ -633,6 +697,12 @@ impl ApprovalPreviewCache {
             shape: command_shape_summary(command),
             command_chars: command.chars().count(),
             has_non_ascii: !command.is_ascii(),
+            mixes_scripts: command
+                .split(|c: char| c.is_whitespace() || is_operator_char(c))
+                .any(mixes_latin_with_lookalike_script),
+            has_escaped_rtl: command.chars().any(is_operator_char)
+                && command.chars().any(is_strong_rtl),
+            ends_with: ends_with_note(command),
         }
     }
 
@@ -669,17 +739,21 @@ impl ApprovalPreviewCache {
             let hidden = self.collapsed.hidden_chars;
             if full_command_shown {
                 notes.push(format!(
-                    "Showing the full command ({} chars).",
+                    "Showing the full command ({} chars; long blank runs stay collapsed).",
                     group_thousands(self.command_chars)
                 ));
             } else {
                 notes.push(format!(
-                    "{} {} of this command {} hidden. Show the full command to enable Run.",
+                    "{} {} of this command {} hidden. Press Enter or Show full command to see \
+                     all of it; Run is enabled after that.",
                     group_thousands(hidden),
                     plural(hidden, "char", "chars"),
                     plural(hidden, "is", "are"),
                 ));
             }
+        }
+        if let Some(ends_with) = &self.ends_with {
+            notes.push(ends_with.clone());
         }
         if self.shape.commands > 1 {
             notes.push(format!("This runs {} commands.", self.shape.commands));
@@ -687,9 +761,18 @@ impl ApprovalPreviewCache {
         if self.shape.has_command_substitution {
             notes.push("This contains command substitution ($(…) or backticks).".to_owned());
         }
-        if self.has_non_ascii {
+        if self.mixes_scripts {
             notes.push(
-                "This contains non-ASCII characters; look-alikes and invisible ones are shown as <U+XXXX>."
+                "This contains words that mix Latin with Cyrillic or Greek letters, which can \
+                 look like ASCII."
+                    .to_owned(),
+            );
+        } else if self.has_non_ascii {
+            notes.push("This contains non-ASCII characters.".to_owned());
+        }
+        if self.has_escaped_rtl {
+            notes.push(
+                "Right-to-left letters are shown as <U+XXXX> so they cannot reorder the command."
                     .to_owned(),
             );
         }

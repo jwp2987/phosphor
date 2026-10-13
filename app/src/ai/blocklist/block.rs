@@ -5982,10 +5982,13 @@ impl TypedActionView for AIBlock {
             AIBlockAction::ExecuteNextPendingAction => {
                 // The model refuses a command whose card elides part of it (issue #847). Bring
                 // the card into view so the refusal has a visible reason and a way forward.
+                let conversation_id = self.conversation_id();
                 let action_model = self.action_model.as_ref(ctx);
                 let hidden_pending_command = action_model
                     .get_pending_action(ctx)
-                    .filter(|action| action_model.user_accept_blocked_by_hidden_command(action))
+                    .filter(|action| {
+                        action_model.user_accept_blocked_by_hidden_command(conversation_id, action)
+                    })
                     .map(|action| action.id.clone());
                 if let Some(action_id) = hidden_pending_command {
                     if let Some(requested_command) = self.requested_commands.get(&action_id) {

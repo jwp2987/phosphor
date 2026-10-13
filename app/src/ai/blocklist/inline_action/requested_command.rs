@@ -796,28 +796,26 @@ impl RequestedCommandView {
         self.approval_preview.borrow()
     }
 
-    /// Edited or re-streamed text has not been seen in full, so any earlier "show full command"
-    /// is withdrawn (issue #847).
+    /// The user committed edited text. It is written into the model's pending action straight
+    /// away, so every accept path, not only this card's Run, runs exactly what the card now
+    /// shows. An earlier "show full command" mark no longer applies, because it is keyed on the
+    /// exact text that was shown (issue #847).
     fn on_command_text_changed(&mut self, ctx: &mut ViewContext<Self>) {
-        // Only touch the model when there is something to withdraw. This is also reached from
-        // inside this model's own event callbacks (the view-only `ExecutingAction` sync), where
-        // an unconditional update would be pointless.
-        if self
-            .action_model
-            .as_ref(ctx)
-            .is_full_command_shown(&self.action_id)
-        {
-            let action_id = self.action_id.clone();
-            self.action_model.update(ctx, |model, _| {
-                model.clear_full_command_shown(&action_id);
-            });
-        }
+        let conversation_id = self.client_ids.conversation_id;
+        let action_id = self.action_id.clone();
+        let command = self.command_text.clone();
+        self.action_model.update(ctx, |model, _| {
+            model.set_pending_command_text(conversation_id, &action_id, command);
+        });
     }
 
+    /// Whether the user saw the current `command_text`, exactly, in full.
     fn is_full_command_shown(&self, app: &AppContext) -> bool {
-        self.action_model
-            .as_ref(app)
-            .is_full_command_shown(&self.action_id)
+        self.action_model.as_ref(app).is_full_command_shown(
+            self.client_ids.conversation_id,
+            &self.action_id,
+            &self.command_text,
+        )
     }
 
     /// Commits any pending editor edits to `command_text` and returns the committed text.
@@ -848,25 +846,28 @@ impl RequestedCommandView {
             self.commit_editor_contents(ctx);
             self.close_edit_mode(ctx);
         }
+        let conversation_id = self.client_ids.conversation_id;
         let action_id = self.action_id.clone();
+        let command = self.command_text.clone();
         self.action_model.update(ctx, |model, _| {
-            model.mark_full_command_shown(&action_id);
+            model.mark_full_command_shown(conversation_id, &action_id, &command);
         });
         self.set_is_header_expanded(true, ctx);
         ctx.notify();
     }
 
     /// Commits any edits and emits `Accepted`, unless the card still elides part of the
-    /// command. In that case nothing runs, and the card keeps offering "Show full command".
+    /// command. In that case nothing runs. The keystroke reveals the full command instead, as
+    /// the card's note announces, and a further Run is needed to accept it.
     fn try_accept(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         self.commit_editor_contents(ctx);
         if self.approval_requires_full_view(ctx) {
             log::info!(
-                "Not accepting requested command {:?}: part of it is hidden on the card",
+                "Not accepting requested command {:?}: part of it is hidden on the card; \
+                 showing it in full instead",
                 self.action_id
             );
-            self.set_is_header_expanded(true, ctx);
-            ctx.notify();
+            self.show_full_command(ctx);
             return false;
         }
         ctx.emit(RequestedCommandViewEvent::Accepted);
@@ -1205,6 +1206,10 @@ impl RequestedCommandView {
     }
 
     fn close_edit_mode(&mut self, ctx: &mut ViewContext<Self>) {
+        // Leaving edit mode (Done or Escape) keeps the edit. The card then shows the edited text,
+        // which is what Run, and every other accept path, will run (issue #847). Before this,
+        // Escape showed the old text while Run committed and ran the edit.
+        self.commit_editor_contents(ctx);
         self.is_editing = false;
         self.accept_and_autoexecute_split_button.set_keybinding(
             Some(KeystrokeSource::Fixed(
@@ -1281,7 +1286,6 @@ impl RequestedCommandView {
     ///
     /// If the command length is shorter than the previous update, then the command is truncated to the given byte length.
     pub fn apply_streamed_update(&mut self, command: &str, ctx: &mut ViewContext<Self>) {
-        let changed = command != self.command_text;
         match command.len().cmp(&self.command_text.len()) {
             Ordering::Greater => {
                 // Check if the existing length falls on a valid UTF-8 character boundary.
@@ -1297,9 +1301,8 @@ impl RequestedCommandView {
             }
             Ordering::Equal => {}
         }
-        if changed {
-            self.on_command_text_changed(ctx);
-        }
+        // No model update for streamed text: a "show full command" mark is keyed on the exact
+        // text shown, so a changed text is unmarked by construction.
 
         // If the editor exists, sync it with the updated command text.
         if let Some(editor) = &self.editor {
@@ -1803,6 +1806,7 @@ impl RequestedCommandView {
         let cache = self.approval_preview();
         let notes = cache.notes(full_command_shown);
         let preview = cache.preview(full_command_shown);
+        let show_full_view = full_command_shown && cache.is_truncated();
 
         let operator_color = theme.ui_warning_color();
         let mut text = Text::new(
@@ -1875,21 +1879,30 @@ impl RequestedCommandView {
                 .finish(),
             );
         }
-        column.add_child(
-            ConstrainedBox::new(
-                ClippedScrollable::vertical(
-                    self.command_preview_scroll_state.clone(),
-                    selectable_text,
-                    SCROLLBAR_WIDTH,
-                    theme.nonactive_ui_detail().into(),
-                    theme.active_ui_detail().into(),
-                    Fill::None,
+        if show_full_view {
+            // The full view can be any length, so it scrolls. Its end is always visible anyway:
+            // the "Ends with" note above echoes the command's last characters.
+            column.add_child(
+                ConstrainedBox::new(
+                    ClippedScrollable::vertical(
+                        self.command_preview_scroll_state.clone(),
+                        selectable_text,
+                        SCROLLBAR_WIDTH,
+                        theme.nonactive_ui_detail().into(),
+                        theme.active_ui_detail().into(),
+                        Fill::None,
+                    )
+                    .finish(),
                 )
+                .with_max_height(MAX_EDITOR_HEIGHT)
                 .finish(),
-            )
-            .with_max_height(MAX_EDITOR_HEIGHT)
-            .finish(),
-        );
+            );
+        } else {
+            // The collapsed preview has no height limit and no scroll container. Soft-wrapped
+            // height depends on the card width, which its char and line budgets cannot bound, so
+            // any fold could hide its end while Run is enabled (#847 review B2).
+            column.add_child(selectable_text);
+        }
         column.finish()
     }
 
@@ -2045,21 +2058,26 @@ impl View for RequestedCommandView {
             } else {
                 self.render_command_preview(app)
             };
-            content.add_child(
-                ConstrainedBox::new(
-                    Container::new(body)
-                        .with_horizontal_padding(INLINE_ACTION_HORIZONTAL_PADDING)
-                        .with_padding_top(REQUESTED_COMMAND_BODY_VERTICAL_PADDING)
-                        .with_padding_bottom(
-                            REQUESTED_COMMAND_BODY_VERTICAL_PADDING - SCROLLBAR_WIDTH.as_f32() - 2.,
-                        )
-                        .with_background_color(theme.background().into_solid())
-                        .with_corner_radius(CornerRadius::with_bottom(Radius::Pixels(8.)))
-                        .finish(),
+            let body = Container::new(body)
+                .with_horizontal_padding(INLINE_ACTION_HORIZONTAL_PADDING)
+                .with_padding_top(REQUESTED_COMMAND_BODY_VERTICAL_PADDING)
+                .with_padding_bottom(
+                    REQUESTED_COMMAND_BODY_VERTICAL_PADDING - SCROLLBAR_WIDTH.as_f32() - 2.,
                 )
-                .with_max_height(MAX_EDITOR_HEIGHT)
-                .finish(),
-            );
+                .with_background_color(theme.background().into_solid())
+                .with_corner_radius(CornerRadius::with_bottom(Radius::Pixels(8.)))
+                .finish();
+            // Only the editor is height-capped. The preview bounds its own height: the
+            // collapsed form is never capped, and the full form scrolls inside its own cap,
+            // below notes that echo the command's end. A cap here would clip the collapsed
+            // preview's end out of sight while Run is enabled.
+            content.add_child(if self.is_editing {
+                ConstrainedBox::new(body)
+                    .with_max_height(MAX_EDITOR_HEIGHT)
+                    .finish()
+            } else {
+                body
+            });
         }
 
         if should_render_mcp_content {

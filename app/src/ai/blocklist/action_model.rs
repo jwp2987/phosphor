@@ -271,15 +271,29 @@ fn run_auto_accept_batch<Id>(
 /// accept. The agent's own drain (`ActionInitiator::Agent`) is profile policy, not approval of
 /// text on screen, so it is out of scope here.
 fn hidden_command_blocks_user_accept(
+    conversation_id: AIConversationId,
     action: &AIAgentAction,
-    full_command_shown: &HashSet<AIAgentActionId>,
+    full_command_shown: &HashMap<(AIConversationId, AIAgentActionId), String>,
 ) -> bool {
     match &action.action {
-        AIAgentActionType::RequestCommandOutput { command, .. } => {
-            approval_requires_full_view(command, full_command_shown.contains(&action.id))
-        }
+        AIAgentActionType::RequestCommandOutput { command, .. } => approval_requires_full_view(
+            command,
+            is_shown_text(full_command_shown, conversation_id, &action.id, command),
+        ),
         _ => false,
     }
+}
+
+/// Whether `command` is exactly the text recorded as shown for this action.
+fn is_shown_text(
+    full_command_shown: &HashMap<(AIConversationId, AIAgentActionId), String>,
+    conversation_id: AIConversationId,
+    action_id: &AIAgentActionId,
+    command: &str,
+) -> bool {
+    full_command_shown
+        .get(&(conversation_id, action_id.clone()))
+        .is_some_and(|shown| shown == command)
 }
 
 fn next_action_acceptable_by_plain_accept(
@@ -341,12 +355,18 @@ pub struct BlocklistAIActionModel {
     /// The ID of the ambient agent task which owns this action model, if any.
     ambient_agent_task_id: Option<crate::ai::ambient_agents::AmbientAgentTaskId>,
 
-    /// Requested commands whose full text the user chose to see on the approval card. A
-    /// command whose card preview elides anything may not be accepted by the user until its id
-    /// is here -- see `hidden_command_blocks_user_accept` and issue #847. This lives on the
-    /// model, not the card, because the card is only one of the accept paths. The AI block's
-    /// Enter key, the CLI subagent's accept and the auto-execute toggle all bypass the card.
-    full_command_shown: HashSet<AIAgentActionId>,
+    /// The exact command text the user chose to see in full on the approval card, per
+    /// (conversation, action). A command whose card preview elides anything may not be accepted
+    /// by the user unless the text that would run is the text recorded here -- see
+    /// `hidden_command_blocks_user_accept` and issue #847.
+    /// * Keyed by conversation as well, because action ids are only unique per conversation.
+    /// * Holds the text, not a flag, so a mark for one text never covers another: an edit, or
+    ///   a re-stream, after "Show full command" does not inherit it.
+    ///
+    /// This lives on the model, not the card, because the card is only one of the accept paths.
+    /// The AI block's Enter key, the CLI subagent's accept and the auto-execute toggle all bypass
+    /// the card.
+    full_command_shown: HashMap<(AIConversationId, AIAgentActionId), String>,
 }
 
 impl BlocklistAIActionModel {
@@ -406,30 +426,71 @@ impl BlocklistAIActionModel {
             pending_preprocessed_actions: Default::default(),
             is_view_only: false,
             ambient_agent_task_id: None,
-            full_command_shown: HashSet::new(),
+            full_command_shown: HashMap::new(),
         }
     }
 
-    /// Records that the user asked to see the whole of requested command `action_id` on its
-    /// approval card, which lets a user accept it (issue #847).
-    pub fn mark_full_command_shown(&mut self, action_id: &AIAgentActionId) {
-        self.full_command_shown.insert(action_id.clone());
+    /// Records that the user saw exactly `command` in full on the approval card of requested
+    /// command `action_id` in `conversation_id`. That lets a user accept it while it is still
+    /// exactly that text (issue #847).
+    pub fn mark_full_command_shown(
+        &mut self,
+        conversation_id: AIConversationId,
+        action_id: &AIAgentActionId,
+        command: &str,
+    ) {
+        self.full_command_shown
+            .insert((conversation_id, action_id.clone()), command.to_owned());
     }
 
-    /// Withdraws [`Self::mark_full_command_shown`], e.g. because the command text changed.
-    pub fn clear_full_command_shown(&mut self, action_id: &AIAgentActionId) {
-        self.full_command_shown.remove(action_id);
+    /// Withdraws [`Self::mark_full_command_shown`].
+    pub fn clear_full_command_shown(
+        &mut self,
+        conversation_id: AIConversationId,
+        action_id: &AIAgentActionId,
+    ) {
+        self.full_command_shown
+            .remove(&(conversation_id, action_id.clone()));
     }
 
-    pub fn is_full_command_shown(&self, action_id: &AIAgentActionId) -> bool {
-        self.full_command_shown.contains(action_id)
+    /// Whether the user saw exactly `command` in full for this action.
+    pub fn is_full_command_shown(
+        &self,
+        conversation_id: AIConversationId,
+        action_id: &AIAgentActionId,
+        command: &str,
+    ) -> bool {
+        is_shown_text(&self.full_command_shown, conversation_id, action_id, command)
     }
 
-    /// Whether a user's accept of `action` must be refused because its approval card elides
-    /// part of the command and the user has not seen it in full. See
-    /// `hidden_command_blocks_user_accept`.
-    pub fn user_accept_blocked_by_hidden_command(&self, action: &AIAgentAction) -> bool {
-        hidden_command_blocks_user_accept(action, &self.full_command_shown)
+    /// Whether a user's accept of `action` in `conversation_id` must be refused because its
+    /// approval card elides part of the command and the user has not seen that exact text in
+    /// full. See `hidden_command_blocks_user_accept`.
+    pub fn user_accept_blocked_by_hidden_command(
+        &self,
+        conversation_id: AIConversationId,
+        action: &AIAgentAction,
+    ) -> bool {
+        hidden_command_blocks_user_accept(conversation_id, action, &self.full_command_shown)
+    }
+
+    /// Replaces the text of pending requested command `action_id` with the user's edit. The card
+    /// calls this whenever it commits edited text, so every accept path runs exactly what the
+    /// card shows, not only the card's own Run (issue #847). No-op if the action is not pending.
+    pub fn set_pending_command_text(
+        &mut self,
+        conversation_id: AIConversationId,
+        action_id: &AIAgentActionId,
+        new_command: String,
+    ) {
+        if let Some(AIAgentActionType::RequestCommandOutput { command, .. }) = self
+            .pending_actions
+            .get_mut(&conversation_id)
+            .and_then(|queue| queue.iter_mut().find(|action| &action.id == action_id))
+            .map(|action| &mut action.action)
+        {
+            *command = new_command;
+        }
     }
 
     /// Enable or disable view-only mode (for use in agent session sharing).
@@ -1014,7 +1075,11 @@ impl BlocklistAIActionModel {
                 .get(&conversation_id)
                 .and_then(|queue| queue.get(idx))
                 .is_some_and(|action| {
-                    hidden_command_blocks_user_accept(action, &self.full_command_shown)
+                    hidden_command_blocks_user_accept(
+                        conversation_id,
+                        action,
+                        &self.full_command_shown,
+                    )
                 })
         {
             // Part of this command is elided on its approval card and the user has not asked to
@@ -1569,7 +1634,8 @@ impl BlocklistAIActionModel {
         cancellation_reason: Option<CancellationReason>,
         ctx: &mut ModelContext<Self>,
     ) {
-        self.full_command_shown.remove(&action_result.id);
+        self.full_command_shown
+            .remove(&(conversation_id, action_result.id.clone()));
         let should_remove_entry =
             self.running_actions
                 .get_mut(&conversation_id)
