@@ -69,6 +69,7 @@ use crate::terminal::model::block::{
 };
 use crate::terminal::model::blocks::{insert_block, TotalIndex};
 use crate::terminal::model::terminal_model::WithinBlock;
+use crate::terminal::model::typeahead_handoff::{ActiveDecision, HandoffState};
 use crate::terminal::view::load_ai_conversation::{
     RestoreConversationEntryBehavior, RestoredAIConversation,
 };
@@ -12806,6 +12807,140 @@ fn ctrl_c_on_a_parked_agent_command_discards_it_before_the_interrupt() {
                 .conversation(&conversation_id)
                 .expect("conversation should exist");
             assert_eq!(conversation.status(), &ConversationStatus::InProgress);
+        });
+    })
+}
+
+/// Collects what a terminal view writes to the pty, through either write event.
+fn collect_pty_writes(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+) -> Rc<RefCell<Vec<Vec<u8>>>> {
+    let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+    let writes = pty_writes.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(terminal, move |_, event, _| match event {
+            Event::WriteBytesToPty { bytes } | Event::WriteHandoffUserBytesToPty { bytes } => {
+                writes.borrow_mut().push(bytes.to_vec());
+            }
+            _ => {}
+        });
+    });
+    pty_writes
+}
+
+/// The keys of a fast command's first 50 ms (#826): started, not yet long-running. Enter,
+/// Backspace and Ctrl-C used to be dropped here, and typed characters written to the pty.
+fn type_during_a_fast_command(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    view.keydown_on_terminal("\r", ctx);
+    view.control_sequence_on_terminal(&[0x7f], ctx);
+    view.ctrl_c(ctx);
+}
+
+#[test]
+fn typeahead_handoff_sends_every_key_of_a_fast_command_to_the_pty() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.start_command_execution();
+                model.typeahead_handoff_mut().on_command_written();
+                let active_block = model.block_list().active_block();
+                assert!(active_block.started());
+                assert!(!active_block.is_active_and_long_running());
+            }
+            type_during_a_fast_command(view, ctx);
+        });
+
+        assert_eq!(
+            *pty_writes.borrow(),
+            vec![b"\r".to_vec(), vec![0x7f], vec![escape_sequences::C0::ETX]],
+            "no key typed while the pty owns input may be dropped"
+        );
+        terminal.read(&app, |view, _| {
+            let model = view.model.lock();
+            assert_eq!(
+                model.typeahead_handoff().state(),
+                &HandoffState::PtyOwned {
+                    // Ctrl-C killed the command and the tty dropped the queued Enter.
+                    wrote_user_bytes: false,
+                    enters_written: 1,
+                    precmds_seen: 0,
+                }
+            );
+            assert_eq!(model.typeahead_handoff().writes_in_flight(), 3);
+        });
+    })
+}
+
+/// Without `FeatureFlag::TypeaheadHandoff`, the pre-hand-off routing is unchanged: non-printable
+/// keys reaching the terminal before the command is long-running are not written.
+#[test]
+fn without_typeahead_handoff_keys_of_a_fast_command_keep_the_old_routing() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(false);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().start_command_execution();
+            assert!(view.model.lock().block_list().active_block().started());
+            type_during_a_fast_command(view, ctx);
+        });
+
+        assert!(pty_writes.borrow().is_empty());
+        terminal.read(&app, |view, _| {
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::EditorOwned
+            );
+        });
+    })
+}
+
+/// Keys typed after an Enter that waits for the shell's typeahead report are held, in order, so
+/// they can follow the deferred command instead of landing in it or being dropped.
+#[test]
+fn typeahead_handoff_holds_keys_behind_a_deferred_enter() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                let handoff = model.typeahead_handoff_mut();
+                handoff.on_command_written();
+                handoff.on_user_bytes(b"ec");
+                handoff.on_user_write_flushed();
+                handoff.on_precmd();
+                assert_eq!(
+                    handoff.on_line_editor_active(true, true),
+                    ActiveDecision::SendRequest
+                );
+                assert!(handoff.defer_enter());
+            }
+            view.keydown_on_terminal("\r", ctx);
+            view.control_sequence_on_terminal(&[0x7f], ctx);
+        });
+
+        assert!(pty_writes.borrow().is_empty());
+        terminal.read(&app, |view, _| {
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::HoldAfterEnter {
+                    held: b"\r\x7f".to_vec(),
+                    released: false,
+                }
+            );
         });
     })
 }

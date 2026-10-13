@@ -3643,6 +3643,10 @@ const UNSTABLE_FEATURES: &[(&str, FeatureFlag)] = &[
         FeatureFlag::MultiLevelOrchestration,
     ),
     ("local_docker_sandbox", FeatureFlag::LocalDockerSandbox),
+    // The typeahead hand-off redesign (#826/#827). It changes routing on the hottest input
+    // path, so it ships dark and this is its only enable path until the torture repros
+    // (`ta.sh`, `bburst.sh`) pass with it on.
+    ("typeahead_handoff", FeatureFlag::TypeaheadHandoff),
 ];
 
 #[cfg(test)]

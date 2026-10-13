@@ -79,6 +79,11 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
                     controller.write_bytes(bytes, ctx);
                 });
             }
+            PtyIntent::WriteHandoffUserBytes(bytes) => {
+                controller.update(ctx, |controller, ctx| {
+                    controller.write_handoff_user_bytes(bytes, ctx);
+                });
+            }
             PtyIntent::WriteAgentInput { bytes, mode } => {
                 controller.update(ctx, |controller, ctx| {
                     controller.write_agent_bytes(bytes, &mode, ctx);
@@ -131,6 +136,11 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
             PtyControllerEvent::PtyDisconnected => surface.update(ctx, |_, _| {
                 model.lock().exit(ExitReason::PtyDisconnected);
             }),
+            PtyControllerEvent::TypeaheadHandoffChanged => {
+                surface.update(ctx, |surface, ctx| {
+                    surface.on_typeahead_handoff_changed(ctx)
+                });
+            }
         }
     });
 }

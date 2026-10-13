@@ -104,6 +104,19 @@ impl EarlyOutput {
         &self.typeahead
     }
 
+    /// Whether stored typeahead has not been inserted into the input editor yet.
+    pub fn has_uninserted_typeahead(&self) -> bool {
+        self.typeahead.chars().count() > self.typeahead_chars_inserted.as_usize()
+    }
+
+    /// Forgets typeahead that belonged to the command just submitted from the input editor: it
+    /// was in that command's text, so a later report starts a new insertion at the front of the
+    /// fresh editor.
+    pub fn clear_typeahead_for_new_command(&mut self) {
+        self.typeahead.clear();
+        self.typeahead_chars_inserted = 0.into();
+    }
+
     /// Record input from the user as potential typeahead.
     pub fn push_user_input(&mut self, input: &str) {
         if self.mode == TypeaheadMode::InputMatching {

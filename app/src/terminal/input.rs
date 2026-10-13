@@ -1134,6 +1134,9 @@ pub enum Event {
     RegisterPluginListener(CLIAgent),
     #[cfg(not(target_family = "wasm"))]
     OpenPluginInstructionsPane(CLIAgent, PluginModalKind),
+    /// Enter was deferred until the shell's typeahead report arrives; keys typed meanwhile must
+    /// reach the terminal so they are held behind the command (`FeatureFlag::TypeaheadHandoff`).
+    TypeaheadHandoffEnterDeferred,
 }
 
 pub enum InputState {
@@ -7639,6 +7642,23 @@ impl Input {
         });
     }
 
+    /// Like [`Self::insert_typeahead_text`], but a cursor the user moved into their own text
+    /// stays where it was relative to that text instead of jumping to the end.
+    pub fn insert_handoff_typeahead_text(
+        &mut self,
+        num_typeahead_chars_inserted: CharOffset,
+        typeahead: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.editor.update(ctx, |view, ctx| {
+            let cursor_at_end = view.single_cursor_at_buffer_end(false, ctx);
+            view.replace_first_n_characters(num_typeahead_chars_inserted, typeahead, ctx);
+            if cursor_at_end {
+                view.move_to_buffer_end(ctx);
+            }
+        });
+    }
+
     pub fn focus_input_box(&self, ctx: &mut ViewContext<Self>) {
         ctx.focus_self();
     }
@@ -12294,6 +12314,10 @@ impl Input {
 
             self.submit_ai_query(None, ctx);
         } else {
+            if self.defer_enter_for_typeahead_report(ctx) {
+                return;
+            }
+
             // If we're submitting a shell command, we want to send telemetry for the input type.
             if FeatureFlag::NldImprovements.is_enabled() {
                 let input_model = self.ai_input_model.as_ref(ctx);
@@ -12401,6 +12425,21 @@ impl Input {
             ai_settings.mark_quota_banner_as_dismissed(ctx);
             ctx.notify();
         });
+    }
+
+    /// Defers this Enter while the typeahead hand-off waits for the shell's report of what the
+    /// user typed before the editor took over, so the command is submitted with that text in front
+    /// of it rather than as a fragment (`FeatureFlag::TypeaheadHandoff`). Returns whether it was
+    /// deferred.
+    fn defer_enter_for_typeahead_report(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        if !FeatureFlag::TypeaheadHandoff.is_enabled() {
+            return false;
+        }
+        let deferred = self.model.lock().typeahead_handoff_mut().defer_enter();
+        if deferred {
+            ctx.emit(Event::TypeaheadHandoffEnterDeferred);
+        }
+        deferred
     }
 
     /// Submits the rich-input buffer on Ctrl+Enter when `submit_on_ctrl_enter` is enabled;

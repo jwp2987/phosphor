@@ -48,6 +48,9 @@ pub enum PtyIntent {
     /// shell only once its line editor is ready), so it never runs (#848).
     DiscardPendingCommandWrites,
     WriteBytes(Cow<'static, [u8]>),
+    /// User bytes the typeahead hand-off routed to the pty and counts as in flight until the
+    /// PTY controller has processed them (`FeatureFlag::TypeaheadHandoff`).
+    WriteHandoffUserBytes(Cow<'static, [u8]>),
     WriteAgentInput {
         bytes: Cow<'static, [u8]>,
         mode: AIAgentPtyWriteMode,
@@ -94,6 +97,10 @@ where
     /// has started, so the surface can react to shell launch metadata.
     #[cfg(feature = "local_tty")]
     fn on_shell_determined(&mut self, _ctx: &mut ViewContext<Self>) {}
+
+    /// Called when the typeahead hand-off changed who owns the user's keystrokes
+    /// (`FeatureFlag::TypeaheadHandoff`).
+    fn on_typeahead_handoff_changed(&mut self, _ctx: &mut ViewContext<Self>) {}
 
     /// Called when the active shell launch data is updated (e.g. shell
     /// indicator metadata).
