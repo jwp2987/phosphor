@@ -1493,3 +1493,29 @@ upstream's behavior is actually a defect rather than a preference.
   The fork-only `new_keyboard_mode_stack` marker is inert at re-pin (#752), so the row is also
   anchored on `KEYBOARD_MODE_STACK_MAX_DEPTH`, which exists at both the fork and the pin
   (`4111d08f9:crates/warp_terminal/src/model/grid/grid_handler.rs:94`). <!-- markers: keep:new_keyboard_mode_stack keep:KEYBOARD_MODE_STACK_MAX_DEPTH keep:test_keyboard_mode_stack_is_still_bounded_without_preallocation -->
+
+- **Replacing the shell's prompt-hook list at the prompt no longer leaves a block running
+  forever** (`#807` bash, 2026-10-11, `app/assets/bundled/bootstrap/bash.sh`; `#828` zsh,
+  2026-10-13, `app/assets/bundled/bootstrap/zsh_body.sh`). **Upstream:** bash's precmd hook
+  lives only in `PROMPT_COMMAND` and zsh's in `precmd_functions`/`preexec_functions`
+  (`4111d08f9:app/assets/bundled/bootstrap/zsh_body.sh:1344`); nothing ever checks they are
+  still there. The pin has no repair in `__bp_preexec_invoke_exec`
+  (`4111d08f9:app/assets/bundled/bootstrap/bash.sh:224`), no `zle-line-init` handling, and a
+  bare `_warp_zshaddhistory` that only filters generator commands. **The defect:**
+  `PROMPT_COMMAND='echo pc'`, `precmd_functions=(myp)` or `precmd_functions=();
+  preexec_functions=()` drops the hook after the command's Preexec was already sent, so
+  CommandFinished never arrives: the block keeps its running timer forever, the input
+  editor never returns, and every later command runs raw inside that one block. **We do:**
+  put the hooks back (keeping the user's own entries) and emit the precmd that was skipped,
+  exactly once, with the status of the command that ran. The two shells now differ in
+  *mechanism*, deliberately: bash repairs from its DEBUG trap (`__bp_reinstall_prompt_command`),
+  which still fires for the user's new `PROMPT_COMMAND`; zsh repairs from a `zle-line-init`
+  widget (`_warp_zle_line_init`, chained in front of any widget the user's rc files
+  installed) at the very next prompt, with `_warp_zshaddhistory` as the fallback on the next
+  accepted line, and a `_WARP_PRECMD_PENDING` flag keeping the emission to one. In zsh the
+  lifecycle hooks (`warp_precmd`, `warp_update_prompt_vars`, `warp_preexec`) are treated as
+  not user-removable; the title hooks stay removable. fish is not affected: its hooks are
+  `--on-event` handlers on Warp-named functions, not a list the user replaces. The guard
+  scans only `*.rs`, so the shell-only names above cannot carry `keep:` markers; the row is
+  anchored on the hook variables themselves, which Rust tests also reference, so an upstream
+  diff touching them trips the re-pin check. <!-- markers: keep:precmd_functions keep:PROMPT_COMMAND -->
