@@ -754,6 +754,36 @@ upstream's behavior is actually a defect rather than a preference.
   (cannot classify before the debounced parse lands, so it did not change the measured case) were
   both tried and dropped.
 
+- **Kitty/iTerm image dimensions from the pty are computed without overflow, and kitty
+  placements are capped at `MAX_IMAGE_CELL_HEIGHT`** (`#876`, 2026-10-13,
+  `crates/warp_terminal/src/model/kitty.rs`, `crates/warpui_core/src/image_cache.rs`,
+  `app/src/terminal/model/grid/ansi_handler.rs`). **Upstream:** multiplies the kitty
+  `s=`/`v=` dimensions by bytes-per-pixel in `u32`
+  (`4111d08f9:crates/warpui_core/src/image_cache.rs:136` and `:253`,
+  `4111d08f9:crates/warp_terminal/src/model/kitty.rs:822`), the placement `c=`/`r=` and the
+  iTerm `width=`/`height=` cell counts by the cell size in `u32` (`kitty.rs:455-463`,
+  `4111d08f9:crates/warp_terminal/src/model/grid/ansi_handler.rs:1317`), never bounds a kitty
+  placement's height (it emits one newline per cell of it), and inflates zlib payloads with no
+  size limit (`kitty.rs:911`) -- all byte-identical. **The defect:** every one of those numbers
+  is printed by whatever runs in the terminal. `\e_Gs=2555555558\e\\` panics with overflow
+  checks on (found by cargo-fuzz); without them `4*65536*65536` wraps to `0` and an empty
+  payload is accepted as a 65536x65536 image; `\e_Ga=p,i=<stored>,r=4294967295\e\\` (or
+  `r=268435455`, no overflow needed) asks for ~2.7e8 newlines and stalls the model thread; a
+  few KB of zlib inflates without limit. **We do:** byte counts are `u64` with `checked_mul`
+  (`CustomImageFormat::expected_byte_count`) and an overflow is an error reply. A raw RGB/RGBA
+  transmission whose `s`/`v` exceed `MAX_KITTY_IMAGE_DIMENSION` (10000) is rejected before its
+  medium is read or its payload decompressed -- a direct payload has already been base64-decoded
+  by then, under the `MAX_KITTY_IMAGE_BYTES` (400 MB) cap on the assembled chunks. zlib output
+  is bounded by the byte count `s`/`v` declare (by the 400 MB cap for PNG). Both limits are
+  kitty's own, so nothing kitty accepts is refused here. Kitty desired dimensions are fitted
+  inside the remaining columns and `MAX_IMAGE_CELL_HEIGHT` rows (aspect kept when only one of
+  `c`/`r` is given), as iTerm's already were; cell-count products saturate. **Not covered:**
+  the file and shared-memory media (`t=f`/`t=t`/`t=s`) are latent -- default builds
+  leave the app's `local_fs` feature off -- and #824 stays open for them. Their reads are now capped
+  at 400 MB, but opening a FIFO still blocks. Raw APC bytes are also still accumulated
+  without limit before a transmission completes.
+  <!-- markers: keep:MAX_KITTY_IMAGE_DIMENSION keep:MAX_KITTY_IMAGE_BYTES keep:expected_byte_count -->
+
 - **Zero-command Agent Mode input fails closed instead of vacuously auto-approving**
   (`#746`, 2026-09-27, `app/src/ai/blocklist/permissions.rs`). **Upstream:**
   `can_autoexecute_command` decomposes the command line into `commands: Vec<String>` and
