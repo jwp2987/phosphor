@@ -3,6 +3,7 @@ use parking_lot::FairMutex;
 use pathfinder_geometry::vector::vec2f;
 use settings::Setting as _;
 use std::borrow::Cow;
+use std::cell::{Ref, RefCell};
 use std::cmp::{Ordering, PartialEq};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -16,6 +17,7 @@ use warpui::clipboard::ClipboardContent;
 use warpui::elements::{
     ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Fill, Highlight, ScrollbarWidth,
 };
+use warpui::text_layout::TextStyle;
 use warpui::ui_components::components::UiComponent as _;
 use warpui::{
     elements::{
@@ -86,9 +88,7 @@ use crate::ui_components::json_tree::{
     render_json_tree,
 };
 
-use super::command_approval_preview::{
-    self, approval_notes, approval_requires_full_view, command_approval_preview, PreviewMode,
-};
+use super::command_approval_preview::{self, ApprovalPreviewCache, ZERO_WIDTH_BREAK};
 use super::inline_action_icons::{self, icon_size};
 
 /// The vertical padding applied to the requested command row's content body.
@@ -392,10 +392,14 @@ pub struct RequestedCommandView {
     minimize_button: CompactibleActionButton,
     show_full_command_button: CompactibleActionButton,
 
-    /// Whether the user asked to see the whole command on the approval card. Until they do, a
-    /// command whose collapsed preview elides anything cannot be approved -- see
-    /// [`approval_requires_full_view`] and issue #847. Reset whenever the command text changes.
-    full_command_shown: bool,
+    /// The approval card's preview of `command_text` (collapsed and full forms, notes, and
+    /// whether anything is elided). It is rebuilt lazily the first time it is read after
+    /// `command_text` changes, never per frame or per streamed chunk -- see
+    /// [`Self::approval_preview`]. Whether the user has seen the full command
+    /// is not kept here. It lives in the action model
+    /// (`BlocklistAIActionModel::is_full_command_shown`), which refuses every user-initiated
+    /// accept of an elided, unseen command, whichever path it comes from (issue #847).
+    approval_preview: RefCell<ApprovalPreviewCache>,
     /// Scroll state for the approval card's command preview.
     command_preview_scroll_state: ClippedScrollStateHandle,
 
@@ -701,7 +705,7 @@ impl RequestedCommandView {
             edit_button,
             minimize_button,
             show_full_command_button,
-            full_command_shown: false,
+            approval_preview: RefCell::new(ApprovalPreviewCache::default()),
             command_preview_scroll_state: Default::default(),
             accept_and_autoexecute_split_button,
             is_accept_split_button_menu_open: false,
@@ -775,8 +779,45 @@ impl RequestedCommandView {
     /// Reads the editor contents into `command_text`, committing any user edits.
     fn commit_editor_contents(&mut self, ctx: &mut ViewContext<Self>) {
         if let Some(editor) = &self.editor {
-            self.command_text = editor.as_ref(ctx).text(ctx).into_string();
+            let text = editor.as_ref(ctx).text(ctx).into_string();
+            if text != self.command_text {
+                self.command_text = text;
+                self.on_command_text_changed(ctx);
+            }
         }
+    }
+
+    /// The approval preview of the current `command_text`, rebuilt only if the text changed
+    /// since it was last built. Checking costs one string comparison.
+    fn approval_preview(&self) -> Ref<'_, ApprovalPreviewCache> {
+        if self.approval_preview.borrow().command() != self.command_text {
+            *self.approval_preview.borrow_mut() = ApprovalPreviewCache::new(&self.command_text);
+        }
+        self.approval_preview.borrow()
+    }
+
+    /// Edited or re-streamed text has not been seen in full, so any earlier "show full command"
+    /// is withdrawn (issue #847).
+    fn on_command_text_changed(&mut self, ctx: &mut ViewContext<Self>) {
+        // Only touch the model when there is something to withdraw. This is also reached from
+        // inside this model's own event callbacks (the view-only `ExecutingAction` sync), where
+        // an unconditional update would be pointless.
+        if self
+            .action_model
+            .as_ref(ctx)
+            .is_full_command_shown(&self.action_id)
+        {
+            let action_id = self.action_id.clone();
+            self.action_model.update(ctx, |model, _| {
+                model.clear_full_command_shown(&action_id);
+            });
+        }
+    }
+
+    fn is_full_command_shown(&self, app: &AppContext) -> bool {
+        self.action_model
+            .as_ref(app)
+            .is_full_command_shown(&self.action_id)
     }
 
     /// Commits any pending editor edits to `command_text` and returns the committed text.
@@ -792,20 +833,25 @@ impl RequestedCommandView {
     /// after committing editor contents: the Run button, Enter, the split-button menu, and
     /// `AIBlock::accept_pending_requested_command` (the auto-execute toggle). MCP tool calls are
     /// not gated here; their arguments are not shown through this preview.
-    pub fn approval_requires_full_view(&self) -> bool {
+    pub fn approval_requires_full_view(&self, app: &AppContext) -> bool {
         self.action_type.is_requested_command()
-            && approval_requires_full_view(&self.command_text, self.full_command_shown)
+            && self
+                .approval_preview()
+                .requires_full_view(self.is_full_command_shown(app))
     }
 
     fn show_full_command(&mut self, ctx: &mut ViewContext<Self>) {
-        self.full_command_shown = true;
         if self.is_editing {
             // The preview is drawn only outside edit mode. Leave edit mode so the full command
-            // the user asked for is what is on screen. Edits are kept in the editor and are
-            // committed on accept.
+            // the user asked for is what is on screen. Committing first means the text marked
+            // as seen below is the edited text.
             self.commit_editor_contents(ctx);
             self.close_edit_mode(ctx);
         }
+        let action_id = self.action_id.clone();
+        self.action_model.update(ctx, |model, _| {
+            model.mark_full_command_shown(&action_id);
+        });
         self.set_is_header_expanded(true, ctx);
         ctx.notify();
     }
@@ -814,7 +860,7 @@ impl RequestedCommandView {
     /// command. In that case nothing runs, and the card keeps offering "Show full command".
     fn try_accept(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         self.commit_editor_contents(ctx);
-        if self.approval_requires_full_view() {
+        if self.approval_requires_full_view(ctx) {
             log::info!(
                 "Not accepting requested command {:?}: part of it is hidden on the card",
                 self.action_id
@@ -1235,10 +1281,7 @@ impl RequestedCommandView {
     ///
     /// If the command length is shorter than the previous update, then the command is truncated to the given byte length.
     pub fn apply_streamed_update(&mut self, command: &str, ctx: &mut ViewContext<Self>) {
-        if command != self.command_text {
-            // A changed command has not been seen in full.
-            self.full_command_shown = false;
-        }
+        let changed = command != self.command_text;
         match command.len().cmp(&self.command_text.len()) {
             Ordering::Greater => {
                 // Check if the existing length falls on a valid UTF-8 character boundary.
@@ -1253,6 +1296,9 @@ impl RequestedCommandView {
                 self.command_text.truncate(command.len());
             }
             Ordering::Equal => {}
+        }
+        if changed {
+            self.on_command_text_changed(ctx);
         }
 
         // If the editor exists, sync it with the updated command text.
@@ -1617,7 +1663,7 @@ impl RequestedCommandView {
                     let action_buttons: Vec<Rc<dyn RenderCompactibleActionButton>> = vec![
                         Rc::new(self.cancel_button.clone()),
                         Rc::new(self.minimize_button.clone()),
-                        self.accept_or_show_full_button(),
+                        self.accept_or_show_full_button(app),
                     ];
                     (action_buttons, MEDIUM_SIZE_SWITCH_THRESHOLD)
                 } else {
@@ -1626,7 +1672,7 @@ impl RequestedCommandView {
                             let action_buttons: Vec<Rc<dyn RenderCompactibleActionButton>> = vec![
                                 Rc::new(self.cancel_button.clone()),
                                 Rc::new(self.edit_button.clone()),
-                                self.accept_or_show_full_button(),
+                                self.accept_or_show_full_button(app),
                             ];
                             (action_buttons, LARGE_SIZE_SWITCH_THRESHOLD)
                         }
@@ -1735,8 +1781,11 @@ impl RequestedCommandView {
 
     /// The Run split button, or "Show full command" in its place while the card elides part of
     /// the command (issue #847).
-    fn accept_or_show_full_button(&self) -> Rc<dyn RenderCompactibleActionButton> {
-        if self.approval_requires_full_view() {
+    fn accept_or_show_full_button(
+        &self,
+        app: &AppContext,
+    ) -> Rc<dyn RenderCompactibleActionButton> {
+        if self.approval_requires_full_view(app) {
             Rc::new(self.show_full_command_button.clone())
         } else {
             Rc::new(self.accept_and_autoexecute_split_button.clone())
@@ -1747,37 +1796,67 @@ impl RequestedCommandView {
     /// substitution, then the command itself. It is drawn from [`command_approval_preview`]
     /// rather than the code editor, so no part of the command is dropped or clipped silently
     /// (issue #847).
-    fn render_command_preview(&self, appearance: &Appearance) -> Box<dyn Element> {
+    fn render_command_preview(&self, app: &AppContext) -> Box<dyn Element> {
+        let appearance = Appearance::as_ref(app);
         let theme = appearance.theme();
-        let collapsed = command_approval_preview(&self.command_text, PreviewMode::Collapsed);
-        let notes = approval_notes(&self.command_text, &collapsed, self.full_command_shown);
-        let preview = if self.full_command_shown && collapsed.is_truncated() {
-            command_approval_preview(&self.command_text, PreviewMode::Full)
-        } else {
-            collapsed
-        };
+        let full_command_shown = self.is_full_command_shown(app);
+        let cache = self.approval_preview();
+        let notes = cache.notes(full_command_shown);
+        let preview = cache.preview(full_command_shown);
 
         let operator_color = theme.ui_warning_color();
-        let marker_color = blended_colors::text_sub(theme, theme.background());
         let mut text = Text::new(
-            preview.text,
+            preview.text.clone(),
             appearance.monospace_font_family(),
             appearance.monospace_font_size(),
         )
         .with_color(blended_colors::text_main(theme, theme.background()))
-        .with_selectable(false);
+        .with_selectable(true);
         if !preview.operator_char_indices.is_empty() {
             text = text.with_single_highlight(
                 Highlight::new().with_foreground_color(operator_color),
-                preview.operator_char_indices,
+                preview.operator_char_indices.clone(),
             );
         }
         if !preview.marker_char_indices.is_empty() {
+            // Markers and `<U+XXXX>` escapes get their own background, so they never read as
+            // command text, even where the command itself contains similar-looking text.
             text = text.with_single_highlight(
-                Highlight::new().with_foreground_color(marker_color),
-                preview.marker_char_indices,
+                Highlight::new().with_text_style(
+                    TextStyle::new()
+                        .with_foreground_color(blended_colors::text_sub(theme, theme.background()))
+                        .with_background_color(theme.surface_3().into_solid()),
+                ),
+                preview.marker_char_indices.clone(),
             );
         }
+        drop(cache);
+
+        // Selectable like the editor it replaces. The zero-width break opportunities of the full
+        // view are display-only and are stripped from what gets copied. Every real U+200B in the
+        // command is shown as `<U+200B>`, so nothing of the command is lost by stripping.
+        let selected_text = self.mcp_content_selected_text.clone();
+        let selectable_text = SelectableArea::new(
+            self.mcp_content_selection_handle.clone(),
+            move |selection_args, ctx, _| {
+                let selection = selection_args
+                    .selection
+                    .map(|selection| selection.replace(ZERO_WIDTH_BREAK, ""));
+                if let Some(selection) = selection.as_ref().filter(|s| !s.is_empty()) {
+                    ctx.dispatch_typed_action(RequestedCommandViewAction::CopyOnSelect(
+                        selection.clone(),
+                    ));
+                }
+                if let Ok(mut stored) = selected_text.write() {
+                    *stored = selection;
+                }
+            },
+            text.finish(),
+        )
+        .on_selection_updated(|ctx, _| {
+            ctx.dispatch_typed_action(RequestedCommandViewAction::SelectText);
+        })
+        .finish();
 
         let mut column = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
         for note in notes {
@@ -1800,7 +1879,7 @@ impl RequestedCommandView {
             ConstrainedBox::new(
                 ClippedScrollable::vertical(
                     self.command_preview_scroll_state.clone(),
-                    text.finish(),
+                    selectable_text,
                     SCROLLBAR_WIDTH,
                     theme.nonactive_ui_detail().into(),
                     theme.active_ui_detail().into(),
@@ -1964,7 +2043,7 @@ impl View for RequestedCommandView {
             let body = if self.is_editing {
                 ChildView::new(editor).finish()
             } else {
-                self.render_command_preview(appearance)
+                self.render_command_preview(app)
             };
             content.add_child(
                 ConstrainedBox::new(

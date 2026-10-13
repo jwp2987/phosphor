@@ -27469,15 +27469,21 @@ impl TypedActionView for TerminalView {
             }
             ToggleAutoexecuteMode => {
                 // If there's a pending (blocked) requested code diff, accept it first.
+                let mut accepted = true;
                 if let Some(ai_block) = self.last_ai_block() {
-                    ai_block.update(ctx, |ai_block, ctx| {
-                        ai_block.accept_pending_action(ctx);
+                    accepted = ai_block.update(ctx, |ai_block, ctx| {
+                        ai_block.accept_pending_action(ctx)
                     });
                 }
 
-                self.ai_context_model.update(ctx, |context_model, ctx| {
-                    context_model.toggle_pending_query_autoexecute(ctx);
-                });
+                // A pending command whose approval card elides part of it was refused (issue
+                // #847). Do not switch autoexecute on over it either: the card stays blocked, and
+                // the user can enable autoexecute from it after showing the full command.
+                if accepted {
+                    self.ai_context_model.update(ctx, |context_model, ctx| {
+                        context_model.toggle_pending_query_autoexecute(ctx);
+                    });
+                }
                 ctx.notify();
             }
             ToggleQueueNextPrompt => {

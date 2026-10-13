@@ -437,36 +437,65 @@ these as expected, not as drift to reconcile.
 Each entry must say what upstream does, what we do instead, and the evidence that
 upstream's behavior is actually a defect rather than a preference.
 
-- **The agent command approval card shows every part of the command, and withholds Run
-  while any of it is elided** (`#847`, 2026-10-13,
+- **The agent command approval card shows every part of the command, and no user accept runs
+  a command while part of it is elided** (`#847`, 2026-10-13,
   `app/src/ai/blocklist/inline_action/command_approval_preview.rs`,
-  `app/src/ai/blocklist/inline_action/requested_command.rs`). **Upstream:** the blocked
-  card renders the raw command in a `CodeEditorView`, which lays a line out unwrapped at
-  infinite width (`4111d08f9:app/src/ai/blocklist/inline_action/requested_command.rs:1652`).
-  Accept commits the editor text and runs it with no other check (`:2056`). The
-  Linux text stack is also the same at the pin (`4111d08f9:crates/warpui/src/windowing/
-  winit/fonts.rs:1089`, `AttrsList::new(Attrs::new())`). **The defect:** that renderer
-  drops any single word longer than 16,384 chars. The list's default attrs never match a
-  span, so cosmic-text shapes an empty run at the start of every word. rustybuzz `enter()`
-  then leaves the reused buffer at `max_len = 16384` (its `leave()` is skipped for an empty
-  buffer), and `push_str` silently discards the longer word. So
-  `echo <100K A>; touch ~/hidden-payload.txt` is shown as `echo  touch
-  ~/hidden-payload.txt`, with the `;` gone. A 3,000-char word is clipped off the right edge
-  instead, so the payload is not visible at all. Approve runs the full text either way.
-  Reproduced on 0.1.11 and at `beee34583`. **We do:** outside edit mode, the card draws
-  `command_approval_preview`. Shell operators and separators are always visible and
-  highlighted. Over-long runs are elided only in their middle, behind a marker with the
-  exact hidden count, so the tail stays visible. An over-long whole is cut in the middle
-  behind a marker that counts the hidden chars and separators. Control and invisible
-  format characters appear as `<U+XXXX>`. Notes say how many characters are hidden, how
-  many commands the line runs, and whether it uses command substitution. While anything is
-  elided, Run is replaced by "Show full command". Enter, the split menu and the
-  auto-execute toggle (`AIBlock::accept_pending_requested_command`) all refuse to accept
-  until the full command has been shown. The full view breaks long runs with zero-width
-  spaces, so no shaped word reaches the renderer limit. The header title and the
-  blocked-conversation notification use the same elided one-line form. The renderer bug
-  itself (in `fonts.rs` / cosmic-text) is not fixed here. It still affects any other text
-  with a word over 16,384 chars, including the card's edit-mode editor.
+  `app/src/ai/blocklist/inline_action/requested_command.rs`,
+  `app/src/ai/blocklist/action_model.rs`).
+
+  **Upstream:** the blocked card renders the raw command in a `CodeEditorView`, which lays a
+  line out unwrapped at infinite width
+  (`4111d08f9:app/src/ai/blocklist/inline_action/requested_command.rs:1652`). Accept commits
+  the editor text and runs it with no other check (`:2056`). The AI block's Enter key
+  (`ExecuteNextPendingAction`) runs the pending command without the card at all. The Linux
+  text stack is also the same at the pin
+  (`4111d08f9:crates/warpui/src/windowing/winit/fonts.rs:1089`,
+  `AttrsList::new(Attrs::new())`).
+
+  **The defect:** that renderer drops any single word longer than 16,384 chars. The list's
+  default attrs never match a span, so cosmic-text shapes an empty run at the start of every
+  word. rustybuzz `enter()` then leaves the reused buffer at `max_len = 16384` (its `leave()`
+  is skipped for an empty buffer), and `push_str` silently discards the longer word.
+  - `echo <100K A>; touch ~/hidden-payload.txt` is shown as `echo  touch
+    ~/hidden-payload.txt`, with the `;` gone.
+  - A 3,000-char word is clipped off the right edge instead, so the payload is not visible at
+    all.
+  - Blank-line padding pushes a payload below the card's fold.
+
+  Approve runs the full text in every case. Reproduced on 0.1.11 and at `beee34583`.
+
+  **We do:**
+  - **Preview.** Outside edit mode, the card draws `command_approval_preview`:
+    - Shell operators and separators are always visible and highlighted.
+    - Over-long words and whitespace stretches are elided only in their middle, behind a
+      marker with the exact hidden count, so the tail stays visible.
+    - Runs of 3 or more blank lines collapse behind a counted marker.
+    - Over 4,000 chars or 20 lines, the middle is cut behind a marker that counts the hidden
+      chars and separators.
+    - Control characters, invisible and blank-rendering characters, non-ASCII whitespace,
+      stacked combining marks, and a literal `<U+` are drawn as `<U+XXXX>`. Markers have
+      their own background.
+    - Notes say how many characters are hidden, how many commands the line runs, whether it
+      uses command substitution, and whether it contains non-ASCII characters.
+  - **Gate.** While anything is elided, Run is replaced by "Show full command". The gate
+    lives in the action model, not the card. `start_pending_action_by_id` refuses every
+    `ActionInitiator::User` start of such a command until the card's "Show full command" has
+    been used. That covers the card's Run, Enter on the card, the AI block's Enter, the CLI
+    subagent's accept and the auto-execute toggle. The auto-execute toggle and the CLI
+    subagent's auto-approve also do not switch the autoexecute override on when that accept
+    was refused. Edited or re-streamed text withdraws "shown".
+  - **Full view.** It breaks long runs with zero-width spaces, so no shaped word reaches the
+    renderer limit.
+  - **Header and notification.** The header title and the blocked-conversation notification
+    use the same elided one-line form.
+
+  **Not done here:**
+  - The renderer bug itself (in `fonts.rs` / cosmic-text) still affects any other text with a
+    word over 16,384 chars, including the card's edit-mode editor.
+  - The TUI shell command view draws its own 4-row editor in terminal cells. Its accept marks
+    the command as shown; whether it can scroll part of a command out of view is a TUI
+    follow-up.
+
 - **An incremental find rescan does not flash the find bar's scanning label**
   (`#815`, 2026-10-12, `app/src/terminal/find/model/async_find.rs`). **Upstream:**
   `AsyncFindController::invalidate_block` sets `status = Scanning` for every

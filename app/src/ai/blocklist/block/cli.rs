@@ -1012,6 +1012,17 @@ impl CLISubagentView {
         {
             return;
         }
+        // Likewise for a requested command whose approval card elides part of it (issue #847):
+        // `execute_next_action_for_user` refuses it, so neither accept it here nor switch on the
+        // autoexecute override over text the user has not seen.
+        let action_model = self.action_model.as_ref(ctx);
+        if action_model
+            .get_pending_actions_for_conversation(&self.conversation_id)
+            .next()
+            .is_some_and(|action| action_model.user_accept_blocked_by_hidden_command(action))
+        {
+            return;
+        }
         self.execute_pending_action(ctx);
         if is_autoexecuted {
             self.enable_autoexecute_override(ctx);

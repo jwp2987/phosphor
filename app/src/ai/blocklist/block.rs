@@ -4961,10 +4961,16 @@ impl AIBlock {
 
     /// Accepts the latest pending (blocked) action, if any.
     /// Includes code diffs, requested commands, and MCP tool calls.
-    pub fn accept_pending_action(&mut self, ctx: &mut ViewContext<Self>) {
+    ///
+    /// Returns `false` when a pending requested command was refused because its approval card
+    /// still elides part of it (issue #847). The caller must then not treat this as an accept:
+    /// the auto-execute toggle must not switch on over a command nobody has seen.
+    #[must_use]
+    pub fn accept_pending_action(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         self.accept_pending_requested_edit(ctx);
-        self.accept_pending_requested_command(ctx);
+        let accepted = self.accept_pending_requested_command(ctx);
         self.accept_pending_requested_mcp_tool(ctx);
+        accepted
     }
 
     /// Accepts the latest pending (blocked) requested code diff, if any.
@@ -4980,8 +4986,9 @@ impl AIBlock {
         self.pending_requested_edit(app).is_some()
     }
 
-    /// Accepts the latest pending (blocked) requested command, if any.
-    fn accept_pending_requested_command(&mut self, ctx: &mut ViewContext<Self>) {
+    /// Accepts the latest pending (blocked) requested command, if any. Returns `false` only if
+    /// one was pending and was refused because part of it is hidden on its card.
+    fn accept_pending_requested_command(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         let pending_action_id = {
             self.action_model
                 .as_ref(ctx)
@@ -5000,10 +5007,11 @@ impl AIBlock {
                 if requested_command
                     .view
                     .as_ref(ctx)
-                    .approval_requires_full_view()
+                    .approval_requires_full_view(ctx)
                 {
                     requested_command.force_expand(ctx);
-                    return;
+                    ctx.notify();
+                    return false;
                 }
                 self.action_model.update(ctx, |action_model, ctx| {
                     action_model.handle_requested_command_accepted(&action_id, command_text, ctx);
@@ -5011,6 +5019,7 @@ impl AIBlock {
                 ctx.notify();
             }
         }
+        true
     }
     /// Accepts the latest pending (blocked) requested MCP tool call, if any.
     fn accept_pending_requested_mcp_tool(&mut self, ctx: &mut ViewContext<Self>) {
@@ -5971,6 +5980,20 @@ impl TypedActionView for AIBlock {
                 self.cancel_action(action_id, ctx);
             }
             AIBlockAction::ExecuteNextPendingAction => {
+                // The model refuses a command whose card elides part of it (issue #847). Bring
+                // the card into view so the refusal has a visible reason and a way forward.
+                let action_model = self.action_model.as_ref(ctx);
+                let hidden_pending_command = action_model
+                    .get_pending_action(ctx)
+                    .filter(|action| action_model.user_accept_blocked_by_hidden_command(action))
+                    .map(|action| action.id.clone());
+                if let Some(action_id) = hidden_pending_command {
+                    if let Some(requested_command) = self.requested_commands.get(&action_id) {
+                        requested_command.force_expand(ctx);
+                    }
+                    ctx.notify();
+                    return;
+                }
                 self.action_model.update(ctx, |action_model, ctx| {
                     action_model.execute_next_action_for_user(self.conversation_id(), ctx)
                 });

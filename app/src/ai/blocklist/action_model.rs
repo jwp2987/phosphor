@@ -68,6 +68,7 @@ use self::execute::{
 };
 
 use super::BlocklistAIHistoryModel;
+use super::inline_action::command_approval_preview::approval_requires_full_view;
 use crate::ai::ai_document_view::DEFAULT_PLANNING_DOCUMENT_TITLE;
 use crate::ai::document::ai_document_model::AIDocumentModel;
 
@@ -259,6 +260,28 @@ fn run_auto_accept_batch<Id>(
 ///
 /// Returns `None` rather than skipping to a later action: the ordinary drain never runs past a
 /// blocked front action, and nothing queued after the question may run before it is answered.
+/// Whether a user-initiated accept of `action` must be refused (issue #847). This applies to a
+/// `RequestCommandOutput` whose approval-card preview elides part of the command (a long run,
+/// blank-line padding, too many lines) when the user has not asked to see the full command.
+/// Every other action, and any command shown whole, is unaffected.
+///
+/// Applied in `start_pending_action_by_id` to `ActionInitiator::User` only. That one choke point
+/// is reached by every user accept: the card's Run button, Enter on the card, the AI block's Enter
+/// (`ExecuteNextPendingAction`), the CLI subagent's accept, and the auto-execute toggle's
+/// accept. The agent's own drain (`ActionInitiator::Agent`) is profile policy, not approval of
+/// text on screen, so it is out of scope here.
+fn hidden_command_blocks_user_accept(
+    action: &AIAgentAction,
+    full_command_shown: &HashSet<AIAgentActionId>,
+) -> bool {
+    match &action.action {
+        AIAgentActionType::RequestCommandOutput { command, .. } => {
+            approval_requires_full_view(command, full_command_shown.contains(&action.id))
+        }
+        _ => false,
+    }
+}
+
 fn next_action_acceptable_by_plain_accept(
     queue: Option<&VecDeque<AIAgentAction>>,
 ) -> Option<&AIAgentActionId> {
@@ -317,6 +340,13 @@ pub struct BlocklistAIActionModel {
 
     /// The ID of the ambient agent task which owns this action model, if any.
     ambient_agent_task_id: Option<crate::ai::ambient_agents::AmbientAgentTaskId>,
+
+    /// Requested commands whose full text the user chose to see on the approval card. A
+    /// command whose card preview elides anything may not be accepted by the user until its id
+    /// is here -- see `hidden_command_blocks_user_accept` and issue #847. This lives on the
+    /// model, not the card, because the card is only one of the accept paths. The AI block's
+    /// Enter key, the CLI subagent's accept and the auto-execute toggle all bypass the card.
+    full_command_shown: HashSet<AIAgentActionId>,
 }
 
 impl BlocklistAIActionModel {
@@ -376,7 +406,30 @@ impl BlocklistAIActionModel {
             pending_preprocessed_actions: Default::default(),
             is_view_only: false,
             ambient_agent_task_id: None,
+            full_command_shown: HashSet::new(),
         }
+    }
+
+    /// Records that the user asked to see the whole of requested command `action_id` on its
+    /// approval card, which lets a user accept it (issue #847).
+    pub fn mark_full_command_shown(&mut self, action_id: &AIAgentActionId) {
+        self.full_command_shown.insert(action_id.clone());
+    }
+
+    /// Withdraws [`Self::mark_full_command_shown`], e.g. because the command text changed.
+    pub fn clear_full_command_shown(&mut self, action_id: &AIAgentActionId) {
+        self.full_command_shown.remove(action_id);
+    }
+
+    pub fn is_full_command_shown(&self, action_id: &AIAgentActionId) -> bool {
+        self.full_command_shown.contains(action_id)
+    }
+
+    /// Whether a user's accept of `action` must be refused because its approval card elides
+    /// part of the command and the user has not seen it in full. See
+    /// `hidden_command_blocks_user_accept`.
+    pub fn user_accept_blocked_by_hidden_command(&self, action: &AIAgentAction) -> bool {
+        hidden_command_blocks_user_accept(action, &self.full_command_shown)
     }
 
     /// Enable or disable view-only mode (for use in agent session sharing).
@@ -955,6 +1008,25 @@ impl BlocklistAIActionModel {
             .get(&conversation_id)
             .and_then(|queue| queue.iter().position(|action| &action.id == action_id))?;
 
+        if initiator == ActionInitiator::User
+            && self
+                .pending_actions
+                .get(&conversation_id)
+                .and_then(|queue| queue.get(idx))
+                .is_some_and(|action| {
+                    hidden_command_blocks_user_accept(action, &self.full_command_shown)
+                })
+        {
+            // Part of this command is elided on its approval card and the user has not asked to
+            // see all of it, so no accept can stand for approval of that text (issue #847). It
+            // stays pending; the card offers "Show full command".
+            log::info!(
+                "Refusing user accept of requested command {action_id:?}: part of it is hidden \
+                 on its approval card"
+            );
+            return None;
+        }
+
         let action = self
             .pending_actions
             .get_mut(&conversation_id)?
@@ -1497,6 +1569,7 @@ impl BlocklistAIActionModel {
         cancellation_reason: Option<CancellationReason>,
         ctx: &mut ModelContext<Self>,
     ) {
+        self.full_command_shown.remove(&action_result.id);
         let should_remove_entry =
             self.running_actions
                 .get_mut(&conversation_id)

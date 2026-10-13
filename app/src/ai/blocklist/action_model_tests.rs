@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
 };
 
@@ -206,4 +206,46 @@ fn plain_accept_still_picks_an_ordinary_front_action() {
         None
     );
     assert_eq!(next_action_acceptable_by_plain_accept(None), None);
+}
+
+fn shell_command_text(command: &str) -> AIAgentActionType {
+    AIAgentActionType::RequestCommandOutput {
+        command: command.to_owned(),
+        is_read_only: None,
+        is_risky: None,
+        rationale: None,
+        uses_pager: None,
+        wait_until_completion: true,
+        citations: vec![],
+    }
+}
+
+/// #847: `start_pending_action_by_id` refuses an `ActionInitiator::User` start of a command whose
+/// approval card elides part of it, until its id is in `full_command_shown`. That covers long
+/// tokens and blank-line padding. Other action types and short commands are never affected.
+#[test]
+fn hidden_command_blocks_user_accept_until_shown() {
+    let long_token = pending_action(
+        "long",
+        shell_command_text(&format!("echo {}; touch ~/x", "A".repeat(100_000))),
+    );
+    let blank_padding = pending_action(
+        "padded",
+        shell_command_text(&format!("echo hi{}rm -rf ~", "\n".repeat(3_000))),
+    );
+    let short = pending_action("short", shell_command());
+    let question = pending_action(
+        "question",
+        AIAgentActionType::AskUserQuestion { questions: vec![] },
+    );
+
+    let none_shown = HashSet::new();
+    assert!(hidden_command_blocks_user_accept(&long_token, &none_shown));
+    assert!(hidden_command_blocks_user_accept(&blank_padding, &none_shown));
+    assert!(!hidden_command_blocks_user_accept(&short, &none_shown));
+    assert!(!hidden_command_blocks_user_accept(&question, &none_shown));
+
+    let shown: HashSet<_> = [long_token.id.clone()].into_iter().collect();
+    assert!(!hidden_command_blocks_user_accept(&long_token, &shown));
+    assert!(hidden_command_blocks_user_accept(&blank_padding, &shown));
 }

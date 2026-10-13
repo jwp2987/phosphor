@@ -1,7 +1,8 @@
 //! Tests for the approval-card command preview (issue #847).
 
 use super::{
-    COLLAPSED_PREVIEW_MAX_CHARS, LONG_RUN_CHARS, PreviewMode, approval_notes,
+    ApprovalPreviewCache, BLANK_LINE_RUN_COLLAPSE, COLLAPSED_PREVIEW_MAX_CHARS,
+    COLLAPSED_PREVIEW_MAX_LINES, LONG_RUN_CHARS, LONG_WHITESPACE_RUN_CHARS, PreviewMode,
     approval_requires_full_view, command_approval_preview, command_shape_summary, one_line_title,
 };
 
@@ -216,20 +217,156 @@ fn shape_summary_flags_command_substitution() {
 #[test]
 fn notes_explain_hidden_text_and_multiple_commands() {
     let command = issue_847_command(100_000);
-    let collapsed = command_approval_preview(&command, PreviewMode::Collapsed);
-    let notes = approval_notes(&command, &collapsed, false);
+    let cache = ApprovalPreviewCache::new(&command);
+    let notes = cache.notes(false);
     assert!(notes[0].contains("99,928 chars of this command are hidden"));
     assert!(notes[0].contains("Show the full command to enable Run"));
     assert!(notes.iter().any(|n| n == "This runs 2 commands."));
 
-    let notes = approval_notes(&command, &collapsed, true);
+    let notes = cache.notes(true);
     assert!(notes[0].starts_with("Showing the full command"));
 }
 
 #[test]
 fn notes_are_empty_for_a_plain_command() {
-    let collapsed = command_approval_preview("ls -la", PreviewMode::Collapsed);
-    assert!(approval_notes("ls -la", &collapsed, false).is_empty());
+    assert!(ApprovalPreviewCache::new("ls -la").notes(false).is_empty());
+}
+
+#[test]
+fn notes_flag_non_ascii() {
+    assert!(
+        ApprovalPreviewCache::new("echo cafe")
+            .notes(false)
+            .is_empty()
+    );
+    let notes = ApprovalPreviewCache::new("echo caf\u{e9}").notes(false);
+    assert!(notes.iter().any(|n| n.contains("non-ASCII")));
+}
+
+/// The cache is what the card renders and gates on. It must agree with the pure functions, and
+/// it must switch to the full preview only after the user asked for it.
+#[test]
+fn cache_matches_pure_functions_and_switches_preview_on_show_full() {
+    let command = issue_847_command(100_000);
+    let cache = ApprovalPreviewCache::new(&command);
+    assert_eq!(cache.command(), command);
+    assert!(cache.is_truncated());
+    assert_eq!(
+        cache.requires_full_view(false),
+        approval_requires_full_view(&command, false)
+    );
+    assert!(!cache.requires_full_view(true));
+
+    let collapsed = cache.preview(false);
+    assert_eq!(
+        collapsed,
+        &command_approval_preview(&command, PreviewMode::Collapsed)
+    );
+    let full = cache.preview(true);
+    assert_eq!(visible(&full.text), command);
+
+    // A command with nothing elided never switches to the full preview.
+    let plain = ApprovalPreviewCache::new("ls; pwd");
+    assert!(!plain.requires_full_view(false));
+    assert_eq!(plain.preview(true).text, "ls; pwd");
+}
+
+/// #847 review M1: blank lines pushed a payload below the card's fold with nothing elided.
+#[test]
+fn blank_line_padding_is_collapsed_and_gates_run() {
+    let command = format!("echo hi{}rm -rf ~", "\n".repeat(3_000));
+    assert!(command.chars().count() < COLLAPSED_PREVIEW_MAX_CHARS);
+    let preview = command_approval_preview(&command, PreviewMode::Collapsed);
+    assert!(preview.is_truncated());
+    assert_eq!(
+        preview.text,
+        "echo hi\n…[2,999 blank lines hidden]…\nrm -rf ~"
+    );
+    assert_eq!(preview.hidden_chars, 2_998);
+    assert!(approval_requires_full_view(&command, false));
+}
+
+#[test]
+fn blank_lines_with_indentation_are_collapsed_too() {
+    let command = format!("echo hi{}rm -rf ~", "\n \t ".repeat(50));
+    let preview = command_approval_preview(&command, PreviewMode::Collapsed);
+    assert!(preview.is_truncated());
+    assert!(preview.text.contains("blank lines hidden"));
+    assert!(preview.text.ends_with("rm -rf ~"));
+}
+
+#[test]
+fn a_couple_of_blank_lines_are_left_alone() {
+    let blank = "\n".repeat(BLANK_LINE_RUN_COLLAPSE);
+    let command = format!("echo a{blank}echo b");
+    let preview = command_approval_preview(&command, PreviewMode::Collapsed);
+    assert_eq!(preview.text, command);
+    assert!(!preview.is_truncated());
+}
+
+#[test]
+fn too_many_lines_cut_the_middle_and_keep_the_last_line() {
+    let command = (0..200)
+        .map(|i| format!("echo line{i}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\nrm -rf ~";
+    let preview = command_approval_preview(&command, PreviewMode::Collapsed);
+    assert!(preview.is_truncated());
+    assert!(preview.text.lines().count() <= COLLAPSED_PREVIEW_MAX_LINES);
+    assert!(preview.text.ends_with("\nrm -rf ~"));
+    assert!(preview.text.contains("hidden here, including"));
+}
+
+#[test]
+fn whitespace_padding_is_elided() {
+    let pad = " ".repeat(LONG_WHITESPACE_RUN_CHARS + 1);
+    let command = format!("true{pad}; rm -rf ~");
+    let preview = command_approval_preview(&command, PreviewMode::Collapsed);
+    assert!(preview.is_truncated());
+    assert!(preview.text.ends_with("; rm -rf ~"));
+    let tabs = "\t".repeat(500);
+    assert!(
+        command_approval_preview(&format!("true{tabs}x"), PreviewMode::Collapsed).is_truncated()
+    );
+}
+
+#[test]
+fn non_ascii_whitespace_and_blank_glyphs_are_escaped() {
+    let command = "rm\u{00A0}-rf\u{3000}~ \u{2800}\u{FFFC}\u{0600}\u{1D173}";
+    let preview = command_approval_preview(command, PreviewMode::Collapsed);
+    for escape in [
+        "<U+00A0>",
+        "<U+3000>",
+        "<U+2800>",
+        "<U+FFFC>",
+        "<U+0600>",
+        "<U+1D173>",
+    ] {
+        assert!(
+            preview.text.contains(escape),
+            "{escape} missing: {}",
+            preview.text
+        );
+    }
+}
+
+#[test]
+fn stacked_combining_marks_are_escaped_after_the_second() {
+    let command = format!("echo e{}", "\u{0301}".repeat(5));
+    let preview = command_approval_preview(&command, PreviewMode::Collapsed);
+    assert_eq!(preview.text.matches("<U+0301>").count(), 3);
+    assert_eq!(preview.text.matches('\u{0301}').count(), 2);
+}
+
+#[test]
+fn a_literal_escape_lookalike_is_distinguishable() {
+    // A command that types `<U+202E>` itself must not look like an escape the card added.
+    let preview = command_approval_preview("echo <U+202E>", PreviewMode::Collapsed);
+    assert_eq!(preview.text, "echo <U+003C>U+202E>");
+    // A plain redirection is untouched.
+    let preview = command_approval_preview("sort <in", PreviewMode::Collapsed);
+    assert_eq!(preview.text, "sort <in");
 }
 
 #[test]

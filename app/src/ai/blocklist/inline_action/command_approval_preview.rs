@@ -1,7 +1,7 @@
 //! How an agent-requested shell command is shown on its approval card (issue #847).
 //!
 //! The card used to render the raw command in a `CodeEditorView`. That misrepresented commands in
-//! two ways, and approving still ran the full text:
+//! three ways, and approving still ran the full text:
 //!
 //! * A single whitespace-delimited word longer than 16,384 chars was dropped by the text
 //!   renderer. It took zero width and lost its glyphs, along with anything glued to it, such as a
@@ -12,40 +12,73 @@
 //!   `max_len = 16384`, and its `push_str` silently drops a longer word.
 //! * A shorter long word (a few thousand chars) laid out at infinite width with no wrap. The
 //!   card clipped it horizontally, and nothing showed that more text existed to the right.
+//! * Blank lines pushed a payload below the card's 500px fold: `echo hi`, ~3,000 newlines, then
+//!   `rm -rf ~`.
 //!
 //! The approval card therefore never hands the shaper an unbounded word. It shows a preview built
 //! here instead:
 //!
-//! * [`PreviewMode::Collapsed`] (the default): every shell operator and separator character stays
-//!   visible and highlighted (`; & | < > ( ) $ backtick quotes backslash { } #`), as do newlines
-//!   and every other short token. Only the middle of an over-long *run* (a word or a whitespace
-//!   stretch) is replaced by a marker that gives the hidden character count. If the result is
-//!   still too long, the middle of the command is cut behind one marker that gives the hidden
-//!   count and how many separators it covers. Any elision makes [`CommandApprovalPreview::
-//!   is_truncated`] true, and the card then withholds Run until the user asks for the full
-//!   command (see [`approval_requires_full_view`]).
-//! * [`PreviewMode::Full`]: the whole command with nothing elided. Long runs get zero-width-space
-//!   break opportunities, which are display-only, so no shaped word reaches the renderer's limit
-//!   and the text soft-wraps instead of clipping.
+//! * [`PreviewMode::Collapsed`] (the default) keeps every shell operator and separator character
+//!   visible and highlighted (`; & | < > ( ) $ backtick quotes backslash { } #`). Newlines and
+//!   every other short token stay visible too. The following are replaced by a marker that gives
+//!   the hidden count:
+//!   * the middle of an over-long word (more than [`LONG_RUN_CHARS`]);
+//!   * the middle of a whitespace stretch (more than [`LONG_WHITESPACE_RUN_CHARS`]);
+//!   * every run of [`BLANK_LINE_RUN_COLLAPSE`] or more blank lines.
 //!
-//! In both modes, control characters and invisible format characters (bidi overrides,
-//! zero-width spaces, BOM, ...) are drawn as a highlighted `<U+XXXX>` escape, never passed
-//! through. A command must not be able to hide part of itself from the person approving it.
+//!   If the result is still longer than [`COLLAPSED_PREVIEW_MAX_CHARS`] or
+//!   [`COLLAPSED_PREVIEW_MAX_LINES`], the middle of the command is cut behind one marker. That
+//!   marker gives the hidden count and how many separators it covers. Any elision makes
+//!   [`CommandApprovalPreview::is_truncated`] true. The card then withholds Run until the user
+//!   asks for the full command (see [`approval_requires_full_view`]). The action model refuses
+//!   every user-initiated accept of such a command, whichever path it comes from.
+//! * [`PreviewMode::Full`] shows the whole command with nothing elided. Long runs get
+//!   zero-width-space break opportunities. These are display-only, so no shaped word reaches the
+//!   renderer's limit, and the text soft-wraps instead of clipping. U+200B is a
+//!   Default_Ignorable code point, so the shaper hides it rather than drawing a missing-glyph box.
+//!   `layout_line` in `fonts.rs` already relies on that. Still, this needs a manual check on a
+//!   real X11 build with a 100K word.
+//!
+//! In both modes, the following are drawn as a highlighted `<U+XXXX>` escape, never passed
+//! through:
+//! * control characters;
+//! * invisible format characters (bidi overrides, zero-width spaces, BOM, ...);
+//! * non-ASCII whitespace, which a shell treats as part of a word;
+//! * a third or later consecutive combining mark;
+//! * a literal `<` that starts `<U+`, so typed text cannot pose as an escape.
+//!
+//! A command must not be able to hide part of itself from the person approving it.
 
-/// Runs (words or whitespace stretches) longer than this many chars are elided in the collapsed
-/// preview. This is far below the renderer's 16,384-char per-word limit.
+use std::cell::OnceCell;
+
+/// Words longer than this many chars are elided in the collapsed preview. This is far below the
+/// renderer's 16,384-char per-word limit.
 pub(crate) const LONG_RUN_CHARS: usize = 160;
-/// How many leading chars of an elided run stay visible.
+/// How many leading chars of an elided word stay visible.
 const LONG_RUN_HEAD_CHARS: usize = 48;
-/// How many trailing chars of an elided run stay visible.
+/// How many trailing chars of an elided word stay visible.
 const LONG_RUN_TAIL_CHARS: usize = 24;
+/// Whitespace stretches (spaces/tabs) longer than this are elided in the collapsed preview, so
+/// padding cannot push the rest of a line out of view.
+pub(crate) const LONG_WHITESPACE_RUN_CHARS: usize = 32;
+/// How many leading and trailing chars of an elided whitespace stretch stay visible.
+const WHITESPACE_KEEP_CHARS: usize = 2;
+/// This many or more consecutive blank lines are collapsed behind a marker.
+pub(crate) const BLANK_LINE_RUN_COLLAPSE: usize = 3;
 /// Upper bound on the collapsed preview's displayed length, in chars, before its middle is cut.
 pub(crate) const COLLAPSED_PREVIEW_MAX_CHARS: usize = 4_000;
+/// Upper bound on the collapsed preview's line count before its middle is cut, so the end of the
+/// command never sits below the card's scroll fold.
+pub(crate) const COLLAPSED_PREVIEW_MAX_LINES: usize = 20;
+/// Lines kept above a line-count cut.
+const CUT_HEAD_LINES: usize = 12;
+/// Lines kept below a line-count cut.
+const CUT_TAIL_LINES: usize = 6;
 /// In the full preview, a zero-width break opportunity is inserted after every this-many chars of
 /// one run. The renderer shapes each piece separately, so the per-word limit is never reached.
 const FULL_VIEW_BREAK_EVERY_CHARS: usize = 256;
 /// Zero-width space: a line-break opportunity that draws nothing.
-const ZERO_WIDTH_BREAK: char = '\u{200B}';
+pub(crate) const ZERO_WIDTH_BREAK: char = '\u{200B}';
 
 /// Characters that are always shown verbatim and highlighted, and are never folded into an
 /// elided run, because they change what (or how many things) the shell runs.
@@ -56,8 +89,27 @@ fn is_operator_char(c: char) -> bool {
     )
 }
 
-/// Characters that must never reach the screen raw: controls (C0 other than `\n`/`\t`, DEL, C1)
-/// and invisible format characters that can hide or reorder text.
+/// Combining marks. A long stack of them can paint over neighbouring text, so after the second
+/// in a row each is escaped.
+fn is_combining_mark(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0300}'..='\u{036F}'
+            | '\u{0483}'..='\u{0489}'
+            | '\u{0591}'..='\u{05BD}'
+            | '\u{0610}'..='\u{061A}'
+            | '\u{064B}'..='\u{065F}'
+            | '\u{1AB0}'..='\u{1AFF}'
+            | '\u{1DC0}'..='\u{1DFF}'
+            | '\u{20D0}'..='\u{20FF}'
+            | '\u{FE20}'..='\u{FE2F}'
+    )
+}
+
+/// Characters that must never reach the screen raw. These are controls (C0 other than
+/// `\n`/`\t`, DEL, C1), invisible or format characters that can hide or reorder text, glyphs
+/// that render as blank, and non-ASCII whitespace, which looks like a word break but is part of
+/// a word to the shell.
 fn must_escape(c: char) -> bool {
     if c == '\n' || c == '\t' {
         return false;
@@ -65,22 +117,31 @@ fn must_escape(c: char) -> bool {
     c.is_control()
         || matches!(
             c,
-            '\u{00AD}'
+            '\u{00A0}'
+                | '\u{00AD}'
                 | '\u{034F}'
+                | '\u{0600}'..='\u{0605}'
                 | '\u{061C}'
+                | '\u{06DD}'
+                | '\u{070F}'
+                | '\u{08E2}'
                 | '\u{115F}'
                 | '\u{1160}'
+                | '\u{1680}'
                 | '\u{17B4}'
                 | '\u{17B5}'
-                | '\u{180E}'
-                | '\u{200B}'..='\u{200F}'
-                | '\u{2028}'..='\u{202E}'
-                | '\u{2060}'..='\u{206F}'
+                | '\u{180B}'..='\u{180E}'
+                | '\u{2000}'..='\u{200F}'
+                | '\u{2028}'..='\u{202F}'
+                | '\u{205F}'..='\u{206F}'
+                | '\u{2800}'
+                | '\u{3000}'
                 | '\u{3164}'
                 | '\u{FE00}'..='\u{FE0F}'
                 | '\u{FEFF}'
                 | '\u{FFA0}'
-                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{FFF9}'..='\u{FFFC}'
+                | '\u{1D173}'..='\u{1D17A}'
                 | '\u{E0000}'..='\u{E0FFF}'
         )
 }
@@ -108,8 +169,8 @@ fn plural(n: usize, one: &'static str, many: &'static str) -> &'static str {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PreviewMode {
-    /// Bounded length. Long runs and, if needed, the middle of the command are elided behind
-    /// markers.
+    /// Bounded length and line count. Long runs, blank-line runs and, if needed, the middle of
+    /// the command are elided behind markers.
     Collapsed,
     /// The entire command. Nothing is elided.
     Full,
@@ -157,6 +218,9 @@ struct Piece {
     hidden_chars: usize,
     /// Command separators (`;`, `&`, `|`, newline) this piece stands for.
     separators: usize,
+    /// Whether this piece stands only for whitespace (other than newlines). Used to find blank
+    /// lines.
+    blank: bool,
 }
 
 impl Piece {
@@ -172,7 +236,19 @@ impl Piece {
             command_chars,
             hidden_chars: 0,
             separators,
+            blank: false,
         }
+    }
+
+    fn marker(text: String, hidden: usize) -> Self {
+        let mut piece = Self::new(PieceKind::Marker, text, hidden);
+        piece.hidden_chars = hidden;
+        piece
+    }
+
+    fn blank(mut self, blank: bool) -> Self {
+        self.blank = blank;
+        self
     }
 
     fn display_chars(&self) -> usize {
@@ -186,34 +262,47 @@ fn push_run(pieces: &mut Vec<Piece>, run: &[char], is_whitespace: bool, mode: Pr
     if run.is_empty() {
         return;
     }
+    let (limit, head, tail) = if is_whitespace {
+        (
+            LONG_WHITESPACE_RUN_CHARS,
+            WHITESPACE_KEEP_CHARS,
+            WHITESPACE_KEEP_CHARS,
+        )
+    } else {
+        (LONG_RUN_CHARS, LONG_RUN_HEAD_CHARS, LONG_RUN_TAIL_CHARS)
+    };
     match mode {
-        PreviewMode::Collapsed if run.len() > LONG_RUN_CHARS => {
-            let hidden = run.len() - LONG_RUN_HEAD_CHARS - LONG_RUN_TAIL_CHARS;
-            pieces.push(Piece::new(
-                PieceKind::Text,
-                run[..LONG_RUN_HEAD_CHARS].iter().collect(),
-                LONG_RUN_HEAD_CHARS,
-            ));
+        PreviewMode::Collapsed if run.len() > limit => {
+            let hidden = run.len() - head - tail;
+            pieces.push(
+                Piece::new(PieceKind::Text, run[..head].iter().collect(), head)
+                    .blank(is_whitespace),
+            );
             let what = if is_whitespace {
                 plural(hidden, "whitespace char", "whitespace chars")
             } else {
                 plural(hidden, "char", "chars")
             };
-            let mut marker = Piece::new(
-                PieceKind::Marker,
-                format!("…[{} more {what}]…", group_thousands(hidden)),
-                hidden,
+            pieces.push(
+                Piece::marker(
+                    format!("…[{} more {what}]…", group_thousands(hidden)),
+                    hidden,
+                )
+                .blank(is_whitespace),
             );
-            marker.hidden_chars = hidden;
-            pieces.push(marker);
-            pieces.push(Piece::new(
-                PieceKind::Text,
-                run[run.len() - LONG_RUN_TAIL_CHARS..].iter().collect(),
-                LONG_RUN_TAIL_CHARS,
-            ));
+            pieces.push(
+                Piece::new(
+                    PieceKind::Text,
+                    run[run.len() - tail..].iter().collect(),
+                    tail,
+                )
+                .blank(is_whitespace),
+            );
         }
         PreviewMode::Collapsed => {
-            pieces.push(Piece::new(PieceKind::Text, run.iter().collect(), run.len()));
+            pieces.push(
+                Piece::new(PieceKind::Text, run.iter().collect(), run.len()).blank(is_whitespace),
+            );
         }
         PreviewMode::Full => {
             let mut text =
@@ -224,36 +313,45 @@ fn push_run(pieces: &mut Vec<Piece>, run: &[char], is_whitespace: bool, mode: Pr
                 }
                 text.push(*c);
             }
-            pieces.push(Piece::new(PieceKind::Text, text, run.len()));
+            pieces.push(Piece::new(PieceKind::Text, text, run.len()).blank(is_whitespace));
         }
     }
 }
 
 fn tokenize(command: &str, mode: PreviewMode) -> Vec<Piece> {
+    let chars: Vec<char> = command.chars().collect();
     let mut pieces = Vec::new();
     let mut run: Vec<char> = Vec::new();
     let mut run_is_whitespace = false;
+    let mut combining_run = 0usize;
 
-    for c in command.chars() {
-        let is_plain_whitespace = c.is_whitespace() && c != '\n' && !must_escape(c);
-        let is_plain_word =
-            !c.is_whitespace() && !is_operator_char(c) && !must_escape(c) && c != '\n';
-        if is_plain_whitespace || is_plain_word {
-            if !run.is_empty() && run_is_whitespace != is_plain_whitespace {
+    for (i, &c) in chars.iter().enumerate() {
+        combining_run = if is_combining_mark(c) {
+            combining_run + 1
+        } else {
+            0
+        };
+        let poses_as_escape =
+            c == '<' && chars.get(i + 1) == Some(&'U') && chars.get(i + 2) == Some(&'+');
+        let escape = must_escape(c) || combining_run > 2 || poses_as_escape;
+
+        if !escape && c != '\n' && !is_operator_char(c) {
+            let is_whitespace = c.is_whitespace();
+            if !run.is_empty() && run_is_whitespace != is_whitespace {
                 push_run(&mut pieces, &run, run_is_whitespace, mode);
                 run.clear();
             }
-            run_is_whitespace = is_plain_whitespace;
+            run_is_whitespace = is_whitespace;
             run.push(c);
             continue;
         }
 
         push_run(&mut pieces, &run, run_is_whitespace, mode);
         run.clear();
-        if c == '\n' {
-            pieces.push(Piece::new(PieceKind::Newline, "\n".to_owned(), 1));
-        } else if must_escape(c) {
+        if escape {
             pieces.push(Piece::new(PieceKind::Marker, escape_char(c), 1));
+        } else if c == '\n' {
+            pieces.push(Piece::new(PieceKind::Newline, "\n".to_owned(), 1));
         } else {
             pieces.push(Piece::new(PieceKind::Operator, c.to_string(), 1));
         }
@@ -262,27 +360,104 @@ fn tokenize(command: &str, mode: PreviewMode) -> Vec<Piece> {
     pieces
 }
 
+/// Collapses every run of [`BLANK_LINE_RUN_COLLAPSE`] or more blank lines into
+/// `\n…[N blank lines]…\n`.
+fn collapse_blank_lines(pieces: Vec<Piece>) -> Vec<Piece> {
+    let mut out: Vec<Piece> = Vec::with_capacity(pieces.len());
+    let mut pieces = pieces.into_iter().peekable();
+    while let Some(piece) = pieces.next() {
+        if piece.kind != PieceKind::Newline {
+            out.push(piece);
+            continue;
+        }
+        // A window that starts at this newline and holds only blank pieces and newlines.
+        let mut window = vec![piece];
+        while let Some(next) = pieces.peek() {
+            if next.kind == PieceKind::Newline || next.blank {
+                window.push(pieces.next().expect("peeked"));
+            } else {
+                break;
+            }
+        }
+        // Trailing blank pieces after the last newline belong to the next line's indentation.
+        let last_newline = window
+            .iter()
+            .rposition(|p| p.kind == PieceKind::Newline)
+            .expect("window starts with a newline");
+        let trailing = window.split_off(last_newline + 1);
+        let blank_lines = window
+            .iter()
+            .filter(|p| p.kind == PieceKind::Newline)
+            .count()
+            - 1;
+        if blank_lines >= BLANK_LINE_RUN_COLLAPSE {
+            let last = window.pop().expect("last newline");
+            let middle = window.split_off(1);
+            out.append(&mut window);
+            let hidden: usize = middle.iter().map(|p| p.command_chars).sum();
+            out.push(Piece::marker(
+                format!(
+                    "…[{} blank {} hidden]…",
+                    group_thousands(blank_lines),
+                    plural(blank_lines, "line", "lines")
+                ),
+                hidden,
+            ));
+            out.push(last);
+        } else {
+            out.append(&mut window);
+        }
+        out.extend(trailing);
+    }
+    out
+}
+
+fn newline_count(pieces: &[Piece]) -> usize {
+    pieces
+        .iter()
+        .filter(|p| p.kind == PieceKind::Newline)
+        .count()
+}
+
 /// Replaces the middle of `pieces` with a single marker when the displayed text is longer than
-/// [`COLLAPSED_PREVIEW_MAX_CHARS`]. The head gets about two thirds of the budget and the tail one
-/// third, so the end of the command, where an appended payload sits, is always shown.
+/// [`COLLAPSED_PREVIEW_MAX_CHARS`] or spans more than [`COLLAPSED_PREVIEW_MAX_LINES`] lines. The
+/// head gets about two thirds of the budget and the tail one third. So the end of the command,
+/// where an appended payload sits, is always shown.
 fn cut_middle(mut pieces: Vec<Piece>) -> Vec<Piece> {
     let total: usize = pieces.iter().map(Piece::display_chars).sum();
-    if total <= COLLAPSED_PREVIEW_MAX_CHARS {
+    if total <= COLLAPSED_PREVIEW_MAX_CHARS && newline_count(&pieces) < COLLAPSED_PREVIEW_MAX_LINES
+    {
         return pieces;
     }
     let head_budget = COLLAPSED_PREVIEW_MAX_CHARS * 2 / 3;
     let tail_budget = COLLAPSED_PREVIEW_MAX_CHARS - head_budget;
 
-    let mut head_end = 0;
-    let mut used = 0;
-    while head_end < pieces.len() && used + pieces[head_end].display_chars() <= head_budget {
-        used += pieces[head_end].display_chars();
+    let fits = |used_chars: usize, used_lines: usize, piece: &Piece, chars: usize, lines: usize| {
+        let piece_lines = usize::from(piece.kind == PieceKind::Newline);
+        used_chars + piece.display_chars() <= chars && used_lines + piece_lines <= lines
+    };
+
+    let (mut head_end, mut chars, mut lines) = (0, 0, 0);
+    while head_end < pieces.len()
+        && fits(chars, lines, &pieces[head_end], head_budget, CUT_HEAD_LINES)
+    {
+        chars += pieces[head_end].display_chars();
+        lines += usize::from(pieces[head_end].kind == PieceKind::Newline);
         head_end += 1;
     }
     let mut tail_start = pieces.len();
-    used = 0;
-    while tail_start > head_end && used + pieces[tail_start - 1].display_chars() <= tail_budget {
-        used += pieces[tail_start - 1].display_chars();
+    (chars, lines) = (0, 0);
+    while tail_start > head_end
+        && fits(
+            chars,
+            lines,
+            &pieces[tail_start - 1],
+            tail_budget,
+            CUT_TAIL_LINES,
+        )
+    {
+        chars += pieces[tail_start - 1].display_chars();
+        lines += usize::from(pieces[tail_start - 1].kind == PieceKind::Newline);
         tail_start -= 1;
     }
     if tail_start <= head_end {
@@ -302,8 +477,7 @@ fn cut_middle(mut pieces: Vec<Piece>) -> Vec<Piece> {
     } else {
         String::new()
     };
-    let mut marker = Piece::new(
-        PieceKind::Marker,
+    let mut marker = Piece::marker(
         format!(
             " …[{} {} hidden here{separator_note}]… ",
             group_thousands(hidden),
@@ -311,7 +485,6 @@ fn cut_middle(mut pieces: Vec<Piece>) -> Vec<Piece> {
         ),
         hidden,
     );
-    marker.hidden_chars = hidden;
     marker.separators = separators;
     pieces.push(marker);
     pieces.extend(tail);
@@ -322,7 +495,7 @@ fn cut_middle(mut pieces: Vec<Piece>) -> Vec<Piece> {
 pub(crate) fn command_approval_preview(command: &str, mode: PreviewMode) -> CommandApprovalPreview {
     let mut pieces = tokenize(command, mode);
     if mode == PreviewMode::Collapsed {
-        pieces = cut_middle(pieces);
+        pieces = cut_middle(collapse_blank_lines(pieces));
     }
 
     let mut preview = CommandApprovalPreview::default();
@@ -345,8 +518,9 @@ pub(crate) fn command_approval_preview(command: &str, mode: PreviewMode) -> Comm
     preview
 }
 
-/// Whether Run must stay withheld for `command`. True when the collapsed preview hides part of
-/// it and the user has not yet chosen to see the full command.
+/// Whether a user's accept must be refused for `command`. True when the collapsed preview hides
+/// part of it and the user has not yet chosen to see the full command. This is the check the
+/// action model applies to every user-initiated accept of a `RequestCommandOutput`.
 pub(crate) fn approval_requires_full_view(command: &str, full_command_shown: bool) -> bool {
     !full_command_shown && command_approval_preview(command, PreviewMode::Collapsed).is_truncated()
 }
@@ -438,36 +612,89 @@ pub(crate) fn command_shape_summary(command: &str) -> CommandShapeSummary {
     summary
 }
 
-/// One-line notes shown above the command on the approval card, in display order.
-pub(crate) fn approval_notes(
-    command: &str,
-    collapsed: &CommandApprovalPreview,
-    full_command_shown: bool,
-) -> Vec<String> {
-    let mut notes = Vec::new();
-    if collapsed.is_truncated() {
-        let hidden = group_thousands(collapsed.hidden_chars);
-        if full_command_shown {
-            notes.push(format!(
-                "Showing the full command ({} chars).",
-                group_thousands(command.chars().count())
-            ));
-        } else {
-            notes.push(format!(
-                "{hidden} {} of this command {} hidden. Show the full command to enable Run.",
-                plural(collapsed.hidden_chars, "char", "chars"),
-                plural(collapsed.hidden_chars, "is", "are"),
-            ));
+/// Everything the approval card draws for one command text, computed once per text change rather
+/// than on every frame. The full preview is built lazily, the first time it is needed.
+#[derive(Debug, Default)]
+pub(crate) struct ApprovalPreviewCache {
+    command: String,
+    collapsed: CommandApprovalPreview,
+    full: OnceCell<CommandApprovalPreview>,
+    shape: CommandShapeSummary,
+    command_chars: usize,
+    has_non_ascii: bool,
+}
+
+impl ApprovalPreviewCache {
+    pub fn new(command: &str) -> Self {
+        Self {
+            command: command.to_owned(),
+            collapsed: command_approval_preview(command, PreviewMode::Collapsed),
+            full: OnceCell::new(),
+            shape: command_shape_summary(command),
+            command_chars: command.chars().count(),
+            has_non_ascii: !command.is_ascii(),
         }
     }
-    let shape = command_shape_summary(command);
-    if shape.commands > 1 {
-        notes.push(format!("This runs {} commands.", shape.commands));
+
+    /// The command text this cache was built from.
+    pub fn command(&self) -> &str {
+        &self.command
     }
-    if shape.has_command_substitution {
-        notes.push("This contains command substitution ($(…) or backticks).".to_owned());
+
+    /// Whether the collapsed preview elides part of the command.
+    pub fn is_truncated(&self) -> bool {
+        self.collapsed.is_truncated()
     }
-    notes
+
+    /// Same answer as [`approval_requires_full_view`] for this command, without re-tokenizing.
+    pub fn requires_full_view(&self, full_command_shown: bool) -> bool {
+        !full_command_shown && self.is_truncated()
+    }
+
+    /// The preview to draw: the full one once the user asked for it and anything was elided,
+    /// otherwise the collapsed one.
+    pub fn preview(&self, full_command_shown: bool) -> &CommandApprovalPreview {
+        if full_command_shown && self.is_truncated() {
+            self.full
+                .get_or_init(|| command_approval_preview(&self.command, PreviewMode::Full))
+        } else {
+            &self.collapsed
+        }
+    }
+
+    /// One-line notes shown above the command on the approval card, in display order.
+    pub fn notes(&self, full_command_shown: bool) -> Vec<String> {
+        let mut notes = Vec::new();
+        if self.is_truncated() {
+            let hidden = self.collapsed.hidden_chars;
+            if full_command_shown {
+                notes.push(format!(
+                    "Showing the full command ({} chars).",
+                    group_thousands(self.command_chars)
+                ));
+            } else {
+                notes.push(format!(
+                    "{} {} of this command {} hidden. Show the full command to enable Run.",
+                    group_thousands(hidden),
+                    plural(hidden, "char", "chars"),
+                    plural(hidden, "is", "are"),
+                ));
+            }
+        }
+        if self.shape.commands > 1 {
+            notes.push(format!("This runs {} commands.", self.shape.commands));
+        }
+        if self.shape.has_command_substitution {
+            notes.push("This contains command substitution ($(…) or backticks).".to_owned());
+        }
+        if self.has_non_ascii {
+            notes.push(
+                "This contains non-ASCII characters; look-alikes and invisible ones are shown as <U+XXXX>."
+                    .to_owned(),
+            );
+        }
+        notes
+    }
 }
 
 /// The command as a one-line header title: the first line, with long runs elided and invisible
