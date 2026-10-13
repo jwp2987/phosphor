@@ -1,0 +1,34 @@
+# cargo-fuzz project for the pty-output path. See docs/fuzzing.md.
+#
+# Deliberately NOT a member of the root workspace (the empty `[workspace]`
+# table below makes this its own workspace, and the root lists it under
+# `exclude`): cargo-fuzz builds it with a nightly toolchain and sanitizer
+# RUSTFLAGS, and it gets its own Cargo.lock. Seed that lock from the root one
+# (`cp Cargo.lock app/fuzz/`) so dependency versions match the main build.
+[package]
+name = "warp-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# `fuzzing` compiles `warp::terminal::model::fuzz_api`; it is off in every
+# normal build.
+warp = { path = "..", features = ["fuzzing"] }
+
+[features]
+# Mirrors the test lane's `--features gui`, in case the lib needs it to build.
+gui = ["warp/gui"]
+
+[workspace]
+
+[[bin]]
+name = "terminal_model"
+path = "fuzz_targets/terminal_model.rs"
+test = false
+doc = false
+bench = false

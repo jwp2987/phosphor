@@ -462,6 +462,11 @@ autoupdate = []
 # `debug_text_content` override) calls trait methods warpui_core only compiles under
 # its OWN test-util feature, and app's test-util did not forward that far (#769).
 test-util = ["warp_core/test-util", "warpui/test-util", "dep:mockito"]
+# Opt-in, for the cargo-fuzz targets in app/fuzz only: compiles
+# `terminal::model::fuzz_api` (a narrow pty-output driver). Implies `test-util`
+# because the driver builds models with `TerminalModel::mock`. Never enabled by
+# any default or release feature set; see docs/fuzzing.md.
+fuzzing = ["test-util"]
 figma_detection = []
 bundled_skills = []
 windows_high_performance_gpu_default = []

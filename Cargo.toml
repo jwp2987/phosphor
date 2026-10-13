@@ -3,6 +3,12 @@ members = [
   "crates/*",
   "app",
 ]
+# cargo-fuzz projects are their own workspaces (nightly + sanitizer builds,
+# separate Cargo.lock); see docs/fuzzing.md.
+exclude = [
+  "app/fuzz",
+  "crates/warp_terminal/fuzz",
+]
 resolver = "2"
 
 # Include all members except serve-wasm (since it's a helper helper for serving

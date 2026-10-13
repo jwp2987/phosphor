@@ -1,0 +1,29 @@
+# cargo-fuzz project for warp_terminal's standalone pty-payload parsers (kitty
+# graphics APC, iTerm inline-image OSC 1337 metadata). See docs/fuzzing.md.
+#
+# Its own workspace (empty `[workspace]` table; excluded from the root), built
+# with nightly + sanitizers. Seed its Cargo.lock from the root one
+# (`cp Cargo.lock crates/warp_terminal/fuzz/`).
+[package]
+name = "warp-terminal-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# No `local_fs`: without it kitty's file and shared-memory transmission media
+# return `UnsupportedPlatform` instead of opening paths named by the input.
+warp_terminal = { path = ".." }
+
+[workspace]
+
+[[bin]]
+name = "image_protocols"
+path = "fuzz_targets/image_protocols.rs"
+test = false
+doc = false
+bench = false

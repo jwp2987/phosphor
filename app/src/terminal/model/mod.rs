@@ -36,6 +36,10 @@ pub mod session;
 pub mod terminal_model;
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_utils;
+// Driver for the `#[ignore]`d fuzz harness and the `app/fuzz` libFuzzer target;
+// absent from every build without `test` or the opt-in `fuzzing` feature.
+#[cfg(any(test, feature = "fuzzing"))]
+pub mod fuzz_api;
 
 pub use secrets::{
     set_user_and_enterprise_secret_regexes, ObfuscateSecrets, RespectObfuscatedSecrets, Secret,
