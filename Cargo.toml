@@ -592,6 +592,9 @@ strip = "symbols"
 inherits = "dev"
 opt-level = "s"
 
+# Mirrored into the standalone cargo-fuzz workspaces (`app/fuzz`,
+# `crates/warp_terminal/fuzz`), which do not inherit `[patch]` from here.
+# Change those copies with this table; `script/check_fuzz_patches` enforces it.
 [patch.crates-io]
 # Pinned to the merge commit of servo/core-foundation-rs#746, which fixes a
 # double-retain bug in `CTFontCollection::get_descriptors` that leaks the

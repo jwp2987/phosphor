@@ -20,6 +20,17 @@ threads-required = 2
 filter = 'package(warp_tui)'
 retries = 2
 
+[profile.fuzz]
+# The `#[ignore]`d randomized pty harness (`terminal_fuzz*`, docs/fuzzing.md)
+# runs for as long as PHOSPHOR_FUZZ_SECS says -- minutes to hours -- and
+# enforces its own per-case slow/hang limits. The default profile's
+# `terminate-after` would kill it at 60s. nextest has no `--slow-timeout`
+# command-line flag; select this profile with `--profile fuzz` instead.
+# No `terminate-after`: a slow run is reported every 5 minutes, never killed.
+slow-timeout = { period = "300s" }
+failure-output = "immediate-final"
+fail-fast = false
+
 [profile.ci]
 # Print out output for failing tests as soon as they fail, and also at the end
 # of the run (for easy scrollability).

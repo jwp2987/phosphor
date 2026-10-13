@@ -23,9 +23,18 @@ mutated input can touch the filesystem of the account that runs it.
 ## Randomized harness
 
 ```sh
-cargo nextest run -p warp --lib --features gui --run-ignored only \
+cargo nextest run --profile fuzz -p warp --lib --features gui --run-ignored only \
   -E 'test(/terminal_fuzz/)'
 ```
+
+**Always pass `--profile fuzz`.** The default nextest profile
+(`.config/nextest.toml`) terminates any test after 60 s, which kills the
+harness at its own default budget and any longer run outright. The `fuzz`
+profile reports a slow run every 5 minutes and never terminates it; the
+harness enforces its own per-case limits (`PHOSPHOR_FUZZ_SLOW_MS`,
+`PHOSPHOR_FUZZ_HANG_SECS`). nextest has no `--slow-timeout` command-line
+flag -- timeouts live only in profiles, so change the profile, not the
+command line.
 
 Environment (all optional):
 
@@ -47,22 +56,20 @@ A multi-hour run on the build box:
 
 ```sh
 PHOSPHOR_FUZZ_ITERS=0 PHOSPHOR_FUZZ_SECS=14400 \
-  cargo nextest run -p warp --lib --features gui --run-ignored only \
+  cargo nextest run --profile fuzz -p warp --lib --features gui --run-ignored only \
   -E 'test(/terminal_fuzz/)' --no-capture
 ```
-
-Raise nextest's slow-test timeout if your profile kills long tests.
 
 At the end the test fails listing every failing `(seed, case)`. To reproduce
 one:
 
 ```sh
 # regenerate it from the seed
-PHOSPHOR_FUZZ_SEED=<seed> PHOSPHOR_FUZZ_CASE=<case> cargo nextest run -p warp --lib \
+PHOSPHOR_FUZZ_SEED=<seed> PHOSPHOR_FUZZ_CASE=<case> cargo nextest run --profile fuzz -p warp --lib \
   --features gui --run-ignored only -E 'test(/terminal_fuzz$/)' --no-capture
 
 # or replay the dump (<seed>-<case>.bin holds the pty bytes, .ops the op list)
-PHOSPHOR_FUZZ_REPLAY=target/fuzz-cases/<seed>-<case>.ops cargo nextest run -p warp --lib \
+PHOSPHOR_FUZZ_REPLAY=target/fuzz-cases/<seed>-<case>.ops cargo nextest run --profile fuzz -p warp --lib \
   --features gui --run-ignored only -E 'test(/terminal_fuzz_replay/)' --no-capture
 ```
 
@@ -78,10 +85,30 @@ One-time setup on the fuzzing box:
 ```sh
 rustup toolchain install nightly
 cargo install cargo-fuzz
-# Give each fuzz workspace the main build's dependency versions.
+# Give each fuzz workspace the main build's dependency versions. Re-copy
+# after pulling a change to the root Cargo.lock or [patch] table.
 cp Cargo.lock app/fuzz/Cargo.lock
 cp Cargo.lock crates/warp_terminal/fuzz/Cargo.lock
 ```
+
+**Each fuzz directory is its own workspace, and cargo applies `[patch]` only
+from the root of the workspace being built.** The root `Cargo.toml`'s
+`[patch.crates-io]` (tink-rust fork, `lib/rust-genai`, core-foundation, ...)
+is therefore copied into `app/fuzz/Cargo.toml` and
+`crates/warp_terminal/fuzz/Cargo.toml`, and `script/check_fuzz_patches` (part
+of `script/precheck`) fails when a copy drifts. Without the copy the build
+takes crates.io `tink-core`, whose `TinkError` is `Send` but not `Sync`, and
+fails in `warp_managed_secrets` (`Tink(#[from] tink_core::TinkError)` /
+``anyhow::Error: From<EnvelopeError>``), plus E0425/E0432/E0433 wherever the
+app uses `lib/rust-genai`'s additions to `genai`. Those errors look like a
+`--cfg fuzzing` problem; they are not -- nothing in this tree, and nothing in
+tink, reads `cfg(fuzzing)`.
+
+If a dependency ever does break under `--cfg fuzzing` (some crates add
+modules or dependencies under it: `h2`, `quinn-proto`, `rav1e`, `tokio`,
+`zune-jpeg`), check whether your `cargo fuzz build --help` lists
+`--no-cfg-fuzzing` and pass it to `build`/`run`. The targets here do not rely
+on `cfg(fuzzing)`.
 
 **Use a separate `CARGO_TARGET_DIR` for fuzz builds.** They compile with
 nightly, sanitizer and coverage `RUSTFLAGS`; sharing the main target directory
@@ -92,6 +119,12 @@ export CARGO_TARGET_DIR=$HOME/phosphor-fuzz-target
 ```
 
 ### `terminal_model` (app)
+
+It depends on the whole `warp` crate, not just `warp_terminal`, because what
+it drives -- `TerminalModel`, the ANSI `Processor` and the block list -- lives
+in `app/src/terminal/model`; `warp_terminal` holds only the escape-sequence
+tables, grid primitives and image-payload parsers (fuzzed on their own by
+`image_protocols` below).
 
 From `app/`:
 
@@ -158,6 +191,6 @@ a libFuzzer input):
 
 ```sh
 PHOSPHOR_FUZZ_REPLAY=$PWD/app/fuzz/artifacts/terminal_model/crash-<sha1> \
-  cargo nextest run -p warp --lib --features gui --run-ignored only \
+  cargo nextest run --profile fuzz -p warp --lib --features gui --run-ignored only \
   -E 'test(/terminal_fuzz_replay/)' --no-capture
 ```

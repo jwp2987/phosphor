@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Fail when a cargo-fuzz workspace's [patch] tables drift from the root's.
+
+WHY THIS EXISTS
+---------------
+`app/fuzz` and `crates/warp_terminal/fuzz` are their own workspaces (excluded
+from the root) so cargo-fuzz can build them with nightly and sanitizer flags.
+Cargo applies `[patch]` only from the root manifest of the workspace being
+built, so the root's `[patch.crates-io]` does NOT reach them. The first
+`cargo +nightly fuzz run terminal_model` therefore resolved crates.io
+`tink-core` 0.3.0 -- whose `TinkError` holds `Box<dyn Error + Send>`, not
+`+ Sync` -- and failed in `warp_managed_secrets` (`anyhow::Error:
+From<EnvelopeError>` needs `Sync`), plus E0425/E0432/E0433 from upstream
+`genai` standing in for `lib/rust-genai`. It looked like a `--cfg fuzzing`
+problem and was not.
+
+The fix copies the root table into each fuzz manifest. This guard keeps the
+copies honest: every `[patch.<source>]` table must name the same crates with
+the same specs, with `path` entries compared after resolving them against
+their own manifest's directory.
+"""
+
+import sys
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+FUZZ_MANIFESTS = ["app/fuzz/Cargo.toml", "crates/warp_terminal/fuzz/Cargo.toml"]
+
+
+def patches(manifest: Path) -> dict:
+    with manifest.open("rb") as f:
+        data = tomllib.load(f)
+    out = {}
+    for source, table in data.get("patch", {}).items():
+        for name, spec in table.items():
+            if isinstance(spec, dict) and "path" in spec:
+                spec = dict(spec)
+                spec["path"] = str((manifest.parent / spec["path"]).resolve())
+            out[(source, name)] = spec
+    return out
+
+
+def main() -> int:
+    expected = patches(ROOT / "Cargo.toml")
+    bad = 0
+    for rel in FUZZ_MANIFESTS:
+        manifest = ROOT / rel
+        if not manifest.exists():
+            continue
+        actual = patches(manifest)
+        for key in sorted(expected.keys() | actual.keys()):
+            want, got = expected.get(key), actual.get(key)
+            if want != got:
+                bad += 1
+                source, name = key
+                print(
+                    f"{rel}: [patch.{source}] {name}: root has {want!r}, fuzz has {got!r}",
+                    file=sys.stderr,
+                )
+    if bad:
+        print(
+            f"fuzz patches: {bad} mismatch(es) -- copy the root [patch] tables into the "
+            "fuzz manifests (path entries relative to the fuzz directory)",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"fuzz patches: ok ({len(expected)} root patch(es) mirrored in {len(FUZZ_MANIFESTS)} manifests)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

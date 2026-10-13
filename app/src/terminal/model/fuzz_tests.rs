@@ -9,8 +9,12 @@
 //! Both tests are `#[ignore]`d so they never run in normal CI. Run with:
 //!
 //! ```text
-//! cargo nextest run -p warp --lib --features gui --run-ignored only -E 'test(/terminal_fuzz/)'
+//! cargo nextest run --profile fuzz -p warp --lib --features gui --run-ignored only \
+//!   -E 'test(/terminal_fuzz/)'
 //! ```
+//!
+//! `--profile fuzz` (`.config/nextest.toml`) matters: the default profile
+//! terminates a test after 60 s. nextest has no `--slow-timeout` flag.
 //!
 //! Environment:
 //!

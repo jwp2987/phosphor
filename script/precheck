@@ -226,6 +226,10 @@ if [[ -x ./script/check_declined_collisions ]]; then
     ./script/check_declined_collisions >/dev/null 2>&1 && ok "declined collisions" \
         || fail "declined collisions -- run ./script/check_declined_collisions for detail"
 fi
+if [[ -x ./script/check_fuzz_patches ]]; then
+    ./script/check_fuzz_patches >/dev/null 2>&1 && ok "fuzz patches" \
+        || fail "fuzz patches -- run ./script/check_fuzz_patches for detail"
+fi
 if [[ -x ./script/check_dead_links ]]; then
     ./script/check_dead_links >/dev/null 2>&1 && ok "dead links" \
         || fail "dead links -- run ./script/check_dead_links for detail"

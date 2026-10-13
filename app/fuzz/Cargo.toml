@@ -32,3 +32,25 @@ path = "fuzz_targets/terminal_model.rs"
 test = false
 doc = false
 bench = false
+
+# A copy of the root `[patch.crates-io]`. Cargo applies `[patch]` only from the
+# root of the workspace being built, and this is its own workspace, so without
+# the copy the build silently takes crates.io `tink-core` (whose `TinkError`
+# is not `Sync`, failing `warp_managed_secrets`), upstream `genai` instead of
+# `lib/rust-genai`, and so on. `script/check_fuzz_patches` (run by
+# `script/precheck`) fails when this drifts from the root table; path entries
+# are rewritten relative to this directory.
+[patch.crates-io]
+core-foundation = { git = "https://github.com/servo/core-foundation-rs", rev = "6f844cf1a1a18e25b70fcdf1bcdc458555bd2eff" }
+core-foundation-sys = { git = "https://github.com/servo/core-foundation-rs", rev = "6f844cf1a1a18e25b70fcdf1bcdc458555bd2eff" }
+core-graphics = { git = "https://github.com/servo/core-foundation-rs", rev = "6f844cf1a1a18e25b70fcdf1bcdc458555bd2eff" }
+core-text = { git = "https://github.com/servo/core-foundation-rs", rev = "6f844cf1a1a18e25b70fcdf1bcdc458555bd2eff" }
+objc = { git = "https://github.com/warpdotdev/rust-objc.git", rev = "5b656827fa9f863ef0eb22e444a3fedac009e78a" }
+pathfinder_simd = { git = "https://github.com/warpdotdev/pathfinder.git", rev = "34128a129ca6aee168fbc5060a4f21b4f7e486a9" }
+yaml-rust = { git = "https://github.com/warpdotdev/yaml-rust.git", rev = "51684719d0102ca85ff4b21cec39877a0c669e19" }
+tink-core = { git = "https://github.com/warpdotdev/tink-rust", rev = "0141035f04a5e262b955c450857b689cff877469" }
+tink-proto = { git = "https://github.com/warpdotdev/tink-rust", rev = "0141035f04a5e262b955c450857b689cff877469" }
+tink-hybrid = { git = "https://github.com/warpdotdev/tink-rust", rev = "0141035f04a5e262b955c450857b689cff877469" }
+tikv-jemallocator = { git = "https://github.com/warpdotdev/jemallocator.git", rev = "2ee30bfdf7059223b54810e4ea6c666f0a379e0b" }
+tikv-jemalloc-sys = { git = "https://github.com/warpdotdev/jemallocator.git", rev = "2ee30bfdf7059223b54810e4ea6c666f0a379e0b" }
+genai = { path = "../../lib/rust-genai" }
