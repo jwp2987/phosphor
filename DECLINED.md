@@ -794,6 +794,21 @@ upstream's behavior is actually a defect rather than a preference.
   renderer lays out the whole message every frame, extending parsed text a renderer still
   holds copies it, and a table or single line that is still streaming is re-parsed whole.
 
+- **glibc malloc is tuned at startup: at most 2 arenas, fixed 128 KiB trim threshold**
+  (`#816`, 2026-10-12, `app/src/alloc.rs`, called first thing in `warp::run`). **Upstream:**
+  runs with glibc's defaults (up to 8 arenas per core; trim and mmap thresholds raised
+  dynamically after large frees). **The defect:** every new block transiently allocates ~365 KiB
+  of grid rows (four `GridHandler` cell matrices) and frees most of it at finish; the live heap
+  grows only ~22 KiB per block (dhat), but glibc keeps the freed memory in per-thread arenas, so
+  RSS grew ~113 KiB per block. Xvfb harness, 1000 trivial blocks, RSS at start / 250 / 1000
+  blocks, one run each: glibc defaults 524 / 605 / 688 MiB; jemalloc via `LD_PRELOAD` 452 / 468 /
+  492; glibc with `MALLOC_ARENA_MAX=2` + `MALLOC_TRIM_THRESHOLD_=131072` 398 / 443 / 461
+  (~25 KiB per block). Typing cost was identical in all three. **We do:** on Linux glibc builds
+  without the `jemalloc` or `dhat_heap_profiling` features, `tune_glibc_malloc` applies those two
+  settings via `mallopt` before any thread exists, skipping a knob the user already set through
+  its environment variable or `GLIBC_TUNABLES`. A re-pin must keep the call at the top of `run`.
+  <!-- markers: keep:tune_glibc_malloc keep:knob_set_by_user -->
+
 - **An incremental find rescan does not flash the find bar's scanning label**
   (`#815`, 2026-10-12, `app/src/terminal/find/model/async_find.rs`). **Upstream:**
   `AsyncFindController::invalidate_block` sets `status = Scanning` for every
