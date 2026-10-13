@@ -758,3 +758,56 @@ fn test_pretty_print_propagates_to_parent_array() {
         "inline table should be multi-line, got:\n{contents}"
     );
 }
+
+/// #859: the settings file is replaced atomically. A write leaves exactly the
+/// settings file in its directory (no temp file), and a symlinked settings
+/// file (dotfile managers) is written through, keeping the link.
+#[cfg(unix)]
+#[test]
+fn test_flush_writes_through_symlink_and_leaves_no_temp_file() {
+    use crate::user_preferences::UserPreferences as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("dotfiles");
+    std::fs::create_dir(&repo).unwrap();
+    let real = repo.join("settings.toml");
+    std::fs::write(&real, "[appearance.text]\nfont_size = 13.0\n").unwrap();
+    let config = dir.path().join("config");
+    std::fs::create_dir(&config).unwrap();
+    let link = config.join("settings.toml");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let (prefs, err) = TomlBackedUserPreferences::new(link.clone());
+    assert!(err.is_none());
+    prefs
+        .write_value_with_hierarchy(
+            "zoom_level",
+            "110".to_string(),
+            Some("appearance.window"),
+            None,
+        )
+        .unwrap();
+
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the link must survive the write"
+    );
+    let written = std::fs::read_to_string(&real).unwrap();
+    let doc: toml_edit::DocumentMut = written.parse().expect("written file must parse");
+    assert_eq!(
+        doc["appearance"]["window"]["zoom_level"].as_integer(),
+        Some(110)
+    );
+    assert_eq!(
+        doc["appearance"]["text"]["font_size"].as_float(),
+        Some(13.0)
+    );
+    let names: Vec<_> = std::fs::read_dir(&repo)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(names, vec![std::ffi::OsString::from("settings.toml")]);
+}

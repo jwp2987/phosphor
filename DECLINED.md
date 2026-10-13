@@ -437,6 +437,23 @@ these as expected, not as drift to reconcile.
 Each entry must say what upstream does, what we do instead, and the evidence that
 upstream's behavior is actually a defect rather than a preference.
 
+- **User config files are replaced atomically, never truncated in place** (`#859`,
+  2026-10-13, `crates/warpui_extras/src/atomic_file.rs`). **Upstream:** settings.toml and
+  user_preferences.json are flushed with `std::fs::write`
+  (`42effe840:crates/warpui_extras/src/user_preferences/toml_backed.rs:205`,
+  `file_backed.rs:76`), keybindings.yaml and themes with `File::create` + write. **The
+  defect:** a write that fails part-way -- measured with a full config filesystem --
+  leaves the file truncated (settings.toml cut off mid-line at 8192 bytes), it no longer
+  parses, and the next launch starts on defaults. **We do:** write a temp file in the same
+  directory, fsync, rename over the target, fsync the directory; on failure the original
+  is untouched and the error is returned. A symlinked target is written *through* (the
+  link survives; dotfile managers rely on it), permission bits are kept, and a file the
+  user cannot write is refused exactly as `std::fs::write` refused it. Applied to
+  settings.toml, user_preferences.json, keybindings.yaml and theme YAML. Not applied to
+  files the app only ever creates fresh (new launch/tab configs, the default worktree
+  template) or to the secure-storage fallback blobs (0600 semantics need their own
+  change).
+
 - **A `keybindings.yaml` that fails to parse is reported and never overwritten**
   (`#858`, 2026-10-13, `app/src/keyboard.rs`, `app/src/workspace/view.rs`).
   **Upstream:** `write_custom_keybinding`/`remove_custom_keybinding` start from

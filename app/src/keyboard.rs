@@ -226,12 +226,9 @@ fn update_keybindings_file(
     let serialized = serde_yaml::to_string(&map)
         .context("Unable to serialize custom keybindings")
         .map_err(KeybindingsWriteError::Io)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("Unable to create {}", parent.display()))
-            .map_err(KeybindingsWriteError::Io)?;
-    }
-    std::fs::write(path, serialized)
+    // Atomic replace (#859): a failed write leaves the previous file intact
+    // instead of truncated.
+    warpui_extras::atomic_file::write(path, serialized)
         .with_context(|| format!("Unable to write {}", path.display()))
         .map_err(KeybindingsWriteError::Io)
 }

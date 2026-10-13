@@ -219,6 +219,28 @@ impl ContainsPoint for FileLink {
     }
 }
 
+/// Atomically replaces (or creates) the file at `path` with `contents`,
+/// creating missing parent directories. Use this instead of [`create_file`]
+/// for any file the user would lose if the write failed part-way: on error
+/// the previous file is left intact (#859). See
+/// [`warpui_extras::atomic_file`] for the symlink and metadata behavior.
+///
+/// Like [`create_file`], this always returns an error for unit tests, as they
+/// should not directly interact with the filesystem.
+#[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+pub fn write_file_atomically<P: AsRef<Path>, C: AsRef<[u8]>>(
+    _path: P,
+    _contents: C,
+) -> io::Result<()> {
+    cfg_if::cfg_if! {
+        if #[cfg(test)] {
+            Err(io::Error::from_raw_os_error(1))
+        } else {
+            warpui_extras::atomic_file::write(_path, _contents)
+        }
+    }
+}
+
 /// Creates the file at the given path if it doesn't already exist, opening it
 /// in write mode. If any directories in the path are missing, those are created
 /// as well.
