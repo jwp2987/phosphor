@@ -6807,6 +6807,10 @@ fn card_is_rejectable(
 fn requested_command_card_is_rejectable_only_while_a_decision_is_pending() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        // On `ActionBlockedOnUserConfirmation` the card builds its `CodeEditorView`
+        // (`ensure_editor`), which needs this singleton -- registered at app start in `lib.rs`,
+        // not by `initialize_app_for_terminal_view`. The other card tests never block the action.
+        app.add_singleton_model(crate::notebooks::editor::keys::NotebookKeybindings::new);
         let terminal = add_window_with_terminal(&mut app, None);
         let (card, action_id, conversation_id, _pty_writes) =
             setup_requested_command_card(&mut app, &terminal);
