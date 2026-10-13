@@ -171,8 +171,8 @@ pub struct BlocklistAIInputModel {
     non_autodetected_input_type: InputType,
 
     /// Buffer text whose detection the view has requested (#833) and which has not been settled
-    /// yet. The view's Enter handler waits (bounded) while this matches the buffer being
-    /// submitted.
+    /// yet. Submitting exactly this text now would race its verdict (see
+    /// [`Self::is_detection_pending_for`]).
     pending_detection_buffer: Option<String>,
 
     /// Buffer text the in-flight async classification task was spawned for.
@@ -689,9 +689,9 @@ impl BlocklistAIInputModel {
     /// autodetection to interfere with the manual input type setting.
     ///
     /// The suppression only covers the buffer the explicit write was made for (see
-    /// [`ExplicitInputTypeSet`]). An explicit write also settles any detection the view is
-    /// waiting on: the user (or a flow acting for them) has decided, so Enter must not wait for,
-    /// or be overridden by, a classifier verdict.
+    /// [`ExplicitInputTypeSet`]). An explicit write also settles any pending detection: the user
+    /// (or a flow acting for them) has decided, so a classifier verdict must not be waited for or
+    /// override it at submission.
     fn temporarily_disable_autodetection(&mut self) {
         self.explicit_input_type_set = Some(ExplicitInputTypeSet {
             at: Instant::now(),
