@@ -1407,7 +1407,7 @@ fn discard_pending_command_writes_drops_only_non_in_band_commands() {
             assert_eq!(controller.pending_writes.len(), 2);
             assert!(matches!(
                 &controller.pending_writes[0],
-                PtyWrite::Bytes { bytes } if bytes.as_ref() == b"keystrokes"
+                PtyWrite::Bytes { bytes } if &bytes[..] == b"keystrokes"
             ));
             assert!(matches!(
                 &controller.pending_writes[1],
