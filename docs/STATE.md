@@ -9,7 +9,7 @@ Pin: `4111d08f932e0eda34fe57e62ee32df7d0f398d9` (see `ORACLE.md` — never measu
 
 ## Is it verified?
 
-Last fully green `script/precheck`: `9da2bb5ff0e9be05dc92f1283fb651ac88fa84dc` (2026-10-12 15:32) — **66 commit(s) since**
+Last fully green `script/precheck`: `9da2bb5ff0e9be05dc92f1283fb651ac88fa84dc` (2026-10-12 15:32) — **80 commit(s) since**
 
 | guard | |
 |---|---|
@@ -27,7 +27,7 @@ any individual test.
 | | count |
 |---|---:|
 | Pin tests | 11655 |
-| Fork tests | 12342 |
+| Fork tests | 12413 |
 | Shared | 8700 |
 | Absent from fork | 2955 |
 
