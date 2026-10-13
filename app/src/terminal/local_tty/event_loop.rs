@@ -140,19 +140,50 @@ impl<T> EventLoop<T>
 where
     T: local_tty::EventedPty + Send + 'static,
 {
-    /// Create a new event loop.
+    /// Create a new event loop, registering the PTY and the message channel
+    /// with a fresh [`mio::Poll`].
+    ///
+    /// Every step here can allocate a file descriptor (the epoll instance, the
+    /// channel's eventfd waker, the PTY and its signal pipe registrations), so
+    /// every step can fail with `EMFILE` when the process is out of fds
+    /// (#882). That is done here, on the caller's thread, rather than on the
+    /// PTY reader thread, so a failure is returned to the caller and shown on
+    /// the tab like any other PTY spawn failure instead of panicking the
+    /// reader thread. On failure the already-spawned shell is killed, as the
+    /// event loop that would otherwise own its lifetime never runs.
     pub fn new(
         terminal: Arc<FairMutex<TerminalModel>>,
         event_listener: ChannelEventListener,
-        pty: T,
-        rx: Receiver<Message>,
-    ) -> EventLoop<T> {
-        EventLoop {
-            poll: mio::Poll::new().expect("create mio Poll"),
-            pty,
-            rx,
-            terminal,
-            event_listener,
+        mut pty: T,
+        mut rx: Receiver<Message>,
+    ) -> io::Result<EventLoop<T>> {
+        let registered = mio::Poll::new().and_then(|poll| {
+            poll.registry()
+                .register(&mut rx, CHANNEL_TOKEN, Interest::READABLE)?;
+            // Register TTY through EventedRW interface.
+            pty.register(&poll, Interest::READABLE | Interest::WRITABLE)?;
+            Ok(poll)
+        });
+
+        match registered {
+            Ok(poll) => Ok(EventLoop {
+                poll,
+                pty,
+                rx,
+                terminal,
+                event_listener,
+            }),
+            Err(err) => {
+                // The `Poll` was dropped when the closure above returned the
+                // error, closing the epoll instance and with it any
+                // registration that did succeed.
+                if let Err(kill_err) = pty.kill() {
+                    log::error!(
+                        "Failed to kill PTY process after event loop setup failed: {kill_err:?}"
+                    );
+                }
+                Err(err)
+            }
         }
     }
 
@@ -351,15 +382,8 @@ where
                 let mut can_read = false;
                 let mut can_write = false;
 
-                self.poll
-                    .registry()
-                    .register(&mut self.rx, CHANNEL_TOKEN, Interest::READABLE)
-                    .unwrap();
-
-                // Register TTY through EventedRW interface.
-                self.pty
-                    .register(&self.poll, Interest::READABLE | Interest::WRITABLE)
-                    .unwrap();
+                // `self.rx` and `self.pty` were registered with `self.poll`
+                // in `EventLoop::new`, where a failure can be reported.
 
                 let mut events = Events::with_capacity(1024);
 
@@ -509,3 +533,7 @@ where
             .expect("thread spawn works")
     }
 }
+
+#[cfg(test)]
+#[path = "event_loop_tests.rs"]
+mod tests;

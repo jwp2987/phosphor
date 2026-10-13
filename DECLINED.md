@@ -1951,3 +1951,31 @@ upstream's behavior is actually a defect rather than a preference.
   design. Round-trip checked in real bash 5.3, zsh 5.9 and fish 4.2 (`printf '%s' WORD`
   reproduces the original bytes); the PowerShell form is unverified in a real shell.
   <!-- markers: keep:needs_control_char_quoting keep:test_escape_control_characters_per_dialect keep:sh_script_quote_arg keep:POSIX_SHELL_ESCAPE_PATTERN keep:shell_escape_single_quotes -->
+
+- **Running out of file descriptors fails a tab with the real cause instead of
+  panicking the PTY reader, leaking the PTY leader, or claiming the shell is
+  unsupported** (`#882`, 2026-10-13, `app/src/terminal/local_tty/event_loop.rs`,
+  `app/src/terminal/local_tty/terminal_manager.rs`,
+  `app/src/terminal/local_tty/unix.rs`, `app/src/terminal/local_tty/shell.rs`).
+  **Upstream:** `EventLoop::new` does `mio::Poll::new().expect(..)` and the
+  "PTY reader" thread `unwrap`s the channel and PTY registrations
+  (`4111d08f9:crates/warp_terminal/src/local_tty/event_loop.rs:156,354,359`);
+  the channel registration creates an eventfd waker, so under `ulimit -n` the
+  thread panics on EMFILE and the tab shows "Shell process exited prematurely",
+  blaming the bootstrap script. `spawn_command_in_pty` holds the PTY leader as a
+  raw fd (`4111d08f9:crates/warp_terminal/src/local_tty/unix.rs:468,584`), so a
+  failing `command.spawn()` (EMFILE again) leaks one fd per failed tab. The
+  "doesn't currently support your default shell" banner opens for every
+  `ShellStarterSource::Fallback`
+  (`4111d08f9:app/src/terminal/local_tty/terminal_manager.rs:601`), including the
+  one taken when the passwd lookup itself failed -- which under fd exhaustion it
+  does on every path (getpwuid_r, spawning `getent`, reading `/etc/passwd`).
+  **We do:** `EventLoop::new` creates the poll and registers both sources on the
+  caller's thread and returns `io::Result`, killing the shell on failure;
+  `start_pty_event_loop` reports it through `on_pty_spawn_failed`
+  ("Shell process could not start! error preparing terminal I/O: Too many open
+  files (os error 24)"); the leader is an `OwnedFd` until the spawn succeeds; and
+  the banner requires `ShellStarterSource::is_known_unsupported_default_shell`
+  (a resolved, unsupported shell). Evidence: the r13 starvation torture round,
+  F4 (`ulimit -n 256`, tab 20).
+  <!-- markers: keep:is_known_unsupported_default_shell keep:emfile_during_setup_is_returned_and_kills_the_shell keep:unresolved_default_shell_does_not_claim_it_is_unsupported -->
