@@ -666,3 +666,228 @@ fn autodetection_disabled_while_agent_drives_requested_command() {
         });
     });
 }
+
+// ---------------------------------------------------------------------------------------------
+// #833: input-type detection is tracked per buffer.
+//
+// The view records every user edit that requests detection (`note_detection_requested`) and only
+// classifies a parse whose text is still requested (`is_detection_requested_for`). These tests pin
+// the model half of that contract, the narrowed explicit-set window (F7), the withdrawal of
+// submitted text from detection, and the typing-speed-independent one-off shortcut (F8). F6
+// (Enter routing before the verdict lands) is not fixed.
+// ---------------------------------------------------------------------------------------------
+
+const AI_UNLOCKED: InputConfig = InputConfig {
+    input_type: InputType::AI,
+    is_locked: false,
+};
+
+/// A buffer the #808 pre-filter settles as Shell synchronously, with no classifier involved.
+const PREFILTERED_COMMAND: &str = "cat foo.txt | grep -i error";
+
+/// Builds an input model with autodetection live (unlocked `initial`, policy enabled), plus the
+/// singletons the async classification path reads.
+fn build_autodetecting_input_model(
+    app: &mut App,
+    initial: InputConfig,
+) -> ModelHandle<BlocklistAIInputModel> {
+    let policy = StubPolicy {
+        autodetection_enabled: true,
+        ..StubPolicy::inert(initial)
+    };
+    let (input_model, _) = build_input_model(app, policy);
+    app.add_singleton_model(crate::input_classifier::InputClassifierModel::new);
+    app.add_singleton_model(crate::PrivacySettings::mock);
+    input_model
+}
+
+async fn parsed(buffer_text: &str) -> ParsedTokensSnapshot {
+    warp_completer::util::parse_current_commands_and_tokens(
+        buffer_text.to_owned(),
+        &crate::completer::EmptyCompletionContext::new(),
+    )
+    .await
+}
+
+/// Requests detection for a parsed buffer the way the view does for a user edit: note it, then
+/// run detection on its parse. Synchronous, so tests that exercise the 250 ms window can parse
+/// up front and stay well inside it.
+fn request_detection(
+    app: &mut App,
+    input_model: &ModelHandle<BlocklistAIInputModel>,
+    snapshot: ParsedTokensSnapshot,
+) {
+    input_model.update(app, |model, ctx| {
+        model.note_detection_requested(snapshot.buffer_text.clone());
+        model.detect_and_set_input_type(
+            snapshot,
+            crate::completer::EmptyCompletionContext::new(),
+            None,
+            ctx,
+        );
+    });
+}
+
+#[test]
+fn edited_buffer_is_pending_until_its_own_verdict_lands() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, AI_UNLOCKED);
+
+        // The edit makes this buffer's input type undecided; other text is not affected.
+        input_model.update(&mut app, |model, _| {
+            model.note_detection_requested(PREFILTERED_COMMAND.to_owned());
+        });
+        input_model.read(&app, |model, ctx| {
+            assert!(model.is_detection_pending_for(PREFILTERED_COMMAND, ctx));
+            assert!(!model.is_detection_pending_for("something else", ctx));
+            // The live type is still the previous buffer's verdict -- exactly what Enter used to
+            // route on.
+            assert_eq!(model.input_type(), InputType::AI);
+        });
+
+        // The detection for the new text settles it, and the verdict is for the new text.
+        let snapshot = parsed(PREFILTERED_COMMAND).await;
+        request_detection(&mut app, &input_model, snapshot);
+        input_model.read(&app, |model, ctx| {
+            assert!(!model.is_detection_pending_for(PREFILTERED_COMMAND, ctx));
+            assert_eq!(model.input_type(), InputType::Shell);
+        });
+    });
+}
+
+#[test]
+fn submit_withdraws_the_submitted_text_from_detection() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(false);
+        let input_model = build_autodetecting_input_model(&mut app, AI_UNLOCKED);
+        AISettings::handle(&app).update(&mut app, |settings, ctx| {
+            settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx)
+                .unwrap();
+        });
+
+        // Typed, then submitted before its parse landed: the late parse must not be
+        // classified (the view checks `is_detection_requested_for` before classifying).
+        input_model.update(&mut app, |model, ctx| {
+            model.note_detection_requested(PREFILTERED_COMMAND.to_owned());
+            model.handle_input_buffer_submitted(ctx);
+        });
+        input_model.read(&app, |model, ctx| {
+            assert!(!model.is_detection_requested_for(PREFILTERED_COMMAND));
+            assert!(!model.is_detection_pending_for(PREFILTERED_COMMAND, ctx));
+            assert_eq!(model.input_config(), AI_UNLOCKED);
+        });
+    });
+}
+
+#[test]
+fn explicit_lock_is_never_pending() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, SHELL_UNLOCKED);
+
+        // ctrl-I (or any explicit lock): detection does not run, so Enter has nothing to wait
+        // for and routes on the locked type.
+        input_model.update(&mut app, |model, ctx| {
+            model.set_input_config(AI_LOCKED, true, ctx);
+            model.note_detection_requested("find the bug in main.rs".to_owned());
+        });
+        input_model.read(&app, |model, ctx| {
+            assert!(!model.is_detection_pending_for("find the bug in main.rs", ctx));
+            assert_eq!(model.input_config(), AI_LOCKED);
+        });
+    });
+}
+
+#[test]
+fn explicit_toggle_covers_the_buffer_it_was_made_for() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, SHELL_UNLOCKED);
+
+        let new_text = "cat foo.txt | grep -i errors";
+        let explicit_snapshot = parsed(PREFILTERED_COMMAND).await;
+        let new_snapshot = parsed(new_text).await;
+
+        // An unlocked explicit write (a slash command, a history pick) followed by the edit that
+        // accompanied it: Enter must not wait, and detection must not overrule the choice.
+        input_model.update(&mut app, |model, ctx| {
+            model.set_input_type(InputType::AI, ctx);
+        });
+        request_detection(&mut app, &input_model, explicit_snapshot);
+        input_model.read(&app, |model, ctx| {
+            assert!(!model.is_detection_pending_for(PREFILTERED_COMMAND, ctx));
+            assert_eq!(model.input_type(), InputType::AI);
+        });
+
+        // New text inside the same 250 ms window is a new question (F7).
+        request_detection(&mut app, &input_model, new_snapshot);
+        input_model.read(&app, |model, ctx| {
+            assert!(!model.is_detection_pending_for(new_text, ctx));
+            assert_eq!(model.input_type(), InputType::Shell);
+        });
+    });
+}
+
+#[test]
+fn submit_window_does_not_swallow_pasted_text() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        // Pin the unlock path `handle_input_buffer_submitted` takes on this surface.
+        let _agent_view = FeatureFlag::AgentView.override_enabled(false);
+        let input_model = build_autodetecting_input_model(&mut app, AI_UNLOCKED);
+        AISettings::handle(&app).update(&mut app, |settings, ctx| {
+            settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx)
+                .unwrap();
+        });
+
+        let pasted = parsed(PREFILTERED_COMMAND).await;
+
+        // Submitting resets the input for the now-empty buffer and opens the 250 ms window.
+        input_model.update(&mut app, |model, ctx| {
+            model.handle_input_buffer_submitted(ctx);
+        });
+        input_model.read(&app, |model, _| {
+            assert_eq!(model.input_config(), AI_UNLOCKED);
+        });
+
+        // A paste inside the window is classified rather than dropped: before #833 the mode
+        // stayed AI here until the next keystroke.
+        request_detection(&mut app, &input_model, pasted);
+        input_model.read(&app, |model, ctx| {
+            assert!(!model.is_detection_pending_for(PREFILTERED_COMMAND, ctx));
+            assert_eq!(model.input_type(), InputType::Shell);
+        });
+    });
+}
+
+#[test]
+fn one_off_shortcut_keys_off_the_last_non_autodetected_type() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, SHELL_UNLOCKED);
+
+        // An autodetected guess for an intermediate keystroke does not move the baseline (F8:
+        // `yes please` must not route by how fast it was typed)...
+        input_model.update(&mut app, |model, ctx| {
+            model.apply_autodetected_input_type(InputType::AI, ctx);
+        });
+        input_model.read(&app, |model, _| {
+            assert_eq!(model.input_type(), InputType::AI);
+            assert_eq!(model.non_autodetected_input_type, InputType::Shell);
+        });
+
+        // ...but a choice the user made does.
+        input_model.update(&mut app, |model, ctx| {
+            model.set_input_type(InputType::AI, ctx);
+        });
+        input_model.read(&app, |model, _| {
+            assert_eq!(model.non_autodetected_input_type, InputType::AI);
+        });
+    });
+}

@@ -52,6 +52,30 @@ const HISTORY_ENTRY_MATCH_CUTOFF: f32 = 0.9;
 /// Duration to temporarily disable autodetection during operations like history selection.
 const AUTODETECTION_DISABLE_DURATION_MS: u64 = 250;
 
+/// An explicit (non-autodetected) write of the input type, which suppresses autodetection for
+/// [`AUTODETECTION_DISABLE_DURATION_MS`] -- but only for the buffer it was made for (#833).
+///
+/// Upstream suppresses *every* detection inside the window. That swallowed content the user
+/// produced right after the explicit write: prose pasted within 250 ms of submitting a command
+/// stayed in shell mode and Enter ran it in the shell. The window exists so the explicit choice
+/// is not immediately reclassified, and that choice was made for one buffer; new text is a new
+/// question.
+#[derive(Clone, Debug)]
+struct ExplicitInputTypeSet {
+    at: Instant,
+    /// The buffer text the explicit choice applies to. `None` until known: most explicit writers
+    /// do not know the buffer, so the first detection request inside the window (the echo of the
+    /// edit that accompanied the explicit write) claims it.
+    buffer_text: Option<String>,
+}
+
+impl ExplicitInputTypeSet {
+    fn is_within_window(&self) -> bool {
+        Instant::now()
+            < self.at + std::time::Duration::from_millis(AUTODETECTION_DISABLE_DURATION_MS)
+    }
+}
+
 /// Configuration for the terminal pane's input.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputConfig {
@@ -134,8 +158,25 @@ pub struct BlocklistAIInputModel {
     /// it was autodetected. Else, `None`.
     last_ai_autodetection_ts: Option<Instant>,
 
-    /// Timestamp of the last time the input type was explicitly set.
-    last_explicit_input_type_set_at: Option<Instant>,
+    /// The last explicit write of the input type, see [`ExplicitInputTypeSet`].
+    explicit_input_type_set: Option<ExplicitInputTypeSet>,
+
+    /// The input type last written by anything *other than* autodetection (initial config,
+    /// explicit toggles, submit resets, agent-view transitions). The one-off natural-language
+    /// shortcut keys off this rather than the live input type, so the verdict for a buffer does
+    /// not depend on what autodetection guessed for the intermediate states while it was typed
+    /// (#833, F8: `yes please` routed to the agent when typed slowly and to the shell when typed
+    /// fast or pasted).
+    non_autodetected_input_type: InputType,
+
+    /// Buffer text whose detection the view has requested (#833) and which has not been settled
+    /// yet. Submitting exactly this text now would race its verdict (see
+    /// [`Self::is_detection_pending_for`]).
+    pending_detection_buffer: Option<String>,
+
+    /// Incremented for every spawned classification task, so a task that completed just before
+    /// being replaced cannot apply its verdict (or clear the handle) over its replacement.
+    detection_generation: u64,
 
     /// Whether the input buffer was empty at the time the lock was set.  This will be true
     /// if a persistent lock is in place and a buffer is submitted.
@@ -194,7 +235,10 @@ impl BlocklistAIInputModel {
         ctx.add_model(|_| Self {
             input_config,
             last_ai_autodetection_ts: None,
-            last_explicit_input_type_set_at: None,
+            explicit_input_type_set: None,
+            non_autodetected_input_type: input_config.input_type,
+            pending_detection_buffer: None,
+            detection_generation: 0,
             was_lock_set_with_empty_buffer: false,
             agent_view_controller: None,
             ai_context_model,
@@ -399,7 +443,10 @@ impl BlocklistAIInputModel {
             terminal_view_id,
             policy,
             last_ai_autodetection_ts: None,
-            last_explicit_input_type_set_at: None,
+            explicit_input_type_set: None,
+            non_autodetected_input_type: input_config.input_type,
+            pending_detection_buffer: None,
+            detection_generation: 0,
             was_lock_set_with_empty_buffer: false,
             autodetect_abort_handle: None,
             model,
@@ -487,6 +534,33 @@ impl BlocklistAIInputModel {
         new_config: InputConfig,
         ctx: &mut ModelContext<Self>,
     ) -> bool {
+        self.write_input_config(new_config, false, ctx)
+    }
+
+    /// Writes an input type that autodetection decided. Unlike
+    /// [`Self::set_input_config_internal`], this does not move
+    /// [`Self::non_autodetected_input_type`].
+    fn apply_autodetected_input_type(
+        &mut self,
+        input_type: InputType,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        self.write_input_config(
+            InputConfig {
+                input_type,
+                ..self.input_config()
+            },
+            true,
+            ctx,
+        )
+    }
+
+    fn write_input_config(
+        &mut self,
+        new_config: InputConfig,
+        is_autodetected: bool,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
         // Locking the input to AI is only allowed when the view's policy permits it (e.g. the
         // GUI only allows it inside an active agent view or an open CLI agent rich input
         // session; the TUI always permits it).
@@ -495,6 +569,10 @@ impl BlocklistAIInputModel {
             && !self.policy.allows_locked_ai_input(ctx)
         {
             return false;
+        }
+
+        if !is_autodetected {
+            self.non_autodetected_input_type = new_config.input_type;
         }
 
         if self.input_config == new_config {
@@ -596,8 +674,98 @@ impl BlocklistAIInputModel {
     /// Temporarily disable autodetection for a fixed duration.
     /// Useful for operations like history selection where we don't want
     /// autodetection to interfere with the manual input type setting.
+    ///
+    /// The suppression only covers the buffer the explicit write was made for (see
+    /// [`ExplicitInputTypeSet`]). An explicit write also settles any pending detection: the user
+    /// (or a flow acting for them) has decided, so a classifier verdict must not be waited for or
+    /// override it at submission.
     fn temporarily_disable_autodetection(&mut self) {
-        self.last_explicit_input_type_set_at = Some(Instant::now());
+        self.explicit_input_type_set = Some(ExplicitInputTypeSet {
+            at: Instant::now(),
+            buffer_text: None,
+        });
+        self.pending_detection_buffer = None;
+    }
+
+    /// Returns `true` if a detection request for `buffer_text` falls under the explicit-write
+    /// suppression window. The first request inside the window claims the explicit write for its
+    /// buffer; later requests are suppressed only while they are for that same buffer (#833).
+    fn is_detection_suppressed_by_explicit_set(&mut self, buffer_text: &str) -> bool {
+        let Some(explicit) = self.explicit_input_type_set.as_mut() else {
+            return false;
+        };
+        if !explicit.is_within_window() {
+            return false;
+        }
+        if explicit.buffer_text.is_none() {
+            explicit.buffer_text = Some(buffer_text.to_owned());
+            return true;
+        }
+        explicit.buffer_text.as_deref() == Some(buffer_text)
+    }
+
+    /// Records that the view has requested input-type detection for `buffer_text` (an edit the
+    /// user made, or a re-detection the view triggered). The view classifies a parse only while
+    /// its text is still requested ([`Self::is_detection_requested_for`]) (#833).
+    pub fn note_detection_requested(&mut self, buffer_text: String) {
+        let explicit_state = self
+            .explicit_input_type_set
+            .as_ref()
+            .map(|explicit| (explicit.is_within_window(), explicit.buffer_text.is_none()));
+        match explicit_state {
+            // The explicit write is history: this edit is a new question for autodetection.
+            Some((false, _)) => self.explicit_input_type_set = None,
+            // The first edit inside the window is the one that accompanied the explicit write
+            // (e.g. the history entry it inserted); the choice applies to its text.
+            Some((true, true)) => {
+                self.is_detection_suppressed_by_explicit_set(&buffer_text);
+            }
+            Some((true, false)) | None => {}
+        }
+        self.pending_detection_buffer = Some(buffer_text);
+    }
+
+    /// Whether submitting `buffer_text` right now would race an unfinished input-type detection
+    /// for it: autodetection is live (not locked, not disabled), the user's last edit requested a
+    /// detection for exactly this text, and no verdict -- autodetected or explicit -- has settled
+    /// it yet.
+    ///
+    /// An explicit write whose buffer is still unclaimed (no detection request has arrived since
+    /// it) is treated as covering the current buffer: nothing has asked to reclassify it, and an
+    /// explicit choice is never overridden. Nothing in the submit path consults this yet (F6 of
+    /// #833 is open); it is the model's answer to "is this buffer's mode a real verdict?".
+    pub fn is_detection_pending_for(&self, buffer_text: &str, app: &AppContext) -> bool {
+        if buffer_text.trim().is_empty() || !self.should_run_input_autodetection(app) {
+            return false;
+        }
+        let is_covered_by_explicit_set =
+            self.explicit_input_type_set
+                .as_ref()
+                .is_some_and(|explicit| {
+                    explicit
+                        .buffer_text
+                        .as_deref()
+                        .is_none_or(|explicit_buffer| explicit_buffer == buffer_text)
+                });
+        if is_covered_by_explicit_set {
+            return false;
+        }
+        self.pending_detection_buffer.as_deref() == Some(buffer_text)
+    }
+
+    /// Whether the user's latest detection-requesting edit was for exactly `buffer_text` and its
+    /// verdict has not landed yet. The view's background path only classifies a parse when this
+    /// holds, so a parse that lands after its text was submitted (or superseded) is dropped.
+    pub fn is_detection_requested_for(&self, buffer_text: &str) -> bool {
+        self.pending_detection_buffer.as_deref() == Some(buffer_text)
+    }
+
+    /// Marks detection for `buffer_text` as settled: whatever the input type is now is the
+    /// verdict for that text.
+    fn settle_detection(&mut self, buffer_text: &str) {
+        if self.pending_detection_buffer.as_deref() == Some(buffer_text) {
+            self.pending_detection_buffer = None;
+        }
     }
 
     pub fn enable_autodetection(&mut self, input_type: InputType, ctx: &mut ModelContext<Self>) {
@@ -610,7 +778,7 @@ impl BlocklistAIInputModel {
         );
         // The goal of this function is to allow autodetection to run, but if we
         // don't clear this, it may be suppressed for a short duration.
-        self.last_explicit_input_type_set_at = None;
+        self.explicit_input_type_set = None;
     }
 
     /// Handles the input buffer being submitted.
@@ -639,6 +807,20 @@ impl BlocklistAIInputModel {
             // We know the buffer is currently empty, as it was just submitted.
             true, ctx,
         );
+        // The reset above is made for the now-empty buffer, so the suppression window must not
+        // swallow whatever the user types or pastes next (#833, F7: prose pasted within 250 ms of
+        // submitting a command stayed in shell mode and Enter ran it). Claim the window for the
+        // empty buffer up front instead of letting the next detection request claim it.
+        if let Some(explicit) = self.explicit_input_type_set.as_mut() {
+            explicit.buffer_text = Some(String::new());
+        }
+        // The submitted text has been routed; nothing may reclassify it now. The shell submit
+        // path leaves the command in the editor until its block completes, so a debounced parse
+        // of it can still land after this point, and the narrowed window above no longer
+        // swallows it: without this, its verdict (say AI, for prose that just ran in the shell)
+        // would become the mode the next command is typed into. The view only classifies a
+        // parse whose text is still `is_detection_requested_for`.
+        self.pending_detection_buffer = None;
     }
 
     pub fn was_lock_set_with_empty_buffer(&self) -> bool {
@@ -671,19 +853,22 @@ impl BlocklistAIInputModel {
 
         // If the input mode is locked, there's no point in running autodetection.
         if !self.should_run_input_autodetection(ctx) {
+            self.settle_detection(&input.buffer_text);
             return;
         }
 
-        if self
-            .last_explicit_input_type_set_at
-            .map(|last_explicitly_set_at| {
-                Instant::now()
-                    < last_explicitly_set_at
-                        + std::time::Duration::from_millis(AUTODETECTION_DISABLE_DURATION_MS)
-            })
-            .unwrap_or(false)
-        {
+        // An explicit write in the last 250 ms keeps its input type -- for the buffer it was made
+        // for only; new text is classified (#833).
+        if self.is_detection_suppressed_by_explicit_set(&input.buffer_text) {
+            self.settle_detection(&input.buffer_text);
             return;
+        }
+        if self
+            .explicit_input_type_set
+            .as_ref()
+            .is_some_and(|explicit| !explicit.is_within_window())
+        {
+            self.explicit_input_type_set = None;
         }
 
         let first_token_str = input.parsed_tokens.first().map(|t| t.token.clone());
@@ -692,6 +877,7 @@ impl BlocklistAIInputModel {
             //
             // We don't know enough (anything) to be able to change the input type one way or
             // another.
+            self.settle_detection(&input.buffer_text);
             return;
         };
 
@@ -703,13 +889,8 @@ impl BlocklistAIInputModel {
 
         // Early return if the first token is included in the denylist. No need to parse history.
         if denylist.contains(&first_token_str.as_str()) {
-            self.set_input_config_internal(
-                InputConfig {
-                    input_type: InputType::Shell,
-                    ..self.input_config()
-                },
-                ctx,
-            );
+            self.apply_autodetected_input_type(InputType::Shell, ctx);
+            self.settle_detection(&input.buffer_text);
             return;
         }
 
@@ -721,13 +902,8 @@ impl BlocklistAIInputModel {
         // anything merely *probably* a command still goes through the pipeline below. See
         // `input_classifier::util::is_unambiguous_shell_command`.
         if input_classifier::util::is_unambiguous_shell_command(&input) {
-            self.set_input_config_internal(
-                InputConfig {
-                    input_type: InputType::Shell,
-                    ..self.input_config()
-                },
-                ctx,
-            );
+            self.apply_autodetected_input_type(InputType::Shell, ctx);
+            self.settle_detection(&input.buffer_text);
             return;
         }
 
@@ -751,7 +927,14 @@ impl BlocklistAIInputModel {
 
         let buffer_cloned = input.buffer_text.clone();
         let other_buffer_cloned = buffer_cloned.clone();
+        self.detection_generation = self.detection_generation.wrapping_add(1);
+        let detection_generation = self.detection_generation;
         let current_input_type = self.input_type();
+        // The one-off natural-language shortcut asks "is the user already talking to the agent?".
+        // Answer it from the last input type the user (or a flow acting for them) chose, not the
+        // live one: the live type is whatever autodetection guessed for the previous keystroke, so
+        // it made the verdict for the final text depend on typing speed (#833, F8).
+        let shortcut_input_type = self.non_autodetected_input_type;
 
         let is_udi_enabled = InputSettings::as_ref(ctx).is_universal_developer_input_enabled(ctx);
 
@@ -770,8 +953,9 @@ impl BlocklistAIInputModel {
         let handle = ctx
             .spawn(
                 async move {
-                    // First check if the token is a natural language word, if current input type is AI
-                    if matches!(current_input_type, InputType::AI)
+                    // First check if the token is a natural language word, if the user was already
+                    // in AI mode before this buffer's autodetection began.
+                    if matches!(shortcut_input_type, InputType::AI)
                         && is_one_off_natural_language_word(first_token_str.to_lowercase().as_str())
                     {
                         return InputType::AI;
@@ -863,6 +1047,7 @@ impl BlocklistAIInputModel {
                     // is not locked, and we should abort the autodetect future if the input is locked, but
                     // we do it anyway out of an abundance of caution.
                     if !me.should_run_input_autodetection(ctx) {
+                        me.settle_detection(&other_buffer_cloned);
                         return;
                     }
                     // If the autodetect abort handle is none, it means we aborted autodetection.
@@ -871,13 +1056,14 @@ impl BlocklistAIInputModel {
                     if me.autodetect_abort_handle.is_none() {
                         return;
                     }
-                    me.set_input_config_internal(
-                        InputConfig {
-                            input_type: new_input_type,
-                            ..me.input_config()
-                        },
-                        ctx,
-                    );
+                    // Likewise if a newer detection replaced this one after it had already
+                    // completed: the newer one owns the handle and will report its own verdict.
+                    if me.detection_generation != detection_generation {
+                        return;
+                    }
+                    me.autodetect_abort_handle = None;
+                    me.apply_autodetected_input_type(new_input_type, ctx);
+                    me.settle_detection(&other_buffer_cloned);
                     if current_input_type != new_input_type {
                         let buffer_length = other_buffer_cloned.len();
                         let input_buffer_text_for_telemetry = should_collect_ai_ugc_telemetry(

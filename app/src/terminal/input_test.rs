@@ -9359,3 +9359,98 @@ fn keeps_the_hashtag_for_a_non_empty_query_under_a_different_filter() {
         &Some(QueryFilter::History)
     ));
 }
+
+// #833: input-type detection for text the user just produced is not swallowed by the
+// explicit-set window, and its verdict is tracked per buffer.
+
+/// Sets up a bootstrapped terminal with autodetection live and returns its input.
+async fn input_with_live_autodetection(app: &mut App) -> ViewHandle<Input> {
+    initialize_app(app);
+    AISettings::handle(app).update(app, |ai_settings, ctx| {
+        let _ = ai_settings
+            .ai_autodetection_enabled_internal
+            .set_value(true, ctx);
+        let _ = ai_settings
+            .nld_in_terminal_enabled_internal
+            .set_value(true, ctx);
+    });
+    let terminal = add_window_with_bootstrapped_terminal(app, None, None).await;
+    terminal.read(&*app, |terminal, _| terminal.input().clone())
+}
+
+/// Pastes `text` into the input the way `insert_clipboard_text_content` does.
+fn paste_into_input(app: &mut App, input: &ViewHandle<Input>, text: &str) {
+    let editor = input.read(&*app, |input, _| input.editor().clone());
+    editor.update(app, |editor, ctx| {
+        editor.user_initiated_insert(text, PlainTextEditorViewAction::Paste, ctx);
+    });
+}
+
+#[test]
+fn test_paste_requests_input_detection_inside_submit_window() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let input = input_with_live_autodetection(&mut app).await;
+        let text = "summarize the readme for me";
+
+        // F7: a command was just submitted (opening the 250 ms explicit-set window for the empty
+        // buffer), then prose is pasted.
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |model, ctx| {
+                model.handle_input_buffer_submitted(ctx);
+            });
+        });
+        paste_into_input(&mut app, &input, text);
+
+        // The paste asked for a verdict on its own text, and the window (claimed by the submit
+        // for the empty buffer) does not swallow it: before #833 the mode stayed on the
+        // submit's reset until the next keystroke.
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), text);
+            assert!(
+                input
+                    .ai_input_model()
+                    .as_ref(ctx)
+                    .is_detection_pending_for(text, ctx)
+            );
+        });
+    });
+}
+
+#[test]
+fn test_parse_landing_after_submit_does_not_reclassify_the_mode() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let input = input_with_live_autodetection(&mut app).await;
+
+        // In AI mode, a command is pasted and submitted before its parse lands. The shell submit
+        // path leaves the text in the editor, so a buffer comparison alone would let the late
+        // parse through, and the #808 pre-filter would flip the mode to Shell for whatever is
+        // typed next.
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |model, ctx| {
+                model.enable_autodetection(InputType::AI, ctx);
+            });
+        });
+        let command = "cat foo.txt | grep -i error";
+        paste_into_input(&mut app, &input, command);
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |model, ctx| {
+                model.handle_input_buffer_submitted(ctx);
+            });
+        });
+
+        // Let the parse (and anything it would trigger) land.
+        for _ in 0..60 {
+            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+        }
+
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), command);
+            assert_eq!(
+                input.ai_input_model().as_ref(ctx).input_type(),
+                InputType::AI
+            );
+        });
+    });
+}
