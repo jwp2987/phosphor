@@ -2621,8 +2621,9 @@ impl Workspace {
         ) {
             const OBJECT_ID: &str = "keybindings_file_error";
             let path = crate::keyboard::keybinding_file_path();
+            let path_string = path.display().to_string();
             let friendly_path = user_friendly_path(
-                &path.display().to_string(),
+                &path_string,
                 dirs::home_dir().as_ref().and_then(|h| h.to_str()),
             );
             let message = format!(
