@@ -13,7 +13,9 @@ use warp_core::ui::theme::WarpTheme;
 use warp_core::ui::Icon;
 use warp_editor::render::element::VerticalExpansionBehavior;
 use warpui::clipboard::ClipboardContent;
-use warpui::elements::{ConstrainedBox, ScrollbarWidth};
+use warpui::elements::{
+    ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Fill, Highlight, ScrollbarWidth,
+};
 use warpui::ui_components::components::UiComponent as _;
 use warpui::{
     elements::{
@@ -84,6 +86,9 @@ use crate::ui_components::json_tree::{
     render_json_tree,
 };
 
+use super::command_approval_preview::{
+    self, approval_notes, approval_requires_full_view, command_approval_preview, PreviewMode,
+};
 use super::inline_action_icons::{self, icon_size};
 
 /// The vertical padding applied to the requested command row's content body.
@@ -92,6 +97,9 @@ pub const REQUESTED_COMMAND_BODY_VERTICAL_PADDING: f32 = 16.;
 
 const REQUESTED_COMMAND_ACCEPT_LABEL: &str = "Run";
 const REQUESTED_COMMAND_MINIMIZE_LABEL: &str = "Done";
+/// Replaces Run while part of the command is elided on the card (issue #847): the full command
+/// has to be on screen before it can be approved.
+const REQUESTED_COMMAND_SHOW_FULL_LABEL: &str = "Show full command";
 
 const LOADING_MESSAGE: &str = "Generating command...";
 const COMMAND_WAITING_FOR_USER_MESSAGE: &str = "OK if I run this command and read the output?";
@@ -352,6 +360,9 @@ pub enum RequestedCommandViewAction {
     CloseEditMode,
     FocusEditor,
     ToggleExpanded,
+    /// Shows the whole command on the approval card, which also re-enables Run for a command
+    /// whose collapsed preview elides part of it (issue #847).
+    ShowFullCommand,
     OpenActiveAgentProfileEditor,
     SelectText,
     CopyOnSelect(String),
@@ -379,6 +390,14 @@ pub struct RequestedCommandView {
     cancel_button: CompactibleActionButton,
     edit_button: CompactibleActionButton,
     minimize_button: CompactibleActionButton,
+    show_full_command_button: CompactibleActionButton,
+
+    /// Whether the user asked to see the whole command on the approval card. Until they do, a
+    /// command whose collapsed preview elides anything cannot be approved -- see
+    /// [`approval_requires_full_view`] and issue #847. Reset whenever the command text changes.
+    full_command_shown: bool,
+    /// Scroll state for the approval card's command preview.
+    command_preview_scroll_state: ClippedScrollStateHandle,
 
     // Split accept button and menu state
     accept_and_autoexecute_split_button: CompactibleSplitActionButton,
@@ -507,6 +526,16 @@ impl RequestedCommandView {
             ButtonSize::InlineActionHeader,
             RequestedCommandViewAction::CloseEditMode,
             Icon::ArrowBlockLeft,
+            Arc::new(NakedTheme),
+            ctx,
+        );
+
+        let show_full_command_button = CompactibleActionButton::new(
+            REQUESTED_COMMAND_SHOW_FULL_LABEL.to_string(),
+            None,
+            ButtonSize::InlineActionHeader,
+            RequestedCommandViewAction::ShowFullCommand,
+            Icon::Eye,
             Arc::new(NakedTheme),
             ctx,
         );
@@ -671,6 +700,9 @@ impl RequestedCommandView {
             cancel_button,
             edit_button,
             minimize_button,
+            show_full_command_button,
+            full_command_shown: false,
+            command_preview_scroll_state: Default::default(),
             accept_and_autoexecute_split_button,
             is_accept_split_button_menu_open: false,
             accept_split_button_menu: accept_menu,
@@ -753,6 +785,46 @@ impl RequestedCommandView {
     pub fn commit_and_get_command_text(&mut self, ctx: &mut ViewContext<Self>) -> String {
         self.commit_editor_contents(ctx);
         self.command_text.clone()
+    }
+
+    /// Whether this command may not be approved yet because the card elides part of it and the
+    /// user has not asked to see the full command (issue #847). Every accept path checks this
+    /// after committing editor contents: the Run button, Enter, the split-button menu, and
+    /// `AIBlock::accept_pending_requested_command` (the auto-execute toggle). MCP tool calls are
+    /// not gated here; their arguments are not shown through this preview.
+    pub fn approval_requires_full_view(&self) -> bool {
+        self.action_type.is_requested_command()
+            && approval_requires_full_view(&self.command_text, self.full_command_shown)
+    }
+
+    fn show_full_command(&mut self, ctx: &mut ViewContext<Self>) {
+        self.full_command_shown = true;
+        if self.is_editing {
+            // The preview is drawn only outside edit mode. Leave edit mode so the full command
+            // the user asked for is what is on screen. Edits are kept in the editor and are
+            // committed on accept.
+            self.commit_editor_contents(ctx);
+            self.close_edit_mode(ctx);
+        }
+        self.set_is_header_expanded(true, ctx);
+        ctx.notify();
+    }
+
+    /// Commits any edits and emits `Accepted`, unless the card still elides part of the
+    /// command. In that case nothing runs, and the card keeps offering "Show full command".
+    fn try_accept(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        self.commit_editor_contents(ctx);
+        if self.approval_requires_full_view() {
+            log::info!(
+                "Not accepting requested command {:?}: part of it is hidden on the card",
+                self.action_id
+            );
+            self.set_is_header_expanded(true, ctx);
+            ctx.notify();
+            return false;
+        }
+        ctx.emit(RequestedCommandViewEvent::Accepted);
+        true
     }
 
     fn handle_editor_event(
@@ -1163,6 +1235,10 @@ impl RequestedCommandView {
     ///
     /// If the command length is shorter than the previous update, then the command is truncated to the given byte length.
     pub fn apply_streamed_update(&mut self, command: &str, ctx: &mut ViewContext<Self>) {
+        if command != self.command_text {
+            // A changed command has not been seen in full.
+            self.full_command_shown = false;
+        }
         match command.len().cmp(&self.command_text.len()) {
             Ordering::Greater => {
                 // Check if the existing length falls on a valid UTF-8 character boundary.
@@ -1541,7 +1617,7 @@ impl RequestedCommandView {
                     let action_buttons: Vec<Rc<dyn RenderCompactibleActionButton>> = vec![
                         Rc::new(self.cancel_button.clone()),
                         Rc::new(self.minimize_button.clone()),
-                        Rc::new(self.accept_and_autoexecute_split_button.clone()),
+                        self.accept_or_show_full_button(),
                     ];
                     (action_buttons, MEDIUM_SIZE_SWITCH_THRESHOLD)
                 } else {
@@ -1550,7 +1626,7 @@ impl RequestedCommandView {
                             let action_buttons: Vec<Rc<dyn RenderCompactibleActionButton>> = vec![
                                 Rc::new(self.cancel_button.clone()),
                                 Rc::new(self.edit_button.clone()),
-                                Rc::new(self.accept_and_autoexecute_split_button.clone()),
+                                self.accept_or_show_full_button(),
                             ];
                             (action_buttons, LARGE_SIZE_SWITCH_THRESHOLD)
                         }
@@ -1655,6 +1731,87 @@ impl RequestedCommandView {
         };
 
         config.render(app)
+    }
+
+    /// The Run split button, or "Show full command" in its place while the card elides part of
+    /// the command (issue #847).
+    fn accept_or_show_full_button(&self) -> Rc<dyn RenderCompactibleActionButton> {
+        if self.approval_requires_full_view() {
+            Rc::new(self.show_full_command_button.clone())
+        } else {
+            Rc::new(self.accept_and_autoexecute_split_button.clone())
+        }
+    }
+
+    /// The approval card's command body: notes on hidden text, statement count and command
+    /// substitution, then the command itself. It is drawn from [`command_approval_preview`]
+    /// rather than the code editor, so no part of the command is dropped or clipped silently
+    /// (issue #847).
+    fn render_command_preview(&self, appearance: &Appearance) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        let collapsed = command_approval_preview(&self.command_text, PreviewMode::Collapsed);
+        let notes = approval_notes(&self.command_text, &collapsed, self.full_command_shown);
+        let preview = if self.full_command_shown && collapsed.is_truncated() {
+            command_approval_preview(&self.command_text, PreviewMode::Full)
+        } else {
+            collapsed
+        };
+
+        let operator_color = theme.ui_warning_color();
+        let marker_color = blended_colors::text_sub(theme, theme.background());
+        let mut text = Text::new(
+            preview.text,
+            appearance.monospace_font_family(),
+            appearance.monospace_font_size(),
+        )
+        .with_color(blended_colors::text_main(theme, theme.background()))
+        .with_selectable(false);
+        if !preview.operator_char_indices.is_empty() {
+            text = text.with_single_highlight(
+                Highlight::new().with_foreground_color(operator_color),
+                preview.operator_char_indices,
+            );
+        }
+        if !preview.marker_char_indices.is_empty() {
+            text = text.with_single_highlight(
+                Highlight::new().with_foreground_color(marker_color),
+                preview.marker_char_indices,
+            );
+        }
+
+        let mut column = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        for note in notes {
+            column.add_child(
+                Container::new(
+                    Text::new(
+                        note,
+                        appearance.ui_font_family(),
+                        appearance.monospace_font_size() - 1.,
+                    )
+                    .with_color(operator_color)
+                    .with_selectable(false)
+                    .finish(),
+                )
+                .with_padding_bottom(4.)
+                .finish(),
+            );
+        }
+        column.add_child(
+            ConstrainedBox::new(
+                ClippedScrollable::vertical(
+                    self.command_preview_scroll_state.clone(),
+                    text.finish(),
+                    SCROLLBAR_WIDTH,
+                    theme.nonactive_ui_detail().into(),
+                    theme.active_ui_detail().into(),
+                    Fill::None,
+                )
+                .finish(),
+            )
+            .with_max_height(MAX_EDITOR_HEIGHT)
+            .finish(),
+        );
+        column.finish()
     }
 
     fn get_header_title_text(&self, app: &AppContext) -> String {
@@ -1799,9 +1956,19 @@ impl View for RequestedCommandView {
             .with_child(Clipped::new(header_element).finish());
 
         if let (true, Some(editor)) = (should_render_editor, &self.editor) {
+            // Outside edit mode the card shows the command preview, not the editor: the editor
+            // lays a line out unwrapped at infinite width, and the text renderer drops any single
+            // word over 16,384 chars, so the editor can misrepresent the command (issue #847).
+            // In edit mode the user is changing the text, and Run is still gated on the
+            // committed text (`try_accept`).
+            let body = if self.is_editing {
+                ChildView::new(editor).finish()
+            } else {
+                self.render_command_preview(appearance)
+            };
             content.add_child(
                 ConstrainedBox::new(
-                    Container::new(ChildView::new(editor).finish())
+                    Container::new(body)
                         .with_horizontal_padding(INLINE_ACTION_HORIZONTAL_PADDING)
                         .with_padding_top(REQUESTED_COMMAND_BODY_VERTICAL_PADDING)
                         .with_padding_bottom(
@@ -2045,14 +2212,14 @@ impl TypedActionView for RequestedCommandView {
     fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
         match action {
             RequestedCommandViewAction::Accept => {
-                self.commit_editor_contents(ctx);
-                ctx.emit(RequestedCommandViewEvent::Accepted);
+                self.try_accept(ctx);
             }
             RequestedCommandViewAction::AcceptAndAutoExecute => {
-                self.commit_editor_contents(ctx);
-                ctx.emit(RequestedCommandViewEvent::Accepted);
-                ctx.emit(RequestedCommandViewEvent::EnableAutoexecuteMode);
+                if self.try_accept(ctx) {
+                    ctx.emit(RequestedCommandViewEvent::EnableAutoexecuteMode);
+                }
             }
+            RequestedCommandViewAction::ShowFullCommand => self.show_full_command(ctx),
             RequestedCommandViewAction::ToggleAcceptMenu => {
                 self.toggle_accept_split_button_menu(ctx)
             }
@@ -2118,19 +2285,12 @@ impl RequestedCommand {
     }
 }
 
-/// Formats the command text to truncate at the first newline and add an ellipsis.
-/// Extracted for unit testing.
+/// Formats the command text as a one-line header title: the first line, plus an ellipsis when
+/// more non-blank lines follow. Long runs are elided with a visible count and invisible characters
+/// are escaped (see [`command_approval_preview::one_line_title`]), so a header never silently
+/// drops or clips part of the command (issue #847). Extracted for unit testing.
 pub fn format_command_text(text: &str) -> String {
-    if let Some(newline_pos) = text.find('\n') {
-        let first_line = &text[..newline_pos];
-        if text[newline_pos..].trim().is_empty() {
-            first_line.to_string()
-        } else {
-            format!("{first_line}…")
-        }
-    } else {
-        text.to_string()
-    }
+    command_approval_preview::one_line_title(text)
 }
 
 /// Builds the blocked/confirmation title for an MCP tool call from the

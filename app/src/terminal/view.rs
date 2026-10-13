@@ -7655,6 +7655,10 @@ impl TerminalView {
                 .get_pending_action(app)
                 .map(|action| match &action.action {
                     AIAgentActionType::RequestCommandOutput { command, .. } => {
+                        // Same one-line form as the card header: long runs elided with a count,
+                        // invisible characters escaped, `…` for more lines (issue #847).
+                        use crate::ai::blocklist::inline_action::requested_command::format_command_text;
+                        let command = format_command_text(command);
                         format!("Phosphor Agent needs your permission to run `{command}`")
                     }
                     AIAgentActionType::ReadFiles(..) => {

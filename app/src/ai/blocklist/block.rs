@@ -4994,6 +4994,17 @@ impl AIBlock {
                 let command_text = requested_command
                     .view
                     .update(ctx, |view, ctx| view.commit_and_get_command_text(ctx));
+                // The card is still eliding part of this command, and the user has not asked to
+                // see all of it. Turning on auto-execute must not approve text nobody has seen
+                // (issue #847). The card stays blocked and offers "Show full command".
+                if requested_command
+                    .view
+                    .as_ref(ctx)
+                    .approval_requires_full_view()
+                {
+                    requested_command.force_expand(ctx);
+                    return;
+                }
                 self.action_model.update(ctx, |action_model, ctx| {
                     action_model.handle_requested_command_accepted(&action_id, command_text, ctx);
                 });
