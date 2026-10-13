@@ -1538,23 +1538,30 @@ upstream's behavior is actually a defect rather than a preference.
   characters raw (#867). **We do:** commands are rendered before the pane's shell exists (a
   saved config replays in whatever shell is current), so `ShellDialect` is not known there;
   every substituted value is instead one `portable_shell_word` — bare, `'...'` or `"..."`,
-  whichever all of bash, zsh, fish and PowerShell read identically — and a command whose value
-  has none (a control character, or `'` with `$`/backtick/`"`/`\`/`!`) is not run at all:
-  the tab is not opened and an error toast names the value (`try_render_tab_config`). A
-  placeholder inside the template's own quotes (`cd "/x/{{v}}"`) or after `\`, `` ` ``, `$`
-  or quoting the shells parse differently is refused the same way, since the word's own
-  quotes would not protect it there; one that is exactly the content of a quote pair
-  (`"{{v}}"`, `'{{v}}'`) has the pair dropped. A legacy `git worktree add` whose baked base
-  branch is not a plain word is refused.
-  The worktree path is the render-time `{{worktree_path}}` (`WORKTREE_PATH_VAR`) instead of
-  baked text, the base branch is one word after `--` (refused if unquotable or containing
-  `{{`), saved configs and default templates from before the fix have their exact legacy path
-  strings rewritten to `{{worktree_path}}`, and `{{repo}}`/`{{pane_type}}` in a customized
-  default template's commands are quoted. Checked in real bash 5.3 (interactive, history
+  whichever all of bash, zsh, fish and PowerShell read identically. That spelling is only right
+  where a shell reads an ordinary argument word, and we do not parse shell to find out where
+  that is (a flat quote tracker was bypassed by nested quotes in `$(...)`, `${y:-"..."}`,
+  comments, heredocs and arithmetic). Instead a command that substitutes a placeholder is held
+  to a whitelist: the placeholder bare or exactly `"{{v}}"`/`'{{v}}'` (the pair is dropped),
+  and nowhere in that command any other quote, `$(`, `${`, `((`, `<<`, backtick, backslash,
+  line break or word-initial `#`, nor `$` directly before a placeholder. A command outside
+  the whitelist, or whose value has no portable spelling (a control character, or `'` with
+  `$`/backtick/`"`/`\`/`!`), is not run: the tab is not opened and an error toast names the
+  placeholder and value (`try_render_tab_config`). The worktree path is the render-time
+  `{{worktree_path}}` (`WORKTREE_PATH_VAR`) instead of baked text, the base branch is one
+  word after `--` (refused if unquotable or containing `{{`), saved configs and default
+  templates from before the fix have their exact legacy `"<path>/{{branch}}"` strings
+  rewritten to `{{worktree_path}}` (and are refused if their baked base branch is not a plain
+  word), and `{{repo}}`/`{{pane_type}}` in a customized default template's commands go through
+  the same whitelist. **Not fixable at render time:** configs saved before `1787cc7ee` bake
+  the worktree path *unquoted*, so a hostile repo name is already shell syntax in the saved
+  text; the whitelist refuses such a command when the name contains `$(`, a quote, a backtick
+  or a backslash, but not when it uses only `;`, `|`, `&` or `>`. Those files have to be
+  recreated. Checked in real bash 5.3 (interactive, history
   expansion on), zsh 5.9 and fish 4.2: every spelling in `PORTABLE_WORDS` round-trips through
   `printf '%s'`, and the full command chain against a real repo named `$(touch pwned)`,
   `` `touch pwned` ``, `a"; touch pwned; echo "`, `it's` and `a;touch pwned` with base
   branches `a;>pwned`, `$(>pwned)`, `` `>pwned` ``, `x|>pwned` creates the worktree at the
   exact path and executes nothing; a `-dash` base fails inside git without running anything.
   The PowerShell spellings are unverified in a real shell.
-  <!-- markers: keep:portable_shell_word keep:WORKTREE_PATH_VAR keep:test_hostile_repo_name_is_quoted_as_part_of_one_path_word keep:test_portable_shell_word_spellings keep:test_placeholder_inside_template_quotes_is_refused keep:try_render_tab_config -->
+  <!-- markers: keep:portable_shell_word keep:WORKTREE_PATH_VAR keep:test_hostile_repo_name_is_quoted_as_part_of_one_path_word keep:test_portable_shell_word_spellings keep:test_placeholder_near_shell_syntax_is_refused keep:try_render_tab_config -->

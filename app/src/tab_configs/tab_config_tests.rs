@@ -14,8 +14,8 @@ id = "main"
 type = "terminal"
 directory = "{{repo}}"
 commands = [
-  "git worktree add -b {{worktree_branch_name}} $HOME/.warp/worktrees/$(basename {{repo}})/{{worktree_branch_name}} {{branch}}",
-  "cd $HOME/.warp/worktrees/$(basename {{repo}})/{{worktree_branch_name}}",
+  "git worktree add -b {{worktree_branch_name}} -- {{worktree_path}} {{branch}}",
+  "cd {{worktree_path}}",
 ]
 
 [params.repo]
@@ -89,8 +89,8 @@ fn test_parse_worktree_toml() {
     assert_eq!(
         config.panes[0].commands.as_deref().unwrap(),
         &[
-            "git worktree add -b {{worktree_branch_name}} $HOME/.warp/worktrees/$(basename {{repo}})/{{worktree_branch_name}} {{branch}}",
-            "cd $HOME/.warp/worktrees/$(basename {{repo}})/{{worktree_branch_name}}"
+            "git worktree add -b {{worktree_branch_name}} -- {{worktree_path}} {{branch}}",
+            "cd {{worktree_path}}"
         ]
     );
     assert_eq!(config.params.len(), 3);
@@ -188,14 +188,12 @@ fn test_render_tab_config_substitutes_values() {
     {
         assert_eq!(cwd, std::path::PathBuf::from("/Users/me/repo"));
         // Commands should have shell-quoted values.
+        let path_word = expected_path_word("/Users/me/repo", "my-feature");
         assert_eq!(
             commands[0].exec,
-            "git worktree add -b my-feature $HOME/.warp/worktrees/$(basename /Users/me/repo)/my-feature main"
+            format!("git worktree add -b my-feature -- {path_word} main")
         );
-        assert_eq!(
-            commands[1].exec,
-            "cd $HOME/.warp/worktrees/$(basename /Users/me/repo)/my-feature"
-        );
+        assert_eq!(commands[1].exec, format!("cd {path_word}"));
     } else {
         panic!("Expected PaneTemplate variant");
     }
@@ -242,8 +240,8 @@ id = "left"
 type = "terminal"
 directory = "{{repo}}"
 commands = [
-  "git worktree add -b {{worktree_branch_name}} $HOME/.warp/worktrees/$(basename {{repo}})/{{worktree_branch_name}} {{branch}}",
-  "cd $HOME/.warp/worktrees/$(basename {{repo}})/{{worktree_branch_name}}",
+  "git worktree add -b {{worktree_branch_name}} -- {{worktree_path}} {{branch}}",
+  "cd {{worktree_path}}",
 ]
 
 [[panes]]
@@ -292,14 +290,12 @@ description = "New worktree branch name"
         {
             assert_eq!(*cwd, std::path::PathBuf::from("/Users/me/repo"));
             assert_eq!(commands.len(), 2);
+            let path_word = expected_path_word("/Users/me/repo", "my-feature");
             assert_eq!(
                 commands[0].exec,
-                "git worktree add -b my-feature $HOME/.warp/worktrees/$(basename /Users/me/repo)/my-feature main"
+                format!("git worktree add -b my-feature -- {path_word} main")
             );
-            assert_eq!(
-                commands[1].exec,
-                "cd $HOME/.warp/worktrees/$(basename /Users/me/repo)/my-feature"
-            );
+            assert_eq!(commands[1].exec, format!("cd {path_word}"));
             assert_eq!(*is_focused, Some(true));
         } else {
             panic!("Expected PaneTemplate for first child");
@@ -1219,24 +1215,34 @@ fn test_placeholder_wrapped_in_template_quotes_is_unwrapped() {
 }
 
 #[test]
-fn test_placeholder_inside_template_quotes_is_refused() {
+fn test_placeholder_near_shell_syntax_is_refused() {
     for command in [
+        // Inside, or next to, the template's own quotes.
         "cd \"/tmp/{{x}}\"",
         "cd '/tmp/{{x}}'",
         "echo \"a {{x}} b\"",
         "echo '{{x}} b'",
-        // Quoting the shells read differently: `\'` is an escape in bash, not in PowerShell.
-        "echo \\'{{x}}",
-        "echo `\"{{x}}",
+        "echo \"'{{x}}'\"",
         "echo \u{2018}{{x}}\u{2019}",
-        // Directly after an escape or `$` the word's opening quote changes meaning.
+        // Shapes that defeated quote tracking (#878 review): nested quotes in `$(...)`, a
+        // default in `${...}`, an apostrophe in a comment, a heredoc body, arithmetic.
+        "cd \"$(git -C \"{{x}}\" rev-parse --show-toplevel)\"",
+        "echo \"${y:-\"{{x}}\"}\"",
+        "# don't\necho '{{x}}'",
+        "cat <<EOF\n{{x}}\nEOF",
+        "echo $(( {{x}} ))",
+        "echo $(basename {{x}})",
+        "echo `basename {{x}}`",
+        "echo {{x}} # note",
+        // Escapes, and `$` directly before the word (`$'...'` is ANSI-C quoting in bash).
+        "echo \\'{{x}}",
         "echo \\{{x}}",
         "echo ${{x}}",
-        "echo `{{x}}",
+        "echo $'{{x}}'",
     ] {
         let err = render_single_command(command, "$(touch pwned)")
-            .expect_err(&format!("{command} must be refused"));
-        assert!(err.contains("$(touch pwned)"), "{command}: {err}");
+            .expect_err(&format!("{command:?} must be refused"));
+        assert!(err.contains("$(touch pwned)"), "{command:?}: {err}");
         // The infallible render falls back to an empty terminal.
         let config: TabConfig = toml::from_str(&build_test_tab_config_toml(
             "Quoting",
@@ -1246,30 +1252,37 @@ fn test_placeholder_inside_template_quotes_is_refused() {
         let params = HashMap::from([("x".to_string(), "$(touch pwned)".to_string())]);
         assert!(
             render_commands(&config, &params, None).is_empty(),
-            "{command}"
+            "{command:?}"
         );
     }
 }
 
 #[test]
-fn test_template_quotes_away_from_placeholders_are_unaffected() {
+fn test_plain_commands_with_placeholders_render() {
     assert_eq!(
         render_single_command(
-            "git checkout {{x}} && echo \"switched\" && grep 'a b' file",
+            "git checkout {{x}} && npm install && ls -la {{x}}/src > out.txt",
             "$(touch pwned)"
         ),
         Ok(vec![
-            "git checkout '$(touch pwned)' && echo \"switched\" && grep 'a b' file".to_string()
+            "git checkout '$(touch pwned)' && npm install && ls -la '$(touch pwned)'/src > out.txt"
+                .to_string()
         ])
     );
+    // `$NAME` without a brace or paren is allowed, and `#` inside a word is not a comment.
     assert_eq!(
-        render_single_command("echo \"done\" {{x}} 'x'", "main"),
-        Ok(vec!["echo \"done\" main 'x'".to_string()])
+        render_single_command("cd $HOME/src/{{x}} && echo issue#5", "main"),
+        Ok(vec!["cd $HOME/src/main && echo issue#5".to_string()])
     );
-    // A placeholder with no value is left alone, wherever it is.
+    // Commands without a substituted placeholder are not restricted.
     assert_eq!(
-        render_single_command("echo \"{{missing}}\" {{x}}", "main"),
-        Ok(vec!["echo \"{{missing}}\" main".to_string()])
+        render_single_command("echo \"$(date)\" 'x' # {{missing}}", "main"),
+        Ok(vec!["echo \"$(date)\" 'x' # {{missing}}".to_string()])
+    );
+    // A balanced `{{{x}}}` is handlebars' escape: left literal, nothing substituted.
+    assert_eq!(
+        render_single_command("echo {{{x}}}", "$(touch pwned)"),
+        Ok(vec!["echo {{{x}}}".to_string()])
     );
 }
 
