@@ -1431,16 +1431,20 @@ esac
   # 1 under p10k's `_p9k_widget` pattern.
   _warp_zle_line_init() {
     local warp_status=$?
-    # Backstop against wrapper shapes that call back into us from the widget
-    # we chain to; the case below handles the known one.
-    if [[ -n ${_warp_in_zle_line_init:-} ]]; then
+    # Nesting depth (locals are dynamically scoped, so this reads the outer
+    # call's value). Re-entry is legitimate when the user's widget calls `zle
+    # zle-line-init` itself: we only repair at the outermost level and keep
+    # chaining, so their recursion behaves as without us. The cap is the
+    # backstop for wrapper shapes that would call back into us forever; the
+    # dispatcher check below handles the known one.
+    local -i _warp_zle_line_init_depth=$(( ${_warp_zle_line_init_depth:-0} + 1 ))
+    if (( _warp_zle_line_init_depth > 8 )); then
       return 0
     fi
-    local _warp_in_zle_line_init=1
     # Only the main command line: vared, `read -q`-style prompts and
     # continuation lines also start ZLE, possibly while a command is running.
     _WARP_REPAIRED_PRECMD=""
-    if [[ ${CONTEXT:-} == start ]]; then
+    if [[ ${CONTEXT:-} == start ]] && (( _warp_zle_line_init_depth == 1 )); then
       _warp_repair_hooks $warp_status
     fi
     if [[ -n ${_WARP_REPAIRED_PRECMD:-} ]]; then
@@ -1448,13 +1452,16 @@ esac
       # lands in the new block, after its Precmd.
       zle .reset-prompt
     fi
-    # add-zle-hook-widget ran after us and wrapped us (as `user:_warp_zle_line_init`
-    # in its hook list). If what we chained to is itself an add-zle-hook-widget
-    # dispatcher, it would read that same list, call us again, and so on until
-    # the recursion limit, at every prompt. The outer dispatcher already runs
-    # every hook in that list, so there is nothing left for us to call.
-    if [[ ${widgets[_warp_user_zle_line_init]:-} == user:azhw:zle-line-init &&
-          ${widgets[zle-line-init]:-} == user:azhw:zle-line-init ]]; then
+    # We chained to an add-zle-hook-widget dispatcher (the rc files used it),
+    # and something after bootstrap wrapped us again -- add-zle-hook-widget
+    # itself (listing us as `user:_warp_zle_line_init`), or a wrapper such as
+    # p10k's `_p9k_widget` around such a dispatcher. If a dispatcher is
+    # already on the call stack, it runs the very zstyle hook list that ours
+    # would (both read it for $WIDGET=zle-line-init): calling ours would
+    # recurse into us, or run every hook in that list twice. Skipping never
+    # drops a hook, since the dispatcher on the stack runs them all.
+    if [[ ${widgets[_warp_user_zle_line_init]:-} == user:azhw:zle-line-init ]] &&
+       (( ${funcstack[(Ie)azhw:zle-line-init]} )); then
       return 0
     fi
     if zle -la _warp_user_zle_line_init; then
@@ -1472,7 +1479,7 @@ esac
     fi
   }
   # ${widgets} comes from zsh/zleparameter.
-  zmodload zsh/zleparameter 2>/dev/null
+  zmodload zsh/zleparameter 2>/dev/null || :
   if [[ "$(zle -lL zle-line-init 2>/dev/null)" != *_warp_zle_line_init* ]]; then
     if zle -la zle-line-init; then
       zle -A zle-line-init _warp_user_zle_line_init
