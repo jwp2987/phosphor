@@ -3136,3 +3136,80 @@ fn test_content_generation_is_unique_per_grid_instance() {
     let clone = grid.clone();
     assert_ne!(clone.content_generation(), grid.content_generation());
 }
+
+/// #876: kitty `r=`/`c=` are untrusted u32s, and the placement code emits one
+/// newline per cell of image height. `r=4294967295` (or `r=268435455`, which
+/// does not even overflow) used to ask for ~2.7e8 newlines and stall the model
+/// thread. The height must be capped at `MAX_IMAGE_CELL_HEIGHT` like iTerm's.
+#[test]
+fn test_kitty_huge_rows_are_capped_at_max_image_cell_height() {
+    use crate::terminal::model::kitty::{DisplayStoredImage, KittyAction, KittyPlacementData};
+    use crate::terminal::model::test_utils;
+    use pathfinder_geometry::vector::vec2f;
+    use warpui::units::{IntoPixels, Pixels};
+
+    let _kitty_images = FeatureFlag::KittyImages.override_enabled(true);
+    let max_cells = super::ansi_handler::MAX_IMAGE_CELL_HEIGHT as usize;
+
+    for rows in [u32::MAX, 268_435_455] {
+        let size = SizeInfo::new(
+            vec2f(80. * 8., 10. * 16.),
+            8.0.into_pixels(),
+            16.0.into_pixels(),
+            Pixels::zero(),
+            Pixels::zero(),
+        );
+        let mut grid = GridHandler::new(
+            size,
+            MAX_SCROLL_LIMIT,
+            ChannelEventListener::new_for_test(),
+            false,
+            ObfuscateSecrets::No,
+            PerformResetGridChecks::default(),
+        );
+        let mut metadata = test_utils::test_kitty_image_metadata_map(1);
+
+        // StoreAndDisplay (`a=T,r=...`).
+        let mut action = test_utils::test_kitty_store_and_display_action(1, 1);
+        let KittyAction::StoreAndDisplay(store_and_display) = &mut action else {
+            panic!("expected StoreAndDisplay action");
+        };
+        store_and_display.placement_data.cols = None;
+        store_and_display.placement_data.rows = Some(rows);
+        grid.handle_completed_kitty_action(action, &mut metadata)
+            .expect("kitty action should be handled")
+            .expect("kitty image should render");
+        let height_cells = grid
+            .images
+            .get_image_placement_data(1, 1)
+            .expect("placed")
+            .height_cells;
+        assert!(
+            (1..=max_cells).contains(&height_cells),
+            "r={rows}: height_cells={height_cells}"
+        );
+
+        // DisplayStoredImage (`a=p,i=1,r=...`), both dimensions given.
+        let action = KittyAction::DisplayStoredImage(DisplayStoredImage {
+            image_id: 1,
+            placement_id: 2,
+            placement_data: KittyPlacementData {
+                cols: Some(u32::MAX),
+                rows: Some(rows),
+                ..Default::default()
+            },
+        });
+        grid.handle_completed_kitty_action(action, &mut metadata)
+            .expect("kitty action should be handled")
+            .expect("kitty image should render");
+        let height_cells = grid
+            .images
+            .get_image_placement_data(1, 2)
+            .expect("placed")
+            .height_cells;
+        assert!(
+            (1..=max_cells).contains(&height_cells),
+            "r={rows}: height_cells={height_cells}"
+        );
+    }
+}

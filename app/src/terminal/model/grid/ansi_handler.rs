@@ -48,7 +48,7 @@ use super::{AbsolutePoint, FullGridClearBehavior, GridHandler, PerformResetGridC
 
 use tab_stops::TabStops;
 
-const MAX_IMAGE_CELL_HEIGHT: u32 = 255;
+pub(super) const MAX_IMAGE_CELL_HEIGHT: u32 = 255;
 
 /// State needed for the grid-level implementation of [`ansi::Handler`].
 #[derive(Clone)]
@@ -2016,7 +2016,7 @@ impl GridHandler {
                 }
 
                 // Create the whitespace to fit the image on.
-                for _ in 0..height_cells - 1 {
+                for _ in 0..height_cells.saturating_sub(1) {
                     self.newline();
                 }
 
@@ -2106,7 +2106,7 @@ impl GridHandler {
                 }
 
                 // Create the whitespace to fit the image on.
-                for _ in 0..height_cells - 1 {
+                for _ in 0..height_cells.saturating_sub(1) {
                     self.newline();
                 }
 

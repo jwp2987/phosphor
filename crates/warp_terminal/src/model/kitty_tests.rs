@@ -188,20 +188,113 @@ fn decompression_is_bounded() {
     );
 }
 
-#[test]
-fn desired_dimensions_do_not_overflow() {
-    let placement = KittyPlacementData {
-        cols: Some(u32::MAX),
-        rows: Some(u32::MAX),
+fn placement(cols: Option<u32>, rows: Option<u32>) -> KittyPlacementData {
+    KittyPlacementData {
+        cols,
+        rows,
         ..Default::default()
-    };
-    let size = placement.get_desired_dimensions(Vector2F::new(10.0, 10.0), 20, 10, 800, 600);
-    assert!(size.x().is_finite() && size.y().is_finite());
+    }
+}
 
-    let placement = KittyPlacementData {
-        cols: Some(u32::MAX),
-        ..Default::default()
-    };
-    let size = placement.get_desired_dimensions(Vector2F::new(10.0, 10.0), 20, 10, 800, 600);
-    assert!(size.x().is_finite() && size.y().is_finite());
+fn assert_size(size: Vector2F, width: f32, height: f32) {
+    assert!(
+        (size.x() - width).abs() < 0.5 && (size.y() - height).abs() < 0.5,
+        "expected {width}x{height}, got {size:?}"
+    );
+}
+
+/// #876: `c=`/`r=` are untrusted u32s. The caller turns the desired height
+/// into one newline per cell, so an unbounded height stalled the model thread
+/// (`r=4294967295` -> ~2.7e8 newlines). The result must stay inside
+/// `max_width_px` x `max_height_px` however large `c`/`r` are.
+#[test]
+fn desired_dimensions_are_bounded() {
+    let image = Vector2F::new(10.0, 10.0);
+    // cell_height 20, cell_width 10, bounds 800x600.
+    let desired = |p: KittyPlacementData| p.get_desired_dimensions(image, 20, 10, 800, 600);
+
+    // Both given: each dimension is clamped independently.
+    assert_size(
+        desired(placement(Some(u32::MAX), Some(u32::MAX))),
+        800.0,
+        600.0,
+    );
+    // One given: the aspect ratio is kept while fitting the bounds.
+    assert_size(desired(placement(Some(u32::MAX), None)), 600.0, 600.0);
+    assert_size(desired(placement(None, Some(u32::MAX))), 600.0, 600.0);
+
+    // Huge but not overflowing (16 * 268435455 fits in u32).
+    let size = placement(None, Some(268_435_455)).get_desired_dimensions(image, 16, 8, 800, 600);
+    assert_size(size, 600.0, 600.0);
+    let size = placement(Some(1), Some(268_435_455)).get_desired_dimensions(image, 16, 8, 800, 600);
+    assert_size(size, 8.0, 600.0);
+
+    // In-bounds requests are unchanged.
+    assert_size(desired(placement(Some(4), Some(3))), 40.0, 60.0);
+    let wide = Vector2F::new(20.0, 10.0);
+    assert_size(
+        placement(Some(4), None).get_desired_dimensions(wide, 20, 10, 800, 600),
+        40.0,
+        20.0,
+    );
+    assert_size(desired(placement(None, None)), 10.0, 10.0);
+}
+
+#[test]
+fn decompression_is_bounded_by_the_declared_image_size() {
+    let mut encoder = ZlibEncoder::new(vec![], Compression::best());
+    encoder.write_all(&[0; 4096]).unwrap();
+    let compressed = encoder.finish().unwrap();
+
+    assert!(matches!(
+        decode_kitty_image_data_bounded(compressed.clone(), true, 1024),
+        Err(KittyDecodeError::PayloadTooLarge { limit: 1024 })
+    ));
+    assert_eq!(
+        decode_kitty_image_data_bounded(compressed.clone(), true, 4096).unwrap(),
+        vec![0; 4096]
+    );
+
+    // End to end: a 2x2 RGBA image (16 bytes) whose zlib stream inflates to
+    // 4096 bytes stops inflating at 16 rather than buffering it all.
+    let input = format!("a=t,f=32,o=z,s=2,v=2;{}", b64(&compressed));
+    let result = kitty_action_from_chunks(input.as_bytes());
+    assert!(
+        matches!(
+            result,
+            Err(KittyError::InvalidKittyAction(
+                InvalidKittyAction::InvalidKittyPayload(InvalidKittyPayload::KittyDecodeError(
+                    KittyDecodeError::PayloadTooLarge { limit: 16 }
+                ))
+            ))
+        ),
+        "{result:?}"
+    );
+
+    // A tiny image whose zlib stream is larger than its pixels still decodes.
+    let mut encoder = ZlibEncoder::new(vec![], Compression::default());
+    encoder.write_all(&[7, 8, 9]).unwrap();
+    let compressed = encoder.finish().unwrap();
+    assert!(compressed.len() > 3);
+    let input = format!("a=t,f=24,o=z,s=1,v=1;{}", b64(&compressed));
+    let result = kitty_action_from_chunks(input.as_bytes());
+    assert!(
+        matches!(result, Ok(KittyAction::StoreOnly(_))),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn assembled_payload_is_bounded() {
+    let chunks = vec![b64(&[1; 6]).into_bytes(), b64(&[2; 6]).into_bytes()];
+    assert_eq!(decode_base64_chunks(&chunks, 12).unwrap().len(), 12);
+    assert!(matches!(
+        decode_base64_chunks(&chunks, 11),
+        Err(KittyDecodeError::PayloadTooLarge { limit: 11 })
+    ));
+    // The first chunk alone fits; the check is on the running total.
+    assert!(matches!(
+        decode_base64_chunks(&chunks, 6),
+        Err(KittyDecodeError::PayloadTooLarge { limit: 6 })
+    ));
 }
