@@ -13,7 +13,7 @@ use crate::terminal;
 use crate::terminal::model::session::SessionId;
 use crate::terminal::HistoryEntry;
 
-use super::HistorySearchItem;
+use super::{HistoryResultsCapped, HistoryResultsCappedNotice, HistorySearchItem};
 
 pub(crate) struct HistorySnapshot {
     commands: Arc<[Arc<HistoryEntry>]>,
@@ -66,6 +66,13 @@ pub(crate) fn history_data_source_for_session(
 /// per keystroke. The command search panel shows about a dozen rows, so the best 1,000
 /// are far more than anyone scrolls through; past that the query needs refining.
 pub(crate) const MAX_HISTORY_SEARCH_RESULTS: usize = 1000;
+
+/// The most history entries the empty query lists (#868): the newest ones.
+///
+/// The empty-query list is the history browser a filter atom (`history:`) opens, so it gets
+/// a larger cap than a ranked query. Every entry ties on an empty query, so this costs a
+/// copy of the history's tail and no matching at all.
+pub(crate) const MAX_HISTORY_ZERO_STATE_RESULTS: usize = 10_000;
 
 /// Only the first this-many bytes of a history entry are fuzzy-matched (#868).
 ///
@@ -163,6 +170,10 @@ pub(crate) fn fuzzy_match_history(
 ) -> BoxFuture<'static, Result<Vec<QueryResult<CommandSearchItemAction>>, DataSourceRunErrorWrapper>>
 {
     Box::pin(async move {
+        if snapshot.query_text.is_empty() {
+            return Ok(newest_history_entries(&snapshot.commands));
+        }
+
         // Keep only the best `MAX_HISTORY_SEARCH_RESULTS` while matching (#868), so the
         // mixer's main-thread sort, the view's renderers and the eventual drop are all
         // bounded by the cap rather than by the size of the history.
@@ -178,6 +189,7 @@ pub(crate) fn fuzzy_match_history(
         // history model already dedupes on load); neither does this.
         let mut top = TopK::new(MAX_HISTORY_SEARCH_RESULTS);
         let mut position = 0usize;
+        let mut matched = 0usize;
 
         // History entries are cheap to match (bounded by `MAX_HISTORY_MATCH_BYTES`), so we
         // use a large chunk size to reduce yield overhead while still allowing cancellation
@@ -189,24 +201,63 @@ pub(crate) fn fuzzy_match_history(
                     snapshot.query_text.as_str(),
                 ) {
                     top.push((match_result.score, position), (entry, match_result));
+                    matched += 1;
                 }
                 position += 1;
             }
             yield_now().await;
         }
 
-        Ok(top
-            .into_ascending_vec()
-            .into_iter()
-            .map(|(_, (entry, match_result))| {
-                HistorySearchItem {
-                    entry: entry.clone(),
-                    match_result,
-                }
-                .into()
-            })
-            .collect())
+        let kept = top.into_ascending_vec();
+        let mut results = Vec::with_capacity(kept.len() + 1);
+        if matched > kept.len() {
+            results.push(capped_notice(HistoryResultsCapped::Best {
+                shown: kept.len(),
+                total: matched,
+            }));
+        }
+        results.extend(kept.into_iter().map(|(_, (entry, match_result))| {
+            HistorySearchItem {
+                entry: entry.clone(),
+                match_result,
+            }
+            .into()
+        }));
+        Ok(results)
     })
+}
+
+/// The empty-query list (#868): the newest `MAX_HISTORY_ZERO_STATE_RESULTS` entries, oldest
+/// first, preceded by a notice row when older entries were left out.
+///
+/// The fuzzy matcher gives every entry `(score 0, no indices)` for an empty pattern, so a
+/// full stable sort kept history order and the newest entries ended up last. Taking the
+/// tail directly produces the same rows in the same order without matching anything.
+fn newest_history_entries(
+    commands: &[Arc<HistoryEntry>],
+) -> Vec<QueryResult<CommandSearchItemAction>> {
+    let start = commands
+        .len()
+        .saturating_sub(MAX_HISTORY_ZERO_STATE_RESULTS);
+    let shown = &commands[start..];
+    let mut results = Vec::with_capacity(shown.len() + 1);
+    if start > 0 {
+        results.push(capped_notice(HistoryResultsCapped::Newest {
+            shown: shown.len(),
+        }));
+    }
+    results.extend(shown.iter().map(|entry| {
+        HistorySearchItem {
+            entry: entry.clone(),
+            match_result: fuzzy_match::FuzzyMatchResult::no_match(),
+        }
+        .into()
+    }));
+    results
+}
+
+fn capped_notice(capped: HistoryResultsCapped) -> QueryResult<CommandSearchItemAction> {
+    HistoryResultsCappedNotice { capped }.into()
 }
 
 #[cfg(test)]

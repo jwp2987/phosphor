@@ -455,10 +455,14 @@ upstream's behavior is actually a defect rather than a preference.
   `(score, position)` in a bounded heap. That is exactly the set and order a full
   stable sort would have put last, which is where the best result sits. Only the first
   4 KiB of an entry is matched and shown, with an ellipsis. Accepting or executing a
-  row still uses the full command. Input buffers over 1 MiB skip the background parse.
-  **Cost:** the empty-query zero state lists the newest 1,000 entries instead of the
-  whole history, and text that appears only past an entry's first 4 KiB no longer
-  matches.
+  row still uses the full command. The empty query (the history list a `history:`
+  filter atom opens; without a filter the zero state shows no history) skips matching
+  and lists the newest 10,000 entries in the same order as before. A capped list ends
+  in a non-selectable row saying so ("Showing the newest N..." / "Showing the best N of
+  M matches..."). Input buffers over 1M chars skip the background parse without
+  copying the buffer. **Cost:** the `history:` list stops at the newest 10,000 entries,
+  a ranked query at the best 1,000, and text that appears only past an entry's first
+  4 KiB no longer matches.
 
 - **An incremental find rescan does not flash the find bar's scanning label**
   (`#815`, 2026-10-12, `app/src/terminal/find/model/async_find.rs`). **Upstream:**

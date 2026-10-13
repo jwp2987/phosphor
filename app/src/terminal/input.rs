@@ -1605,6 +1605,10 @@ pub struct Input {
     /// syntax highlighting and autosuggestions features (all which use the completer).
     completions_abort_handle: Option<AbortHandle>,
     decorations_future_handle: Option<SpawnedFutureHandle>,
+    /// Whether decorations were already cleared because the buffer is over
+    /// `decorations::MAX_BACKGROUND_JOB_BUFFER_CHARS` (#868), so later edits of the same
+    /// oversized buffer skip the full-buffer clear.
+    decorations_cleared_for_oversized_buffer: bool,
     autosuggestions_abort_handle: Option<AbortHandle>,
 
     pub prompt_render_helper: PromptRenderHelper,
@@ -3310,6 +3314,7 @@ impl Input {
             has_pending_command: false,
             last_word_insertion,
             decorations_future_handle: None,
+            decorations_cleared_for_oversized_buffer: false,
             autosuggestions_abort_handle: None,
             completions_abort_handle: None,
             menu_positioning_provider,

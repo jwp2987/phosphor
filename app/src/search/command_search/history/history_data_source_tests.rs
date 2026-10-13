@@ -10,6 +10,7 @@ use rand::{Rng, SeedableRng};
 use super::super::history_display_text;
 use super::*;
 use crate::search::command_search::searcher::{AcceptedHistoryItem, CommandSearchItemAction};
+use crate::search::item::SearchItem as _;
 
 /// What a full stable ascending sort by score followed by keeping the last `k` returns:
 /// the ordering the mixer produced before #868, written out the slow way.
@@ -77,8 +78,7 @@ fn comparisons_to_keep_top_k(scores: impl Iterator<Item = i64>, k: usize) -> (u6
     for (position, score) in scores.enumerate() {
         top.push(CountedKey(score, position), ());
     }
-    let kept = top.len();
-    (COMPARISONS.with(Cell::get), kept)
+    (COMPARISONS.with(Cell::get), top.len())
 }
 
 /// 1,000,000 synthetic entries: keeping the best `MAX_HISTORY_SEARCH_RESULTS` costs a
@@ -100,14 +100,15 @@ fn top_k_work_is_bounded_for_a_million_entries() {
     );
 
     // Worst case for the heap: every entry beats everything kept so far, which is what
-    // the empty-query zero state looks like (equal scores, newest wins). Each entry is
-    // then one comparison against the weakest plus a sift through a heap of height
-    // log2(k) -- bounded by the cap, not by the history size.
+    // equal scores look like (newest wins). Each entry is then one comparison against the
+    // weakest plus a sift through a heap of height log2(k) -- bounded by the cap, not by
+    // the history size. The constant is loose on purpose: it bounds the shape, not
+    // `BinaryHeap`'s sift internals.
     let log2_k = (k as f64).log2().ceil() as u64;
     let (ascending_cmp, kept) = comparisons_to_keep_top_k((0..N).map(|_| 0), k);
     assert_eq!(kept, k);
     assert!(
-        ascending_cmp <= N as u64 * (2 * log2_k + 2),
+        ascending_cmp <= 3 * log2_k * N as u64,
         "{ascending_cmp} comparisons for {N} ascending entries"
     );
 }
@@ -165,9 +166,19 @@ fn fuzzy_match_history_returns_the_best_matches_in_mixer_order() {
             .collect();
 
         let results = block_on(fuzzy_match_history(snapshot(&commands, query))).unwrap();
-        assert!(results.len() <= MAX_HISTORY_SEARCH_RESULTS);
-        let actual: Vec<String> = results.iter().map(accepted_command).collect();
+        let (notices, rows): (Vec<_>, Vec<_>) =
+            results.iter().partition(|r| r.is_static_separator());
+        assert!(rows.len() <= MAX_HISTORY_SEARCH_RESULTS);
+        let actual: Vec<String> = rows.into_iter().map(accepted_command).collect();
         assert_eq!(actual, expected, "query {query:?}");
+
+        // A capped list says so, in one notice row at the start (the end farthest from
+        // the best result); an uncapped one has none.
+        let capped = scores.len() > MAX_HISTORY_SEARCH_RESULTS;
+        assert_eq!(notices.len(), usize::from(capped), "query {query:?}");
+        if capped {
+            assert!(results[0].is_static_separator());
+        }
     }
 }
 
@@ -224,4 +235,61 @@ fn history_match_target_is_a_char_boundary_prefix() {
     let target = history_match_target(&s);
     assert_eq!(target.len(), MAX_HISTORY_MATCH_BYTES - 1);
     assert!(s.starts_with(target));
+}
+
+/// The empty query lists the newest `MAX_HISTORY_ZERO_STATE_RESULTS` entries in history
+/// order -- what the full sort of all-zero scores produced, cut to the cap -- after one
+/// notice row that says older entries were left out.
+#[test]
+fn empty_query_lists_the_newest_entries_after_a_notice() {
+    // The equivalence rests on this: an empty pattern ties every entry at (0, []).
+    assert_eq!(
+        fuzzy_match::match_indices_case_insensitive("git status", ""),
+        Some(fuzzy_match::FuzzyMatchResult::no_match())
+    );
+
+    let total = MAX_HISTORY_ZERO_STATE_RESULTS + 5;
+    let commands: Vec<String> = (0..total).map(|i| format!("cmd {i}")).collect();
+    let results = block_on(fuzzy_match_history(snapshot(&commands, ""))).unwrap();
+
+    assert_eq!(results.len(), MAX_HISTORY_ZERO_STATE_RESULTS + 1);
+    assert!(results[0].is_static_separator());
+    assert!(matches!(
+        results[0].accept_result(),
+        CommandSearchItemAction::NoOp
+    ));
+    let actual: Vec<String> = results[1..].iter().map(accepted_command).collect();
+    assert_eq!(actual, commands[5..].to_vec());
+    assert!(results[1..].iter().all(|r| !r.is_static_separator()));
+
+    // A history under the cap is listed whole, with no notice.
+    let small: Vec<String> = (0..10).map(|i| format!("cmd {i}")).collect();
+    let results = block_on(fuzzy_match_history(snapshot(&small, ""))).unwrap();
+    let actual: Vec<String> = results.iter().map(accepted_command).collect();
+    assert_eq!(actual, small);
+}
+
+/// The notice row sorts below every real result, so the mixer's ascending sort keeps it at
+/// the far end of the list, and it is never a selectable result.
+#[test]
+fn capped_notice_is_an_unselectable_lowest_row() {
+    let notice = HistoryResultsCappedNotice {
+        capped: HistoryResultsCapped::Best {
+            shown: 1000,
+            total: 5000,
+        },
+    };
+    assert!(notice.is_static_separator());
+    assert_eq!(
+        notice.score(),
+        ordered_float::OrderedFloat(f64::NEG_INFINITY)
+    );
+    assert!(matches!(
+        notice.accept_result(),
+        CommandSearchItemAction::NoOp
+    ));
+    assert!(matches!(
+        notice.execute_result(),
+        CommandSearchItemAction::NoOp
+    ));
 }
