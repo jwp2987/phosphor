@@ -305,6 +305,56 @@ Started from a maintainer patch (`git am`, authorship kept):
   for a long-running command defaults its model chip to Ollama instead of
   inheriting the parent conversation's provider (pre-existing).
 
+### What landed — round 12 + the torture round (2026-10-12 → 10-13)
+
+Round 12 (finish #817/#815/#816): #817 merged (`beee34583`, content-generation counter);
+#815 closed with numbers (find bar open 46% → 31-32%, equal to closed); #816 allocator
+measurements resumed after the torture round (branch `fix/816-glibc-malloc-tuning`).
+
+Torture round (maintainer: "torture test the thing ... chaos monkey test it ... make it worse"):
+headless X11 testers for lockups, routing, chaos (4,058 actions), filesystem/completion/history,
+crash/restore/config, agent workflows (mock + LAN model), and resource starvation; plus
+cargo-fuzz targets (branch `test/terminal-parser-fuzz`, which found #876 in an hour). Every
+finding was filed (#822-#882); the serious ones were fixed through fix agent → Sonnet review
+→ Opus refutation (security ones got 3-5 refutation rounds) → box tests → `--no-ff` merge.
+
+Merged in this wave (box: 9,284/9,286 lib tests with the remaining two being new-test fixes
+since landed; `script/precheck` green on the combined tree except the regenerated STATE.md):
+
+| issue | what |
+|---|---|
+| #825 (+#838, #839) | bash `set -u` no longer breaks the hooks |
+| #828 | zsh hook repair when plugins replace `precmd_functions` |
+| #831, #832 | pre-filter holes; history no longer poisons routing |
+| #833 (Refs) | Enter before input detection finishes (F7/F8); F6 open |
+| #840 | reopening a closed tab with the conversation list open no longer panics (must-panic verified) |
+| #848 | closing a tab/pane/window stops its agent; nothing runs in a closed pane |
+| #850 | an approved agent command can be interrupted; exactly one ^C on every stop path |
+| #857, #858, #859 | settings validated at load; broken keybindings never overwritten; atomic config writes |
+| #866 | control chars / invalid UTF-8 in cwd or env no longer wedge the tab |
+| #867 | completion/drag-drop/cd insert control-char file names safely per shell |
+| #868 | ctrl-r with a huge history no longer freezes (top-k, bounded) |
+| #876 | kitty image size overflow (fuzz-found) and unbounded placement rows |
+
+Next wave (reviewed, being box-tested as `integ/r14c` / later): #847 (approval card can no longer
+hide part of a command — 5 refutation rounds), #849 (incremental markdown for streamed answers),
+#878 (worktree tab-config command injection), #881 (subagent restore crash), #882 (EMFILE panic),
+design H for #826/#827 behind `FeatureFlag::TypeaheadHandoff` (off everywhere; named-only in
+`ZAP_UNSTABLE_FEATURES`).
+
+**Operational lessons:**
+- **The box was reachable all along.** "No route to host" from the laptop for ~9 hours was the
+  laptop's network; the box had 39 days of uptime. Check from another host before calling it down.
+- **Must-panic checks must revert every production file.** The first #840 check reverted two of
+  five files; a defensive `try_as_ref` left in another file hid the crash and the test passed.
+- **Hoisting a singleton read out of a loop breaks unit tests** that never register the singleton
+  (#840 made 162 input tests panic). Keep lazy reads lazy.
+- **Approval UI and shell-quoting fixes need adversarial rounds until a round finds nothing.**
+  #847 took five rounds (renderer word drop, soft-wrap fold, UAX#14 space rules, dwell, edit
+  divergence); #878 took three (flat quote tracker bypassed by `$(…"{{x}}"…)`, comments, heredocs).
+- **`git push` from the laptop intermittently hangs** on this network: wrap pushes in `timeout`
+  and verify with `git ls-remote`.
+
 ### What landed — round 11, the filed-only issues (2026-10-12)
 
 Scope: the seven issues round 10 filed but did not fix (#808, #809, #812-#816). Same
