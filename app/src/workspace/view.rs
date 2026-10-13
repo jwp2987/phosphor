@@ -2231,6 +2231,8 @@ impl Workspace {
         self.pending_onboarding_intention = Some(intention);
     }
 
+    /// Returns `false` only when the config could not be opened (see
+    /// `open_tab_config_with_params`); the old tab is then kept.
     #[cfg(feature = "local_fs")]
     fn handle_session_config_completed(
         &mut self,
@@ -2286,8 +2288,6 @@ impl Workspace {
         }
     }
 
-    /// Returns `false` only when the config could not be opened (see
-    /// `open_tab_config_with_params`).
     #[cfg(not(feature = "local_fs"))]
     fn handle_session_config_completed(
         &mut self,
@@ -9881,13 +9881,11 @@ impl Workspace {
                     ctx,
                 );
                 if !opened {
-                    // Refused as unsafe (#878; the error is toasted): treat it like a cancel,
-                    // so the old tab stays, no chip is promoted and the tutorial does not wait
-                    // on setup commands that never run.
-                    if let Some(intention) = pending_intention {
-                        self.pending_onboarding_intention = Some(intention);
-                    }
-                    self.cancel_tab_config_params_modal(ctx);
+                    // Refused as unsafe (#878; the error is toasted): leave the modal open so
+                    // the values can be corrected. Nothing has changed yet — the old tab, any
+                    // pending replacement and the onboarding intention all stay as they were,
+                    // and closing the modal goes through `cancel_tab_config_params_modal`.
+                    self.pending_onboarding_intention = pending_intention;
                     return;
                 }
                 if should_track_existing_config_open {

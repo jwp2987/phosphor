@@ -1309,3 +1309,76 @@ fn test_legacy_worktree_config_with_unquoted_hostile_base_is_refused() {
         assert_eq!(result.is_err(), refused, "base {base:?}: {result:?}");
     }
 }
+
+#[test]
+fn test_placeholder_in_arithmetic_or_subscript_is_refused() {
+    // A branch named `feature/a$(touch pwned)` is a valid refname; inside `$[ ]` or a
+    // subscript the quoted word is evaluated as arithmetic, which expands `$(...)`.
+    for command in [
+        "echo $[ {{x}} ]",
+        "echo $[{{x}}]",
+        "echo ${arr[{{x}}]}",
+        "echo arr[{{x}}]",
+        "ls *(e:{{x}}:)",
+    ] {
+        let err = render_single_command(command, "feature/a$(touch pwned)")
+            .expect_err(&format!("{command:?} must be refused"));
+        assert!(
+            err.contains("feature/a$(touch pwned)"),
+            "{command:?}: {err}"
+        );
+    }
+}
+
+#[test]
+fn test_placeholder_passed_to_reparsing_command_is_refused() {
+    for command in [
+        "ssh host cat {{x}}",
+        "eval echo {{x}}",
+        "bash -c {{x}}",
+        "sh -lc {{x}}",
+        "/usr/bin/zsh -c {{x}}",
+        "fish -c {{x}}",
+        "watch ls {{x}}",
+        "tmux new-session ls {{x}}",
+        "screen -dm ls {{x}}",
+        "docker exec box ls {{x}}",
+        "podman exec box ls {{x}}",
+        "kubectl exec pod -- ls {{x}}",
+        "su root -c {{x}}",
+        "sudo sh -c {{x}}",
+        "sudo -u me bash -c {{x}}",
+        "FOO=1 env ssh host {{x}}",
+        "echo {{x}} | xargs rm",
+        "find . -name {{x}} -exec rm {} +",
+        "script -c {{x}} out.log",
+        "trap {{x}} EXIT",
+        "iex {{x}}",
+        "Invoke-Expression {{x}}",
+        "git -c alias.x=!sh {{x}}",
+        "cd /tmp && ssh host {{x}}",
+    ] {
+        let err = render_single_command(command, "main")
+            .expect_err(&format!("{command:?} must be refused"));
+        assert!(
+            err.contains("parses its arguments as shell code"),
+            "{command:?}: {err}"
+        );
+    }
+    // Ordinary commands, including ones that merely mention those words, still render.
+    for command in [
+        "git checkout {{x}}",
+        "npm run dev -- {{x}}",
+        "bash script.sh {{x}}",
+        "sudo apt install {{x}}",
+        "find . -name {{x}}",
+        "git -c core.pager=less log {{x}}",
+        "echo ssh {{x}}",
+        "w {{x}}",
+    ] {
+        assert!(
+            render_single_command(command, "main").is_ok(),
+            "{command:?} should render"
+        );
+    }
+}

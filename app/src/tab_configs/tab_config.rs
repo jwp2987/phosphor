@@ -447,6 +447,8 @@ fn forbidden_syntax_around_placeholders(residual: &[char]) -> Option<&'static st
     for (needle, what) in [
         ("$(", "`$(...)`"),
         ("${", "`${...}`"),
+        ("$[", "`$[...]` arithmetic"),
+        ("(e:", "a zsh `(e:...)` glob qualifier"),
         ("((", "`((...))`"),
         ("<<", "a heredoc"),
     ] {
@@ -469,6 +471,96 @@ fn forbidden_syntax_around_placeholders(residual: &[char]) -> Option<&'static st
             _ => continue,
         };
         return Some(what);
+    }
+    None
+}
+
+/// Commands that parse their arguments as shell (or PowerShell) code again, where a value
+/// quoted for the local shell is unquoted text: `ssh host {{x}}` runs `{{x}}`'s value on the
+/// remote shell. Best-effort, word-level: the first word of each `;`/`&`/`|`/`(`-separated
+/// segment (after `VAR=value` assignments and a path), plus the flags that make a command
+/// re-parse (`sh -c`, `docker exec`, `find -exec`, `git -c alias.*`, ...). It cannot see
+/// aliases, functions or scripts that do the same, which is why the docs say never to pass a
+/// placeholder to anything that re-parses it.
+fn reparsing_command(residual: &[char]) -> Option<&'static str> {
+    const ALWAYS: [&str; 10] = [
+        "ssh",
+        "eval",
+        "watch",
+        "tmux",
+        "screen",
+        "su",
+        "xargs",
+        "trap",
+        "iex",
+        "invoke-expression",
+    ];
+    const SHELLS: [&str; 7] = ["sh", "bash", "zsh", "fish", "dash", "ksh", "pwsh"];
+    const PREFIXES: [&str; 8] = [
+        "sudo", "doas", "env", "nohup", "time", "nice", "command", "exec",
+    ];
+
+    let text: String = residual
+        .iter()
+        .map(|&c| {
+            if matches!(c, ';' | '&' | '|' | '(' | ')') {
+                '\n'
+            } else {
+                c
+            }
+        })
+        .collect();
+    for segment in text.lines() {
+        let words: Vec<String> = segment
+            .split_whitespace()
+            .skip_while(|word| {
+                word.split_once('=').is_some_and(|(name, _)| {
+                    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                })
+            })
+            .map(|word| {
+                let base = word
+                    .rsplit(|c: char| c == '/' || c == '\\')
+                    .next()
+                    .unwrap_or(word);
+                let base = base.to_ascii_lowercase();
+                base.strip_suffix(".exe")
+                    .map(str::to_string)
+                    .unwrap_or(base)
+            })
+            .collect();
+        let Some(first) = words.first().map(String::as_str) else {
+            continue;
+        };
+        let rest = &words[1..];
+        let has = |flag: &str| rest.iter().any(|word| word == flag);
+        let has_shell_c = |words: &[String]| {
+            words
+                .iter()
+                .position(|word| SHELLS.contains(&word.as_str()))
+                .is_some_and(|i| {
+                    words[i + 1..].iter().any(|word| {
+                        word.starts_with('-') && !word.starts_with("--") && word.contains('c')
+                    })
+                })
+        };
+        let reparses = ALWAYS.contains(&first)
+            || has_shell_c(&words[..])
+            || (PREFIXES.contains(&first)
+                && (rest.iter().any(|word| ALWAYS.contains(&word.as_str()))
+                    || has("-c")
+                    || has_shell_c(rest)))
+            || (matches!(first, "docker" | "podman" | "kubectl") && has("exec"))
+            || (first == "find"
+                && ["-exec", "-execdir", "-ok", "-okdir"]
+                    .iter()
+                    .copied()
+                    .any(|flag| has(flag)))
+            || (first == "script" && has("-c"))
+            || (first == "git" && rest.iter().any(|word| word.starts_with("alias.")));
+        if reparses {
+            return Some("a command that parses its arguments as shell code again");
+        }
     }
     None
 }
@@ -525,11 +617,14 @@ pub(crate) fn render_command(
             start -= 1;
             end += 1;
         }
-        // After `$`, bash/zsh read a quoted word as `$'...'`/`$"..."` and fish rejects it.
-        if start > 0 && chars[start - 1] == '$' {
+        // After `$`, bash/zsh read a quoted word as `$'...'`/`$"..."` and fish rejects it;
+        // after `[` it is an array subscript (`arr[...]`, zsh `h[...]`), evaluated as
+        // arithmetic or a pattern.
+        if start > 0 && matches!(chars[start - 1], '$' | '[') {
             return Err(format!(
-                "`{{{{{name}}}}}` directly follows `$` in the command {template:?}, so its value \
-                 ({value:?}) cannot be quoted safely"
+                "`{{{{{name}}}}}` directly follows `{}` in the command {template:?}, so its \
+                 value ({value:?}) cannot be quoted safely",
+                chars[start - 1]
             ));
         }
         spans.push((
@@ -552,7 +647,9 @@ pub(crate) fn render_command(
         cursor = *end;
     }
     residual.extend_from_slice(&chars[cursor..]);
-    if let Some(what) = forbidden_syntax_around_placeholders(&residual) {
+    if let Some(what) =
+        forbidden_syntax_around_placeholders(&residual).or_else(|| reparsing_command(&residual))
+    {
         let names = spans
             .iter()
             .map(|(_, _, _, description)| description.as_str())

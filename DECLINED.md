@@ -1544,7 +1544,14 @@ upstream's behavior is actually a defect rather than a preference.
   comments, heredocs and arithmetic). Instead a command that substitutes a placeholder is held
   to a whitelist: the placeholder bare or exactly `"{{v}}"`/`'{{v}}'` (the pair is dropped),
   and nowhere in that command any other quote, `$(`, `${`, `((`, `<<`, backtick, backslash,
-  line break or word-initial `#`, nor `$` directly before a placeholder. A command outside
+  line break or word-initial `#`, nor `$` or `[` directly before a placeholder, nor `$[` or
+  a zsh `(e:` glob qualifier. As a best-effort word-level check, a command whose segments
+  start with something that re-parses its arguments as code (`ssh`, `eval`, `sh -c` and other
+  shells' `-c`, `watch`, `tmux`, `screen`, `docker`/`podman`/`kubectl exec`, `su`, `sudo ... sh
+  -c`, `xargs`, `find -exec`, `script -c`, `trap`, `iex`/`Invoke-Expression`, `git -c alias.`)
+  is refused too: values are quoted for the local shell only, and that check cannot see
+  aliases, functions or scripts, nor uses as an arithmetic operand, variable name or command
+  name, which the tab-configs skill tells users to avoid. A command outside
   the whitelist, or whose value has no portable spelling (a control character, or `'` with
   `$`/backtick/`"`/`\`/`!`), is not run: the tab is not opened and an error toast names the
   placeholder and value (`try_render_tab_config`). The worktree path is the render-time
