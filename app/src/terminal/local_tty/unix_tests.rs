@@ -204,3 +204,21 @@ fn docker_sandbox_command_exports_node_version_chip_flag() {
         );
     }
 }
+
+/// #857: the pty must never be told it is 0 rows or 0 columns, and a cell
+/// count above `u16::MAX` must saturate rather than wrap (65536 used to
+/// become 0).
+#[test]
+fn winsize_never_zero_and_never_wraps() {
+    let tiny = SizeInfo::new_without_font_metrics(1, 2).with_rows_and_columns(0, 0);
+    let win = (&tiny).to_winsize();
+    assert_eq!((win.ws_row, win.ws_col), (1, 1));
+
+    let huge = SizeInfo::new_without_font_metrics(1, 2).with_rows_and_columns(65_536, 70_000);
+    let win = (&huge).to_winsize();
+    assert_eq!((win.ws_row, win.ws_col), (u16::MAX, u16::MAX));
+
+    let normal = SizeInfo::new_without_font_metrics(24, 80);
+    let win = (&normal).to_winsize();
+    assert_eq!((win.ws_row, win.ws_col), (24, 80));
+}

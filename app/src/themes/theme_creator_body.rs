@@ -11,7 +11,7 @@ use pathfinder_geometry::vector::vec2f;
 use std::default::Default;
 use std::path::PathBuf;
 #[cfg(feature = "local_fs")]
-use std::{fs::copy, io::Write};
+use std::fs::copy;
 #[cfg(feature = "local_fs")]
 use warp_core::ui::theme::WarpTheme;
 use warpui::elements::{
@@ -210,21 +210,21 @@ impl ThemeCreatorBody {
     ) -> Option<T> {
         if let Ok(theme_yaml) = serde_yaml::to_string(theme) {
             let path = dir.join(theme_yaml_file_name);
-            if let Ok(mut file) = crate::util::file::create_file(&path) {
-                if write!(file, "{theme_yaml}").is_ok() {
-                    match image_option {
-                        Some((image_path, theme_name, image_extension)) => {
-                            if copy(
-                                image_path.clone(),
-                                dir.join(format!("{theme_name}.{image_extension}")),
-                            )
-                            .is_ok()
-                            {
-                                return Some((success_callback)(path));
-                            }
+            // Atomic replace (#859): re-saving a theme over an existing file
+            // must not leave it truncated if the write fails.
+            if crate::util::file::write_file_atomically(&path, &theme_yaml).is_ok() {
+                match image_option {
+                    Some((image_path, theme_name, image_extension)) => {
+                        if copy(
+                            image_path.clone(),
+                            dir.join(format!("{theme_name}.{image_extension}")),
+                        )
+                        .is_ok()
+                        {
+                            return Some((success_callback)(path));
                         }
-                        None => return Some((success_callback)(path)),
                     }
+                    None => return Some((success_callback)(path)),
                 }
             }
         }

@@ -459,6 +459,83 @@ upstream's behavior is actually a defect rather than a preference.
   nothing there); and the checked-out case now panics with a message naming the
   re-entrancy instead of a misleading downcast failure.
 
+- **User config files are replaced atomically, never truncated in place** (`#859`,
+  2026-10-13, `crates/warpui_extras/src/atomic_file.rs`). **Upstream:** settings.toml and
+  user_preferences.json are flushed with `std::fs::write`
+  (`42effe840:crates/warpui_extras/src/user_preferences/toml_backed.rs:205`,
+  `file_backed.rs:76`), keybindings.yaml and themes with `File::create` + write. **The
+  defect:** a write that fails part-way -- measured with a full config filesystem --
+  leaves the file truncated (settings.toml cut off mid-line at 8192 bytes), it no longer
+  parses, and the next launch starts on defaults. **We do:** write a temp file in the same
+  directory, fsync, rename over the target, fsync the directory; on failure the original
+  is untouched and the error is returned. A symlinked target is written *through* (the
+  link survives; dotfile managers rely on it), permission bits are kept, and a file the
+  user cannot write is refused exactly as `std::fs::write` refused it. **Limits:** a
+  hard-linked file (nlink > 1) is written in place so its links stay in sync, as vim's
+  `backupcopy=auto` does; ACLs and xattrs are not carried over; ownership is: run as
+  root (sudo keeping `HOME`, pkexec), the replacement is `fchown`ed back to the original
+  owner/group, and a non-root writer that cannot give it the original owner writes in
+  place; where a rename is impossible -- a writable file in a directory the user
+  cannot create files in (EACCES/EPERM), or a single-file bind mount (EBUSY/EXDEV) --
+  the write falls back to the old in-place write, only when the target exists and is
+  writable, and never for ENOSPC, EIO or any other error. Every in-place write (those
+  three cases) is the pre-#859 behavior: it can itself hit a full disk and truncate the
+  file. A dangling symlink into a missing directory fails with NotFound, as
+  `std::fs::write` did; no directories are created through a link. A crash between creating and
+  renaming the temp file leaves a `.{name}.tmp-*` file, swept on the next write once it
+  is over an hour old. Applied to
+  settings.toml, user_preferences.json, keybindings.yaml and theme YAML. Not applied to
+  files the app only ever creates fresh (new launch/tab configs, the default worktree
+  template) or to the secure-storage fallback blobs (0600 semantics need their own
+  change).
+
+- **A `keybindings.yaml` that fails to parse is reported and never overwritten**
+  (`#858`, 2026-10-13, `app/src/keyboard.rs`, `app/src/workspace/view.rs`).
+  **Upstream:** `write_custom_keybinding`/`remove_custom_keybinding` start from
+  `read_custom_keybindings().unwrap_or_default()` (`42effe840:app/src/keyboard.rs:71,89`),
+  and `read_custom_keybindings` returns `None` for a parse error exactly as for a missing
+  file, logging only a warning. **The defect:** one syntax error made every custom binding
+  silently inactive, and the next keybinding change (including the "use Emacs-style
+  bindings" banner) rewrote the file with only that change -- the user's bindings were
+  lost with no backup. **We do:** an unreadable or unparsable file is distinct from a
+  missing one; it is never written while broken (the change applies for the session
+  only), and a persistent error toast with an "Open file" link names the file and the
+  parse error, at launch and on every refused write (re-shown even if dismissed). A new
+  window re-reads the file before replaying a recorded error, so a file fixed by hand
+  stops warning; there is no watcher on keybindings.yaml, so the toast says a restart is
+  needed to load the fixed bindings. An empty or comment-only file (with or without a
+  leading UTF-8 BOM) still means "no customizations".
+
+- **A stored setting value goes through the setting's `validate`, and an out-of-range
+  `font_size` is rejected and reported** (`#857`, 2026-10-13,
+  `crates/settings/src/macros.rs`, `crates/settings/src/manager.rs`,
+  `app/src/settings/font.rs`). **Upstream:** the macro-generated `Setting::new(Some(v))`
+  stores `v` as-is (`42effe840:crates/settings/src/macros.rs:255`), so the value read at
+  startup is the one path that never reaches `validate`; `MonospaceFontSize` has no
+  validator at all, although the settings UI only accepts 1..=120. **The defect:**
+  `font_size = 1000` in settings.toml closed windows, killed running commands and pruned
+  the saved session to one window for good; `1e308` blanked the terminal; `0` cost ~2.7
+  GB of RSS. None of these was named by the settings-errors banner, because it reported
+  only values that failed to *deserialize*. **We do:** `new` validates; `font_size` and
+  `notebook_font_size` outside 1..=120 (or non-finite) fall back to the default; the
+  banner (startup and hot reload) lists any key whose value `validate` replaced. The pty
+  `winsize` is also clamped to 1..=65535 rows/cols instead of `usize as u16`.
+  Side effect, intended: `BackgroundOpacity`/`BackgroundBlurRadius`, whose validators
+  were likewise skipped at startup, are now clamped (and reported) at startup too.
+  **Scope of the fix:** this removes the *config* trigger only. Why a huge cell size
+  makes every idle shell run a command and exit (which is what closed the windows and
+  pruned the session) is **not root-caused**. The most plausible mechanism is the
+  2-column x 1-row winsize that `SizeInfo::new`'s `MIN_COLUMNS`/`MIN_ROWS` floor
+  produces, which zle/readline may mishandle; that size is still reachable with a tiny
+  pane at the maximum font size 120. Tracked as a follow-up issue.
+  A validator must return accepted values unchanged: any change is reported as an
+  invalid value, so a normalising validator would raise false banner errors (documented
+  on `Setting::validate`). Every float setting, validator or not, replaces a non-finite
+  stored value with its default and reports it (`SettingsValue::is_well_formed`). A bad
+  value for a setting that does nothing on this platform is not reported. The banner
+  now says "a valid value is being used instead" rather than "the default value is
+  being used", since a clamped value (opacity 0 -> 1) is not the default.
+
 - **An incremental find rescan does not flash the find bar's scanning label**
   (`#815`, 2026-10-12, `app/src/terminal/find/model/async_find.rs`). **Upstream:**
   `AsyncFindController::invalidate_block` sets `status = Scanning` for every

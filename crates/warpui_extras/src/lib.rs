@@ -3,3 +3,5 @@ pub mod secure_storage;
 
 #[cfg(feature = "user_preferences")]
 pub mod user_preferences;
+
+pub mod atomic_file;

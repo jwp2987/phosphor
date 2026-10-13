@@ -141,11 +141,11 @@ impl SettingsFileError {
             Self::InvalidSettings(keys) => match keys.len() {
                 1 => (
                     "Your settings file contains an error.".to_owned(),
-                    format!("{self}. The default value is being used."),
+                    format!("{self}. A valid value is being used instead."),
                 ),
                 _ => (
                     "Your settings file contains errors.".to_owned(),
-                    format!("{self}. Default values are being used."),
+                    format!("{self}. Valid values are being used instead."),
                 ),
             },
             // Never phrased as an invalid *value*: there is no such setting,

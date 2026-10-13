@@ -190,7 +190,7 @@ pub fn init(
             }
             super::SettingsFileError::InvalidSettings(keys) => {
                 log::warn!(
-                    "Settings file has invalid values (using defaults for): {}",
+                    "Settings file has invalid values (using valid values instead for): {}",
                     keys.join(", ")
                 );
             }

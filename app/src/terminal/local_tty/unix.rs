@@ -754,11 +754,20 @@ pub trait ToWinsize {
     fn to_winsize(&self) -> winsize;
 }
 
+/// Converts a row/column count to a `winsize` field.
+///
+/// Never 0: a 0-row or 0-column pty is the "size unknown" state, and programs
+/// handle it badly. Never wrapped: `usize as u16` truncates, so 65536 rows
+/// used to reach the kernel as 0 (#857).
+fn winsize_cells(cells: usize) -> libc::c_ushort {
+    cells.clamp(1, libc::c_ushort::MAX as usize) as libc::c_ushort
+}
+
 impl ToWinsize for &SizeInfo {
     fn to_winsize(&self) -> winsize {
         winsize {
-            ws_row: self.rows as libc::c_ushort,
-            ws_col: self.columns as libc::c_ushort,
+            ws_row: winsize_cells(self.rows),
+            ws_col: winsize_cells(self.columns),
             ws_xpixel: self.pane_width_px().as_f32() as libc::c_ushort,
             ws_ypixel: self.pane_height_px().as_f32() as libc::c_ushort,
         }
