@@ -646,6 +646,11 @@ mod validated_load_tests {
         let toml_path = path.clone();
 
         warpui::App::test((), |mut app| async move {
+            // Public settings are written to the settings file only when the
+            // settings-file feature is on (as in the shipped app); otherwise
+            // `preferences_for_setting` routes writes to the private backend
+            // and this test would observe nothing on disk.
+            crate::set_settings_file_enabled(true);
             app.update(move |ctx| {
                 let (toml, err) =
                     warpui_extras::user_preferences::toml_backed::TomlBackedUserPreferences::new(
@@ -662,37 +667,44 @@ mod validated_load_tests {
             app.add_singleton_model(|_| SettingsManager::default());
             BoundedTestSettings::register(&mut app);
 
-            // The user edits the file; the watcher reloads it.
-            std::fs::write(&path, "[test]\nbounded_size = 1000.0\n").unwrap();
-            app.read(|ctx| {
-                <crate::PublicPreferences as SingletonEntity>::as_ref(ctx)
-                    .reload_from_disk()
-                    .unwrap();
-            });
-            let failed_keys = app.update(|ctx| {
-                SettingsManager::handle(ctx)
-                    .update(ctx, |manager, ctx| manager.reload_all_public_settings(ctx))
-            });
-            assert_eq!(failed_keys, vec!["bounded_size".to_string()]);
-            app.read(|ctx| {
-                assert_eq!(
-                    *BoundedTestSettings::as_ref(ctx).bounded_size.value(),
-                    BOUNDED_DEFAULT,
-                    "the out-of-range value must never be in effect"
-                );
-            });
-
-            // The user fixes it from the settings UI: this must reach the file.
-            app.update(|ctx| {
-                BoundedTestSettings::handle(ctx).update(ctx, |settings, ctx| {
-                    settings.bounded_size.set_value(14.0, ctx).unwrap();
+            // The user puts an out-of-range value in the file, the watcher
+            // reloads it, and then the user fixes it from the settings UI with
+            // `ui_value`. That change must reach the file -- including when
+            // `ui_value` equals the default that is already in effect, or the
+            // bad line would stay on disk forever.
+            for ui_value in [BOUNDED_DEFAULT, 14.0] {
+                std::fs::write(&path, "[test]\nbounded_size = 1000.0\n").unwrap();
+                app.read(|ctx| {
+                    <crate::PublicPreferences as SingletonEntity>::as_ref(ctx)
+                        .reload_from_disk()
+                        .unwrap();
                 });
-            });
-            let on_disk = std::fs::read_to_string(&path).unwrap();
-            assert!(
-                on_disk.contains("bounded_size = 14") && !on_disk.contains("1000"),
-                "a UI change must be persisted after a rejected value was reported; file: {on_disk}"
-            );
+                let failed_keys = app.update(|ctx| {
+                    SettingsManager::handle(ctx)
+                        .update(ctx, |manager, ctx| manager.reload_all_public_settings(ctx))
+                });
+                assert_eq!(failed_keys, vec!["bounded_size".to_string()]);
+                app.read(|ctx| {
+                    assert_eq!(
+                        *BoundedTestSettings::as_ref(ctx).bounded_size.value(),
+                        BOUNDED_DEFAULT,
+                        "the out-of-range value must never be in effect"
+                    );
+                });
+
+                app.update(|ctx| {
+                    BoundedTestSettings::handle(ctx).update(ctx, |settings, ctx| {
+                        settings.bounded_size.set_value(ui_value, ctx).unwrap();
+                    });
+                });
+                let on_disk = std::fs::read_to_string(&path).unwrap();
+                assert!(
+                    on_disk.contains(&format!("bounded_size = {ui_value:?}"))
+                        && !on_disk.contains("1000"),
+                    "setting {ui_value} from the UI after a rejected value was reported \
+                     must be persisted; file: {on_disk}"
+                );
+            }
         });
     }
 }
