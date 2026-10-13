@@ -501,8 +501,9 @@ upstream's behavior is actually a defect rather than a preference.
     action model, keyed by (conversation, action id).
   - **Model gate.** `start_pending_action_by_id` refuses every `ActionInitiator::User` start of
     an elided command without that record for the exact text it would run. It also refuses
-    while the card is in edit mode, where the card shows uncommitted text. Edit mode is checked
-    live, through a probe on the card, so a card dropped mid-edit cannot leave a command stuck.
+    while the card is in edit mode, where the card shows uncommitted text. Edit mode is read
+    live from a flag the card shares through a `Weak`, so a card dropped mid-edit cannot leave a
+    command stuck.
   - **Accept paths.**
     - The AI block's Enter and the auto-execute toggle go through the card's accept.
     - The CLI subagent's accept is refused for elided commands, with a toast.
@@ -510,7 +511,9 @@ upstream's behavior is actually a defect rather than a preference.
     - A collapsed card expands instead of accepting.
     - Streamed updates replace any differing text, not only longer text.
     - Turning autoexecute on is skipped when the accept was refused. Turning it off always
-      works.
+      works and no longer accepts the pending action (the pin's toggle accepted it either way).
+    - Once the user commits an edit, a later or re-sent stream for that action is ignored. The
+      edit stays on the card and in the pending action.
 
   **Not done here:**
   - The renderer bug itself (in `fonts.rs` / cosmic-text) still affects any other text with a

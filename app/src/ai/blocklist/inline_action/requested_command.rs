@@ -3,7 +3,7 @@ use parking_lot::FairMutex;
 use pathfinder_geometry::vector::vec2f;
 use settings::Setting as _;
 use std::borrow::Cow;
-use std::cell::{Ref, RefCell};
+use std::cell::{Cell, Ref, RefCell};
 use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -45,7 +45,6 @@ use crate::ai::blocklist::block::cli_controller::{
 };
 use crate::ai::blocklist::block::view_impl::output::action_icon;
 use crate::ai::blocklist::inline_action::inline_action_header::RightClickConfig;
-use crate::ai::blocklist::action_model::EditingProbe;
 use crate::ai::blocklist::model::{AIBlockModel, AIBlockModelHelper};
 use crate::ai::blocklist::{
     AIBlock, BlocklistAIActionEvent, BlocklistAIHistoryModel, ClientIdentifiers,
@@ -422,6 +421,12 @@ pub struct RequestedCommandView {
     /// command only while this matches `command_text`, [`FULL_VIEW_DWELL`] has passed, and the
     /// full view is scrolled to its end -- see [`Self::review_state`].
     full_view_opened: Option<(String, Instant)>,
+    /// Whether this card is in edit mode, shared with the action model, which refuses user
+    /// accepts that bypass the card while it is set (issue #847).
+    edit_flag: Rc<Cell<bool>>,
+    /// Set once the user commits an edit. From then on, the user's text wins over streamed
+    /// text for this action -- see [`streamed_text_change`].
+    user_committed_edit: bool,
 
     /// The approval card's preview of `command_text` (collapsed and full forms, notes, and
     /// whether anything is elided). It is rebuilt lazily the first time it is read after
@@ -748,6 +753,8 @@ impl RequestedCommandView {
             show_full_command_button,
             read_to_end_button,
             full_view_opened: None,
+            edit_flag: Rc::new(Cell::new(false)),
+            user_committed_edit: false,
             approval_preview: RefCell::new(ApprovalPreviewCache::default()),
             command_preview_scroll_state: Default::default(),
             accept_and_autoexecute_split_button,
@@ -844,6 +851,7 @@ impl RequestedCommandView {
     /// shows. An earlier "show full command" mark no longer applies, because it is keyed on the
     /// exact text that was shown (issue #847).
     fn on_command_text_changed(&mut self, ctx: &mut ViewContext<Self>) {
+        self.user_committed_edit = true;
         self.command_preview_scroll_state = ClippedScrollStateHandle::new();
         let conversation_id = self.client_ids.conversation_id;
         let action_id = self.action_id.clone();
@@ -857,19 +865,17 @@ impl RequestedCommandView {
     /// editor's uncommitted text, so the model refuses user accepts that bypass the card (issue
     /// #847).
     fn set_command_being_edited(&mut self, editing: bool, ctx: &mut ViewContext<Self>) {
-        let conversation_id = self.client_ids.conversation_id;
-        let action_id = self.action_id.clone();
-        // The probe asks this card live, so a card dropped mid-edit stops blocking accepts.
-        let probe = editing.then(|| {
-            let card = ctx.handle();
-            Box::new(move |app: &AppContext| {
-                card.upgrade(app)
-                    .is_some_and(|card| card.as_ref(app).is_editing)
-            }) as EditingProbe
-        });
-        self.action_model.update(ctx, |model, _| {
-            model.set_command_being_edited(conversation_id, &action_id, probe);
-        });
+        self.edit_flag.set(editing);
+        if editing {
+            // The model reads the flag live through a `Weak`, so leaving edit mode needs no
+            // model update, and a dropped card stops blocking accepts.
+            let conversation_id = self.client_ids.conversation_id;
+            let action_id = self.action_id.clone();
+            let flag = Rc::downgrade(&self.edit_flag);
+            self.action_model.update(ctx, |model, _| {
+                model.register_command_edit_flag(conversation_id, &action_id, flag);
+            });
+        }
     }
 
     /// Whether the full view of the current `command_text` is open.
@@ -1415,18 +1421,36 @@ impl RequestedCommandView {
         // and avoids flicker. Otherwise replace it. A same-length or shorter update that differs
         // used to be ignored or truncated by length, leaving the card showing text that was not
         // the action's (issue #847).
-        if command != self.command_text {
-            // New content: whether the preview is scrolled to its end is unknown until relaid.
-            self.command_preview_scroll_state = ClippedScrollStateHandle::new();
-            if command.starts_with(self.command_text.as_str()) {
+        let change = streamed_text_change(&self.command_text, command, self.user_committed_edit);
+        match change {
+            StreamedTextChange::Unchanged => {}
+            StreamedTextChange::Append => {
                 let existing_length = self.command_text.len();
                 self.command_text.push_str(&command[existing_length..]);
-            } else {
-                self.command_text = command.to_string();
+            }
+            StreamedTextChange::Replace => self.command_text = command.to_string(),
+        }
+        if change != StreamedTextChange::Unchanged {
+            // New content: whether the preview is scrolled to its end is unknown until relaid.
+            self.command_preview_scroll_state = ClippedScrollStateHandle::new();
+            // Keep the model's pending action, which other accept paths run, equal to what the
+            // card shows. A review mark is keyed on the exact text, so the changed text is
+            // unmarked by construction. Only a pending action is updated, so ordinary streaming
+            // copies nothing. View-only sessions never accept, and this is reached from inside
+            // the model's own events there.
+            let conversation_id = self.client_ids.conversation_id;
+            let action_model = self.action_model.as_ref(ctx);
+            let is_pending = action_model
+                .get_pending_actions_for_conversation(&conversation_id)
+                .any(|action| action.id == self.action_id);
+            if is_pending && !action_model.is_view_only() {
+                let action_id = self.action_id.clone();
+                let command = self.command_text.clone();
+                self.action_model.update(ctx, |model, _| {
+                    model.set_pending_command_text(conversation_id, &action_id, command);
+                });
             }
         }
-        // No model update for streamed text: a review mark is keyed on the exact text shown, so
-        // a changed text is unmarked by construction.
 
         // If the editor exists, sync it with the updated command text. Not while the user is
         // editing: their in-progress edit is kept, and it is what commits on leaving edit mode.
@@ -2515,6 +2539,35 @@ impl RequestedCommand {
 /// drops or clips part of the command (issue #847). Extracted for unit testing.
 pub fn format_command_text(text: &str) -> String {
     command_approval_preview::one_line_title(text)
+}
+
+/// How a streamed update changes the card's command text. See [`streamed_text_change`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamedTextChange {
+    Unchanged,
+    /// The streamed text extends the current text: append the rest (avoids flicker).
+    Append,
+    /// The streamed text differs in some other way: replace the current text with it.
+    Replace,
+}
+
+/// Decides how a streamed `streamed` text updates the card's `current` text (issue #847).
+/// * Once the user has committed an edit, their text wins: a later or re-sent stream for the same
+///   action is ignored. This keeps the card and the model's pending action both on the edit.
+/// * Otherwise any difference is applied. A same-length or shorter update that differs replaces
+///   the text, rather than being ignored or truncated by length.
+fn streamed_text_change(
+    current: &str,
+    streamed: &str,
+    user_committed_edit: bool,
+) -> StreamedTextChange {
+    if user_committed_edit || streamed == current {
+        StreamedTextChange::Unchanged
+    } else if streamed.starts_with(current) {
+        StreamedTextChange::Append
+    } else {
+        StreamedTextChange::Replace
+    }
 }
 
 /// Builds the blocked/confirmation title for an MCP tool call from the

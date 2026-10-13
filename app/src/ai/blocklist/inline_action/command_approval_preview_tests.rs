@@ -602,3 +602,22 @@ fn unassigned_default_ignorables_are_escaped() {
     let preview = command_approval_preview("a\u{2065}b\u{FFF0}c\u{E0FFF}d", PreviewMode::Collapsed);
     assert_eq!(preview.text, "a<U+2065>b<U+FFF0>c<U+E0FFF>d");
 }
+
+/// One base character with 20,000 nonspacing marks: every mark after the second is escaped, and
+/// escapes are not marks, so breaks still land and no segment approaches the renderer limit.
+#[test]
+fn a_huge_combining_mark_stack_is_escaped_and_broken() {
+    let command = format!("e{}", "\u{0301}".repeat(20_000));
+    let full = command_approval_preview(&command, PreviewMode::Full);
+    assert!(longest_unbroken_stretch(&full.text) <= 1_024);
+    assert!(full.text.contains("<U+0301>"));
+}
+
+/// A long run of spacing marks (Mc, here Devanagari visarga) is not escaped, and breaks may sit
+/// between them, so segments stay bounded.
+#[test]
+fn a_long_spacing_mark_run_is_broken() {
+    let command = format!("\u{0915}{}", "\u{0903}".repeat(20_000));
+    let full = command_approval_preview(&command, PreviewMode::Full);
+    assert!(longest_unbroken_stretch(&full.text) <= 1_024);
+}

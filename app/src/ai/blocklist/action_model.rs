@@ -42,8 +42,10 @@ use futures::future::{BoxFuture, join_all};
 use preprocess::{PendingPreprocessedActions, PreprocessId};
 
 use std::{
+    cell::Cell,
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
+    rc::Weak,
     sync::Arc,
 };
 
@@ -246,10 +248,6 @@ fn run_auto_accept_batch<Id>(
     attempted
 }
 
-/// Answers whether an approval card is still in edit mode. See
-/// `BlocklistAIActionModel::commands_being_edited`.
-pub type EditingProbe = Box<dyn Fn(&AppContext) -> bool>;
-
 /// Whether a user-initiated accept of `action` must be refused (issue #847). This applies to a
 /// `RequestCommandOutput` whose approval-card preview elides part of the command (a long run,
 /// blank-line padding, too many lines), unless that exact text was reviewed in full. Every
@@ -374,12 +372,13 @@ pub struct BlocklistAIActionModel {
     /// the card.
     full_command_shown: HashMap<(AIConversationId, AIAgentActionId), String>,
 
-    /// Requested commands whose approval card is (or was) in edit mode, each with a probe that
-    /// says whether it still is. In edit mode the card shows the editor's uncommitted text, not
-    /// the pending action's, so no user accept may run the pending text then (issue #847). The
-    /// card's own accept leaves edit mode first. The probe is checked live, not just recorded:
-    /// a card that was dropped mid-edit never leaves a command stuck.
-    commands_being_edited: HashMap<(AIConversationId, AIAgentActionId), EditingProbe>,
+    /// The edit-mode flag of each requested command's approval card, shared with the card. In
+    /// edit mode the card shows the editor's uncommitted text, not the pending action's, so no
+    /// user accept may run the pending text then (issue #847). The card's own accept leaves edit
+    /// mode first. The flag is read live through a `Weak`. It is not a view lookup, which fails
+    /// while the card is mid-update. A dropped card's flag no longer upgrades, so it cannot
+    /// leave a command stuck.
+    commands_being_edited: HashMap<(AIConversationId, AIAgentActionId), Weak<Cell<bool>>>,
 }
 
 impl BlocklistAIActionModel {
@@ -488,23 +487,16 @@ impl BlocklistAIActionModel {
         hidden_command_blocks_user_accept(conversation_id, action, &self.full_command_shown)
     }
 
-    /// Records that the approval card of `action_id` entered edit mode (`Some(probe)`, where the
-    /// probe answers "is it still editing?") or left it (`None`). See `commands_being_edited`.
-    pub fn set_command_being_edited(
+    /// Shares the edit-mode flag of the approval card of `action_id` with the model. See
+    /// `commands_being_edited`.
+    pub fn register_command_edit_flag(
         &mut self,
         conversation_id: AIConversationId,
         action_id: &AIAgentActionId,
-        probe: Option<EditingProbe>,
+        flag: Weak<Cell<bool>>,
     ) {
-        let key = (conversation_id, action_id.clone());
-        match probe {
-            Some(probe) => {
-                self.commands_being_edited.insert(key, probe);
-            }
-            None => {
-                self.commands_being_edited.remove(&key);
-            }
-        }
+        self.commands_being_edited
+            .insert((conversation_id, action_id.clone()), flag);
     }
 
     /// Whether a user accept of `action_id` must wait because its approval card is in edit mode.
@@ -512,11 +504,11 @@ impl BlocklistAIActionModel {
         &self,
         conversation_id: AIConversationId,
         action_id: &AIAgentActionId,
-        app: &AppContext,
     ) -> bool {
         self.commands_being_edited
             .get(&(conversation_id, action_id.clone()))
-            .is_some_and(|still_editing| still_editing(app))
+            .and_then(Weak::upgrade)
+            .is_some_and(|editing| editing.get())
     }
 
     /// Replaces the text of pending requested command `action_id` with the user's edit. The card
@@ -1115,7 +1107,7 @@ impl BlocklistAIActionModel {
             .and_then(|queue| queue.iter().position(|action| &action.id == action_id))?;
 
         if initiator == ActionInitiator::User
-            && self.is_command_being_edited(conversation_id, action_id, ctx)
+            && self.is_command_being_edited(conversation_id, action_id)
         {
             // The card shows uncommitted edits; the pending text is not what is on screen.
             log::info!(

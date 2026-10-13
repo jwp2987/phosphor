@@ -958,6 +958,7 @@ fn user_accept_is_refused_while_the_approval_card_is_editing() {
     App::test((), |mut app| async move {
         app.update(super::init);
         let action = command_action("action-editing", "echo short");
+        let editing = Rc::new(std::cell::Cell::new(true));
         let view = add_shell_view(
             &mut app,
             action.clone(),
@@ -969,11 +970,7 @@ fn user_accept_is_refused_while_the_approval_card_is_editing() {
         });
         action_model.update(&mut app, |model, ctx| {
             queue_tui_permission_action(model, action.clone(), conversation_id, ctx);
-            model.set_command_being_edited(
-                conversation_id,
-                &action.id,
-                Some(Box::new(|_: &AppContext| true)),
-            );
+            model.register_command_edit_flag(conversation_id, &action.id, Rc::downgrade(&editing));
             model.execute_next_action_for_user(conversation_id, ctx);
             model.execute_action(&action.id, conversation_id, ctx);
         });
@@ -987,18 +984,31 @@ fn user_accept_is_refused_while_the_approval_card_is_editing() {
             assert!(model.get_action_result(&action.id).is_none());
         });
 
-        // The probe is checked live: a card that was dropped, or left edit mode without
-        // reporting it, stops blocking.
-        action_model.update(&mut app, |model, ctx| {
-            assert!(model.is_command_being_edited(conversation_id, &action.id, ctx));
-            model.set_command_being_edited(
-                conversation_id,
-                &action.id,
-                Some(Box::new(|_: &AppContext| false)),
+        // The flag is read live: leaving edit mode, or dropping the card that owns the flag,
+        // stops blocking.
+        app.read(|ctx| {
+            assert!(
+                action_model
+                    .as_ref(ctx)
+                    .is_command_being_edited(conversation_id, &action.id)
             );
-            assert!(!model.is_command_being_edited(conversation_id, &action.id, ctx));
-            model.set_command_being_edited(conversation_id, &action.id, None);
-            assert!(!model.is_command_being_edited(conversation_id, &action.id, ctx));
+        });
+        editing.set(false);
+        app.read(|ctx| {
+            assert!(
+                !action_model
+                    .as_ref(ctx)
+                    .is_command_being_edited(conversation_id, &action.id)
+            );
+        });
+        editing.set(true);
+        drop(editing);
+        app.read(|ctx| {
+            assert!(
+                !action_model
+                    .as_ref(ctx)
+                    .is_command_being_edited(conversation_id, &action.id)
+            );
         });
     });
 }
