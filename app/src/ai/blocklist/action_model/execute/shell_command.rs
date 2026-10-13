@@ -171,6 +171,12 @@ impl ShellCommandExecutor {
         self.awaiting_completion_action_ids.insert(action_id);
     }
 
+    /// Undoes [`Self::mark_awaiting_completion_for_test`].
+    #[cfg(test)]
+    pub fn unmark_awaiting_completion_for_test(&mut self, action_id: &AIAgentActionId) {
+        self.awaiting_completion_action_ids.remove(action_id);
+    }
+
     fn handle_terminal_model_event(&mut self, event: &ModelEvent, _ctx: &mut ModelContext<Self>) {
         // We wait for precmd for the block _after_ the requested command's block so that
         // downstream checks for current working directory are fresh. The precmd hook is when

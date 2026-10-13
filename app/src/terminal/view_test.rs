@@ -6489,9 +6489,324 @@ fn setup_running_agent_command(
         );
         assert!(active_block.is_agent_driving_command());
         assert!(!active_block.is_agent_in_control());
+        drop(model);
+        // The agent's tool call is blocked until the command completes.
+        view.ai_action_model
+            .as_ref(ctx)
+            .shell_command_executor(ctx)
+            .update(ctx, |executor, _| {
+                executor.mark_awaiting_completion_for_test(AIAgentActionId::from(
+                    "sleep-forever".to_owned(),
+                ));
+            });
         conversation_id
     });
     (pty_writes, conversation_id)
+}
+
+/// Escape's stop is scoped (review of #850): it must not fire while the CLI subagent is in
+/// control of the agent's command -- there Escape belongs to the subagent / take-over UI, and
+/// the command must not be ^C'd nor the conversation cancelled.
+#[test]
+fn escape_does_not_stop_when_cli_subagent_is_in_control() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, conversation_id) = setup_running_agent_command(&mut app, &terminal);
+        terminal.update(&mut app, |view, _ctx| {
+            let task_id = TaskId::new("test-cli-subagent".to_owned());
+            let mut model = view.model.lock();
+            let active_block = model.block_list_mut().active_block_mut();
+            active_block
+                .set_agent_interaction_mode_for_agent_monitored_command(&task_id, conversation_id)
+                .expect("command should become agent monitored");
+            assert!(active_block.is_agent_in_control());
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_action(
+                &TerminalAction::MaybeDismissToolTip {
+                    from_keybinding: true,
+                },
+                ctx,
+            );
+        });
+
+        assert!(
+            !pty_writes
+                .borrow()
+                .contains(&vec![warp_terminal::model::escape_sequences::C0::ETX]),
+            "Escape must not interrupt a command the CLI subagent controls"
+        );
+        terminal.read(&app, |_, ctx| {
+            let conversation = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&conversation_id)
+                .expect("conversation should exist");
+            assert_eq!(conversation.status(), &ConversationStatus::InProgress);
+        });
+    })
+}
+
+/// Escape's stop is scoped (review of #850): an agent command started without
+/// `wait_until_completion` (a REPL, an editor, a dev server the agent polls with snapshots)
+/// may legitimately want ESC, so Escape still goes to the program there.
+#[test]
+fn escape_does_not_stop_agent_command_the_agent_is_not_waiting_on() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, conversation_id) = setup_running_agent_command(&mut app, &terminal);
+        // Undo the wait_until_completion mark: this one is polled with snapshots.
+        terminal.update(&mut app, |view, ctx| {
+            view.ai_action_model
+                .as_ref(ctx)
+                .shell_command_executor(ctx)
+                .update(ctx, |executor, _| {
+                    executor.unmark_awaiting_completion_for_test(&AIAgentActionId::from(
+                        "sleep-forever".to_owned(),
+                    ));
+                });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_action(
+                &TerminalAction::MaybeDismissToolTip {
+                    from_keybinding: true,
+                },
+                ctx,
+            );
+        });
+
+        assert!(
+            !pty_writes
+                .borrow()
+                .contains(&vec![warp_terminal::model::escape_sequences::C0::ETX]),
+            "Escape must reach a program the agent is not blocked on"
+        );
+        terminal.read(&app, |_, ctx| {
+            let conversation = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&conversation_id)
+                .expect("conversation should exist");
+            assert_eq!(conversation.status(), &ConversationStatus::InProgress);
+        });
+    })
+}
+
+/// #850 follow-up: within `LONG_RUNNING_COMMAND_DURATION_MS` of an agent command starting,
+/// ctrl-c fell through to the rich-content path and cancelled the whole conversation. It must
+/// interrupt the command instead, exactly as it does a moment later.
+#[test]
+fn ctrl_c_interrupts_agent_command_before_it_counts_as_long_running() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, conversation_id) = setup_running_agent_command(&mut app, &terminal);
+        terminal.update(&mut app, |view, _ctx| {
+            let mut model = view.model.lock();
+            let active_block = model.block_list_mut().active_block_mut();
+            active_block.set_was_long_running(false.into());
+            assert!(active_block.is_executing());
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_action(&TerminalAction::CtrlC, ctx);
+        });
+
+        assert_eq!(
+            *pty_writes.borrow(),
+            vec![vec![warp_terminal::model::escape_sequences::C0::ETX]]
+        );
+        terminal.read(&app, |_, ctx| {
+            let conversation = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&conversation_id)
+                .expect("conversation should exist");
+            assert_eq!(conversation.status(), &ConversationStatus::InProgress);
+        });
+    })
+}
+
+/// A real `RequestedCommandView`, wired into a real `AIBlock` in a real `TerminalView`, for the
+/// `sleep 100000` command of a conversation, with that command running in the active block.
+/// Returns the card, the action id, the conversation id and the recorded PTY writes.
+fn setup_requested_command_card(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+) -> (
+    ViewHandle<crate::ai::blocklist::inline_action::requested_command::RequestedCommandView>,
+    AIAgentActionId,
+    AIConversationId,
+    Rc<RefCell<Vec<Vec<u8>>>>,
+) {
+    let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+    let writes = pty_writes.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(terminal, move |_, event, _| {
+            if let Event::WriteBytesToPty { bytes } = event {
+                writes.borrow_mut().push(bytes.to_vec());
+            }
+        });
+    });
+
+    let action_id = AIAgentActionId::from("sleep-forever".to_owned());
+    let (card, conversation_id) = terminal.update(app, |view, ctx| {
+        let (conversation_id, _task_id, _exchange_id, _stream_id) =
+            append_exchange_and_handle_event(view, agent_jump_user_query("sleep please"), ctx);
+        let ai_block = view.last_ai_block().expect("AI block should exist");
+        let card = ai_block.update(ctx, |block, ctx| {
+            block.insert_requested_command_for_test(&action_id, "sleep 100000", ctx)
+        });
+        let mut model = view.model.lock();
+        model.simulate_long_running_block("sleep 100000", "");
+        model
+            .block_list_mut()
+            .active_block_mut()
+            .set_agent_interaction_mode_for_requested_command(
+                action_id.clone(),
+                None,
+                conversation_id,
+            );
+        (card, conversation_id)
+    });
+    (card, action_id, conversation_id, pty_writes)
+}
+
+fn card_is_rejectable(
+    app: &App,
+    card: &ViewHandle<crate::ai::blocklist::inline_action::requested_command::RequestedCommandView>,
+) -> bool {
+    use crate::ai::blocklist::inline_action::requested_command::REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT;
+    use warpui::View as _;
+    card.read(app, |card, ctx| {
+        card.keymap_context(ctx)
+            .set
+            .contains(REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT)
+    })
+}
+
+/// #850: the card's real `keymap_context` carries the Rejectable flag (so ctrl-c means Reject)
+/// while the command awaits approval, and drops it once the command runs (so ctrl-c bubbles up
+/// to the terminal's interrupt).
+#[test]
+fn requested_command_card_is_rejectable_only_while_a_decision_is_pending() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (card, action_id, conversation_id, _pty_writes) =
+            setup_requested_command_card(&mut app, &terminal);
+        let action_model = terminal.read(&app, |view, _| view.ai_action_model.clone());
+
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model.queue_action_for_test(
+                crate::ai::agent::AIAgentAction {
+                    id: action_id.clone(),
+                    task_id: TaskId::new("task".to_owned()),
+                    action: crate::ai::agent::AIAgentActionType::RequestCommandOutput {
+                        command: "sleep 100000".to_owned(),
+                        is_read_only: None,
+                        is_risky: None,
+                        rationale: None,
+                        uses_pager: None,
+                        wait_until_completion: true,
+                        citations: vec![],
+                    },
+                    requires_result: false,
+                },
+                conversation_id,
+                ctx,
+            );
+        });
+        // `queue_action_for_test` preprocesses via `ctx.spawn`; pump until it is Blocked.
+        for _ in 0..64 {
+            let is_blocked = action_model.read(&app, |action_model, _| {
+                action_model
+                    .get_action_status(&action_id)
+                    .is_some_and(|status| status.is_blocked())
+            });
+            if is_blocked {
+                break;
+            }
+            futures_lite::future::yield_now().await;
+        }
+        action_model.read(&app, |action_model, _| {
+            assert!(
+                action_model
+                    .get_action_status(&action_id)
+                    .is_some_and(|status| status.is_blocked()),
+                "precondition: the command must await approval"
+            );
+        });
+        assert!(
+            card_is_rejectable(&app, &card),
+            "pre-approval, ctrl-c on the card must still mean Reject"
+        );
+
+        action_model.update(&mut app, |action_model, _ctx| {
+            action_model.mark_action_running_for_test(conversation_id, &action_id);
+        });
+        action_model.read(&app, |action_model, _| {
+            assert!(
+                action_model
+                    .get_action_status(&action_id)
+                    .is_some_and(|status| status.is_running())
+            );
+        });
+        assert!(
+            !card_is_rejectable(&app, &card),
+            "once the command runs the card must not claim ctrl-c"
+        );
+    })
+}
+
+/// #850: a Reject that still lands on a running command's card (the Windows code-editor ctrl-c
+/// fallback bypasses the keymap) travels card -> `AIBlock` -> `TerminalView` and comes out as
+/// one ^C on the PTY, without cancelling the running tool call or the conversation.
+#[test]
+fn reject_on_running_card_routes_interrupt_to_the_terminal() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (card, action_id, conversation_id, pty_writes) =
+            setup_requested_command_card(&mut app, &terminal);
+        let action_model = terminal.read(&app, |view, _| view.ai_action_model.clone());
+        action_model.update(&mut app, |action_model, _ctx| {
+            action_model.mark_action_running_for_test(conversation_id, &action_id);
+        });
+        pty_writes.borrow_mut().clear();
+
+        card.update(&mut app, |card, ctx| {
+            use warpui::TypedActionView as _;
+            card.handle_action(
+                &crate::ai::blocklist::inline_action::requested_command::RequestedCommandViewAction::Reject,
+                ctx,
+            );
+        });
+
+        assert_eq!(
+            *pty_writes.borrow(),
+            vec![vec![warp_terminal::model::escape_sequences::C0::ETX]],
+            "the interrupt must reach the PTY as exactly one ^C"
+        );
+        action_model.read(&app, |action_model, _| {
+            assert!(
+                action_model
+                    .get_action_status(&action_id)
+                    .is_some_and(|status| status.is_running()),
+                "the tool call must stay live to receive the interrupted result"
+            );
+        });
+        terminal.read(&app, |_, ctx| {
+            let conversation = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&conversation_id)
+                .expect("conversation should exist");
+            assert_ne!(conversation.status(), &ConversationStatus::Cancelled);
+        });
+    })
 }
 
 /// Issue #850: ctrl-c while an approved agent command runs must interrupt it like a user's

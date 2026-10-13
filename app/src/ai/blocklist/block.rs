@@ -3225,6 +3225,23 @@ impl AIBlock {
         }
     }
 
+    /// Test-only: inserts a requested-command card for `action_id`, wired to this block exactly
+    /// as a streamed `RequestCommandOutput` would be, and returns it.
+    #[cfg(test)]
+    pub(crate) fn insert_requested_command_for_test(
+        &mut self,
+        action_id: &AIAgentActionId,
+        command: &str,
+        ctx: &mut ViewContext<Self>,
+    ) -> ViewHandle<RequestedCommandView> {
+        self.handle_requested_command_stream_update(action_id, command, &[], ctx);
+        self.requested_commands
+            .get(action_id)
+            .expect("requested command was just inserted")
+            .view
+            .clone()
+    }
+
     fn handle_requested_command_view_event(
         &mut self,
         action_id: &AIAgentActionId,

@@ -1539,10 +1539,14 @@ upstream's behavior is actually a defect rather than a preference.
   is active) -- byte-identical at `4111d08f9:app/src/terminal/view.rs:26935` and `:21900`. **The
   defect:** while an approved agent command such as `sleep 100000` runs, neither path does
   anything useful (`sleep` ignores ESC; the view cannot be left), so the pane had no keyboard way
-  out (#850). **We do:** when the active block is an agent-requested command the agent still
-  drives (`is_agent_driving_command`, not handed to the user), Escape calls
-  `stop_local_agent_conversation` -- cancels the turn and sends ^C. Once the user holds the
-  command, Escape goes to the program as before. **ctrl-c:** upstream gates the card's
+  out (#850). **We do (behaviour change 1, Escape-stop, deliberately narrow):** Escape calls
+  `stop_local_agent_conversation` -- cancels the turn and sends ^C -- only when the active
+  block is an agent `wait_until_completion` command (the executor `is_awaiting_completion` on
+  it) that the agent still holds with no CLI subagent in control (`is_agent_driving_command`
+  and not `is_agent_in_control`), on the normal screen (`conversation_for_escape_stop`). In
+  every other case Escape goes where it went before: to the program (a REPL, `vim`, a dev
+  server the agent started without waiting; anything on the alt screen; a command the user
+  holds) or to the CLI subagent / take-over UI. **ctrl-c (behaviour change 2):** upstream gates the card's
   ctrl-c -> Reject binding on `Blocked` (`REQUESTED_ACTION_BLOCKED_KEYMAP_CONTEXT`); the fork's
   base predated that gate, so ctrl-c on a running command's card cancelled its tool call (the
   result never reached the model) and left the process running. We restore the gate, slightly
@@ -1550,8 +1554,19 @@ upstream's behavior is actually a defect rather than a preference.
   ctrl-c Cancel, and MCP calls in every state), so a running command's ctrl-c bubbles to
   `TerminalView`'s interrupt and the executor reports exit 130 + output to the model. A Reject
   that still reaches a running command (the Windows code-editor fallback) is routed to the same
-  interrupt (`reject_disposition`). Covered by
+  interrupt (`reject_disposition`). A consequence worth naming: under CLI-subagent control
+  (`is_agent_in_control`), ctrl-c on the card used to Reject (cancel the tool call); it now
+  bubbles to `TerminalView`'s take-over path (`switch_control_to_user(Stop { should_auto_resume:
+  true })`), which is what upstream's gate produces too. Also, an agent-requested command now
+  counts as running for ctrl-c from the moment it executes, not only after
+  `LONG_RUNNING_COMMAND_DURATION_MS`: in that first 50 ms ctrl-c used to cancel the whole
+  conversation instead of interrupting the command. Covered by
+  `escape_does_not_stop_when_cli_subagent_is_in_control`,
+  `escape_does_not_stop_agent_command_the_agent_is_not_waiting_on`,
+  `ctrl_c_interrupts_agent_command_before_it_counts_as_long_running`,
+  `requested_command_card_is_rejectable_only_while_a_decision_is_pending`,
+  `reject_on_running_card_routes_interrupt_to_the_terminal`,
   `escape_stops_turn_and_interrupts_running_agent_command`,
   `ctrl_c_interrupts_running_agent_command_without_cancelling_conversation`,
   `ctrl_c_reject_tests`, and
-  `interrupted_requested_command_reports_exit_130_and_captured_output`. <!-- markers: keep:stop_agent_turn_and_interrupt_running_agent_command keep:reject_disposition keep:escape_stops_turn_and_interrupts_running_agent_command -->
+  `interrupted_requested_command_reports_exit_130_and_captured_output`. <!-- markers: keep:stop_agent_turn_and_interrupt_running_agent_command keep:conversation_for_escape_stop keep:reject_disposition keep:escape_stops_turn_and_interrupts_running_agent_command -->

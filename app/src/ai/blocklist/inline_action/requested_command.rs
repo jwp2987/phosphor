@@ -170,7 +170,7 @@ const EDIT_COMMAND_ACTION_NAME: &str = "requested_command:edit";
 const EDIT_MODE_OPEN_KEYMAP_CONTEXT: &str = "RequestedCommandViewEditModeOpen";
 /// Set on the card's keymap context while ctrl-c on it should still mean "Reject" -- i.e. while
 /// there is a decision pending on the action. See [`reject_disposition`] and issue #850.
-const REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT: &str = "RequestedActionRejectable";
+pub(crate) const REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT: &str = "RequestedActionRejectable";
 
 const SCROLLBAR_WIDTH: ScrollbarWidth = ScrollbarWidth::Auto;
 const MAX_EDITOR_HEIGHT: f32 = 500.0;
