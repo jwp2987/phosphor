@@ -566,6 +566,13 @@ upstream's behavior is actually a defect rather than a preference.
 - **Closing a tab or pane stops its agent; nothing runs in a closed session** (`#848`,
   2026-10-13, `app/src/pane_group/pane/terminal_pane.rs`, `app/src/terminal/view.rs`,
   `app/src/ai/blocklist/controller.rs`). **Upstream:** `TerminalPane::detach` does agent
+
+- **Stopping an agent stops the command it is running: closing a tab or pane, ctrl-c, Escape
+  and a manual stop; nothing runs in a closed session** (`#848`, `#850`, 2026-10-13,
+  `app/src/pane_group/pane/terminal_pane.rs`, `app/src/terminal/view.rs`,
+  `app/src/ai/blocklist/controller.rs`,
+  `app/src/ai/blocklist/action_model/execute/shell_command.rs`,
+  `app/src/ai/blocklist/inline_action/requested_command.rs`). **#848, closing:** **Upstream:** `TerminalPane::detach` does agent
   cleanup only for `DetachType::Closed` (clearing the view's conversations, which cancels the
   *active* one); a `HiddenForClose` detach -- what every tab or pane close is while the
   undo-close stack holds it -- leaves the agent alone
@@ -599,6 +606,81 @@ upstream's behavior is actually a defect rather than a preference.
     permanent close now also stops non-active running conversations.
   - Quitting closes windows the same way, so a conversation running at quit is restored on
     the next launch as `Cancelled` rather than as still running.
+
+  **#850, a running agent command could not be stopped.** After approving an agent-proposed
+  `sleep 100000`, ctrl-c (focus stays on the command's card) dispatched Reject on the running
+  action -- cancelling the tool call so its result never reached the model, while `sleep` kept
+  running and the ^C never reached the PTY -- and Escape did nothing; the pane stayed stuck until
+  the process was killed from outside.
+  - **ctrl-c on the card.** Upstream gates the card's ctrl-c -> Reject binding on `Blocked`
+    (`REQUESTED_ACTION_BLOCKED_KEYMAP_CONTEXT`); the fork's base predated that gate. We restore
+    it, slightly wider (`REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT`, from `reject_disposition`:
+    also `Queued` and `Preprocessing`, whose rows carry the same ctrl-c Cancel, and MCP calls in
+    every state; an untracked card -- restored or orphaned, no buttons -- does not claim it).
+    A running command's ctrl-c bubbles to `TerminalView`'s ctrl-c, which sends ^C; the executor
+    then reports exit 130 + the captured output to the model and the conversation continues. A
+    Reject that still reaches a running card, and the Windows code-editor ctrl-c fallback in any
+    non-Reject state, go straight to `TerminalView::ctrl_c` (`AIBlockEvent::InterruptRunningCommand`).
+  - **Finished card:** ctrl-c is no longer swallowed as a no-op Reject; it bubbles to the
+    terminal's ctrl-c, which with no command running cancels the active agent conversation -- so
+    ctrl-c on a finished card while the *next* turn streams now stops that turn.
+  - **CLI-subagent control** (`is_agent_in_control`): ctrl-c on the card used to Reject; it now
+    reaches the take-over path (`switch_control_to_user(Stop { should_auto_resume: true })`),
+    which is what upstream's gate produces too.
+  - **No grace window, no preexec wait:** an agent-requested command counts as running for
+    ctrl-c from the moment it is written to the shell (`is_agent_requested_command_in_flight`),
+    not only after `LONG_RUNNING_COMMAND_DURATION_MS`. Before, in the first 50 ms and between
+    the write and preexec (up to a round trip on a remote session), ctrl-c cancelled the whole
+    conversation while the command ran on, orphaned. Every interrupt of an agent command
+    (`TerminalView::interrupt_agent_command`) first discards a copy still parked in the PTY
+    controller's write queue (`DiscardPendingCommandWrites`), then writes the ^C. The ^C is
+    written directly and overtakes the queue; without the discard, the parked command would run
+    after the interrupt meant for it. Before preexec the ^C makes bash/zsh abort the line, precmd
+    finishes the block, and the tool call resolves with it.
+  - **A manual stop interrupts the command.** `ShellCommandExecutor::cancel_execution` now takes
+    the cancellation reason and, for `ManuallyCancelled` while the agent still holds the
+    in-flight command (`Block::agent_holds_in_flight_command`: no CLI subagent, not user-held),
+    emits `CancelExecution { action_id }` (declared but never emitted upstream). The terminal
+    re-checks the same predicate, marks the command `Stop` (non-resuming) and interrupts it once.
+    `ManuallyCancelled` callers that therefore now interrupt the agent's command: the status
+    bar's stop, exiting the agent view (`AgentViewControllerEvent::ExitedAgentView`), a
+    permanent pane close (`ClearedConversationsInTerminalView`), and AI block cleanup
+    (`AIBlock::cleanup_block`). A take-over (`switch_control_to_user`) hands the command to the
+    user before cancelling, so it does not interrupt. Other reasons (follow-up, user command,
+    revert, optimistic subagent completion) still leave the process alone, as upstream does.
+    `stop_local_agent_conversation_with_interrupt_scope` (ctrl-c after a `Stop`, Escape, the
+    #848 close) hands the command to the user *before* cancelling, so it is the only one to send
+    ^C on its path.
+  - **Escape (deliberately narrow).** Upstream: `MaybeDismissToolTip` forwards an ESC byte and
+    `InputEvent::Escape` returns early while `can_exit_agent_view` refuses -- byte-identical at
+    `4111d08f9:app/src/terminal/view.rs:26935` and `:21900`, and useless while `sleep` runs. We
+    stop the turn and interrupt the command (`stop_local_agent_conversation`) only for an agent
+    `wait_until_completion` command the executor is blocked on, held by the agent with no CLI
+    subagent in control, on the normal screen (`conversation_for_escape_stop`). Everywhere else
+    Escape goes where it went before: to the program (a REPL, `vim`, a dev server the agent
+    started without waiting; the alt screen; a command the user holds) or to the take-over UI.
+  - **Limits.** A program that ignores or handles SIGINT keeps running: ctrl-c just resends ^C
+    (the tool call keeps waiting, up to the 30-minute `UntilCompletion` backstop), and Escape
+    cancels the turn and hands the program to the user with no result sent to the model. The
+    TUI is not covered: it handles `CancelExecution` with its own unconditional interrupt and has
+    none of the ctrl-c/Escape/discard changes (#875).
+  - Covered by `ctrl_c_reject_tests`, `interrupted_requested_command_reports_exit_130_and_captured_output`,
+    the `manual_cancel_*` executor tests, and in `view_test.rs`:
+    `ctrl_c_keystroke_on_a_running_card_interrupts_the_command`,
+    `requested_command_card_is_rejectable_only_while_a_decision_is_pending`,
+    `reject_on_running_card_routes_interrupt_to_the_terminal`,
+    `ctrl_c_interrupts_running_agent_command_without_cancelling_conversation`,
+    `ctrl_c_interrupts_agent_command_before_it_counts_as_long_running`,
+    `ctrl_c_interrupts_agent_command_written_but_not_yet_preexeced`,
+    `ctrl_c_on_a_parked_agent_command_discards_it_before_the_interrupt`,
+    `cancel_execution_event_interrupts_an_agent_held_command_once`,
+    `cancel_execution_after_the_command_finished_sends_nothing`,
+    `closing_the_pane_with_a_real_async_agent_command_interrupts_once`,
+    `status_bar_stop_of_a_real_async_agent_command_interrupts_once`,
+    `escape_on_a_real_async_agent_command_interrupts_once`,
+    `escape_stops_turn_and_interrupts_running_agent_command`,
+    `escape_does_not_stop_when_cli_subagent_is_in_control`, and
+    `escape_does_not_stop_agent_command_the_agent_is_not_waiting_on`. <!-- markers: keep:stop_agent_turn_and_interrupt_running_agent_command keep:conversation_for_escape_stop keep:reject_disposition keep:is_agent_requested_command_in_flight keep:agent_holds_in_flight_command keep:interrupt_agent_command keep:escape_stops_turn_and_interrupts_running_agent_command -->
 
 - **An incremental find rescan does not flash the find bar's scanning label**
   (`#815`, 2026-10-12, `app/src/terminal/find/model/async_find.rs`). **Upstream:**
@@ -1809,3 +1891,4 @@ upstream's behavior is actually a defect rather than a preference.
   **Known limit:** a non-UTF-8 path is shown lossily, so features that need the exact bytes cannot
   find that directory. The hook schema is `String`-typed. pwsh is unaffected: `ConvertTo-Json`
   escapes control characters. <!-- markers: keep:repair_hook_json keep:salvage_precmd keep:parse_dcs_precmd_repairs_raw_control_characters_and_invalid_utf8 keep:precmd_with_control_characters_and_invalid_utf8_still_reaches_a_usable_prompt keep:handle_decoded_data -->
+

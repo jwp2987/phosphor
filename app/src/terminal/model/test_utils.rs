@@ -379,8 +379,14 @@ impl TerminalModel {
     /// Simulates the completion of a block.
     /// Assumes that a block was running to begin with.
     pub fn finish_block(&mut self) {
+        self.finish_block_with_exit_code(0);
+    }
+
+    /// Simulates the completion of a block with the given exit code (e.g. 130 for a command
+    /// interrupted by ^C). Assumes that a block was running to begin with.
+    pub fn finish_block_with_exit_code(&mut self, exit_code: i32) {
         let completion_metadata = CompletionMetadata {
-            exit_code: ExitCode::from(0),
+            exit_code: ExitCode::from(exit_code),
             next_block_id: BlockId::new(),
         };
         self.command_finished(CommandFinishedValue {

@@ -1042,6 +1042,41 @@ impl BlocklistAIActionModel {
         self.queue_actions(vec![action], conversation_id, ctx);
     }
 
+    /// Test-only: moves `action_id` from pending to running for `conversation_id`, so
+    /// `get_action_status` reports `RunningAsync` without spawning anything.
+    #[cfg(test)]
+    pub(crate) fn mark_action_running_for_test(
+        &mut self,
+        conversation_id: AIConversationId,
+        action_id: &AIAgentActionId,
+    ) {
+        if let Some(pending) = self.pending_actions.get_mut(&conversation_id) {
+            pending.retain(|action| &action.id != action_id);
+        }
+        self.running_actions.insert(
+            conversation_id,
+            RunningActions::new(RunningActionPhase::Serial, action_id.clone()),
+        );
+    }
+
+    /// Test-only: registers `action` as a really running async action of `conversation_id` --
+    /// in the executor's `async_executing_actions` (so cancelling it goes through
+    /// `cancel_running_async_action` and the shell executor's `cancel_execution`) as well as in
+    /// `running_actions` -- without spawning its execution.
+    #[cfg(test)]
+    pub(crate) fn start_running_async_action_for_test(
+        &mut self,
+        action: AIAgentAction,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let action_id = action.id.clone();
+        self.executor.update(ctx, |executor, _| {
+            executor.insert_async_executing_action_for_test(action, conversation_id);
+        });
+        self.mark_action_running_for_test(conversation_id, &action_id);
+    }
+
     /// Queues the `actions` in the given iterator for the given conversation,
     /// to be dispatched in the order in which they appear in the iterator.
     pub(super) fn queue_actions(

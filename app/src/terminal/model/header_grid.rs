@@ -770,6 +770,11 @@ impl HeaderGrid {
         self.command_start_time
     }
 
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_command_start_time_for_test(&mut self, start_time: Instant) {
+        self.command_start_time = Some(start_time);
+    }
+
     pub fn num_secrets_obfuscated(&self) -> usize {
         self.prompt_and_command_grid.num_secrets_obfuscated()
     }
