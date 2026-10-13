@@ -1361,7 +1361,7 @@ fn test_placeholder_passed_to_reparsing_command_is_refused() {
         let err = render_single_command(command, "main")
             .expect_err(&format!("{command:?} must be refused"));
         assert!(
-            err.contains("runs its input or arguments as code"),
+            err.contains("as code") || err.contains("evaluate code") || err.contains("runs a shell"),
             "{command:?}: {err}"
         );
     }
