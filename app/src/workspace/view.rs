@@ -2163,7 +2163,16 @@ impl Workspace {
                     );
                     !config.params.is_empty()
                 };
-                self.handle_session_config_completed(selection, ctx);
+                if !self.handle_session_config_completed(selection, ctx) {
+                    // The config could not be opened safely (#878; the error is toasted) and
+                    // the old tab stays: no chip, and no tutorial waiting on setup commands
+                    // that never run. Mirrors `cancel_tab_config_params_modal`.
+                    self.pending_session_config_tab_config_chip = false;
+                    if let Some(intention) = pending_intention {
+                        self.dispatch_tutorial_when_bootstrapped(false, intention, ctx);
+                    }
+                    return;
+                }
 
                 if let Some(intention) = pending_intention {
                     if has_worktree && has_params {
@@ -2222,12 +2231,14 @@ impl Workspace {
         self.pending_onboarding_intention = Some(intention);
     }
 
+    /// Returns `false` only when the config could not be opened (see
+    /// `open_tab_config_with_params`); the old tab is then kept.
     #[cfg(feature = "local_fs")]
     fn handle_session_config_completed(
         &mut self,
         selection: &crate::tab_configs::session_config::SessionConfigSelection,
         ctx: &mut ViewContext<Self>,
-    ) {
+    ) -> bool {
         use crate::tab_configs::session_config::{build_tab_config, write_tab_config};
 
         // Build a TabConfig.
@@ -2258,16 +2269,22 @@ impl Workspace {
             self.pending_session_config_replacement =
                 Some(PendingSessionConfigReplacement { old_pane_group_id });
             self.open_tab_config(config, ctx);
+            true
         } else {
             let worktree_branch_name = self.maybe_generate_worktree_name(&config);
             let param_values = config.default_param_values();
-            self.open_tab_config_with_params(
+            // Keep the old tab when the config could not be opened (the error is toasted),
+            // so the window is never left without one.
+            let opened = self.open_tab_config_with_params(
                 config,
                 param_values,
                 worktree_branch_name.as_deref(),
                 ctx,
             );
-            self.remove_tab_by_pane_group_id(old_pane_group_id, ctx);
+            if opened {
+                self.remove_tab_by_pane_group_id(old_pane_group_id, ctx);
+            }
+            opened
         }
     }
 
@@ -2276,7 +2293,8 @@ impl Workspace {
         &mut self,
         _selection: &crate::tab_configs::session_config::SessionConfigSelection,
         _ctx: &mut ViewContext<Self>,
-    ) {
+    ) -> bool {
+        true
     }
 
     /// Opens the vertical tabs panel if the setting was enabled.
@@ -6803,10 +6821,27 @@ impl Workspace {
         param_values: HashMap<String, String>,
         worktree_branch_name: Option<&str>,
         ctx: &mut ViewContext<Self>,
-    ) {
+    ) -> bool {
         let tab_color = tab_config.color;
-        let (rendered_title, pane_template) =
-            crate::tab_configs::render_tab_config(&tab_config, &param_values, worktree_branch_name);
+        let (rendered_title, pane_template) = match crate::tab_configs::try_render_tab_config(
+            &tab_config,
+            &param_values,
+            worktree_branch_name,
+        ) {
+            Ok(rendered) => rendered,
+            Err(e) => {
+                // A value that cannot be quoted safely for the shell (#878): open nothing
+                // rather than a tab whose setup commands silently did not run.
+                log::warn!("Not opening tab config '{}': {e}", tab_config.name);
+                self.toast_stack.update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_ephemeral_toast(
+                        DismissibleToast::error(format!("Can't open \"{}\": {e}", tab_config.name)),
+                        ctx,
+                    );
+                });
+                return false;
+            }
+        };
         self.add_tab_with_pane_layout(
             PanesLayout::Template(pane_template),
             Arc::new(HashMap::new()),
@@ -6819,6 +6854,7 @@ impl Workspace {
                 tab.selected_color = SelectedTabColor::Color(color);
             }
         }
+        true
     }
 
     /// Opens a tab config, showing the param-fill modal when the config has parameters,
@@ -6832,19 +6868,20 @@ impl Workspace {
             let is_worktree_config = tab_config.is_worktree();
             let worktree_branch_name = self.maybe_generate_worktree_name(&tab_config);
             let param_values = tab_config.default_param_values();
-            self.open_tab_config_with_params(
+            if self.open_tab_config_with_params(
                 tab_config,
                 param_values,
                 worktree_branch_name.as_deref(),
                 ctx,
-            );
-            send_telemetry_from_ctx!(
-                TabConfigsTelemetryEvent::ExistingConfigOpened {
-                    open_mode: ExistingTabConfigOpenMode::Direct,
-                    is_worktree_config,
-                },
-                ctx
-            );
+            ) {
+                send_telemetry_from_ctx!(
+                    TabConfigsTelemetryEvent::ExistingConfigOpened {
+                        open_mode: ExistingTabConfigOpenMode::Direct,
+                        is_worktree_config,
+                    },
+                    ctx
+                );
+            }
         } else {
             // Pass the active terminal's cwd to seed the branch picker's git lookup.
             // Local-only: BranchPicker shells out to `git` against this path
@@ -9891,12 +9928,20 @@ impl Workspace {
                 let should_track_existing_config_open =
                     self.pending_session_config_replacement.is_none();
                 let worktree_name = self.maybe_generate_worktree_name(config);
-                self.open_tab_config_with_params(
+                let opened = self.open_tab_config_with_params(
                     config.as_ref().clone(),
                     params.clone(),
                     worktree_name.as_deref(),
                     ctx,
                 );
+                if !opened {
+                    // Refused as unsafe (#878; the error is toasted): leave the modal open so
+                    // the values can be corrected. Nothing has changed yet — the old tab, any
+                    // pending replacement and the onboarding intention all stay as they were,
+                    // and closing the modal goes through `cancel_tab_config_params_modal`.
+                    self.pending_onboarding_intention = pending_intention;
+                    return;
+                }
                 if should_track_existing_config_open {
                     send_telemetry_from_ctx!(
                         TabConfigsTelemetryEvent::ExistingConfigOpened {
@@ -10106,12 +10151,24 @@ impl Workspace {
             warp_util::worktree_names::generate_worktree_branch_name(&branch_refs)
         };
 
-        let toml_content = crate::tab_configs::build_worktree_config_toml(
+        let toml_content = match crate::tab_configs::build_worktree_config_toml(
             &config_name,
             repo,
             base_branch,
             worktree_branch_name,
-        );
+        ) {
+            Ok(toml_content) => toml_content,
+            Err(e) => {
+                log::warn!("Not creating worktree tab config: {e}");
+                self.toast_stack.update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_ephemeral_toast(
+                        DismissibleToast::error(format!("Can't create worktree config: {e}")),
+                        ctx,
+                    );
+                });
+                return;
+            }
+        };
 
         let dir = tab_configs_dir();
         if let Err(e) = std::fs::create_dir_all(&dir) {
