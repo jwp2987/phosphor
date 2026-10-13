@@ -1382,3 +1382,50 @@ fn test_placeholder_passed_to_reparsing_command_is_refused() {
         );
     }
 }
+
+#[test]
+fn test_closed_literal_quotes_away_from_placeholders_render() {
+    // Generated commands bake the base branch as a quoted literal next to placeholders; those
+    // literals, and the same forms written by hand, must not trip the whitelist.
+    for (command, expected) in [
+        (
+            "git worktree add -b {{x}} -- /wt 'a;touch pwned'",
+            "git worktree add -b main -- /wt 'a;touch pwned'",
+        ),
+        (
+            "git worktree add -b {{x}} -- /wt '$(id)'",
+            "git worktree add -b main -- /wt '$(id)'",
+        ),
+        (
+            "git worktree add -b {{x}} -- /wt \"it's\"",
+            "git worktree add -b main -- /wt \"it's\"",
+        ),
+        (
+            "git commit -m \"wip\" && git checkout {{x}}",
+            "git commit -m \"wip\" && git checkout main",
+        ),
+        ("echo 'a;ssh;b' {{x}}", "echo 'a;ssh;b' main"),
+        ("echo 'a # b' {{x}}", "echo 'a # b' main"),
+    ] {
+        assert_eq!(
+            render_single_command(command, "main"),
+            Ok(vec![expected.to_string()]),
+            "{command:?}"
+        );
+    }
+
+    // Quoted strings the shells read differently, or that hold a placeholder, are refused.
+    for command in [
+        "echo \"a$b\" {{x}}",
+        "echo \"a!b\" {{x}}",
+        "echo 'a\\b' {{x}}",
+        "echo 'unclosed {{x}}",
+        "echo 'a' \"{{x}} b\"",
+        "echo 'a\nb' {{x}}",
+    ] {
+        assert!(
+            render_single_command(command, "main").is_err(),
+            "{command:?} must be refused"
+        );
+    }
+}

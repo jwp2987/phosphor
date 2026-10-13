@@ -1543,8 +1543,10 @@ upstream's behavior is actually a defect rather than a preference.
   that is (a flat quote tracker was bypassed by nested quotes in `$(...)`, `${y:-"..."}`,
   comments, heredocs and arithmetic). Instead a command that substitutes a placeholder is held
   to a whitelist: the placeholder bare or exactly `"{{v}}"`/`'{{v}}'` (the pair is dropped),
-  and nowhere in that command any other quote, `$(`, `${`, `((`, `<<`, backtick, backslash,
-  line break or word-initial `#`, nor `$` or `[` directly before a placeholder, nor `$[` or
+  any other quoted string only as a closed literal with no placeholder inside that every
+  shell reads alike (`'...'` without `\`, `"..."` without `$`/backtick/`\`/`!` — the forms
+  generated commands bake the base branch in), and outside those literals no `$(`, `${`,
+  `((`, `<<`, backtick, backslash, line break or word-initial `#`, nor `$` or `[` directly before a placeholder, nor `$[` or
   a zsh `(e:` glob qualifier. As a best-effort word-level check, a command whose segments
   start with something that re-parses its arguments as code (`ssh`, `eval`, `sh -c` and other
   shells' `-c`, `watch`, `tmux`, `screen`, `docker`/`podman`/`kubectl exec`, `su`, `sudo ... sh
