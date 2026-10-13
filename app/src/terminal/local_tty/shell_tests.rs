@@ -68,3 +68,38 @@ fn test_trim_wsl_err_from_output() {
         b"/bin/bash\n".to_vec()
     );
 }
+
+fn fallback_source(unsupported_shell: Option<&str>) -> ShellStarterSource {
+    ShellStarterSource::Fallback {
+        unsupported_shell: unsupported_shell.map(str::to_owned),
+        starter: DirectShellStarter::new_for_test(
+            ShellType::Zsh,
+            PathBuf::from("/bin/zsh"),
+            Vec::new(),
+        ),
+    }
+}
+
+/// #882: the "doesn't currently support your default shell" banner is only
+/// true when the default shell was resolved and is unsupported.
+#[test]
+fn unsupported_shell_banner_requires_a_resolved_unsupported_shell() {
+    assert!(fallback_source(Some("/usr/bin/nu")).is_known_unsupported_default_shell());
+}
+
+/// #882: a fallback taken because the passwd lookup failed (under fd
+/// exhaustion every lookup path fails with EMFILE) says nothing about the
+/// user's shell, so it must not raise the banner.
+#[test]
+fn unresolved_default_shell_does_not_claim_it_is_unsupported() {
+    assert!(!fallback_source(None).is_known_unsupported_default_shell());
+}
+
+#[test]
+fn non_fallback_sources_never_claim_unsupported_shell() {
+    let starter = || {
+        DirectShellStarter::new_for_test(ShellType::Bash, PathBuf::from("/bin/bash"), Vec::new())
+    };
+    assert!(!ShellStarterSource::UserDefault(starter()).is_known_unsupported_default_shell());
+    assert!(!ShellStarterSource::Environment(starter()).is_known_unsupported_default_shell());
+}

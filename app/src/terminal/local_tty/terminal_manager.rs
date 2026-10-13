@@ -735,19 +735,24 @@ impl<S> TerminalManager<S> {
         )
     }
 
-    /// Start's the PTY event loop, returning a sender for the event loop and the event loop's join handle.
+    /// Starts the PTY event loop, returning the event loop's join handle.
+    ///
+    /// Fails if the event loop cannot be set up -- in practice when the
+    /// process is out of file descriptors (#882). The PTY's shell has then
+    /// already been killed; the caller reports the error on the tab.
     fn start_pty_event_loop(
         pty: Pty,
         rx: mio_channel::Receiver<Message>,
         model: Arc<FairMutex<TerminalModel>>,
         channel_event_proxy: ChannelEventListener,
-    ) -> JoinHandle<()> {
+    ) -> anyhow::Result<JoinHandle<()>> {
         // Create the event loop and get a handle to the injector.
-        let event_loop = EventLoop::new(model, channel_event_proxy, pty, rx);
+        let event_loop = EventLoop::new(model, channel_event_proxy, pty, rx)
+            .context("error preparing terminal I/O")?;
 
         // Spawn the event loop on a separate thread to interact with the PTY and write the data back
         // to the terminal.
-        event_loop.spawn()
+        Ok(event_loop.spawn())
     }
 
     #[cfg(feature = "integration_tests")]
@@ -780,10 +785,12 @@ fn on_shell_determined<S: TerminalSurface>(
     let bg_executor = ctx.background_executor();
     let auth_state = AuthStateProvider::as_ref(ctx).get();
 
-    let is_fallback_shell = matches!(
-        shell_starter_source,
-        Some(ShellStarterSource::Fallback { .. })
-    );
+    // Only a default shell that was resolved and found unsupported warrants
+    // the banner; a fallback taken because the passwd lookup failed (e.g. on
+    // EMFILE) does not (#882).
+    let show_unsupported_shell_banner = shell_starter_source
+        .as_ref()
+        .is_some_and(ShellStarterSource::is_known_unsupported_default_shell);
     let shell_starter = shell_starter_source
         .map(|source| get_shell_starter_internal(source, bg_executor, auth_state));
     let shell_starter = match shell_starter {
@@ -811,7 +818,7 @@ fn on_shell_determined<S: TerminalSurface>(
     };
 
     // Show a "shell unsupported" banner, if applicable.
-    if is_fallback_shell
+    if show_unsupported_shell_banner
         && user_default_shell_unsupported_banner_model_handle.as_ref(ctx)
             == &BannerState::NotDismissed
     {
@@ -906,12 +913,25 @@ fn on_shell_determined<S: TerminalSurface>(
     let fd = pty.get_fd();
 
     // Create the channel above and pass the receving side to the event loop.
-    let event_loop_handle = TerminalManager::<S>::start_pty_event_loop(
+    let event_loop_handle = match TerminalManager::<S>::start_pty_event_loop(
         pty,
         event_loop_rx,
         model.clone(),
         channel_event_proxy,
-    );
+    ) {
+        Ok(event_loop_handle) => event_loop_handle,
+        Err(err) => {
+            // Same surface as a failed spawn above: the tab says why
+            // (e.g. "Too many open files"), rather than the reader thread
+            // panicking and the tab blaming the bootstrap script (#882).
+            log::error!("Failed to start pty event loop: {err:#}");
+            manager.view.update(ctx, |surface, ctx| {
+                surface.on_pty_spawn_failed(err, ctx);
+            });
+            manager.model().lock().exit(ExitReason::PtySpawnFailed);
+            return;
+        }
+    };
 
     manager.event_loop_handle = Some(event_loop_handle);
     #[cfg(feature = "integration_tests")]

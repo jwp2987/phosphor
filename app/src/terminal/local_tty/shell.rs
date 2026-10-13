@@ -381,6 +381,27 @@ pub enum ShellStarterSource {
 }
 
 impl ShellStarterSource {
+    /// Whether the user's default shell was *found* and is unsupported, which
+    /// is what the "doesn't currently support your default shell" banner
+    /// claims.
+    ///
+    /// A [`Self::Fallback`] without an `unsupported_shell` means the default
+    /// shell could not be determined at all -- the passwd lookup failed. That
+    /// is not evidence the shell is unsupported: under fd exhaustion every
+    /// lookup path (getpwuid_r, spawning `getent`, reading `/etc/passwd`)
+    /// fails with EMFILE, and the banner used to tell such users their shell
+    /// was unsupported (#882). The fallback shell is still used; only the
+    /// claim is withheld.
+    pub fn is_known_unsupported_default_shell(&self) -> bool {
+        matches!(
+            self,
+            Self::Fallback {
+                unsupported_shell: Some(_),
+                ..
+            }
+        )
+    }
+
     #[cfg(test)]
     pub fn shell_type(&self) -> ShellType {
         match self {
