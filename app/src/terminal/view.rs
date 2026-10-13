@@ -9884,6 +9884,12 @@ impl TerminalView {
                 .editor()
                 .update(ctx, |editor, ctx| editor.handle_action(&action, ctx))
         });
+        if !self.input.as_ref(ctx).editor().is_focused(ctx) {
+            self.model
+                .lock()
+                .typeahead_handoff_mut()
+                .note_focus_moved_by_takeover_key();
+        }
         self.redetermine_global_focus(ctx);
         true
     }
@@ -22529,7 +22535,7 @@ impl TerminalView {
                     self.model
                         .lock()
                         .typeahead_handoff_mut()
-                        .end_editor_takeover_window();
+                        .on_editor_focused();
                 }
                 ctx.dispatch_typed_action(&PaneGroupAction::HandleFocusChange);
                 ctx.notify();

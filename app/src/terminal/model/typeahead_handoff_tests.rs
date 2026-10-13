@@ -647,3 +647,17 @@ fn the_editor_takeover_window_ends_early_on_request() {
     handoff.end_editor_takeover_window();
     assert!(!handoff.editor_took_over_within(Duration::from_secs(1), start));
 }
+
+#[test]
+fn the_window_survives_focus_moved_by_a_key_it_applied() {
+    let start = Instant::now();
+    let window = Duration::from_secs(1);
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.note_editor_took_over(start);
+    handoff.note_focus_moved_by_takeover_key();
+    handoff.on_editor_focused();
+    assert!(handoff.editor_took_over_within(window, start));
+    // Any other focus change ends it.
+    handoff.on_editor_focused();
+    assert!(!handoff.editor_took_over_within(window, start));
+}

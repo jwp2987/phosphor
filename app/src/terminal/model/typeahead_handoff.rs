@@ -159,6 +159,9 @@ pub struct TypeaheadHandoff {
     held_agent_command: Option<HeldAgentCommand>,
     /// When the editor last took input over from the pty.
     editor_took_over_at: Option<Instant>,
+    /// A key applied within that window moved focus to the editor itself; the resulting focus
+    /// event must not end the window.
+    focus_moved_by_takeover_key: bool,
 }
 
 /// Identifies an agent's command held behind the user's typeahead.
@@ -511,6 +514,19 @@ impl TypeaheadHandoff {
     /// did.
     pub fn end_editor_takeover_window(&mut self) {
         self.editor_took_over_at = None;
+    }
+
+    /// A key the window applied is about to move focus to the editor.
+    pub fn note_focus_moved_by_takeover_key(&mut self) {
+        self.focus_moved_by_takeover_key = true;
+    }
+
+    /// The editor gained focus: ends the window, unless a key the window applied moved focus
+    /// there itself.
+    pub fn on_editor_focused(&mut self) {
+        if !mem::take(&mut self.focus_moved_by_takeover_key) {
+            self.end_editor_takeover_window();
+        }
     }
 
     /// Records that the editor just took input over (`now`), so a non-printable key that still
