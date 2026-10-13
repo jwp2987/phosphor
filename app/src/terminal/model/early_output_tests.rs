@@ -1,3 +1,5 @@
+use crate::features::FeatureFlag;
+use crate::terminal::event::Event as TerminalEvent;
 use crate::terminal::model::block::TranscriptScope;
 use crate::terminal::{
     event_listener::ChannelEventListener,
@@ -208,4 +210,125 @@ fn test_queued_typeahead_shell_reported() {
         .background_block_mut()
         .expect("Block should exist")
         .is_empty(&TranscriptScope::Terminal));
+}
+
+fn report(block_list: &mut BlockList, buffer: &str) {
+    block_list.input_buffer(ansi::InputBufferValue {
+        buffer: buffer.into(),
+        session_id: None,
+    });
+}
+
+/// Without `FeatureFlag::TypeaheadHandoff`, a second report replaces the first, as at the pin.
+#[test]
+fn second_report_replaces_the_first_without_the_typeahead_handoff() {
+    let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(false);
+    let mut block_list = new_block_list(
+        ChannelEventListener::new_for_test(),
+        TypeaheadMode::ShellReported,
+    );
+    report(&mut block_list, "first");
+    report(&mut block_list, "second");
+    assert_eq!(block_list.early_output().typeahead(), "second");
+
+    // And a precmd clears a report the view has not inserted yet.
+    block_list.prompt_only_precmd(Default::default());
+    assert_eq!(block_list.early_output().typeahead(), "");
+}
+
+/// The shell clears its line when it reports it, so two reports hold different text and the
+/// first must survive the second.
+#[test]
+fn typeahead_handoff_appends_a_second_report() {
+    let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+    let mut block_list = new_block_list(
+        ChannelEventListener::new_for_test(),
+        TypeaheadMode::ShellReported,
+    );
+    report(&mut block_list, "echo 47");
+    report(&mut block_list, " >> ~/burst");
+    assert_eq!(block_list.early_output().typeahead(), "echo 47 >> ~/burst");
+
+    // The view replaces what it already inserted with the whole accumulated report.
+    let (typeahead, inserted) = block_list
+        .early_output_mut()
+        .advance_typeahead()
+        .expect("typeahead was reported");
+    assert_eq!(typeahead, "echo 47 >> ~/burst");
+    assert_eq!(inserted.as_usize(), 0);
+}
+
+#[test]
+fn typeahead_handoff_precmd_keeps_a_report_the_editor_has_not_inserted() {
+    let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+    let mut block_list = new_block_list(
+        ChannelEventListener::new_for_test(),
+        TypeaheadMode::ShellReported,
+    );
+    report(&mut block_list, "pwd");
+    block_list.prompt_only_precmd(Default::default());
+    assert_eq!(block_list.early_output().typeahead(), "pwd");
+    assert!(block_list.early_output().has_uninserted_typeahead());
+
+    // Once inserted, the next precmd clears it as before.
+    block_list.early_output_mut().advance_typeahead();
+    assert!(!block_list.early_output().has_uninserted_typeahead());
+    block_list.prompt_only_precmd(Default::default());
+    assert_eq!(block_list.early_output().typeahead(), "");
+}
+
+#[test]
+fn clearing_typeahead_for_a_new_command_restarts_insertion() {
+    let mut block_list = new_block_list(
+        ChannelEventListener::new_for_test(),
+        TypeaheadMode::ShellReported,
+    );
+    report(&mut block_list, "ls");
+    block_list.early_output_mut().advance_typeahead();
+    block_list
+        .early_output_mut()
+        .clear_typeahead_for_new_command();
+    report(&mut block_list, "pwd");
+    let (typeahead, inserted) = block_list
+        .early_output_mut()
+        .advance_typeahead()
+        .expect("typeahead was reported");
+    assert_eq!(typeahead, "pwd");
+    assert_eq!(
+        inserted.as_usize(),
+        0,
+        "a report after the command was submitted must not overwrite the fresh editor's text"
+    );
+}
+
+/// The hand-off waits on the report it requested; an empty line answers it too.
+#[test]
+fn typeahead_handoff_hears_about_an_empty_report() {
+    let (events_tx, events_rx) = async_channel::unbounded();
+    let mut block_list = {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(false);
+        new_block_list(
+            ChannelEventListener::builder_for_test()
+                .with_terminal_events_tx(events_tx)
+                .build(),
+            TypeaheadMode::ShellReported,
+        )
+    };
+    let typeahead_events = |events_rx: &async_channel::Receiver<TerminalEvent>| {
+        std::iter::from_fn(|| events_rx.try_recv().ok())
+            .filter(|event| matches!(event, TerminalEvent::Typeahead))
+            .count()
+    };
+    typeahead_events(&events_rx);
+
+    {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(false);
+        report(&mut block_list, "");
+        assert_eq!(typeahead_events(&events_rx), 0);
+    }
+
+    let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+    report(&mut block_list, "");
+    assert_eq!(typeahead_events(&events_rx), 1);
+    assert_eq!(block_list.early_output().typeahead(), "");
 }
