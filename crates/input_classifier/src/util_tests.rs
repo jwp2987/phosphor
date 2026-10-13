@@ -518,9 +518,17 @@ fn test_is_unambiguous_shell_command_forces_shell_for_clear_commands() {
             "make reinstall",
             "mount -o remount /",
             "git repack -ad",
+            "sudo apt reinstall vim",
+            "make -j8 reinstall",
             "cd API",
             "ls SDK",
             "mkdir VM",
+            "cd UX",
+            "cd LLM",
+            // #831: a bare `.` / `..` argument is not a sentence period.
+            "cd ..",
+            "ls .",
+            "find . -name x",
         ] {
             assert!(
                 is_unambiguous_shell_command_for(buffer).await,
@@ -623,9 +631,7 @@ fn test_is_unambiguous_shell_command_leaves_prose_and_ambiguous_input_to_the_cla
             "top 10 CPU hogs",
             "free RAM",
             // #831: a word ending in a sentence comma (bash would run `rm -rf "node_modules,"
-            // reinstall`), and `re-` / `-ly` derivations the dictionaries miss. Without the comma,
-            // `rm -rf node_modules reinstall` stays forced: `brew reinstall foo` and `make
-            // reinstall` make `reinstall` a command word.
+            // reinstall`) or period, and `re-` / `-ly` derivations the dictionaries miss.
             "rm -rf node_modules, reinstall",
             "rm -rf dist, redeploy",
             "rm -rf ~/proj, reclone",
@@ -635,6 +641,18 @@ fn test_is_unambiguous_shell_command_leaves_prose_and_ambiguous_input_to_the_cla
             "chmod -R 777 ~, fixperms",
             "rm -rf build, rebuild",
             "rm node_modules recursively",
+            "rm -rf node_modules. reinstall",
+            "rm -rf node_modules reinstall.",
+            "rm -rf ~/x... retry",
+            // #831: a command-like `re-` word outside subcommand position (`brew reinstall foo`
+            // is in it) is the verb of a request, not an argument to delete.
+            "rm -rf node_modules reinstall",
+            "rm -rf node_modules reinstall deps",
+            "rm -rf node_modules; reinstall",
+            "rm -rf node_modules + reinstall",
+            "rm -rf node_modules -> reinstall",
+            "rm -rf node_modules & reinstall",
+            "rm -rf dist reboot",
         ] {
             assert!(
                 !is_unambiguous_shell_command_for(buffer).await,

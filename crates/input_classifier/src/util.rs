@@ -361,15 +361,16 @@ lazy_static! {
     /// a bare argument (#831). [`is_prose_word`] otherwise treats every ALL-CAPS word as a shell
     /// argument (`DEBUG`, `HOME`, `HEAD`, `README`), so this list is deliberately closed: it must
     /// never contain a name that commonly appears unquoted in a command (`CI`, `IO`, `SYS`...)
-    /// or that is a plausible directory name (`API`, `SDK`, `VM`, `UI`: `cd API`, `ls SDK`).
+    /// or that is a plausible directory name (`API`, `SDK`, `VM`, `UI`, `UX`, `LLM`: `cd API`,
+    /// `ls UX`).
     static ref PROSE_ACRONYMS: HashSet<&'static str> = HashSet::from([
-        "PR", "MR", "CPU", "GPU", "RAM", "PID", "CVE", "URL", "UX", "DNS", "SSL", "TLS", "OOM",
-        "LLM",
+        "PR", "MR", "CPU", "GPU", "RAM", "PID", "CVE", "URL", "DNS", "SSL", "TLS", "OOM",
     ]);
 
     /// `re-` words that are commands or subcommands in their own right (`sudo reboot`, `brew
     /// reinstall foo`, `mount -o remount`, `git repack`), so [`is_derived_english_word`] must not
-    /// read them as prose even though their base (`boot`, `install`, `mount`...) is English.
+    /// read them as prose even though their base (`boot`, `install`, `mount`...) is English. They
+    /// are only arguments in that position, though: see [`is_misplaced_re_command_word`].
     static ref RE_PREFIXED_COMMAND_WORDS: HashSet<&'static str> = HashSet::from([
         "reboot", "recompile", "reconfigure", "reindex", "reinstall", "relink", "remount",
         "renice", "repack",
@@ -724,17 +725,50 @@ fn is_prose_article(words: &[ShellWord], index: usize) -> bool {
     })
 }
 
-/// True iff `word` is an unquoted word ending in sentence comma punctuation (`node_modules,` in
-/// "rm -rf node_modules, reinstall"; `~,` in "chmod -R 777 ~, fixperms") (#831). A comma there
-/// separates clauses of a sentence; in a command line it would become part of the argument
-/// (`rm -rf "node_modules,"`), which nobody types on purpose. Flags that take a comma as their
-/// value (`cut -d,`, `awk -F,`, `sort -t,`), a bare `,` argument (`tr , x`) and quoted words
-/// (`printf 'a,'`) are not sentence commas.
-fn ends_in_sentence_comma(word: &ShellWord) -> bool {
-    !word.quoted
-        && word.text.ends_with(',')
-        && !word.text.starts_with('-')
-        && !word.text.trim_end_matches(',').is_empty()
+/// True iff `word` is an unquoted word ending in sentence punctuation (#831): a comma
+/// (`node_modules,` in "rm -rf node_modules, reinstall"; `~,` in "chmod -R 777 ~, fixperms"), or
+/// a period after a letter, digit or `_` (`node_modules.` in "rm -rf node_modules. reinstall",
+/// `~/x...`). That punctuation separates clauses of a sentence; in a command line it would become
+/// part of the argument (`rm -rf "node_modules,"`), which nobody types on purpose. Flags that take
+/// it as their value (`cut -d,`, `awk -F,`, `sort -t,`), a bare `,`, `.` or `..` argument (`tr ,
+/// x`, `cd ..`, `find . -name x`), a path ending in `/.` or `:.` (`host:.`) and quoted words
+/// (`printf 'a,'`) are not sentence punctuation.
+fn ends_in_sentence_punctuation(word: &ShellWord) -> bool {
+    if word.quoted || word.text.starts_with('-') {
+        return false;
+    }
+    if word.text.ends_with(',') {
+        return !word.text.trim_end_matches(',').is_empty();
+    }
+    word.text.ends_with('.')
+        && word
+            .text
+            .trim_end_matches('.')
+            .ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// True iff `remaining[index]` is one of the [`RE_PREFIXED_COMMAND_WORDS`] somewhere other than
+/// subcommand position (#831). Directly after a known command word or a flag (`sudo reboot`,
+/// `brew reinstall foo`, `sudo apt reinstall vim`, `mount -o remount /`) it is a command or
+/// subcommand; after anything else (`rm -rf node_modules reinstall`, `rm -rf node_modules ;
+/// reinstall`, `rm -rf node_modules -> reinstall`, `rm -rf dist reboot`) it is the English verb
+/// of a request, and the line would delete a file of that name. A flag is `-` or `--` followed by
+/// a letter or digit, so `->` and `--` are not. `ssh host reboot` is vetoed too: the pre-filter
+/// cannot tell that `host` is a host, so the classifier decides it.
+fn is_misplaced_re_command_word(head: &str, remaining: &[ShellWord], index: usize) -> bool {
+    let word = &remaining[index];
+    if word.quoted || !RE_PREFIXED_COMMAND_WORDS.contains(strip_sentence_punctuation(&word.text)) {
+        return false;
+    }
+    let previous = match index.checked_sub(1) {
+        Some(previous) => remaining[previous].text.as_str(),
+        None => head,
+    };
+    let is_flag = previous
+        .strip_prefix("--")
+        .or_else(|| previous.strip_prefix('-'))
+        .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_alphanumeric()));
+    !(is_known_shell_command_word(previous) || is_flag)
 }
 
 /// True iff `text` (unquoted, sentence punctuation stripped) is an acronym used as an English
@@ -748,12 +782,14 @@ fn is_prose_acronym(text: &str) -> bool {
         .is_some_and(|stem| stem.len() >= 2 && stem.chars().all(|c| c.is_ascii_uppercase()))
 }
 
-/// True iff lowercase `text` is a regular English derivation that the dictionaries miss (#831):
-/// a `re-` verb whose base is English (`reinstall`, `redeploy`, `reclone`, `recreate`,
-/// `regenerate`) or an `-ly` adverb (`recursively`). Only plain lowercase ASCII words of six or
-/// more letters qualify, so short tool and package names (`redis`, `regex`) stay arguments; a
-/// longer `re-` name whose remainder is no English word (`reflog`, `readline`) does too, and so
-/// do the [`RE_PREFIXED_COMMAND_WORDS`] (`reboot`, `reinstall`).
+/// True iff lowercase `text` looks like a regular English derivation that the dictionaries miss
+/// (#831): a `re-` word whose base is English (`redeploy`, `reclone`, `recreate`, `regenerate`)
+/// or any word ending in `-ly` (`recursively` — but also `anomaly`, `butterfly`; this is a
+/// spelling test, not a part-of-speech one). Only plain lowercase ASCII words of six or more
+/// letters qualify, so short tool and package names (`redis`, `regex`) stay arguments; a longer
+/// `re-` name whose remainder is no English word (`reflog`, `readline`) does too, and so do the
+/// [`RE_PREFIXED_COMMAND_WORDS`] (`reboot`, `reinstall`), which
+/// [`is_misplaced_re_command_word`] handles by position instead.
 fn is_derived_english_word(text: &str) -> bool {
     if text.len() < 6
         || !text.chars().all(|c| c.is_ascii_lowercase())
@@ -831,8 +867,9 @@ fn is_prose_word(word: &ShellWord) -> bool {
 /// head; a head that is a slash command rather than a path (`/plan`, `/model gpt`: starts with
 /// `/` with no further `/` or `.`); any [`PROSE_FUNCTION_WORDS`] member among the other unquoted
 /// words (`the`, `sure`, `it`, `and`...); the article `a` before a word (`make a PR`,
-/// [`is_prose_article`]); a word ending in a sentence comma (`rm -rf node_modules, reinstall`,
-/// [`ends_in_sentence_comma`]); and `exit` / `return` / `logout` with a non-numeric argument
+/// [`is_prose_article`]); a word ending in a sentence comma or period (`rm -rf node_modules,
+/// reinstall`, [`ends_in_sentence_punctuation`]); a command-like `re-` word outside subcommand
+/// position (`rm -rf node_modules reinstall`, [`is_misplaced_re_command_word`]); and `exit` / `return` / `logout` with a non-numeric argument
 /// (`exit vim` ends the whole session, not vim).
 ///
 /// **Rule 1 (operator):** the head itself carries command evidence — a known command word
@@ -892,7 +929,8 @@ pub fn is_unambiguous_shell_command(input: &ParsedTokensSnapshot) -> bool {
     let remaining = &words[first_index + 1..];
     if remaining.iter().any(is_function_word)
         || (0..remaining.len()).any(|index| is_prose_article(remaining, index))
-        || remaining.iter().any(ends_in_sentence_comma)
+        || remaining.iter().any(ends_in_sentence_punctuation)
+        || (0..remaining.len()).any(|index| is_misplaced_re_command_word(head, remaining, index))
     {
         return false;
     }
