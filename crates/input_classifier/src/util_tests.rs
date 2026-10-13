@@ -510,6 +510,17 @@ fn test_is_unambiguous_shell_command_forces_shell_for_clear_commands() {
             "ls a b c",
             "tar -cf a.tar a",
             "git reflog",
+            // #831: `re-` words that are commands or subcommands are not derived prose, and an
+            // acronym that could be a directory name is an argument.
+            "sudo reboot",
+            "systemctl reboot",
+            "brew reinstall foo",
+            "make reinstall",
+            "mount -o remount /",
+            "git repack -ad",
+            "cd API",
+            "ls SDK",
+            "mkdir VM",
         ] {
             assert!(
                 is_unambiguous_shell_command_for(buffer).await,
@@ -612,7 +623,9 @@ fn test_is_unambiguous_shell_command_leaves_prose_and_ambiguous_input_to_the_cla
             "top 10 CPU hogs",
             "free RAM",
             // #831: a word ending in a sentence comma (bash would run `rm -rf "node_modules,"
-            // reinstall`), and `re-` / `-ly` derivations the dictionaries miss.
+            // reinstall`), and `re-` / `-ly` derivations the dictionaries miss. Without the comma,
+            // `rm -rf node_modules reinstall` stays forced: `brew reinstall foo` and `make
+            // reinstall` make `reinstall` a command word.
             "rm -rf node_modules, reinstall",
             "rm -rf dist, redeploy",
             "rm -rf ~/proj, reclone",
@@ -620,10 +633,8 @@ fn test_is_unambiguous_shell_command_leaves_prose_and_ambiguous_input_to_the_cla
             "rm *.log, regenerate",
             "mv main.rs lib.rs, refactor",
             "chmod -R 777 ~, fixperms",
+            "rm -rf build, rebuild",
             "rm node_modules recursively",
-            "rm -rf node_modules reinstall",
-            "rm -rf node_modules -> reinstall",
-            "rm -rf node_modules + reinstall",
         ] {
             assert!(
                 !is_unambiguous_shell_command_for(buffer).await,

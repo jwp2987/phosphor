@@ -360,10 +360,19 @@ lazy_static! {
     /// 4242", "free RAM") and are not signal, variable, ref or file names a command line takes as
     /// a bare argument (#831). [`is_prose_word`] otherwise treats every ALL-CAPS word as a shell
     /// argument (`DEBUG`, `HOME`, `HEAD`, `README`), so this list is deliberately closed: it must
-    /// never contain a name that commonly appears unquoted in a command (`CI`, `IO`, `SYS`...).
+    /// never contain a name that commonly appears unquoted in a command (`CI`, `IO`, `SYS`...)
+    /// or that is a plausible directory name (`API`, `SDK`, `VM`, `UI`: `cd API`, `ls SDK`).
     static ref PROSE_ACRONYMS: HashSet<&'static str> = HashSet::from([
-        "PR", "MR", "CPU", "GPU", "RAM", "PID", "CVE", "API", "URL", "UI", "UX", "DNS", "SSL",
-        "TLS", "OOM", "VM", "LLM", "AI", "CLI", "IDE", "SDK",
+        "PR", "MR", "CPU", "GPU", "RAM", "PID", "CVE", "URL", "UX", "DNS", "SSL", "TLS", "OOM",
+        "LLM",
+    ]);
+
+    /// `re-` words that are commands or subcommands in their own right (`sudo reboot`, `brew
+    /// reinstall foo`, `mount -o remount`, `git repack`), so [`is_derived_english_word`] must not
+    /// read them as prose even though their base (`boot`, `install`, `mount`...) is English.
+    static ref RE_PREFIXED_COMMAND_WORDS: HashSet<&'static str> = HashSet::from([
+        "reboot", "recompile", "reconfigure", "reindex", "reinstall", "relink", "remount",
+        "renice", "repack",
     ]);
 }
 
@@ -743,9 +752,13 @@ fn is_prose_acronym(text: &str) -> bool {
 /// a `re-` verb whose base is English (`reinstall`, `redeploy`, `reclone`, `recreate`,
 /// `regenerate`) or an `-ly` adverb (`recursively`). Only plain lowercase ASCII words of six or
 /// more letters qualify, so short tool and package names (`redis`, `regex`) stay arguments; a
-/// longer `re-` name whose remainder is no English word (`reflog`, `readline`) does too.
+/// longer `re-` name whose remainder is no English word (`reflog`, `readline`) does too, and so
+/// do the [`RE_PREFIXED_COMMAND_WORDS`] (`reboot`, `reinstall`).
 fn is_derived_english_word(text: &str) -> bool {
-    if text.len() < 6 || !text.chars().all(|c| c.is_ascii_lowercase()) {
+    if text.len() < 6
+        || !text.chars().all(|c| c.is_ascii_lowercase())
+        || RE_PREFIXED_COMMAND_WORDS.contains(text)
+    {
         return false;
     }
     if let Some(base) = text.strip_prefix("re") {
