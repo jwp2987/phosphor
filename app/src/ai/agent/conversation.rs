@@ -2362,6 +2362,10 @@ impl AIConversation {
         } in added_exchanges.into_iter()
         {
             let is_viewing_shared_session = self.is_viewing_shared_session;
+            // The exchange stops streaming here: settle its streamed text on a full conversion
+            // (#849).
+            self.task_store
+                .modify_task(&task_id, |task| task.finalize_streamed_text());
             let task = self
                 .task_store
                 .get(&task_id)
@@ -2499,6 +2503,10 @@ impl AIConversation {
         } in added_exchanges.into_iter()
         {
             let is_viewing_shared_session = self.is_viewing_shared_session;
+            // The exchange stops streaming here: settle its streamed text on a full conversion
+            // (#849).
+            self.task_store
+                .modify_task(&task_id, |task| task.finalize_streamed_text());
             let task = self
                 .task_store
                 .get(&task_id)
@@ -2567,6 +2575,10 @@ impl AIConversation {
         task_id: &TaskId,
         exchange_id: AIAgentExchangeId,
     ) -> Result<&AIAgentExchange, UpdateConversationError> {
+        // The exchange stops streaming here: settle its streamed text on a full conversion
+        // (#849).
+        self.task_store
+            .modify_task(task_id, |task| task.finalize_streamed_text());
         let task = self
             .task_store
             .get(task_id)

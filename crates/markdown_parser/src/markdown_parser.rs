@@ -105,8 +105,15 @@ impl ListIndentationContext {
             reference_indentation_level
         };
 
-        // Add current line to stack
-        self.indentation_stack.push((space_count, new_level));
+        // Add current line to stack. An entry equal to the top is not pushed: a line with the
+        // same space count as the top always gets the top's level, so the duplicate could never
+        // change a later lookup (those read the top after popping deeper entries, and a
+        // duplicate is popped exactly when its twin is). Without this, a long flat list grew the
+        // stack by one entry per item, which made it O(items) to snapshot in a
+        // `MarkdownResumePoint` (#849).
+        if self.indentation_stack.last() != Some(&(space_count, new_level)) {
+            self.indentation_stack.push((space_count, new_level));
+        }
 
         new_level
     }
@@ -146,7 +153,106 @@ fn parse_markdown_internal<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
     markdown: &'a str,
     parse_gfm_tables: bool,
 ) -> IResult<&'a str, Vec<FormattedTextLine>, E> {
-    let indentation_context = RefCell::new(ListIndentationContext::new());
+    parse_blocks(
+        markdown,
+        &MarkdownResumePoint::default(),
+        parse_gfm_tables,
+        None,
+    )
+    .map(|(remaining, (lines, _))| (remaining, lines))
+}
+
+/// A block boundary from which a Markdown document that only ever grows at its end can be
+/// re-parsed without re-reading anything before it (#849).
+///
+/// A streamed agent answer used to be re-parsed from its first byte on every chunk, which is
+/// quadratic in the answer's length: a 10 MB answer froze the main thread for minutes. A resume
+/// point records the block parser's whole state at an offset — how many lines precede it and the
+/// list-indentation context — so [`parse_markdown_tail`] can continue from there and produce
+/// exactly the lines a full parse would.
+///
+/// A point is only ever recorded where nothing before it can be re-interpreted by text appended
+/// later. See [`block_final_after`] for the constructs that read past their own line.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MarkdownResumePoint {
+    offset: usize,
+    line_count: usize,
+    indentation_stack: Vec<(usize, usize)>,
+    /// Indent level of the line just before `offset` when that line is an ordered-list item; an
+    /// ordered item only keeps its number when it is not continuing such a list.
+    prev_ordered_indent: Option<usize>,
+}
+
+impl MarkdownResumePoint {
+    /// Byte offset of the first block that has not been parsed.
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
+    /// Number of [`FormattedTextLine`]s a full parse produces before [`Self::offset`].
+    pub fn line_count(&self) -> usize {
+        self.line_count
+    }
+}
+
+/// The result of [`parse_markdown_tail`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MarkdownTail {
+    /// The lines a full parse produces from the resume point onward. Unlike [`parse_markdown`],
+    /// a trailing [`FormattedTextLine::LineBreak`] is NOT removed, since the caller has to splice
+    /// these after the lines it kept and then trim the joined result.
+    pub lines: Vec<FormattedTextLine>,
+    /// The furthest resume point at or before `final_len`, or the starting point if there is
+    /// none further.
+    pub resume: MarkdownResumePoint,
+}
+
+/// Parses `markdown` from `from` onward, for a document that only grows at its end.
+///
+/// `from` must be [`MarkdownResumePoint::default`] or a point returned for an earlier version of
+/// the same document whose first `from.offset()` bytes are unchanged. `final_len` is how many
+/// leading bytes of `markdown` the caller guarantees will never change; the returned resume point
+/// never lies beyond it.
+///
+/// With `full` being the lines of a full parse of `markdown` before its trailing line break is
+/// trimmed, this returns exactly `full[from.line_count()..]` — the caller keeps the first
+/// `from.line_count()` lines it already has. Fails exactly when a full parse fails.
+pub fn parse_markdown_tail(
+    markdown: &str,
+    from: &MarkdownResumePoint,
+    parse_gfm_tables: bool,
+    final_len: usize,
+) -> Result<MarkdownTail> {
+    if from.offset > markdown.len() || !markdown.is_char_boundary(from.offset) {
+        return Err(anyhow::anyhow!(
+            "Markdown resume point is past the end of the document"
+        ));
+    }
+    parse_blocks::<nom::error::Error<_>>(markdown, from, parse_gfm_tables, Some(final_len))
+        .map(|(_, (lines, resume))| MarkdownTail { lines, resume })
+        .map_err(|err| {
+            if cfg!(debug_assertions) {
+                anyhow::anyhow!("Failed to parse Markdown: {err}")
+            } else {
+                anyhow::anyhow!("Failed to parse Markdown")
+            }
+        })
+}
+
+/// The block loop behind both [`parse_markdown`] and [`parse_markdown_tail`]: parses `markdown`
+/// from `from` to its end, and — when `final_len` is given — tracks the furthest resume point at
+/// or before it.
+fn parse_blocks<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
+    markdown: &'a str,
+    from: &MarkdownResumePoint,
+    parse_gfm_tables: bool,
+    final_len: Option<usize>,
+) -> IResult<&'a str, (Vec<FormattedTextLine>, MarkdownResumePoint), E> {
+    let mut resumed_context = ListIndentationContext::new();
+    resumed_context
+        .indentation_stack
+        .clone_from(&from.indentation_stack);
+    let indentation_context = RefCell::new(resumed_context);
 
     let mut block = context(
         "block",
@@ -194,48 +300,148 @@ fn parse_markdown_internal<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
         )),
     );
 
-    let mut remaining = markdown;
+    let prev_ordered_indent = |lines: &[FormattedTextLine]| match lines.last() {
+        Some(FormattedTextLine::OrderedList(prev)) => Some(prev.indented_text.indent_level),
+        Some(_) => None,
+        None => from.prev_ordered_indent,
+    };
+
+    let mut remaining = &markdown[from.offset..];
     let mut lines = Vec::new();
+    let mut resume = from.clone();
+    // Everything that decided how the blocks before `from` parsed is final by construction.
+    let mut decided_by = from.offset;
     while !remaining.is_empty() {
+        let block_start = markdown.len() - remaining.len();
+
         // Block-level comments produce no line at all, so they are handled outside `block`, which
         // must yield a `FormattedTextLine`. This runs first because a comment can only start at
         // `<!--`, which no other block construct claims.
         if let Ok((remaining_after_comment, _)) = parse_html_comment_block::<E>(remaining) {
             remaining = remaining_after_comment;
-            continue;
-        }
+        } else {
+            let (remaining_after_block, mut line) = block(remaining)?;
+            remaining = remaining_after_block;
 
-        let (remaining_after_block, mut line) = block(remaining)?;
-        remaining = remaining_after_block;
-
-        // Clear indentation context for non-list content and handle ordered list numbering
-        match &mut line {
-            FormattedTextLine::LineBreak => {
-                // Line breaks don't reset context
-            }
-            FormattedTextLine::UnorderedList(_) | FormattedTextLine::TaskList(_) => {
-                // List items already update indentation context during parsing
-            }
-            FormattedTextLine::OrderedList(list_item) => {
-                // For ordered lists, only the starting item's number is applied. We reset the number for
-                // subsequent items here because, in isolation, we don't know if a given list item starts a
-                // list or not.
-                if let Some(FormattedTextLine::OrderedList(prev_list_item)) = lines.last()
-                    && prev_list_item.indented_text.indent_level
-                        >= list_item.indented_text.indent_level
-                {
-                    list_item.number = None;
+            // Clear indentation context for non-list content and handle ordered list numbering
+            match &mut line {
+                FormattedTextLine::LineBreak => {
+                    // Line breaks don't reset context
+                }
+                FormattedTextLine::UnorderedList(_) | FormattedTextLine::TaskList(_) => {
+                    // List items already update indentation context during parsing
+                }
+                FormattedTextLine::OrderedList(list_item) => {
+                    // For ordered lists, only the starting item's number is applied. We reset the number for
+                    // subsequent items here because, in isolation, we don't know if a given list item starts a
+                    // list or not.
+                    if prev_ordered_indent(&lines)
+                        .is_some_and(|prev| prev >= list_item.indented_text.indent_level)
+                    {
+                        list_item.number = None;
+                    }
+                }
+                _ => {
+                    // Non-list content resets indentation context
+                    indentation_context.borrow_mut().clear();
                 }
             }
-            _ => {
-                // Non-list content resets indentation context
-                indentation_context.borrow_mut().clear();
+
+            if final_len.is_some() {
+                let block_end = markdown.len() - remaining.len();
+                decided_by =
+                    decided_by.max(block_final_after(markdown, block_start, block_end, &line));
+            }
+            lines.push(line);
+        }
+
+        if let Some(final_len) = final_len {
+            let block_end = markdown.len() - remaining.len();
+            if block_end <= final_len
+                && decided_by <= final_len
+                && markdown.as_bytes()[block_end - 1] == b'\n'
+            {
+                resume = MarkdownResumePoint {
+                    offset: block_end,
+                    line_count: from.line_count + lines.len(),
+                    indentation_stack: indentation_context.borrow().indentation_stack.clone(),
+                    prev_ordered_indent: prev_ordered_indent(&lines),
+                };
             }
         }
-        lines.push(line);
     }
 
-    Ok((remaining, lines))
+    Ok((remaining, (lines, resume)))
+}
+
+/// The offset up to which `markdown` must be final for the block parsed from `start` to `end` to
+/// parse the same way however the document continues; `usize::MAX` when that is not known yet.
+///
+/// Most blocks are decided by their own line, which ends at `end`. The exceptions are the parsers
+/// that read past it:
+/// - an HTML comment searches forward for its `-->`;
+/// - an image's alt text runs to the first `]`, on whatever line that is;
+/// - a fenced code block needs its closing fence — while it has none, the opening line parses as
+///   a paragraph and every later line depends on whether one arrives;
+/// - a table (or a line that could be a table's header) depends on the line after it.
+///
+/// Each check fires on the opening token alone, whichever block the line actually became, so it
+/// errs towards "not yet final" — which only costs re-parsing, never a wrong result.
+fn block_final_after(markdown: &str, start: usize, end: usize, line: &FormattedTextLine) -> usize {
+    let input = &markdown[start..];
+    let mut final_after = end;
+
+    let after_blanks = input.trim_start_matches([' ', '\t']);
+    if let Some(comment_body) = after_blanks.strip_prefix("<!--") {
+        let body_start = markdown.len() - comment_body.len();
+        final_after = final_after.max(match comment_body.find("-->") {
+            Some(close) => end_of_line_at(markdown, body_start + close),
+            None => usize::MAX,
+        });
+    }
+
+    let after_fence_indent = strip_leading_spaces(input, INDENT_TAG_MAX_COUNT);
+    if after_fence_indent.starts_with("```")
+        && !matches!(
+            line,
+            FormattedTextLine::CodeBlock(_)
+                | FormattedTextLine::Embedded(_)
+                | FormattedTextLine::Table(_)
+        )
+    {
+        return usize::MAX;
+    }
+
+    if let Some(alt_text) = strip_leading_spaces(input, 3).strip_prefix("![")
+        && !matches!(line, FormattedTextLine::Image(_))
+    {
+        let alt_start = markdown.len() - alt_text.len();
+        final_after = final_after.max(match alt_text.find(']') {
+            Some(close) => end_of_line_at(markdown, alt_start + close),
+            None => usize::MAX,
+        });
+    }
+
+    if matches!(line, FormattedTextLine::Table(_)) || after_blanks.starts_with('|') {
+        final_after = final_after.max(end_of_line_at(markdown, end));
+    }
+
+    final_after
+}
+
+/// Strips at most `max` leading spaces.
+fn strip_leading_spaces(input: &str, max: usize) -> &str {
+    let spaces = input.bytes().take(max).take_while(|b| *b == b' ').count();
+    &input[spaces..]
+}
+
+/// The offset just past the first `\n` at or after `offset`, or `usize::MAX` if the line that
+/// contains `offset` has not ended yet.
+fn end_of_line_at(markdown: &str, offset: usize) -> usize {
+    markdown
+        .get(offset..)
+        .and_then(|rest| rest.find('\n'))
+        .map_or(usize::MAX, |newline| offset + newline + 1)
 }
 
 /// Parse a single paragraph of Markdown text.
@@ -2102,3 +2308,7 @@ fn parse_block_leading_spaces<'a, E: ContextError<&'a str> + ParseError<&'a str>
 #[cfg(test)]
 #[path = "markdown_parser_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "markdown_parser_incremental_test.rs"]
+mod incremental_tests;
