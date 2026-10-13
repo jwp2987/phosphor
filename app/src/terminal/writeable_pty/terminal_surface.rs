@@ -47,7 +47,16 @@ pub enum PtyIntent {
     /// Drop any command still parked in the PTY controller's write queue (written by the
     /// shell only once its line editor is ready), so it never runs (#848).
     DiscardPendingCommandWrites,
+    /// Drop only the command held behind the user's typeahead (`FeatureFlag::TypeaheadHandoff`):
+    /// its agent action was cancelled or its conversation stopped.
+    DiscardHeldTypeaheadCommand,
     WriteBytes(Cow<'static, [u8]>),
+    /// User bytes the typeahead hand-off routed to the pty and counts as in flight until the
+    /// PTY controller has processed them (`FeatureFlag::TypeaheadHandoff`).
+    WriteHandoffUserBytes(Cow<'static, [u8]>),
+    /// Re-run the typeahead hand-off's request decision: the shell is at its prompt with user
+    /// bytes in its line and no line-editor activation will come (`FeatureFlag::TypeaheadHandoff`).
+    RetryTypeaheadHandoffRequest,
     WriteAgentInput {
         bytes: Cow<'static, [u8]>,
         mode: AIAgentPtyWriteMode,
@@ -94,6 +103,14 @@ where
     /// has started, so the surface can react to shell launch metadata.
     #[cfg(feature = "local_tty")]
     fn on_shell_determined(&mut self, _ctx: &mut ViewContext<Self>) {}
+
+    /// Called when the typeahead hand-off changed who owns the user's keystrokes
+    /// (`FeatureFlag::TypeaheadHandoff`).
+    fn on_typeahead_handoff_changed(&mut self, _ctx: &mut ViewContext<Self>) {}
+
+    /// Called when `command` was not run because another one is already waiting to start
+    /// (`FeatureFlag::TypeaheadHandoff`), so the surface can say so.
+    fn on_command_coalesced(&mut self, _command: &str, _ctx: &mut ViewContext<Self>) {}
 
     /// Called when the active shell launch data is updated (e.g. shell
     /// indicator metadata).

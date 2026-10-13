@@ -1,5 +1,7 @@
 use crate::persistence::ModelEvent;
 use crate::terminal::line_editor_status::LineEditorStatus;
+use crate::features::FeatureFlag;
+use crate::terminal::model::lifecycle::StartCommandOutcome;
 use crate::terminal::model::session::{ExecutorCommandEvent, Sessions};
 
 use crate::terminal::model::terminal_model::ExitReason;
@@ -35,6 +37,7 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
 {
     let controller_weak_handle = pty_controller.downgrade();
     let surface_weak_handle = surface.downgrade();
+    let surface_weak_handle_for_intents = surface.downgrade();
     let model_clone = model.clone();
 
     ctx.subscribe_to_view(surface, move |_surface, event, ctx| {
@@ -73,10 +76,25 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
                     controller.discard_pending_command_writes();
                 });
             }
+            PtyIntent::DiscardHeldTypeaheadCommand => {
+                controller.update(ctx, |controller, _| {
+                    controller.discard_held_handoff_command();
+                });
+            }
             PtyIntent::WriteBytes(bytes) => {
                 controller.update(ctx, |controller, ctx| {
                     // TODO: the underlying bytes should be wrapped in an Arc and copied out only when they need to be written to the PTY.
                     controller.write_bytes(bytes, ctx);
+                });
+            }
+            PtyIntent::WriteHandoffUserBytes(bytes) => {
+                controller.update(ctx, |controller, ctx| {
+                    controller.write_handoff_user_bytes(bytes, ctx);
+                });
+            }
+            PtyIntent::RetryTypeaheadHandoffRequest => {
+                controller.update(ctx, |controller, ctx| {
+                    controller.retry_typeahead_handoff_request(ctx);
                 });
             }
             PtyIntent::WriteAgentInput { bytes, mode } => {
@@ -99,10 +117,36 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
                     return;
                 };
 
-                model_clone.lock().block_list_mut().active_block_mut().set_cloud_workflow_state(event.workflow_id);
-                controller.update(ctx, |controller, ctx| {
-                    controller.write_command(&event.command, shell_type, event.source.clone(), ctx)
-                });
+                if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                    let workflow_id = event.workflow_id;
+                    let outcome = controller.update(ctx, |controller, ctx| {
+                        controller.write_command_annotating_block(
+                            &event.command,
+                            shell_type,
+                            event.source.clone(),
+                            move |model| {
+                                model
+                                    .block_list_mut()
+                                    .active_block_mut()
+                                    .set_cloud_workflow_state(workflow_id)
+                            },
+                            ctx,
+                        )
+                    });
+                    // The input only knows the command left it; say why it never ran.
+                    if outcome == StartCommandOutcome::Coalesced {
+                        if let Some(surface) = surface_weak_handle_for_intents.upgrade(ctx) {
+                            surface.update(ctx, |surface, ctx| {
+                                surface.on_command_coalesced(&event.command, ctx)
+                            });
+                        }
+                    }
+                } else {
+                    model_clone.lock().block_list_mut().active_block_mut().set_cloud_workflow_state(event.workflow_id);
+                    controller.update(ctx, |controller, ctx| {
+                        controller.write_command(&event.command, shell_type, event.source.clone(), ctx)
+                    });
+                }
 
                 if event.should_add_command_to_history {
                     update_command_history(
@@ -131,6 +175,11 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
             PtyControllerEvent::PtyDisconnected => surface.update(ctx, |_, _| {
                 model.lock().exit(ExitReason::PtyDisconnected);
             }),
+            PtyControllerEvent::TypeaheadHandoffChanged => {
+                surface.update(ctx, |surface, ctx| {
+                    surface.on_typeahead_handoff_changed(ctx)
+                });
+            }
         }
     });
 }

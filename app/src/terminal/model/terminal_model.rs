@@ -45,12 +45,15 @@ use super::kitty::{
 };
 use super::lifecycle::{
     BlockLifecycleCoordinator, CommandStartKind, IgnoreReason, LifecycleAction, LifecycleInput,
-    LifecycleSnapshot, LifecycleTransition, PreexecObservation, StartCommandOutcome,
+    LifecyclePhase, LifecycleSnapshot, LifecycleTransition, PreexecObservation,
+    StartCommandOutcome,
 };
 use super::secrets::{RespectObfuscatedSecrets, SecretAndHandle};
 use super::selection::ScrollDelta;
 use super::session::{BootstrapSessionType, InBandCommandOutputReceiver, SessionId};
 use super::tmux::commands::TmuxCommand;
+use super::early_output::TypeaheadMode;
+use super::typeahead_handoff::TypeaheadHandoff;
 use super::{
     super::{AltScreen, BlockList},
     ansi::BootstrappedValue,
@@ -464,6 +467,10 @@ pub struct TerminalModel {
     /// Coordinates block lifecycle transitions, deciding which lifecycle inputs may mutate the
     /// active block. See `super::lifecycle`.
     lifecycle_coordinator: BlockLifecycleCoordinator,
+    /// Who owns the user's keystrokes around a command submitted from the input editor
+    /// (`FeatureFlag::TypeaheadHandoff`). Kept here so every routing and request decision is made
+    /// under the model lock.
+    typeahead_handoff: TypeaheadHandoff,
     /// Whether the blocklist has been cleared in the lifetime of this terminal model.
     pub blocklist_has_been_cleared: bool,
 
@@ -1165,6 +1172,7 @@ impl TerminalModel {
             is_input_dirty: false,
             block_list,
             lifecycle_coordinator: BlockLifecycleCoordinator::default(),
+            typeahead_handoff: TypeaheadHandoff::default(),
             blocklist_has_been_cleared: false,
             alt_screen_active: false,
             title_stack: Vec::new(),
@@ -1743,6 +1751,23 @@ impl TerminalModel {
 
     pub fn block_list_mut(&mut self) -> &mut BlockList {
         &mut self.block_list
+    }
+
+    pub fn typeahead_handoff(&self) -> &TypeaheadHandoff {
+        &self.typeahead_handoff
+    }
+
+    pub fn typeahead_handoff_mut(&mut self) -> &mut TypeaheadHandoff {
+        &mut self.typeahead_handoff
+    }
+
+    /// Whether the shell is at its prompt with no command started, so the typeahead request
+    /// cannot reach a running program.
+    pub fn is_at_prompt_for_typeahead_request(&self) -> bool {
+        let active_block = self.block_list.active_block();
+        self.lifecycle_coordinator.phase() == LifecyclePhase::AtPrompt
+            && !active_block.started()
+            && active_block.has_received_precmd()
     }
 
     pub fn remove_image_id_to_metadata_entry(&mut self, image_id: u32) {
@@ -2668,6 +2693,9 @@ impl TerminalModel {
         }
         let handled_after_inband = data.was_sent_after_in_band_command();
         self.block_list.apply_precmd_to_active(data);
+        if FeatureFlag::TypeaheadHandoff.is_enabled() {
+            self.typeahead_handoff.on_precmd();
+        }
 
         self.emit_handler_event(HandlerEvent::Precmd {
             session_id: session_id.map(|id| id.into()),
@@ -2677,6 +2705,16 @@ impl TerminalModel {
     }
 
     fn apply_preexec(&mut self, data: PreexecValue) {
+        if FeatureFlag::TypeaheadHandoff.is_enabled() {
+            // A block nobody started is a line the shell read from the tty itself: typeahead.
+            let active_block = self.block_list.active_block();
+            let shell_started = self.block_list.is_bootstrapped()
+                && self.block_list.early_output().typeahead_mode() == TypeaheadMode::ShellReported
+                && !active_block.started()
+                && !active_block.is_in_band_command_block()
+                && !self.shared_session_status.is_viewer();
+            self.typeahead_handoff.on_preexec(shell_started);
+        }
         self.block_list.apply_preexec_to_active(data);
         self.emit_handler_event(HandlerEvent::Preexec);
     }

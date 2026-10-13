@@ -298,3 +298,29 @@ fn ctrl_c_cancels_third_party_harness_has_a_default_enable_path() {
          or the Cargo feature fell out of `default`"
     );
 }
+
+/// `ZAP_UNSTABLE_FEATURES=all` must not opt anyone into the typeahead hand-off (#826/#827); it
+/// stays reachable by name.
+#[test]
+fn typeahead_handoff_is_named_only_among_unstable_features() {
+    assert!(UNSTABLE_FEATURES_NAMED_ONLY.contains(&FeatureFlag::TypeaheadHandoff));
+    assert!(
+        UNSTABLE_FEATURES
+            .iter()
+            .any(|(name, flag)| *name == "typeahead_handoff"
+                && *flag == FeatureFlag::TypeaheadHandoff)
+    );
+}
+
+#[test]
+fn unstable_features_all_excludes_the_typeahead_handoff() {
+    for all in ["all", " * ", "ALL"] {
+        let flags = unstable_features_from_env_value(all);
+        assert!(!flags.contains(&FeatureFlag::TypeaheadHandoff), "{all:?}");
+        assert!(flags.contains(&FeatureFlag::WarpControlCli), "{all:?}");
+    }
+    let named = unstable_features_from_env_value("warp_control_cli, typeahead_handoff");
+    assert!(named.contains(&FeatureFlag::TypeaheadHandoff));
+    assert!(named.contains(&FeatureFlag::WarpControlCli));
+    assert!(unstable_features_from_env_value("").is_empty());
+}
