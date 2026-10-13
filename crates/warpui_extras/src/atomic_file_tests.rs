@@ -164,6 +164,92 @@ mod unix {
         assert_eq!(entries(&locked), vec!["settings.toml"]);
     }
 
+    /// Hard-linked dotfiles stay linked: a file with nlink > 1 is written in
+    /// place, so every name sees the new contents.
+    #[test]
+    fn a_hard_linked_file_is_written_in_place() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let other = dir.path().join("settings.toml.link");
+        fs::write(&path, "old\n").unwrap();
+        fs::hard_link(&path, &other).unwrap();
+        let inode = fs::metadata(&path).unwrap().ino();
+
+        write(&path, "new\n").unwrap();
+
+        assert_eq!(fs::read_to_string(&other).unwrap(), "new\n");
+        let metadata = fs::metadata(&path).unwrap();
+        assert_eq!(metadata.ino(), inode, "same file, not a replacement");
+        assert_eq!(metadata.nlink(), 2);
+        assert_eq!(
+            entries(dir.path()),
+            vec!["settings.toml", "settings.toml.link"]
+        );
+    }
+
+    #[test]
+    fn ownership_decision() {
+        use super::super::{OwnershipPlan, decide_ownership};
+
+        // Same owner and group: nothing to do.
+        assert_eq!(
+            decide_ownership(1000, 1000, 1000, 1000),
+            OwnershipPlan::Keep
+        );
+        // Root (sudo/pkexec) replacing a user's file: give it back.
+        assert_eq!(
+            decide_ownership(0, 0, 1000, 1000),
+            OwnershipPlan::Chown {
+                uid: Some(1000),
+                gid: Some(1000)
+            }
+        );
+        assert_eq!(
+            decide_ownership(0, 1000, 1000, 1000),
+            OwnershipPlan::Chown {
+                uid: Some(1000),
+                gid: None
+            }
+        );
+        // Root replacing root's own file.
+        assert_eq!(decide_ownership(0, 0, 0, 0), OwnershipPlan::Keep);
+        // A non-root writer cannot give a file away: write in place.
+        assert_eq!(
+            decide_ownership(1000, 1000, 1001, 1000),
+            OwnershipPlan::InPlace
+        );
+        assert_eq!(decide_ownership(1000, 1000, 0, 0), OwnershipPlan::InPlace);
+        // Same user, other group (e.g. setgid directory): try the group.
+        assert_eq!(
+            decide_ownership(1000, 1000, 1000, 50),
+            OwnershipPlan::Chown {
+                uid: None,
+                gid: Some(50)
+            }
+        );
+    }
+
+    /// Like `std::fs::write`, a dangling link whose target directory is
+    /// missing fails with NotFound and creates nothing.
+    #[test]
+    fn a_dangling_symlink_into_a_missing_directory_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("settings.toml");
+        let missing_dir = dir.path().join("nowhere");
+        symlink(missing_dir.join("settings.toml"), &link).unwrap();
+
+        let err = write(&link, "x\n").unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert!(
+            !missing_dir.exists(),
+            "no directory created through the link"
+        );
+        assert_eq!(entries(dir.path()), vec!["settings.toml"]);
+    }
+
     #[test]
     fn a_dangling_symlink_creates_its_target() {
         let dir = tempfile::tempdir().unwrap();
@@ -271,9 +357,23 @@ fn temp_file_names_are_matched_exactly() {
         ".settings.toml.tmp-123-0",
         "settings.toml"
     ));
+    assert!(is_temp_file_for(".settings.toml.tmp-1-45", "settings.toml"));
     assert!(!is_temp_file_for("settings.toml", "settings.toml"));
     assert!(!is_temp_file_for(".settings.toml", "settings.toml"));
     assert!(!is_temp_file_for(".settings.toml.bak", "settings.toml"));
+    assert!(!is_temp_file_for(".settings.toml.tmp-", "settings.toml"));
+    assert!(!is_temp_file_for(".settings.toml.tmp-12", "settings.toml"));
+    assert!(!is_temp_file_for(".settings.toml.tmp-12-", "settings.toml"));
+    assert!(!is_temp_file_for(".settings.toml.tmp--1", "settings.toml"));
+    assert!(!is_temp_file_for(".settings.toml.tmp-a-1", "settings.toml"));
+    assert!(!is_temp_file_for(
+        ".settings.toml.tmp-1-2-3",
+        "settings.toml"
+    ));
+    assert!(!is_temp_file_for(
+        ".settings.toml.tmp-1-2.swp",
+        "settings.toml"
+    ));
     assert!(!is_temp_file_for(
         ".keybindings.yaml.tmp-1-0",
         "settings.toml"

@@ -19,7 +19,9 @@
 //! link: the file the link resolves to is replaced, and the link itself is
 //! left in place. Renaming over the link instead would silently turn a managed
 //! file into an unmanaged copy. Resolution follows the chain hop by hop, so a
-//! dangling link creates its target, just as `std::fs::write` would.
+//! dangling link creates its target, just as `std::fs::write` would -- and,
+//! also like `std::fs::write`, fails with `NotFound` if the target's
+//! directory does not exist (no directories are created through a link).
 //!
 //! # Metadata
 //!
@@ -30,8 +32,17 @@
 //! extended attributes and ACLs are not carried over (changing ownership needs
 //! privileges the app does not have); the new file is owned by the writing
 //! user, which for a file in the user's own config directory is what it
-//! already was. Hard links to the original are not updated -- they keep the
-//! old contents, as with any editor that saves by rename.
+//! already was. On unix, when the writer is root (`sudo` keeping `HOME`,
+//! `pkexec`) and the original belongs to someone else, the replacement is
+//! `fchown`ed back to the original owner and group, so the user's own later
+//! writes are not refused. A writer that cannot give the replacement the
+//! original owner writes in place instead.
+//!
+//! # Hard links
+//!
+//! A file with more than one hard link (unix `nlink > 1`) is written in
+//! place, so every name keeps seeing the same contents -- the rule vim's
+//! `backupcopy=auto` uses. A rename would detach this name from the others.
 //!
 //! # Where a rename is impossible
 //!
@@ -39,7 +50,10 @@
 //! that is itself a mount point (single-file bind mounts in containers), cannot
 //! be replaced by rename. Only in those cases -- see `should_write_in_place` --
 //! the write falls back to the old truncate-and-write, which is no worse than
-//! before. A full disk or an I/O error never falls back.
+//! before. A full disk or an I/O error never *triggers* the fallback -- but
+//! note that an in-place write (here, or for hard links and ownership above)
+//! can itself hit a full disk and leave the file truncated, exactly as
+//! before #859. The atomic guarantee holds only on the rename path.
 //!
 //! # Leftovers
 //!
@@ -70,21 +84,37 @@ pub fn write(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> io::Result<(
 /// disk) can be simulated. `fill` may run twice: once into the temporary file
 /// and, only on the in-place fallback, once more into the target.
 fn write_with(path: &Path, fill: impl Fn(&mut File) -> io::Result<()>) -> io::Result<()> {
-    let target = resolve_symlinks(path)?;
+    let (target, through_symlink) = resolve_symlinks(path)?;
     let dir = match target.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
         _ => PathBuf::from("."),
     };
-    fs::create_dir_all(&dir)?;
+    if through_symlink {
+        // A dangling link whose target directory is missing: fail with
+        // NotFound as `std::fs::write` did, rather than creating directories
+        // wherever the link happens to point.
+        if !dir.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "{} is a symlink to {}, whose directory does not exist",
+                    path.display(),
+                    target.display()
+                ),
+            ));
+        }
+    } else {
+        fs::create_dir_all(&dir)?;
+    }
 
-    // Permissions to carry over. `None` for a new file, which then gets the
-    // same default mode `std::fs::write` would give it (0o666 & !umask).
-    let existing_permissions = match fs::metadata(&target) {
-        Ok(metadata) => Some(metadata.permissions()),
+    // `None` for a new file, which then gets the same default mode
+    // `std::fs::write` would give it (0o666 & !umask).
+    let existing = match fs::metadata(&target) {
+        Ok(metadata) => Some(metadata),
         Err(err) if err.kind() == io::ErrorKind::NotFound => None,
         Err(err) => return Err(err),
     };
-    if existing_permissions.is_some() {
+    if existing.is_some() {
         // A rename only needs write access to the directory, so without this
         // a file the user made read-only (to stop the app changing it) would
         // be replaced anyway. Refuse exactly when `std::fs::write` would have:
@@ -92,7 +122,14 @@ fn write_with(path: &Path, fill: impl Fn(&mut File) -> io::Result<()>) -> io::Re
         OpenOptions::new().write(true).open(&target)?;
     }
     // The probe above returned early unless an existing target is writable.
-    let target_writable = existing_permissions.is_some();
+    let target_writable = existing.is_some();
+
+    #[cfg(unix)]
+    if let Some(metadata) = &existing
+        && has_other_hard_links(metadata)
+    {
+        return write_in_place(&target, "it has other hard links", &fill);
+    }
 
     sweep_stale_temp_files(&dir, &target);
 
@@ -100,7 +137,35 @@ fn write_with(path: &Path, fill: impl Fn(&mut File) -> io::Result<()>) -> io::Re
         Ok(created) => created,
         Err(err) => return write_in_place_or_fail(err, &target, target_writable, &fill),
     };
-    let prepared = prepare_temp_file(&mut temp_file, existing_permissions, &fill);
+
+    #[cfg(unix)]
+    if let Some(original) = &existing {
+        let given_original_owner = match temp_file
+            .metadata()
+            .map(|temp| ownership_plan(original, &temp))
+        {
+            Ok(OwnershipPlan::Keep) => true,
+            Ok(OwnershipPlan::Chown { uid, gid }) => {
+                std::os::unix::fs::fchown(&temp_file, uid, gid).is_ok()
+            }
+            Ok(OwnershipPlan::InPlace) | Err(_) => false,
+        };
+        if !given_original_owner {
+            drop(temp_file);
+            let _ = fs::remove_file(&temp_path);
+            return write_in_place(
+                &target,
+                "a replacement could not be given the original owner",
+                &fill,
+            );
+        }
+    }
+
+    let prepared = prepare_temp_file(
+        &mut temp_file,
+        existing.map(|metadata| metadata.permissions()),
+        &fill,
+    );
     drop(temp_file);
     if let Err(err) = prepared {
         // Never falls back: this is where a full disk or an I/O error shows
@@ -120,6 +185,67 @@ fn write_with(path: &Path, fill: impl Fn(&mut File) -> io::Result<()>) -> io::Re
         let _ = dir_handle.sync_all();
     }
     Ok(())
+}
+
+/// Whether to write in place to keep the target's hard links intact: a
+/// rename would detach this name from the others, which would keep the old
+/// contents. The rule vim's `backupcopy=auto` uses.
+#[cfg(unix)]
+fn has_other_hard_links(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    metadata.nlink() > 1
+}
+
+/// How a replacement gets the original file's owner.
+#[cfg(unix)]
+#[derive(Debug, PartialEq, Eq)]
+enum OwnershipPlan {
+    /// The replacement already has the original owner and group.
+    Keep,
+    /// Change the replacement's owner and/or group (`None` = leave as is).
+    Chown { uid: Option<u32>, gid: Option<u32> },
+    /// The replacement cannot be given the original owner: write in place.
+    InPlace,
+}
+
+/// Reads the owners off `original` and off the freshly created temp file,
+/// whose owner *is* the writer's effective uid/gid (no `geteuid` needed).
+#[cfg(unix)]
+fn ownership_plan(original: &fs::Metadata, temp: &fs::Metadata) -> OwnershipPlan {
+    use std::os::unix::fs::MetadataExt as _;
+    decide_ownership(temp.uid(), temp.gid(), original.uid(), original.gid())
+}
+
+/// The case that matters is running as root (`sudo phosphor` keeping
+/// `HOME`, `pkexec`): a renamed-in file would be root-owned, and the user's
+/// own later writes to their config would be refused. Root gives it back with
+/// `fchown`. A non-root writer cannot give a file away, so a different owner
+/// means writing in place; a different group may still be set if the writer
+/// belongs to it (tried; in place if `fchown` refuses).
+#[cfg(unix)]
+fn decide_ownership(
+    writer_uid: u32,
+    writer_gid: u32,
+    original_uid: u32,
+    original_gid: u32,
+) -> OwnershipPlan {
+    let uid_differs = writer_uid != original_uid;
+    let gid_differs = writer_gid != original_gid;
+    if !uid_differs && !gid_differs {
+        OwnershipPlan::Keep
+    } else if writer_uid == 0 {
+        OwnershipPlan::Chown {
+            uid: uid_differs.then_some(original_uid),
+            gid: gid_differs.then_some(original_gid),
+        }
+    } else if uid_differs {
+        OwnershipPlan::InPlace
+    } else {
+        OwnershipPlan::Chown {
+            uid: None,
+            gid: Some(original_gid),
+        }
+    }
 }
 
 fn prepare_temp_file(
@@ -159,8 +285,8 @@ fn should_write_in_place(err: &io::Error, target_writable: bool) -> bool {
         )
 }
 
-/// The fallback: the pre-#859 truncate-and-write, used only where an atomic
-/// replace is impossible (see [`should_write_in_place`]).
+/// The fallback for errors: in place where an atomic replace is impossible
+/// (see [`should_write_in_place`]), otherwise the original error.
 fn write_in_place_or_fail(
     err: io::Error,
     target: &Path,
@@ -170,8 +296,20 @@ fn write_in_place_or_fail(
     if !should_write_in_place(&err, target_writable) {
         return Err(err);
     }
+    write_in_place(target, &err.to_string(), fill)
+}
+
+/// The pre-#859 truncate-and-write. **Not crash- or disk-full-safe**: if the
+/// write itself fails part-way (ENOSPC included), the file is left truncated,
+/// exactly as before #859. Used only where a rename cannot preserve what the
+/// user has -- see the module docs.
+fn write_in_place(
+    target: &Path,
+    why: &str,
+    fill: &impl Fn(&mut File) -> io::Result<()>,
+) -> io::Result<()> {
     log::warn!(
-        "Cannot atomically replace {} ({err}); writing it in place instead",
+        "Not atomically replacing {} ({why}); writing it in place instead",
         target.display()
     );
     let mut file = OpenOptions::new().write(true).truncate(true).open(target)?;
@@ -183,11 +321,15 @@ fn write_in_place_or_fail(
 /// creating and renaming) and are removed on the next write to the same file.
 const STALE_TEMP_AGE: Duration = Duration::from_secs(60 * 60);
 
-/// Whether `name` is a temp file [`create_temp_file`] makes for `file_name`.
+/// Whether `name` is exactly a temp file [`create_temp_file`] makes for
+/// `file_name`: `.{file_name}.tmp-<digits>-<digits>`.
 fn is_temp_file_for(name: &str, file_name: &str) -> bool {
+    let is_number = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
     name.strip_prefix('.')
         .and_then(|rest| rest.strip_prefix(file_name))
-        .is_some_and(|rest| rest.starts_with(".tmp-"))
+        .and_then(|rest| rest.strip_prefix(".tmp-"))
+        .and_then(|rest| rest.split_once('-'))
+        .is_some_and(|(pid, counter)| is_number(pid) && is_number(counter))
 }
 
 /// Best-effort removal of this file's temp files left behind by a crashed
@@ -224,8 +366,11 @@ fn sweep_stale_temp_files(dir: &Path, target: &Path) {
 /// Follows `path` through any chain of symlinks to the path that will
 /// actually hold the data. Relative link targets resolve against the link's
 /// own directory. A dangling link resolves to the missing target.
-fn resolve_symlinks(path: &Path) -> io::Result<PathBuf> {
+///
+/// Returns the resolved path and whether any link was followed.
+fn resolve_symlinks(path: &Path) -> io::Result<(PathBuf, bool)> {
     let mut current = path.to_path_buf();
+    let mut followed = false;
     for _ in 0..MAX_SYMLINK_HOPS {
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -234,9 +379,10 @@ fn resolve_symlinks(path: &Path) -> io::Result<PathBuf> {
                     Some(parent) if link_target.is_relative() => parent.join(link_target),
                     _ => link_target,
                 };
+                followed = true;
             }
-            Ok(_) => return Ok(current),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(current),
+            Ok(_) => return Ok((current, followed)),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok((current, followed)),
             Err(err) => return Err(err),
         }
     }
