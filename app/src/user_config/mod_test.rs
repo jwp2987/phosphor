@@ -186,6 +186,15 @@ default = "terminal"
         );
     }
 
+    // A placeholder inside the template's own quotes cannot be quoted safely.
+    let quoted_inside =
+        PRE_878_TEMPLATE.replace("echo \\\"{{repo}}\\\" {{repo}}", "echo '{{repo}}/x'");
+    assert_ne!(quoted_inside, PRE_878_TEMPLATE);
+    assert!(
+        materialize_default_worktree_config(&quoted_inside, "W", "/tmp/$(touch pwned)", "terminal")
+            .is_err()
+    );
+
     // A repo path with no portable spelling is refused when a command needs it, as is one
     // that the render would substitute into (closing the quotes from inside).
     assert!(

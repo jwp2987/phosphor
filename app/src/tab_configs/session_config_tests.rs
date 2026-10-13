@@ -3,12 +3,7 @@ use std::path::Path;
 use crate::terminal::cli_agent::CLIAgent;
 
 use super::*;
-
-fn generated_worktree_path_string(repo: &str, worktree_name: &str) -> String {
-    super::super::tab_config::generated_worktree_path(Path::new(repo), worktree_name)
-        .display()
-        .to_string()
-}
+use crate::tab_configs::tab_config::generated_worktree_path_string;
 
 // ── SessionType helpers ──
 
@@ -278,7 +273,7 @@ fn render_worktree_substitutes_default_branch_name() {
     } = pane_template
     {
         let path_word = super::super::tab_config::portable_shell_word(
-            &generated_worktree_path_string("/home/user/repo", "my-feature-branch"),
+            &generated_worktree_path_string(Path::new("/home/user/repo"), "my-feature-branch"),
         )
         .expect("test paths are portable")
         .into_owned();

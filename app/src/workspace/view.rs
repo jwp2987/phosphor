@@ -2261,13 +2261,16 @@ impl Workspace {
         } else {
             let worktree_branch_name = self.maybe_generate_worktree_name(&config);
             let param_values = config.default_param_values();
-            self.open_tab_config_with_params(
+            // Keep the old tab when the config could not be opened (the error is toasted),
+            // so the window is never left without one.
+            if self.open_tab_config_with_params(
                 config,
                 param_values,
                 worktree_branch_name.as_deref(),
                 ctx,
-            );
-            self.remove_tab_by_pane_group_id(old_pane_group_id, ctx);
+            ) {
+                self.remove_tab_by_pane_group_id(old_pane_group_id, ctx);
+            }
         }
     }
 
@@ -6749,10 +6752,27 @@ impl Workspace {
         param_values: HashMap<String, String>,
         worktree_branch_name: Option<&str>,
         ctx: &mut ViewContext<Self>,
-    ) {
+    ) -> bool {
         let tab_color = tab_config.color;
-        let (rendered_title, pane_template) =
-            crate::tab_configs::render_tab_config(&tab_config, &param_values, worktree_branch_name);
+        let (rendered_title, pane_template) = match crate::tab_configs::try_render_tab_config(
+            &tab_config,
+            &param_values,
+            worktree_branch_name,
+        ) {
+            Ok(rendered) => rendered,
+            Err(e) => {
+                // A value that cannot be quoted safely for the shell (#878): open nothing
+                // rather than a tab whose setup commands silently did not run.
+                log::warn!("Not opening tab config '{}': {e}", tab_config.name);
+                self.toast_stack.update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_ephemeral_toast(
+                        DismissibleToast::error(format!("Can't open \"{}\": {e}", tab_config.name)),
+                        ctx,
+                    );
+                });
+                return false;
+            }
+        };
         self.add_tab_with_pane_layout(
             PanesLayout::Template(pane_template),
             Arc::new(HashMap::new()),
@@ -6765,6 +6785,7 @@ impl Workspace {
                 tab.selected_color = SelectedTabColor::Color(color);
             }
         }
+        true
     }
 
     /// Opens a tab config, showing the param-fill modal when the config has parameters,
@@ -9837,7 +9858,7 @@ impl Workspace {
                 let should_track_existing_config_open =
                     self.pending_session_config_replacement.is_none();
                 let worktree_name = self.maybe_generate_worktree_name(config);
-                self.open_tab_config_with_params(
+                let opened = self.open_tab_config_with_params(
                     config.as_ref().clone(),
                     params.clone(),
                     worktree_name.as_deref(),
@@ -9853,7 +9874,12 @@ impl Workspace {
                     );
                 }
                 self.close_tab_config_params_modal(ctx);
-                self.complete_pending_session_config_replacement(ctx);
+                if opened {
+                    self.complete_pending_session_config_replacement(ctx);
+                } else {
+                    // Nothing replaced the old tab (the error is toasted); keep it.
+                    self.pending_session_config_replacement = None;
+                }
 
                 // The new tab has setup commands (worktree creation); wait for
                 // them to finish before starting the onboarding tutorial, but

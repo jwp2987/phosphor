@@ -1539,7 +1539,13 @@ upstream's behavior is actually a defect rather than a preference.
   saved config replays in whatever shell is current), so `ShellDialect` is not known there;
   every substituted value is instead one `portable_shell_word` — bare, `'...'` or `"..."`,
   whichever all of bash, zsh, fish and PowerShell read identically — and a command whose value
-  has none (a control character, or `'` with `$`/backtick/`"`/`\`/`!`) is not run at all.
+  has none (a control character, or `'` with `$`/backtick/`"`/`\`/`!`) is not run at all:
+  the tab is not opened and an error toast names the value (`try_render_tab_config`). A
+  placeholder inside the template's own quotes (`cd "/x/{{v}}"`) or after `\`, `` ` ``, `$`
+  or quoting the shells parse differently is refused the same way, since the word's own
+  quotes would not protect it there; one that is exactly the content of a quote pair
+  (`"{{v}}"`, `'{{v}}'`) has the pair dropped. A legacy `git worktree add` whose baked base
+  branch is not a plain word is refused.
   The worktree path is the render-time `{{worktree_path}}` (`WORKTREE_PATH_VAR`) instead of
   baked text, the base branch is one word after `--` (refused if unquotable or containing
   `{{`), saved configs and default templates from before the fix have their exact legacy path
@@ -1551,4 +1557,4 @@ upstream's behavior is actually a defect rather than a preference.
   branches `a;>pwned`, `$(>pwned)`, `` `>pwned` ``, `x|>pwned` creates the worktree at the
   exact path and executes nothing; a `-dash` base fails inside git without running anything.
   The PowerShell spellings are unverified in a real shell.
-  <!-- markers: keep:portable_shell_word keep:WORKTREE_PATH_VAR keep:test_hostile_repo_name_is_quoted_as_part_of_one_path_word keep:test_portable_shell_word_spellings -->
+  <!-- markers: keep:portable_shell_word keep:WORKTREE_PATH_VAR keep:test_hostile_repo_name_is_quoted_as_part_of_one_path_word keep:test_portable_shell_word_spellings keep:test_placeholder_inside_template_quotes_is_refused keep:try_render_tab_config -->
