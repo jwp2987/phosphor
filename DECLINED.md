@@ -881,6 +881,27 @@ upstream's behavior is actually a defect rather than a preference.
   (cannot classify before the debounced parse lands, so it did not change the measured case) were
   both tried and dropped.
 
+  **F6, shell-ward half (`#886`, 2026-10-13).** Dropping prefix verdicts removed what used to
+  pull a burst back to Shell: before #833 the parse of a *prefix* (`echo b31 >> ~/b`) could land
+  mid-burst and the #808 pre-filter set Shell synchronously. After it, a burst typed faster than
+  the parse never has a verdict for its line at Enter, so after one agent submit every following
+  command inherited `AI` (39 complete `echo bN >> ~/blk.txt` lines sent to the agent in one run,
+  0-3 before). **We do:** Enter settles a still-pending detection from the *whole* text, Shell-ward
+  only, by rules that need no parse and are precision-first for the full line -- the denylist and
+  `is_unambiguous_shell_command` (whose prose vetoes are the #831 holes) -- so prose is never
+  decided here and keeps the old F6 behaviour. Shell **typeahead** (keys typed while a command
+  ran, reported back by the shell and inserted at the front of the editor) is decided Shell, at
+  Enter and in detection, **only** while the buffer still starts with that typeahead **and** the
+  whole buffer, head word included, has no prose evidence (`has_no_prose_evidence`: no `?` ending,
+  safe quoting, no colon shape, no function word, article, sentence comma/period or prose word).
+  That accepts the split/merged pieces a burst leaves (`ho b199 >> ~/blk.txt`, `b22 b23`,
+  `b11 blk.txtecho b12`), which have no head the pre-filter can see, and refuses anything a person
+  might type as a question while a command runs (`exit vim`, `rm the temp files`,
+  `mv files to backup`): those go through the normal pipeline. Provenance never routes anything
+  to the agent. It ends on submit, when the typeahead leaves the front of the buffer
+  (select-all + paste, emptying it), or when the user chooses AI. Upstream classifies typeahead
+  like any other buffer.
+
 - **Kitty/iTerm image dimensions from the pty are computed without overflow, and kitty
   placements are capped at `MAX_IMAGE_CELL_HEIGHT`** (`#876`, 2026-10-13,
   `crates/warp_terminal/src/model/kitty.rs`, `crates/warpui_core/src/image_cache.rs`,

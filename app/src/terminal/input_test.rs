@@ -7093,6 +7093,144 @@ fn test_terminal_only_ai_enter_enters_agent_view_and_clears_buffer() {
     });
 }
 
+/// #886: a command typed faster than its own detection inherits the previous buffer's `AI`;
+/// Enter must settle it from the whole text instead of sending it to the agent.
+#[test]
+fn test_enter_settles_pending_unambiguous_command_as_shell() {
+    use crate::ai::blocklist::InputConfig;
+    use crate::ai::blocklist::agent_view::AgentViewState;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+
+        initialize_app(&mut app);
+
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+            assert!(ai_settings.is_ai_autodetection_enabled(ctx));
+        });
+
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        let line = "echo b30 >> ~/blk.txt";
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false,
+                    },
+                    false, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+            // The explicit write above covers the first buffer edited after it; the burst line
+            // is a later buffer (separate update, so the edit events are handled in between),
+            // and its mode is only what it inherited.
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("x", ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(line, ctx);
+        });
+        input.read(&app, |input, ctx| {
+            let ai_input = input.ai_input_model().as_ref(ctx);
+            assert!(
+                ai_input.is_detection_pending_for(line, ctx),
+                "precondition: the line's own verdict has not landed"
+            );
+            assert_eq!(ai_input.input_type(), InputType::AI);
+        });
+
+        input.update(&mut app, |input, ctx| {
+            input.input_enter(ctx);
+        });
+
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.ai_input_model().as_ref(ctx).input_type(),
+                InputType::Shell
+            );
+        });
+        terminal.read(&app, |terminal, _| {
+            let state = terminal
+                .model
+                .lock()
+                .block_list()
+                .agent_view_state()
+                .clone();
+            assert!(
+                !matches!(state, AgentViewState::Active { .. }),
+                "the command must not have been sent to the agent"
+            );
+        });
+    });
+}
+
+/// #886: inserting shell typeahead records its provenance in the input model, and the edit
+/// handler drops it when the buffer is emptied or the typeahead is replaced.
+#[test]
+fn test_typeahead_insertion_sets_and_edits_clear_provenance() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+
+        initialize_app(&mut app);
+
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let typeahead_prefix = |app: &App| {
+            input.read(app, |input, ctx| {
+                input
+                    .ai_input_model()
+                    .as_ref(ctx)
+                    .typeahead_prefix()
+                    .map(str::to_owned)
+            })
+        };
+
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            input.insert_typeahead_text(CharOffset::from(0), "b22 b23", ctx);
+        });
+        assert_eq!(typeahead_prefix(&app).as_deref(), Some("b22 b23"));
+
+        // Emptying the buffer ends it.
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+        });
+        assert_eq!(typeahead_prefix(&app), None);
+
+        // Select-all and typing over the typeahead ends it too: the text is the user's own.
+        input.update(&mut app, |input, ctx| {
+            input.insert_typeahead_text(CharOffset::from(0), "b22 b23", ctx);
+        });
+        assert_eq!(typeahead_prefix(&app).as_deref(), Some("b22 b23"));
+        input.update(&mut app, |input, ctx| {
+            input
+                .editor
+                .update(ctx, |editor, ctx| editor.select_all(ctx));
+            input.user_insert("what is this", ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "what is this");
+        });
+        assert_eq!(typeahead_prefix(&app), None);
+    });
+}
+
 #[test]
 fn test_terminal_only_escape_locks_shell_mode() {
     use crate::ai::blocklist::InputConfig;

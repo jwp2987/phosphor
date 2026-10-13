@@ -7647,6 +7647,15 @@ impl Input {
             view.replace_first_n_characters(num_typeahead_chars_inserted, typeahead, ctx);
             view.move_to_buffer_end(ctx);
         });
+        self.note_typeahead_inserted(typeahead, ctx);
+    }
+
+    /// Tells input-type detection the buffer now starts with shell typeahead (#886): typed at the
+    /// shell, so a prose-free piece of it is decided Shell rather than classified as prose.
+    fn note_typeahead_inserted(&mut self, typeahead: &str, ctx: &mut ViewContext<Self>) {
+        let typeahead = typeahead.to_owned();
+        self.ai_input_model
+            .update(ctx, |model, _| model.note_typeahead_inserted(typeahead));
     }
 
     /// Like [`Self::insert_typeahead_text`], but a cursor the user moved into their own text
@@ -7664,6 +7673,7 @@ impl Input {
                 view.move_to_buffer_end(ctx);
             }
         });
+        self.note_typeahead_inserted(typeahead, ctx);
     }
 
     pub fn focus_input_box(&self, ctx: &mut ViewContext<Self>) {
@@ -9134,8 +9144,19 @@ impl Input {
                 // `BlocklistAIInputModel::is_detection_requested_for`.
                 let buffer_text_for_detection =
                     should_run_ai_input_detection.then(|| self.buffer_text(ctx));
+                // Typeahead provenance (#886) ends when its text leaves the front of the buffer.
+                // Checked on every edit, not only those that request detection; the buffer is
+                // only copied while there is provenance to check.
+                let buffer_text_for_typeahead = self
+                    .ai_input_model
+                    .as_ref(ctx)
+                    .has_typeahead_provenance()
+                    .then(|| self.buffer_text(ctx));
                 self.ai_input_model.update(ctx, |controller, _| {
                     controller.abort_in_progress_detection();
+                    if let Some(buffer_text) = buffer_text_for_typeahead {
+                        controller.note_buffer_edited(&buffer_text);
+                    }
                     if let Some(buffer_text) = buffer_text_for_detection {
                         controller.note_detection_requested(buffer_text);
                     }
@@ -12006,6 +12027,25 @@ impl Input {
         );
     }
 
+    /// Before Enter routes on the live input type, settles a detection still pending for the
+    /// buffer from its whole text (#886). Under burst typing the verdict for the full line never
+    /// lands before its Enter, so the live type is the previous buffer's -- `AI` after an agent
+    /// submit, which sent whole runs of `echo bN >> ~/blk.txt` to the agent. See
+    /// `BlocklistAIInputModel::settle_pending_detection_for_submit` for what may be decided here.
+    fn settle_pending_input_detection_for_submit(&mut self, ctx: &mut ViewContext<Self>) {
+        let buffer_text = self.buffer_text(ctx);
+        let snapshot = match &self.last_parsed_tokens {
+            Some(parsed) if parsed.buffer_text == buffer_text => parsed.clone(),
+            _ => decorations::ParsedTokensSnapshot {
+                buffer_text,
+                parsed_tokens: Vec::new(),
+            },
+        };
+        self.ai_input_model.update(ctx, |model, ctx| {
+            model.settle_pending_detection_for_submit(&snapshot, ctx);
+        });
+    }
+
     /// Handles the user's 'Enter' keypress.
     ///
     /// Depending on input state, this method may either execute a command, accept an input
@@ -12200,7 +12240,7 @@ impl Input {
                 self.send_queued_row_immediately(conversation_id, query_id, text, is_command, ctx);
             }
             return;
-        } else if self.maybe_queue_input_for_in_progress_conversation(ctx)
+        } else if self.settle_detection_and_maybe_queue_input(ctx)
             || self.maybe_handle_enter_for_slash_command(ctx)
         {
             return;
@@ -12967,6 +13007,14 @@ impl Input {
     /// on and the active conversation is still in progress.
     /// Only queues when AI input is active — if the user is in shell mode the
     /// input is not queued (so e.g. `ls` still runs in the terminal).
+    /// Runs once no inline menu took the Enter, so it submits the buffer: settles a pending
+    /// input-type detection first (#886), since queueing and everything after it route on the
+    /// input type.
+    fn settle_detection_and_maybe_queue_input(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        self.settle_pending_input_detection_for_submit(ctx);
+        self.maybe_queue_input_for_in_progress_conversation(ctx)
+    }
+
     fn maybe_queue_input_for_in_progress_conversation(
         &mut self,
         ctx: &mut ViewContext<Self>,
