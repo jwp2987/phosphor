@@ -983,7 +983,7 @@ fn finished_cli_subagent_without_exchange_does_not_panic_or_create_card() {
             (block.id().clone(), conversation_id)
         });
 
-        terminal.read(&app, |view, ctx| {
+        terminal.read(&app, |_, ctx| {
             assert!(
                 BlocklistAIHistoryModel::as_ref(ctx)
                     .conversation(&conversation_id)
