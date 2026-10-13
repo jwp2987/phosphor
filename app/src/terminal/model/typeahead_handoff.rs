@@ -15,6 +15,7 @@
 use std::mem;
 
 use crate::ai::agent::AIAgentActionId;
+use crate::ai::agent::conversation::AIConversationId;
 
 /// Who owns the user's keystrokes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -151,10 +152,18 @@ pub struct TypeaheadHandoff {
     request_generation: u64,
     /// The request whose report deadline the view has not armed yet.
     deadline_to_arm: Option<u64>,
-    /// The agent action whose command `PtyController` holds behind the user's typeahead, if
-    /// the held command is an agent's. Its block is not started yet, so this is the only place
-    /// a cancel of that action can find it.
-    held_command_action: Option<AIAgentActionId>,
+    /// The agent action (and its conversation) whose command `PtyController` holds behind the
+    /// user's typeahead, if the held command is an agent's. Its block is not started yet, so
+    /// this is the only place a cancel of that action, or a stop of that conversation, can find
+    /// it.
+    held_agent_command: Option<HeldAgentCommand>,
+}
+
+/// Identifies an agent's command held behind the user's typeahead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldAgentCommand {
+    pub action_id: AIAgentActionId,
+    pub conversation_id: AIConversationId,
 }
 
 impl TypeaheadHandoff {
@@ -214,12 +223,16 @@ impl TypeaheadHandoff {
         )
     }
 
-    pub fn held_command_action(&self) -> Option<&AIAgentActionId> {
-        self.held_command_action.as_ref()
+    pub fn held_agent_command(&self) -> Option<&HeldAgentCommand> {
+        self.held_agent_command.as_ref()
     }
 
-    pub fn set_held_command_action(&mut self, action: Option<AIAgentActionId>) {
-        self.held_command_action = action;
+    pub fn held_command_action(&self) -> Option<&AIAgentActionId> {
+        self.held_agent_command.as_ref().map(|held| &held.action_id)
+    }
+
+    pub fn set_held_agent_command(&mut self, held: Option<HeldAgentCommand>) {
+        self.held_agent_command = held;
     }
 
     pub fn writes_in_flight(&self) -> u32 {

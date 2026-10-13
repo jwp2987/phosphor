@@ -47,6 +47,9 @@ pub enum PtyIntent {
     /// Drop any command still parked in the PTY controller's write queue (written by the
     /// shell only once its line editor is ready), so it never runs (#848).
     DiscardPendingCommandWrites,
+    /// Drop only the command held behind the user's typeahead (`FeatureFlag::TypeaheadHandoff`):
+    /// its agent action was cancelled or its conversation stopped.
+    DiscardHeldTypeaheadCommand,
     WriteBytes(Cow<'static, [u8]>),
     /// User bytes the typeahead hand-off routed to the pty and counts as in flight until the
     /// PTY controller has processed them (`FeatureFlag::TypeaheadHandoff`).

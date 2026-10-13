@@ -25,6 +25,7 @@ use crate::ai::agent::{
 use crate::ai::blocklist::BlocklistAIPermissions;
 use crate::ai::blocklist::permissions::CommandExecutionPermission;
 use crate::ai::execution_profiles::WriteToPtyPermission;
+use crate::features::FeatureFlag;
 use crate::terminal::event::BlockMetadataReceivedEvent;
 use crate::terminal::model::block::{
     Block, BlockId, CURSOR_MARKER, formatted_terminal_contents_for_input,
@@ -1256,11 +1257,16 @@ impl BlockSelector {
 /// Whether cancelling `action_id`'s tool call should also interrupt its command: the active
 /// block is that agent-requested command, written and not yet finished (before or after
 /// preexec), and the agent still holds it with no CLI subagent in control.
+///
+/// With `FeatureFlag::TypeaheadHandoff`, also when the command is held behind the user's
+/// typeahead: not written and no block started for it, but it must not run after the cancel.
 fn should_interrupt_on_cancel(model: &TerminalModel, action_id: &AIAgentActionId) -> bool {
     model
         .block_list()
         .active_block()
         .agent_holds_in_flight_command(action_id)
+        || (FeatureFlag::TypeaheadHandoff.is_enabled()
+            && model.typeahead_handoff().held_command_action() == Some(action_id))
 }
 
 /// Returns the result from executing a requested command.

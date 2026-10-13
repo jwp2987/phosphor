@@ -1692,6 +1692,8 @@ pub enum Event {
     ShutdownPty,
     /// Drop any command still waiting in the PTY controller's write queue (#848).
     DiscardPendingCommandWrites,
+    /// Drop only the command held behind the user's typeahead (`FeatureFlag::TypeaheadHandoff`).
+    DiscardHeldTypeaheadCommand,
     // TODO: break this event down into higher-level events that hide the
     // `bytes` detail from the view.
     WriteBytesToPty {
@@ -8417,7 +8419,7 @@ impl TerminalView {
             }
         };
         match holds_unwritten_copy {
-            Some(true) => ctx.emit(Event::DiscardPendingCommandWrites),
+            Some(true) => self.discard_held_typeahead_command(ctx),
             Some(false) => {}
             None => self.interrupt_agent_command(ctx),
         }
@@ -8432,13 +8434,28 @@ impl TerminalView {
         // Keys held behind a deferred Enter (`FeatureFlag::TypeaheadHandoff`) would hold this
         // ^C too; the interrupt cancels that Enter and its keys instead, so the ^C is written.
         if FeatureFlag::TypeaheadHandoff.is_enabled() {
-            self.model
+            let cancelled = self
+                .model
                 .lock()
                 .typeahead_handoff_mut()
                 .cancel_deferred_enter();
+            if cancelled {
+                self.redetermine_terminal_focus(ctx);
+            }
         }
         ctx.emit(Event::DiscardPendingCommandWrites);
         self.user_write_ctrl_c_to_pty(ctx);
+    }
+
+    /// Drops the agent command held behind the user's typeahead (`FeatureFlag::TypeaheadHandoff`)
+    /// -- only it, not a command from the editor queued after it. It is forgotten here at once,
+    /// so an executor cancel of its action that follows does not ask again.
+    fn discard_held_typeahead_command(&mut self, ctx: &mut ViewContext<Self>) {
+        self.model
+            .lock()
+            .typeahead_handoff_mut()
+            .set_held_agent_command(None);
+        ctx.emit(Event::DiscardHeldTypeaheadCommand);
     }
 
     /// Cancels a local agent conversation and tears down the command it is driving.
@@ -8467,6 +8484,20 @@ impl TerminalView {
             .ai_controller
             .as_ref(ctx)
             .has_active_stream_for_conversation(conversation_id, ctx);
+
+        // An agent command of this conversation held behind the user's typeahead
+        // (`FeatureFlag::TypeaheadHandoff`) was never written and no block holds it: drop it, or
+        // it would run after the stop.
+        let holds_this_conversations_command = FeatureFlag::TypeaheadHandoff.is_enabled()
+            && self
+                .model
+                .lock()
+                .typeahead_handoff()
+                .held_agent_command()
+                .is_some_and(|held| held.conversation_id == conversation_id);
+        if holds_this_conversations_command {
+            self.discard_held_typeahead_command(ctx);
+        }
 
         // Order matters, and guarantees exactly one ^C reaches the shell: decide what to
         // interrupt and hand the command to the user (`set_user_control_with_stop_reason`)
@@ -26890,6 +26921,7 @@ impl PtyIntentEvent for Event {
             Event::CtrlD => Some(PtyIntent::CtrlD),
             Event::ShutdownPty => Some(PtyIntent::ShutdownPty),
             Event::DiscardPendingCommandWrites => Some(PtyIntent::DiscardPendingCommandWrites),
+            Event::DiscardHeldTypeaheadCommand => Some(PtyIntent::DiscardHeldTypeaheadCommand),
             Event::WriteBytesToPty { bytes } => Some(PtyIntent::WriteBytes(bytes.clone())),
             Event::WriteHandoffUserBytesToPty { bytes } => {
                 Some(PtyIntent::WriteHandoffUserBytes(bytes.clone()))

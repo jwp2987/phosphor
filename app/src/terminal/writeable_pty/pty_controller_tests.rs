@@ -2308,6 +2308,40 @@ mod typeahead_handoff {
         });
     }
 
+    /// The targeted discard (a cancelled agent action, a stopped conversation) drops only the
+    /// held command: a command from the editor queued after it stays queued, and the
+    /// executing-command state, which is now that command's, is kept.
+    #[test]
+    fn a_targeted_discard_keeps_a_queued_editor_command() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            submit(&mut app, &harness, "sleep 2");
+            user_types(&mut app, &harness, b"foo");
+            shell_runs_a_command(&harness.model, "sleep 2");
+            fire_queued_command(&mut app, &harness);
+            submit(&mut app, &harness, "ls");
+
+            harness.controller.update(&mut app, |controller, _| {
+                assert_eq!(controller.pending_writes.len(), 2);
+                controller.discard_held_handoff_command();
+                assert_eq!(controller.pending_writes.len(), 1);
+                assert!(!is_held_handoff_command(&controller.pending_writes[0]));
+                assert!(!controller.handoff_held_command_pending);
+                assert!(
+                    controller.is_user_command_executing,
+                    "the editor command still owns the executing state"
+                );
+            });
+
+            line_editor_becomes_active(&mut app, &harness);
+            assert_eq!(
+                written(&harness).last(),
+                Some(&bytes_to_execute_command("ls", SHELL, false))
+            );
+        });
+    }
+
     /// A shell that cannot report its line keeps the pre-hand-off routing: nothing could hand
     /// keys left in its line back to the editor.
     #[test]

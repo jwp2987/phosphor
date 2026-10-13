@@ -15,7 +15,7 @@ use crate::terminal::model::session::{
     ExecutorCommandEvent, InBandCommandCancelledEvent, Sessions,
 };
 use crate::terminal::model::tmux::commands::TmuxCommand;
-use crate::terminal::model::typeahead_handoff::ActiveDecision;
+use crate::terminal::model::typeahead_handoff::{ActiveDecision, HeldAgentCommand};
 use crate::terminal::model_events::AnsiHandlerEvent;
 use crate::terminal::view::LINEFEED_REGEX;
 #[cfg(not(target_family = "wasm"))]
@@ -185,6 +185,9 @@ pub struct PtyController<T: EventLoopSender> {
     /// Typeahead hand-off: a command the hand-off does not own is queued behind the user's
     /// unreported line (`hold_command_behind_unreported_user_line`). At most one is held.
     handoff_held_command_pending: bool,
+    /// Typeahead hand-off: a command from the editor was written or queued while one was held,
+    /// so `is_user_command_executing` belongs to it and dropping the held one must leave it.
+    handoff_command_written_since_hold: bool,
 }
 
 impl<T: EventLoopSender> PtyController<T> {
@@ -405,6 +408,7 @@ impl<T: EventLoopSender> PtyController<T> {
             handoff_bytes_after_command: Vec::new(),
             handoff_request_waiting: false,
             handoff_held_command_pending: false,
+            handoff_command_written_since_hold: false,
         }
     }
 
@@ -801,17 +805,18 @@ impl<T: EventLoopSender> PtyController<T> {
             let is_held_handoff_command = is_held_handoff_command(&write);
             let did_write = self.send_write_to_event_loop(write, ctx);
             if is_held_handoff_command {
-                self.handoff_held_command_pending = false;
-                self.terminal_model
-                    .lock()
-                    .typeahead_handoff_mut()
-                    .set_held_command_action(None);
-                if !did_write {
+                if did_write {
+                    self.handoff_held_command_pending = false;
+                    self.terminal_model
+                        .lock()
+                        .typeahead_handoff_mut()
+                        .set_held_agent_command(None);
+                } else {
                     log::warn!(
                         "A command held behind the user's typeahead could not start when it was \
                          released; dropping it."
                     );
-                    self.is_user_command_executing = false;
+                    self.forget_held_handoff_command();
                 }
             }
             if did_write && is_shell_command && self.handoff_command_pending {
@@ -1155,6 +1160,7 @@ impl<T: EventLoopSender> PtyController<T> {
             // A command from the editor goes first and the held command stays queued behind it,
             // to start at the prompt that follows; clearing the queue would drop it silently.
             self.pending_writes.retain(is_held_handoff_command);
+            self.handoff_command_written_since_hold = true;
         } else {
             self.pending_writes.clear();
         }
@@ -1213,6 +1219,18 @@ impl<T: EventLoopSender> PtyController<T> {
         if self.handoff_held_command_pending {
             self.forget_held_handoff_command();
         }
+    }
+
+    /// Drops only the command held behind the user's typeahead (its agent action was cancelled
+    /// or its conversation stopped), leaving every other queued write -- a command from the
+    /// editor queued after it included.
+    pub fn discard_held_handoff_command(&mut self) {
+        if !self.handoff_held_command_pending {
+            return;
+        }
+        self.pending_writes
+            .retain(|write| !is_held_handoff_command(write));
+        self.forget_held_handoff_command();
     }
 
     /// [`Self::write_command`], also applying `annotate_block` (e.g. recording the cloud
@@ -1277,21 +1295,26 @@ impl<T: EventLoopSender> PtyController<T> {
         annotate_block: Option<Box<dyn FnOnce(&mut TerminalModel) + Send>>,
         ctx: &mut ModelContext<Self>,
     ) {
-        let held_action = match &source {
-            CommandExecutionSource::AI { metadata } => {
-                metadata.requested_command_action_id().cloned()
-            }
-            CommandExecutionSource::SharedSession { ai_metadata, .. } => ai_metadata
-                .as_ref()
-                .and_then(|metadata| metadata.requested_command_action_id().cloned()),
+        let agent_metadata = match &source {
+            CommandExecutionSource::AI { metadata } => Some(metadata),
+            CommandExecutionSource::SharedSession { ai_metadata, .. } => ai_metadata.as_ref(),
             CommandExecutionSource::User
             | CommandExecutionSource::QueuedCommand
             | CommandExecutionSource::EnvVarCollection { .. } => None,
         };
+        let held_agent_command = agent_metadata.and_then(|metadata| {
+            metadata
+                .requested_command_action_id()
+                .map(|action_id| HeldAgentCommand {
+                    action_id: action_id.clone(),
+                    conversation_id: *metadata.conversation_id(),
+                })
+        });
         self.terminal_model
             .lock()
             .typeahead_handoff_mut()
-            .set_held_command_action(held_action);
+            .set_held_agent_command(held_agent_command);
+        self.handoff_command_written_since_hold = false;
         let terminal_model = self.terminal_model.clone();
         self.pending_writes.clear();
         self.is_user_command_executing = true;
@@ -1320,20 +1343,20 @@ impl<T: EventLoopSender> PtyController<T> {
     /// Drops a command held behind the user's typeahead that can no longer go out (the shell
     /// exited). Its requester gets no result: commands carry no completion channel here.
     fn drop_held_handoff_command(&mut self) {
-        self.pending_writes
-            .retain(|write| !is_held_handoff_command(write));
-        self.forget_held_handoff_command();
+        self.discard_held_handoff_command();
         log::warn!("Dropped a command held behind the user's typeahead: the shell exited.");
     }
 
     /// Clears the bookkeeping of a held command that was dropped without being written.
     fn forget_held_handoff_command(&mut self) {
         self.handoff_held_command_pending = false;
-        self.is_user_command_executing = false;
+        if !self.handoff_command_written_since_hold {
+            self.is_user_command_executing = false;
+        }
         self.terminal_model
             .lock()
             .typeahead_handoff_mut()
-            .set_held_command_action(None);
+            .set_held_agent_command(None);
     }
 
     /// Typeahead hand-off: whether the next queued write is a command that starts its own block
