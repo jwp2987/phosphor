@@ -9053,6 +9053,220 @@ fn cmd_k_in_agent_view_cancels_in_progress_conversation_and_starts_new_one() {
     })
 }
 
+// --- Closing a pane stops its agent (#848) ---
+
+/// Counts the input's `ExecuteAIQuery` (a prompt sent to the agent) and `ExecuteCommand` (a
+/// command run in the shell) events: one per queued row actually fired.
+fn count_fired_queue_rows(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+) -> (Rc<RefCell<usize>>, Rc<RefCell<usize>>) {
+    let prompts = Rc::new(RefCell::new(0));
+    let commands = Rc::new(RefCell::new(0));
+    let input = terminal.read(app, |view, _| view.input().clone());
+    let (prompts_sub, commands_sub) = (prompts.clone(), commands.clone());
+    app.update(|ctx| {
+        ctx.subscribe_to_view(&input, move |_, event: &InputEvent, _| match event {
+            InputEvent::ExecuteAIQuery => *prompts_sub.borrow_mut() += 1,
+            InputEvent::ExecuteCommand(_) => *commands_sub.borrow_mut() += 1,
+            _ => {}
+        });
+    });
+    (prompts, commands)
+}
+
+/// The #848 repro at the view level: an agent turn is streaming with a queued prompt and a
+/// queued `!` command behind it when the tab is closed. Before the fix nothing on the close
+/// path touched the agent: the stream ran on, its turn end drained the queue, the prompt went
+/// to the provider and the command ran in the closed tab's shell. Closing must cancel the
+/// stream and leave the queue suspended -- no row fires, none is popped into the hidden input
+/// -- and undoing the close must not resume anything on its own.
+#[test]
+fn closing_the_pane_cancels_the_stream_and_suspends_the_queue_until_restored() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        FeatureFlag::AgentView.set_enabled(true);
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(move |_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles.clone())
+        });
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (fired_prompts, fired_commands) = count_fired_queue_rows(&mut app, &terminal);
+
+        let conversation_id = terminal.update(&mut app, |view, ctx| {
+            view.agent_view_controller().update(ctx, |controller, ctx| {
+                controller
+                    .try_enter_agent_view(
+                        None,
+                        AgentViewEntryOrigin::Input {
+                            was_prompt_autodetected: false,
+                        },
+                        ctx,
+                    )
+                    .expect("should enter agent view")
+            })
+        });
+
+        // The streaming turn: an exchange bound to a live (mock) response stream.
+        let stream_id = ResponseStreamId::new_for_test();
+        terminal.update(&mut app, |view, ctx| {
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                let exchange = exchange_with_inputs(vec![]);
+                history
+                    .conversation_mut(&conversation_id)
+                    .expect("conversation should exist")
+                    .append_reassigned_exchange(&stream_id, exchange, view.view_id, ctx)
+                    .expect("exchange should append");
+            });
+            let stream = ctx.add_model(|_| ResponseStream::new_for_test(stream_id.clone()));
+            view.ai_controller.update(ctx, |controller, ctx| {
+                controller.register_mock_stream_for_test(
+                    stream_id.clone(),
+                    conversation_id,
+                    stream,
+                    ctx,
+                );
+            });
+        });
+
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(
+                conversation_id,
+                QueuedQuery::new(
+                    "please answer queued two".to_owned(),
+                    QueuedQueryOrigin::AutoQueueToggle,
+                ),
+                ctx,
+            );
+            model.append(
+                conversation_id,
+                QueuedQuery::new_command(
+                    "touch ~/closed-tab-ran".to_owned(),
+                    QueuedQueryOrigin::AutoQueueToggle,
+                ),
+                ctx,
+            );
+        });
+        let queue_texts = |app: &App| {
+            QueuedQueryModel::handle(app).read(app, |model, _| {
+                model
+                    .queue(conversation_id)
+                    .iter()
+                    .map(|row| row.text().to_owned())
+                    .collect::<Vec<_>>()
+            })
+        };
+        let full_queue = vec![
+            "please answer queued two".to_owned(),
+            "touch ~/closed-tab-ran".to_owned(),
+        ];
+        let status = |app: &App| {
+            BlocklistAIHistoryModel::handle(app).read(app, |history, _| {
+                history
+                    .conversation(&conversation_id)
+                    .map(|c| c.status().clone())
+            })
+        };
+        assert_eq!(status(&app), Some(ConversationStatus::InProgress));
+
+        // Close the tab (what `TerminalPane::detach(HiddenForClose)` does to each view).
+        terminal.update(&mut app, |view, ctx| {
+            view.suspend_agent_work_for_close(ctx);
+        });
+
+        terminal.read(&app, |view, ctx| {
+            assert!(view.is_suspended_for_close());
+            assert!(
+                !view
+                    .ai_controller()
+                    .as_ref(ctx)
+                    .has_active_stream_for_conversation(conversation_id, ctx),
+                "closing the pane must cancel the in-flight request"
+            );
+            assert_eq!(
+                view.input().as_ref(ctx).buffer_text(ctx),
+                "",
+                "the cancel must not pop a queued row into the closed pane's input"
+            );
+        });
+        assert_eq!(status(&app), Some(ConversationStatus::Cancelled));
+        assert_eq!(
+            queue_texts(&app),
+            full_queue,
+            "the queue survives the close"
+        );
+
+        // Everything that could drain the queue while the pane sits in the undo stack: a turn
+        // end, and a previously dispatched queued command finishing.
+        terminal.update(&mut app, |view, ctx| {
+            view.drain_queued_prompts(conversation_id, FinishReason::Complete, ctx);
+            QueuedQueryModel::handle(ctx).update(ctx, |model, _| {
+                model.arm_command_in_flight(conversation_id);
+            });
+            view.on_queued_command_finished(ctx);
+        });
+        assert_eq!(
+            *fired_prompts.borrow(),
+            0,
+            "no prompt is sent from a closed pane"
+        );
+        assert_eq!(
+            *fired_commands.borrow(),
+            0,
+            "no command runs in a closed pane"
+        );
+        assert_eq!(queue_texts(&app), full_queue);
+
+        // Undo the close: nothing resumes by itself.
+        terminal.update(&mut app, |view, _| view.resume_after_close_undone());
+        terminal.read(&app, |view, ctx| {
+            assert!(!view.is_suspended_for_close());
+            assert!(
+                !view
+                    .ai_controller()
+                    .as_ref(ctx)
+                    .has_active_stream_for_conversation(conversation_id, ctx)
+            );
+        });
+        assert_eq!(status(&app), Some(ConversationStatus::Cancelled));
+        assert_eq!(queue_texts(&app), full_queue);
+        assert_eq!(*fired_prompts.borrow(), 0);
+        assert_eq!(*fired_commands.borrow(), 0);
+
+        // Once restored the queue behaves normally again: the next clean turn end takes the head.
+        terminal.update(&mut app, |view, ctx| {
+            view.drain_queued_prompts(conversation_id, FinishReason::Complete, ctx);
+        });
+        assert_eq!(queue_texts(&app), vec!["touch ~/closed-tab-ran".to_owned()]);
+    })
+}
+
+/// While a pane is closed, a one-shot "send after this turn" follow-up must be treated as
+/// cancelled rather than sent, whatever the turn's own finish reason (#848).
+#[test]
+fn closed_pane_runs_conversation_finished_callbacks_as_cancelled() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        terminal.update(&mut app, |view, ctx| {
+            let seen = seen.clone();
+            view.conversation_completed_callbacks.push(Box::new(
+                move |_: &mut TerminalView,
+                      reason: FinishReason,
+                      _: &mut ViewContext<TerminalView>| {
+                    seen.borrow_mut().push(reason)
+                },
+            ));
+            view.suspend_agent_work_for_close(ctx);
+            view.fire_conversation_finished_callbacks(FinishReason::Complete, ctx);
+        });
+        assert_eq!(*seen.borrow(), vec![FinishReason::Cancelled]);
+    })
+}
+
 #[test]
 fn cmd_k_does_not_clear_buffer_when_agent_is_driving_command() {
     App::test((), |mut app| async move {

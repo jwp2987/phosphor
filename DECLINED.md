@@ -437,6 +437,28 @@ these as expected, not as drift to reconcile.
 Each entry must say what upstream does, what we do instead, and the evidence that
 upstream's behavior is actually a defect rather than a preference.
 
+- **Closing a tab or pane stops its agent; nothing runs in a closed session** (`#848`,
+  2026-10-13, `app/src/pane_group/pane/terminal_pane.rs`, `app/src/terminal/view.rs`).
+  **Upstream:** `TerminalPane::detach` does agent cleanup only for `DetachType::Closed`
+  (clearing the view's conversations, which cancels the *active* one); a
+  `HiddenForClose` detach -- what every tab or pane close is while the undo-close stack
+  holds it -- leaves the agent alone (`4111d08f9:app/src/pane_group/pane/terminal_pane.rs:366`,
+  same shape; `drain_queued_prompts` has no closed-pane check). **The defect:** the
+  detached view keeps its PTY and conversations, so the in-flight request kept streaming,
+  its turn end drained the queued-prompts queue into the provider, and a queued `!` command
+  ran in the closed tab's shell 36-47 s after the close, with a "Task completed" toast
+  (workflows torture run F-B, reproduced on 0.1.11). **We do:** any close detach (tab, pane, or a whole window via
+  `Workspace::on_window_closed` -> `detach_panes`) calls
+  `TerminalView::suspend_agent_work_for_close` on every view in the pane's stack. Every
+  running conversation (in progress, blocked, transient error, waiting for events; not an
+  empty one, not a shared-session viewer) is stopped as a follow-up Ctrl-C stops it --
+  request cancelled, actions cancelled, agent-driven command interrupted, status
+  `Cancelled` -- and the view is marked suspended: the queue drain and LRC delivery fire
+  and restore nothing, and one-shot finished callbacks see `Cancelled`. Undo-close clears
+  the mark in `attach` but resumes nothing; the queue comes back intact for the user to
+  send or delete. Discarding the pane clears the conversations, which drops their queues as
+  before. A permanent close now also stops non-active running conversations.
+
 - **An incremental find rescan does not flash the find bar's scanning label**
   (`#815`, 2026-10-12, `app/src/terminal/find/model/async_find.rs`). **Upstream:**
   `AsyncFindController::invalidate_block` sets `status = Scanning` for every

@@ -211,6 +211,22 @@ impl PaneContent for TerminalPane {
         self.view
             .update(ctx, |view, ctx| view.set_focus_handle(focus_handle, ctx));
 
+        // A restored (undo-closed) pane may start agent work again. Nothing resumes on its own:
+        // conversations stopped by the close stay cancelled and their queues wait for the user
+        // (#848; see `TerminalView::suspend_agent_work_for_close`).
+        let views = self
+            .view
+            .as_ref(ctx)
+            .pane_stack()
+            .as_ref(ctx)
+            .entries()
+            .iter()
+            .map(|(_, view)| view.clone())
+            .collect::<Vec<_>>();
+        for view in views {
+            view.update(ctx, |view, _| view.resume_after_close_undone());
+        }
+
         // Attach the initial terminal view in the stack.
         attach_terminal_view(&self.terminal_view(ctx), terminal_pane_id, ctx);
 
@@ -313,6 +329,26 @@ impl PaneContent for TerminalPane {
         detach_type: DetachType,
         ctx: &mut ViewContext<PaneGroup>,
     ) {
+        // Closing a pane -- restorably or for good -- stops its agent work (#848). Without
+        // this, a hidden-for-close pane kept streaming, drained its queued prompts at the turn
+        // end and ran queued commands in the detached shell, and a permanent close cancelled
+        // only the *active* conversation. Must run before the conversations are cleared below,
+        // while they can still be found by terminal view. A move keeps everything running.
+        if matches!(detach_type, DetachType::HiddenForClose | DetachType::Closed) {
+            let views = self
+                .view
+                .as_ref(ctx)
+                .pane_stack()
+                .as_ref(ctx)
+                .entries()
+                .iter()
+                .map(|(_, view)| view.clone())
+                .collect::<Vec<_>>();
+            for view in views {
+                view.update(ctx, |view, ctx| view.suspend_agent_work_for_close(ctx));
+            }
+        }
+
         if matches!(detach_type, DetachType::Closed) {
             // Only immediately clear conversations and delete blocks if the session is being
             // permanently closed.

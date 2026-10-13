@@ -2915,6 +2915,13 @@ pub struct TerminalView {
     /// conversation's next `FinishedReceivingOutput` -- the resumed turn's end, which drains the
     /// queue -- so it cannot outlive that turn or suppress a later, unrelated delivery.
     block_completion_auto_resumes: HashSet<AIConversationId>,
+    /// True while this view's pane is closed but still restorable from the undo-close stack
+    /// (`DetachType::HiddenForClose`). A closed pane must not start agent work: while set, the
+    /// queued-prompts drain and LRC delivery leave every row where it is, and one-shot
+    /// conversation-finished callbacks see `Cancelled` rather than `Complete`, so nothing is
+    /// sent to a provider and no queued command runs in the detached shell (#848). Cleared when
+    /// the pane is re-attached; see [`Self::suspend_agent_work_for_close`].
+    suspended_for_close: bool,
 
     /// Per-session PTY recorder for writing PTY bytes to a file.
     pty_recorder: ModelHandle<PtyRecorder>,
@@ -4298,6 +4305,7 @@ impl TerminalView {
             last_observed_active_subagent: Default::default(),
             skipped_turn_end_drains: Default::default(),
             block_completion_auto_resumes: Default::default(),
+            suspended_for_close: false,
             pty_recorder: ctx
                 .add_model(|ctx| PtyRecorder::new(inactive_pty_reads_rx, window_id, ctx)),
             active_viewer_driven_size: None,
@@ -5157,6 +5165,11 @@ impl TerminalView {
             model.unlock_pending_lrc_rows(conversation_id, ctx)
         });
 
+        // Never deliver queued rows from a closed pane (#848); see `drain_queued_prompts`.
+        if self.suspended_for_close {
+            return;
+        }
+
         let has_active_subagent = BlocklistAIHistoryModel::as_ref(ctx)
             .conversation(&conversation_id)
             .is_some_and(|conversation| conversation.has_active_subagent());
@@ -5379,6 +5392,17 @@ impl TerminalView {
         finish_reason: FinishReason,
         ctx: &mut ViewContext<Self>,
     ) {
+        // A closed (undo-restorable) pane neither fires nor restores queued rows: firing would
+        // send a prompt or run a command in a session the user closed (#848), and restoring the
+        // head into the hidden input would quietly take it out of the queue the user gets back
+        // on undo. The row unlocks still run so a restored queue is never stuck locked.
+        if self.suspended_for_close {
+            QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+                model.unlock_pending_lrc_rows(conversation_id, ctx);
+                model.unlock_pending_approval_rows(conversation_id, ctx);
+            });
+            return;
+        }
         match finish_reason {
             FinishReason::Complete => {
                 // The turn finishing IS the action snapshot firing, so any row parked as
@@ -5568,6 +5592,14 @@ impl TerminalView {
         finish_reason: FinishReason,
         ctx: &mut ViewContext<Self>,
     ) {
+        // In a closed pane every turn end counts as a cancellation, so a one-shot follow-up
+        // (`/compact-and`, a pending "send after this finishes" prompt) restores its text
+        // instead of sending it (#848).
+        let finish_reason = if self.suspended_for_close {
+            FinishReason::Cancelled
+        } else {
+            finish_reason
+        };
         let queued_prompt = self.queued_prompt_callback.take();
         let callbacks = self
             .conversation_completed_callbacks
@@ -8333,6 +8365,62 @@ impl TerminalView {
                 );
             });
         }
+    }
+
+    /// Stops all agent work in this view because its pane was closed (#848).
+    ///
+    /// Closing a tab or pane only *detaches* it -- the undo-close stack keeps the view, its PTY
+    /// and its conversations alive so the close can be undone -- and nothing on that path
+    /// touched the agent. The in-flight request kept streaming, its turn end drained the
+    /// queued-prompts queue, and a queued `! command` then ran in the shell of a tab the user
+    /// had closed.
+    ///
+    /// Every conversation of this view that is still running (in progress, blocked on an
+    /// approval, recovering from a transient error, or waiting for events) is stopped the way a
+    /// follow-up Ctrl-C stops it: the in-flight request is cancelled, pending and running
+    /// actions are cancelled (so no follow-up request carries their results), an agent-driven
+    /// command is interrupted, and the conversation ends up `Cancelled`. The queue itself is
+    /// left intact but suspended: if the close is undone the user gets the conversation back as
+    /// cancelled with every queued row still there to send or delete, and nothing resumes on
+    /// its own. If the close is never undone, discarding the pane clears the conversations,
+    /// which drops their queues (`QueuedQueryModel::handle_history_event`).
+    pub(crate) fn suspend_agent_work_for_close(&mut self, ctx: &mut ViewContext<Self>) {
+        self.suspended_for_close = true;
+
+        let running_conversation_ids: Vec<AIConversationId> = BlocklistAIHistoryModel::as_ref(ctx)
+            .all_live_conversations_for_terminal_view(self.view_id)
+            .filter(|conversation| {
+                let status = conversation.status();
+                (status.is_in_progress()
+                    || status.is_blocked()
+                    || status.is_transient_error()
+                    || status.is_waiting_for_events())
+                    // A brand-new empty conversation has nothing to cancel; marking it
+                    // `Cancelled` would only show a stale status if the tab is restored.
+                    && !conversation.is_empty()
+                    // Viewers do not own the remote conversation and must not cancel it.
+                    && !conversation.is_viewing_shared_session()
+            })
+            .map(|conversation| conversation.id())
+            .collect();
+
+        for conversation_id in running_conversation_ids {
+            self.stop_local_agent_conversation(conversation_id, ctx);
+        }
+    }
+
+    /// Lifts [`Self::suspend_agent_work_for_close`]'s suspension when a closed pane is restored.
+    /// Deliberately does not resume anything: the conversations stay cancelled and the queue
+    /// waits for the user.
+    pub(crate) fn resume_after_close_undone(&mut self) {
+        self.suspended_for_close = false;
+    }
+
+    /// Whether this view's pane is closed but still restorable; see
+    /// [`Self::suspend_agent_work_for_close`].
+    #[cfg(test)]
+    pub(crate) fn is_suspended_for_close(&self) -> bool {
+        self.suspended_for_close
     }
 
     fn user_write_ctrl_c_to_pty(&mut self, ctx: &mut ViewContext<Self>) {
