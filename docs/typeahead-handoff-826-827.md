@@ -1,7 +1,12 @@
 # Typeahead hand-off: why keystrokes are lost and commands fragment (#826, #827)
 
-Status: analysis only. No fix has landed. The fix needs the redesign described
-under "Design options". Line numbers are from `beee34583`.
+Status: design H (the design review's choice; it keeps the shell protocol and the
+destructive report) is implemented behind the dark flag
+`FeatureFlag::TypeaheadHandoff`, enabled with
+`ZAP_UNSTABLE_FEATURES=typeahead_handoff`. It is unverified: not compiled on the
+authoring machine and not yet run against the torture repros. See
+"Implementation (design H)" at the end. The analysis below describes the code with
+the flag off, which is unchanged. Line numbers are from `beee34583`.
 
 The same mechanism is in the oracle pin `4111d08f9`, which has the same
 50 ms activation delay, the same `reinitialize_buffer` on block completion, the
@@ -217,3 +222,62 @@ Rust unit tests on the hand-off state machine (`early_output_tests.rs`,
 
 Then re-run the tester's `ta.sh` and `bburst.sh` (torture round 2026-10-12)
 on bash, zsh and fish. The pass criterion is 50/50 lines and 5/5 uncorrupted.
+
+## Implementation (design H)
+
+`app/src/terminal/model/typeahead_handoff.rs` is a pure state machine owned by
+`TerminalModel` (so every routing and request decision is made under the model
+lock). It engages only for commands submitted from the input editor
+(`CommandExecutionSource::User`); agent, shared-session, in-band and
+queued-prompt-panel commands keep the old routing.
+
+| state | entered on | keys typed on the terminal | focus |
+|---|---|---|---|
+| `EditorOwned` | start; a commit; a report | old routing (flag-off predicates) | old rules |
+| `PtyOwned { wrote_user_bytes, enters_written, precmds_seen }` | `write_command` accepted; a preexec for a block nobody started | every key class to the pty, counted (`\r`/`\n` = Enter) | terminal |
+| `AwaitingReport` | `ESC i` written | old routing (the editor has focus) | old rules (editor) |
+| `HoldAfterEnter { held, released }` | Enter in the editor while `AwaitingReport` | held, in order | terminal |
+
+Transitions out of `PtyOwned`:
+- precmd (main thread, after `BlockCompleted` reinitialized the editor) with no
+  user bytes in the shell's line and no queued line: back to `EditorOwned`, no
+  request.
+- `LineEditorStatus::Active`: request only if `precmds_seen >= enters_written`,
+  the lifecycle is `AtPrompt` with nothing started, and no counted user write is
+  in flight; otherwise wait, hold `PtyController`'s queued writes (an in-band
+  command's kill prefix would destroy the unreported line), and retry when the
+  in-flight count reaches zero or after 250 ms with no precmd/preexec (stale
+  counts are then reset). A shell without input reporting commits instead.
+- Ctrl-C: written to the pty; a running command's queued lines die with it, so
+  the counts reset; at the prompt the editor takes over after 250 ms or the next
+  precmd, whichever comes first.
+
+Report handling: inserted at the front of the editor (the user's cursor stays
+put relative to their own text) and the editor keeps input. Enter while it is
+outstanding is deferred; the report (or a 500 ms deadline) runs it, then the held
+keys are written after the command as its typeahead. A late report is stashed and
+inserted when the editor next owns input; a deferred Enter that wrote no command
+hands the held keys back to the editor after a second deadline.
+
+Gated model fixes (flag on only): additive reports, precmd keeps a report the
+editor has not inserted, and an empty report still notifies the hand-off.
+Ungated shell fix: `\ei` (and bash's `\C-p`) bound in the vi command keymaps,
+recorded under `IMPROVED` in `DECLINED.md`.
+
+Residual risks, to check with the torture repros (`ta.sh`, `bburst.sh` at delays 3
+and 12, on bash, zsh and fish, plus `ta.sh` variants with Backspace and Enter
+across the boundary):
+- focus moves to the terminal for every editor command and back at the prompt;
+  watch the queued-prompt draft, agent view, CLI-agent rich input, the find bar
+  and synced inputs (synced panes still use the long-running predicate);
+- Ctrl-C at the prompt may run a prompt cycle (bash, zsh) that arrives after the
+  250 ms settle and reinitializes the editor under the user;
+- text typed into the shell's line between the prompt and the request is echoed
+  by the shell and can show briefly as background output;
+- a request still waits on stale counts for 250 ms after a line the shell never
+  answers with a prompt (a program reading stdin, a continuation line, a
+  bracketed paste with newlines);
+- if the line editor became active before the state became requestable and no
+  later activation or counted write arrives, the pty keeps input until the next
+  Enter;
+- IME composition on the terminal is not routed by the hand-off.
