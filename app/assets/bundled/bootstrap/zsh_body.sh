@@ -755,6 +755,34 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
   }
   zle -N warp_report_input
 
+  # Home, End and Delete as terminals send them (Phosphor sends CSI or SS3 H/F, and CSI 3~;
+  # other terminals use 1~/4~ and 7~/8~). zsh binds none of them by default, so keys typed ahead
+  # into zle -- while a command runs, or after Enter with the typeahead hand-off -- arrived as
+  # unbound garbage and the wrong command ran (#885). Bound only where unbound: a warpified
+  # subshell does not re-source the user's rc files after this, so overwriting would lose their
+  # own bindings.
+  () {
+    local warp_keymap warp_sequence warp_widget
+    local -A warp_widgets
+    for warp_keymap in emacs viins vicmd; do
+      if [[ $warp_keymap == vicmd ]]; then
+        warp_widgets=(home vi-beginning-of-line end vi-end-of-line delete vi-delete-char)
+      else
+        warp_widgets=(home beginning-of-line end end-of-line delete delete-char)
+      fi
+      for warp_sequence in '\e[H' '\eOH' '\e[1~' '\e[7~' '\e[F' '\eOF' '\e[4~' '\e[8~' '\e[3~'; do
+        case $warp_sequence in
+          ('\e[3~') warp_widget=$warp_widgets[delete] ;;
+          (*F|*4~|*8~) warp_widget=$warp_widgets[end] ;;
+          (*) warp_widget=$warp_widgets[home] ;;
+        esac
+        if [[ $(bindkey -M "$warp_keymap" "$warp_sequence" 2>/dev/null) == *' undefined-key' ]]; then
+          bindkey -M "$warp_keymap" "$warp_sequence" "$warp_widget" 2>/dev/null || :
+        fi
+      done
+    done
+  }
+
   function clear() {
       warp_send_json_message "{\"hook\": \"Clear\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
   }

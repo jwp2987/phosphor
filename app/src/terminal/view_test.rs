@@ -13420,3 +13420,228 @@ fn typeahead_handoff_stopping_a_conversation_drops_its_held_command() {
         assert_eq!(*counts.borrow(), (1, 0, 0));
     })
 }
+
+/// Drives the hand-off to "request written, report outstanding".
+fn awaiting_typeahead_report(view: &TerminalView) {
+    let mut model = view.model.lock();
+    let handoff = model.typeahead_handoff_mut();
+    handoff.on_command_written();
+    handoff.on_user_bytes(b"ec");
+    handoff.on_user_write_flushed();
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+}
+
+/// Counts the commands a terminal view asks to execute.
+fn count_executed_commands(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+) -> Rc<RefCell<usize>> {
+    let count = Rc::new(RefCell::new(0));
+    let seen = count.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(terminal, move |_, event, _| {
+            if let Event::ExecuteCommand(_) = event {
+                *seen.borrow_mut() += 1;
+            }
+        });
+    });
+    count
+}
+
+/// B1: an Enter while the report is outstanding waits for it, however long it takes. The
+/// editor holds only what was typed after the request; submitting it (or anything written after
+/// the request) would run a fragment. Nothing is written and no command runs until the report.
+#[test]
+fn typeahead_handoff_never_submits_a_fragment_without_the_report() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        let executed = count_executed_commands(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            awaiting_typeahead_report(view);
+            view.input
+                .update(ctx, |input, ctx| input.replace_buffer_content("ho 47", ctx));
+            view.input.update(ctx, |input, ctx| input.input_enter(ctx));
+            view.keydown_on_terminal("\r", ctx);
+        });
+        // Well past the old 1 s give-up deadline.
+        Timer::after(Duration::from_millis(1500)).await;
+
+        assert_eq!(*executed.borrow(), 0, "no command without the report");
+        assert!(pty_writes.borrow().is_empty());
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ho 47");
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::HoldAfterEnter {
+                    held: b"\r".to_vec(),
+                    released: false,
+                }
+            );
+        });
+    })
+}
+
+/// S2 and #826 N1: the report arrived but its submit wrote no command (the test view is not
+/// bootstrapped). The held shell lines go to the pty at once -- not into the editor, where the
+/// next Enter sent them to the agent.
+#[test]
+fn typeahead_handoff_releases_held_shell_lines_to_the_pty_when_the_submit_runs_nothing() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            hold_after_deferred_enter(view);
+            assert_eq!(
+                view.model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .on_user_bytes(b"echo 1\recho 2\r"),
+                UserBytesRoute::Held
+            );
+            view.handle_typeahead_report_with_handoff(ctx);
+
+            assert!(!view.input.as_ref(ctx).buffer_text(ctx).contains("echo"));
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::EditorOwned
+            );
+        });
+
+        assert_eq!(*pty_writes.borrow(), vec![b"echo 1\recho 2\r".to_vec()]);
+    })
+}
+
+/// B2: the deferred submit is a shell command in Universal input too (the production default),
+/// where the classic-mode setter does nothing; the lock covers that one submit and the previous
+/// configuration comes back.
+#[test]
+fn typeahead_handoff_deferred_submit_is_a_shell_command_in_universal_input() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        InputSettings::handle(&app).update(&mut app, |input_settings, ctx| {
+            let _ = input_settings
+                .input_box_type
+                .set_value(crate::settings::InputBoxType::Universal, ctx);
+        });
+        let ai_input_model = terminal.read(&app, |view, _| view.ai_input_model.clone());
+        // Natural-language detection took the buffer for a query.
+        ai_input_model.update(&mut app, |input_model, ctx| {
+            input_model.set_input_type(InputType::AI, ctx)
+        });
+        let configs: Rc<RefCell<Vec<InputType>>> = Rc::new(RefCell::new(Vec::new()));
+        let recorded = configs.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&ai_input_model, move |_, event, _| {
+                if let BlocklistAIInputEvent::InputTypeChanged { config } = event {
+                    recorded.borrow_mut().push(config.input_type);
+                }
+            });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.input.update(ctx, |input, ctx| {
+                input.replace_buffer_content("list the files", ctx);
+                input.input_enter_as_shell_command(ctx)
+            });
+        });
+
+        let configs = configs.borrow();
+        assert_eq!(
+            configs.first(),
+            Some(&InputType::Shell),
+            "the submit ran with the input locked to shell"
+        );
+        assert_eq!(
+            configs.last(),
+            Some(&InputType::AI),
+            "the previous configuration is restored after that one submit"
+        );
+    })
+}
+
+/// #826 N2: Backspace (or an arrow) typed just after the editor took input over, before focus
+/// left the terminal, is applied to the editor instead of being dropped.
+#[test]
+fn typeahead_handoff_applies_a_key_that_beat_the_focus_change_to_the_editor() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        // One key per update, as in the app, where every key is its own event: the editor's
+        // display map follows buffer edits through a model subscription, delivered only when
+        // effects flush, and Left moves the cursor through the display map.
+        let send = |app: &mut App, bytes: &'static [u8]| {
+            terminal.update(app, |view, ctx| {
+                view.control_sequence_on_terminal(bytes, ctx)
+            });
+        };
+        let buffer =
+            |app: &App| terminal.read(app, |view, ctx| view.input.as_ref(ctx).buffer_text(ctx));
+        let cursor = |app: &App| {
+            terminal.read(app, |view, ctx| {
+                view.input
+                    .as_ref(ctx)
+                    .editor()
+                    .as_ref(ctx)
+                    .start_byte_index_of_last_selection(ctx)
+                    .as_usize()
+            })
+        };
+
+        terminal.update(&mut app, |view, ctx| {
+            view.input.update(ctx, |input, ctx| {
+                input.replace_buffer_content("lss", ctx);
+                input
+                    .editor()
+                    .update(ctx, |editor, ctx| editor.move_to_buffer_end(ctx));
+            });
+        });
+        // Not right after a hand-off: the key keeps its old meaning (dropped).
+        send(&mut app, &[0x7f]);
+        assert_eq!(buffer(&app), "lss");
+
+        terminal.update(&mut app, |view, _| view.note_editor_took_over());
+        send(&mut app, &[0x7f]);
+        assert_eq!(buffer(&app), "ls");
+        assert_eq!(cursor(&app), 2);
+        send(&mut app, b"\x1b[D");
+        assert_eq!(cursor(&app), 1, "Left moved the cursor");
+        send(&mut app, &[0x7f]);
+        assert_eq!(buffer(&app), "s");
+    })
+}
+
+/// Without the flag a key on the terminal at the prompt is still dropped.
+#[test]
+fn without_typeahead_handoff_a_key_on_the_terminal_at_the_prompt_is_dropped() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(false);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.input
+                .update(ctx, |input, ctx| input.replace_buffer_content("lss", ctx));
+            view.model
+                .lock()
+                .typeahead_handoff_mut()
+                .note_editor_took_over(Instant::now());
+            view.control_sequence_on_terminal(&[0x7f], ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "lss");
+        });
+    })
+}

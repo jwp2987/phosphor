@@ -104,7 +104,6 @@ fn no_bytes_written_hands_back_at_the_prompt_without_a_request() {
     handoff.on_precmd();
     assert!(handoff.try_commit_at_prompt());
     assert_eq!(handoff.state(), &HandoffState::EditorOwned);
-    assert_eq!(handoff.take_report_deadline_to_arm(), None);
 }
 
 #[test]
@@ -191,10 +190,6 @@ fn the_request_is_the_atomic_switch_to_the_editor() {
     assert!(!handoff.routes_keys_to_pty());
     assert_eq!(handoff.on_user_bytes(b"\x7f\r"), UserBytesRoute::Write);
     assert_eq!(handoff.writes_in_flight(), 0);
-    // The deadline is handed out exactly once.
-    let generation = handoff.take_report_deadline_to_arm();
-    assert!(generation.is_some());
-    assert_eq!(handoff.take_report_deadline_to_arm(), None);
     // A second activation while the report is outstanding does not request again.
     assert_eq!(
         handoff.on_line_editor_active(true, true),
@@ -252,29 +247,6 @@ fn deferred_enter_writes_report_then_command_then_held_keys() {
 }
 
 #[test]
-fn report_deadline_gives_up_without_submitting_a_fragment() {
-    let mut handoff = awaiting_report();
-    let generation = handoff.take_report_deadline_to_arm().unwrap();
-    assert!(handoff.defer_enter());
-    handoff.on_user_bytes(b"ls");
-    assert_eq!(
-        handoff.on_report_deadline(generation),
-        DeadlineOutcome::GiveUp {
-            held: b"ls".to_vec()
-        },
-        "the editor holds only what was typed after the request; submitting it would run a \
-         fragment (#827)"
-    );
-    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
-    // The late report still lands at the front of the editor.
-    assert_eq!(handoff.on_report(), ReportDisposition::InsertLegacy);
-    assert_eq!(
-        handoff.on_report_deadline(generation),
-        DeadlineOutcome::Stale
-    );
-}
-
-#[test]
 fn a_report_after_the_deferred_command_was_written_is_stashed() {
     let mut handoff = awaiting_report();
     assert!(handoff.defer_enter());
@@ -287,52 +259,8 @@ fn a_report_after_the_deferred_command_was_written_is_stashed() {
     );
 }
 
-#[test]
-fn report_deadline_without_enter_just_releases_the_editor() {
-    let mut handoff = awaiting_report();
-    let generation = handoff.take_report_deadline_to_arm().unwrap();
-    assert_eq!(
-        handoff.on_report_deadline(generation),
-        DeadlineOutcome::ReleaseEditor
-    );
-    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
-}
-
-#[test]
-fn deferred_enter_that_writes_no_command_gives_the_held_keys_back() {
-    let mut handoff = awaiting_report();
-    let generation = handoff.take_report_deadline_to_arm().unwrap();
-    assert!(handoff.defer_enter());
-    handoff.on_user_bytes(b"xy");
-    assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
-    assert_eq!(
-        handoff.on_report_deadline(generation),
-        DeadlineOutcome::GiveUp {
-            held: b"xy".to_vec()
-        }
-    );
-    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
-}
-
-#[test]
-fn a_deadline_armed_for_an_earlier_request_is_void() {
-    let mut handoff = awaiting_report();
-    let first = handoff.take_report_deadline_to_arm().unwrap();
-    assert_eq!(handoff.on_report(), ReportDisposition::Insert);
-    handoff.on_command_written();
-    type_and_flush(&mut handoff, b"x");
-    handoff.on_precmd();
-    assert_eq!(
-        handoff.on_line_editor_active(true, true),
-        ActiveDecision::SendRequest
-    );
-    assert_eq!(handoff.on_report_deadline(first), DeadlineOutcome::Stale);
-    assert_eq!(handoff.state(), &HandoffState::AwaitingReport);
-}
-
-/// The counts expect a prompt for every Enter. An Enter consumed by something other than the
-/// shell's line editor is answered by none, so with nothing in the shell's line the decision is
-/// to drain and, after a quiet period, reset and decide again.
+/// A line-consuming program answered the user's Enter, so no prompt follows it: the quiet
+/// period releases the pty back to the editor.
 fn consumed_enter_is_released_after_a_quiet_period(handoff: &mut TypeaheadHandoff) {
     // The submitted command's own prompt.
     handoff.on_precmd();
@@ -643,4 +571,93 @@ fn unanswered_lines_are_tracked_while_the_pty_owns_input() {
     type_and_flush(&mut handoff, b"a\r");
     assert!(handoff.has_unanswered_lines());
     assert!(!TypeaheadHandoff::default().has_unanswered_lines());
+}
+
+/// #826 N1: under CPU starvation the held keys were handed back to the editor with every Enter
+/// turned into a newline, and the next Enter sent the typed shell lines to the agent. Held keys
+/// with an Enter in them are shell lines: they never go to the editor.
+#[test]
+fn the_editor_takeover_window_is_tracked() {
+    let start = Instant::now();
+    let window = Duration::from_millis(500);
+    let mut handoff = TypeaheadHandoff::default();
+    assert!(!handoff.editor_took_over_within(window, start));
+    handoff.note_editor_took_over(start);
+    assert!(handoff.editor_took_over_within(window, start + Duration::from_millis(200)));
+    assert!(!handoff.editor_took_over_within(window, start + Duration::from_millis(800)));
+    // Only while the editor owns input.
+    handoff.on_command_written();
+    assert!(!handoff.editor_took_over_within(window, start + Duration::from_millis(200)));
+}
+
+/// B1: the request is outstanding until the report arrives. Nothing gives up on it: the
+/// editor holds only what was typed after the request, so a submit now would run a fragment.
+#[test]
+fn a_deferred_enter_waits_for_the_report_however_long_it_takes() {
+    let mut handoff = awaiting_report();
+    assert!(handoff.defer_enter());
+    handoff.on_user_bytes(b"echo 1\recho 2\r");
+    // Nothing but the report (or Ctrl-C, or the session ending) releases it.
+    assert_eq!(handoff.release_after_unsubmitted_enter(), None);
+    assert!(handoff.routes_keys_to_pty());
+    assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
+    assert_eq!(handoff.on_command_written(), b"echo 1\recho 2\r".to_vec());
+}
+
+/// S2: the report arrived and its submit wrote no command: the held keys are released at once,
+/// shell lines to the pty and an unfinished line to the editor -- never shell lines to the
+/// editor (#826 N1).
+#[test]
+fn keys_held_behind_an_unsubmitted_enter_are_released_where_they_belong() {
+    let mut handoff = awaiting_report();
+    assert!(handoff.defer_enter());
+    handoff.on_user_bytes(b"echo 1\recho 2\r");
+    assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
+    assert_eq!(
+        handoff.release_after_unsubmitted_enter(),
+        Some(HeldKeysRelease::ToPty(b"echo 1\recho 2\r".to_vec()))
+    );
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+
+    let mut handoff = awaiting_report();
+    assert!(handoff.defer_enter());
+    handoff.on_user_bytes(b"ls -l");
+    assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
+    assert_eq!(
+        handoff.release_after_unsubmitted_enter(),
+        Some(HeldKeysRelease::ToEditor(b"ls -l".to_vec()))
+    );
+}
+
+#[test]
+fn the_session_ending_releases_everything() {
+    let mut handoff = awaiting_report();
+    assert!(handoff.defer_enter());
+    handoff.on_user_bytes(b"ls");
+    handoff.reset_on_exit();
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+    assert!(!handoff.routes_keys_to_pty());
+}
+
+#[test]
+fn the_editor_takeover_window_ends_early_on_request() {
+    let start = Instant::now();
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.note_editor_took_over(start);
+    handoff.end_editor_takeover_window();
+    assert!(!handoff.editor_took_over_within(Duration::from_secs(1), start));
+}
+
+#[test]
+fn the_window_survives_focus_moved_by_a_key_it_applied() {
+    let start = Instant::now();
+    let window = Duration::from_secs(1);
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.note_editor_took_over(start);
+    handoff.note_focus_moved_by_takeover_key();
+    handoff.on_editor_focused();
+    assert!(handoff.editor_took_over_within(window, start));
+    // Any other focus change ends it.
+    handoff.on_editor_focused();
+    assert!(!handoff.editor_took_over_within(window, start));
 }

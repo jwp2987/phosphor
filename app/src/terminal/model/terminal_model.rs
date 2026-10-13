@@ -1556,6 +1556,10 @@ impl TerminalModel {
         let transition = self.plan_lifecycle_transition(LifecycleInput::Exit, None, None, None);
 
         self.handled_exit = true;
+        if FeatureFlag::TypeaheadHandoff.is_enabled() {
+            // Nothing can answer an outstanding typeahead request or run held keys any more.
+            self.typeahead_handoff.reset_on_exit();
+        }
         // Forcibly exit the alt screen so that we can show the user the
         // banner informing them that the shell process exited.
         self.exit_alt_screen(true);
