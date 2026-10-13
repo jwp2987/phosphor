@@ -13581,6 +13581,27 @@ fn typeahead_handoff_applies_a_key_that_beat_the_focus_change_to_the_editor() {
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
         let terminal = add_window_with_terminal(&mut app, None);
 
+        // One key per update, as in the app, where every key is its own event: the editor's
+        // display map follows buffer edits through a model subscription, delivered only when
+        // effects flush, and Left moves the cursor through the display map.
+        let send = |app: &mut App, bytes: &'static [u8]| {
+            terminal.update(app, |view, ctx| {
+                view.control_sequence_on_terminal(bytes, ctx)
+            });
+        };
+        let buffer =
+            |app: &App| terminal.read(app, |view, ctx| view.input.as_ref(ctx).buffer_text(ctx));
+        let cursor = |app: &App| {
+            terminal.read(app, |view, ctx| {
+                view.input
+                    .as_ref(ctx)
+                    .editor()
+                    .as_ref(ctx)
+                    .start_byte_index_of_last_selection(ctx)
+                    .as_usize()
+            })
+        };
+
         terminal.update(&mut app, |view, ctx| {
             view.input.update(ctx, |input, ctx| {
                 input.replace_buffer_content("lss", ctx);
@@ -13588,17 +13609,19 @@ fn typeahead_handoff_applies_a_key_that_beat_the_focus_change_to_the_editor() {
                     .editor()
                     .update(ctx, |editor, ctx| editor.move_to_buffer_end(ctx));
             });
-            // Not right after a hand-off: the key keeps its old meaning (dropped).
-            view.control_sequence_on_terminal(&[0x7f], ctx);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "lss");
-
-            view.note_editor_took_over();
-            view.control_sequence_on_terminal(&[0x7f], ctx);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
-            view.control_sequence_on_terminal(b"\x1b[D", ctx);
-            view.control_sequence_on_terminal(&[0x7f], ctx);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "s");
         });
+        // Not right after a hand-off: the key keeps its old meaning (dropped).
+        send(&mut app, &[0x7f]);
+        assert_eq!(buffer(&app), "lss");
+
+        terminal.update(&mut app, |view, _| view.note_editor_took_over());
+        send(&mut app, &[0x7f]);
+        assert_eq!(buffer(&app), "ls");
+        assert_eq!(cursor(&app), 2);
+        send(&mut app, b"\x1b[D");
+        assert_eq!(cursor(&app), 1, "Left moved the cursor");
+        send(&mut app, &[0x7f]);
+        assert_eq!(buffer(&app), "s");
     })
 }
 
