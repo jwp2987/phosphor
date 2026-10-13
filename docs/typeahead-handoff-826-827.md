@@ -277,8 +277,11 @@ Transitions out of `PtyOwned`:
   result).
 - With #848/#850: a discard of parked commands (tab close, an agent interrupt)
   drops a held command like any other parked command and forgets it. A held
-  agent command records its action, so cancelling that action discards it even
-  though no block holds it yet. An agent interrupt (ctrl-c on an agent command in
+  agent command records its action and conversation, so cancelling that action
+  (the executor's manual-cancel check includes it) or stopping that conversation
+  drops it -- only it, with no ^C -- even though no block holds it yet. Dropping
+  it leaves the executing-command state alone if a command from the editor was
+  written or queued after it. An agent interrupt (ctrl-c on an agent command in
   flight, a conversation stop) cancels a deferred Enter and its held keys first,
   so its single ^C is written rather than held.
 - A command that starts its own block when written (an in-band or held command)

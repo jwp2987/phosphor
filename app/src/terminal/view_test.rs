@@ -69,7 +69,7 @@ use crate::terminal::model::block::{
 };
 use crate::terminal::model::blocks::{insert_block, TotalIndex};
 use crate::terminal::model::terminal_model::WithinBlock;
-use crate::terminal::model::typeahead_handoff::{ActiveDecision, HandoffState};
+use crate::terminal::model::typeahead_handoff::{ActiveDecision, HandoffState, HeldAgentCommand};
 use crate::terminal::view::load_ai_conversation::{
     RestoreConversationEntryBehavior, RestoredAIConversation,
 };
@@ -13165,14 +13165,25 @@ fn typeahead_handoff_ctrl_c_on_an_agent_command_is_not_held() {
                 .start();
             hold_after_deferred_enter(view);
         });
-        let (etx, discards) = count_close_pty_effects(&mut app, &terminal);
+        let sequence: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let recorded = sequence.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
+                Event::DiscardPendingCommandWrites => recorded.borrow_mut().push("discard"),
+                Event::WriteBytesToPty { bytes } | Event::WriteHandoffUserBytesToPty { bytes }
+                    if bytes.contains(&C0::ETX) =>
+                {
+                    recorded.borrow_mut().push("etx")
+                }
+                _ => {}
+            });
+        });
 
         terminal.update(&mut app, |view, ctx| {
             view.handle_action(&TerminalAction::CtrlC, ctx);
         });
 
-        assert_eq!(*etx.borrow(), 1);
-        assert_eq!(*discards.borrow(), 1);
+        assert_eq!(*sequence.borrow(), vec!["discard", "etx"]);
         terminal.read(&app, |view, _| {
             assert_eq!(
                 view.model.lock().typeahead_handoff().state(),
@@ -13182,34 +13193,112 @@ fn typeahead_handoff_ctrl_c_on_an_agent_command_is_not_held() {
     })
 }
 
-/// A cancel of an agent action whose command is held behind the user's typeahead (no block
-/// holds it yet) discards it and sends no ^C; a cancel of another action does neither.
+/// Counts the hand-off's targeted discard of a held command, the full #848 discard and ^C.
+fn count_held_discard_effects(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+) -> Rc<RefCell<(usize, usize, usize)>> {
+    let counts = Rc::new(RefCell::new((0, 0, 0)));
+    let seen = counts.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(terminal, move |_, event, _| match event {
+            Event::DiscardHeldTypeaheadCommand => seen.borrow_mut().0 += 1,
+            Event::DiscardPendingCommandWrites => seen.borrow_mut().1 += 1,
+            Event::WriteBytesToPty { bytes } | Event::WriteHandoffUserBytesToPty { bytes }
+                if bytes.contains(&C0::ETX) =>
+            {
+                seen.borrow_mut().2 += 1
+            }
+            _ => {}
+        });
+    });
+    counts
+}
+
+/// The status bar's stop of an agent action whose command is held behind the user's typeahead
+/// (written nowhere, no block started): the executor's cancel asks the terminal to interrupt it,
+/// and the terminal drops only the held command -- no ^C, no full discard that would also drop
+/// a command from the editor queued after it.
 #[test]
-fn typeahead_handoff_cancel_of_a_held_agent_command_discards_it() {
+fn typeahead_handoff_cancel_of_a_held_agent_command_drops_only_it() {
     App::test((), |mut app| async move {
-        initialize_app_for_terminal_view(&mut app);
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
-        let terminal = add_window_with_terminal(&mut app, None);
-        let held = AIAgentActionId::from("held-command".to_owned());
+        let (terminal, conversation_id, action_id) =
+            terminal_with_real_async_agent_command(&mut app, false);
         terminal.update(&mut app, |view, _| {
+            assert!(
+                !view
+                    .model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .agent_holds_in_flight_command(&action_id)
+            );
             view.model
                 .lock()
                 .typeahead_handoff_mut()
-                .set_held_command_action(Some(held.clone()));
+                .set_held_agent_command(Some(HeldAgentCommand {
+                    action_id: action_id.clone(),
+                    conversation_id,
+                }));
         });
-        let (etx, discards) = count_close_pty_effects(&mut app, &terminal);
+        let counts = count_held_discard_effects(&mut app, &terminal);
+        let action_model = terminal.read(&app, |view, _| view.ai_action_model.clone());
 
-        terminal.update(&mut app, |view, ctx| {
-            view.interrupt_cancelled_agent_command(
-                &AIAgentActionId::from("other-command".to_owned()),
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model.cancel_action_with_id(
+                conversation_id,
+                &action_id,
+                CancellationReason::ManuallyCancelled,
                 ctx,
             );
         });
-        assert_eq!((*etx.borrow(), *discards.borrow()), (0, 0));
+
+        assert_eq!(*counts.borrow(), (1, 0, 0));
+        terminal.read(&app, |view, _| {
+            assert!(
+                view.model
+                    .lock()
+                    .typeahead_handoff()
+                    .held_agent_command()
+                    .is_none()
+            );
+        });
+    })
+}
+
+/// Stopping a conversation drops its agent command held behind the user's typeahead (only it),
+/// exactly once; a held command of another conversation is left alone.
+#[test]
+fn typeahead_handoff_stopping_a_conversation_drops_its_held_command() {
+    App::test((), |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let (terminal, conversation_id, action_id) =
+            terminal_with_real_async_agent_command(&mut app, false);
+        let counts = count_held_discard_effects(&mut app, &terminal);
 
         terminal.update(&mut app, |view, ctx| {
-            view.interrupt_cancelled_agent_command(&held, ctx);
+            view.model
+                .lock()
+                .typeahead_handoff_mut()
+                .set_held_agent_command(Some(HeldAgentCommand {
+                    action_id: AIAgentActionId::from("other-conversation".to_owned()),
+                    conversation_id: AIConversationId::new(),
+                }));
+            view.stop_local_agent_conversation(conversation_id, ctx);
         });
-        assert_eq!((*etx.borrow(), *discards.borrow()), (0, 1));
+        assert_eq!(*counts.borrow(), (0, 0, 0));
+
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .typeahead_handoff_mut()
+                .set_held_agent_command(Some(HeldAgentCommand {
+                    action_id: action_id.clone(),
+                    conversation_id,
+                }));
+            view.stop_local_agent_conversation(conversation_id, ctx);
+        });
+        assert_eq!(*counts.borrow(), (1, 0, 0));
     })
 }
