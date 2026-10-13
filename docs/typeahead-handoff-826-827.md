@@ -267,6 +267,17 @@ Transitions out of `PtyOwned`:
   its Enter counted only when it is written, so the prompt still reads as a
   prompt meanwhile. Ctrl-C discards the shell's line and so releases it (it goes
   out behind the Ctrl-C, and an agent still gets its command run).
+  Only a command whose start would be accepted right now (at the prompt, nothing
+  started) is held; one arriving while a block is started or running takes the
+  normal path and is coalesced or rejected exactly as without the hand-off. One
+  command is held at a time: another non-editor command meanwhile is coalesced.
+  A command from the editor meanwhile goes first and the held one starts at the
+  prompt after it. If the shell exits, a held command is dropped (with a log
+  line; commands carry no completion channel, so an agent that sent it gets no
+  result).
+- A command that starts its own block when written (an in-band or held command)
+  waits while an Enter the user typed is unanswered by a prompt, so the output of
+  the user's lines does not land in its block.
 - A precmd that leaves the pty owning input (an empty Enter, a prompt cycle after
   Ctrl-C) brings no line-editor activation, so the view asks the controller to
   decide again. Every Enter typed also counts as activity for the quiet period,

@@ -194,6 +194,20 @@ impl TypeaheadHandoff {
         )
     }
 
+    /// Whether the pty owns input and some Enter written to it is not answered by a prompt
+    /// yet, i.e. the shell may still have user lines to run. A command that starts its own
+    /// block when written must wait meanwhile, or the user lines' output would land in it.
+    pub fn has_unanswered_lines(&self) -> bool {
+        matches!(
+            self.owner(),
+            Owner::Pty {
+                enters_written,
+                precmds_seen,
+                ..
+            } if enters_written > precmds_seen
+        )
+    }
+
     pub fn writes_in_flight(&self) -> u32 {
         self.writes_in_flight
     }
@@ -565,8 +579,11 @@ pub fn text_for_editor(bytes: &[u8]) -> String {
         let ch = chars[i];
         i += 1;
         match ch {
+            // Backspace erases within the current line only, as the line editor would.
             '\u{7f}' | '\u{8}' => {
-                out.pop();
+                if !out.ends_with('\n') {
+                    out.pop();
+                }
             }
             // ^U: back to the start of the line.
             '\u{15}' => {

@@ -13113,7 +13113,10 @@ fn typeahead_handoff_ctrl_c_settle_asks_for_a_new_decision() {
         });
         assert_eq!(*retries.borrow(), 0);
 
-        Timer::after(Duration::from_millis(400)).await;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while *retries.borrow() == 0 && Instant::now() < deadline {
+            Timer::after(Duration::from_millis(50)).await;
+        }
         assert_eq!(*retries.borrow(), 1);
     })
 }

@@ -625,6 +625,22 @@ fn given_back_keys_apply_line_edits_and_drop_escape_sequences() {
     assert_eq!(text_for_editor(b"one\rtwo\n\tthree"), "one\ntwo\n\tthree");
     // ^U only erases the current line.
     assert_eq!(text_for_editor(b"one\ntwo\x15"), "one\n");
+    // Backspace does not join lines.
+    assert_eq!(text_for_editor(b"one\n\x7f\x7ftwo"), "one\ntwo");
     // A lone ESC does not take the next character with it; other controls are dropped.
     assert_eq!(text_for_editor(b"a\x1bb\x03c\x1b"), "abc");
+}
+
+#[test]
+fn unanswered_lines_are_tracked_while_the_pty_owns_input() {
+    let mut handoff = after_submit();
+    assert!(
+        handoff.has_unanswered_lines(),
+        "the submitted command has not reached its prompt"
+    );
+    handoff.on_precmd();
+    assert!(!handoff.has_unanswered_lines());
+    type_and_flush(&mut handoff, b"a\r");
+    assert!(handoff.has_unanswered_lines());
+    assert!(!TypeaheadHandoff::default().has_unanswered_lines());
 }
