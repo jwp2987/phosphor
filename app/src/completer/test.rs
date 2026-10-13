@@ -9,6 +9,7 @@ use typed_path::{UnixComponent, WindowsComponent, WindowsPrefix};
 use warp_completer::completer::PathCompletionContext;
 use warp_completer::completer::{CompletionContext, EngineDirEntry};
 use warp_completer::signatures::CommandRegistry;
+use warp_util::path::ShellDialect;
 use warpui::App;
 
 use crate::completer::SessionContext;
@@ -638,7 +639,7 @@ pub fn test_concurrent_directory_refreshes_are_coalesced() {
 #[test]
 pub fn test_ls_script_for_dir_builds_the_expected_command() {
     let directory = TypedPath::unix("/home/user/somedir");
-    let script = super::ls_script_for_dir(&directory)
+    let script = super::ls_script_for_dir(&directory, ShellDialect::Posix)
         .expect("a UTF-8 directory should always produce a script");
 
     // Assert on structure rather than the exact byte-for-byte string: this is what matters for
@@ -658,6 +659,20 @@ pub fn test_ls_script_for_dir_builds_the_expected_command() {
         script.contains("find -L . -maxdepth 1 -not -type d -print0"),
         "{script:?}"
     );
+}
+
+/// #867: a directory name with a control character must reach the in-band executor escaped
+/// for the session's shell, never raw (a raw CR would submit the line early).
+#[test]
+pub fn test_ls_script_for_dir_escapes_control_characters_per_shell() {
+    let directory = TypedPath::unix("/tmp/rc\rexit");
+    let bash = super::ls_script_for_dir(&directory, ShellDialect::Posix).expect("UTF-8 path");
+    assert!(bash.contains("cd $'/tmp/rc\\x0Dexit' &&"), "{bash:?}");
+    let fish = super::ls_script_for_dir(&directory, ShellDialect::Fish).expect("UTF-8 path");
+    assert!(fish.contains("cd /tmp/rc\\x0Dexit &&"), "{fish:?}");
+    for script in [bash, fish] {
+        assert!(!script.chars().any(char::is_control), "{script:?}");
+    }
 }
 
 #[test]

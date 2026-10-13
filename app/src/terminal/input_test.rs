@@ -206,6 +206,32 @@ fn renders_echo_prompt_chip_command_as_single_shell_argument() {
     );
 }
 
+/// #867: a directory name with a control character is spelled with the shell's escape syntax,
+/// never placed in the buffer raw, where a CR would submit the line.
+#[test]
+fn renders_change_directory_prompt_chip_with_control_characters_escaped() {
+    let command = PromptChipShellCommand::ChangeDirectory {
+        dir_name: "rc\rexit 'x'".to_string(),
+    };
+
+    assert_eq!(
+        render_prompt_chip_shell_command(&command, ShellType::Bash),
+        r"cd $'rc\x0Dexit \'x\''"
+    );
+    assert_eq!(
+        render_prompt_chip_shell_command(&command, ShellType::Zsh),
+        r"cd $'rc\x0Dexit \'x\''"
+    );
+    assert_eq!(
+        render_prompt_chip_shell_command(&command, ShellType::Fish),
+        r"cd rc\x0Dexit\ \'x\'"
+    );
+    assert_eq!(
+        render_prompt_chip_shell_command(&command, ShellType::PowerShell),
+        r#"cd "rc$([char]0x000D)exit 'x'""#
+    );
+}
+
 #[test]
 fn renders_fixed_prompt_chip_command_without_interpolation() {
     assert_eq!(

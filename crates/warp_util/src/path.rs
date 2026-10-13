@@ -65,6 +65,10 @@ lazy_static! {
     ];
 }
 
+/// The characters [`POSIX_SHELL_ESCAPE_PATTERN`] backslash-escapes, other than `\n` and `\t`.
+/// Keep the two in sync.
+const POSIX_METACHARACTERS: &str = " \"$'\\#=[]!><|;{}()*?&`~";
+
 /// Leading prefix for a path to the home directory using the $HOME environment variable.
 pub const HOME_DIR_ENV_VAR_PREFIX: &str = "$HOME";
 
@@ -226,7 +230,17 @@ impl ShellFamily {
 
     /// Escapes an input string so they will retain its meaning in a no-quote representation. This
     /// is done by prepending the escape character to special/meta characters like *, |, $, etc.
+    ///
+    /// Input containing a control character is quoted with [`ShellDialect::from`] this family;
+    /// see [`ShellDialect::escape`]. For [`ShellFamily::Posix`] that is bash/zsh ANSI-C quoting,
+    /// which fish refuses to parse — callers that know the exact shell should use
+    /// [`ShellDialect`] directly so fish gets its own spelling.
     pub fn escape<'s>(&self, input: &'s str) -> Cow<'s, str> {
+        ShellDialect::from(*self).escape(input)
+    }
+
+    /// The pre-#867 metacharacter escaping, correct only for input with no control character.
+    fn escape_metacharacters<'s>(&self, input: &'s str) -> Cow<'s, str> {
         if input.is_empty() {
             return "''".into();
         }
@@ -267,6 +281,87 @@ impl ShellFamily {
     /// This function returns a [`Cow::Borrowed`] of the input string where possible and only
     /// returns owned data when the escaped version differs from the input string.
     pub fn shell_escape<'s>(&self, path: &'s str) -> Cow<'s, str> {
+        ShellDialect::from(*self).shell_escape(path)
+    }
+}
+
+/// Whether `c` cannot be placed in the input buffer verbatim (#867).
+///
+/// The buffer is written to the PTY as typed text, so a raw control character is acted on by
+/// the line discipline and the shell's line editor before any quoting is parsed: a CR or LF
+/// submits the line, `^U` kills it, `^C` interrupts. A filename containing `\rexit` therefore
+/// ran `exit` after Tab completion. Quoting does not help — the character has to be spelled
+/// as an escape sequence. Covers C0, DEL and C1 (`char::is_control`) and the Unicode line and
+/// paragraph separators, which editors render as line breaks.
+pub fn needs_control_char_quoting(c: char) -> bool {
+    c.is_control() || c == '\u{2028}' || c == '\u{2029}'
+}
+
+/// Shell quoting syntax, one level finer than [`ShellFamily`].
+///
+/// bash, zsh and fish share backslash escaping of metacharacters, which is all
+/// [`ShellFamily::Posix`] describes, but there is no spelling of a control character that all
+/// three accept: bash/zsh need ANSI-C quoting (`$'\r'`), which fish rejects, and fish's
+/// unquoted `\r` is a plain `r` in bash. Input without a control character escapes exactly as
+/// [`ShellFamily::escape`] always did, in every dialect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellDialect {
+    /// bash, zsh, and any POSIX-family shell whose exact type is not known. Control characters
+    /// are written with ANSI-C quoting. fish rejects that at parse time ("Expected a variable
+    /// name after this $") without running anything, so an unknown shell fails closed.
+    Posix,
+    /// fish: control characters are written with fish's unquoted backslash escapes.
+    Fish,
+    /// PowerShell: a word with a control character is double-quoted and the character written
+    /// as a `$([char]0x..)` subexpression, which Windows PowerShell 5.1 also understands.
+    PowerShell,
+}
+
+impl From<ShellFamily> for ShellDialect {
+    fn from(family: ShellFamily) -> Self {
+        match family {
+            ShellFamily::Posix => Self::Posix,
+            ShellFamily::PowerShell => Self::PowerShell,
+        }
+    }
+}
+
+impl ShellDialect {
+    pub fn family(self) -> ShellFamily {
+        match self {
+            Self::Posix | Self::Fish => ShellFamily::Posix,
+            Self::PowerShell => ShellFamily::PowerShell,
+        }
+    }
+
+    /// Escapes `input` as a single shell word whose value is exactly `input`.
+    ///
+    /// Input without a control character (see [`needs_control_char_quoting`]) is escaped by
+    /// prefixing metacharacters, unchanged from [`ShellFamily::escape`]. Input with one never
+    /// yields a raw control character:
+    /// * bash/zsh: the whole word as `$'...'`, with `\\`, `\'`, and every control character
+    ///   as its UTF-8 bytes in `\xHH` form (locale independent).
+    /// * fish: metacharacters backslash-escaped as usual, ASCII control characters as `\xHH`
+    ///   and other control characters as `\uHHHH`.
+    /// * PowerShell: the whole word double-quoted, `` ` ``, `"`, `$` and the typographic double
+    ///   quotes PowerShell also accepts backtick-escaped, and each control character as
+    ///   `$([char]0xHHHH)`.
+    ///
+    /// [`ShellFamily::unescape`] does not invert the control-character forms.
+    pub fn escape<'s>(self, input: &'s str) -> Cow<'s, str> {
+        if !input.chars().any(needs_control_char_quoting) {
+            return self.family().escape_metacharacters(input);
+        }
+        Cow::Owned(match self {
+            Self::Posix => ansi_c_quote(input),
+            Self::Fish => fish_escape(input),
+            Self::PowerShell => powershell_double_quote(input),
+        })
+    }
+
+    /// Escapes the path to treat it as a single word within the shell, leaving a leading `~/`
+    /// or `$HOME/` unescaped so it still expands. See [`ShellFamily::shell_escape`].
+    pub fn shell_escape<'s>(self, path: &'s str) -> Cow<'s, str> {
         // Special case if the path starts with "~/" or "~\": The escape function escapes the "~" to avoid
         // tilde expansion, but we still want tilde expansion with the rest of the path properly
         // escaped.
@@ -291,6 +386,70 @@ impl ShellFamily {
         }
         self.escape(path)
     }
+}
+
+/// bash/zsh ANSI-C quoting of the whole word: `$'...'`.
+fn ansi_c_quote(input: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(input.len() + 8);
+    out.push_str("$'");
+    for c in input.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            c if needs_control_char_quoting(c) => {
+                let mut buf = [0u8; 4];
+                for byte in c.encode_utf8(&mut buf).bytes() {
+                    let _ = write!(out, "\\x{byte:02X}");
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// fish's unquoted escaping: metacharacters as `\c`, control characters as escape sequences.
+fn fish_escape(input: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(input.len() + 8);
+    for c in input.chars() {
+        if needs_control_char_quoting(c) {
+            if c.is_ascii() {
+                let _ = write!(out, "\\x{:02X}", c as u32);
+            } else {
+                let _ = write!(out, "\\u{:04X}", c as u32);
+            }
+        } else if POSIX_METACHARACTERS.contains(c) {
+            out.push('\\');
+            out.push(c);
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// PowerShell double-quoted string with control characters as `$([char]0x..)` subexpressions.
+fn powershell_double_quote(input: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(input.len() + 16);
+    out.push('"');
+    for c in input.chars() {
+        match c {
+            '`' | '"' | '$' | '\u{201C}' | '\u{201D}' | '\u{201E}' => {
+                out.push('`');
+                out.push(c);
+            }
+            c if needs_control_char_quoting(c) => {
+                let _ = write!(out, "$([char]0x{:04X})", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Returns `true` iff the given string is a valid POSIX portable pathname.

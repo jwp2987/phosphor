@@ -1,7 +1,7 @@
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use view::command_dialog::EnvVarSecretCommand;
-use warp_util::path::ShellFamily;
+use warp_util::path::{ShellDialect, ShellFamily};
 
 pub mod active_env_var_collection_data;
 pub mod env_var_collection_block;
@@ -80,9 +80,11 @@ impl EnvVar {
     }
 
     pub fn get_initialization_string(&self, shell_type: ShellType) -> String {
-        let shell_family = ShellFamily::from(shell_type);
-        let name = shell_family.escape(&self.name);
-        let value = get_init_command_for_env_var(&self.value, shell_family);
+        // The dialect, not the family: a value with a control character (e.g. a newline) is
+        // spelled differently in fish than in bash/zsh (#867).
+        let shell_dialect = ShellDialect::from(shell_type);
+        let name = shell_dialect.escape(&self.name);
+        let value = get_init_command_for_env_var(&self.value, shell_dialect);
 
         match shell_type {
             ShellType::Bash | ShellType::Zsh => {
@@ -98,10 +100,11 @@ impl EnvVar {
     }
 }
 
-fn get_init_command_for_env_var(value: &EnvVarValue, shell_family: ShellFamily) -> String {
+fn get_init_command_for_env_var(value: &EnvVarValue, shell_dialect: ShellDialect) -> String {
+    let shell_family = shell_dialect.family();
     match value {
         EnvVarValue::Constant(val) => match shell_family {
-            ShellFamily::Posix => shell_family.escape(val).into_owned(),
+            ShellFamily::Posix => shell_dialect.escape(val).into_owned(),
             ShellFamily::PowerShell => format!("'{}'", val.replace("'", "''")),
         },
         EnvVarValue::Command(cmd) => format!("$({})", cmd.command),
@@ -266,7 +269,7 @@ fn serialize_variables_internal<'s, I: IntoIterator<Item = (&'s str, &'s EnvVarV
                 prefix,
                 shell_family.escape(name),
                 separator,
-                get_init_command_for_env_var(value, shell_family),
+                get_init_command_for_env_var(value, shell_family.into()),
                 postfix
             )
         })

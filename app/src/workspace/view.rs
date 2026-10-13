@@ -7747,7 +7747,24 @@ impl Workspace {
             return;
         };
 
-        let cd_command = format!("cd {}", shell_words::quote(path_str));
+        // A control character cannot go into the buffer raw even inside quotes: the buffer is
+        // typed to the PTY, where a CR submits the line (#867). Such names are spelled with the
+        // session shell's escape syntax instead; every other name keeps its `'...'` form.
+        let quoted = if path_str
+            .chars()
+            .any(warp_util::path::needs_control_char_quoting)
+        {
+            let Some(view) = self.active_session_view(ctx) else {
+                return;
+            };
+            view.as_ref(ctx)
+                .shell_dialect_from_app(ctx)
+                .escape(path_str)
+                .into_owned()
+        } else {
+            shell_words::quote(path_str).into_owned()
+        };
+        let cd_command = format!("cd {quoted}");
         input_handle.update(ctx, |input_view, ctx| {
             input_view.replace_buffer_content(&cd_command, ctx);
         });
@@ -8090,7 +8107,9 @@ impl Workspace {
                     // verified by reading only.
                     let command = format!(
                         "{} {}",
-                        terminal_view.shell_family(ctx).shell_escape(&exec),
+                        terminal_view
+                            .shell_dialect_from_app(ctx)
+                            .shell_escape(&exec),
                         warp_cli::dump_debug_info_flag()
                     );
                     terminal_view.set_pending_command(&command, ctx);

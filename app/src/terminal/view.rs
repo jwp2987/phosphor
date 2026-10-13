@@ -383,7 +383,7 @@ use warp_core::context_flag::ContextFlag;
 use warp_core::user_preferences::GetUserPreferences as _;
 #[cfg(feature = "local_fs")]
 use warp_util::path::LineAndColumnArg;
-use warp_util::path::ShellFamily;
+use warp_util::path::{ShellDialect, ShellFamily};
 use warpui::clipboard::ClipboardContent;
 use warpui::elements::new_scrollable::{
     AxisConfiguration, ClippedAxisConfiguration, DualAxisConfig, NewScrollableElement,
@@ -5783,6 +5783,17 @@ impl TerminalView {
     pub fn attach_path_as_context(&mut self, path: &Path, ctx: &mut ViewContext<Self>) {
         let content = path.to_string_lossy().to_string();
 
+        // The path is inserted as plain text, not as a shell word, so it cannot be escaped.
+        // A control character in it would act on the PTY or the CLI agent (a CR submits the
+        // line), so such a path is refused rather than inserted raw (#867).
+        if content
+            .chars()
+            .any(warp_util::path::needs_control_char_quoting)
+        {
+            log::warn!("Not attaching a path containing a control character as context");
+            return;
+        }
+
         // If a CLI agent is running, route the context to rich input when it is
         // open, otherwise fall back to writing directly to the PTY.
         if self
@@ -9396,15 +9407,15 @@ impl TerminalView {
     }
 
     fn read_from_clipboard(
-        shell_family: Option<ShellFamily>,
+        shell_dialect: Option<ShellDialect>,
         ctx: &mut ViewContext<Self>,
     ) -> String {
         let content = ctx.clipboard().read();
-        clipboard_content_with_escaped_paths(content, shell_family, false)
+        clipboard_content_with_escaped_paths(content, shell_dialect, false)
     }
 
     fn middle_click_paste_content(
-        shell_family: Option<ShellFamily>,
+        shell_dialect: Option<ShellDialect>,
         ctx: &mut ViewContext<Self>,
     ) -> String {
         let content = SelectionSettings::handle(ctx).update(ctx, |selection, ctx| {
@@ -9412,7 +9423,7 @@ impl TerminalView {
         });
 
         content
-            .map(|content| clipboard_content_with_escaped_paths(content, shell_family, false))
+            .map(|content| clipboard_content_with_escaped_paths(content, shell_dialect, false))
             .unwrap_or_default()
     }
 
@@ -11448,7 +11459,7 @@ impl TerminalView {
                 if access.allows_read() {
                     self.write_to_pty(
                         format(&TerminalView::read_from_clipboard(
-                            Some(self.shell_family(ctx)),
+                            Some(self.shell_dialect_from_app(ctx)),
                             ctx,
                         ))
                         .into_bytes(),
@@ -14127,8 +14138,14 @@ impl TerminalView {
 
     /// Opens a folder that the user may or may not have opened in the past
     pub fn open_repo_folder(&mut self, path: String, ctx: &mut ViewContext<Self>) {
+        // Escaped for the session's shell: the old `cd "{path}"` let `$`, backticks and `"` in
+        // the folder name through, and a control character in it reached the PTY raw (#867).
+        let escaped = self
+            .shell_dialect_from_app(ctx)
+            .shell_escape(&path)
+            .into_owned();
         self.input.update(ctx, |input, ctx| {
-            input.try_execute_command(format!("cd \"{path}\"").as_str(), ctx);
+            input.try_execute_command(format!("cd {escaped}").as_str(), ctx);
         });
 
         self.toggle_left_panel_file_tree(true, ctx);
@@ -16250,6 +16267,16 @@ impl TerminalView {
             })
     }
 
+    /// The exact quoting syntax of the active session's shell, for escaping text inserted into
+    /// the input or typed to the PTY. With no session it falls back to the family's dialect,
+    /// whose control-character form fish rejects rather than runs (#867).
+    pub(crate) fn shell_dialect_from_app(&self, ctx: &AppContext) -> ShellDialect {
+        self.active_block_session_id()
+            .and_then(|session_id| self.sessions.as_ref(ctx).get(session_id))
+            .map(|session| session.shell_dialect())
+            .unwrap_or_else(|| self.shell_family_from_app(ctx).into())
+    }
+
     /// Whether a `BlockStarted` for `command` would actually reach the block list
     /// as a normal command block.
     /// Warpify-compatible subshell commands (`ssh`, `python`, `docker run`, ...)
@@ -16313,13 +16340,13 @@ impl TerminalView {
         // If we're pasting into a CLI coding agent (e.g. Claude Code) that has its own native
         // handling for pasted file paths and images, skip shell-escaping and let the agent
         // see https://github.com/anthropics/claude-code/issues/18590.
-        let shell_family = if is_cli_agent_paste {
+        let shell_dialect = if is_cli_agent_paste {
             None
         } else {
-            Some(self.shell_family(ctx))
+            Some(self.shell_dialect_from_app(ctx))
         };
         let mut copied = if middle_click {
-            TerminalView::middle_click_paste_content(shell_family, ctx)
+            TerminalView::middle_click_paste_content(shell_dialect, ctx)
         } else {
             let clipboard_content = ctx.clipboard().read();
 
@@ -16347,7 +16374,7 @@ impl TerminalView {
                 // happened" signal and reads the Windows clipboard directly for image data.
             }
 
-            clipboard_content_with_escaped_paths(clipboard_content, shell_family, false)
+            clipboard_content_with_escaped_paths(clipboard_content, shell_dialect, false)
         };
 
         if should_paste_in_input {
@@ -18537,7 +18564,19 @@ impl TerminalView {
     fn cd_into_remote_directory(&mut self, path: &std::path::Path, ctx: &mut ViewContext<Self>) {
         // Shell-escape the path, to prevent injection if it contains characters like
         // `"`, `$(...)`, or backticks that the remote shell would otherwise execute.
-        let quoted_dir = shell_words::quote(&path.to_string_lossy()).into_owned();
+        // A control character must not reach the PTY raw even inside quotes (#867); spell it
+        // with the session shell's escape syntax instead.
+        let path_str = path.to_string_lossy();
+        let quoted_dir = if path_str
+            .chars()
+            .any(warp_util::path::needs_control_char_quoting)
+        {
+            self.shell_dialect_from_app(ctx)
+                .escape(&path_str)
+                .into_owned()
+        } else {
+            shell_words::quote(&path_str).into_owned()
+        };
         self.input.update(ctx, |input, ctx| {
             input.try_execute_command(format!("cd -- {quoted_dir}").as_str(), ctx);
         });
@@ -25989,8 +26028,10 @@ impl TerminalView {
                 paths
             };
 
-            let input =
-                warpui::clipboard_utils::escaped_paths_str(paths, Some(self.shell_family(ctx)));
+            let input = warpui::clipboard_utils::escaped_paths_str(
+                paths,
+                Some(self.shell_dialect_from_app(ctx)),
+            );
             self.typed_characters_on_terminal(&input, ctx);
         }
     }

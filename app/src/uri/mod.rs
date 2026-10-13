@@ -1191,7 +1191,7 @@ fn open_file_editor(
 
 fn execute_file(window_id: WindowId, path_str: &str, ctx: &mut AppContext) {
     active_terminal_in_window(window_id, ctx, |term, t_ctx| {
-        let path_str = term.shell_family(t_ctx).shell_escape(path_str);
+        let path_str = term.shell_dialect_from_app(t_ctx).shell_escape(path_str);
         term.input().update(t_ctx, |input, i_ctx| {
             input.set_pending_command(&path_str, i_ctx);
         })

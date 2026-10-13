@@ -22,7 +22,7 @@ use std::sync::Arc;
 use typed_path::{TypedPath, TypedPathBuf, WindowsPath};
 use warp_util::path::{
     convert_msys2_to_windows_native_path, convert_wsl_to_windows_host_path, msys2_exe_to_root,
-    ShellFamily,
+    ShellDialect, ShellFamily,
 };
 
 use version_compare::Version;
@@ -1024,6 +1024,11 @@ impl Session {
     }
 
     pub fn shell_family(&self) -> ShellFamily {
+        self.shell().shell_type().into()
+    }
+
+    /// The exact quoting syntax of this session's shell; see [`ShellDialect`].
+    pub fn shell_dialect(&self) -> ShellDialect {
         self.shell().shell_type().into()
     }
 

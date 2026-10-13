@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use smol_str::SmolStr;
 use typed_path::{TypedPath, TypedPathBuf};
 use warp_core::command::ExitCode;
-use warp_util::path::{EscapeChar, ShellFamily};
+use warp_util::path::{EscapeChar, ShellDialect, ShellFamily};
 use warpui::platform::OperatingSystem;
 
 use crate::{completer::TopLevelCommandCaseSensitivity, signatures::CommandRegistry};
@@ -190,6 +190,13 @@ pub trait PathCompletionContext: Send + Sync {
     }
 
     fn shell_family(&self) -> ShellFamily;
+
+    /// The exact quoting syntax used to escape suggested paths. Defaults to the family's, which
+    /// for [`ShellFamily::Posix`] is bash/zsh syntax; implementations that know the shell is fish
+    /// must say so, or control characters in file names are spelled in a form fish rejects.
+    fn shell_dialect(&self) -> ShellDialect {
+        self.shell_family().into()
+    }
 
     /// The current working directory, which is used to determine how relative path suggestions
     /// should be computed.

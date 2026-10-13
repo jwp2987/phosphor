@@ -39,7 +39,10 @@ use settings::Setting as _;
 use snapshot::{EditorHeightShrinkDelay, ViewSnapshot};
 use vec1::{vec1, Vec1};
 use warp_core::{safe_error, send_telemetry_from_ctx};
-use warp_util::{path::ShellFamily, user_input::UserInput};
+use warp_util::{
+    path::{ShellDialect, ShellFamily},
+    user_input::UserInput,
+};
 use warpui::platform::keyboard::KeyCode;
 use warpui::ui_components::button::ButtonTooltipPosition;
 use warpui::ui_components::components::{Coords, UiComponent, UiComponentStyles};
@@ -1900,7 +1903,9 @@ pub struct EditorView {
     convert_newline_to_space: bool,
 
     /// Shell-specific behavior for this editor, e.g. how to escape special characters in paths.
-    shell_family: Option<ShellFamily>,
+    /// The exact dialect, not only the family: fish spells control characters differently
+    /// from bash/zsh (#867).
+    shell_dialect: Option<ShellDialect>,
 
     accept_autosuggestion_keybinding_view: ViewHandle<AcceptAutosuggestionKeybinding>,
     autosuggestion_ignore_view: ViewHandle<AutosuggestionIgnore>,
@@ -3012,11 +3017,19 @@ impl EditorView {
     }
 
     pub fn set_shell_family(&mut self, shell_family: ShellFamily) {
-        self.shell_family = Some(shell_family);
+        self.shell_dialect = Some(shell_family.into());
+    }
+
+    pub fn set_shell_dialect(&mut self, shell_dialect: ShellDialect) {
+        self.shell_dialect = Some(shell_dialect);
     }
 
     pub fn shell_family(&self) -> Option<ShellFamily> {
-        self.shell_family
+        self.shell_dialect.map(ShellDialect::family)
+    }
+
+    pub fn shell_dialect(&self) -> Option<ShellDialect> {
+        self.shell_dialect
     }
 
     pub fn set_drag_drop_path_transformer(&mut self, transformer: Option<PathTransformerFn>) {
@@ -3031,7 +3044,7 @@ impl EditorView {
     pub fn clipboard_text_content(&self, content: ClipboardContent) -> String {
         clipboard_content_with_escaped_paths(
             content,
-            self.shell_family,
+            self.shell_dialect,
             self.convert_newline_to_space,
         )
     }
@@ -3277,7 +3290,7 @@ impl EditorView {
             cached_buffer_points: Default::default(),
             baseline_position_computation_method: options.baseline_position_computation_method,
             middle_click_paste: options.middle_click_paste,
-            shell_family: None,
+            shell_dialect: None,
             accept_autosuggestion_keybinding_view,
             autosuggestion_ignore_view,
             show_autosuggestion_keybinding_hint: *editor_settings_handle
@@ -7745,7 +7758,7 @@ impl EditorView {
                 let mut new_autosuggestion_text = None;
                 // For PowerShell, the prefix may be case-insensitive since PowerShell
                 // values/commands are case-insensitive.
-                if self.shell_family == Some(ShellFamily::PowerShell)
+                if self.shell_family() == Some(ShellFamily::PowerShell)
                     && autosuggestion_state
                         .original_autosuggestion_text
                         .to_lowercase()
@@ -8089,7 +8102,7 @@ impl EditorView {
         };
 
         let input =
-            warpui::clipboard_utils::escaped_paths_str(&transformed_paths, self.shell_family);
+            warpui::clipboard_utils::escaped_paths_str(&transformed_paths, self.shell_dialect);
 
         self.user_insert(&input, ctx);
     }
