@@ -332,7 +332,8 @@ is applied to the editor rather than dropped (#826 N2). The window ends as soon
 as the editor gains focus or the terminal is clicked; Enter is not applied.
 
 Known gaps, not addressed:
-- review items S3 and S4 of the 2026-10-13 review of `fix/826-typeahead-handoff-2`
+- Agent and queued-prompts-panel commands are not held while a report is awaited (`AwaitingReport`/`Hold`): `holds_queued_writes` is only true for `PtyOwned{wrote_user_bytes}`, so such a command is written ahead of the user's deferred Enter, the user's submit is then coalesced, and released held lines can reach the agent command's stdin.
+- Releasing held bytes to the pty writes them raw and returns to `EditorOwned`: a trailing piece with no Enter (`ls⏎ec`) sits unreported in the shell's line, and text typed to continue a line after a menu-accepted Enter runs as a separate command; a `\n` inside a bracketed paste is treated as a shell line.
   are deferred (recorded with that review);
 - keybindings gated on the `LongRunningCommand` context (e.g. shift-enter) are
   inactive while the pty owns input but the command is not yet long-running;
