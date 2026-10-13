@@ -213,7 +213,11 @@ impl PaneContent for TerminalPane {
 
         // A restored (undo-closed) pane may start agent work again. Nothing resumes on its own:
         // conversations stopped by the close stay cancelled and their queues wait for the user
-        // (#848; see `TerminalView::suspend_agent_work_for_close`).
+        // (#848; see `TerminalView::suspend_agent_work_for_close`). Not for a pane that is
+        // itself still closed: `reattach_panes` (undoing a tab close) attaches every pane of the
+        // group, including one closed earlier inside it, which stays in the undo stack and
+        // hidden. `restore_closed_pane` unhides a pane before attaching it.
+        let is_still_closed = group.is_pane_hidden_for_close(terminal_pane_id.into());
         let views = self
             .view
             .as_ref(ctx)
@@ -223,8 +227,10 @@ impl PaneContent for TerminalPane {
             .iter()
             .map(|(_, view)| view.clone())
             .collect::<Vec<_>>();
-        for view in views {
-            view.update(ctx, |view, _| view.resume_after_close_undone());
+        if !is_still_closed {
+            for view in views {
+                view.update(ctx, |view, ctx| view.resume_after_close_undone(ctx));
+            }
         }
 
         // Attach the initial terminal view in the stack.

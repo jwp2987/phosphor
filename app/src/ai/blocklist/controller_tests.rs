@@ -688,3 +688,50 @@ fn reject_of_a_blocked_command_with_no_follow_up_unlocks_the_queued_row() {
         });
     });
 }
+
+/// #848: a controller whose pane is closed (suspended for undo-close) starts no request --
+/// `send_request_input` is the single place a request starts, so a resume (as here), an action
+/// follow-up, a flushed BYOP request and a passive suggestion are all refused there. Lifting the
+/// suspension restores normal sending, which shows the refusal is the guard and not the setup.
+#[test]
+fn suspended_controller_sends_no_request_until_lifted() {
+    use crate::features::FeatureFlag;
+
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
+        let terminal = add_window_with_terminal(&mut app, None);
+        let terminal_view_id = terminal.read(&app, |view, _| view.id());
+        let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
+        let conversation_id = BlocklistAIHistoryModel::handle(&app)
+            .update(&mut app, |history, ctx| {
+                history.start_new_conversation(terminal_view_id, false, false, ctx)
+            });
+
+        controller.update(&mut app, |controller, ctx| {
+            controller.set_suspended_for_close(true);
+            controller.resume_conversation(conversation_id, false, vec![], ctx);
+            assert!(!controller.has_active_stream_for_conversation(conversation_id, ctx));
+
+            // No auto-resume is armed either: it would fire after an undo.
+            controller.schedule_auto_resume_after_error(
+                conversation_id,
+                PendingResume::immediate(RecoveryBudget::fresh()),
+                ctx,
+            );
+            assert!(
+                !controller
+                    .pending_auto_resume_handles
+                    .contains_key(&conversation_id)
+            );
+
+            controller.set_suspended_for_close(false);
+            controller.resume_conversation(conversation_id, false, vec![], ctx);
+            assert!(controller.has_active_stream_for_conversation(conversation_id, ctx));
+        });
+    });
+}

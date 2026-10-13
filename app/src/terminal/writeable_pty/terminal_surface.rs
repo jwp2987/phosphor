@@ -44,6 +44,9 @@ pub enum PtyIntent {
     #[cfg(not(target_family = "wasm"))]
     Interrupt,
     ShutdownPty,
+    /// Drop any command still parked in the PTY controller's write queue (written by the
+    /// shell only once its line editor is ready), so it never runs (#848).
+    DiscardPendingCommandWrites,
     WriteBytes(Cow<'static, [u8]>),
     WriteAgentInput {
         bytes: Cow<'static, [u8]>,

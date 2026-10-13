@@ -533,6 +533,58 @@ fn test_detach_for_close_stops_the_agent_and_reattach_does_not_resume_it() {
     });
 }
 
+/// #848: undoing a tab close re-attaches every pane of the group (`reattach_panes`), including a
+/// pane closed earlier *inside* that tab, which is still closed and still in the undo stack.
+/// Only the panes that actually come back may lose their close suspension; the still-closed
+/// pane keeps it until it is itself restored.
+#[test]
+fn test_undoing_a_tab_close_keeps_a_pane_closed_inside_it_suspended() {
+    let _guard = FeatureFlag::UndoClosedPanes.override_enabled(true);
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            panes.add_terminal_pane(Direction::Right, None, ctx);
+            let kept = panes.pane_id_by_index(0).expect("pane 0 exists");
+            let closed = panes.pane_id_by_index(1).expect("pane 1 exists");
+            let kept_view = panes
+                .terminal_view_from_pane_id(kept, ctx)
+                .expect("terminal pane");
+            let closed_view = panes
+                .terminal_view_from_pane_id(closed, ctx)
+                .expect("terminal pane");
+
+            // Close one pane of the split (hidden for undo), then the whole tab.
+            panes.close_pane(closed, ctx);
+            assert!(panes.is_pane_hidden_for_close(closed));
+            assert!(closed_view.as_ref(ctx).is_suspended_for_close());
+            panes.detach_panes(ctx);
+            assert!(kept_view.as_ref(ctx).is_suspended_for_close());
+
+            // Undo the tab close.
+            panes.reattach_panes(ctx);
+            assert!(!kept_view.as_ref(ctx).is_suspended_for_close());
+            assert!(
+                closed_view.as_ref(ctx).is_suspended_for_close(),
+                "a pane still closed inside the restored tab must stay suspended"
+            );
+            assert!(
+                closed_view
+                    .as_ref(ctx)
+                    .ai_controller()
+                    .as_ref(ctx)
+                    .is_suspended_for_close()
+            );
+
+            // Undo the pane close too.
+            assert!(panes.restore_closed_pane(closed, ctx));
+            assert!(!closed_view.as_ref(ctx).is_suspended_for_close());
+        });
+    });
+}
+
 /// #848: moving a pane to another tab or window (`DetachType::Moved`) is not a close; its agent
 /// keeps running and its queue keeps draining.
 #[test]

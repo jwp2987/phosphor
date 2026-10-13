@@ -1687,6 +1687,8 @@ pub enum Event {
     },
     CtrlD,
     ShutdownPty,
+    /// Drop any command still waiting in the PTY controller's write queue (#848).
+    DiscardPendingCommandWrites,
     // TODO: break this event down into higher-level events that hide the
     // `bytes` detail from the view.
     WriteBytesToPty {
@@ -8372,14 +8374,17 @@ impl TerminalView {
                         || active_block.is_command_grid_active()
                         || active_block.is_active_and_long_running(),
                 ),
-                // Only a command the agent itself is running, and only while it is actually
-                // running: never the user's own command, and never the idle prompt (whose
-                // half-typed line a Ctrl-C would wipe).
+                // Only a command this conversation's agent requested and is still driving. Not
+                // the user's own command -- including one the user tagged the agent into
+                // (agent metadata, but no requested action) or took over from the agent --
+                // and not the idle prompt, which carries no agent metadata. No execution-state
+                // check: an agent command written to the shell before preexec must be
+                // interrupted too.
                 StopInterruptScope::AgentCommandOnly => (
-                    block_is_this_conversations,
-                    !active_block.is_command_grid_active()
-                        && (active_block.is_executing()
-                            || active_block.is_active_and_long_running()),
+                    block_is_this_conversations
+                        && active_block.is_agent_requested_command()
+                        && active_block.is_agent_driving_command(),
+                    true,
                 ),
             };
 
@@ -8392,6 +8397,11 @@ impl TerminalView {
         };
 
         if should_interrupt_active_command {
+            if interrupt_scope == StopInterruptScope::AgentCommandOnly {
+                // The agent's command may still be parked in the PTY write queue, waiting for
+                // the line editor; drop it so it never runs in the closed pane (#848).
+                ctx.emit(Event::DiscardPendingCommandWrites);
+            }
             self.user_write_ctrl_c_to_pty(ctx);
         }
 
@@ -8429,6 +8439,12 @@ impl TerminalView {
     /// which drops their queues (`QueuedQueryModel::handle_history_event`).
     pub(crate) fn suspend_agent_work_for_close(&mut self, ctx: &mut ViewContext<Self>) {
         self.suspended_for_close = true;
+        // The controller refuses every request from here on -- an action follow-up triggered
+        // by the cancellations below, a resume, a passive suggestion -- until the undo.
+        self.ai_controller.update(ctx, |controller, _| {
+            controller.set_suspended_for_close(true);
+        });
+        self.abort_prompt_and_code_suggestions(ctx);
 
         let running_conversation_ids: Vec<AIConversationId> = BlocklistAIHistoryModel::as_ref(ctx)
             .all_live_conversations_for_terminal_view(self.view_id)
@@ -8448,6 +8464,12 @@ impl TerminalView {
             .collect();
 
         for conversation_id in running_conversation_ids {
+            // Before the stop: with the batch's earlier results gone, the actions it cancels
+            // finish the batch as all-cancelled, and nothing stale rides along with the
+            // user's next prompt after an undo.
+            self.ai_controller.update(ctx, |controller, ctx| {
+                controller.discard_pending_work_for_close(conversation_id, ctx);
+            });
             self.stop_local_agent_conversation_with_interrupt_scope(
                 conversation_id,
                 StopInterruptScope::AgentCommandOnly,
@@ -8459,8 +8481,11 @@ impl TerminalView {
     /// Lifts [`Self::suspend_agent_work_for_close`]'s suspension when a closed pane is restored.
     /// Deliberately does not resume anything: the conversations stay cancelled and the queue
     /// waits for the user.
-    pub(crate) fn resume_after_close_undone(&mut self) {
+    pub(crate) fn resume_after_close_undone(&mut self, ctx: &mut ViewContext<Self>) {
         self.suspended_for_close = false;
+        self.ai_controller.update(ctx, |controller, _| {
+            controller.set_suspended_for_close(false);
+        });
     }
 
     /// Whether this view's pane is closed but still restorable; see
@@ -26437,6 +26462,7 @@ impl PtyIntentEvent for Event {
         match self {
             Event::CtrlD => Some(PtyIntent::CtrlD),
             Event::ShutdownPty => Some(PtyIntent::ShutdownPty),
+            Event::DiscardPendingCommandWrites => Some(PtyIntent::DiscardPendingCommandWrites),
             Event::WriteBytesToPty { bytes } => Some(PtyIntent::WriteBytes(bytes.clone())),
             Event::WriteAgentInputToPty { bytes, mode } => Some(PtyIntent::WriteAgentInput {
                 bytes: bytes.clone(),

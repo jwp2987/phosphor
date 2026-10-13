@@ -9219,7 +9219,7 @@ fn closing_the_pane_cancels_the_stream_and_suspends_the_queue_until_restored() {
         assert_eq!(queue_texts(&app), full_queue);
 
         // Undo the close: nothing resumes by itself.
-        terminal.update(&mut app, |view, _| view.resume_after_close_undone());
+        terminal.update(&mut app, |view, ctx| view.resume_after_close_undone(ctx));
         terminal.read(&app, |view, ctx| {
             assert!(!view.is_suspended_for_close());
             assert!(
@@ -9297,56 +9297,95 @@ fn start_running_conversation_for_close(
     })
 }
 
-/// Records every ETX (Ctrl-C) byte `terminal` writes to its PTY.
-fn count_etx_writes(app: &mut App, terminal: &ViewHandle<TerminalView>) -> Rc<RefCell<usize>> {
+/// Counts the ETX (Ctrl-C) writes and `DiscardPendingCommandWrites` requests `terminal` sends
+/// toward its PTY.
+fn count_close_pty_effects(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+) -> (Rc<RefCell<usize>>, Rc<RefCell<usize>>) {
     let etx = Rc::new(RefCell::new(0));
-    let etx_sub = etx.clone();
+    let discards = Rc::new(RefCell::new(0));
+    let (etx_sub, discards_sub) = (etx.clone(), discards.clone());
     app.update(|ctx| {
-        ctx.subscribe_to_view(terminal, move |_, event, _| {
-            if let Event::WriteBytesToPty { bytes } = event
-                && bytes.contains(&C0::ETX)
-            {
+        ctx.subscribe_to_view(terminal, move |_, event, _| match event {
+            Event::WriteBytesToPty { bytes } if bytes.contains(&C0::ETX) => {
                 *etx_sub.borrow_mut() += 1;
             }
+            Event::DiscardPendingCommandWrites => *discards_sub.borrow_mut() += 1,
+            _ => {}
         });
     });
-    etx
+    (etx, discards)
 }
 
-/// #848 review F2: closing a pane interrupts the agent's own running command...
-#[test]
-fn closing_the_pane_interrupts_the_agents_running_command() {
-    App::test((), |mut app| async move {
-        initialize_app_for_terminal_view(&mut app);
-        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
-        app.add_singleton_model(move |_| {
-            crate::GlobalResourceHandlesProvider::new(global_resource_handles.clone())
-        });
-        let terminal = add_window_with_terminal(&mut app, None);
-        let etx = count_etx_writes(&mut app, &terminal);
+fn register_global_resource_handles(app: &mut App) {
+    let global_resource_handles = crate::GlobalResourceHandles::mock(app);
+    app.add_singleton_model(move |_| {
+        crate::GlobalResourceHandlesProvider::new(global_resource_handles.clone())
+    });
+}
 
-        terminal.update(&mut app, |view, ctx| {
-            let conversation_id = start_running_conversation_for_close(view, ctx);
+/// Builds a close-test terminal whose running conversation's agent requested the active
+/// block's command. `executing` starts the command; otherwise the block is still at the
+/// prompt, i.e. the agent wrote the command but the shell has not reached preexec.
+fn terminal_with_agent_command(
+    app: &mut App,
+    executing: bool,
+) -> (ViewHandle<TerminalView>, AIConversationId) {
+    initialize_app_for_terminal_view(app);
+    register_global_resource_handles(app);
+    let terminal = add_window_with_terminal(app, None);
+    let conversation_id = terminal.update(app, |view, ctx| {
+        let conversation_id = start_running_conversation_for_close(view, ctx);
+        if executing {
             view.model
                 .lock()
                 .simulate_long_running_block("cargo build", "compiling");
-            view.model
-                .lock()
-                .block_list_mut()
-                .active_block_mut()
-                .set_agent_interaction_mode_for_requested_command(
-                    AIAgentActionId::from("requested-command".to_owned()),
-                    None,
-                    conversation_id,
-                );
+        }
+        view.model
+            .lock()
+            .block_list_mut()
+            .active_block_mut()
+            .set_agent_interaction_mode_for_requested_command(
+                AIAgentActionId::from("requested-command".to_owned()),
+                None,
+                conversation_id,
+            );
+        conversation_id
+    });
+    (terminal, conversation_id)
+}
 
-            view.suspend_agent_work_for_close(ctx);
-        });
+/// #848: closing a pane interrupts the command its agent is running...
+#[test]
+fn closing_the_pane_interrupts_the_agents_running_command() {
+    App::test((), |mut app| async move {
+        let (terminal, _) = terminal_with_agent_command(&mut app, true);
+        let (etx, discards) = count_close_pty_effects(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| view.suspend_agent_work_for_close(ctx));
+
         assert_eq!(
             *etx.borrow(),
             1,
             "the agent's command is interrupted on close"
         );
+        assert_eq!(*discards.borrow(), 1);
+    })
+}
+
+/// ...including one the agent wrote that the shell has not started yet (before preexec): the
+/// line is interrupted and a copy still parked in the PTY write queue is dropped.
+#[test]
+fn closing_the_pane_interrupts_an_agent_command_not_yet_started() {
+    App::test((), |mut app| async move {
+        let (terminal, _) = terminal_with_agent_command(&mut app, false);
+        let (etx, discards) = count_close_pty_effects(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| view.suspend_agent_work_for_close(ctx));
+
+        assert_eq!(*etx.borrow(), 1);
+        assert_eq!(*discards.borrow(), 1, "the parked command write is dropped");
     })
 }
 
@@ -9357,22 +9396,21 @@ fn closing_the_pane_interrupts_the_agents_running_command() {
 fn closing_the_pane_does_not_interrupt_the_users_own_command() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
-        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
-        app.add_singleton_model(move |_| {
-            crate::GlobalResourceHandlesProvider::new(global_resource_handles.clone())
-        });
+        register_global_resource_handles(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
-        let etx = count_etx_writes(&mut app, &terminal);
+        let (etx, discards) = count_close_pty_effects(&mut app, &terminal);
 
         let conversation_id = terminal.update(&mut app, |view, ctx| {
             let conversation_id = start_running_conversation_for_close(view, ctx);
             view.model
                 .lock()
                 .simulate_long_running_block("npm run dev", "listening on :3000");
-            view.suspend_agent_work_for_close(ctx);
             conversation_id
         });
+        terminal.update(&mut app, |view, ctx| view.suspend_agent_work_for_close(ctx));
+
         assert_eq!(*etx.borrow(), 0, "the user's own command keeps running");
+        assert_eq!(*discards.borrow(), 0);
         terminal.read(&app, |_, ctx| {
             assert_eq!(
                 BlocklistAIHistoryModel::as_ref(ctx)
@@ -9385,91 +9423,266 @@ fn closing_the_pane_does_not_interrupt_the_users_own_command() {
     })
 }
 
+/// ...nor a user command the user tagged the agent into: it carries the conversation's agent
+/// metadata, but the agent never requested it.
+#[test]
+fn closing_the_pane_does_not_interrupt_a_user_command_the_agent_was_tagged_into() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        register_global_resource_handles(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (etx, _) = count_close_pty_effects(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            let conversation_id = start_running_conversation_for_close(view, ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh build-box", "$ ");
+            let task_id = TaskId::new("tagged-in".to_owned());
+            view.model
+                .lock()
+                .block_list_mut()
+                .active_block_mut()
+                .set_agent_interaction_mode_for_agent_monitored_command(&task_id, conversation_id)
+                .expect("a user command can be tagged in");
+        });
+        terminal.update(&mut app, |view, ctx| view.suspend_agent_work_for_close(ctx));
+
+        assert_eq!(
+            *etx.borrow(),
+            0,
+            "the user's tagged-in command keeps running"
+        );
+    })
+}
+
 /// ...and never the idle prompt, where a Ctrl-C would wipe the user's half-typed line.
 #[test]
 fn closing_the_pane_does_not_interrupt_the_idle_prompt() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
-        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
-        app.add_singleton_model(move |_| {
-            crate::GlobalResourceHandlesProvider::new(global_resource_handles.clone())
-        });
+        register_global_resource_handles(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
-        let etx = count_etx_writes(&mut app, &terminal);
+        let (etx, _) = count_close_pty_effects(&mut app, &terminal);
 
         terminal.update(&mut app, |view, ctx| {
             start_running_conversation_for_close(view, ctx);
             view.input().update(ctx, |input, ctx| {
                 input.replace_buffer_content("git commit -m 'half typ", ctx);
             });
-            view.suspend_agent_work_for_close(ctx);
         });
+        terminal.update(&mut app, |view, ctx| view.suspend_agent_work_for_close(ctx));
+
         assert_eq!(*etx.borrow(), 0, "the prompt is left alone");
     })
 }
 
-/// #848 review F1: a long-running agent command the user took over (`Manual`) is not stopped
-/// by the close -- it is the user's command now, and its conversation is no longer running --
-/// but when it exits in the closed tab it must not auto-resume the conversation and send a
-/// request; nor is that resume owed once the tab is restored.
+/// Builds an agent-monitored long-running block for `conversation_id` that the user has taken
+/// over (`Manual`), i.e. one whose completion auto-resumes the conversation. Returns its id.
+fn manual_takeover_lrc_block(
+    view: &mut TerminalView,
+    conversation_id: AIConversationId,
+    command: &str,
+) -> BlockId {
+    view.model
+        .lock()
+        .simulate_long_running_block(command, "running");
+    let task_id = TaskId::new(format!("cli-subagent-{command}"));
+    let mut model = view.model.lock();
+    let active_block = model.block_list_mut().active_block_mut();
+    active_block.set_agent_interaction_mode_for_requested_command(
+        AIAgentActionId::from(format!("requested-{command}")),
+        Some(task_id.clone()),
+        conversation_id,
+    );
+    active_block
+        .set_agent_interaction_mode_for_agent_monitored_command(&task_id, conversation_id)
+        .expect("command should become agent monitored");
+    active_block
+        .take_over_control_for_user(UserTakeOverReason::Manual)
+        .expect("user takeover should succeed");
+    active_block.id().clone()
+}
+
+/// #848: a long-running agent command the user took over (`Manual`) is not stopped by the
+/// close -- it is the user's command now, and its conversation is no longer running -- but when
+/// it exits in the closed tab it must not auto-resume the conversation and send a request; nor
+/// is that resume owed once the tab is restored. Once restored, the same kind of completion
+/// resumes again, which shows the first assertion is not vacuous.
 #[test]
 fn completed_user_controlled_lrc_does_not_resume_in_a_closed_pane() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
-        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
-        app.add_singleton_model(|_| {
-            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
-        });
+        register_global_resource_handles(&mut app);
 
         let terminal = add_window_with_terminal(&mut app, None);
-        terminal.update(&mut app, |view, ctx| {
+        let has_stream = |app: &App, conversation_id: AIConversationId| {
+            terminal.read(app, |view, ctx| {
+                view.ai_controller
+                    .as_ref(ctx)
+                    .has_active_stream_for_conversation(conversation_id, ctx)
+            })
+        };
+
+        let (conversation_id, block_id) = terminal.update(&mut app, |view, ctx| {
             let conversation_id = BlocklistAIHistoryModel::handle(ctx)
                 .update(ctx, |history, ctx| {
                     history.start_new_conversation(view.view_id, false, false, ctx)
                 });
+            let block_id = manual_takeover_lrc_block(view, conversation_id, "sleep 20");
+            (conversation_id, block_id)
+        });
 
-            view.model
-                .lock()
-                .simulate_long_running_block("sleep 20", "running");
-            let task_id = TaskId::new("test-cli-subagent".to_owned());
-            let block_id = {
-                let mut model = view.model.lock();
-                let active_block = model.block_list_mut().active_block_mut();
-                active_block.set_agent_interaction_mode_for_requested_command(
-                    AIAgentActionId::from("requested-command".to_owned()),
-                    Some(task_id.clone()),
-                    conversation_id,
-                );
-                active_block
-                    .set_agent_interaction_mode_for_agent_monitored_command(
-                        &task_id,
-                        conversation_id,
-                    )
-                    .expect("command should become agent monitored");
-                active_block
-                    .take_over_control_for_user(UserTakeOverReason::Manual)
-                    .expect("user takeover should succeed");
-                active_block.id().clone()
-            };
+        terminal.update(&mut app, |view, ctx| view.suspend_agent_work_for_close(ctx));
+        terminal.update(&mut app, |view, ctx| {
+            view.on_user_block_completed(&block_id, ctx)
+        });
+        assert!(
+            !has_stream(&app, conversation_id),
+            "a closed pane must not resume the conversation"
+        );
 
-            view.suspend_agent_work_for_close(ctx);
-            view.on_user_block_completed(&block_id, ctx);
-            assert!(
-                !view
-                    .ai_controller
-                    .as_ref(ctx)
-                    .has_active_stream_for_conversation(conversation_id, ctx),
-                "a closed pane must not resume the conversation"
+        terminal.update(&mut app, |view, ctx| view.resume_after_close_undone(ctx));
+        assert!(
+            !has_stream(&app, conversation_id),
+            "restoring the pane must not deliver the skipped resume"
+        );
+
+        // Control: in the restored pane, a completed take-over resumes as usual.
+        let second_block_id = terminal.update(&mut app, |view, _| {
+            view.model.lock().finish_block();
+            manual_takeover_lrc_block(view, conversation_id, "sleep 30")
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.on_user_block_completed(&second_block_id, ctx)
+        });
+        assert!(has_stream(&app, conversation_id));
+    })
+}
+
+/// #848 (blocker found in review): stopping a conversation mid-batch must not send a follow-up
+/// from the closed pane. Closing cancels the batch's still-pending action; every cancellation
+/// reaches the controller's `FinishedAction` subscriber, which sends the batch's results as a
+/// follow-up when any of them -- here the earlier, successful one -- should trigger a request.
+/// That request's auto-executable actions would then run in the closed pane's shell.
+#[test]
+fn closing_mid_batch_sends_no_follow_up_and_leaves_the_conversation_cancelled() {
+    use crate::ai::agent::{
+        AIAgentAction, AIAgentActionResult, AIAgentActionResultType, AIAgentActionType,
+        TransferShellCommandControlToUserResult,
+    };
+
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        register_global_resource_handles(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let sent_requests = Rc::new(RefCell::new(0));
+        let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
+        let sent_requests_sub = sent_requests.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&controller, move |_, event, _| {
+                if matches!(event, BlocklistAIControllerEvent::SentRequest { .. }) {
+                    *sent_requests_sub.borrow_mut() += 1;
+                }
+            });
+        });
+
+        let conversation_id = terminal.update(&mut app, |view, ctx| {
+            start_running_conversation_for_close(view, ctx)
+        });
+        let action_model = terminal.read(&app, |view, _| view.ai_action_model.clone());
+
+        // The batch: a command awaiting approval...
+        let blocked_action_id = AIAgentActionId::from("awaiting-approval".to_owned());
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model.queue_action_for_test(
+                AIAgentAction {
+                    id: blocked_action_id.clone(),
+                    task_id: TaskId::new("task".to_owned()),
+                    action: AIAgentActionType::RequestCommandOutput {
+                        command: "free -h".to_owned(),
+                        is_read_only: None,
+                        is_risky: None,
+                        rationale: None,
+                        uses_pager: None,
+                        wait_until_completion: true,
+                        citations: vec![],
+                    },
+                    requires_result: false,
+                },
+                conversation_id,
+                ctx,
             );
+        });
+        for _ in 0..64 {
+            let is_blocked = action_model.read(&app, |action_model, _| {
+                action_model
+                    .get_action_status(&blocked_action_id)
+                    .is_some_and(|status| status.is_blocked())
+            });
+            if is_blocked {
+                break;
+            }
+            futures_lite::future::yield_now().await;
+        }
+        // ...behind an earlier action that already succeeded.
+        action_model.update(&mut app, |action_model, _| {
+            assert!(
+                action_model
+                    .get_action_status(&blocked_action_id)
+                    .is_some_and(|status| status.is_blocked()),
+                "precondition: the command is blocked on approval"
+            );
+            action_model.push_finished_action_result_for_test(
+                conversation_id,
+                AIAgentActionResult {
+                    id: AIAgentActionId::from("already-ran".to_owned()),
+                    task_id: TaskId::new("task".to_owned()),
+                    result: AIAgentActionResultType::TransferShellCommandControlToUser(
+                        TransferShellCommandControlToUserResult::Snapshot {
+                            block_id: BlockId::default(),
+                            grid_contents: "done".to_owned(),
+                            cursor: "<|cursor|>".to_owned(),
+                            is_alt_screen_active: false,
+                            is_preempted: false,
+                        },
+                    ),
+                },
+            );
+        });
 
-            view.resume_after_close_undone();
+        terminal.update(&mut app, |view, ctx| view.suspend_agent_work_for_close(ctx));
+        // Let every subscriber of the cancellations run.
+        for _ in 0..16 {
+            futures_lite::future::yield_now().await;
+        }
+
+        assert_eq!(
+            *sent_requests.borrow(),
+            0,
+            "no follow-up from a closed pane"
+        );
+        terminal.read(&app, |view, ctx| {
             assert!(
                 !view
-                    .ai_controller
+                    .ai_controller()
                     .as_ref(ctx)
-                    .has_active_stream_for_conversation(conversation_id, ctx),
-                "restoring the pane must not resume it either"
+                    .has_active_stream_for_conversation(conversation_id, ctx)
+            );
+            assert_eq!(
+                BlocklistAIHistoryModel::as_ref(ctx)
+                    .conversation(&conversation_id)
+                    .map(|c| c.status().clone()),
+                Some(ConversationStatus::Cancelled)
+            );
+            assert!(
+                view.ai_action_model
+                    .as_ref(ctx)
+                    .get_finished_action_results(conversation_id)
+                    .is_none_or(|results| results.is_empty()),
+                "the batch's earlier results must not ride along with the next prompt"
             );
         });
     })
