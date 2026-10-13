@@ -38,6 +38,13 @@ fn generated_worktree_path_string(repo: &str, worktree_name: &str) -> String {
         .to_string()
 }
 
+/// The generated worktree path for `repo`/`branch`, as the one shell word commands receive.
+fn expected_path_word(repo: &str, branch: &str) -> String {
+    portable_shell_word(&generated_worktree_path_string(repo, branch))
+        .expect("test paths are portable")
+        .into_owned()
+}
+
 fn build_test_tab_config_toml(name: &str, commands: Vec<String>) -> String {
     let config = TabConfig {
         name: name.to_string(),
@@ -794,7 +801,8 @@ fn test_worktree_custom_commands_with_template() {
 #[test]
 fn test_build_worktree_toml_autogenerate_round_trips() {
     let toml_str =
-        build_worktree_config_toml("Worktree: my-project", "/Users/me/repo", "main", None);
+        build_worktree_config_toml("Worktree: my-project", "/Users/me/repo", "main", None)
+            .expect("plain names are accepted");
     let config: TabConfig = toml::from_str(&toml_str).expect("Generated TOML should parse");
 
     assert_eq!(config.name, "Worktree: my-project");
@@ -814,15 +822,15 @@ fn test_build_worktree_toml_autogenerate_round_trips() {
         assert_eq!(
             commands[0].exec,
             format!(
-                "git worktree add -b obsidian-hawk \"{}\" main",
-                generated_worktree_path_string("/Users/me/repo", "obsidian-hawk")
+                "git worktree add -b obsidian-hawk -- {} main",
+                expected_path_word("/Users/me/repo", "obsidian-hawk")
             )
         );
         assert_eq!(
             commands[1].exec,
             format!(
-                "cd \"{}\"",
-                generated_worktree_path_string("/Users/me/repo", "obsidian-hawk")
+                "cd {}",
+                expected_path_word("/Users/me/repo", "obsidian-hawk")
             )
         );
     } else {
@@ -837,7 +845,8 @@ fn test_build_worktree_toml_manual_round_trips() {
         "/Users/me/repo",
         "main",
         Some("my-feature"),
-    );
+    )
+    .expect("plain names are accepted");
     let config: TabConfig = toml::from_str(&toml_str).expect("Generated TOML should parse");
 
     assert_eq!(config.name, "Worktree: my-project");
@@ -864,16 +873,13 @@ fn test_build_worktree_toml_manual_round_trips() {
         assert_eq!(
             commands[0].exec,
             format!(
-                "git worktree add -b my-feature \"{}\" main",
-                generated_worktree_path_string("/Users/me/repo", "my-feature")
+                "git worktree add -b my-feature -- {} main",
+                expected_path_word("/Users/me/repo", "my-feature")
             )
         );
         assert_eq!(
             commands[1].exec,
-            format!(
-                "cd \"{}\"",
-                generated_worktree_path_string("/Users/me/repo", "my-feature")
-            )
+            format!("cd {}", expected_path_word("/Users/me/repo", "my-feature"))
         );
     } else {
         panic!("Expected PaneTemplate");
@@ -903,4 +909,278 @@ directory = "~/a"
     } else {
         panic!("Expected fallback PaneTemplate");
     }
+}
+
+// ── #878: values interpolated into worktree commands ───────────────
+
+/// Values that reach tab config commands, with the word [`portable_shell_word`] writes for
+/// each (`None`: no spelling every shell reads alike, so the command must not run).
+///
+/// Every `Some` spelling was checked in real shells (bash 5.3, zsh 5.9, fish 4.2):
+/// `printf '%s' WORD` reproduced the value byte for byte and nothing was executed.
+const PORTABLE_WORDS: &[(&str, Option<&str>)] = &[
+    ("main", Some("main")),
+    ("feat/x-1.2", Some("feat/x-1.2")),
+    ("/home/me/repo", Some("/home/me/repo")),
+    ("_tmp:1", Some("_tmp:1")),
+    ("", Some("''")),
+    ("my feature", Some("'my feature'")),
+    // A leading `-` would be a PowerShell parameter name, a leading digit a number literal.
+    ("-x", Some("'-x'")),
+    ("1kb", Some("'1kb'")),
+    ("$(touch pwned)", Some("'$(touch pwned)'")),
+    ("`touch pwned`", Some("'`touch pwned`'")),
+    ("a;touch pwned", Some("'a;touch pwned'")),
+    ("$(id)", Some("'$(id)'")),
+    ("a\"b", Some("'a\"b'")),
+    ("a!b", Some("'a!b'")),
+    ("{{worktree_path}}", Some("'{{worktree_path}}'")),
+    ("C:\\Users\\me\\repo", Some("'C:\\Users\\me\\repo'")),
+    // A `'` (or a typographic one, which PowerShell also closes on) needs double quotes...
+    ("it's", Some("\"it's\"")),
+    ("it\u{2019}s", Some("\"it\u{2019}s\"")),
+    // ...which cannot hold `$`, `` ` ``, `"`, `\` or `!` portably.
+    ("it's $(id)", None),
+    ("a'`id`", None),
+    ("a'\"b", None),
+    ("a'!b", None),
+    // fish reads `\\` and `\'` as escapes even inside single quotes.
+    ("a\\\\b", None),
+    ("trail\\", None),
+    // Control characters would reach the PTY raw (#867).
+    ("a\rexit", None),
+    ("a\nb", None),
+    ("a\u{1b}[2J", None),
+    ("a\u{7f}", None),
+    ("a\u{2028}b", None),
+];
+
+#[test]
+fn test_portable_shell_word_spellings() {
+    for &(value, expected) in PORTABLE_WORDS {
+        assert_eq!(
+            portable_shell_word(value).as_deref(),
+            expected,
+            "spelling of {value:?}"
+        );
+    }
+}
+
+/// Repository directory names that were shell syntax inside the old `cd "<path>"`.
+const HOSTILE_REPO_NAMES: &[&str] = &[
+    "$(touch pwned)",
+    "`touch pwned`",
+    "a\"; touch pwned; echo \"",
+    "it's",
+    "a;touch pwned",
+];
+
+fn render_commands(
+    config: &TabConfig,
+    params: &HashMap<String, String>,
+    autogenerated: Option<&str>,
+) -> Vec<String> {
+    match render_tab_config(config, params, autogenerated).1 {
+        PaneTemplateType::PaneTemplate { commands, .. } => {
+            commands.into_iter().map(|command| command.exec).collect()
+        }
+        PaneTemplateType::PaneBranchTemplate { .. } => panic!("Expected PaneTemplate"),
+    }
+}
+
+#[test]
+fn test_hostile_repo_name_is_quoted_as_part_of_one_path_word() {
+    for name in HOSTILE_REPO_NAMES {
+        let repo = format!("/Users/me/{name}");
+        for manual in [None, Some("my-feature")] {
+            let toml_str = build_worktree_config_toml("Worktree", &repo, "main", manual)
+                .expect("a hostile repo name is quoted, not refused");
+            assert!(
+                !toml_str.contains(&format!("{name}/")),
+                "the repo name must not be baked into a command: {toml_str}"
+            );
+            let config: TabConfig = toml::from_str(&toml_str).expect("Generated TOML parses");
+            let (params, autogenerated, branch) = match manual {
+                Some(branch) => (
+                    HashMap::from([("worktree_branch_name".to_string(), branch.to_string())]),
+                    None,
+                    branch,
+                ),
+                None => (HashMap::new(), Some("mesa-coyote"), "mesa-coyote"),
+            };
+            let path_word = expected_path_word(&repo, branch);
+            assert!(
+                path_word.starts_with('\'') || path_word.starts_with('"'),
+                "{name:?} must be quoted: {path_word}"
+            );
+            assert_eq!(
+                render_commands(&config, &params, autogenerated),
+                [
+                    format!("git worktree add -b {branch} -- {path_word} main"),
+                    format!("cd {path_word}"),
+                ],
+                "repo {name:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_session_config_hostile_repo_name_is_quoted() {
+    use super::super::session_config::{SessionType, build_tab_config};
+    for name in HOSTILE_REPO_NAMES {
+        let repo = format!("/home/user/{name}");
+        let config = build_tab_config(&SessionType::Terminal, Path::new(&repo), true, true);
+        let path_word = expected_path_word(&repo, "mesa-coyote");
+        assert_eq!(
+            render_commands(&config, &HashMap::new(), Some("mesa-coyote")),
+            [
+                format!("git worktree add -b mesa-coyote -- {path_word}"),
+                format!("cd {path_word}"),
+            ],
+            "repo {name:?}"
+        );
+    }
+}
+
+#[test]
+fn test_hostile_branch_names_are_single_words() {
+    // Base branches: git refnames may contain all of these except the control character.
+    for (base, word) in [
+        ("a;touch pwned", "'a;touch pwned'"),
+        ("$(id)", "'$(id)'"),
+        ("`id`", "'`id`'"),
+        // After `--`, a leading `-` is a positional argument, not a git option.
+        ("-x", "'-x'"),
+    ] {
+        let toml_str = build_worktree_config_toml("Worktree", "/Users/me/repo", base, None)
+            .expect("quotable base branches are accepted");
+        let config: TabConfig = toml::from_str(&toml_str).expect("Generated TOML parses");
+        assert_eq!(
+            render_commands(&config, &HashMap::new(), Some("mesa-coyote"))[0],
+            format!(
+                "git worktree add -b mesa-coyote -- {} {word}",
+                expected_path_word("/Users/me/repo", "mesa-coyote")
+            ),
+            "base {base:?}"
+        );
+    }
+
+    // A manually named branch is quoted both as `-b`'s value and inside the path word.
+    let toml_str =
+        build_worktree_config_toml("Worktree", "/Users/me/repo", "main", Some("x")).unwrap();
+    let config: TabConfig = toml::from_str(&toml_str).unwrap();
+    for (branch, word) in [("$(id)", "'$(id)'"), ("a;touch pwned", "'a;touch pwned'")] {
+        let params = HashMap::from([("worktree_branch_name".to_string(), branch.to_string())]);
+        let path_word = expected_path_word("/Users/me/repo", branch);
+        assert!(path_word.starts_with('\''), "{path_word}");
+        assert_eq!(
+            render_commands(&config, &params, None),
+            [
+                format!("git worktree add -b {word} -- {path_word} main"),
+                format!("cd {path_word}"),
+            ],
+            "branch {branch:?}"
+        );
+    }
+}
+
+#[test]
+fn test_unquotable_base_branch_is_refused() {
+    for base in [
+        "it's $(id)",
+        "a'`id`",
+        "{{worktree_branch_name}}",
+        "a}}b",
+        "a\rb",
+    ] {
+        assert!(
+            build_worktree_config_toml("Worktree", "/Users/me/repo", base, None).is_err(),
+            "base {base:?} must be refused"
+        );
+    }
+    // No base branch: git uses HEAD, and no empty word is passed.
+    let toml_str = build_worktree_config_toml("Worktree", "/Users/me/repo", "", None).unwrap();
+    let config: TabConfig = toml::from_str(&toml_str).unwrap();
+    assert_eq!(
+        render_commands(&config, &HashMap::new(), Some("mesa-coyote"))[0],
+        format!(
+            "git worktree add -b mesa-coyote -- {}",
+            expected_path_word("/Users/me/repo", "mesa-coyote")
+        )
+    );
+}
+
+#[test]
+fn test_unquotable_value_runs_no_commands() {
+    // A control character in a repo name or param has no portable spelling: the render falls
+    // back to an empty terminal instead of typing anything.
+    let repo = "/Users/me/a\rtouch pwned";
+    let toml_str = build_worktree_config_toml("Worktree", repo, "main", None).unwrap();
+    let config: TabConfig = toml::from_str(&toml_str).unwrap();
+    assert!(render_commands(&config, &HashMap::new(), Some("mesa-coyote")).is_empty());
+
+    let config: TabConfig = toml::from_str(WORKTREE_TOML).unwrap();
+    let params = HashMap::from([
+        ("repo".to_string(), "/Users/me/repo".to_string()),
+        ("branch".to_string(), "main".to_string()),
+        (
+            "worktree_branch_name".to_string(),
+            "x'$(touch pwned)".to_string(),
+        ),
+    ]);
+    assert!(render_commands(&config, &params, None).is_empty());
+}
+
+#[test]
+fn test_legacy_generated_worktree_path_is_requoted() {
+    // Configs saved before #878 baked `"<worktrees dir>/<repo>/{{branch}}"` into commands.
+    for name in HOSTILE_REPO_NAMES {
+        let repo = format!("/Users/me/{name}");
+        for branch_var in ["autogenerated_branch_name", "worktree_branch_name"] {
+            let legacy_path =
+                generated_worktree_path_string(&repo, &format!("{{{{{branch_var}}}}}"));
+            let mut config: TabConfig = toml::from_str(&build_test_tab_config_toml(
+                "Legacy",
+                vec![
+                    format!("git worktree add -b {{{{{branch_var}}}}} \"{legacy_path}\" main"),
+                    format!("cd \"{legacy_path}\""),
+                ],
+            ))
+            .unwrap();
+            config.panes[0].directory = Some(repo.clone());
+            let (params, autogenerated) = if branch_var == "worktree_branch_name" {
+                (
+                    HashMap::from([(branch_var.to_string(), "my-feature".to_string())]),
+                    None,
+                )
+            } else {
+                (HashMap::new(), Some("my-feature"))
+            };
+            let path_word = expected_path_word(&repo, "my-feature");
+            assert_eq!(
+                render_commands(&config, &params, autogenerated),
+                [
+                    format!("git worktree add -b my-feature {path_word} main"),
+                    format!("cd {path_word}"),
+                ],
+                "repo {name:?}, {branch_var}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_worktree_path_param_overrides_builtin() {
+    let mut config: TabConfig = toml::from_str(&build_test_tab_config_toml(
+        "Custom",
+        vec!["cd {{worktree_path}}".to_string()],
+    ))
+    .unwrap();
+    config.panes[0].directory = Some("/Users/me/repo".to_string());
+    let params = HashMap::from([("worktree_path".to_string(), "/tmp/my wt".to_string())]);
+    assert_eq!(
+        render_commands(&config, &params, Some("mesa-coyote")),
+        ["cd '/tmp/my wt'"]
+    );
 }

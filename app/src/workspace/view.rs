@@ -10052,12 +10052,24 @@ impl Workspace {
             warp_util::worktree_names::generate_worktree_branch_name(&branch_refs)
         };
 
-        let toml_content = crate::tab_configs::build_worktree_config_toml(
+        let toml_content = match crate::tab_configs::build_worktree_config_toml(
             &config_name,
             repo,
             base_branch,
             worktree_branch_name,
-        );
+        ) {
+            Ok(toml_content) => toml_content,
+            Err(e) => {
+                log::warn!("Not creating worktree tab config: {e}");
+                self.toast_stack.update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_ephemeral_toast(
+                        DismissibleToast::error(format!("Can't create worktree config: {e}")),
+                        ctx,
+                    );
+                });
+                return;
+            }
+        };
 
         let dir = tab_configs_dir();
         if let Err(e) = std::fs::create_dir_all(&dir) {
