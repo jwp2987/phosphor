@@ -1532,3 +1532,37 @@ upstream's behavior is actually a defect rather than a preference.
   (real bash in a pty); through the app by `test_bash_bootstraps_with_nounset_option` and
   `test_bash_bootstraps_with_nounset_in_rcfile`; the guards by
   `test_init_subshell_command_guard_is_nounset_safe_for_bash_and_zsh_only`. <!-- markers: keep:test_bash_bootstraps_with_nounset_option keep:test_bash_bootstraps_with_nounset_in_rcfile keep:test_init_subshell_command_guard_is_nounset_safe_for_bash_and_zsh_only -->
+
+- **Replacing the shell's prompt-hook list at the prompt no longer leaves a block running
+  forever** (`#807` bash, 2026-10-11, `app/assets/bundled/bootstrap/bash.sh`; `#828` zsh,
+  2026-10-13, `app/assets/bundled/bootstrap/zsh_body.sh`). **Upstream:** bash's precmd hook
+  lives only in `PROMPT_COMMAND` and zsh's in `precmd_functions`/`preexec_functions`
+  (`4111d08f9:app/assets/bundled/bootstrap/zsh_body.sh:1344`); nothing ever checks they are
+  still there. The pin has no repair in `__bp_preexec_invoke_exec`
+  (`4111d08f9:app/assets/bundled/bootstrap/bash.sh:224`), no `zle-line-init` handling, and a
+  bare `_warp_zshaddhistory` that only filters generator commands. **The defect:**
+  `PROMPT_COMMAND='echo pc'`, `precmd_functions=(myp)` or `precmd_functions=();
+  preexec_functions=()` drops the hook after the command's Preexec was already sent, so
+  CommandFinished never arrives: the block keeps its running timer forever, the input
+  editor never returns, and every later command runs raw inside that one block. **We do:**
+  put the hooks back (keeping the user's own entries) and emit the precmd that was skipped,
+  exactly once, with the status of the command that ran. The two shells now differ in
+  *mechanism*, deliberately: bash repairs from its DEBUG trap (`__bp_reinstall_prompt_command`),
+  which still fires for the user's new `PROMPT_COMMAND`; zsh repairs from a `zle-line-init`
+  widget (`_warp_zle_line_init`, chained in front of any widget the user's rc files
+  installed) at the very next prompt, with `_warp_zshaddhistory` as the fallback on the next
+  accepted line, and a `_WARP_PRECMD_PENDING` flag keeping the emission to one. In zsh the
+  lifecycle hooks (`warp_precmd`, `warp_update_prompt_vars`, `warp_preexec`) are treated as
+  not user-removable; the title hooks stay removable. **Known limit:** a `zle-line-init`
+  wrapper installed after bootstrap (p10k's init, zsh-vi-mode, zinit turbo, zsh-defer --
+  the rc files are sourced inside bootstrap, so these land later) runs before ours; on a
+  cycle that needs the repair the block still finishes exactly once, but may report the
+  wrapper's status instead of the command's (0 under `add-zle-hook-widget`, 1 under p10k's
+  `_p9k_widget` pattern). fish is not affected: its hooks are `--on-event` handlers on
+  Warp-named functions, not a list the user replaces. **Protection:** the repair lives only in
+  shell scripts, which neither `script/check_declined_collisions` (it greps `*.rs`) nor
+  `script/generate_repin_queue` (it diffs test-bearing files only) looks at. So
+  `bootstrap_test.rs::test_bootstrap_scripts_repair_a_replaced_prompt_hook` asserts the bundled
+  scripts still define and register these functions -- a re-pin that takes upstream's scripts
+  wholesale fails it -- and the `keep:` markers below hold the test and its names in place.
+  <!-- markers: keep:test_bootstrap_scripts_repair_a_replaced_prompt_hook keep:_warp_repair_hooks keep:_warp_zle_line_init keep:__bp_reinstall_prompt_command -->
