@@ -651,7 +651,11 @@ impl KeybindingsView {
 
             // Persist the keybinding into the `.warp` directory so that it will last beyond
             // this session
-            write_custom_keybinding(row.binding.name.clone(), UserDefinedKeybinding::Removed);
+            write_custom_keybinding(
+                row.binding.name.clone(),
+                UserDefinedKeybinding::Removed,
+                ctx,
+            );
             update_binding_list(&row.binding.name, None, &mut self.bindings);
             row.binding.trigger = None;
 

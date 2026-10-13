@@ -64,14 +64,17 @@ fn unknown_keys_lists_every_key_when_there_are_several() {
 fn invalid_settings_copy_is_unchanged() {
     // Guards the split itself: adding `UnknownKeys` must not have moved the
     // pre-existing variant's wording, which the workspace banner and the
-    // settings-page footer both render.
+    // settings-page footer both render. The wording was changed deliberately
+    // once, by #857: a rejected value is not always replaced by the default
+    // (opacity 0 runs at 1, blur 200 at 64), so "the default value is being
+    // used" was not always true.
     let (heading, description) =
         SettingsFileError::InvalidSettings(vec!["Theme".to_owned()]).heading_and_description();
 
     assert_eq!(heading, "Your settings file contains an error.");
     assert_eq!(
         description,
-        "Invalid value for 'Theme'. The default value is being used."
+        "Invalid value for 'Theme'. A valid value is being used instead."
     );
 }
 

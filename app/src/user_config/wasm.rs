@@ -12,6 +12,7 @@ impl super::WarpConfig {
             launch_configs: Default::default(),
             tab_configs: Default::default(),
             tab_config_errors: Default::default(),
+            keybindings_file_error: None,
             theme_config: WarpThemeConfig::new(),
             local_user_workflows: Default::default(),
         }

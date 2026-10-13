@@ -348,6 +348,14 @@ pub trait Setting {
     /// return the provided value.  If not, it is up to the implementation
     /// whether the current value of the setting is returned or whether some
     /// other value is returned.
+    ///
+    /// **Return `new_value` unchanged for every value you accept.** Any value
+    /// this changes is reported to the user as invalid in the settings-errors
+    /// banner (the manager's `valid_fn` compares the stored value with the
+    /// validated one, #857). A *normalising* validator -- rounding, trimming,
+    /// canonicalising case -- would therefore flag perfectly good values as
+    /// errors. Normalise at the point of use instead, or accept the value
+    /// as written.
     fn validate(&self, new_value: Self::Value) -> Self::Value {
         new_value
     }

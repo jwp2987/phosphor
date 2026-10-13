@@ -37,22 +37,31 @@ const KEYBINDINGS_FILE_NAME: &str = "keybindings.yaml";
 /// Load all stored custom keybindings into the UI framework so that they are used
 #[cfg(not(test))]
 pub fn load_custom_keybindings(app: &mut AppContext) {
-    if let Some(keybindings) = read_custom_keybindings() {
-        for (name, trigger) in keybindings.0 {
-            let keybinding_type = UserDefinedKeybinding::try_from(trigger.clone());
+    let keybindings = match read_keybindings_file(&keybinding_file_path()) {
+        KeybindingsFile::Missing => return,
+        KeybindingsFile::Parsed(keybindings) => keybindings,
+        KeybindingsFile::Invalid(reason) => {
+            // Previously indistinguishable from "no file": nothing told the
+            // user their bindings were not in effect, and the next keybinding
+            // change rewrote the file without them (#858).
+            report_invalid_keybindings_file(&reason, app);
+            return;
+        }
+    };
+    for (name, trigger) in keybindings.0 {
+        let keybinding_type = UserDefinedKeybinding::try_from(trigger.clone());
 
-            match keybinding_type {
-                Ok(UserDefinedKeybinding::Removed) => {
-                    app.set_custom_trigger(name, Trigger::Empty);
-                }
-                Ok(UserDefinedKeybinding::Keystrokes(keystrokes)) => {
-                    app.set_custom_trigger(name, Trigger::Keystrokes(keystrokes.to_vec()));
-                }
-                Err(e) => {
-                    log::warn!(
-                        "Tried to load an unparsable keybinding of {trigger:?} for action: {name}. error: {e}"
-                    );
-                }
+        match keybinding_type {
+            Ok(UserDefinedKeybinding::Removed) => {
+                app.set_custom_trigger(name, Trigger::Empty);
+            }
+            Ok(UserDefinedKeybinding::Keystrokes(keystrokes)) => {
+                app.set_custom_trigger(name, Trigger::Keystrokes(keystrokes.to_vec()));
+            }
+            Err(e) => {
+                log::warn!(
+                    "Tried to load an unparsable keybinding of {trigger:?} for action: {name}. error: {e}"
+                );
             }
         }
     }
@@ -62,23 +71,32 @@ pub fn load_custom_keybindings(app: &mut AppContext) {
 /// using the name of the editable binding and the new keystrokes
 /// if keystrokes is UserDefinedKeybinding::Removed
 /// we write a special value to disk to save that state
+///
+/// If the existing file cannot be read or parsed, nothing is written and the
+/// error is reported: the change still applies for this session, but the
+/// user's file is never replaced by one that has lost their bindings (#858).
 #[cfg(not(test))]
-pub fn write_custom_keybinding(name: String, keybinding: UserDefinedKeybinding) {
+pub fn write_custom_keybinding(
+    name: String,
+    keybinding: UserDefinedKeybinding,
+    ctx: &mut AppContext,
+) {
     // In tests, we don't want to write the actual keybindings file, since that could clobber the
     // user's current settings, so we no-op
     if var_os(DISABLE_SAVE_ENV_VAR).is_some() {
         return;
     }
 
-    let mut map = read_custom_keybindings().unwrap_or_default();
-
-    map.0.insert(name, keybinding.into());
-    save_custom_keybindings(map);
+    persist_keybindings_change(ctx, move |map| {
+        map.0.insert(name, keybinding.into());
+    });
 }
 
 /// Remove a custom keybinding from disk.
+///
+/// Like [`write_custom_keybinding`], refuses to touch a file it cannot parse.
 #[cfg(not(test))]
-pub fn remove_custom_keybinding<N>(name: N)
+pub fn remove_custom_keybinding<N>(name: N, ctx: &mut AppContext)
 where
     N: AsRef<str>,
 {
@@ -88,10 +106,52 @@ where
         return;
     }
 
-    let mut map = read_custom_keybindings().unwrap_or_default();
+    let name = name.as_ref().to_owned();
+    persist_keybindings_change(ctx, move |map| {
+        map.0.remove(&name);
+    });
+}
 
-    map.0.remove(name.as_ref());
-    save_custom_keybindings(map);
+#[cfg(not(test))]
+fn persist_keybindings_change(ctx: &mut AppContext, change: impl FnOnce(&mut CustomKeybindings)) {
+    cfg_if::cfg_if! {
+        if #[cfg(feature = "local_fs")] {
+            match update_keybindings_file(&keybinding_file_path(), change) {
+                Ok(()) => {
+                    // The file parsed, so it has been fixed since an earlier
+                    // failure: windows opened from now on need no warning.
+                    use warpui::SingletonEntity as _;
+                    crate::user_config::WarpConfig::handle(ctx).update(ctx, |config, _| {
+                        config.record_keybindings_file_error_quietly(None);
+                    });
+                }
+                Err(KeybindingsWriteError::ExistingFileInvalid(reason)) => {
+                    report_invalid_keybindings_file(&reason, ctx);
+                }
+                Err(KeybindingsWriteError::Io(e)) => {
+                    log::warn!("Unable to store custom keybindings: {e:#}");
+                }
+            }
+        } else {
+            let _ = (ctx, change);
+            log::warn!("TODO(wasm): need to implement keybindings support");
+        }
+    }
+}
+
+/// Logs and surfaces (as a toast in every workspace) that `keybindings.yaml`
+/// could not be used.
+#[cfg(not(test))]
+fn report_invalid_keybindings_file(reason: &str, ctx: &mut AppContext) {
+    use warpui::SingletonEntity as _;
+
+    log::warn!(
+        "Custom keybindings in {} are not in effect and the file will not be modified until it is fixed: {reason}",
+        keybinding_file_path().display()
+    );
+    crate::user_config::WarpConfig::handle(ctx).update(ctx, |config, ctx| {
+        config.set_keybindings_file_error(reason.to_owned(), ctx);
+    });
 }
 
 /// Ungated, matching the pinned oracle (`02b53fcd8`): only the *disk-touching*
@@ -102,46 +162,112 @@ pub fn keybinding_file_path() -> std::path::PathBuf {
     warp_core::paths::config_local_dir().join(KEYBINDINGS_FILE_NAME)
 }
 
-/// Save the custom keybindings map to disk.
-#[cfg(not(test))]
-// Allow unused variables when no local filesystem exists as the arg is unused.
-#[cfg_attr(not(feature = "local_fs"), allow(unused_variables))]
-fn save_custom_keybindings(map: CustomKeybindings) {
-    cfg_if::cfg_if! {
-        if #[cfg(feature = "local_fs")] {
-            let file = match crate::util::file::create_file(keybinding_file_path()) {
-                Ok(f) => f,
-                Err(e) => {
-                    log::warn!("Unable to open file for storing custom keybindings: {e}");
-                    return;
-                }
-            };
-            let writer = std::io::BufWriter::new(file);
+/// The state of a keybindings file on disk.
+// `Invalid`'s reason is read only by the non-test reporting path.
+#[cfg_attr(test, allow(dead_code))]
+enum KeybindingsFile {
+    /// There is no file: nothing is customized yet.
+    Missing,
+    Parsed(CustomKeybindings),
+    /// The file exists but could not be read or parsed. Holds a description
+    /// of why. Must never be treated like [`Self::Missing`]: writing a fresh
+    /// map over it would destroy every binding the user had (#858).
+    Invalid(String),
+}
 
-            if let Err(e) = serde_yaml::to_writer(writer, &map) {
-                log::warn!("Unable to serialize custom keybindings to file: {e}");
-            }
-        } else {
-            log::warn!("TODO(wasm): need to implement keybindings support");
-        }
+#[derive(Debug)]
+// The payloads are read only by the non-test, `local_fs` reporting path.
+#[cfg_attr(any(test, not(feature = "local_fs")), allow(dead_code))]
+enum KeybindingsWriteError {
+    /// The existing file is unreadable or unparsable, so it was left alone.
+    ExistingFileInvalid(String),
+    Io(anyhow::Error),
+}
+
+/// Reads the keybindings file at `path`.
+fn read_keybindings_file(path: &std::path::Path) -> KeybindingsFile {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return KeybindingsFile::Missing,
+        Err(e) => return KeybindingsFile::Invalid(format!("could not be read: {e}")),
+    };
+    // Editors on Windows commonly save UTF-8 with a byte-order mark; it is
+    // not part of the YAML and must not make an otherwise valid (or empty)
+    // file read as broken.
+    let contents = contents.strip_prefix('\u{feff}').unwrap_or(&contents);
+    // An empty (or comment-only) file means "no customizations". serde_yaml
+    // does not deserialize an empty document into a map, so without this an
+    // empty file would be reported as broken (before #858 it was silently
+    // treated as missing, which was right for this case only).
+    // `---` and `...` are YAML document start/end markers.
+    if contents.lines().all(|line| {
+        let line = line.trim();
+        line.is_empty() || line.starts_with('#') || line == "---" || line == "..."
+    }) {
+        return KeybindingsFile::Parsed(CustomKeybindings::default());
+    }
+    match serde_yaml::from_str(contents) {
+        Ok(map) => KeybindingsFile::Parsed(map),
+        Err(e) => KeybindingsFile::Invalid(format!("could not be parsed: {e}")),
     }
 }
 
-/// Read the stored custom keybindings from disk into a map of Editable Binding Name -> Trigger
-///
-/// Returns `None` if the file can't be read or the deserialization fails
-#[cfg(not(test))]
-fn read_custom_keybindings() -> Option<CustomKeybindings> {
-    let file = std::fs::File::open(keybinding_file_path()).ok()?;
-    let reader = std::io::BufReader::new(file);
-
-    match serde_yaml::from_reader(reader) {
-        Ok(map) => Some(map),
-        Err(e) => {
-            log::warn!("Unable to deserialize stored keybindings: {e}");
-            None
-        }
+/// The reason the keybindings file at `path` is unusable right now, or `None`
+/// if it is missing or parses.
+fn current_keybindings_file_error(path: &std::path::Path) -> Option<String> {
+    match read_keybindings_file(path) {
+        KeybindingsFile::Invalid(reason) => Some(reason),
+        KeybindingsFile::Missing | KeybindingsFile::Parsed(_) => None,
     }
+}
+
+/// Returns the keybindings-file error a new window should show, re-reading
+/// the file first when one was recorded: there is no watcher on
+/// keybindings.yaml, so a file the user fixed by hand would otherwise keep
+/// replaying a stale error in every window opened afterwards. Updates the
+/// recorded error (without re-announcing it) to match the file. Only reads
+/// the disk when an error was recorded.
+#[cfg(not(test))]
+pub fn recheck_keybindings_file_error(ctx: &mut AppContext) -> Option<String> {
+    use warpui::SingletonEntity as _;
+
+    let config = crate::user_config::WarpConfig::handle(ctx);
+    let stored = config.as_ref(ctx).keybindings_file_error()?.to_owned();
+    let current = current_keybindings_file_error(&keybinding_file_path());
+    if current.as_deref() != Some(stored.as_str()) {
+        let recorded = current.clone();
+        config.update(ctx, |config, _| {
+            config.record_keybindings_file_error_quietly(recorded)
+        });
+    }
+    current
+}
+
+/// Applies `change` to the keybindings file at `path` and writes it back.
+///
+/// Refuses (without touching the file) when the existing file is unreadable
+/// or unparsable.
+#[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+fn update_keybindings_file(
+    path: &std::path::Path,
+    change: impl FnOnce(&mut CustomKeybindings),
+) -> Result<(), KeybindingsWriteError> {
+    let mut map = match read_keybindings_file(path) {
+        KeybindingsFile::Missing => CustomKeybindings::default(),
+        KeybindingsFile::Parsed(map) => map,
+        KeybindingsFile::Invalid(reason) => {
+            return Err(KeybindingsWriteError::ExistingFileInvalid(reason));
+        }
+    };
+    change(&mut map);
+    let serialized = serde_yaml::to_string(&map)
+        .context("Unable to serialize custom keybindings")
+        .map_err(KeybindingsWriteError::Io)?;
+    // Atomic replace (#859): a failed write leaves the previous file intact
+    // instead of truncated.
+    warpui_extras::atomic_file::write(path, serialized)
+        .with_context(|| format!("Unable to write {}", path.display()))
+        .map_err(KeybindingsWriteError::Io)
 }
 
 // For tests, we don't want to read or write from the filesystem.
@@ -150,9 +276,16 @@ fn read_custom_keybindings() -> Option<CustomKeybindings> {
 #[cfg(test)]
 pub fn load_custom_keybindings(_: &mut AppContext) {}
 #[cfg(test)]
-pub fn write_custom_keybinding(_: String, _: UserDefinedKeybinding) {}
+pub fn recheck_keybindings_file_error(ctx: &mut AppContext) -> Option<String> {
+    use warpui::SingletonEntity as _;
+    crate::user_config::WarpConfig::as_ref(ctx)
+        .keybindings_file_error()
+        .map(str::to_owned)
+}
 #[cfg(test)]
-pub fn remove_custom_keybinding<N>(_: N)
+pub fn write_custom_keybinding(_: String, _: UserDefinedKeybinding, _: &mut AppContext) {}
+#[cfg(test)]
+pub fn remove_custom_keybinding<N>(_: N, _: &mut AppContext)
 where
     N: AsRef<str>,
 {
@@ -170,8 +303,7 @@ where
 /// ---
 /// "editor:delete_all_left": cmd-shift-A
 /// "editor:delete_all_right": cmd-shift-D escape
-#[derive(Serialize, Deserialize, Default)]
-#[cfg(not(test))]
+#[derive(Serialize, Deserialize, Default, Debug, PartialEq)]
 struct CustomKeybindings(std::collections::HashMap<String, PersistedTrigger>);
 
 /// The normalized version of a keystroke or series of keystrokes that is written into the

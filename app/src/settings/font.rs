@@ -21,6 +21,7 @@ pub const DEFAULT_MONOSPACE_FALLBACK_FONT_NAME: &str = "";
 pub const MARKDOWN_HEADING_SCALE_MIN: f32 = 0.1;
 pub const MARKDOWN_HEADING_SCALE_MAX: f32 = 5.0;
 pub const DEFAULT_MONOSPACE_FONT_SIZE: f32 = 13.0;
+pub const DEFAULT_NOTEBOOK_FONT_SIZE: f32 = 14.0;
 pub const DEFAULT_MONOSPACE_FONT_WEIGHT: Weight = Weight::Normal;
 
 pub const DEFAULT_UI_FONT_NAME: &str = "";
@@ -98,7 +99,7 @@ define_settings_group!(FontSettings,
         },
         notebook_font_size: NotebookFontSize {
             type: f32,
-            default: 14.0,
+            default: DEFAULT_NOTEBOOK_FONT_SIZE,
             supported_platforms: SupportedPlatforms::ALL,
             sync_to_cloud: SyncToCloud::Never,
             private: false,
@@ -209,6 +210,48 @@ define_settings_group!(FontSettings,
     ]
 );
 
+/// Smallest terminal/notebook font size the settings accept. Matches the
+/// settings UI's font-size input (`settings_view::appearance_page`).
+pub const FONT_SIZE_SETTING_MIN: f32 = 1.0;
+/// Largest terminal/notebook font size the settings accept. Matches the
+/// settings UI's font-size input (`settings_view::appearance_page`).
+pub const FONT_SIZE_SETTING_MAX: f32 = 120.0;
+
+/// Returns `new_value` if it is a usable font size, otherwise `fallback`.
+///
+/// The settings UI only ever writes 1..=120, but `settings.toml` can hold
+/// anything that parses as a float. Unchecked, `font_size = 1000` made the
+/// terminal grid zero-sized, which closed windows and pruned the saved
+/// session; `1e308` blanked the terminal; `0` and negatives cost gigabytes of
+/// glyph atlas (#857). Rejected values fall back to the default rather than
+/// clamping to the nearest bound: a typo like `1000` for `10.00` is better
+/// served by the familiar default than by the 120-point maximum.
+pub fn validated_font_size(setting: &str, new_value: f32, fallback: f32) -> f32 {
+    if new_value.is_finite() && (FONT_SIZE_SETTING_MIN..=FONT_SIZE_SETTING_MAX).contains(&new_value)
+    {
+        new_value
+    } else {
+        log::warn!(
+            "{setting} {new_value} is outside {FONT_SIZE_SETTING_MIN}..={FONT_SIZE_SETTING_MAX}; using {fallback}"
+        );
+        fallback
+    }
+}
+
+impl MonospaceFontSize {
+    // Inherent, so it shadows `Setting::validate` inside the macro-generated
+    // impl (the same pattern as `BackgroundOpacity::validate`).
+    fn validate(&self, new_value: f32) -> f32 {
+        validated_font_size("font_size", new_value, DEFAULT_MONOSPACE_FONT_SIZE)
+    }
+}
+
+impl NotebookFontSize {
+    fn validate(&self, new_value: f32) -> f32 {
+        validated_font_size("notebook_font_size", new_value, DEFAULT_NOTEBOOK_FONT_SIZE)
+    }
+}
+
 const MAX_NOTEBOOK_FONT_SIZE: f32 = 25.0;
 const NOTEBOOK_FONT_SIZE_INCREMENT: f32 = 1.0;
 
@@ -252,3 +295,7 @@ pub fn heading_font_size_multipliers_from_settings(
         h6: clamp(*font_settings.markdown_heading_h6_scale),
     }
 }
+
+#[cfg(test)]
+#[path = "font_tests.rs"]
+mod tests;

@@ -756,7 +756,8 @@ pub enum WorkspaceAction {
     },
     SaveCurrentTabAsNewConfig(usize),
     SyncTrafficLights,
-    /// Opens a tab config file in the editor and dismisses the associated error toast.
+    /// Opens a config file that failed to load (a tab config, or `keybindings.yaml`)
+    /// in the editor and dismisses the associated error toast.
     OpenTabConfigErrorFile {
         path: PathBuf,
         toast_object_id: String,

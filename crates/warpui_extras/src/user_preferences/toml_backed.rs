@@ -226,14 +226,14 @@ impl TomlBackedUserPreferences {
                 self.file_path.display()
             )));
         }
-        let parent_dir = self
-            .file_path
-            .parent()
-            .expect("absolute path to file should have parent");
-        std::fs::create_dir_all(parent_dir)?;
-
+        // Written atomically (temp file + fsync + rename), never truncated in
+        // place: on a full disk `std::fs::write` left the file cut off
+        // mid-line, unparseable, and the next launch started on defaults
+        // (#859). On failure the previous file is intact and the error is
+        // returned. A symlinked settings file is written through (see
+        // `crate::atomic_file`).
         let data = self.document.borrow().to_string();
-        std::fs::write(&self.file_path, data)?;
+        crate::atomic_file::write(&self.file_path, data)?;
         Ok(())
     }
 

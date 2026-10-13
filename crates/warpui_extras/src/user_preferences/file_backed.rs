@@ -65,14 +65,10 @@ impl FileBackedUserPreferences {
 
     /// Flushes the internal in-memory preferences store to disk.
     fn flush(&self) -> Result<(), Error> {
-        let parent_dir = self
-            .file_path
-            .parent()
-            .expect("absolute path to file should have parent");
-        std::fs::create_dir_all(parent_dir)?;
-
+        // Atomic replace, never truncate-in-place (#859): see
+        // `crate::atomic_file`.
         let data = serde_json::to_string_pretty(&self.inner).map_err(anyhow::Error::new)?;
-        std::fs::write(&self.file_path, data)?;
+        crate::atomic_file::write(&self.file_path, data)?;
         Ok(())
     }
 }

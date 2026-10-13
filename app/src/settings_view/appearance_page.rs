@@ -126,8 +126,9 @@ const FONT_FAMILY_DROPDOWN_WIDTH: f32 = 225.;
 const FONT_WEIGHT_DROPDOWN_WIDTH: f32 = 100.;
 const LINE_HEIGHT_INPUT_BOX_WIDTH: f32 = 80.;
 const OPACITY_SLIDER_WIDTH: f32 = 150.;
-const MIN_FONT_SIZE: usize = 1;
-const MAX_FONT_SIZE: usize = 120;
+// The UI accepts exactly what the setting's load-time validation accepts (#857).
+const MIN_FONT_SIZE: usize = crate::settings::FONT_SIZE_SETTING_MIN as usize;
+const MAX_FONT_SIZE: usize = crate::settings::FONT_SIZE_SETTING_MAX as usize;
 const MIN_LINE_SPACING: f32 = 0.1;
 const MAX_LINE_SPACING: f32 = 5.;
 
