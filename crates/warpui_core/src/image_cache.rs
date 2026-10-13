@@ -57,6 +57,28 @@ pub enum CustomImageFormat {
 }
 
 impl CustomImageFormat {
+    fn bytes_per_pixel(&self) -> u64 {
+        match self {
+            CustomImageFormat::Rgb => 3,
+            CustomImageFormat::Rgba => 4,
+        }
+    }
+
+    /// The number of raw pixel bytes a `width` x `height` image in this format
+    /// occupies, or `None` if that does not fit in a `usize`.
+    ///
+    /// The dimensions come from untrusted input (kitty graphics control data,
+    /// or any image payload that starts with `warp-img:`), so the product is
+    /// computed in `u64` with checked arithmetic rather than in `u32`, where
+    /// it overflows (#876).
+    pub fn expected_byte_count(&self, width: u32, height: u32) -> Option<usize> {
+        let count = self
+            .bytes_per_pixel()
+            .checked_mul(u64::from(width))?
+            .checked_mul(u64::from(height))?;
+        usize::try_from(count).ok()
+    }
+
     fn create_tag(&self) -> String {
         match self {
             CustomImageFormat::Rgb => "rgb".into(),
@@ -67,6 +89,10 @@ impl CustomImageFormat {
 
 #[derive(Debug, Clone)]
 enum CustomHeaderParsingError {
+    DimensionsTooLarge {
+        width: u32,
+        height: u32,
+    },
     ExpectedDataSizeMismatch {
         expected_bytes: usize,
         actual_bytes: usize,
@@ -86,6 +112,10 @@ impl error::Error for CustomHeaderParsingError {}
 impl fmt::Display for CustomHeaderParsingError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
+            Self::DimensionsTooLarge { width, height } => write!(
+                f,
+                "The custom image's dimensions ({width}x{height}) are too large to address."
+            ),
             Self::ExpectedDataSizeMismatch {
                 expected_bytes,
                 actual_bytes,
@@ -109,6 +139,8 @@ impl fmt::Display for CustomHeaderParsingError {
 
 #[derive(Debug, Clone)]
 pub enum CustomHeaderCreationError {
+    /// `width * height * bytes_per_pixel` does not fit in a `usize`.
+    DimensionsTooLarge { width: u32, height: u32 },
     ExpectedDataSizeMismatch {
         expected_bytes: usize,
         actual_bytes: usize,
@@ -138,11 +170,9 @@ impl CustomImageHeader {
         height: u32,
         image_format: CustomImageFormat,
     ) -> Result<Vec<u8>, CustomHeaderCreationError> {
-        let bytes_per_pixel = match image_format {
-            CustomImageFormat::Rgb => 3,
-            CustomImageFormat::Rgba => 4,
+        let Some(expected_byte_count) = image_format.expected_byte_count(width, height) else {
+            return Err(CustomHeaderCreationError::DimensionsTooLarge { width, height });
         };
-        let expected_byte_count = (bytes_per_pixel * width * height) as usize;
 
         if expected_byte_count != data.len() {
             return Err(CustomHeaderCreationError::ExpectedDataSizeMismatch {
@@ -255,11 +285,9 @@ impl CustomImageHeader {
             }
         };
 
-        let bytes_per_pixel = match image_type {
-            CustomImageFormat::Rgb => 3,
-            CustomImageFormat::Rgba => 4,
+        let Some(expected_byte_count) = image_type.expected_byte_count(width, height) else {
+            return Err(CustomHeaderParsingError::DimensionsTooLarge { width, height });
         };
-        let expected_byte_count = (bytes_per_pixel * width * height) as usize;
 
         if expected_byte_count != data.len() {
             return Err(CustomHeaderParsingError::ExpectedDataSizeMismatch {
