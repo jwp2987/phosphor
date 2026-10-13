@@ -860,48 +860,88 @@ impl Task {
             log::error!("Message not found for append client action.");
             return Err(UpdateTaskError::MessageNotFound);
         };
-        let mut updated_message =
-            FieldMaskOperation::append(&api::MESSAGE_DESCRIPTOR, existing_message, &message, mask)
-                .apply()
-                .map_err(UpdateTaskError::from)?;
+        // A pure text/reasoning append extends the stored text in place. The general field-mask
+        // append transcodes the whole message to a dynamic message and back and rebuilds the
+        // string with `format!`, which costs O(message) per chunk (#849).
+        let in_place = is_in_place_text_append(existing_message, &message, &mask);
+        let (mut updated_message, rollback_len) = if in_place {
+            if !self
+                .exchanges
+                .iter()
+                .any(|exchange| exchange.id == exchange_id)
+            {
+                return Err(UpdateTaskError::ExchangeNotFound);
+            }
+            let mut updated = std::mem::take(&mut self.try_get_source_mut()?.messages[idx]);
+            let previous_len = push_appended_text(&mut updated, &message);
+            (updated, Some(previous_len))
+        } else {
+            let updated = FieldMaskOperation::append(
+                &api::MESSAGE_DESCRIPTOR,
+                existing_message,
+                &message,
+                mask,
+            )
+            .apply()
+            .map_err(UpdateTaskError::from)?;
+            (updated, None)
+        };
 
         let id = self.id.clone();
-        let exchange_to_update = self
+        let upserted = match self
             .exchanges
             .iter_mut()
             .find(|exchange| exchange.id == exchange_id)
-            .ok_or(UpdateTaskError::ExchangeNotFound)?;
-        // A streamed answer or reasoning grows by appends, so its sections are brought up to
-        // date incrementally rather than re-derived from the whole text on every chunk (#849).
-        // The text is moved out while the rest of the message is converted, so that conversion
-        // neither copies nor parses it.
-        let upserted = match take_streamed_text(&mut updated_message) {
-            Some(text) => {
-                let parser = self
-                    .streaming_text
-                    .entry(updated_message.id.clone())
-                    .or_default();
-                let upserted = exchange_to_update.upsert_streamed_text_output(
-                    &id,
-                    &updated_message,
-                    &text,
-                    parser,
-                    current_todo_list,
-                    current_comments,
-                    skill_path_origin,
+        {
+            None => Err(UpdateTaskError::ExchangeNotFound),
+            Some(exchange_to_update) => {
+                // A streamed answer or reasoning grows by appends, so its sections are brought
+                // up to date incrementally rather than re-derived from the whole text on every
+                // chunk (#849). The text is moved out while the rest of the message is
+                // converted, so that conversion neither copies nor parses it.
+                let streaming = matches!(
+                    exchange_to_update.output_status,
+                    AIAgentOutputStatus::Streaming { output: Some(_) }
                 );
-                restore_streamed_text(&mut updated_message, text);
-                upserted
+                match streaming
+                    .then(|| take_streamed_text(&mut updated_message))
+                    .flatten()
+                {
+                    Some(text) => {
+                        let parser = self
+                            .streaming_text
+                            .entry(updated_message.id.clone())
+                            .or_default();
+                        let upserted = exchange_to_update.upsert_streamed_text_output(
+                            &id,
+                            &updated_message,
+                            &text,
+                            parser,
+                            current_todo_list,
+                            current_comments,
+                            skill_path_origin,
+                        );
+                        restore_streamed_text(&mut updated_message, text);
+                        upserted
+                    }
+                    None => exchange_to_update.upsert_output_for_message(
+                        &id,
+                        &updated_message,
+                        current_todo_list,
+                        current_comments,
+                        skill_path_origin,
+                    ),
+                }
             }
-            None => exchange_to_update.upsert_output_for_message(
-                &id,
-                &updated_message,
-                current_todo_list,
-                current_comments,
-                skill_path_origin,
-            ),
         };
-        upserted?;
+        if let Err(err) = upserted {
+            // The in-place path took the stored message out; put it back as it was.
+            if let Some(previous_len) = rollback_len {
+                truncate_streamed_text(&mut updated_message, previous_len);
+                self.try_get_source_mut()?.messages[idx] = updated_message;
+            }
+            return Err(err);
+        }
 
         let source = self.try_get_source_mut()?;
         source.messages[idx] = updated_message;
@@ -1016,6 +1056,9 @@ impl Task {
         expected_message_count: u32,
         replacement_messages: Vec<api::Message>,
     ) -> Result<Vec<api::Message>, ExtractMessagesError> {
+        // A replacement may reuse the id of a message that was streaming; incremental state for
+        // the old text must not be applied to it (#849).
+        self.streaming_text.clear();
         let source = match self.try_get_source_mut() {
             Ok(s) => s,
             Err(_) => return Err(ExtractMessagesError::TaskNotInitialized),
@@ -1073,6 +1116,12 @@ impl Task {
         skill_path_origin: &SkillPathOrigin,
         should_convert_input_messages: bool,
     ) -> Result<(), UpdateTaskError> {
+        // These messages get a full conversion below. A message re-added under an id that was
+        // streaming (a resumed stream replaying it with new text) must not later be extended
+        // from incremental state that describes its old text (#849).
+        for message in &messages {
+            self.streaming_text.remove(&message.id);
+        }
         let exchange = self
             .exchange_mut(exchange_id)
             .ok_or(UpdateTaskError::ExchangeNotFound)?;
@@ -1142,6 +1191,59 @@ pub fn derive_todo_lists_from_root_task(root_task: &Task) -> Vec<AIAgentTodoList
     }
 
     todo_lists
+}
+
+/// Whether `mask` appends `delta`'s text to `stored`'s and nothing else, so the append can be
+/// done in place: the result is `stored` with that one string extended, exactly what the general
+/// field-mask append produces for it.
+fn is_in_place_text_append(stored: &api::Message, delta: &api::Message, mask: &FieldMask) -> bool {
+    let [path] = mask.paths.as_slice() else {
+        return false;
+    };
+    matches!(
+        (
+            path.as_str(),
+            stored.message.as_ref(),
+            delta.message.as_ref()
+        ),
+        (
+            "agent_output.text",
+            Some(Message::AgentOutput(_)),
+            Some(Message::AgentOutput(_))
+        ) | (
+            "agent_reasoning.reasoning",
+            Some(Message::AgentReasoning(_)),
+            Some(Message::AgentReasoning(_))
+        )
+    )
+}
+
+/// Appends `delta`'s text to `stored`'s for an [`is_in_place_text_append`] append, returning the
+/// stored text's previous length.
+fn push_appended_text(stored: &mut api::Message, delta: &api::Message) -> usize {
+    match (stored.message.as_mut(), delta.message.as_ref()) {
+        (Some(Message::AgentOutput(stored)), Some(Message::AgentOutput(delta))) => {
+            let previous_len = stored.text.len();
+            stored.text.push_str(&delta.text);
+            previous_len
+        }
+        (Some(Message::AgentReasoning(stored)), Some(Message::AgentReasoning(delta))) => {
+            let previous_len = stored.reasoning.len();
+            stored.reasoning.push_str(&delta.reasoning);
+            previous_len
+        }
+        // Not reached: callers check `is_in_place_text_append` first.
+        _ => 0,
+    }
+}
+
+/// Undoes [`push_appended_text`].
+fn truncate_streamed_text(message: &mut api::Message, len: usize) {
+    match message.message.as_mut() {
+        Some(Message::AgentOutput(output)) => output.text.truncate(len),
+        Some(Message::AgentReasoning(reasoning)) => reasoning.reasoning.truncate(len),
+        _ => {}
+    }
 }
 
 /// Moves the streamed text out of an agent output or reasoning message, leaving it empty.

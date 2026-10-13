@@ -448,16 +448,18 @@ upstream's behavior is actually a defect rather than a preference.
   same code path). **The defect:** streaming is quadratic in the answer's length. Measured
   (#849): 10 MB in 4 KB chunks held the main thread at 100% for >9 minutes with no repaint
   (RSS 767 MB -> 1.2 GB); 100 KB in 8-byte chunks blocked it ~18-19 s, on 0.1.11 as on main.
-  **We do:** append chunks of agent output/reasoning text go through
-  `IncrementalTextSections`, which keeps a commit point (a line boundary nothing later can
-  reinterpret) and the splitter's state there, edits the previous sections in place, and
-  re-parses only the lines after it; plain-text Markdown resumes from a
+  **We do:** a pure text/reasoning append extends the stored string in place (the general
+  field-mask append transcodes the whole message and rebuilds the string per chunk), and the
+  text goes through `IncrementalTextSections`, which keeps a commit point (a line boundary
+  nothing later can reinterpret) and the splitter's state there, edits the previous sections
+  in place, and re-parses only the lines after it; plain-text Markdown resumes from a
   `MarkdownResumePoint` (`parse_markdown_tail`) instead of byte 0. The sections after every
   chunk equal the full conversion's (tested byte-by-byte against it), and when the exchange
   finishes the message is re-converted once in full (`Task::finalize_streamed_text`), so the
-  settled output is exactly upstream's. Still proportional to their own size per chunk: a
-  table or a single line that is still being streamed, and the renderer, which lays out the
-  whole message every frame.
+  settled output is exactly upstream's, including after a feature flag toggled mid-stream.
+  Parsing work per chunk is bounded by the chunk; other O(message) costs remain (#872): the
+  renderer lays out the whole message every frame, extending parsed text a renderer still
+  holds copies it, and a table or single line that is still streaming is re-parsed whole.
 
 - **An incremental find rescan does not flash the find bar's scanning label**
   (`#815`, 2026-10-12, `app/src/terminal/find/model/async_find.rs`). **Upstream:**

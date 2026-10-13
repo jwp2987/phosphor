@@ -148,6 +148,17 @@ pub(super) fn parse_markdown_into_text_and_code_sections(
     sections
 }
 
+/// A cheap fingerprint of `text[..len]`: its length and its last 64 bytes. It is not a proof
+/// that the text is unchanged — callers also invalidate on every path that replaces a message —
+/// but it catches a replaced message without hashing the whole answer on every chunk.
+fn source_fingerprint(text: &str, len: usize) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    len.hash(&mut hasher);
+    text.as_bytes()[len.saturating_sub(64)..len].hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Reads the `path=... start=...` parameters of a linked code block's opening fence.
 fn code_source_from_params(param_str: &str) -> Option<CodeSource> {
     let mut params = HashMap::new();
@@ -326,8 +337,16 @@ fn push_code_or_mermaid_section(
 ///   being streamed) go through the same steps as the full conversion.
 ///
 /// The result after every update equals `parse_markdown_into_text_and_code_sections(text)`.
-/// [`Self::update`] edits the previous result in place, so the work per chunk is bounded by the
-/// chunk and the lines around it, not by the answer.
+/// [`Self::update`] edits the previous result in place, so the parsing work per chunk is bounded
+/// by the chunk and the lines around it, not by the answer. Other O(answer) costs remain outside
+/// it (#872): when a renderer still holds the open piece's parsed text, extending it copies it
+/// once (`Arc::make_mut`), and a table or a single line that is still streaming is re-parsed
+/// whole on every chunk.
+///
+/// The feature flags that shape the result (`BlocklistMarkdownTableRendering`,
+/// `MarkdownTables`) are read on each update. Toggling one mid-stream leaves the sections
+/// committed before the toggle as they were converted; the full re-conversion when the
+/// exchange finishes (`Task::finalize_streamed_text`) brings them in line.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct IncrementalTextSections {
     commit: SectionsCommit,
@@ -344,6 +363,10 @@ pub(crate) struct IncrementalTextSections {
 struct SectionsCommit {
     /// Source bytes before the commit point; always ends with `\n`.
     source_len: usize,
+    /// [`source_fingerprint`] of the text before `source_len`. A caller that hands over text
+    /// that is not an extension of the last one — a message replaced under the same id — is
+    /// caught by this rather than having stale sections spliced into its new text.
+    fingerprint: u64,
     /// Leading output sections that are final.
     sections: usize,
     mode: CommittedMode,
@@ -464,6 +487,8 @@ impl IncrementalTextSections {
         if text.len() < commit.source_len
             || !text.is_char_boundary(commit.source_len)
             || sections.len() < commit.sections
+            || (commit.source_len > 0
+                && source_fingerprint(text, commit.source_len) != commit.fingerprint)
         {
             return false;
         }
@@ -611,6 +636,7 @@ impl IncrementalTextSections {
                 pending = PendingCommit {
                     commit: SectionsCommit {
                         source_len: line_ends[index - 1],
+                        fingerprint: source_fingerprint(text, line_ends[index - 1]),
                         sections: sections.len(),
                         mode: match &mode {
                             WorkingMode::Plain(plain) => CommittedMode::Plain(CommittedPlain {
@@ -684,9 +710,11 @@ impl IncrementalTextSections {
                         return None;
                     }
                     markdown_text.truncate(plain.piece_len);
+                    // `parse_markdown` trims a trailing line break, so the kept lines may
+                    // include one more than the stored text has; `replace_tail` restores it.
                     let (reuse, resume) = match formatted_lines {
                         Some(formatted)
-                            if formatted.lines().len() >= plain.piece_resume.line_count() =>
+                            if formatted.lines().len() + 1 >= plain.piece_resume.line_count() =>
                         {
                             (Some(formatted), plain.piece_resume.clone())
                         }

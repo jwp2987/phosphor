@@ -1463,10 +1463,17 @@ impl FormattedTextWrapper {
     /// lines are the ones kept. Lets a streamed answer extend its parsed Markdown instead of
     /// re-parsing and re-wrapping all of it on every chunk (#849).
     ///
-    /// The shared [`FormattedText`] is copied only if a renderer still holds the previous one,
-    /// which happens at most once per frame.
+    /// `keep` may exceed the stored lines by one: that is the line break `parse_markdown`
+    /// trimmed off the end, and it is put back.
+    ///
+    /// The shared [`FormattedText`] is copied if a renderer still holds the previous one, which
+    /// is O(text) (#872).
     pub(crate) fn replace_tail(&mut self, keep: usize, tail: Vec<FormattedTextLine>) {
         let formatted_text = Arc::make_mut(&mut self.formatted_text);
+        if keep > formatted_text.lines.len() {
+            debug_assert_eq!(keep, formatted_text.lines.len() + 1);
+            formatted_text.lines.push_back(FormattedTextLine::LineBreak);
+        }
         formatted_text.lines.truncate(keep);
         formatted_text.lines.extend(tail);
         if let Some(FormattedTextLine::LineBreak) = formatted_text.lines.back() {

@@ -215,3 +215,53 @@ fn one_huge_paragraph_run_is_not_reparsed_per_chunk() {
         text.len()
     );
 }
+
+#[test]
+fn text_replaced_under_the_same_length_is_not_extended_from_stale_state() {
+    // A caller that hands over text which is not an extension of the last one (a message
+    // replaced under the same id) must get a full conversion, not stale sections.
+    let old = "first line\nsecond line\nthird line\nfourth";
+    let new = "first line\nsecOND line\nthird line\nfourth and more\n";
+    let mut parser = IncrementalTextSections::default();
+    let mut sections = Vec::new();
+    parser.update(old, &mut sections);
+    parser.update(new, &mut sections);
+    assert_same_sections(
+        &sections,
+        &parse_markdown_into_text_and_code_sections(new),
+        "after the text was replaced",
+    );
+}
+
+#[test]
+fn a_piece_ending_in_a_blank_line_keeps_resuming_while_a_table_streams() {
+    // Two blank lines leave the plain-text piece ending in a line break that `parse_markdown`
+    // trims. While the table after it streams, the commit point stays before the table, so
+    // every chunk reopens that piece; it must resume, not re-parse the whole piece.
+    let _rendering = FeatureFlag::BlocklistMarkdownTableRendering.override_enabled(true);
+    let _tables = FeatureFlag::MarkdownTables.override_enabled(true);
+    let mut text = "prose line with *some* markup\n".repeat(2048);
+    let prose_len = text.len();
+    text.push_str("\n\n| A | B |\n| --- | --- |\n");
+    text.push_str(&"| 1 | 2 |\n".repeat(2000));
+
+    let mut parser = IncrementalTextSections::default();
+    let mut sections = Vec::new();
+    parser.update(&text[..prose_len], &mut sections);
+    let mut end = prose_len;
+    while end < text.len() {
+        end = (end + 64).min(text.len());
+        parser.update(&text[..end], &mut sections);
+    }
+    assert_same_sections(
+        &sections,
+        &parse_markdown_into_text_and_code_sections(&text),
+        "after streaming",
+    );
+    assert!(
+        parser.markdown_bytes_parsed() <= 2 * text.len(),
+        "parsed {} Markdown bytes to stream {} bytes",
+        parser.markdown_bytes_parsed(),
+        text.len()
+    );
+}

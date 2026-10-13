@@ -470,3 +470,202 @@ fn test_is_warp_documentation_search_subagent() {
     assert!(subtask.is_warp_documentation_search_subagent());
     assert!(!subtask.is_conversation_search_subagent());
 }
+
+// =============================================================================
+// Tests for incrementally converted streamed text (#849)
+// =============================================================================
+
+mod streamed_text {
+    use std::collections::HashSet;
+
+    use ai::skills::SkillPathOrigin;
+    use chrono::Local;
+    use prost_types::FieldMask;
+    use warp_multi_agent_api as api;
+
+    use crate::ai::agent::util::parse_markdown_into_text_and_code_sections;
+    use crate::ai::agent::{
+        AIAgentExchange, AIAgentExchangeId, AIAgentOutput, AIAgentOutputMessageType,
+        AIAgentOutputStatus, AIAgentTextSection, MessageId, Shared,
+    };
+    use crate::ai::llms::LLMId;
+    use crate::test_util::ai_agent_tasks::{create_api_task, create_message};
+
+    use super::super::Task;
+
+    const TASK_ID: &str = "task1";
+
+    fn streaming_exchange() -> AIAgentExchange {
+        AIAgentExchange {
+            id: AIAgentExchangeId::new(),
+            input: vec![],
+            output_status: AIAgentOutputStatus::Streaming {
+                output: Some(Shared::new(AIAgentOutput::default())),
+            },
+            added_message_ids: HashSet::new(),
+            start_time: Local::now(),
+            finish_time: None,
+            time_to_first_token_ms: None,
+            working_directory: None,
+            model_id: LLMId::from(""),
+            request_cost: None,
+            coding_model_id: LLMId::from(""),
+            cli_agent_model_id: LLMId::from(""),
+            computer_use_model_id: LLMId::from(""),
+            response_initiator: None,
+        }
+    }
+
+    fn text_message(id: &str, text: &str) -> api::Message {
+        let mut message = create_message(id, TASK_ID);
+        message.message = Some(api::message::Message::AgentOutput(
+            api::message::AgentOutput {
+                text: text.to_string(),
+            },
+        ));
+        message
+    }
+
+    fn text_mask() -> FieldMask {
+        FieldMask {
+            paths: vec!["agent_output.text".to_string()],
+        }
+    }
+
+    fn stored_text(task: &Task, id: &str) -> String {
+        task.messages()
+            .find(|message| message.id == id)
+            .and_then(|message| match &message.message {
+                Some(api::message::Message::AgentOutput(output)) => Some(output.text.clone()),
+                _ => None,
+            })
+            .expect("stored agent output message")
+    }
+
+    fn shown_sections(
+        task: &Task,
+        exchange_id: AIAgentExchangeId,
+        id: &str,
+    ) -> Vec<AIAgentTextSection> {
+        let exchange = task.exchange(exchange_id).expect("exchange exists");
+        let AIAgentOutputStatus::Streaming {
+            output: Some(output),
+        } = &exchange.output_status
+        else {
+            panic!("exchange is streaming");
+        };
+        let output = output.get();
+        output
+            .messages
+            .iter()
+            .find(|message| message.id.0 == id)
+            .and_then(|message| match &message.message {
+                AIAgentOutputMessageType::Text(text) => Some(text.sections.clone()),
+                _ => None,
+            })
+            .expect("text output message")
+    }
+
+    /// The sections shown for `id` equal a full conversion of its stored text, parsed lines
+    /// included (section equality alone compares only their raw text and links).
+    fn assert_shows_full_conversion(task: &Task, exchange_id: AIAgentExchangeId, id: &str) {
+        let text = stored_text(task, id);
+        let shown = shown_sections(task, exchange_id, id);
+        let expected = parse_markdown_into_text_and_code_sections(&text);
+        assert_eq!(shown, expected, "{id}: {text:?}");
+        for (shown, expected) in shown.iter().zip(&expected) {
+            if let (
+                AIAgentTextSection::PlainText { text: shown },
+                AIAgentTextSection::PlainText { text: expected },
+            ) = (shown, expected)
+            {
+                assert_eq!(
+                    shown.formatted_text_arc().as_deref(),
+                    expected.formatted_text_arc().as_deref()
+                );
+            }
+        }
+    }
+
+    fn append_in_chunks(
+        task: &mut Task,
+        exchange_id: AIAgentExchangeId,
+        id: &str,
+        text: &str,
+        chunk_len: usize,
+    ) {
+        let mut start = 0;
+        while start < text.len() {
+            let mut end = (start + chunk_len).min(text.len());
+            while !text.is_char_boundary(end) {
+                end += 1;
+            }
+            let before = stored_text(task, id);
+            task.append_to_message_content(
+                text_message(id, &text[start..end]),
+                exchange_id,
+                None,
+                None,
+                &SkillPathOrigin::Local,
+                text_mask(),
+            )
+            .expect("append applies");
+            assert_eq!(
+                stored_text(task, id),
+                format!("{before}{}", &text[start..end])
+            );
+            assert_shows_full_conversion(task, exchange_id, id);
+            start = end;
+        }
+    }
+
+    #[test]
+    fn streamed_text_matches_full_conversion_through_upsert_remove_and_finalize() {
+        let exchange = streaming_exchange();
+        let exchange_id = exchange.id;
+        let mut task = Task::new_restored_root(
+            create_api_task(
+                TASK_ID,
+                vec![text_message("m1", ""), text_message("m2", "")],
+            ),
+            std::iter::once(exchange),
+        );
+
+        let answer = "Intro paragraph with `code`.\n\n```rust\nfn main() {}\n```\n\n\
+                      | A | B |\n| --- | --- |\n| 1 | 2 |\n\n![img](a.png)\nafter\n";
+        append_in_chunks(&mut task, exchange_id, "m1", answer, 7);
+        assert!(task.streaming_text.contains_key("m1"));
+
+        // A non-append update replaces the text mid-stream: the incremental state for the old
+        // text must not be applied to the new one.
+        task.upsert_message(
+            text_message("m1", "Replaced text.\n\n```\nopen code"),
+            exchange_id,
+            None,
+            None,
+            &SkillPathOrigin::Local,
+            text_mask(),
+            false,
+        )
+        .expect("upsert applies");
+        assert!(!task.streaming_text.contains_key("m1"));
+        assert_shows_full_conversion(&task, exchange_id, "m1");
+        append_in_chunks(&mut task, exchange_id, "m1", " more\n```\nand prose\n", 5);
+
+        append_in_chunks(
+            &mut task,
+            exchange_id,
+            "m2",
+            "second message\n\nwith text\n",
+            4,
+        );
+        let mut removed = HashSet::new();
+        removed.insert(MessageId::new("m2".to_string()));
+        task.remove_messages(&removed);
+        assert!(!task.streaming_text.contains_key("m2"));
+
+        task.finalize_streamed_text();
+        assert!(task.streaming_text.is_empty());
+        assert_shows_full_conversion(&task, exchange_id, "m1");
+    }
+}
