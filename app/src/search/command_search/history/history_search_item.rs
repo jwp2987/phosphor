@@ -16,6 +16,7 @@ use crate::search::item::SearchItem;
 use crate::search::{
     command_search::searcher::AcceptedHistoryItem, result_renderer::ItemHighlightState,
 };
+use crate::util::truncation::bounded_display_text;
 use crate::{
     appearance::Appearance, terminal::rich_history::render_rich_history,
     util::time_format::format_approx_duration_from_now,
@@ -23,6 +24,14 @@ use crate::{
 use crate::{search::command_search::searcher::CommandSearchItemAction, terminal::HistoryEntry};
 
 const COMMAND_METADATA_LEFT_MARGIN_FROM_METADATA: f32 = 8.;
+
+/// The text a history row shows for `command` (#868): the command itself, or for one
+/// longer than [`super::MAX_HISTORY_MATCH_BYTES`], the part that fuzzy matching saw plus
+/// an ellipsis. The match indices all fall inside that part, so highlighting is
+/// unaffected. Accepting or executing the row still uses the full command.
+pub(crate) fn history_display_text(command: &str) -> String {
+    bounded_display_text(command, super::MAX_HISTORY_MATCH_BYTES)
+}
 
 #[derive(Clone, Debug)]
 pub struct HistorySearchItem {
@@ -63,7 +72,7 @@ impl SearchItem for HistorySearchItem {
 
         let command = Align::new(
             Text::new_inline(
-                self.entry.command.clone(),
+                history_display_text(&self.entry.command),
                 appearance.monospace_font_family(),
                 appearance.monospace_font_size(),
             )
@@ -159,7 +168,10 @@ impl SearchItem for HistorySearchItem {
     }
 
     fn accessibility_label(&self) -> String {
-        format!("History item: {}", self.entry.command)
+        format!(
+            "History item: {}",
+            history_display_text(&self.entry.command)
+        )
     }
 }
 

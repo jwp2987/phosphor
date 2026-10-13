@@ -6,6 +6,7 @@ use crate::terminal::history::LinkedWorkflowData;
 use crate::terminal::input::inline_history::data_source::AcceptHistoryItem;
 use crate::terminal::input::inline_menu::styles as inline_styles;
 use crate::util::time_format::format_approx_duration_from_now_utc;
+use crate::util::truncation::bounded_display_text;
 use chrono::{DateTime, Local};
 use fuzzy_match::FuzzyMatchResult;
 use ordered_float::OrderedFloat;
@@ -18,6 +19,10 @@ use warpui::prelude::{Align, CrossAxisAlignment, Flex, MainAxisAlignment, MainAx
 use warpui::scene::{CornerRadius, Radius};
 use warpui::text_layout::ClipConfig;
 use warpui::{AppContext, Element, SingletonEntity};
+
+/// The most bytes of a history command a menu row lays out (#868). A row is one clipped
+/// line, so this is far more than it can show.
+const MAX_ROW_DISPLAY_BYTES: usize = 4096;
 
 #[derive(Debug, Clone)]
 pub struct InlineHistoryItem {
@@ -181,12 +186,18 @@ impl SearchItem for InlineHistoryItem {
                 (title.clone(), indices, appearance.ui_font_family())
             }
             HistoryItemType::Command { command, .. } => {
+                // A history command can be arbitrarily long (with a 50 MB line, each Up
+                // press cost ~11 s, #868). The row shows one clipped line, so copy and lay
+                // out only a bounded prefix. Accepting the row still inserts the full
+                // command.
+                let display_text = bounded_display_text(command, MAX_ROW_DISPLAY_BYTES);
                 let indices = if self.prefix_match_len > 0 {
-                    (0..self.prefix_match_len).collect()
+                    let highlightable = self.prefix_match_len.min(display_text.chars().count());
+                    (0..highlightable).collect()
                 } else {
                     vec![]
                 };
-                (command.clone(), indices, appearance.monospace_font_family())
+                (display_text, indices, appearance.monospace_font_family())
             }
             HistoryItemType::AIPrompt { query_text } => {
                 let indices = if self.prefix_match_len > 0 {
@@ -278,7 +289,10 @@ impl SearchItem for InlineHistoryItem {
     fn accessibility_label(&self) -> String {
         match &self.item_type {
             HistoryItemType::Conversation { title, .. } => format!("Conversation: {title}"),
-            HistoryItemType::Command { command, .. } => format!("Command: {command}"),
+            HistoryItemType::Command { command, .. } => format!(
+                "Command: {}",
+                bounded_display_text(command, MAX_ROW_DISPLAY_BYTES)
+            ),
             HistoryItemType::AIPrompt { query_text } => format!("AI prompt: {query_text}"),
         }
     }

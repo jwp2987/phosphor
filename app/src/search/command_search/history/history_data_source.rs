@@ -1,4 +1,6 @@
 use futures_lite::future::yield_now;
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::sync::Arc;
 use warpui::{AppContext, SingletonEntity};
 
@@ -56,33 +58,157 @@ pub(crate) fn history_data_source_for_session(
     history_data_source_from_shared(commands)
 }
 
+/// The most history matches one query hands to the mixer (#868).
+///
+/// Every match used to be returned. With a 1,000,000-line history one typed character
+/// matched most of it, and the mixer then collected, sorted, wrapped in a renderer and
+/// later dropped every one of those results on the main thread: 66-224 s of frozen UI
+/// per keystroke. The command search panel shows about a dozen rows, so the best 1,000
+/// are far more than anyone scrolls through; past that the query needs refining.
+pub(crate) const MAX_HISTORY_SEARCH_RESULTS: usize = 1000;
+
+/// Only the first this-many bytes of a history entry are fuzzy-matched (#868).
+///
+/// The matcher's cost grows with the text length times the query length, so a single
+/// 50 MB history line cost ~10 s per keystroke on its own. A match that starts past the
+/// first 4 KiB of a command is not one a person is searching for. The full command is
+/// still what gets accepted or executed; this bounds only the matching.
+pub(crate) const MAX_HISTORY_MATCH_BYTES: usize = 4096;
+
+/// The part of a history command that fuzzy matching sees (#868).
+pub(crate) fn history_match_target(command: &str) -> &str {
+    crate::util::truncation::prefix_on_char_boundary(command, MAX_HISTORY_MATCH_BYTES)
+}
+
+/// One candidate kept by [`TopK`]. Ordered by `key` alone; `item` is payload.
+struct Ranked<K, T> {
+    key: K,
+    item: T,
+}
+
+impl<K: Ord, T> PartialEq for Ranked<K, T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+
+impl<K: Ord, T> Eq for Ranked<K, T> {}
+
+impl<K: Ord, T> PartialOrd for Ranked<K, T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<K: Ord, T> Ord for Ranked<K, T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key.cmp(&other.key)
+    }
+}
+
+/// Keeps the `k` items with the greatest keys seen so far, in `O(k)` memory and
+/// `O(log k)` work per offered item, instead of collecting everything and sorting it.
+///
+/// Keys must be unique for the result to be deterministic; history search makes them so
+/// by pairing the score with the entry's position.
+pub(crate) struct TopK<K: Ord, T> {
+    k: usize,
+    // A min-heap: the root is the weakest kept item, the one a better candidate evicts.
+    heap: BinaryHeap<Reverse<Ranked<K, T>>>,
+}
+
+impl<K: Ord, T> TopK<K, T> {
+    pub(crate) fn new(k: usize) -> Self {
+        Self {
+            k,
+            heap: BinaryHeap::with_capacity(k.min(4096)),
+        }
+    }
+
+    /// Offers one candidate. It is kept iff it ranks among the best `k` so far.
+    pub(crate) fn push(&mut self, key: K, item: T) {
+        if self.k == 0 {
+            return;
+        }
+        if self.heap.len() < self.k {
+            self.heap.push(Reverse(Ranked { key, item }));
+            return;
+        }
+        if let Some(mut weakest) = self.heap.peek_mut() {
+            if key > weakest.0.key {
+                *weakest = Reverse(Ranked { key, item });
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.heap.len()
+    }
+
+    /// The kept items, weakest first: the same order, and the same items, as a full
+    /// ascending sort by key followed by keeping the last `k`.
+    pub(crate) fn into_ascending_vec(self) -> Vec<(K, T)> {
+        // `into_sorted_vec` sorts ascending by `Reverse`, i.e. strongest first.
+        let mut kept = self.heap.into_sorted_vec();
+        kept.reverse();
+        kept.into_iter()
+            .map(|Reverse(ranked)| (ranked.key, ranked.item))
+            .collect()
+    }
+}
+
 pub(crate) fn fuzzy_match_history(
     snapshot: HistorySnapshot,
 ) -> BoxFuture<'static, Result<Vec<QueryResult<CommandSearchItemAction>>, DataSourceRunErrorWrapper>>
 {
     Box::pin(async move {
-        let mut results = Vec::new();
+        // Keep only the best `MAX_HISTORY_SEARCH_RESULTS` while matching (#868), so the
+        // mixer's main-thread sort, the view's renderers and the eventual drop are all
+        // bounded by the cap rather than by the size of the history.
+        //
+        // The key is `(score, position)`. The mixer orders results with a stable ascending
+        // sort on score, and the best result is the last one, so among equal scores the
+        // newest entry (the highest position) ranks highest. Keeping the greatest
+        // `(score, position)` pairs therefore keeps exactly the results that a full sort
+        // would have put in the last `MAX_HISTORY_SEARCH_RESULTS` places, and emitting
+        // them ascending gives them in that same order.
+        //
+        // History search does not dedupe (the mixer runs with `AllowDuplicates`, and the
+        // history model already dedupes on load); neither does this.
+        let mut top = TopK::new(MAX_HISTORY_SEARCH_RESULTS);
+        let mut position = 0usize;
 
-        // History entries are cheap to match (single short string), so we use a large chunk
-        // size to reduce yield overhead while still allowing cancellation of stale queries.
+        // History entries are cheap to match (bounded by `MAX_HISTORY_MATCH_BYTES`), so we
+        // use a large chunk size to reduce yield overhead while still allowing cancellation
+        // of stale queries.
         for chunk in snapshot.commands.chunks(512) {
             for entry in chunk {
                 if let Some(match_result) = fuzzy_match::match_indices_case_insensitive(
-                    entry.command.as_str(),
+                    history_match_target(entry.command.as_str()),
                     snapshot.query_text.as_str(),
                 ) {
-                    results.push(
-                        HistorySearchItem {
-                            entry: entry.clone(),
-                            match_result,
-                        }
-                        .into(),
-                    );
+                    top.push((match_result.score, position), (entry, match_result));
                 }
+                position += 1;
             }
             yield_now().await;
         }
 
-        Ok(results)
+        Ok(top
+            .into_ascending_vec()
+            .into_iter()
+            .map(|(_, (entry, match_result))| {
+                HistorySearchItem {
+                    entry: entry.clone(),
+                    match_result,
+                }
+                .into()
+            })
+            .collect())
     })
 }
+
+#[cfg(test)]
+#[path = "history_data_source_tests.rs"]
+mod tests;

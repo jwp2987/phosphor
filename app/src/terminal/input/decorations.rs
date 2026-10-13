@@ -23,6 +23,10 @@ pub use warp_completer::{
     ParsedTokensSnapshot,
 };
 
+/// Input buffers longer than this get no background parse: no syntax highlighting, error
+/// underlining or input-type detection (#868).
+pub(super) const MAX_BACKGROUND_JOB_BUFFER_BYTES: usize = 1024 * 1024;
+
 /// Options to enable/disable command decoration and/or AI input background tasks spawned on input
 /// edits.
 #[derive(Default, Clone, Copy)]
@@ -230,6 +234,19 @@ impl Input {
             if mode.no_jobs_to_run() {
                 return;
             }
+        }
+
+        // A buffer this large is a recalled history line or a paste, not a command anyone
+        // reads token by token (#868: a 50 MB history line recalled with Up). Parsing it for
+        // highlighting, error underlining and input-type detection copies and walks the
+        // whole buffer on every edit and can start completion commands over it, so skip
+        // the jobs and leave the text plain.
+        if buffer_text.len() > MAX_BACKGROUND_JOB_BUFFER_BYTES {
+            if let Some(handle) = self.decorations_future_handle.take() {
+                handle.abort_handle().abort();
+            }
+            self.clear_decorations(ctx);
+            return;
         }
 
         match self.completion_session_context_or_empty_context(ctx) {
