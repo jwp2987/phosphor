@@ -437,6 +437,20 @@ these as expected, not as drift to reconcile.
 Each entry must say what upstream does, what we do instead, and the evidence that
 upstream's behavior is actually a defect rather than a preference.
 
+- **A `keybindings.yaml` that fails to parse is reported and never overwritten**
+  (`#858`, 2026-10-13, `app/src/keyboard.rs`, `app/src/workspace/view.rs`).
+  **Upstream:** `write_custom_keybinding`/`remove_custom_keybinding` start from
+  `read_custom_keybindings().unwrap_or_default()` (`42effe840:app/src/keyboard.rs:71,89`),
+  and `read_custom_keybindings` returns `None` for a parse error exactly as for a missing
+  file, logging only a warning. **The defect:** one syntax error made every custom binding
+  silently inactive, and the next keybinding change (including the "use Emacs-style
+  bindings" banner) rewrote the file with only that change -- the user's bindings were
+  lost with no backup. **We do:** an unreadable or unparsable file is distinct from a
+  missing one; it is never written while broken (the change applies for the session
+  only), and a persistent error toast with an "Open file" link names the file and the
+  parse error, at launch and on every refused write. An empty or comment-only file still
+  means "no customizations".
+
 - **A stored setting value goes through the setting's `validate`, and an out-of-range
   `font_size` is rejected and reported** (`#857`, 2026-10-13,
   `crates/settings/src/macros.rs`, `crates/settings/src/manager.rs`,

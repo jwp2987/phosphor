@@ -2606,6 +2606,58 @@ impl Workspace {
         });
     }
 
+    /// Shows a persistent error toast when `keybindings.yaml` could not be
+    /// used (#858) -- immediately, if the error was found before this
+    /// workspace existed (it is found while loading bindings at launch), and
+    /// on every later `KeybindingsFileError`.
+    fn subscribe_to_keybindings_file_errors(
+        toast_stack: ViewHandle<DismissibleToastStack<WorkspaceAction>>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        fn show(
+            reason: &str,
+            toast_stack: &ViewHandle<DismissibleToastStack<WorkspaceAction>>,
+            ctx: &mut ViewContext<Workspace>,
+        ) {
+            const OBJECT_ID: &str = "keybindings_file_error";
+            let path = crate::keyboard::keybinding_file_path();
+            let friendly_path = user_friendly_path(
+                &path.display().to_string(),
+                dirs::home_dir().as_ref().and_then(|h| h.to_str()),
+            );
+            let message = format!(
+                "Custom keybindings in {friendly_path} are not in effect: the file {reason}. \
+                 It will not be changed until you fix it."
+            );
+            let toast = DismissibleToast::error(message)
+                .with_object_id(OBJECT_ID.to_owned())
+                .with_link(
+                    ToastLink::new(crate::t!("common-open-file")).with_onclick_action(
+                        WorkspaceAction::OpenTabConfigErrorFile {
+                            path,
+                            toast_object_id: OBJECT_ID.to_owned(),
+                        },
+                    ),
+                );
+            toast_stack.update(ctx, |toast_stack, ctx| {
+                toast_stack.dismiss_toasts_by_prefix(OBJECT_ID, ctx);
+                toast_stack.add_persistent_toast(toast, ctx);
+            });
+        }
+
+        if let Some(reason) = WarpConfig::as_ref(ctx)
+            .keybindings_file_error()
+            .map(str::to_owned)
+        {
+            show(&reason, &toast_stack, ctx);
+        }
+        ctx.subscribe_to_model(&WarpConfig::handle(ctx), move |_me, _, event, ctx| {
+            if let WarpConfigUpdateEvent::KeybindingsFileError(reason) = event {
+                show(reason, &toast_stack, ctx);
+            }
+        });
+    }
+
     /// Subscribes to `WarpConfigUpdateEvent::SettingsErrors` and
     /// `SettingsErrorsCleared` to update the workspace settings-error banner
     /// and mirror the state into the settings pane for its nav-rail footer.
@@ -3035,6 +3087,7 @@ impl Workspace {
 
         Self::subscribe_to_workspace_toast_stack(toast_stack.clone(), ctx);
         Self::subscribe_to_tab_config_errors(toast_stack.clone(), ctx);
+        Self::subscribe_to_keybindings_file_errors(toast_stack.clone(), ctx);
         Self::subscribe_to_settings_errors(ctx);
         let user_menu = ctx.add_typed_action_view(|_| {
             Menu::new()

@@ -69,6 +69,10 @@ pub enum WarpConfigUpdateEvent {
     /// A previously-errored settings reload succeeded with no errors.
     #[cfg_attr(not(feature = "local_fs"), expect(dead_code))]
     SettingsErrorsCleared,
+    /// `keybindings.yaml` exists but could not be read or parsed, so the
+    /// user's custom bindings are not in effect and the file will not be
+    /// rewritten until it is fixed (#858). Holds the reason.
+    KeybindingsFileError(String),
 }
 
 /// Singleton model containing user configurable file entities like themes, launch configs, and
@@ -86,6 +90,9 @@ pub struct WarpConfig {
     tab_config_errors: Vec<TabConfigError>,
     theme_config: WarpThemeConfig,
     local_user_workflows: Vec<Workflow>,
+    /// Why `keybindings.yaml` could not be used, if it could not (#858).
+    /// Kept so a workspace created after the error was found can still show it.
+    keybindings_file_error: Option<String>,
 }
 
 /// Platform-independent parts of WarpConfig.
@@ -115,6 +122,27 @@ impl WarpConfig {
 
     pub fn local_user_workflows(&self) -> &Vec<Workflow> {
         &self.local_user_workflows
+    }
+
+    /// Why `keybindings.yaml` could not be used, if it could not.
+    pub fn keybindings_file_error(&self) -> Option<&str> {
+        self.keybindings_file_error.as_deref()
+    }
+
+    /// Forgets a previously recorded `keybindings.yaml` error (the file has
+    /// since been read successfully). Toasts already shown stay until dismissed.
+    pub fn clear_keybindings_file_error(&mut self) {
+        self.keybindings_file_error = None;
+    }
+
+    /// Records that `keybindings.yaml` could not be used and tells every
+    /// workspace. Repeats of the same reason are not re-announced.
+    pub fn set_keybindings_file_error(&mut self, reason: String, ctx: &mut ModelContext<Self>) {
+        if self.keybindings_file_error.as_deref() == Some(reason.as_str()) {
+            return;
+        }
+        self.keybindings_file_error = Some(reason.clone());
+        ctx.emit(WarpConfigUpdateEvent::KeybindingsFileError(reason));
     }
 
     /// Saving the newly created launch configuration to the WarpConfig that we currently
