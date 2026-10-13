@@ -938,6 +938,89 @@ fn finished_cli_subagent_skips_rebuild_when_block_missing() {
 }
 
 #[test]
+fn finished_cli_subagent_without_exchange_does_not_panic_or_create_card() {
+    // Issue #881: under CPU starvation an Enter typed into a bootstrapping tab was
+    // routed to the agent, the subagent's only request failed with
+    // `UpdateTask(TaskNotInitialized)` before an exchange was appended, and the
+    // `FinishedSubagent` -> `RestoredReadOnly` rebuild then hit
+    // `.expect("Exchange exists.")` in `CLISubagentView::new_with_mode` on the main
+    // thread, killing the whole app. The block still carries matching metadata, so
+    // the rebuild precondition passes; the card must be skipped instead.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        // FinishedSubagent triggers sidecar persistence, which needs GlobalResourceHandlesProvider.
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
+
+        let task_id = TaskId::new("cli-task-failed-request".to_string());
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (block_id, conversation_id) = terminal.update(&mut app, |view, ctx| {
+            // A conversation with no exchange anywhere: neither the subagent task nor
+            // the root task has one, so the BYOP root-task fallback finds nothing too.
+            let conversation_id =
+                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
+                    history_model.start_new_conversation(view.view_id, false, false, ctx)
+                });
+
+            let mut model = view.model.lock();
+            model.simulate_block("echo failed-request", "");
+            let block = model
+                .block_list_mut()
+                .blocks_mut()
+                .iter_mut()
+                .find(|block| block.command_to_string() == "echo failed-request")
+                .expect("simulated block should exist");
+            block.set_agent_interaction_mode(AgentInteractionMetadata::new(
+                None,
+                conversation_id,
+                Some(task_id.clone()),
+                None,
+                false,
+                false,
+            ));
+            (block.id().clone(), conversation_id)
+        });
+
+        terminal.read(&app, |_, ctx| {
+            assert!(
+                BlocklistAIHistoryModel::as_ref(ctx)
+                    .conversation(&conversation_id)
+                    .is_some(),
+                "the conversation must exist, so the test exercises the missing-exchange \
+                 path rather than the missing-conversation one"
+            );
+            assert!(
+                CLISubagentView::initial_exchange(&conversation_id, &task_id, ctx).is_none(),
+                "a conversation with no exchange has nothing for a card to open on"
+            );
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_cli_subagent_controller_event(
+                view.cli_subagent_controller.clone(),
+                &CLISubagentEvent::FinishedSubagent {
+                    block_id: block_id.clone(),
+                    task_id: task_id.clone(),
+                    conversation_id: Some(conversation_id),
+                    initial_requested_command_action_id: None,
+                },
+                ctx,
+            );
+        });
+
+        terminal.read(&app, |view, _| {
+            assert!(
+                !view.cli_subagent_views.contains_key(&block_id),
+                "FinishedSubagent must not create a read-only card for a conversation \
+                 with no exchange"
+            );
+        });
+    });
+}
+
+#[test]
 fn spawned_cli_subagent_associates_anchor_block_with_conversation() {
     // Issue #799: tagging the agent into a running command never associated the anchor
     // command block's `AgentViewVisibility` with the new conversation. Opening the
