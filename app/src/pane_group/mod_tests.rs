@@ -431,6 +431,219 @@ fn test_reattach_panes_restores_hidden_child_when_parent_is_already_fullscreen()
     });
 }
 
+/// Starts a non-empty, in-progress agent conversation in `pane_id`'s terminal view and returns
+/// its id. Non-empty because closing deliberately leaves a brand-new empty conversation alone.
+fn start_running_conversation_in_pane(
+    panes: &PaneGroup,
+    pane_id: PaneId,
+    ctx: &mut ViewContext<PaneGroup>,
+) -> AIConversationId {
+    use crate::ai::agent::{AIAgentExchange, AIAgentExchangeId, AIAgentOutputStatus};
+    use crate::ai::llms::LLMId;
+
+    let terminal_view_id = panes
+        .terminal_view_from_pane_id(pane_id, ctx)
+        .expect("pane should have a terminal view")
+        .id();
+    let conversation_id = start_parent_conversation_for_terminal_view(terminal_view_id, ctx);
+    BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+        let exchange = AIAgentExchange {
+            id: AIAgentExchangeId::new(),
+            input: vec![],
+            output_status: AIAgentOutputStatus::Streaming { output: None },
+            added_message_ids: Default::default(),
+            start_time: chrono::Local::now(),
+            finish_time: None,
+            time_to_first_token_ms: None,
+            working_directory: None,
+            model_id: LLMId::from("test-model"),
+            request_cost: None,
+            coding_model_id: LLMId::from("test-coding-model"),
+            cli_agent_model_id: LLMId::from("test-cli-agent-model"),
+            computer_use_model_id: LLMId::from("test-computer-use-model"),
+            response_initiator: None,
+        };
+        history
+            .conversation_mut(&conversation_id)
+            .expect("conversation should exist")
+            .append_reassigned_exchange(
+                &crate::ai::blocklist::ResponseStreamId::new_for_test(),
+                exchange,
+                terminal_view_id,
+                ctx,
+            )
+            .expect("exchange should append");
+        history.update_conversation_status(
+            terminal_view_id,
+            conversation_id,
+            crate::ai::agent::conversation::ConversationStatus::InProgress,
+            ctx,
+        );
+    });
+    conversation_id
+}
+
+fn conversation_status(
+    conversation_id: AIConversationId,
+    ctx: &AppContext,
+) -> Option<crate::ai::agent::conversation::ConversationStatus> {
+    BlocklistAIHistoryModel::as_ref(ctx)
+        .conversation(&conversation_id)
+        .map(|conversation| conversation.status().clone())
+}
+
+/// #848: closing a tab hides its panes for undo (`DetachType::HiddenForClose`), and that path
+/// left the agent running -- it went on streaming, drained its queue and ran queued commands in
+/// the detached shell. Hiding for close must stop the conversation and suspend the view's queue;
+/// restoring the tab lifts the suspension without resuming the conversation.
+#[test]
+fn test_detach_for_close_stops_the_agent_and_reattach_does_not_resume_it() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let pane_id = get_newly_created_pane_id(panes, &[]);
+            let conversation_id = start_running_conversation_in_pane(panes, pane_id, ctx);
+            let terminal_view = panes
+                .terminal_view_from_pane_id(pane_id, ctx)
+                .expect("pane should have a terminal view");
+            assert_eq!(
+                conversation_status(conversation_id, ctx),
+                Some(crate::ai::agent::conversation::ConversationStatus::InProgress)
+            );
+
+            panes.detach_panes(ctx);
+            assert!(terminal_view.as_ref(ctx).is_suspended_for_close());
+            assert_eq!(
+                conversation_status(conversation_id, ctx),
+                Some(crate::ai::agent::conversation::ConversationStatus::Cancelled),
+                "closing the tab must stop its agent"
+            );
+
+            panes.reattach_panes(ctx);
+            assert!(!terminal_view.as_ref(ctx).is_suspended_for_close());
+            assert_eq!(
+                conversation_status(conversation_id, ctx),
+                Some(crate::ai::agent::conversation::ConversationStatus::Cancelled),
+                "restoring the tab must not resume the agent"
+            );
+        });
+    });
+}
+
+/// #848: undoing a tab close re-attaches every pane of the group (`reattach_panes`), including a
+/// pane closed earlier *inside* that tab, which is still closed and still in the undo stack.
+/// Only the panes that actually come back may lose their close suspension; the still-closed
+/// pane keeps it until it is itself restored.
+#[test]
+fn test_undoing_a_tab_close_keeps_a_pane_closed_inside_it_suspended() {
+    let _guard = FeatureFlag::UndoClosedPanes.override_enabled(true);
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            panes.add_terminal_pane(Direction::Right, None, ctx);
+            let kept = panes.pane_id_by_index(0).expect("pane 0 exists");
+            let closed = panes.pane_id_by_index(1).expect("pane 1 exists");
+            let kept_view = panes
+                .terminal_view_from_pane_id(kept, ctx)
+                .expect("terminal pane");
+            let closed_view = panes
+                .terminal_view_from_pane_id(closed, ctx)
+                .expect("terminal pane");
+
+            // Close one pane of the split (hidden for undo), then the whole tab.
+            panes.close_pane(closed, ctx);
+            assert!(panes.is_pane_hidden_for_close(closed));
+            assert!(closed_view.as_ref(ctx).is_suspended_for_close());
+            panes.detach_panes(ctx);
+            assert!(kept_view.as_ref(ctx).is_suspended_for_close());
+
+            // Undo the tab close.
+            panes.reattach_panes(ctx);
+            assert!(!kept_view.as_ref(ctx).is_suspended_for_close());
+            assert!(
+                closed_view.as_ref(ctx).is_suspended_for_close(),
+                "a pane still closed inside the restored tab must stay suspended"
+            );
+            assert!(
+                closed_view
+                    .as_ref(ctx)
+                    .ai_controller()
+                    .as_ref(ctx)
+                    .is_suspended_for_close()
+            );
+
+            // Undo the pane close too.
+            assert!(panes.restore_closed_pane(closed, ctx));
+            assert!(!closed_view.as_ref(ctx).is_suspended_for_close());
+        });
+    });
+}
+
+/// #848: moving a pane to another tab or window (`DetachType::Moved`) is not a close; its agent
+/// keeps running and its queue keeps draining.
+#[test]
+fn test_moving_a_pane_does_not_stop_its_agent() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let pane_id = get_newly_created_pane_id(panes, &[]);
+            let conversation_id = start_running_conversation_in_pane(panes, pane_id, ctx);
+            let terminal_view = panes
+                .terminal_view_from_pane_id(pane_id, ctx)
+                .expect("pane should have a terminal view");
+
+            panes
+                .pane_contents
+                .get(&pane_id)
+                .expect("pane should exist")
+                .as_pane()
+                .detach(panes, DetachType::Moved, ctx);
+
+            assert!(!terminal_view.as_ref(ctx).is_suspended_for_close());
+            assert_eq!(
+                conversation_status(conversation_id, ctx),
+                Some(crate::ai::agent::conversation::ConversationStatus::InProgress),
+            );
+        });
+    });
+}
+
+/// #848: a permanent close (`DetachType::Closed`) used to cancel only the view's *active*
+/// conversation, via `ClearedConversationsInTerminalView`. Every running conversation of the
+/// pane must stop.
+#[test]
+fn test_permanent_close_stops_every_running_conversation_in_the_pane() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let pane_id = get_newly_created_pane_id(panes, &[]);
+            let first = start_running_conversation_in_pane(panes, pane_id, ctx);
+            let second = start_running_conversation_in_pane(panes, pane_id, ctx);
+
+            panes.clean_up_panes(ctx);
+
+            for conversation_id in [first, second] {
+                assert_eq!(
+                    conversation_status(conversation_id, ctx),
+                    Some(crate::ai::agent::conversation::ConversationStatus::Cancelled),
+                );
+            }
+        });
+    });
+}
+
 #[test]
 fn test_restore_closed_pane_restores_hidden_child_when_parent_is_already_fullscreen() {
     let _agent_view = FeatureFlag::AgentView.override_enabled(true);

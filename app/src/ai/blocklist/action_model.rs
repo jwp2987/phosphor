@@ -1015,6 +1015,20 @@ impl BlocklistAIActionModel {
         })
     }
 
+    /// Test-only: records `result` as a finished action result of `conversation_id`, as if an
+    /// earlier action of the current batch had already completed.
+    #[cfg(test)]
+    pub(crate) fn push_finished_action_result_for_test(
+        &mut self,
+        conversation_id: AIConversationId,
+        result: AIAgentActionResult,
+    ) {
+        self.finished_action_results
+            .entry(conversation_id)
+            .or_default()
+            .push(Arc::new(result));
+    }
+
     /// Test-only: queues a single action through the normal dispatch pipeline so
     /// confirmation-requiring actions surface as a pending permission prompt.
     /// Exposed for the `warp_tui` test suite via `tui_test_support`.

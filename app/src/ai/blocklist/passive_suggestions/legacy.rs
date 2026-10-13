@@ -220,6 +220,12 @@ impl PassiveSuggestionsModel {
 
         self.abort_pending_requests(ctx);
 
+        // A closed (undo-restorable) pane makes no suggestion requests (#848). The prompt
+        // suggestion is a direct BYOP call that bypasses the controller's own guard.
+        if self.ai_controller.as_ref(ctx).is_suspended_for_close() {
+            return;
+        }
+
         if should_generate_unit_test_suggestion(block_completed, &self.terminal_model, ctx) {
             self.generate_unit_test_suggestion(block_completed.clone(), ctx);
         } else if should_generate_prompt_suggestions(block_completed, &self.terminal_model, ctx) {

@@ -574,7 +574,32 @@ pub struct BlocklistAIController {
     /// At most 1 kept per conversation; a subsequent request submitted directly by
     /// the user overwrites it.
     pending_byop_requests: HashMap<AIConversationId, PendingByopRequest>,
+    /// True while this controller's pane is closed but restorable from the undo-close stack
+    /// (#848). A closed pane sends nothing: `send_request_input` -- the single place a request
+    /// is started -- refuses, no auto-resume is scheduled, and finished actions neither trigger
+    /// a follow-up nor put their conversation back `InProgress`. Mirrors
+    /// `TerminalView::suspended_for_close`, which sets and clears it.
+    suspended_for_close: bool,
 }
+
+/// `send_request_input`'s refusal while the pane is closed (#848). Expected, not a failure:
+/// callers log it at debug level rather than as an error.
+#[derive(Debug)]
+pub(crate) struct SuspendedForCloseError {
+    conversation_id: AIConversationId,
+}
+
+impl std::fmt::Display for SuspendedForCloseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "not sending a request from a closed pane (conversation {:?})",
+            self.conversation_id
+        )
+    }
+}
+
+impl std::error::Error for SuspendedForCloseError {}
 
 /// See `pending_byop_requests`.
 struct PendingByopRequest {
@@ -655,6 +680,45 @@ impl BlocklistAIController {
             else {
                 return;
             };
+            // A closed pane sends no follow-up (#848). Closing stops a conversation mid-batch by
+            // cancelling its pending actions, and each cancellation lands here: with an earlier
+            // action of the batch already succeeded, the check below would see a result that
+            // triggers a request and send the batch's results from the closed pane -- the new
+            // turn's auto-executable actions then running in its shell. The action model also
+            // put the conversation back `InProgress` when the batch drained; restore the
+            // `Cancelled` the close set.
+            if me.suspended_for_close {
+                if me
+                    .action_model
+                    .as_ref(ctx)
+                    .has_unfinished_actions_for_conversation(*conversation_id)
+                {
+                    return;
+                }
+                me.action_model.update(ctx, |action_model, _| {
+                    action_model.clear_finished_action_results(*conversation_id);
+                });
+                let history_model = BlocklistAIHistoryModel::handle(ctx);
+                let is_in_progress = history_model
+                    .as_ref(ctx)
+                    .conversation(conversation_id)
+                    .is_some_and(|conversation| conversation.status().is_in_progress());
+                if is_in_progress {
+                    history_model.update(ctx, |history_model, ctx| {
+                        history_model.update_conversation_status(
+                            me.terminal_view_id,
+                            *conversation_id,
+                            ConversationStatus::Cancelled,
+                            ctx,
+                        );
+                    });
+                }
+                QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+                    model.unlock_pending_approval_rows(*conversation_id, ctx)
+                });
+                return;
+            }
+
             let action_model = me.action_model.as_ref(ctx);
             if action_model.has_unfinished_actions_for_conversation(*conversation_id) {
                 return;
@@ -841,7 +905,39 @@ impl BlocklistAIController {
             pending_passive_follow_ups: HashSet::new(),
             pending_passive_suggestion_results: HashMap::new(),
             pending_byop_requests: HashMap::new(),
+            suspended_for_close: false,
         }
+    }
+
+    /// Marks this controller's pane closed (or restored); see `suspended_for_close`.
+    pub fn set_suspended_for_close(&mut self, suspended: bool) {
+        self.suspended_for_close = suspended;
+    }
+
+    pub fn is_suspended_for_close(&self) -> bool {
+        self.suspended_for_close
+    }
+
+    /// Drops everything this controller holds that would otherwise go out with a later request
+    /// for `conversation_id`, because its pane was closed (#848): the results of actions that
+    /// finished before the close (sent with the next turn, they would make a restored
+    /// conversation silently continue the batch the close stopped), a stashed BYOP request, a
+    /// requested passive follow-up, and queued passive suggestion results.
+    pub fn discard_pending_work_for_close(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.pending_byop_requests.remove(&conversation_id);
+        self.pending_passive_follow_ups.remove(&conversation_id);
+        self.pending_passive_suggestion_results
+            .remove(&conversation_id);
+        if let Some(handle) = self.pending_auto_resume_handles.remove(&conversation_id) {
+            handle.abort();
+        }
+        self.action_model.update(ctx, |action_model, _| {
+            action_model.clear_finished_action_results(conversation_id);
+        });
     }
 
     /// Internal method to send a query to the AI model. External callers should use either
@@ -1032,6 +1128,8 @@ impl BlocklistAIController {
                     pending.category(),
                     pending.tool_call_count()
                 );
+            } else if e.downcast_ref::<SuspendedForCloseError>().is_some() {
+                log::debug!("{e}");
             } else {
                 log::error!("Failed to send agent request: {e:?}");
             }
@@ -1870,7 +1968,9 @@ impl BlocklistAIController {
             // Pending, the Err has already been re-written into pending_byop_requests
             // internally by send_request_input; other errors are handled by the
             // controller's existing paths.
-            if e.downcast_ref::<PendingByopToolResultsError>().is_none() {
+            if e.downcast_ref::<SuspendedForCloseError>().is_some() {
+                log::debug!("{e}");
+            } else if e.downcast_ref::<PendingByopToolResultsError>().is_none() {
                 log::error!("[byop-readiness] failed to flush pending BYOP request: {e:?}");
             }
         }
@@ -2007,6 +2107,11 @@ impl BlocklistAIController {
         resume: PendingResume,
         ctx: &mut ModelContext<Self>,
     ) {
+        // A closed pane schedules no resume (#848): one armed now would fire after an undo and
+        // restart a conversation the close stopped.
+        if self.suspended_for_close {
+            return;
+        }
         let backoff = resume.backoff();
         let recovery = resume.recovery();
         let wait_for_online = NetworkStatus::as_ref(ctx).wait_until_online();
@@ -3273,6 +3378,15 @@ impl BlocklistAIController {
         is_queued_prompt: bool,
         ctx: &mut ModelContext<Self>,
     ) -> anyhow::Result<(AIConversationId, ResponseStreamId)> {
+        // Every request -- a user query, an action follow-up, a resume, a retry-by-resume, a
+        // flushed BYOP request, a passive suggestion -- starts here, so this is the one guard
+        // that keeps a closed pane from talking to a provider (#848).
+        if self.suspended_for_close {
+            return Err(SuspendedForCloseError {
+                conversation_id: request_input.conversation_id,
+            }
+            .into());
+        }
         let history_model = BlocklistAIHistoryModel::handle(ctx);
         let request_snapshot = self.conversation_snapshot_for_request(&request_input, ctx)?;
         let mut conversation_data = request_snapshot.conversation_data;

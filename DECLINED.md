@@ -563,6 +563,43 @@ upstream's behavior is actually a defect rather than a preference.
   a ranked query at the best 1,000, and text that appears only past an entry's first
   4 KiB no longer matches.
 
+- **Closing a tab or pane stops its agent; nothing runs in a closed session** (`#848`,
+  2026-10-13, `app/src/pane_group/pane/terminal_pane.rs`, `app/src/terminal/view.rs`,
+  `app/src/ai/blocklist/controller.rs`). **Upstream:** `TerminalPane::detach` does agent
+  cleanup only for `DetachType::Closed` (clearing the view's conversations, which cancels the
+  *active* one); a `HiddenForClose` detach -- what every tab or pane close is while the
+  undo-close stack holds it -- leaves the agent alone
+  (`4111d08f9:app/src/pane_group/pane/terminal_pane.rs:366`, same shape;
+  `drain_queued_prompts` has no closed-pane check). **The defect:** the detached view keeps
+  its PTY and conversations, so the in-flight request kept streaming, its turn end drained the
+  queued-prompts queue into the provider, and a queued `!` command ran in the closed tab's
+  shell 36-47 s after the close, with a "Task completed" toast (workflows torture run F-B,
+  reproduced on 0.1.11). **We do:** any close detach (tab, pane, or a whole window via
+  `Workspace::on_window_closed` -> `detach_panes`) calls
+  `TerminalView::suspend_agent_work_for_close` on every view in the pane's stack.
+  - Every running conversation (in progress, blocked, transient error, waiting for events;
+    not an empty one, not a shared-session viewer) is stopped: request and actions
+    cancelled, status `Cancelled`, and the results of actions that finished earlier in the
+    batch dropped.
+  - Only a command this conversation's agent requested and is still driving gets Ctrl-C
+    (and a copy parked in the PTY write queue is dropped). The user's own command, one the
+    agent was tagged into or that the user took over, and the idle prompt are left alone.
+  - The view and its `BlocklistAIController` are marked suspended. The controller refuses
+    every request in `send_request_input`, which covers action follow-ups, resumes, flushed
+    BYOP requests and passive suggestions. It also arms no auto-resume, and a finished
+    batch neither sends a follow-up nor goes back to `InProgress`. Passive suggestions are
+    aborted and not started. The queue drain and LRC delivery fire and restore nothing,
+    one-shot finished callbacks see `Cancelled`, and a taken-over agent command that exits
+    does not auto-resume.
+  - A cancelled `ResponseStream` keeps no scheduled resume and runs no parked
+    retry-when-online. That applies to every cancel, including a manual Ctrl-C.
+  - Undo-close lifts the suspension in `attach` (not for a pane still closed inside the
+    restored tab) but resumes nothing; the queue comes back intact to send or delete.
+    Discarding the pane clears the conversations, which drops their queues as before. A
+    permanent close now also stops non-active running conversations.
+  - Quitting closes windows the same way, so a conversation running at quit is restored on
+    the next launch as `Cancelled` rather than as still running.
+
 - **An incremental find rescan does not flash the find bar's scanning label**
   (`#815`, 2026-10-12, `app/src/terminal/find/model/async_find.rs`). **Upstream:**
   `AsyncFindController::invalidate_block` sets `status = Scanning` for every

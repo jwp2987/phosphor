@@ -1357,3 +1357,65 @@ fn pty_write_gate_stall_logs_itself_without_further_input() {
         drop(model_events_tx);
     });
 }
+
+/// #848: closing a pane drops an agent command still parked in the write queue (waiting for
+/// the line editor), so it never runs in the closed pane. Only non-in-band commands go:
+/// queued keystrokes and in-band commands stay.
+#[test]
+fn discard_pending_command_writes_drops_only_non_in_band_commands() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        controller.update(&mut app, |controller, _| {
+            controller.pending_writes.push_back(PtyWrite::Bytes {
+                bytes: b"keystrokes".to_vec().into(),
+            });
+            controller.pending_writes.push_back(PtyWrite::Command {
+                command: "touch ~/closed-tab-ran".to_owned(),
+                shell_type: ShellType::Zsh,
+                in_band_command_id: None,
+                before_write_fn: None,
+            });
+            controller.pending_writes.push_back(PtyWrite::Command {
+                command: "in-band".to_owned(),
+                shell_type: ShellType::Zsh,
+                in_band_command_id: Some("in-band-1".to_owned()),
+                before_write_fn: None,
+            });
+
+            controller.discard_pending_command_writes();
+
+            assert_eq!(controller.pending_writes.len(), 2);
+            assert!(matches!(
+                &controller.pending_writes[0],
+                PtyWrite::Bytes { bytes } if &bytes[..] == b"keystrokes"
+            ));
+            assert!(matches!(
+                &controller.pending_writes[1],
+                PtyWrite::Command { in_band_command_id: Some(id), .. } if id == "in-band-1"
+            ));
+        });
+        assert!(sender.messages.lock().is_empty());
+
+        drop(model_events_tx);
+    });
+}

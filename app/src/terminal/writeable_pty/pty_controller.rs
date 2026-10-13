@@ -940,6 +940,21 @@ impl<T: EventLoopSender> PtyController<T> {
         StartCommandOutcome::Accepted
     }
 
+    /// Drops every queued (not yet written) command, so a command parked until the line editor
+    /// becomes active never reaches the shell. Used when the pane that queued it is closed
+    /// (#848). Keystrokes and in-band commands stay queued.
+    pub fn discard_pending_command_writes(&mut self) {
+        self.pending_writes.retain(|pty_write| {
+            !matches!(
+                pty_write,
+                PtyWrite::Command {
+                    in_band_command_id: None,
+                    ..
+                }
+            )
+        });
+    }
+
     /// Synchronously writes the EOT (End-of-Transmission) char to the PTY.
     pub fn write_end_of_transmission_char(&mut self, ctx: &mut ModelContext<Self>) {
         self.write_bytes(&[escape_sequences::C0::EOT][..], ctx);
