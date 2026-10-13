@@ -755,6 +755,25 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
   }
   zle -N warp_report_input
 
+  # Home, End and Delete as terminals send them (Phosphor sends CSI or SS3 H/F, and CSI 3~;
+  # other terminals use 1~/4~ and 7~/8~). zsh binds none of them by default, so keys typed ahead
+  # into zle -- while a command runs, or after Enter with the typeahead hand-off -- arrived as
+  # unbound garbage and the wrong command ran (#885). Bound once here, in every standard keymap
+  # (`main` is a link to emacs or viins), so a user's zshrc, sourced after this, can still rebind
+  # them.
+  () {
+    local warp_keymap warp_sequence
+    for warp_keymap in emacs viins vicmd; do
+      for warp_sequence in '\e[H' '\eOH' '\e[1~' '\e[7~'; do
+        bindkey -M "$warp_keymap" "$warp_sequence" beginning-of-line 2>/dev/null || :
+      done
+      for warp_sequence in '\e[F' '\eOF' '\e[4~' '\e[8~'; do
+        bindkey -M "$warp_keymap" "$warp_sequence" end-of-line 2>/dev/null || :
+      done
+      bindkey -M "$warp_keymap" '\e[3~' delete-char 2>/dev/null || :
+    done
+  }
+
   function clear() {
       warp_send_json_message "{\"hook\": \"Clear\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
   }

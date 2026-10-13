@@ -949,6 +949,17 @@ upstream's behavior is actually a defect rather than a preference.
   `GLOB_RESULT_LIMIT` cap as the sole backstop — identical to pre-fix behavior for anything
   that isn't a real tool call carrying a smaller `limit`.
 
+- **zsh binds Home, End and Delete as terminals send them** (`#885`, 2026-10-13,
+  `app/assets/bundled/bootstrap/zsh_body.sh`). **Upstream:** the zsh bootstrap binds none of
+  `\e[H` `\eOH` `\e[1~` `\e[7~` (Home), `\e[F` `\eOF` `\e[4~` `\e[8~` (End) or `\e[3~`
+  (Delete), and `zsh -f` has none by default (byte-identical at `4111d08f9`). **The defect:** keys
+  typed ahead into zle -- while a command runs, or after Enter with the typeahead hand-off --
+  reach it unbound, so `echo ac` Left `b` End ` > f` ran a different command than typed. bash
+  is unaffected: readline binds the CSI/SS3 forms and `\e[3~` in emacs, vi-insert and
+  vi-command by default. **We do:** bind them once at bootstrap in emacs, viins and vicmd to
+  beginning-of-line, end-of-line and delete-char; a user's zshrc, sourced after, can rebind
+  them. <!-- markers: keep:input_reporting_sequence -->
+
 - **The input-report and kill-line bindings are installed in the vi command keymaps too**
   (`#826`/`#827`, 2026-10-13, `app/assets/bundled/bootstrap/zsh_body.sh`,
   `app/assets/bundled/bootstrap/bash_body.sh`). **Upstream:** zsh binds `\ei` with a plain
