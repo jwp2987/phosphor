@@ -133,12 +133,26 @@ fn build_grep_command_uses_long_null_option_not_short_z() {
 fn build_grep_list_files_command_lists_recursively() {
     let queries = vec!["needle".to_string()];
 
-    let command = build_grep_list_files_command(&queries, "/tmp/repo", ShellType::Bash);
+    let command = build_grep_list_files_command(&queries, "/tmp/repo");
 
     assert_eq!(
         command,
         "grep --color=never -rlIE --devices=skip -e 'needle' '/tmp/repo'"
     );
+}
+
+/// #867: a query with a control character stays plain single-quoted inside the `sh` script
+/// (dash has no `$'...'`), and the outer quoting escapes it for the session's shell, so no raw
+/// control character is typed into the PTY.
+#[test]
+fn build_grep_content_scan_command_escapes_control_characters_only_in_the_outer_layer() {
+    let queries = vec!["a\tb".to_string()];
+
+    let command = build_grep_content_scan_command(&queries, "/tmp/repo", ShellType::Bash);
+
+    assert!(command.starts_with("sh -c $'files=$(grep "), "{command}");
+    assert!(command.contains(r"-e \x27a\x09b\x27"), "{command}");
+    assert!(!command.chars().any(char::is_control), "{command:?}");
 }
 
 #[test]

@@ -9,7 +9,7 @@ use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use typed_path::{TypedPath, TypedPathBuf};
 use warp_command_signatures::{IconType, PathSuggestionType};
-use warp_util::path::{HOME_DIR_ENV_VAR_PREFIX, ShellFamily};
+use warp_util::path::{HOME_DIR_ENV_VAR_PREFIX, ShellDialect, ShellFamily};
 
 use crate::completer::suggest::Priority;
 use crate::completer::{
@@ -251,6 +251,10 @@ impl<'a> PathCompletionContext for CdpathOverrideContext<'a> {
         self.inner.shell_family()
     }
 
+    fn shell_dialect(&self) -> ShellDialect {
+        self.inner.shell_dialect()
+    }
+
     fn pwd(&self) -> TypedPath<'_> {
         self.cdpath_pwd.to_path()
     }
@@ -337,13 +341,14 @@ async fn list_directory_contents(
                         // distinguish between a tilde representing the home directory and a literal
                         // tilde. `shell_escape()` will doubly escape an escaped tilde which is
                         // incorrect so we correct that behavior here.
-                        ctx.shell_family()
+                        ctx.shell_dialect()
                             .shell_escape(split_path.directory_relative_path_name.as_str())
                             .replace(r"\\\~", r"\~")
                     },
                     // Home directory expansion is never needed on file names, so we use the
-                    // standard `escape()`.
-                    ctx.shell_family().escape(file_name.as_str())
+                    // standard `escape()`. The dialect, not the family: a name with a control
+                    // character must be spelled for the exact shell (#867).
+                    ctx.shell_dialect().escape(file_name.as_str())
                 )
             };
 

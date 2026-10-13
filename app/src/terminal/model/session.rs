@@ -22,7 +22,7 @@ use std::sync::Arc;
 use typed_path::{TypedPath, TypedPathBuf, WindowsPath};
 use warp_util::path::{
     convert_msys2_to_windows_native_path, convert_wsl_to_windows_host_path, msys2_exe_to_root,
-    ShellFamily,
+    ShellDialect, ShellFamily,
 };
 
 use version_compare::Version;
@@ -1027,6 +1027,11 @@ impl Session {
         self.shell().shell_type().into()
     }
 
+    /// The exact quoting syntax of this session's shell; see [`ShellDialect`].
+    pub fn shell_dialect(&self) -> ShellDialect {
+        self.shell().shell_type().into()
+    }
+
     pub fn launch_data(&self) -> Option<&ShellLaunchData> {
         self.info.launch_data.as_ref()
     }
@@ -1616,11 +1621,12 @@ impl Session {
             .as_deref()
             .map(|path| HashMap::from_iter([("PATH".to_string(), path.to_string())]));
 
-        let escaped_history_file =
-            shell_escape_single_quotes(history_file, self.info.shell.shell_type());
+        // `shell_quote_arg`, not bare single quotes: a control character in the path must not
+        // be typed into the PTY raw (#867).
+        let quoted_history_file = shell_quote_arg(history_file, self.info.shell.shell_type());
         let output_in_bytes = self
             .execute_command(
-                format!("cat '{escaped_history_file}'").as_str(),
+                format!("cat {quoted_history_file}").as_str(),
                 None,
                 env_vars,
                 ExecuteCommandOptions::default(),

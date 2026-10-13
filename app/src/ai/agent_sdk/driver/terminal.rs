@@ -11,7 +11,7 @@ use std::{
 use futures::channel::oneshot;
 use warp_completer::completer::CommandOutput;
 use warp_core::command::ExitCode;
-use warp_util::path::ShellFamily;
+use warp_util::path::ShellDialect;
 use warpui::{r#async::FutureExt, AppContext, Entity, ModelContext, ModelHandle, ViewHandle};
 
 use crate::ai::agent::redaction::redact_secrets;
@@ -390,16 +390,17 @@ impl TerminalDriver {
     /// Build the shell-aware `cd <escaped>` command for the active session.
     ///
     /// Shared between [`Self::cd`] and [`Self::cd_silent`] so both paths use
-    /// the same [`ShellFamily::shell_escape`] logic (posix single-quoting,
-    /// fish backslash, pwsh double-quote doubling) and don't drift.
+    /// the same [`ShellDialect::shell_escape`] logic (backslash escaping, with
+    /// control characters spelled per shell: `$'..'` for bash/zsh, fish's `\xHH`,
+    /// pwsh `$([char]..)`) and don't drift.
     fn build_cd_command(&self, target: &str, ctx: &AppContext) -> String {
-        let shell_family = self.terminal_view.read(ctx, |terminal, app| {
+        let shell_dialect = self.terminal_view.read(ctx, |terminal, app| {
             terminal
                 .active_session_shell_type(app)
-                .map(ShellFamily::from)
-                .unwrap_or(ShellFamily::Posix)
+                .map(ShellDialect::from)
+                .unwrap_or(ShellDialect::Posix)
         });
-        let escaped_target = shell_family.shell_escape(target);
+        let escaped_target = shell_dialect.shell_escape(target);
         format!("cd {escaped_target}")
     }
 

@@ -27,8 +27,10 @@ pub enum ExecutorCommandEvent {
 pub fn shell_escape_single_quotes(command: &str, shell_type: ShellType) -> String {
     match shell_type {
         ShellType::Fish => {
-            // Backslash-escape single quotes for Fish.
-            command.replace('\'', r"\'")
+            // Inside fish single quotes both `\\` and `\'` are escapes, so backslashes must be
+            // doubled before quotes are escaped. Escaping only the quote turned a trailing `\`
+            // into `\'`, which swallowed the closing quote, and collapsed `\\` to `\` (#867).
+            command.replace('\\', r"\\").replace('\'', r"\'")
         }
         ShellType::PowerShell => {
             // In powershell we escape single quotes using two single quotes ''
@@ -52,8 +54,28 @@ pub fn shell_escape_single_quotes(command: &str, shell_type: ShellType) -> Strin
 ///
 /// Use this for complete interpolated arguments in generated command strings,
 /// not for fragments that intentionally contain operators, pipes, or flags.
+///
+/// A value with a control character is not single-quoted: quoting keeps it one word, but the
+/// character would still be typed into the PTY raw, where the line editor acts on it (a CR
+/// submits the line). Such a value is spelled with the shell's escape syntax instead (#867).
 pub fn shell_quote_arg(value: &str, shell_type: ShellType) -> String {
+    if value
+        .chars()
+        .any(warp_util::path::needs_control_char_quoting)
+    {
+        return warp_util::path::ShellDialect::from(shell_type)
+            .escape(value)
+            .into_owned();
+    }
     format!("'{}'", shell_escape_single_quotes(value, shell_type))
+}
+
+/// Single-quotes a word for a POSIX `sh` script that is itself passed as one argument, e.g.
+/// `sh -c {shell_quote_arg(script)}`. Control characters stay raw here on purpose: `sh` (dash)
+/// has no `$'...'`, and the outer [`shell_quote_arg`] escapes the whole script for the
+/// session's shell, so nothing raw reaches the PTY. Never use this for a word typed directly.
+pub fn sh_script_quote_arg(value: &str) -> String {
+    format!("'{}'", shell_escape_single_quotes(value, ShellType::Bash))
 }
 
 #[cfg(test)]

@@ -1615,7 +1615,7 @@ impl TerminalView {
 }
 
 fn read_from_clipboard(ctx: &mut ViewContext<TerminalView>) -> String {
-    TerminalView::read_from_clipboard(Some(ShellFamily::Posix), ctx)
+    TerminalView::read_from_clipboard(Some(ShellDialect::Posix), ctx)
 }
 
 #[test]

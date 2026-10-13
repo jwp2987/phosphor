@@ -18,7 +18,7 @@ use warp_completer::completer::{
 };
 use warp_completer::signatures::CommandRegistry;
 use warp_core::features::FeatureFlag;
-use warp_util::path::{EscapeChar, ShellFamily};
+use warp_util::path::{EscapeChar, ShellDialect, ShellFamily};
 use warpui::{AppContext, SingletonEntity};
 
 use crate::safe_warn;
@@ -233,7 +233,8 @@ impl SessionContext {
                     .as_deref()
                     .map(|path| HashMap::from_iter([("PATH".to_string(), path.to_string())]));
 
-                let Some(ls_command) = ls_script_for_dir(directory) else {
+                let Some(ls_command) = ls_script_for_dir(directory, self.session.shell_dialect())
+                else {
                     return vec![];
                 };
 
@@ -291,6 +292,10 @@ impl PathCompletionContext for SessionContext {
 
     fn shell_family(&self) -> ShellFamily {
         self.session.shell_family()
+    }
+
+    fn shell_dialect(&self) -> ShellDialect {
+        self.session.shell_dialect()
     }
 
     async fn list_directory_entries(&self, directory: TypedPathBuf) -> Arc<Vec<EngineDirEntry>> {
@@ -584,13 +589,17 @@ impl CompletionContext for EmptyCompletionContext {
 /// This uses `find` instead of `ls` due to the challenges of parsing `ls` output for
 /// unusual file names (e.g.: ones including newlines).
 /// We intentionally ignore '.' and '..' here as we add those suggestions manually.
-fn ls_script_for_dir(directory: &TypedPath) -> Option<String> {
+///
+/// The script is written to the session's PTY by the in-band executor, so the directory is
+/// escaped for the session's exact shell: a raw control character in it would be acted on by
+/// the line editor (#867).
+fn ls_script_for_dir(directory: &TypedPath, dialect: ShellDialect) -> Option<String> {
     // We need to cd into the directory we want completions for
     let Some(dir_str) = directory.to_str() else {
         log::warn!("Non-unicode character found in path: `{directory:?}`");
         return None;
     };
-    let escaped_dir = warp_util::path::ShellFamily::Posix.shell_escape(dir_str);
+    let escaped_dir = dialect.shell_escape(dir_str);
 
     // Get all directories with -print0, which makes all items end in `\0` (null character)
     // Get all files with -print0, which makes all items end in `\0`

@@ -614,14 +614,14 @@ pub fn get_image_filepaths_from_paths(paths: &[String]) -> Vec<String> {
 /// Create escaped file paths text string for insertion into terminal.
 pub fn escaped_paths_str(
     paths: &[String],
-    shell_family: Option<warp_util::path::ShellFamily>,
+    shell_dialect: Option<warp_util::path::ShellDialect>,
 ) -> String {
     // Handle regular file paths as text
     #[allow(unused_mut)]
     let mut input = paths
         .iter()
-        .map(|path| match shell_family {
-            Some(shell_family) => shell_family.escape(path.as_ref()),
+        .map(|path| match shell_dialect {
+            Some(shell_dialect) => shell_dialect.escape(path.as_ref()),
             None => std::borrow::Cow::Borrowed(path.as_ref()),
         })
         .join(" ");
