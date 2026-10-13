@@ -74,6 +74,11 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
   # We use an empty string as the sentinel value (rather than unsetting) for
   # compatibility with `setopt nounset`.
   _WARP_GENERATOR_COMMAND=""
+  # Set by warp_preexec, cleared by warp_precmd; see _warp_repair_hooks (#828).
+  _WARP_PRECMD_PENDING=""
+  # Set once the lifecycle hooks are registered; before that their absence from
+  # precmd_functions/preexec_functions is normal, not something to repair.
+  _WARP_HOOKS_INSTALLED=""
   # Make sure we delete generator PID files when the shell exits, if they exist.
   __warp_generator_pid_file_cleanup() {
     if [[ -f $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE ]]; then
@@ -272,6 +277,10 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
   # Note that this is very performance sensitive code, so try not to
   # invoke any external commands in here.
   warp_preexec () {
+      # Phosphor (#828): a Preexec is out; the block it opens is finished only by
+      # warp_precmd. _warp_repair_hooks reads this to tell whether a prompt cycle
+      # skipped that precmd (and so owes one) or already ran it.
+      _WARP_PRECMD_PENDING=1
       local warp_escaped_command="$(warp_escape_json $1)"
       warp_send_json_message "{\"hook\": \"Preexec\", \"value\": {\"command\": \"$warp_escaped_command\", \"session_id\": $WARP_SESSION_ID}}"
       warp_maybe_send_reset_grid_osc
@@ -336,6 +345,12 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
       # previously run user command (as opposed to any of the commands executed
       # in this function below).
       local exit_code=$?
+      # Phosphor (#828): _warp_repair_hooks runs this outside the precmd hook,
+      # where $? is no longer the user's command; it passes that status here.
+      if [[ -n ${1:-} ]]; then
+        exit_code=$1
+      fi
+      _WARP_PRECMD_PENDING=""
       # Compute the next block ID once so the CommandFinished hook and the following Precmd hook
       # report the same ID. The Precmd carries this completion metadata so the client can classify
       # it and, if the CommandFinished was missed, recover the completion.
@@ -1227,6 +1242,10 @@ esac
   # See https://zsh.sourceforge.io/Doc/Release/Functions.html for more context
   # on the zshaddhistory hook.
   _warp_zshaddhistory() {
+    # Phosphor (#828): last-resort repair, for when the zle-line-init repair
+    # below did not run (a plugin or the user replaced that widget too). Each
+    # zshaddhistory function sees the previous command's status in $?.
+    _warp_repair_hooks $?
     _is_warp_generator_command "$1"
   }
 
@@ -1322,6 +1341,97 @@ esac
 
   precmd_functions+=(warp_precmd warp_update_prompt_vars)
   preexec_functions+=(warp_preexec)
+  _WARP_HOOKS_INSTALLED=1
+
+  # Phosphor (#828): assigning the hook arrays at the prompt
+  # (`precmd_functions=(myp)`, `precmd_functions=(); preexec_functions=()`, a
+  # sourced script doing the same) drops our hooks. The command that did it had
+  # already sent its Preexec, so without warp_precmd its block never gets a
+  # CommandFinished: it keeps its running timer forever, the input editor never
+  # comes back, and every later command runs raw inside it. This is the zsh twin
+  # of #807 (bash: PROMPT_COMMAND reassigned).
+  #
+  # The repair has to run from somewhere the user's assignment did not touch.
+  # The primary point is the zle-line-init widget: ZLE runs it at every prompt,
+  # right after the (now hook-less) precmd stage, so the stuck block is finished
+  # before the user types anything, and it sees the status of the command that
+  # just ran in $?. TRAPDEBUG was rejected (runs before every command, and would
+  # clobber a user's DEBUG trap); re-registering from another hook array only
+  # moves the problem to that array. The zshaddhistory hook above is the
+  # fallback for when zle-line-init gets replaced after us: it repairs on the
+  # next accepted line instead, before that line's preexec, so the next command
+  # still gets a block of its own.
+  #
+  # Returns 0 when it emitted the precmd that the prompt cycle skipped.
+  _warp_repair_hooks() {
+    [[ -n ${_WARP_HOOKS_INSTALLED:-} ]] || return 1
+    local -a warp_missing_precmd warp_missing_preexec
+    local warp_fn
+    # Only the lifecycle hooks trigger a repair. The title hooks are cosmetic
+    # and a user may legitimately remove them on their own (`add-zsh-hook -d
+    # precmd warp_set_title_idle_on_precmd`), so they are only put back
+    # alongside a lifecycle hook, i.e. when the whole array was replaced.
+    for warp_fn in warp_precmd warp_update_prompt_vars; do
+      (( ${precmd_functions[(Ie)$warp_fn]} )) || warp_missing_precmd+=($warp_fn)
+    done
+    (( ${preexec_functions[(Ie)warp_preexec]} )) || warp_missing_preexec+=(warp_preexec)
+    (( ${#warp_missing_precmd} + ${#warp_missing_preexec} )) || return 1
+
+    if (( ${#warp_missing_precmd} )) && (( ! ${precmd_functions[(Ie)warp_set_title_idle_on_precmd]} )); then
+      warp_missing_precmd=(warp_set_title_idle_on_precmd $warp_missing_precmd)
+    fi
+    if (( ${#warp_missing_preexec} )) && (( ! ${preexec_functions[(Ie)warp_set_title_active_on_preexec]} )); then
+      warp_missing_preexec=(warp_set_title_active_on_preexec $warp_missing_preexec)
+    fi
+    # Append, keeping whatever the user put in the arrays; ours run after
+    # theirs, as they do after bootstrap. warp_update_prompt_vars must stay
+    # last (see its own comment), so move it behind whatever is re-added.
+    if (( ${#warp_missing_precmd} )); then
+      precmd_functions=(${precmd_functions:#warp_update_prompt_vars} ${warp_missing_precmd:#warp_update_prompt_vars} warp_update_prompt_vars)
+    fi
+    preexec_functions+=($warp_missing_preexec)
+
+    # Emit the precmd only if a Preexec is still waiting for it. zsh runs the
+    # precmd stage over a copy of the array, so a precmd function that removes
+    # ours still lets ours run for that prompt -- then nothing is owed, and
+    # emitting again would finish a block twice.
+    if (( ${warp_missing_precmd[(Ie)warp_precmd]} )) && [[ -n ${_WARP_PRECMD_PENDING:-} ]]; then
+      if (( ${warp_missing_precmd[(Ie)warp_set_title_idle_on_precmd]} )); then
+        warp_set_title_idle_on_precmd
+      fi
+      warp_precmd "${1:-0}"
+      warp_update_prompt_vars
+      return 0
+    fi
+    return 1
+  }
+
+  # zle-line-init: chain to whatever widget the user's rc files installed rather
+  # than replacing it. Ours runs first because only the outermost widget sees
+  # the previous command's status in $?; the status is handed on to the user's
+  # widget unchanged. Not add-zle-hook-widget: its dispatcher runs other hooks
+  # (and a zstyle lookup) before ours, so $? would no longer be that status.
+  _warp_zle_line_init() {
+    local warp_status=$?
+    # Only the main command line: vared, `read -q`-style prompts and
+    # continuation lines also start ZLE, possibly while a command is running.
+    if [[ ${CONTEXT:-} == start ]] && _warp_repair_hooks $warp_status; then
+      # The prompt was drawn before the hooks above ran; draw it again so it
+      # lands in the new block, after its Precmd.
+      zle .reset-prompt
+    fi
+    if zle -la _warp_user_zle_line_init; then
+      # Without -w, $WIDGET stays zle-line-init for the user's widget.
+      () { return $1 } $warp_status
+      zle _warp_user_zle_line_init -N -- "$@"
+    fi
+  }
+  if [[ "$(zle -lL zle-line-init 2>/dev/null)" != *_warp_zle_line_init* ]]; then
+    if zle -la zle-line-init; then
+      zle -A zle-line-init _warp_user_zle_line_init
+    fi
+    zle -N zle-line-init _warp_zle_line_init
+  fi
 
   WARP_BOOTSTRAPPED=1
 
