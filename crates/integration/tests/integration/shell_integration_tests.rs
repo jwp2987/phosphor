@@ -78,6 +78,9 @@ integration_tests! {
     test_color_overrides_in_prompt_dont_crash,
     // Tests zsh-specific behavior with nounset option.
     test_zsh_bootstraps_with_nounset_option,
+    // Tests bash-specific behavior with nounset (#825).
+    test_bash_bootstraps_with_nounset_option,
+    test_bash_bootstraps_with_nounset_in_rcfile,
     // Tests PowerShell-specific behavior with PSReadLine's vi edit mode.
     test_pwsh_vi_edit_mode_does_not_corrupt_commands,
 

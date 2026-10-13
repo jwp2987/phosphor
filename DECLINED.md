@@ -1493,3 +1493,25 @@ upstream's behavior is actually a defect rather than a preference.
   The fork-only `new_keyboard_mode_stack` marker is inert at re-pin (#752), so the row is also
   anchored on `KEYBOARD_MODE_STACK_MAX_DEPTH`, which exists at both the fork and the pin
   (`4111d08f9:crates/warp_terminal/src/model/grid/grid_handler.rs:94`). <!-- markers: keep:new_keyboard_mode_stack keep:KEYBOARD_MODE_STACK_MAX_DEPTH keep:test_keyboard_mode_stack_is_still_bounded_without_preallocation -->
+
+- **The bash hooks survive the user's `set -u` / `set -e` / `set -o pipefail`** (`#825`,
+  2026-10-13, `app/assets/bundled/bootstrap/bash_body.sh`, `bash.sh`,
+  `bash_init_shell.sh`, `bash_init_subshell.sh`). **Upstream:** the hooks expand unset
+  variables bare -- first `if [ ! -z  $_WARP_GENERATOR_COMMAND ]` in `warp_precmd`
+  (`42effe840:app/assets/bundled/bootstrap/bash_body.sh:462`, byte-identical), then
+  `$WARP_DISABLE_AUTO_TITLE`, `$SAVED_PS1`, `$VIRTUAL_ENV`, `$WARP_SSH_REUSE_CONTROL_MASTER`
+  and dozens more -- and run under whatever options the user's shell has. **The defect:**
+  type `set -u` at a bash prompt and the precmd hook aborts with "unbound variable" before
+  it emits Precmd; the block never finishes, Enter and ctrl-c do nothing, `set +u` cannot be
+  submitted, and only closing the tab recovers. A `set -u` in `~/.bashrc` breaks bootstrap
+  itself. zsh already handled `setopt nounset` (`test_zsh_bootstraps_with_nounset_option`);
+  bash did not. **We do:** every Warp hook entry point (precmd, preexec, title hooks,
+  `warp_update_prompt_vars`, the `bind -x` handlers, `warp_run_generator_command`, `clear`,
+  `ssh`, ...) runs through `__warp_run_relaxed`, which turns errexit/nounset/pipefail off for
+  the hook's own body and restores exactly the caller's state on the way out, passing `$?`
+  in and the hook's status out; the bootstrap does the same around itself and hands back
+  what the user's rcfiles turned on. The expansions are also nounset-safe (`${VAR:-}`), and
+  the vendored bash-preexec dispatcher got upstream-style `${...:-}` guards only -- it still
+  runs the user's own precmd/preexec functions under the user's options. Checked without a
+  build by `script/test_bash_bootstrap_nounset` (real bash in a pty); through the app by
+  `test_bash_bootstraps_with_nounset_option` and `test_bash_bootstraps_with_nounset_in_rcfile`. <!-- markers: keep:test_bash_bootstraps_with_nounset_option keep:test_bash_bootstraps_with_nounset_in_rcfile -->

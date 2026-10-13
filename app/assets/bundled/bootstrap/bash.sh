@@ -2,7 +2,7 @@
  # Warp bootstrap script contents from showing up in the history.
 
  # Keep track of whether bash-preexec was included in /etc/bash.bashrc.
- if [[ $bash_preexec_imported == "defined" || $__bp_imported == "defined" ]]; then
+ if [[ ${bash_preexec_imported:-} == "defined" || ${__bp_imported:-} == "defined" ]]; then
      BASH_PREEXEC_IN_ETC_BASHRC=1
  fi
  # Ensure that nothing already loaded by the shell (e.g.: bash-preexec sourced
@@ -177,7 +177,7 @@
 
          # Invoke every function defined in our function array.
          local precmd_function
-         for precmd_function in "${precmd_functions[@]}"; do
+         for precmd_function in "${precmd_functions[@]:-}"; do
 
              # Only execute this function if it actually exists.
              # Test existence of functions with: declare -[Ff]
@@ -201,7 +201,7 @@
          # reassignment (e.g. `PROMPT_COMMAND+=(...)` on bash 5.1 keeps the old
          # elements), so the repaired value never carries a hook twice.
          user_prompt_command=
-         for line in "${PROMPT_COMMAND[@]}"; do
+         for line in "${PROMPT_COMMAND[@]:-}"; do
              case "$line" in
                  __bp_precmd_invoke_cmd|__bp_interactive_mode|"") continue ;;
              esac
