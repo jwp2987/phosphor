@@ -707,6 +707,16 @@ fn apply_scroll_multiplier(event: &mut Event, app: &AppContext) {
 
 /// Runs the app. If a subcommand was requested, it'll be run instead of the main application.
 pub fn run() -> Result<()> {
+    // First, while the process is still single-threaded; every worker re-exec (terminal server,
+    // plugin host, ...) of this binary also enters here.
+    #[cfg(all(
+        target_os = "linux",
+        target_env = "gnu",
+        not(feature = "jemalloc"),
+        not(feature = "dhat_heap_profiling")
+    ))]
+    crate::alloc::tune_glibc_malloc();
+
     // POSIX locale fallback: when LANG/LC_* are all unset, give C/Rust libraries that
     // depend on these env vars (chrono number formatting, libc strftime, etc.) a
     // reasonable UTF-8 default. Deliberately skipped on Windows — the Windows API
