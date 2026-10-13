@@ -1108,7 +1108,7 @@ impl<T: EventLoopSender> PtyController<T> {
             return StartCommandOutcome::Coalesced;
         }
         if self.must_hold_command_behind_unreported_user_line(&source) {
-            self.hold_command_behind_unreported_user_line(command, shell_type, source, ctx);
+            self.hold_command_behind_unreported_user_line(command, shell_type, source, None, ctx);
             return StartCommandOutcome::Accepted;
         }
         let is_editor_command = matches!(source, CommandExecutionSource::User);
@@ -1206,6 +1206,34 @@ impl<T: EventLoopSender> PtyController<T> {
         });
     }
 
+    /// [`Self::write_command`], also applying `annotate_block` (e.g. recording the cloud
+    /// workflow the command came from) to the block the command starts. For a command held
+    /// behind the user's typeahead that block is started only when the command is written, so
+    /// the annotation is applied then rather than to whichever block is active now.
+    pub fn write_command_annotating_block(
+        &mut self,
+        command: &str,
+        shell_type: ShellType,
+        source: CommandExecutionSource,
+        annotate_block: impl FnOnce(&mut TerminalModel) + Send + 'static,
+        ctx: &mut ModelContext<Self>,
+    ) -> StartCommandOutcome {
+        if !self.handoff_held_command_pending
+            && self.must_hold_command_behind_unreported_user_line(&source)
+        {
+            self.hold_command_behind_unreported_user_line(
+                command,
+                shell_type,
+                source,
+                Some(Box::new(annotate_block)),
+                ctx,
+            );
+            return StartCommandOutcome::Accepted;
+        }
+        annotate_block(&mut self.terminal_model.lock());
+        self.write_command(command, shell_type, source, ctx)
+    }
+
     /// Typeahead hand-off: whether a command the hand-off does not own (a queued-prompt-panel or
     /// agent command) must wait, because the shell's line may hold user bytes its kill prefix
     /// would destroy before they were reported. Decided before the command's block is started.
@@ -1237,6 +1265,7 @@ impl<T: EventLoopSender> PtyController<T> {
         command: &str,
         shell_type: ShellType,
         source: CommandExecutionSource,
+        annotate_block: Option<Box<dyn FnOnce(&mut TerminalModel) + Send>>,
         ctx: &mut ModelContext<Self>,
     ) {
         let terminal_model = self.terminal_model.clone();
@@ -1250,6 +1279,9 @@ impl<T: EventLoopSender> PtyController<T> {
                 let mut model = terminal_model.lock();
                 let outcome = start_command_execution_for_source(&mut model, source);
                 if outcome.is_accepted() {
+                    if let Some(annotate_block) = annotate_block {
+                        annotate_block(&mut model);
+                    }
                     model.end_in_band_command_output(false);
                     model.typeahead_handoff_mut().on_uncounted_command_written();
                 }

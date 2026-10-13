@@ -105,6 +105,10 @@ where
     /// (`FeatureFlag::TypeaheadHandoff`).
     fn on_typeahead_handoff_changed(&mut self, _ctx: &mut ViewContext<Self>) {}
 
+    /// Called when `command` was not run because another one is already waiting to start
+    /// (`FeatureFlag::TypeaheadHandoff`), so the surface can say so.
+    fn on_command_coalesced(&mut self, _command: &str, _ctx: &mut ViewContext<Self>) {}
+
     /// Called when the active shell launch data is updated (e.g. shell
     /// indicator metadata).
     fn on_active_shell_launch_data_updated(

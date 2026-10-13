@@ -9657,10 +9657,11 @@ impl TerminalView {
     /// in the shell's line. The finished block's `BlockCompleted`, which reinitializes the editor,
     /// is delivered before this precmd, so nothing typed into the editor from here on is wiped.
     ///
-    /// A prompt that leaves the pty owning input (the shell ran no command: an empty Enter, a
-    /// prompt cycle after Ctrl-C) voids any quiet-period reset armed before it, and no
-    /// line-editor activation follows, since the line editor never went inactive. So the
-    /// controller is asked to decide again; it only does while the line editor is active.
+    /// A prompt that ran no command (an empty Enter, a syntax error, a prompt cycle after
+    /// Ctrl-C) voids any quiet-period reset armed before it, and no line-editor activation
+    /// follows, since the line editor never went inactive. So whether the editor took over or
+    /// the pty still owns input, the controller is asked to decide again (draining writes held
+    /// for this prompt, or requesting); it only does while the line editor is active.
     fn commit_typeahead_handoff_at_prompt(&mut self, ctx: &mut ViewContext<Self>) {
         let (committed, still_pty_owned) = {
             let mut model = self.model.lock();
@@ -9670,7 +9671,8 @@ impl TerminalView {
         };
         if committed {
             self.handle_typeahead_handoff_changed(ctx);
-        } else if still_pty_owned {
+        }
+        if committed || still_pty_owned {
             ctx.emit(Event::RetryTypeaheadHandoffRequest);
         }
     }
@@ -26898,6 +26900,15 @@ impl TerminalSurface for TerminalView {
 
     fn on_typeahead_handoff_changed(&mut self, ctx: &mut ViewContext<Self>) {
         self.handle_typeahead_handoff_changed(ctx);
+    }
+
+    fn on_command_coalesced(&mut self, command: &str, ctx: &mut ViewContext<Self>) {
+        const MAX_COMMAND_LENGTH: usize = 43;
+        let truncated_command = truncate_from_end(command, MAX_COMMAND_LENGTH);
+        self.show_error_toast(
+            format!("Cannot run `{truncated_command}` (command already running)."),
+            ctx,
+        );
     }
 
     fn on_active_shell_launch_data_updated(

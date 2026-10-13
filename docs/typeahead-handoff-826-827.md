@@ -278,9 +278,14 @@ Transitions out of `PtyOwned`:
 - A command that starts its own block when written (an in-band or held command)
   waits while an Enter the user typed is unanswered by a prompt, so the output of
   the user's lines does not land in its block.
-- A precmd that leaves the pty owning input (an empty Enter, a prompt cycle after
-  Ctrl-C) brings no line-editor activation, so the view asks the controller to
-  decide again. Every Enter typed also counts as activity for the quiet period,
+- A precmd for a prompt that ran no command (an empty Enter, a syntax error, a
+  prompt cycle after Ctrl-C) brings no line-editor activation, so the view asks
+  the controller to decide again, whether the editor took over at that precmd
+  (draining writes held for this prompt) or the pty still owns input.
+- A second non-editor command while one is held is coalesced and the surface
+  shows the same "Cannot run `...` (command already running)." toast the input
+  shows for a running command. A held command's cloud workflow is recorded on the
+  block it starts, when it starts. Every Enter typed also counts as activity for the quiet period,
   and a flushed Enter re-decides (re-arming it).
 - Ctrl-C while keys are held behind a deferred Enter cancels the deferred Enter
   and drops the held keys; nothing is written to the pty.

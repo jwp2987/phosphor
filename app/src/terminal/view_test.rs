@@ -12984,13 +12984,24 @@ fn typeahead_handoff_ctrl_c_cancels_a_deferred_enter() {
 }
 
 /// The view's precmd handler hands input back to the editor when nothing was typed: no
-/// request, and the terminal stops owning keys.
+/// request, and the terminal stops owning keys. It also asks the controller to decide again, as
+/// no line-editor activation follows a prompt that ran no command, and writes held for this
+/// prompt must drain.
 #[test]
 fn typeahead_handoff_precmd_hands_back_when_nothing_was_typed() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
         let terminal = add_window_with_terminal(&mut app, None);
+        let retries = Rc::new(RefCell::new(0));
+        let retries_seen = retries.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::RetryTypeaheadHandoffRequest = event {
+                    *retries_seen.borrow_mut() += 1;
+                }
+            });
+        });
 
         terminal.update(&mut app, |view, ctx| {
             {
@@ -13008,6 +13019,7 @@ fn typeahead_handoff_precmd_hands_back_when_nothing_was_typed() {
                 &HandoffState::EditorOwned
             );
         });
+        assert_eq!(*retries.borrow(), 1);
     })
 }
 
