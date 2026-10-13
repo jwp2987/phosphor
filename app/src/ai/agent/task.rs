@@ -36,9 +36,10 @@ use super::{
         ConversionParams, ConvertAPIMessageToClientOutputMessage,
     },
     conversation::{context_in_exchanges, update_todo_list_from_todo_op},
+    util::{parse_markdown_into_text_and_code_sections, IncrementalTextSections},
     AIAgentContext, AIAgentExchange, AIAgentExchangeId, AIAgentOutput, AIAgentOutputMessage,
-    AIAgentOutputStatus, MaybeAIAgentOutputMessage, MessageId, MessageToAIAgentOutputMessageError,
-    Shared,
+    AIAgentOutputMessageType, AIAgentOutputStatus, AIAgentTextSection, MaybeAIAgentOutputMessage,
+    MessageId, MessageToAIAgentOutputMessageError, Shared,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -174,6 +175,10 @@ pub struct Task {
     data: TaskImpl,
     /// List of `AIAgentExchange`s corresponding to messages contained in this task.
     exchanges: Vec<AIAgentExchange>,
+    /// Incremental Markdown state for this task's text messages that are still streaming,
+    /// keyed by message id, so each appended chunk re-parses only what it can have changed
+    /// (#849). Dropped when the exchange finishes.
+    streaming_text: HashMap<String, IncrementalTextSections>,
 }
 
 impl Task {
@@ -182,6 +187,7 @@ impl Task {
             id: TaskId::new(Uuid::new_v4().to_string()),
             data: TaskImpl::Optimistic(optimistic::Task::Root),
             exchanges: vec![],
+            streaming_text: HashMap::new(),
         }
     }
 
@@ -192,6 +198,7 @@ impl Task {
                 block_id,
             })),
             exchanges: vec![],
+            streaming_text: HashMap::new(),
         }
     }
 
@@ -247,6 +254,7 @@ impl Task {
                 }),
             }),
             exchanges: vec![],
+            streaming_text: HashMap::new(),
         }
     }
 
@@ -330,6 +338,7 @@ impl Task {
                 subagent_params: None,
             }),
             exchanges: restored_exchanges,
+            streaming_text: HashMap::new(),
         }
     }
 
@@ -383,6 +392,7 @@ impl Task {
         let mut me = Self {
             id: TaskId(subtask.id.clone()),
             exchanges: vec![new_exchange],
+            streaming_text: HashMap::new(),
             data: TaskImpl::Server(ServerTask {
                 source: subtask,
                 subagent_params: subagent_call_and_id
@@ -416,6 +426,7 @@ impl Task {
         Self {
             id: TaskId(subtask.id.clone()),
             exchanges: restored_exchanges,
+            streaming_text: HashMap::new(),
             data: TaskImpl::Server(ServerTask {
                 source: subtask,
                 subagent_params: subagent_call_and_id
@@ -441,6 +452,7 @@ impl Task {
         Self {
             id: TaskId(subtask.id.clone()),
             exchanges: vec![],
+            streaming_text: HashMap::new(),
             data: TaskImpl::Server(ServerTask {
                 source: subtask,
                 subagent_params: subagent_call_and_id
@@ -775,6 +787,9 @@ impl Task {
             FieldMaskOperation::update(&api::MESSAGE_DESCRIPTOR, existing_message, &message, mask)
                 .apply()
                 .map_err(UpdateTaskError::from)?;
+        // This replaces the message's sections with a full conversion, which incremental state
+        // kept for earlier appends no longer describes.
+        self.streaming_text.remove(&updated_message.id);
 
         let id = self.id.clone();
         let exchange_to_update = self
@@ -845,26 +860,93 @@ impl Task {
             log::error!("Message not found for append client action.");
             return Err(UpdateTaskError::MessageNotFound);
         };
-        let updated_message =
+        let mut updated_message =
             FieldMaskOperation::append(&api::MESSAGE_DESCRIPTOR, existing_message, &message, mask)
                 .apply()
                 .map_err(UpdateTaskError::from)?;
 
         let id = self.id.clone();
         let exchange_to_update = self
-            .exchange_mut(exchange_id)
+            .exchanges
+            .iter_mut()
+            .find(|exchange| exchange.id == exchange_id)
             .ok_or(UpdateTaskError::ExchangeNotFound)?;
-        exchange_to_update.upsert_output_for_message(
-            &id,
-            &updated_message,
-            current_todo_list,
-            current_comments,
-            skill_path_origin,
-        )?;
+        // A streamed answer or reasoning grows by appends, so its sections are brought up to
+        // date incrementally rather than re-derived from the whole text on every chunk (#849).
+        // The text is moved out while the rest of the message is converted, so that conversion
+        // neither copies nor parses it.
+        let upserted = match take_streamed_text(&mut updated_message) {
+            Some(text) => {
+                let parser = self
+                    .streaming_text
+                    .entry(updated_message.id.clone())
+                    .or_default();
+                let upserted = exchange_to_update.upsert_streamed_text_output(
+                    &id,
+                    &updated_message,
+                    &text,
+                    parser,
+                    current_todo_list,
+                    current_comments,
+                    skill_path_origin,
+                );
+                restore_streamed_text(&mut updated_message, text);
+                upserted
+            }
+            None => exchange_to_update.upsert_output_for_message(
+                &id,
+                &updated_message,
+                current_todo_list,
+                current_comments,
+                skill_path_origin,
+            ),
+        };
+        upserted?;
 
         let source = self.try_get_source_mut()?;
         source.messages[idx] = updated_message;
         Ok(&source.messages[idx])
+    }
+
+    /// Replaces the incrementally maintained sections of this task's streamed text messages with
+    /// a full conversion of their final text, and drops the incremental state. Called when an
+    /// exchange stops streaming, so what stays on screen is exactly what a restored conversation
+    /// would show (#849).
+    pub(super) fn finalize_streamed_text(&mut self) {
+        if self.streaming_text.is_empty() {
+            return;
+        }
+        let streamed = std::mem::take(&mut self.streaming_text);
+        let Ok(source) = self.try_get_source() else {
+            return;
+        };
+        for message in &source.messages {
+            if !streamed.contains_key(&message.id) {
+                continue;
+            }
+            let text = match &message.message {
+                Some(Message::AgentOutput(output)) => output.text.as_str(),
+                Some(Message::AgentReasoning(reasoning)) => reasoning.reasoning.as_str(),
+                _ => continue,
+            };
+            for exchange in &self.exchanges {
+                let AIAgentOutputStatus::Streaming {
+                    output: Some(output),
+                } = &exchange.output_status
+                else {
+                    continue;
+                };
+                let mut output = output.get_mut();
+                if let Some(sections) = output
+                    .messages
+                    .iter_mut()
+                    .find(|m| m.id.0 == message.id)
+                    .and_then(|m| text_sections_mut(&mut m.message))
+                {
+                    *sections = parse_markdown_into_text_and_code_sections(text);
+                }
+            }
+        }
     }
 
     pub(super) fn remove_exchange(
@@ -903,6 +985,8 @@ impl Task {
 
     /// Removes messages with the given IDs from the task source.
     pub(super) fn remove_messages(&mut self, message_ids: &HashSet<MessageId>) {
+        self.streaming_text
+            .retain(|id, _| !message_ids.contains(&MessageId::new(id.clone())));
         match self.try_get_source_mut() {
             Ok(source) => {
                 source
@@ -1060,7 +1144,93 @@ pub fn derive_todo_lists_from_root_task(root_task: &Task) -> Vec<AIAgentTodoList
     todo_lists
 }
 
+/// Moves the streamed text out of an agent output or reasoning message, leaving it empty.
+fn take_streamed_text(message: &mut api::Message) -> Option<String> {
+    match message.message.as_mut()? {
+        Message::AgentOutput(output) => Some(std::mem::take(&mut output.text)),
+        Message::AgentReasoning(reasoning) => Some(std::mem::take(&mut reasoning.reasoning)),
+        _ => None,
+    }
+}
+
+/// Puts back text taken by [`take_streamed_text`].
+fn restore_streamed_text(message: &mut api::Message, text: String) {
+    match message.message.as_mut() {
+        Some(Message::AgentOutput(output)) => output.text = text,
+        Some(Message::AgentReasoning(reasoning)) => reasoning.reasoning = text,
+        _ => {}
+    }
+}
+
+/// The text sections of an output message converted from an agent output or reasoning message.
+fn text_sections_mut(
+    message: &mut AIAgentOutputMessageType,
+) -> Option<&mut Vec<AIAgentTextSection>> {
+    match message {
+        AIAgentOutputMessageType::Text(text) | AIAgentOutputMessageType::Reasoning { text, .. } => {
+            Some(&mut text.sections)
+        }
+        _ => None,
+    }
+}
+
 impl AIAgentExchange {
+    /// [`Self::upsert_output_for_message`] for an agent output or reasoning message whose text
+    /// is being streamed: `message` has had its text moved out into `text`, and the sections for
+    /// `text` are brought up to date by `parser`, reusing the ones already in the output (#849).
+    #[allow(clippy::too_many_arguments)]
+    fn upsert_streamed_text_output(
+        &self,
+        task_id: &TaskId,
+        message: &api::Message,
+        text: &str,
+        parser: &mut IncrementalTextSections,
+        todo_list: Option<&AIAgentTodoList>,
+        comments: Option<&CodeReview>,
+        skill_path_origin: &SkillPathOrigin,
+    ) -> Result<(), UpdateTaskError> {
+        let AIAgentOutputStatus::Streaming {
+            output: Some(output),
+        } = &self.output_status
+        else {
+            return Ok(());
+        };
+        let mut output = output.get_mut();
+        let message_idx = output.messages.iter().position(|m| m.id.0 == message.id);
+
+        match message.clone().to_client_output_message(ConversionParams {
+            current_todo_list: todo_list,
+            active_code_review: comments,
+            task_id,
+            skill_path_origin,
+        })? {
+            MaybeAIAgentOutputMessage::Message(mut m) => {
+                let mut sections = match message_idx {
+                    Some(idx) => text_sections_mut(&mut output.messages[idx].message)
+                        .map(std::mem::take)
+                        .unwrap_or_default(),
+                    None => Vec::new(),
+                };
+                parser.update(text, &mut sections);
+                if let Some(target) = text_sections_mut(&mut m.message) {
+                    *target = sections;
+                }
+                output.extend_citations(m.citations.clone());
+                if let Some(message_idx) = message_idx {
+                    output.messages[message_idx] = m;
+                } else {
+                    output.messages.push(m);
+                }
+            }
+            MaybeAIAgentOutputMessage::NoClientRepresentation => {
+                log::warn!(
+                    "Tried to update output for message which no longer has a client representation"
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Upserts the output for a specific message.
     /// Note: this means updates will insert a new entry after previously added entries.
     fn upsert_output_for_message(

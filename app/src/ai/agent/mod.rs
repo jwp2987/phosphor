@@ -54,7 +54,7 @@ use crate::TelemetryEvent;
 use derivative::Derivative;
 use markdown_parser::{
     parse_markdown, parse_markdown_with_gfm_tables, FormattedTable, FormattedText,
-    FormattedTextInline,
+    FormattedTextInline, FormattedTextLine,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1444,20 +1444,53 @@ impl FormattedTextWrapper {
     }
 }
 
+impl FormattedTextLineWrapper {
+    fn wrap(line: &FormattedTextLine) -> Self {
+        FormattedTextLineWrapper {
+            stripped_text: line.raw_text(),
+            hyperlinks: line
+                .hyperlinks(true)
+                .into_iter()
+                .filter_map(|(r, u)| Some((r, u.url()?)))
+                .collect(),
+        }
+    }
+}
+
+impl FormattedTextWrapper {
+    /// Keeps the first `keep` lines, appends `tail`, then drops a trailing line break the way
+    /// `parse_markdown` does — so the result equals wrapping a full parse whose first `keep`
+    /// lines are the ones kept. Lets a streamed answer extend its parsed Markdown instead of
+    /// re-parsing and re-wrapping all of it on every chunk (#849).
+    ///
+    /// The shared [`FormattedText`] is copied only if a renderer still holds the previous one,
+    /// which happens at most once per frame.
+    pub(crate) fn replace_tail(&mut self, keep: usize, tail: Vec<FormattedTextLine>) {
+        let formatted_text = Arc::make_mut(&mut self.formatted_text);
+        formatted_text.lines.truncate(keep);
+        formatted_text.lines.extend(tail);
+        if let Some(FormattedTextLine::LineBreak) = formatted_text.lines.back() {
+            formatted_text.lines.pop_back();
+        }
+        self.lines.truncate(keep.min(formatted_text.lines.len()));
+        let wrapped = self.lines.len();
+        self.lines.extend(
+            formatted_text
+                .lines
+                .iter()
+                .skip(wrapped)
+                .map(FormattedTextLineWrapper::wrap),
+        );
+    }
+}
+
 impl From<FormattedText> for FormattedTextWrapper {
     fn from(value: FormattedText) -> Self {
         let formatted_text = Arc::new(value);
         let lines = formatted_text
             .lines
             .iter()
-            .map(|line| FormattedTextLineWrapper {
-                stripped_text: line.raw_text(),
-                hyperlinks: line
-                    .hyperlinks(true)
-                    .into_iter()
-                    .filter_map(|(r, u)| Some((r, u.url()?)))
-                    .collect(),
-            })
+            .map(FormattedTextLineWrapper::wrap)
             .collect();
         Self {
             lines,
@@ -1507,11 +1540,17 @@ impl AgentOutputText {
 /// and its doc comment still says "in notebooks", but the parser is shared and
 /// an agent reply is the surface most likely to contain a table.
 fn parse_agent_markdown(markdown: &str) -> anyhow::Result<FormattedText> {
-    if warp_core::features::FeatureFlag::MarkdownTables.is_enabled() {
+    if agent_markdown_parses_gfm_tables() {
         parse_markdown_with_gfm_tables(markdown)
     } else {
         parse_markdown(markdown)
     }
+}
+
+/// Whether [`parse_agent_markdown`] recognises GFM tables. The incremental parser for streamed
+/// answers (`util::IncrementalTextSections`) must make the same choice to produce the same lines.
+fn agent_markdown_parses_gfm_tables() -> bool {
+    warp_core::features::FeatureFlag::MarkdownTables.is_enabled()
 }
 
 impl From<String> for AgentOutputText {
