@@ -12,8 +12,8 @@
 name: PR Check
 
 on:
-  pull_request:
-    branches: [main]
+  # Manual only: this repo merges straight to main (no PRs), and automatic
+  # runs were cut back after GitHub disabled Actions on the repo (2026-10).
   workflow_dispatch:
 
 # A newer push to the same PR cancels the in-flight check.
