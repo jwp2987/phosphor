@@ -1369,7 +1369,6 @@ fn test_placeholder_passed_to_reparsing_command_is_refused() {
     for command in [
         "git checkout {{x}}",
         "npm run dev -- {{x}}",
-        "bash script.sh {{x}}",
         "sudo apt install {{x}}",
         "find . -name {{x}}",
         "git -c core.pager=less log {{x}}",
@@ -1496,6 +1495,127 @@ fn test_placeholder_as_arithmetic_variable_or_command_input_is_refused() {
     ] {
         assert!(
             render_single_command(command, "main").is_ok(),
+            "{command:?} should render"
+        );
+    }
+}
+
+/// Command-word bypasses found in review of 423dc85a7 (50 executions in real bash/zsh/fish
+/// before the structural command-word check). Every one must be refused.
+#[test]
+fn test_command_word_bypasses_are_refused() {
+    for (command, value) in [
+        ("'ssh' host {{x}}", "touch pwned"),
+        ("\"ssh\" host {{x}}", "touch pwned"),
+        ("s'sh' host {{x}}", "touch pwned"),
+        ("'eval' {{x}}", "touch pwned"),
+        ("e''val {{x}}", "touch pwned"),
+        ("'bash' -c {{x}}", "touch pwned"),
+        ("bash '-c' {{x}}", "touch pwned"),
+        ("sudo 'bash' -c {{x}}", "touch pwned"),
+        ("find . -maxdepth 0 '-exec' sh -c {{x}} ';'", "touch pwned"),
+        ("git -c 'alias.p=!sh -c \"$1\" -' p {{x}}", "touch pwned"),
+        ("eval 'true' {{x}}", "touch pwned"),
+        ("'ss'h host {{x}}", "touch pwned"),
+        ("ss''h host {{x}}", "touch pwned"),
+        ("\"s\"sh host {{x}}", "touch pwned"),
+        ("e\"va\"l {{x}}", "touch pwned"),
+        ("\\ssh host {{x}}", "touch pwned"),
+        ("${c} {{x}}", "touch pwned"),
+        ("$c {{x}}", "touch pwned"),
+        ("echo $((1)) {{x}}", "touch pwned"),
+        ("{s,}sh {{x}}", "touch pwned"),
+        ("{eval,} {{x}}", "touch pwned"),
+        ("{ssh,host} {{x}}", "touch pwned"),
+        ("/bin/ba?h -c {{x}}", "touch pwned"),
+        ("/bin/ba[s]h -c {{x}}", "touch pwned"),
+        ("/bin/bas*h -c {{x}}", "touch pwned"),
+        ("command eval {{x}}", "touch pwned"),
+        ("exec ssh host {{x}}", "touch pwned"),
+        ("builtin eval {{x}}", "touch pwned"),
+        ("nohup sh -c {{x}}", "touch pwned"),
+        ("time eval {{x}}", "touch pwned"),
+        ("env -i ssh host {{x}}", "touch pwned"),
+        ("noglob eval {{x}}", "touch pwned"),
+        ("nocorrect eval {{x}}", "touch pwned"),
+        ("- eval {{x}}", "touch pwned"),
+        ("if eval {{x}}; then :; fi", "touch pwned"),
+        ("! eval {{x}}", "touch pwned"),
+        ("{ eval {{x}}; }", "touch pwned"),
+        ("true; and eval {{x}}", "touch pwned"),
+        ("not eval {{x}}", "touch pwned"),
+        ("</dev/null eval {{x}}", "touch pwned"),
+        (">/dev/null eval {{x}}", "touch pwned"),
+        ("c=eval; command $c {{x}}", "touch pwned"),
+        ("c=eval; builtin $c {{x}}", "touch pwned"),
+        ("echo {{x}} | sh", "touch pwned"),
+        ("printf %s {{x}} | bash", "touch pwned"),
+        ("sh <(echo {{x}})", "touch pwned"),
+        ("echo {{x}} > /dev/null | . /dev/stdin", "touch pwned"),
+        ("flock /tmp/x.lock -c {{x}}", "touch pwned"),
+        ("env -S {{x}}", "touch pwned"),
+        ("timeout 5 bash -c {{x}}", "touch pwned"),
+        ("dash -c {{x}}", "touch pwned"),
+        ("busybox sh -c {{x}}", "touch pwned"),
+        ("busybox ash -c {{x}}", "touch pwned"),
+        ("setsid -w eval {{x}}", "touch pwned"),
+        ("unset {{x}}", "a[$(touch pwned)]"),
+        ("unset -v {{x}}", "a[$(touch pwned)]"),
+        ("getopts a {{x}}", "a[$(touch pwned)]"),
+        ("mapfile -t {{x}} </dev/null", "a[$(touch pwned)]"),
+        ("integer n={{x}}", "a[$(touch pwned)]"),
+        ("float n={{x}}", "a[$(touch pwned)]"),
+        ("repeat {{x}} true", "a[$(touch pwned)]"),
+        ("export n={{x}}; echo $((n))", "a[$(touch pwned)]"),
+        ("shift {{x}}", "a[$(touch pwned)]"),
+        ("printf %d {{x}}", "a[$(touch pwned)]"),
+        ("test {{x}} -nt x", "a[$(touch pwned)]"),
+        ("readonly n={{x}}", "a[$(touch pwned)]"),
+        ("export -i n={{x}}", "a[$(touch pwned)]"),
+        ("vared {{x}}", "a[$(touch pwned)]"),
+        ("print -v {{x}} x", "a[$(touch pwned)]"),
+        ("wait -p {{x}}", "a[$(touch pwned)]"),
+        ("ulimit -t {{x}}", "a[$(touch pwned)]"),
+        ("kill -l {{x}}", "a[$(touch pwned)]"),
+        ("set -A {{x}} x", "a[$(touch pwned)]"),
+    ] {
+        assert!(
+            render_single_command(command, value).is_err(),
+            "{command:?} with {value:?} must be refused"
+        );
+    }
+    // Shells are refused however they are invoked, not only with `-c`.
+    for command in [
+        "bash script.sh {{x}}",
+        "echo {{x}} | sh",
+        "powershell {{x}}",
+    ] {
+        assert!(
+            render_single_command(command, "main").is_err(),
+            "{command:?}"
+        );
+    }
+}
+
+#[test]
+fn test_ordinary_commands_with_placeholders_still_render() {
+    for command in [
+        "git worktree add -b {{x}} -- {{x}} 'origin/main'",
+        "cd {{x}}",
+        "npm run dev -- {{x}}",
+        "cargo build -p {{x}}",
+        "make {{x}}",
+        "code {{x}}",
+        "ls -la {{x}}",
+        "test -d {{x}} && cd {{x}}",
+        "sudo apt install {{x}}",
+        "cd {{x}} && claude",
+        "echo {{x}} >&2",
+        "npm test 2>&1 {{x}}",
+        "FOO=1 npm start {{x}}",
+    ] {
+        assert!(
+            render_single_command(command, "feature/x").is_ok(),
             "{command:?} should render"
         );
     }

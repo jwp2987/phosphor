@@ -560,41 +560,181 @@ fn forbidden_syntax_around_placeholders(residual: &[char]) -> Option<&'static st
     None
 }
 
-/// Commands that parse their arguments as shell (or PowerShell / cmd) code again, where a
-/// value quoted for the local shell is unquoted text: `ssh host {{x}}` runs `{{x}}`'s value on
-/// the remote shell. Also the cheap arithmetic and variable-name cases: `let`, `read`,
-/// `declare`/`typeset`/`local`, `printf -v`, `test`/`[`/`[[` with `-v` or a numeric
-/// comparison, and a `$variable` as the command name. Best-effort, word-level: the first word
-/// of each `;`/`&`/`|`/`(`-separated segment (after `VAR=value` assignments and a path), plus
-/// the flags that make a command re-parse (`sh -c`, `docker exec`, `find -exec`,
-/// `git -c alias.*`, `cmd /c`, ...). `residual` is the [`StrippedCommand::words`] form, so a
-/// quoted command name is seen unquoted. It cannot see aliases, functions or scripts that do
-/// the same, which is why the docs say never to pass a placeholder to anything that re-parses
-/// it.
-fn reparsing_command(residual: &[char]) -> Option<&'static str> {
-    const ALWAYS: [&str; 15] = [
-        "ssh",
-        "eval",
-        "watch",
-        "tmux",
-        "screen",
-        "su",
-        "xargs",
-        "trap",
-        "iex",
-        "invoke-expression",
-        "invoke-command",
-        "start-process",
-        "let",
-        "read",
-        "source",
-    ];
-    const SHELLS: [&str; 7] = ["sh", "bash", "zsh", "fish", "dash", "ksh", "pwsh"];
-    const PREFIXES: [&str; 8] = [
-        "sudo", "doas", "env", "nohup", "time", "nice", "command", "exec",
-    ];
-    const COMPARISONS: [&str; 7] = ["-eq", "-ne", "-lt", "-le", "-gt", "-ge", "-v"];
+/// Shell keywords and fish combinators that may precede a command word.
+const LEADING_KEYWORDS: [&str; 17] = [
+    "if", "then", "elif", "else", "do", "while", "until", "!", "{", "}", "time", "coproc", "and",
+    "or", "not", "begin", "function",
+];
 
+/// Commands that run another command named in their arguments.
+const PRECOMMANDS: [&str; 20] = [
+    "builtin",
+    "command",
+    "exec",
+    "noglob",
+    "nocorrect",
+    "-",
+    "nohup",
+    "timeout",
+    "setsid",
+    "stdbuf",
+    "flock",
+    "ionice",
+    "chrt",
+    "taskset",
+    "nice",
+    "unbuffer",
+    "env",
+    "sudo",
+    "doas",
+    "time",
+];
+
+/// Command words refused in any segment of a command that substitutes a placeholder: shells
+/// and interpreters (which run their input or arguments as code however they are invoked),
+/// commands that evaluate or forward their arguments as code, and builtins that read an
+/// argument as arithmetic or a variable name (where `a[$(...)]` runs).
+const DENIED_COMMANDS: [&str; 70] = [
+    // Shells and interpreters.
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "dash",
+    "ksh",
+    "ash",
+    "csh",
+    "tcsh",
+    "mksh",
+    "yash",
+    "nu",
+    "busybox",
+    "pwsh",
+    "powershell",
+    "cmd",
+    "perl",
+    "python",
+    "python2",
+    "python3",
+    "ruby",
+    "node",
+    "php",
+    "lua",
+    "awk",
+    "gawk",
+    "mawk",
+    "nawk",
+    "sed",
+    "vim",
+    "nvim",
+    "tclsh",
+    "expect",
+    "osascript",
+    "deno",
+    "bun",
+    // Evaluate, source or forward their arguments as code.
+    "eval",
+    "ssh",
+    "watch",
+    "tmux",
+    "screen",
+    "su",
+    "xargs",
+    "trap",
+    "iex",
+    "invoke-expression",
+    "invoke-command",
+    "icm",
+    "start-process",
+    "saps",
+    "start",
+    "source",
+    ".",
+    // Read an argument as arithmetic or a variable name.
+    "let",
+    "read",
+    "unset",
+    "getopts",
+    "mapfile",
+    "readarray",
+    "integer",
+    "float",
+    "repeat",
+    "shift",
+    "vared",
+    "declare",
+    "typeset",
+    "local",
+    "readonly",
+    "ulimit",
+    "kill",
+];
+
+/// `test`/`[`/`[[` operators whose operands are arithmetic or variable names.
+const TEST_OPERATORS: [&str; 10] = [
+    "-eq", "-ne", "-lt", "-le", "-gt", "-ge", "-v", "-nt", "-ot", "-ef",
+];
+
+/// A command word made only of these characters cannot be a brace expansion, glob, variable
+/// or quoting trick: `^[A-Za-z0-9_./:-]+$`.
+fn is_plain_command_word(word: &str) -> bool {
+    !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | ':' | '-'))
+}
+
+/// `NAME=value` or `NAME+=value`.
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        let name = name.strip_suffix('+').unwrap_or(name);
+        name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// For a redirection token (`>file`, `2>`, `&>`, `<`, `>>x`, ...), whether its target is the
+/// next word; `None` when `word` is not a redirection.
+fn redirection_takes_next_word(word: &str) -> Option<bool> {
+    let operator = word.trim_start_matches(|c: char| c.is_ascii_digit());
+    if !(operator.starts_with('<') || operator.starts_with('>') || operator.starts_with("&>")) {
+        return None;
+    }
+    let target = operator.trim_start_matches(|c: char| matches!(c, '<' | '>' | '&' | '|'));
+    Some(target.is_empty())
+}
+
+/// A command word by basename, lowercased, without `.exe`.
+fn command_name(word: &str) -> String {
+    let base = word
+        .rsplit(|c: char| c == '/' || c == '\\')
+        .next()
+        .unwrap_or(word)
+        .to_ascii_lowercase();
+    base.strip_suffix(".exe")
+        .map(str::to_string)
+        .unwrap_or(base)
+}
+
+/// Checks the command word of every segment of a command that substitutes a placeholder.
+///
+/// Best-effort and structural, not a shell parser. The command is split into segments at
+/// `; & | ( )`; in each, leading keywords (`if`, `!`, `{`, fish `and`/`not`, ...), redirections
+/// and `VAR=value` assignments are skipped and the next word is the command word. It is
+/// refused when it starts with `$`, contains a placeholder, is not a plain word (see
+/// [`is_plain_command_word`]: no brace expansion or glob can make it another command), or is
+/// in [`DENIED_COMMANDS`]. After a precommand ([`PRECOMMANDS`]: `sudo`, `env`, `command`,
+/// `nohup`, ...) every later non-option, non-placeholder word is held to the same rules, and
+/// `flock -c`, `sudo`/`doas -s`/`-i` and `env -S` are refused. A few commands are refused
+/// only with the arguments that make them evaluate code: `docker`/`podman`/`kubectl exec`,
+/// `find -exec`, `script -c`, `git -c alias.*` or a `git -c` whose value is a placeholder,
+/// `test`/`[`/`[[` with an arithmetic or name operator, `printf`/`print` with `-v` or a
+/// numeric conversion, `export -i`, `wait -p` and `set -A`.
+///
+/// `residual` is the [`StrippedCommand::words`] form, so a quoted command name is seen
+/// unquoted. Aliases, functions and scripts that evaluate their arguments are invisible here;
+/// placeholders are supported only as ordinary arguments to ordinary commands.
+fn reparsing_command(residual: &[char]) -> Option<&'static str> {
     let text: String = residual
         .iter()
         .map(|&c| {
@@ -606,91 +746,120 @@ fn reparsing_command(residual: &[char]) -> Option<&'static str> {
         })
         .collect();
     for segment in text.lines() {
-        let mut raw_words = segment.split_whitespace().skip_while(|word| {
-            word.split_once('=').is_some_and(|(name, _)| {
-                !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-            })
-        });
-        let Some(raw_first) = raw_words.next() else {
+        let words: Vec<&str> = segment.split_whitespace().collect();
+        let mut index = 0;
+        while let Some(&word) = words.get(index) {
+            if LEADING_KEYWORDS.contains(&word) || is_assignment(word) {
+                index += 1;
+            } else if let Some(takes_next) = redirection_takes_next_word(word) {
+                index += if takes_next { 2 } else { 1 };
+            } else {
+                break;
+            }
+        }
+        let Some(&command_word) = words.get(index) else {
             continue;
         };
-        if raw_first.starts_with('$') {
+        if command_word.starts_with('$') {
             return Some("a variable as the command name");
         }
-        let words: Vec<String> = std::iter::once(raw_first)
-            .chain(raw_words)
-            .map(|word| {
-                let base = word
-                    .rsplit(|c: char| c == '/' || c == '\\')
-                    .next()
-                    .unwrap_or(word);
-                let base = base.to_ascii_lowercase();
-                base.strip_suffix(".exe")
-                    .map(str::to_string)
-                    .unwrap_or(base)
-            })
-            .collect();
-        let first = words[0].as_str();
-        let rest = &words[1..];
-        let has = |flag: &str| rest.iter().any(|word| word == flag);
-        let has_shell_c = |words: &[String]| {
-            words
-                .iter()
-                .position(|word| SHELLS.contains(&word.as_str()))
-                .is_some_and(|i| {
-                    words[i + 1..].iter().any(|word| {
-                        word.starts_with('-') && !word.starts_with("--") && word.contains('c')
-                    })
-                })
-        };
-        let has_powershell_command = |words: &[String]| {
-            words
-                .iter()
-                .position(|word| matches!(word.as_str(), "powershell" | "pwsh"))
-                .is_some_and(|i| {
-                    words[i + 1..]
-                        .iter()
-                        .any(|word| word.starts_with("-c") || word.starts_with("-e"))
-                })
-        };
-        let has_cmd_c = |words: &[String]| {
-            words
-                .iter()
-                .position(|word| word == "cmd")
-                .is_some_and(|i| {
-                    words[i + 1..]
-                        .iter()
-                        .any(|word| word.starts_with("/c") || word.starts_with("/k"))
-                })
-        };
-        let reparses = ALWAYS.contains(&first)
-            || has_shell_c(&words[..])
-            || has_powershell_command(&words[..])
-            || has_cmd_c(&words[..])
-            || (PREFIXES.contains(&first)
-                && (rest.iter().any(|word| ALWAYS.contains(&word.as_str()))
-                    || has("-c")
-                    || has_shell_c(rest)))
-            || (matches!(first, "docker" | "podman" | "kubectl") && has("exec"))
-            || (first == "find"
-                && ["-exec", "-execdir", "-ok", "-okdir"]
-                    .iter()
-                    .copied()
-                    .any(|flag| has(flag)))
-            || (first == "script" && has("-c"))
-            || (first == "git" && rest.iter().any(|word| word.starts_with("alias.")));
-        if reparses {
-            return Some("a command that parses its arguments as shell code again");
+        if command_word.contains(PLACEHOLDER_MARK) {
+            return Some("a placeholder as the command name");
         }
-        let arithmetic_or_name = matches!(first, "declare" | "typeset" | "local")
-            || (first == "printf" && has("-v"))
-            || (matches!(first, "test" | "[" | "[[")
-                && COMPARISONS.iter().copied().any(|flag| has(flag)));
-        if arithmetic_or_name {
-            return Some("a command that reads its arguments as arithmetic or variable names");
+        if !is_plain_command_word(command_word) {
+            return Some("a command name that is not a plain word");
+        }
+        let command = command_name(command_word);
+        if DENIED_COMMANDS.contains(&command.as_str()) {
+            return Some("a command that runs its input or arguments as code");
+        }
+        let rest = &words[index + 1..];
+        let has = |flag: &str| rest.iter().any(|word| *word == flag);
+
+        if PRECOMMANDS.contains(&command.as_str()) {
+            for &word in rest {
+                if word.contains(PLACEHOLDER_MARK) || redirection_takes_next_word(word).is_some() {
+                    continue;
+                }
+                if word.starts_with('-') && word != "-" {
+                    let flag = word.to_ascii_lowercase();
+                    let dangerous = match command.as_str() {
+                        "flock" => matches!(flag.as_str(), "-c" | "--command"),
+                        "sudo" => matches!(flag.as_str(), "-s" | "-i" | "--shell" | "--login"),
+                        "doas" => flag == "-s",
+                        "env" => word.starts_with("-S") || flag.starts_with("--split-string"),
+                        _ => false,
+                    };
+                    if dangerous {
+                        return Some("a precommand option that runs a shell");
+                    }
+                    continue;
+                }
+                if word.starts_with('$') {
+                    return Some("a variable as the command name");
+                }
+                if is_assignment(word) {
+                    continue;
+                }
+                if !is_plain_command_word(word) {
+                    return Some("a command name that is not a plain word");
+                }
+                if DENIED_COMMANDS.contains(&command_name(word).as_str()) {
+                    return Some("a command that runs its input or arguments as code");
+                }
+            }
+            continue;
+        }
+
+        let evaluates = match command.as_str() {
+            "docker" | "podman" | "kubectl" => has("exec"),
+            "find" => ["-exec", "-execdir", "-ok", "-okdir"]
+                .iter()
+                .any(|flag| has(*flag)),
+            "script" => has("-c"),
+            "git" => {
+                rest.iter().any(|word| word.starts_with("alias."))
+                    || rest
+                        .windows(2)
+                        .any(|pair| pair[0] == "-c" && pair[1].contains(PLACEHOLDER_MARK))
+            }
+            "test" | "[" | "[[" => TEST_OPERATORS.iter().any(|flag| has(*flag)),
+            "printf" | "print" => has("-v") || rest.iter().any(|word| has_numeric_conversion(word)),
+            "export" => rest
+                .iter()
+                .any(|word| word.starts_with('-') && word.contains('i')),
+            "wait" => has("-p"),
+            "set" => has("-A") || has("+A"),
+            _ => false,
+        };
+        if evaluates {
+            return Some("arguments that make the command evaluate code or arithmetic");
         }
     }
     None
+}
+
+/// Whether a `printf` format word has a numeric conversion (`%d`, `%5.2f`, ...), whose
+/// argument zsh evaluates as arithmetic.
+fn has_numeric_conversion(word: &str) -> bool {
+    let mut chars = word.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            continue;
+        }
+        while chars.peek().is_some_and(|&next| {
+            matches!(next, '-' | '+' | ' ' | '#' | '.') || next.is_ascii_digit()
+        }) {
+            chars.next();
+        }
+        if chars
+            .next()
+            .is_some_and(|conversion| "diouxXeEfFgGaAc".contains(conversion))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Renders one command template, substituting each referenced value as a single shell word
@@ -703,8 +872,12 @@ fn reparsing_command(residual: &[char]) -> Option<&'static str> {
 /// literal with no placeholder inside (see [`strip_literal_quoted_strings`] — the form
 /// generated commands bake the base branch in); outside those literals the command must
 /// contain no `$(`, `${`, `$[`, `((`, `<<`, `(e:`, backtick, backslash, line break or
-/// word-initial `#`, no `$` or `[` directly before a placeholder, and no command that
-/// re-parses its arguments ([`reparsing_command`]). Anything else is an
+/// word-initial `#`, no `$` or `[` directly before a placeholder or placeholder inside
+/// `[...]`, and every segment's command word must pass the structural check in
+/// [`reparsing_command`] (a plain word, not a shell, interpreter, evaluator or
+/// arithmetic/name builtin, no evaluating flags). This is best-effort, not a shell parser:
+/// placeholders are supported only as ordinary arguments to ordinary commands. Anything else
+/// is an
 /// error naming the placeholders: quotes around or near the placeholder, command
 /// substitution, parameter expansion, arithmetic, heredocs and comments all change what the
 /// substituted quoting means, and the shells disagree on them. A value with no portable

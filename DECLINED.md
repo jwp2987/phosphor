@@ -1547,18 +1547,25 @@ upstream's behavior is actually a defect rather than a preference.
   shell reads alike (`'...'` without `\`, `"..."` without `$`/backtick/`\`/`!` — the forms
   generated commands bake the base branch in), and outside those literals no `$(`, `${`,
   `((`, `<<`, backtick, backslash, line break or word-initial `#`, nor `$` or `[` directly before a placeholder, nor `$[` or
-  a zsh `(e:` glob qualifier. As a best-effort word-level check, a command whose segments
-  start with something that re-parses its arguments as code (`ssh`, `eval`, `sh -c` and other
-  shells' `-c`, `watch`, `tmux`, `screen`, `docker`/`podman`/`kubectl exec`, `su`, `sudo ... sh
-  -c`, `xargs`, `find -exec`, `script -c`, `trap`, `iex`/`Invoke-Expression`, `git -c alias.`)
-  is refused too — also when the name or flag is quoted (`'ssh'`, `e''val`, `bash '-c'`),
-  since the word check reads each literal's content — as are `powershell`/`pwsh -Command`,
-  `cmd /c`, `Invoke-Command`, `Start-Process`, `--%`, `let`, `read`, `declare`/`typeset`/
-  `local`, `printf -v`, `test`/`[`/`[[` with `-v` or `-eq`-style comparisons, a placeholder
-  inside `[...]` and a `$variable` as the command name: values are quoted for the local shell
-  only, and that check cannot see
-  aliases, functions or scripts, nor uses as an arithmetic operand, variable name or command
-  name, which the tab-configs skill tells users to avoid. A command outside
+  a zsh `(e:` glob qualifier. Then a best-effort structural check of every segment
+  (split at `; & | ( )`): after leading keywords (`if`, `!`, `{`, fish `and`/`not`, ...),
+  redirections and `VAR=value`, the command word must be a plain word
+  (`[A-Za-z0-9_./:-]+`, so no brace expansion or glob can turn it into another command), must
+  not start with `$` or be a placeholder, and must not be a shell or interpreter (`sh`, `bash`,
+  `zsh`, `fish`, `pwsh`, `cmd`, `python`, `node`, `awk`, `sed`, `vim`, ...), an evaluator
+  (`eval`, `ssh`, `xargs`, `source`, `.`, `iex`, `Start-Process`, ...) or a builtin that reads an
+  argument as arithmetic or a variable name (`let`, `read`, `unset`, `declare`, `kill`,
+  `ulimit`, ...) — in any segment, however invoked (`| sh`, `bash script.sh {{v}}`). After a
+  precommand (`sudo`, `env`, `command`, `builtin`, `nohup`, `timeout`, `flock`, ...) every later
+  word is held to the same rules, and `flock -c`, `sudo -s`/`-i`, `env -S` are refused; so are
+  `docker`/`podman`/`kubectl exec`, `find -exec`, `script -c`, `git -c alias.*` or a
+  placeholder as a `git -c` value, `test`/`[`/`[[` with `-eq`-style, `-v` or `-nt`/`-ot`/`-ef`
+  operators, `printf`/`print` with `-v` or a numeric conversion, `export -i`, `wait -p`,
+  `set -A`, PowerShell's `--%` and a placeholder inside `[...]`. Quoted command names and flags
+  are seen unquoted (`'ssh'`, `e''val`, `bash '-c'`). This is not a shell parser: aliases,
+  functions and scripts that evaluate their arguments are invisible to it. Placeholders are
+  supported only as ordinary arguments to ordinary commands; anything that evaluates its
+  arguments as code is unsupported, and mostly refused. A command outside
   the whitelist, or whose value has no portable spelling (a control character, or `'` with
   `$`/backtick/`"`/`\`/`!`), is not run: the tab is not opened and an error toast names the
   placeholder and value (`try_render_tab_config`). The worktree path is the render-time
