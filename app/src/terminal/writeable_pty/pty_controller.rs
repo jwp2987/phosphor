@@ -13,8 +13,8 @@ use crate::terminal::model::lifecycle::StartCommandOutcome;
 use crate::terminal::model::session::{
     ExecutorCommandEvent, InBandCommandCancelledEvent, Sessions,
 };
-use crate::terminal::model::typeahead_handoff::ActiveDecision;
 use crate::terminal::model::tmux::commands::TmuxCommand;
+use crate::terminal::model::typeahead_handoff::ActiveDecision;
 use crate::terminal::model_events::AnsiHandlerEvent;
 use crate::terminal::view::LINEFEED_REGEX;
 #[cfg(not(target_family = "wasm"))]
@@ -466,7 +466,7 @@ impl<T: EventLoopSender> PtyController<T> {
 
     /// Re-runs a typeahead hand-off request decision that had to wait, if the shell's line
     /// editor is still active.
-    fn retry_typeahead_handoff_request(&mut self, ctx: &mut ModelContext<Self>) {
+    pub fn retry_typeahead_handoff_request(&mut self, ctx: &mut ModelContext<Self>) {
         if self.line_editor_status.as_ref(ctx).is_line_editor_active() {
             self.decide_typeahead_handoff_request(true, ctx);
         }
@@ -774,9 +774,17 @@ impl<T: EventLoopSender> PtyController<T> {
                     ..
                 }
             );
+            let is_in_band_command = is_command && !is_shell_command;
             let did_write = self.send_write_to_event_loop(write, ctx);
             if did_write && is_shell_command && self.handoff_command_pending {
                 self.flush_handoff_bytes_after_command(ctx);
+            }
+            // An in-band command's prompt is counted like any other, so its Enter must be too.
+            if did_write && is_in_band_command && FeatureFlag::TypeaheadHandoff.is_enabled() {
+                self.terminal_model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .on_uncounted_command_written();
             }
             if !is_command || !did_write {
                 self.execute_next_queued_write(ctx);
@@ -1097,6 +1105,10 @@ impl<T: EventLoopSender> PtyController<T> {
                     .block_list_mut()
                     .early_output_mut()
                     .clear_typeahead_for_new_command();
+            } else if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                // Not the hand-off's command (a queued-prompt-panel or agent command), but its
+                // prompt will still be counted.
+                model.typeahead_handoff_mut().on_uncounted_command_written();
             }
         }
 

@@ -1702,6 +1702,9 @@ pub enum Event {
     WriteHandoffUserBytesToPty {
         bytes: Cow<'static, [u8]>,
     },
+    /// Asks the PTY controller to re-run the typeahead hand-off's request decision
+    /// (`FeatureFlag::TypeaheadHandoff`).
+    RetryTypeaheadHandoffRequest,
     WriteAgentInputToPty {
         bytes: Cow<'static, [u8]>,
         mode: AIAgentPtyWriteMode,
@@ -8650,6 +8653,20 @@ impl TerminalView {
     /// Windows users expect ctrl-c to copy if there is selected text. Otherwise,
     /// we perform the normal ctrl-c action.
     fn ctrl_c(&mut self, ctx: &mut ViewContext<Self>) {
+        // Ctrl-C after an Enter that waits for the typeahead report cancels that Enter and the
+        // keys held behind it, instead of being held and replayed after the deferred command.
+        if FeatureFlag::TypeaheadHandoff.is_enabled() {
+            let cancelled = self
+                .model
+                .lock()
+                .typeahead_handoff_mut()
+                .cancel_deferred_enter();
+            if cancelled {
+                self.redetermine_terminal_focus(ctx);
+                ctx.notify();
+                return;
+            }
+        }
         let (
             has_block_list_selection,
             has_alt_screen_selection,
@@ -9755,6 +9772,17 @@ impl TerminalView {
         if outcome == InterruptOutcome::AtPrompt {
             ctx.spawn(Timer::after(INTERRUPT_SETTLE), |me, _, ctx| {
                 me.commit_typeahead_handoff_at_prompt(ctx);
+                // Keys typed since the interrupt are in the shell's line, and zsh usually runs no
+                // prompt cycle after ^C at the prompt, so no line-editor activation will come to
+                // ask for them.
+                let needs_request = me
+                    .model
+                    .lock()
+                    .typeahead_handoff()
+                    .needs_request_at_prompt();
+                if needs_request {
+                    ctx.emit(Event::RetryTypeaheadHandoffRequest);
+                }
             });
         }
     }
@@ -26837,6 +26865,7 @@ impl PtyIntentEvent for Event {
             Event::WriteHandoffUserBytesToPty { bytes } => {
                 Some(PtyIntent::WriteHandoffUserBytes(bytes.clone()))
             }
+            Event::RetryTypeaheadHandoffRequest => Some(PtyIntent::RetryTypeaheadHandoffRequest),
             Event::WriteAgentInputToPty { bytes, mode } => Some(PtyIntent::WriteAgentInput {
                 bytes: bytes.clone(),
                 mode: *mode,

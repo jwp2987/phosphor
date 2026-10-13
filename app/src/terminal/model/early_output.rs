@@ -206,8 +206,10 @@ impl EarlyOutput {
     pub fn precmd(&mut self) {
         // A report the input editor has not inserted yet is the user's input, not the previous
         // command's: it was stashed so it would not be wiped with that command's text, and is
-        // inserted once the editor takes over.
+        // inserted once the editor takes over. Only a shell report qualifies: with input
+        // matching, typeahead is matched from echo and can hold a program's stdin echo.
         if FeatureFlag::TypeaheadHandoff.is_enabled()
+            && self.mode == TypeaheadMode::ShellReported
             && self.typeahead_chars_inserted.as_usize() == 0
             && !self.typeahead.is_empty()
         {

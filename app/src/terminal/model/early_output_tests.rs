@@ -332,3 +332,21 @@ fn typeahead_handoff_hears_about_an_empty_report() {
     assert_eq!(typeahead_events(&events_rx), 1);
     assert_eq!(block_list.early_output().typeahead(), "");
 }
+
+/// With input matching, typeahead comes from echo matches, which a program's `read` also
+/// produces; retention would carry that echo into the next prompt.
+#[test]
+fn typeahead_handoff_precmd_still_clears_input_matched_typeahead() {
+    let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+    let mut block_list = new_block_list(
+        ChannelEventListener::new_for_test(),
+        TypeaheadMode::InputMatching,
+    );
+    block_list.early_output_mut().push_user_input("yes");
+    block_list.input('y');
+    block_list.input('e');
+    block_list.input('s');
+    assert_eq!(block_list.early_output().typeahead(), "yes");
+    block_list.prompt_only_precmd(Default::default());
+    assert_eq!(block_list.early_output().typeahead(), "");
+}

@@ -233,6 +233,22 @@ impl TypeaheadHandoff {
         held
     }
 
+    /// A command the hand-off does not own (a queued-prompt-panel command, an agent command, an
+    /// in-band command) was written while the pty owns input. Its Enter is counted, so its
+    /// precmd does not make lines the user queued ahead of it look answered. Its kill prefix and
+    /// Enter end whatever line it lands on.
+    pub fn on_uncounted_command_written(&mut self) {
+        if let HandoffState::PtyOwned {
+            wrote_user_bytes,
+            enters_written,
+            ..
+        } = &mut self.state
+        {
+            *enters_written = enters_written.saturating_add(1);
+            *wrote_user_bytes = false;
+        }
+    }
+
     /// The shell emitted a precmd hook (model thread).
     pub fn on_precmd(&mut self) {
         self.activity_generation = self.activity_generation.wrapping_add(1);
@@ -344,7 +360,8 @@ impl TypeaheadHandoff {
     /// No precmd or preexec arrived for a while after a [`ActiveDecision::Wait`]: a line the
     /// counts still consider queued was consumed by something other than the shell (a program
     /// reading stdin, an empty or continued line). Trust the quiet and treat every line as
-    /// answered. Returns whether the counts were reset.
+    /// answered. The in-flight count is left alone: those writes are real. Returns whether the
+    /// counts were reset.
     pub fn reset_stale_counts(&mut self, activity_generation: u64) -> bool {
         if activity_generation != self.activity_generation {
             return false;
@@ -356,7 +373,6 @@ impl TypeaheadHandoff {
                 ..
             } => {
                 *precmds_seen = *enters_written;
-                self.writes_in_flight = 0;
                 true
             }
             HandoffState::EditorOwned
@@ -453,6 +469,38 @@ impl TypeaheadHandoff {
                 InterruptOutcome::NotOwned
             }
         }
+    }
+
+    /// Ctrl-C while keys are held behind a deferred Enter cancels both: the deferred submit is
+    /// dropped and the held keys with it. No command is running (the deferred one was never
+    /// written), so nothing is written to the pty. Returns whether there was anything to cancel.
+    pub fn cancel_deferred_enter(&mut self) -> bool {
+        match self.owner() {
+            // The report is still outstanding; the editor keeps waiting for it.
+            Owner::Hold { released: false } => {
+                self.state = HandoffState::AwaitingReport;
+                true
+            }
+            // The deferred submit already ran without writing a command.
+            Owner::Hold { released: true } => {
+                self.state = HandoffState::EditorOwned;
+                true
+            }
+            Owner::Editor | Owner::Pty { .. } | Owner::AwaitingReport => false,
+        }
+    }
+
+    /// Whether the pty owns input at the prompt with user bytes in the shell's line, so only a
+    /// request can hand input to the editor.
+    pub fn needs_request_at_prompt(&self) -> bool {
+        matches!(
+            self.owner(),
+            Owner::Pty {
+                wrote_user_bytes: true,
+                enters_written,
+                precmds_seen,
+            } if precmds_seen >= enters_written
+        )
     }
 
     fn mark_released(&mut self) {

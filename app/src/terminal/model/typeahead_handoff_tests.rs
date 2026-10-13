@@ -423,3 +423,99 @@ fn a_command_written_while_lines_are_queued_keeps_their_count() {
         }
     );
 }
+
+#[test]
+fn a_queued_command_written_behind_typeahead_keeps_its_precmd_from_running_ahead() {
+    let mut handoff = after_submit();
+    // `a` and Enter, then `b`, typed while the editor's command runs.
+    type_and_flush(&mut handoff, b"a\rb");
+    // The queued-prompts panel writes a command; its kill prefix lands on `b`'s line.
+    handoff.on_uncounted_command_written();
+    // The editor's command and `a` reach their prompts: the queued command has not.
+    for _ in 0..2 {
+        handoff.on_precmd();
+        assert_eq!(
+            handoff.on_line_editor_active(true, true),
+            ActiveDecision::Drain,
+            "a request now would be read in cooked mode, behind the queued command"
+        );
+    }
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Committed
+    );
+}
+
+#[test]
+fn an_uncounted_command_changes_nothing_unless_the_pty_owns_input() {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.on_uncounted_command_written();
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+}
+
+#[test]
+fn a_stale_count_reset_keeps_writes_in_flight() {
+    let mut handoff = after_submit();
+    type_and_flush(&mut handoff, b"y\r");
+    assert_eq!(handoff.on_user_bytes(b"z"), UserBytesRoute::WriteCounted);
+    handoff.on_precmd();
+    let ActiveDecision::Wait {
+        activity_generation,
+    } = handoff.on_line_editor_active(true, true)
+    else {
+        panic!("a queued line must block the request");
+    };
+    assert!(handoff.reset_stale_counts(activity_generation));
+    assert_eq!(handoff.writes_in_flight(), 1);
+    assert!(
+        matches!(
+            handoff.on_line_editor_active(true, true),
+            ActiveDecision::Wait { .. }
+        ),
+        "`z` is still on its way to the pty, so a request now could overtake it"
+    );
+    assert_eq!(handoff.on_user_write_flushed(), 0);
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+}
+
+#[test]
+fn ctrl_c_at_the_prompt_then_typing_needs_a_request() {
+    let mut handoff = after_submit();
+    handoff.on_precmd();
+    type_and_flush(&mut handoff, b"abc");
+    type_and_flush(&mut handoff, &[0x03]);
+    assert_eq!(handoff.on_interrupt(), InterruptOutcome::AtPrompt);
+    assert!(!handoff.needs_request_at_prompt());
+    // Typed before the settle timer, with no prompt cycle from the shell.
+    type_and_flush(&mut handoff, b"ls");
+    assert!(!handoff.try_commit_at_prompt());
+    assert!(handoff.needs_request_at_prompt());
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+}
+
+#[test]
+fn ctrl_c_while_holding_cancels_the_deferred_enter_and_held_keys() {
+    let mut handoff = awaiting_report();
+    assert!(handoff.defer_enter());
+    handoff.on_user_bytes(b"rm -rf build\r");
+    assert!(handoff.cancel_deferred_enter());
+    assert_eq!(handoff.state(), &HandoffState::AwaitingReport);
+    // The report still lands in the editor, which keeps input.
+    assert_eq!(handoff.on_report(), ReportDisposition::Insert);
+    assert!(!handoff.cancel_deferred_enter());
+
+    // After the deferred submit ran without writing a command.
+    let mut handoff = awaiting_report();
+    assert!(handoff.defer_enter());
+    handoff.on_user_bytes(b"x");
+    assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
+    assert!(handoff.cancel_deferred_enter());
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+}

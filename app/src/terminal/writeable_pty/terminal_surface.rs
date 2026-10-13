@@ -51,6 +51,9 @@ pub enum PtyIntent {
     /// User bytes the typeahead hand-off routed to the pty and counts as in flight until the
     /// PTY controller has processed them (`FeatureFlag::TypeaheadHandoff`).
     WriteHandoffUserBytes(Cow<'static, [u8]>),
+    /// Re-run the typeahead hand-off's request decision: the shell is at its prompt with user
+    /// bytes in its line and no line-editor activation will come (`FeatureFlag::TypeaheadHandoff`).
+    RetryTypeaheadHandoffRequest,
     WriteAgentInput {
         bytes: Cow<'static, [u8]>,
         mode: AIAgentPtyWriteMode,

@@ -12944,3 +12944,41 @@ fn typeahead_handoff_holds_keys_behind_a_deferred_enter() {
         });
     })
 }
+
+/// Ctrl-C after an Enter that waits for the report cancels the Enter and the held keys; nothing
+/// is replayed after a command the user just tried to stop.
+#[test]
+fn typeahead_handoff_ctrl_c_cancels_a_deferred_enter() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                let handoff = model.typeahead_handoff_mut();
+                handoff.on_command_written();
+                handoff.on_user_bytes(b"ec");
+                handoff.on_user_write_flushed();
+                handoff.on_precmd();
+                assert_eq!(
+                    handoff.on_line_editor_active(true, true),
+                    ActiveDecision::SendRequest
+                );
+                assert!(handoff.defer_enter());
+            }
+            view.keydown_on_terminal("\r", ctx);
+            view.ctrl_c(ctx);
+        });
+
+        assert!(pty_writes.borrow().is_empty());
+        terminal.read(&app, |view, _| {
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::AwaitingReport
+            );
+        });
+    })
+}

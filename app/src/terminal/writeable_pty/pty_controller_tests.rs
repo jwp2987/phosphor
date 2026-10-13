@@ -1428,7 +1428,7 @@ mod typeahead_handoff {
     use super::*;
     use crate::terminal::model::ansi::{Handler, PreexecValue};
     use crate::terminal::model::typeahead_handoff::{
-        HandoffState, ReportDisposition, UserBytesRoute,
+        HandoffState, InterruptOutcome, ReportDisposition, UserBytesRoute,
     };
 
     const SHELL: ShellType = ShellType::Zsh;
@@ -1693,6 +1693,82 @@ mod typeahead_handoff {
                     enters_written: 2,
                     precmds_seen: 0,
                 }
+            );
+        });
+    }
+
+    /// A command from the queued-prompts panel is not the hand-off's, but its prompt is still
+    /// counted; without counting its Enter the request would go out while `a` is still queued
+    /// and land in cooked mode behind it.
+    #[test]
+    fn a_queued_command_does_not_let_the_request_overtake_queued_lines() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            submit(&mut app, &harness, "sleep 1");
+            user_types(&mut app, &harness, b"a\rb");
+            shell_runs_a_command(&harness.model, "sleep 1");
+            line_editor_becomes_active(&mut app, &harness);
+
+            let outcome = harness.controller.update(&mut app, |controller, ctx| {
+                controller.write_command(
+                    "queued",
+                    SHELL,
+                    CommandExecutionSource::QueuedCommand,
+                    ctx,
+                )
+            });
+            assert_eq!(outcome, StartCommandOutcome::Accepted);
+
+            for command in ["a", "queued"] {
+                shell_runs_a_command(&harness.model, command);
+                line_editor_becomes_active(&mut app, &harness);
+                assert!(
+                    !written(&harness).contains(&REQUEST.to_vec()),
+                    "no request while the shell still has lines to run"
+                );
+            }
+            assert_eq!(
+                harness.model.lock().typeahead_handoff().state(),
+                &HandoffState::EditorOwned
+            );
+        });
+    }
+
+    /// Ctrl-C at the prompt, then typing: zsh runs no prompt cycle, so no activation comes. The
+    /// view's settle timer asks the controller to retry, which writes the request.
+    #[test]
+    fn a_retry_after_ctrl_c_at_the_prompt_writes_the_request() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            submit(&mut app, &harness, "true");
+            shell_runs_a_command(&harness.model, "true");
+            harness.line_editor_status.update(&mut app, |status, _| {
+                status.set_line_editor_active_for_test(true)
+            });
+            user_types(&mut app, &harness, b"abc");
+            user_types(&mut app, &harness, &[escape_sequences::C0::ETX]);
+            assert_eq!(
+                harness.model.lock().typeahead_handoff_mut().on_interrupt(),
+                InterruptOutcome::AtPrompt
+            );
+            user_types(&mut app, &harness, b"ls");
+            assert!(
+                !harness
+                    .model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .try_commit_at_prompt()
+            );
+
+            harness.controller.update(&mut app, |controller, ctx| {
+                controller.retry_typeahead_handoff_request(ctx)
+            });
+            assert_eq!(written(&harness).last(), Some(&REQUEST.to_vec()));
+            assert_eq!(
+                harness.model.lock().typeahead_handoff().state(),
+                &HandoffState::AwaitingReport
             );
         });
     }
