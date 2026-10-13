@@ -1422,14 +1422,21 @@ esac
   # the previous command's status in $?; the status is handed on to the user's
   # widget unchanged. Not add-zle-hook-widget: its dispatcher runs other hooks
   # (and a zstyle lookup) before ours, so $? would no longer be that status.
+  #
+  # Limit: the rc files are sourced inside this bootstrap, but plenty of setups
+  # install their widgets lazily, after it (p10k's init, zsh-vi-mode, zinit
+  # turbo, zsh-defer). A wrapper installed then runs before ours, so on a cycle
+  # that needs the repair the block still finishes exactly once, but may carry
+  # the wrapper's status instead of the command's: 0 under add-zle-hook-widget,
+  # 1 under p10k's `_p9k_widget` pattern.
   _warp_zle_line_init() {
     local warp_status=$?
-    # Handing a non-zero $warp_status on below is a failing command by
-    # definition; under the user's `err_return`/`err_exit` it would return from
-    # this widget (or exit the shell) before their own widget ever ran. So both
-    # are off for this widget -- and, since options are dynamically scoped, for
-    # the user's widget it calls.
-    setopt localoptions noerrreturn noerrexit
+    # Backstop against wrapper shapes that call back into us from the widget
+    # we chain to; the case below handles the known one.
+    if [[ -n ${_warp_in_zle_line_init:-} ]]; then
+      return 0
+    fi
+    local _warp_in_zle_line_init=1
     # Only the main command line: vared, `read -q`-style prompts and
     # continuation lines also start ZLE, possibly while a command is running.
     _WARP_REPAIRED_PRECMD=""
@@ -1441,12 +1448,31 @@ esac
       # lands in the new block, after its Precmd.
       zle .reset-prompt
     fi
+    # add-zle-hook-widget ran after us and wrapped us (as `user:_warp_zle_line_init`
+    # in its hook list). If what we chained to is itself an add-zle-hook-widget
+    # dispatcher, it would read that same list, call us again, and so on until
+    # the recursion limit, at every prompt. The outer dispatcher already runs
+    # every hook in that list, so there is nothing left for us to call.
+    if [[ ${widgets[_warp_user_zle_line_init]:-} == user:azhw:zle-line-init &&
+          ${widgets[zle-line-init]:-} == user:azhw:zle-line-init ]]; then
+      return 0
+    fi
     if zle -la _warp_user_zle_line_init; then
-      # Without -w, $WIDGET stays zle-line-init for the user's widget.
-      () { return $1 } $warp_status
-      zle _warp_user_zle_line_init -N -- "$@"
+      # Hand $? on as a condition, not a bare command: a non-zero status as a
+      # bare command would trip the user's err_return/err_exit and return from
+      # here before their widget ran. Both branches see the status. No
+      # localoptions here: it would undo options the user's widget sets
+      # globally (`setopt extendedglob`). Without -w, $WIDGET stays
+      # zle-line-init for the user's widget.
+      if () { return $1 } $warp_status; then
+        zle _warp_user_zle_line_init -N -- "$@"
+      else
+        zle _warp_user_zle_line_init -N -- "$@"
+      fi
     fi
   }
+  # ${widgets} comes from zsh/zleparameter.
+  zmodload zsh/zleparameter 2>/dev/null
   if [[ "$(zle -lL zle-line-init 2>/dev/null)" != *_warp_zle_line_init* ]]; then
     if zle -la zle-line-init; then
       zle -A zle-line-init _warp_user_zle_line_init

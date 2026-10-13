@@ -1514,8 +1514,16 @@ upstream's behavior is actually a defect rather than a preference.
   installed) at the very next prompt, with `_warp_zshaddhistory` as the fallback on the next
   accepted line, and a `_WARP_PRECMD_PENDING` flag keeping the emission to one. In zsh the
   lifecycle hooks (`warp_precmd`, `warp_update_prompt_vars`, `warp_preexec`) are treated as
-  not user-removable; the title hooks stay removable. fish is not affected: its hooks are
-  `--on-event` handlers on Warp-named functions, not a list the user replaces. The guard
-  scans only `*.rs`, so the shell-only names above cannot carry `keep:` markers; the row is
-  anchored on the hook variables themselves, which Rust tests also reference, so an upstream
-  diff touching them trips the re-pin check. <!-- markers: keep:precmd_functions keep:PROMPT_COMMAND -->
+  not user-removable; the title hooks stay removable. **Known limit:** a `zle-line-init`
+  wrapper installed after bootstrap (p10k's init, zsh-vi-mode, zinit turbo, zsh-defer --
+  the rc files are sourced inside bootstrap, so these land later) runs before ours; on a
+  cycle that needs the repair the block still finishes exactly once, but may report the
+  wrapper's status instead of the command's (0 under `add-zle-hook-widget`, 1 under p10k's
+  `_p9k_widget` pattern). fish is not affected: its hooks are `--on-event` handlers on
+  Warp-named functions, not a list the user replaces. **Protection:** the repair lives only in
+  shell scripts, which neither `script/check_declined_collisions` (it greps `*.rs`) nor
+  `script/generate_repin_queue` (it diffs test-bearing files only) looks at. So
+  `bootstrap_test.rs::test_bootstrap_scripts_repair_a_replaced_prompt_hook` asserts the bundled
+  scripts still define and register these functions -- a re-pin that takes upstream's scripts
+  wholesale fails it -- and the `keep:` markers below hold the test and its names in place.
+  <!-- markers: keep:test_bootstrap_scripts_repair_a_replaced_prompt_hook keep:_warp_repair_hooks keep:_warp_zle_line_init keep:__bp_reinstall_prompt_command -->
