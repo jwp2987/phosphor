@@ -538,6 +538,47 @@ fn test_is_unambiguous_shell_command_forces_shell_for_clear_commands() {
     });
 }
 
+// #886: Enter settles a pending detection with this pre-filter alone (no parse has landed under
+// burst typing). These are the lines the burst torture sent to the agent, including the shapes a
+// burst merges -- they all have a command head, so the text alone settles them.
+#[test]
+fn test_is_unambiguous_shell_command_settles_burst_lines_from_text_alone() {
+    for buffer in [
+        "echo b30 >> ~/blk.txt",
+        "echo b129 b131 >> ~/blk.txt",
+        "echo b196 >> ~/blk.txtecho b199 >> ~/blk.txt",
+        "echo b11 >> ~/blk.txtecho b12 >> ~/blk.txt",
+    ] {
+        let snapshot = ParsedTokensSnapshot {
+            buffer_text: buffer.to_string(),
+            parsed_tokens: Vec::new(),
+        };
+        assert!(
+            is_unambiguous_shell_command(&snapshot),
+            "expected {buffer:?} to be settled as Shell without a parse"
+        );
+    }
+}
+
+// #886: the headless pieces a burst splits off carry no head the pre-filter can see; they are
+// left to the classifier (and decided Shell only by their typeahead provenance, in the model).
+#[test]
+fn test_is_unambiguous_shell_command_leaves_headless_burst_fragments_alone() {
+    futures::executor::block_on(async move {
+        for buffer in [
+            "ho b199 >> ~/blk.txt",
+            "b22 b23",
+            "b11 blk.txtecho b12",
+            "xtecho b5 >> ~/blk.txt",
+        ] {
+            assert!(
+                !is_unambiguous_shell_command_for(buffer).await,
+                "{buffer:?} has no command head; the pre-filter must not claim it"
+            );
+        }
+    });
+}
+
 #[test]
 fn test_is_unambiguous_shell_command_leaves_prose_and_ambiguous_input_to_the_classifier() {
     futures::executor::block_on(async move {

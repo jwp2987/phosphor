@@ -178,6 +178,15 @@ pub struct BlocklistAIInputModel {
     /// being replaced cannot apply its verdict (or clear the handle) over its replacement.
     detection_generation: u64,
 
+    /// Whether the buffer holds text the shell handed back as typeahead (#886): keys typed while
+    /// a command was running, or before the editor regained focus, went to the shell's tty and
+    /// were reported back into the editor. That text was typed *at the shell*, and when a burst
+    /// splits or merges it the pieces (`ho b199 >> ~/blk.txt`, `b22 b23`,
+    /// `xtecho b5 >> ~/blk.txt`) carry no command head the pre-filter could recognise, so the
+    /// classifier read them as prose. Set by the view when it inserts typeahead; cleared by a
+    /// submit, an emptied buffer, or the user choosing AI explicitly.
+    buffer_has_typeahead: bool,
+
     /// Whether the input buffer was empty at the time the lock was set.  This will be true
     /// if a persistent lock is in place and a buffer is submitted.
     was_lock_set_with_empty_buffer: bool,
@@ -239,6 +248,7 @@ impl BlocklistAIInputModel {
             non_autodetected_input_type: input_config.input_type,
             pending_detection_buffer: None,
             detection_generation: 0,
+            buffer_has_typeahead: false,
             was_lock_set_with_empty_buffer: false,
             agent_view_controller: None,
             ai_context_model,
@@ -447,6 +457,7 @@ impl BlocklistAIInputModel {
             non_autodetected_input_type: input_config.input_type,
             pending_detection_buffer: None,
             detection_generation: 0,
+            buffer_has_typeahead: false,
             was_lock_set_with_empty_buffer: false,
             autodetect_abort_handle: None,
             model,
@@ -573,6 +584,10 @@ impl BlocklistAIInputModel {
 
         if !is_autodetected {
             self.non_autodetected_input_type = new_config.input_type;
+            // Choosing AI for a typeahead buffer overrides its shell provenance (#886).
+            if new_config.input_type.is_ai() {
+                self.buffer_has_typeahead = false;
+            }
         }
 
         if self.input_config == new_config {
@@ -732,8 +747,9 @@ impl BlocklistAIInputModel {
     ///
     /// An explicit write whose buffer is still unclaimed (no detection request has arrived since
     /// it) is treated as covering the current buffer: nothing has asked to reclassify it, and an
-    /// explicit choice is never overridden. Nothing in the submit path consults this yet (F6 of
-    /// #833 is open); it is the model's answer to "is this buffer's mode a real verdict?".
+    /// explicit choice is never overridden. Enter consults it through
+    /// [`Self::settle_pending_detection_for_submit`] (#886, the shell-ward half of #833's F6); it
+    /// is the model's answer to "is this buffer's mode a real verdict?".
     pub fn is_detection_pending_for(&self, buffer_text: &str, app: &AppContext) -> bool {
         if buffer_text.trim().is_empty() || !self.should_run_input_autodetection(app) {
             return false;
@@ -758,6 +774,68 @@ impl BlocklistAIInputModel {
     /// holds, so a parse that lands after its text was submitted (or superseded) is dropped.
     pub fn is_detection_requested_for(&self, buffer_text: &str) -> bool {
         self.pending_detection_buffer.as_deref() == Some(buffer_text)
+    }
+
+    /// Records that the view inserted shell typeahead into the buffer (#886); see
+    /// [`Self::buffer_has_typeahead`].
+    pub fn note_typeahead_inserted(&mut self) {
+        self.buffer_has_typeahead = true;
+    }
+
+    /// Records that the buffer was emptied: whatever is typed next is not typeahead (#886).
+    pub fn note_buffer_emptied(&mut self) {
+        self.buffer_has_typeahead = false;
+    }
+
+    /// Settles a detection still pending for the buffer being submitted, from what can be
+    /// decided synchronously about its *whole* text (#886, the shell-ward half of #833's F6).
+    ///
+    /// Enter routes on the live input type. When the latest edit's verdict has not landed, that
+    /// type is the verdict for some earlier buffer -- after an agent submit, `AI`. A burst typed
+    /// faster than the parse and the classifier never lets the verdict for the full line land
+    /// before its Enter, so every command in the burst went to the agent (#886: 39 complete
+    /// `echo bN >> ~/blk.txt` lines in one run). Before #833 the parse of a *prefix* of the line
+    /// (`echo b31 >> ~/b`) could still land mid-burst and the pre-filter flipped the mode to
+    /// Shell; #833 rightly dropped prefix verdicts (a shell-looking prefix of prose is not a
+    /// verdict for the prose), which left nothing to correct the inherited type.
+    ///
+    /// Only Shell is decided here, and only by rules that are already precision-first for the
+    /// whole text: the user's denylist, [`input_classifier::util::is_unambiguous_shell_command`]
+    /// (whose prose vetoes are the #831 holes), or shell typeahead provenance. Anything else keeps
+    /// the live type, as before. A locked or explicitly chosen type is never pending, so it is
+    /// never overridden. Returns `true` if the input type was settled to Shell.
+    pub fn settle_pending_detection_for_submit(
+        &mut self,
+        input: &ParsedTokensSnapshot,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        if !self.is_detection_pending_for(&input.buffer_text, ctx) {
+            return false;
+        }
+        let is_shell = self.buffer_has_typeahead
+            || self.is_first_word_denylisted(&input.buffer_text, ctx)
+            || input_classifier::util::is_unambiguous_shell_command(input);
+        if !is_shell {
+            return false;
+        }
+        // The in-flight verdict is for this text and is superseded; a parse of it that lands
+        // later is no longer requested and is dropped by the view.
+        self.abort_in_progress_detection();
+        self.apply_autodetected_input_type(InputType::Shell, ctx);
+        self.settle_detection(&input.buffer_text);
+        true
+    }
+
+    /// Whether the first word of `buffer_text` is in the user's autodetection denylist.
+    fn is_first_word_denylisted(&self, buffer_text: &str, app: &AppContext) -> bool {
+        let Some(first_word) = buffer_text.split_whitespace().next() else {
+            return false;
+        };
+        AISettings::as_ref(app)
+            .autodetection_command_denylist
+            .value()
+            .split(',')
+            .any(|entry| entry == first_word)
     }
 
     /// Marks detection for `buffer_text` as settled: whatever the input type is now is the
@@ -821,6 +899,8 @@ impl BlocklistAIInputModel {
         // would become the mode the next command is typed into. The view only classifies a
         // parse whose text is still `is_detection_requested_for`.
         self.pending_detection_buffer = None;
+        // The typeahead, if any, went with the submitted text (#886).
+        self.buffer_has_typeahead = false;
     }
 
     pub fn was_lock_set_with_empty_buffer(&self) -> bool {
@@ -902,6 +982,17 @@ impl BlocklistAIInputModel {
         // anything merely *probably* a command still goes through the pipeline below. See
         // `input_classifier::util::is_unambiguous_shell_command`.
         if input_classifier::util::is_unambiguous_shell_command(&input) {
+            self.apply_autodetected_input_type(InputType::Shell, ctx);
+            self.settle_detection(&input.buffer_text);
+            return;
+        }
+
+        // #886: text the shell handed back as typeahead was typed at the shell. A burst that the
+        // tty split or merged leaves pieces with no recognisable head (`ho b199 >> ~/blk.txt`,
+        // `b22 b23`, `b11 blk.txtecho b12`) that the classifier reads as prose, and an AI verdict
+        // here is the mode the rest of the burst is then typed into. Choosing AI explicitly
+        // clears the provenance, so the user can still send such a buffer to the agent.
+        if self.buffer_has_typeahead {
             self.apply_autodetected_input_type(InputType::Shell, ctx);
             self.settle_detection(&input.buffer_text);
             return;

@@ -891,3 +891,201 @@ fn one_off_shortcut_keys_off_the_last_non_autodetected_type() {
         });
     });
 }
+
+// ---------------------------------------------------------------------------------------------
+// #886: Enter settles a pending detection Shell-ward from the whole text, and shell typeahead
+// defaults to Shell.
+//
+// The burst torture (`echo bN >> ~/blk.txt` + Return, ~1 ms per key) never let the verdict for a
+// line land before its Enter, so after one agent submit the inherited `AI` routed whole runs of
+// complete commands to the agent. The buffers below are the ones the agent received, and the
+// split/merged shapes the shell handed back as typeahead, taken from the bisect logs.
+// ---------------------------------------------------------------------------------------------
+
+/// Complete (or merged-but-headed) lines from the #886 runs that were sent to the agent.
+const BURST_LINES_SENT_TO_AGENT: &[&str] = &[
+    "echo b30 >> ~/blk.txt",
+    "echo b134 >> ~/blk.txt",
+    "echo b196 >> ~/blk.txtecho b199 >> ~/blk.txt",
+    "echo b129 b131 >> ~/blk.txt",
+];
+
+/// Headless typeahead pieces from the #886 runs: no head the pre-filter recognises.
+const TYPEAHEAD_FRAGMENTS: &[&str] = &[
+    "ho b199 >> ~/blk.txt",
+    "b22 b23",
+    "b11 blk.txtecho b12",
+    "xtecho b5 >> ~/blk.txt",
+    "b29 >> ~/blk.txt",
+];
+
+fn snapshot_without_parse(buffer_text: &str) -> ParsedTokensSnapshot {
+    // Enter does not wait for the debounced parse; the settle works from the text alone.
+    ParsedTokensSnapshot {
+        buffer_text: buffer_text.to_owned(),
+        parsed_tokens: Vec::new(),
+    }
+}
+
+fn settle_for_submit(
+    app: &mut App,
+    input_model: &ModelHandle<BlocklistAIInputModel>,
+    buffer_text: &str,
+) -> bool {
+    input_model.update(app, |model, ctx| {
+        model.settle_pending_detection_for_submit(&snapshot_without_parse(buffer_text), ctx)
+    })
+}
+
+/// Puts the model back to "`AI` inherited from an earlier verdict", with nothing pending, the
+/// state an agent submit leaves for the next command typed into the same input.
+fn inherit_ai(app: &mut App, input_model: &ModelHandle<BlocklistAIInputModel>) {
+    input_model.update(app, |model, ctx| {
+        model.apply_autodetected_input_type(InputType::AI, ctx);
+        model.note_buffer_emptied();
+    });
+}
+
+#[test]
+fn pending_burst_line_settles_to_shell_at_submit() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, AI_UNLOCKED);
+        for line in BURST_LINES_SENT_TO_AGENT {
+            // The line's own verdict has not landed when its Enter arrives.
+            inherit_ai(&mut app, &input_model);
+            input_model.update(&mut app, |model, _| {
+                model.note_detection_requested((*line).to_owned());
+            });
+            assert!(settle_for_submit(&mut app, &input_model, line), "{line}");
+            input_model.read(&app, |model, ctx| {
+                assert_eq!(model.input_type(), InputType::Shell, "{line}");
+                assert!(!model.is_detection_pending_for(line, ctx), "{line}");
+                // A late parse of the line is no longer requested, so the view drops it.
+                assert!(!model.is_detection_requested_for(line), "{line}");
+            });
+        }
+    });
+}
+
+#[test]
+fn pending_prose_with_shell_head_keeps_inherited_type_at_submit() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, AI_UNLOCKED);
+        // #831's holes: prose that starts with a command word must never be settled to Shell at
+        // Enter. Only the Shell-ward pre-filter runs here, so the inherited `AI` stands.
+        for prose in [
+            "find the bug in main.rs",
+            "git status of the repo",
+            "cat the config file and summarize it",
+            "ls files > list.txt please",
+        ] {
+            inherit_ai(&mut app, &input_model);
+            input_model.update(&mut app, |model, _| {
+                model.note_detection_requested(prose.to_owned());
+            });
+            assert!(!settle_for_submit(&mut app, &input_model, prose), "{prose}");
+            input_model.read(&app, |model, ctx| {
+                assert_eq!(model.input_type(), InputType::AI, "{prose}");
+                assert!(model.is_detection_pending_for(prose, ctx), "{prose}");
+            });
+        }
+    });
+}
+
+#[test]
+fn settled_or_locked_type_is_not_overridden_at_submit() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let line = BURST_LINES_SENT_TO_AGENT[0];
+        let input_model = build_autodetecting_input_model(&mut app, AI_UNLOCKED);
+
+        // Nothing requested a detection for this text (no edit since its verdict): the live type
+        // is its verdict and is left alone.
+        assert!(!settle_for_submit(&mut app, &input_model, line));
+        input_model.read(&app, |model, _| {
+            assert_eq!(model.input_type(), InputType::AI);
+        });
+
+        // ctrl-I: the user locked AI, so even an unambiguous command goes to the agent.
+        input_model.update(&mut app, |model, ctx| {
+            model.set_input_config(AI_LOCKED, true, ctx);
+            model.note_detection_requested(line.to_owned());
+        });
+        assert!(!settle_for_submit(&mut app, &input_model, line));
+        input_model.read(&app, |model, _| {
+            assert_eq!(model.input_config(), AI_LOCKED);
+        });
+    });
+}
+
+#[test]
+fn typeahead_fragments_default_to_shell() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, AI_UNLOCKED);
+        for fragment in TYPEAHEAD_FRAGMENTS {
+            // At Enter, before any verdict.
+            inherit_ai(&mut app, &input_model);
+            input_model.update(&mut app, |model, _| {
+                model.note_typeahead_inserted();
+                model.note_detection_requested((*fragment).to_owned());
+            });
+            assert!(
+                settle_for_submit(&mut app, &input_model, fragment),
+                "{fragment}"
+            );
+            input_model.read(&app, |model, _| {
+                assert_eq!(model.input_type(), InputType::Shell, "{fragment}");
+            });
+
+            // And in detection: settled synchronously, the classifier never sees it.
+            inherit_ai(&mut app, &input_model);
+            let snapshot = parsed(fragment).await;
+            input_model.update(&mut app, |model, _| model.note_typeahead_inserted());
+            request_detection(&mut app, &input_model, snapshot);
+            input_model.read(&app, |model, ctx| {
+                assert_eq!(model.input_type(), InputType::Shell, "{fragment}");
+                assert!(!model.is_detection_pending_for(fragment, ctx), "{fragment}");
+            });
+        }
+    });
+}
+
+#[test]
+fn typeahead_provenance_ends_with_its_buffer() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(false);
+        let fragment = TYPEAHEAD_FRAGMENTS[1];
+        let input_model = build_autodetecting_input_model(&mut app, AI_UNLOCKED);
+
+        // Without typeahead the fragment is not decided at Enter (it has no command head).
+        input_model.update(&mut app, |model, _| {
+            model.note_detection_requested(fragment.to_owned());
+        });
+        assert!(!settle_for_submit(&mut app, &input_model, fragment));
+
+        // Choosing Shell keeps the provenance...
+        input_model.update(&mut app, |model, ctx| {
+            model.note_typeahead_inserted();
+            model.set_input_type(InputType::Shell, ctx);
+        });
+        input_model.read(&app, |model, _| assert!(model.buffer_has_typeahead));
+
+        // ...while choosing AI, emptying the buffer, or submitting it each end it.
+        let ends: [fn(&mut BlocklistAIInputModel, &mut ModelContext<BlocklistAIInputModel>); 3] = [
+            |model, ctx| model.set_input_type(InputType::AI, ctx),
+            |model, _| model.note_buffer_emptied(),
+            |model, ctx| model.handle_input_buffer_submitted(ctx),
+        ];
+        for end in ends {
+            input_model.update(&mut app, |model, ctx| {
+                model.note_typeahead_inserted();
+                end(model, ctx);
+            });
+            input_model.read(&app, |model, _| assert!(!model.buffer_has_typeahead));
+        }
+    });
+}

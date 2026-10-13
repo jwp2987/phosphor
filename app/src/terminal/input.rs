@@ -7640,6 +7640,17 @@ impl Input {
             view.replace_first_n_characters(num_typeahead_chars_inserted, typeahead, ctx);
             view.move_to_buffer_end(ctx);
         });
+        self.note_typeahead_inserted(typeahead, ctx);
+    }
+
+    /// Tells input-type detection the buffer now holds shell typeahead (#886): it was typed at
+    /// the shell, so it defaults to Shell rather than being classified as prose.
+    fn note_typeahead_inserted(&mut self, typeahead: &str, ctx: &mut ViewContext<Self>) {
+        if typeahead.trim().is_empty() {
+            return;
+        }
+        self.ai_input_model
+            .update(ctx, |model, _| model.note_typeahead_inserted());
     }
 
     /// Like [`Self::insert_typeahead_text`], but a cursor the user moved into their own text
@@ -7657,6 +7668,7 @@ impl Input {
                 view.move_to_buffer_end(ctx);
             }
         });
+        self.note_typeahead_inserted(typeahead, ctx);
     }
 
     pub fn focus_input_box(&self, ctx: &mut ViewContext<Self>) {
@@ -9127,8 +9139,12 @@ impl Input {
                 // `BlocklistAIInputModel::is_detection_requested_for`.
                 let buffer_text_for_detection =
                     should_run_ai_input_detection.then(|| self.buffer_text(ctx));
+                let is_buffer_empty = self.editor.as_ref(ctx).buffer_size(ctx).as_usize() == 0;
                 self.ai_input_model.update(ctx, |controller, _| {
                     controller.abort_in_progress_detection();
+                    if is_buffer_empty {
+                        controller.note_buffer_emptied();
+                    }
                     if let Some(buffer_text) = buffer_text_for_detection {
                         controller.note_detection_requested(buffer_text);
                     }
@@ -11999,6 +12015,25 @@ impl Input {
         );
     }
 
+    /// Before Enter routes on the live input type, settles a detection still pending for the
+    /// buffer from its whole text (#886). Under burst typing the verdict for the full line never
+    /// lands before its Enter, so the live type is the previous buffer's -- `AI` after an agent
+    /// submit, which sent whole runs of `echo bN >> ~/blk.txt` to the agent. See
+    /// `BlocklistAIInputModel::settle_pending_detection_for_submit` for what may be decided here.
+    fn settle_pending_input_detection_for_submit(&mut self, ctx: &mut ViewContext<Self>) {
+        let buffer_text = self.buffer_text(ctx);
+        let snapshot = match &self.last_parsed_tokens {
+            Some(parsed) if parsed.buffer_text == buffer_text => parsed.clone(),
+            _ => decorations::ParsedTokensSnapshot {
+                buffer_text,
+                parsed_tokens: Vec::new(),
+            },
+        };
+        self.ai_input_model.update(ctx, |model, ctx| {
+            model.settle_pending_detection_for_submit(&snapshot, ctx);
+        });
+    }
+
     /// Handles the user's 'Enter' keypress.
     ///
     /// Depending on input state, this method may either execute a command, accept an input
@@ -12072,6 +12107,7 @@ impl Input {
         if self.defer_enter_for_typeahead_report(ctx) {
             return;
         }
+        self.settle_pending_input_detection_for_submit(ctx);
         let command = self.editor.as_ref(ctx).buffer_text(ctx);
 
         ctx.emit(Event::Enter);

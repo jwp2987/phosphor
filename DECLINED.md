@@ -881,6 +881,20 @@ upstream's behavior is actually a defect rather than a preference.
   (cannot classify before the debounced parse lands, so it did not change the measured case) were
   both tried and dropped.
 
+  **F6, shell-ward half (`#886`, 2026-10-13).** Dropping prefix verdicts removed what used to
+  pull a burst back to Shell: before #833 the parse of a *prefix* (`echo b31 >> ~/b`) could land
+  mid-burst and the #808 pre-filter set Shell synchronously. After it, a burst typed faster than
+  the parse never has a verdict for its line at Enter, so after one agent submit every following
+  command inherited `AI` (39 complete `echo bN >> ~/blk.txt` lines sent to the agent in one run,
+  0-3 before). **We do:** Enter settles a still-pending detection from the *whole* text, Shell-ward
+  only, by rules that need no parse and are precision-first for the full line -- the denylist and
+  `is_unambiguous_shell_command` (whose prose vetoes are the #831 holes) -- so prose is never
+  decided here and keeps the old F6 behaviour. A buffer holding shell **typeahead** (keys typed
+  while a command ran, reported back by the shell) defaults to Shell both at Enter and in
+  detection, because it was typed at the shell and its split/merged pieces (`ho b199 >> ~/blk.txt`,
+  `b22 b23`, `b11 blk.txtecho b12`) have no head the pre-filter can see; choosing AI explicitly
+  clears that provenance. Upstream classifies typeahead like any other buffer.
+
 - **Kitty/iTerm image dimensions from the pty are computed without overflow, and kitty
   placements are capped at `MAX_IMAGE_CELL_HEIGHT`** (`#876`, 2026-10-13,
   `crates/warp_terminal/src/model/kitty.rs`, `crates/warpui_core/src/image_cache.rs`,
