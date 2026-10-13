@@ -4,7 +4,7 @@
 # Throughout, command -p is used to call external binaries. command -p resolves the
 # given command using the system default $PATH, which ensures the shells can locate
 # the corresponding binaries even if the user has a clobbered value of $PATH.
-if [ -z "$WARP_BOOTSTRAPPED" ]; then
+if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # Byte sequence used to signal the start of a DCS. ([0x1b, 0x50, 0x24] which
     # maps to <ESC>, P, $ in ASCII.)
     DCS_START="$(printf '\eP$')"
@@ -50,9 +50,53 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
         __warp_emit () { printf "$@"; }
     fi
 
+    # Phosphor (#825): the hooks below run inside the user's interactive shell,
+    # so they run under whatever `set -u` / `set -e` / `set -o pipefail` the user
+    # chose. Under `set -u` the first unset variable a hook expanded aborted it
+    # (`_WARP_GENERATOR_COMMAND: unbound variable`): Precmd was never sent and
+    # the tab locked for good. Under `set -e` any failing test inside a hook
+    # exits the shell. So every hook entry point turns those three options off
+    # for its own body and puts back exactly what the user had on the way out.
+    # The expansions are nounset-safe as well (`${VAR:-}`), so a hook that is
+    # ever called outside these wrappers still does not abort.
+    #
+    # __warp_relax_opts <var>: store in <var> the `set` commands that restore
+    # the CALLER's errexit/nounset/pipefail, then turn all three off. Builtins
+    # only -- this runs on every prompt and every command, so no forks.
+    __warp_relax_opts () {
+        local __warp_relax_restore=
+        case $- in *e*) __warp_relax_restore+='set -e;' ;; esac
+        case $- in *u*) __warp_relax_restore+='set -u;' ;; esac
+        if [[ -o pipefail ]]; then __warp_relax_restore+='set -o pipefail;'; fi
+        set +e +u +o pipefail
+        printf -v "$1" '%s' "$__warp_relax_restore"
+    }
+
+    __warp_set_status () { return "${1:-0}"; }
+
+    # __warp_run_relaxed <function> [args...]: run <function> with the options
+    # relaxed and restore them afterwards. `$?` is handed through on the way in
+    # (warp_precmd reads the finished command's status from it) and the
+    # function's own status on the way out (bash-preexec gives preexec return
+    # values meaning under `extdebug`).
+    __warp_run_relaxed () {
+        local __warp_run_status=$? __warp_run_restore
+        __warp_relax_opts __warp_run_restore
+        __warp_set_status "$__warp_run_status"
+        "$@"
+        __warp_run_status=$?
+        eval "$__warp_run_restore"
+        return "$__warp_run_status"
+    }
+
+    # The bootstrap itself runs under the same rules: in a subshell it is typed
+    # into a shell whose rcfiles already ran, and the user's own rcfiles (sourced
+    # below) can turn these options on before the rest of it runs.
+    __warp_relax_opts __warp_bootstrap_opts_restore
+
     # Attempt to cd to the desired initial working directory, swallowing any
     # errors.  If this fails, the user will end up in their home directory.
-    if [[ ! -z "$WARP_INITIAL_WORKING_DIR" ]]; then
+    if [[ ! -z "${WARP_INITIAL_WORKING_DIR:-}" ]]; then
         cd "$WARP_INITIAL_WORKING_DIR" >/dev/null 2>&1
         unset WARP_INITIAL_WORKING_DIR
     fi
@@ -72,11 +116,11 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
     _WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE=""
     # Make sure we delete generator PID files when the shell exits, if they exist.
     __warp_generator_pid_file_cleanup() {
-      if [[ -f $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE ]]; then
-        command -p rm $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE
+      if [[ -f ${_WARP_GENERATOR_PIDS_STARTED_TMP_FILE:-} ]]; then
+        command -p rm "$_WARP_GENERATOR_PIDS_STARTED_TMP_FILE"
       fi
-      if [[ -f $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE ]]; then
-        command -p rm $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE
+      if [[ -f ${_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE:-} ]]; then
+        command -p rm "$_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE"
       fi
     }
     trap __warp_generator_pid_file_cleanup EXIT
@@ -87,10 +131,10 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
         # Note that because the JSON string may contain characters that we don't control (including
         # unicode), we encode it as hexadecimal string to avoid prematurely calling unhook if
         # one of the bytes in JSON is 9c (ST) or other (CAN, SUB, ESC).
-        encoded_message=$(warp_hex_encode_string "$1")
+        encoded_message=$(warp_hex_encode_string "${1-}")
         # We send the InitShell hook via OSCs when on WSL or MSYS2 or SSH from Windows and via DCSs otherwise.
         # Note that $WARP_USING_WINDOWS_CON_PTY is set in the init shell script.
-        if [ "$WARP_USING_WINDOWS_CON_PTY" = true ]; then
+        if [ "${WARP_USING_WINDOWS_CON_PTY:-}" = true ]; then
           __warp_emit "$OSC_START$DCS_JSON_MARKER$OSC_PARAM_SEPARATOR$encoded_message$OSC_END"
         else
           __warp_emit "$DCS_START$DCS_JSON_MARKER$encoded_message$DCS_END"
@@ -112,11 +156,11 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
     #
     # Installed after warp_send_json_message is defined so the handler is
     # callable the moment the trap is registered.
-    if [[ "$WARP_IS_SSH" == "1" ]]; then
+    if [[ "${WARP_IS_SSH:-}" == "1" ]]; then
         __warp_emit_exit_shell() {
-            if [[ -n "$WARP_SESSION_ID" ]]; then
+            if [[ -n "${WARP_SESSION_ID:-}" ]]; then
                 warp_send_json_message \
-                    "{\"hook\": \"ExitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
+                    "{\"hook\": \"ExitShell\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
             fi
         }
         # Bash allows only one handler per signal, so compose with the
@@ -130,35 +174,35 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
     fi
 
     warp_maybe_send_reset_grid_osc () {
-        if [ "$WARP_USING_WINDOWS_CON_PTY" = true ]; then
+        if [ "${WARP_USING_WINDOWS_CON_PTY:-}" = true ]; then
             __warp_emit "$RESET_GRID_OSC"
         fi
     }
 
     # Expects the first argument to be the shell hook.
     warp_send_hook_via_kv_pairs_start () {
-      __warp_emit "${OSC_START}k;A;%s\a" $1
+      __warp_emit "${OSC_START}k;A;%s\a" "${1-}"
     }
 
     # Expects the first argument to be the key and the second argument to be the value.
     warp_send_hook_kv_pair_escaped () {
       # Note that we only escape the value.
-      if [[ -n "$2" ]]; then
+      if [[ -n "${2-}" ]]; then
         __warp_emit "${OSC_START}k;B;%s;%q\a" "$1" "$2"
       else
         # Don't print anything for the empty value.
-        __warp_emit "${OSC_START}k;B;%s;\a" "$1"
+        __warp_emit "${OSC_START}k;B;%s;\a" "${1-}"
       fi
     }
 
     # Expects the first argument to be the key and the second argument to be the value.
     warp_send_hook_kv_pair () {
       # Note that we only escape the value.
-      if [[ -n "$2" ]]; then
+      if [[ -n "${2-}" ]]; then
         __warp_emit "${OSC_START}k;B;%s;%s\a" "$1" "$2"
       else
         # Don't print anything for the empty value.
-        __warp_emit "${OSC_START}k;B;%s;\a" "$1"
+        __warp_emit "${OSC_START}k;B;%s;\a" "${1-}"
       fi
     }
 
@@ -175,15 +219,16 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
     #
     # The payload of the OSC is "<content_length>;<hex-encoded content>".
     warp_send_generator_output_osc () {
-        local hex_encoded_message=$(warp_hex_encode_string "$1")
+        local hex_encoded_message=$(warp_hex_encode_string "${1-}")
         warp_send_generator_output_osc_pre_hex_encoded "$hex_encoded_message"
     }
 
     # Note: If we're on windows, we send a reset grid to erase any cursor mutations caused by
     # the in-band command.
     warp_send_generator_output_osc_pre_hex_encoded () {
-        local byte_count=$(LC_ALL="C"; printf "${#1}")
-        __warp_emit "%b%i;%s%b" $OSC_START_GENERATOR_OUTPUT $byte_count $1 $OSC_END_GENERATOR_OUTPUT
+        local payload=${1-}
+        local byte_count=$(LC_ALL="C"; printf "${#payload}")
+        __warp_emit "%b%i;%s%b" $OSC_START_GENERATOR_OUTPUT $byte_count $payload $OSC_END_GENERATOR_OUTPUT
         warp_maybe_send_reset_grid_osc
     }
 
@@ -195,7 +240,7 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
     # exit_code is the exit code of the executed command, and command_output is
     # the output itself.
     _warp_execute_command() {
-      local command_id=$1
+      local command_id=${1-}
       # This is shorthand to slice the 2nd-nth arguments of this function (i.e.
       # the command array) into its own array. The first argument is the
       # command_id stored above.
@@ -226,7 +271,7 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
       _warp_execute_command "$@" &
       # $! contains the PID of the most recently backgrounded command.
       local pid=$!
-      echo $pid >> $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE
+      echo $pid >> "${_WARP_GENERATOR_PIDS_STARTED_TMP_FILE:-}"
       wait $pid 2> /dev/null
 
       # If the exit code of the backgrounded _warp_execute_command process is non-zero,
@@ -235,7 +280,7 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
       # _warp_execute_command function itself). In this case, send empty output with
       # exit code 1 to indicate generator execution failed.
       if [[ $? -ne 0 ]]; then
-          warp_send_generator_output_osc "$1;;1"
+          warp_send_generator_output_osc "${1-};;1"
       fi
 
 
@@ -243,8 +288,8 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
       # 
       # The completed generator PIDs file may not exist if this generator was (by
       # error) left running/not cancelled properly in warp_preexec.
-      if [[ -f $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE ]]; then
-        echo $pid >> $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE
+      if [[ -f ${_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE:-} ]]; then
+        echo $pid >> "$_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE"
       fi
     }
 
@@ -270,48 +315,55 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
     # name too, so they move with it. `script/check_generator_wrapper_names` enforces
     # the pairing.
     warp_run_generator_command() {
+      # Relaxed for the whole body (#825), and therefore also for the generator
+      # subshell forked below: generators are Warp's own commands, not the user's.
+      local __warp_generator_restore
+      __warp_relax_opts __warp_generator_restore
+
       # Setting this environment variable prevents warp_precmd from emitting the
       # 'Block started' hook to the Rust app.
       _WARP_GENERATOR_COMMAND=1
 
       # Ensure the started and completed generator PID files exist.
-      if [[ -z $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE || ! -f $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE ]]; then
+      if [[ -z ${_WARP_GENERATOR_PIDS_STARTED_TMP_FILE:-} || ! -f $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE ]]; then
         _WARP_GENERATOR_PIDS_STARTED_TMP_FILE="$(command -p mktemp)"
       fi
-      if [[ -z $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE || ! -f $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE ]]; then
+      if [[ -z ${_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE:-} || ! -f $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE ]]; then
         _WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE="$(command -p mktemp)"
       fi
 
       # To minimize latency and prevent the user from being blocked from entering a command,
       # cache the user's precmd_functions and only register warp_precmd. In the warp_precmd
       # execution following this generator command, the user's precmd_functions are restored.
-      _USER_PRECMD_FUNCTIONS=(${precmd_functions[@]})
+      _USER_PRECMD_FUNCTIONS=(${precmd_functions[@]+"${precmd_functions[@]}"})
       precmd_functions=(warp_precmd)
 
       # $@ must be double-quoted to prevent word-splitting, which would cause the given command to
       # be split into a bash list on $IFS chars (spaces, tabs, newlines), which could invalidate
       # the syntactical correctness of the command.
       (_warp_run_generator_command_internal "$@" &)
+
+      eval "$__warp_generator_restore"
     }
 
 
     # Note that this is very performance sensitive code, so try not to
     # invoke any external commands in here.
-    warp_preexec () {
+    __warp_preexec_impl () {
         # Use the $BASH_COMMAND environment variable instead of $1, which is passed in by bash_preeexec.
         #
         # Bash_preexec intends to pass the command to preexec functions (as $1), but it utilizes session
         # history to do so. This means that $1 is not the correct command if the executed command is ignored
         # by history (e.g. via $HISTCONTROL or $HISTIGNORE); for example, all in-band generators are ignored
         # by history.
-        if [ "$WARP_IN_MSYS2" = true ]; then
+        if [ "${WARP_IN_MSYS2:-}" = true ]; then
           warp_send_hook_via_kv_pairs_start "Preexec"
           warp_send_hook_kv_pair "command" "$BASH_COMMAND"
-          warp_send_hook_kv_pair "session_id" "$WARP_SESSION_ID"
+          warp_send_hook_kv_pair "session_id" "${WARP_SESSION_ID:-}"
           warp_send_hook_via_kv_pairs_end
         else
           local truncated_command=$(warp_escape_json "$BASH_COMMAND")
-          warp_send_json_message "{\"hook\": \"Preexec\", \"value\": {\"command\": \"$truncated_command\", \"session_id\": $WARP_SESSION_ID}}"
+          warp_send_json_message "{\"hook\": \"Preexec\", \"value\": {\"command\": \"$truncated_command\", \"session_id\": ${WARP_SESSION_ID:-}}}"
         fi
         warp_maybe_send_reset_grid_osc
 
@@ -319,7 +371,7 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
         # Since we did not early-return above, this hook is for a user-entered
         # command. Kill ongoing generator jobs so their output does not interfere
         # with the user command's output.
-        if [[ "$BASH_COMMAND" != warp_run_generator_command* ]] && [[ -f $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE ]] && [[ -f $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE ]]
+        if [[ "$BASH_COMMAND" != warp_run_generator_command* ]] && [[ -f ${_WARP_GENERATOR_PIDS_STARTED_TMP_FILE:-} ]] && [[ -f ${_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE:-} ]]
         then
           # Read PIDs from the started generators tmp file that are not present in
           # the completed generators tmp file into a bash array.
@@ -340,26 +392,34 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
           pids=()
           while IFS= read -r pid; do
             found=0
-            for completed_pid in "${completed_pids[@]}"; do
+            for completed_pid in ${completed_pids[@]+"${completed_pids[@]}"}; do
               if [[ "$pid" == "$completed_pid" ]]; then
                 found=1
                 break
               fi
             done
-            if (( found == 0 )); then
+            # The files start with the blank line warp_precmd resets them to.
+            if (( found == 0 )) && [[ -n "$pid" ]]; then
               pids+=("$pid")
             fi
           done < $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE
 
-          # If the array is not empty, kill the ongoing pids.
-          if [[ ! -z $pids ]]; then
+          # If the array is not empty, kill the ongoing pids -- all of them (#838:
+          # this used to expand `$pids`, i.e. only the first element).
+          if (( ${#pids[@]} > 0 )); then
             # Suppress stderr output; kill writes to stderr if any of the given
             # PIDS are not running (which might rarely be the case due to race
             # conditions in checking which PIDS to cancel and this kill command.
-            kill -9 $pids >/dev/null 2>/dev/null
-          fi 
+            kill -9 "${pids[@]}" >/dev/null 2>/dev/null || :
+          fi
         fi
+
+        # Warp's preexec never vetoes the user's command: bash-preexec makes a
+        # preexec's non-zero status skip the command under `extdebug`, and under
+        # the user's `set -e` it would exit the shell (#825).
+        return 0
     }
+    function warp_preexec { __warp_run_relaxed __warp_preexec_impl "$@"; }
 
     # Set terminal window and tab title to the same title value. Note that for values longer than 25
     # characters, we truncate the title and prepend "..".
@@ -369,12 +429,13 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
       DISABLE_AUTO_TITLE="1"
 
       # truncating the title's len to 25 characters and leading ".."
-      tmp_len=$((${#1}-25)) # starting character's position
+      local title_text=${1-}
+      tmp_len=$((${#title_text}-25)) # starting character's position
       len=$((tmp_len>0 ? tmp_len : 0)) # account for the shorter strings
       if [[ $len -ne 0 ]]; then
-        title="..${1:$len}" # shorten the argument and prepend the leading ".."
+        title="..${title_text:$len}" # shorten the argument and prepend the leading ".."
       else
-        title="$1"
+        title="$title_text"
       fi
       # Set the title. Be sure to make the title a %s argument to prevent title content from ending up
       # in the block output, see:
@@ -383,9 +444,9 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
     }
 
     # Runs before executing the command
-    warp_set_title_idle_on_precmd () {
+    __warp_set_title_idle_on_precmd_impl () {
       # If the user wants to set the title themselves, they can set the WARP_DISABLE_AUTO_TITLE flag.
-      if [ ! -z "$WARP_DISABLE_AUTO_TITLE" ]; then
+      if [ ! -z "${WARP_DISABLE_AUTO_TITLE:-}" ]; then
         return
       fi
 
@@ -398,32 +459,33 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
       new_home='~'
       bash_term_tab_title="${PWD/#$HOME/$new_home}"
 
-      if [[ $WARP_IS_LOCAL_SHELL_SESSION == "1" ]]; then
+      if [[ ${WARP_IS_LOCAL_SHELL_SESSION:-} == "1" ]]; then
         warp_title "$bash_term_tab_title"
       else
         bash_term_tab_title_remote="${HOSTNAME%%.*}:$bash_term_tab_title"
         warp_title "$bash_term_tab_title_remote"
       fi
     }
+    function warp_set_title_idle_on_precmd { __warp_run_relaxed __warp_set_title_idle_on_precmd_impl "$@"; }
 
     # Runs before executing the command
-    warp_set_title_active_on_preexec () {
+    __warp_set_title_active_on_preexec_impl () {
       # If the user wants to set the title themselves, they can set the WARP_DISABLE_AUTO_TITLE flag.
-      if [ ! -z "$WARP_DISABLE_AUTO_TITLE" ]; then
+      if [ ! -z "${WARP_DISABLE_AUTO_TITLE:-}" ]; then
         return
       fi
 
-      cmd="$1"
+      cmd="${1-}"
       # warp_set_title_active_on_preexec is a preexec_function, which accepts 1 argument 
       #(currently invoked command)
       local this_command_spec
-      read -r -a this_command_spec <<< "$1"
+      read -r -a this_command_spec <<< "${1-}"
 
       # if running fg, figure out the command from its process id
-      if [[ "${this_command_spec[0]}" == "fg" ]]; then 
+      if [[ "${this_command_spec[0]:-}" == "fg" ]]; then 
         # note that `fg` and `jobs` essentially take the same arguments (but to be extra safe, 
         # we swapped empty/no-arguments to current background process), so we can just use that
-        jobspec=${this_command_spec[1]}
+        jobspec=${this_command_spec[1]:-}
         if [[ "$jobspec" == "" ]]; then
           jobspec="%%"
         fi
@@ -442,6 +504,7 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
 
       warp_title "$cmd"
     }
+    function warp_set_title_active_on_preexec { __warp_run_relaxed __warp_set_title_active_on_preexec_impl "$@"; }
 
     # The git prompt's git commands are read-only and should not interfere with
     # other processes. This environment variable is equivalent to running with `git
@@ -456,7 +519,7 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
 
     # Note that this is very performance sensitive code, so try not to
     # invoke any external commands in here.
-    warp_precmd () {
+    __warp_precmd_impl () {
         # $? is relative to the process so we MUST check this first
         # or else the exit code will correspond to the commands
         # executed within this block instead of the actual last
@@ -465,22 +528,23 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
         # Compute the next block ID once so the CommandFinished hook and the following Precmd hook
         # report the same ID. The Precmd carries this completion metadata so the client can classify
         # it and, if the CommandFinished was missed, recover the completion.
-        local next_block_id="precmd-$WARP_SESSION_ID-$((block_id++))"
-        if [ "$WARP_IN_MSYS2" = true ]; then
+        : "${block_id:=0}"
+        local next_block_id="precmd-${WARP_SESSION_ID:-}-$((block_id++))"
+        if [ "${WARP_IN_MSYS2:-}" = true ]; then
           warp_send_hook_via_kv_pairs_start "CommandFinished"
           warp_send_hook_kv_pair "exit_code" "$exit_code"
           warp_send_hook_kv_pair "next_block_id" "$next_block_id"
-          warp_send_hook_kv_pair "session_id" "$WARP_SESSION_ID"
+          warp_send_hook_kv_pair "session_id" "${WARP_SESSION_ID:-}"
           warp_send_hook_via_kv_pairs_end
         else
-          warp_send_json_message "{\"hook\": \"CommandFinished\", \"value\": {\"exit_code\": $exit_code, \"next_block_id\": \"$next_block_id\", \"session_id\": $WARP_SESSION_ID}}"
+          warp_send_json_message "{\"hook\": \"CommandFinished\", \"value\": {\"exit_code\": $exit_code, \"next_block_id\": \"$next_block_id\", \"session_id\": ${WARP_SESSION_ID:-}}}"
         fi
 
         warp_maybe_send_reset_grid_osc
 
-        if [[ $PS1 == "" ]]; then
+        if [[ ${PS1:-} == "" ]]; then
           # Use the saved PS1, if we've already unset it (due to active Warp prompt).
-          WARP_PS1="$SAVED_PS1"
+          WARP_PS1="${SAVED_PS1:-}"
         else
           # If we haven't unset it yet, then we can use the current PS1 value.
           WARP_PS1="$PS1"
@@ -489,10 +553,10 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
         # If this is being called for a generator command, short circuit and send an unpopulated
         # precmd payload (except for pwd), since we don't re-render the prompt after generator commands
         # are run.
-        if [ ! -z  $_WARP_GENERATOR_COMMAND ]; then
+        if [ -n "${_WARP_GENERATOR_COMMAND:-}" ]; then
             # Restore the user's precmd_functions, since they were un-registered prior to executing
             # the generator.
-            precmd_functions=(${_USER_PRECMD_FUNCTIONS[@]})
+            precmd_functions=(${_USER_PRECMD_FUNCTIONS[@]+"${_USER_PRECMD_FUNCTIONS[@]}"})
 
             unset _WARP_GENERATOR_COMMAND
             warp_send_json_message "{\"hook\": \"Precmd\", \"value\": {
@@ -505,34 +569,34 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
             \"virtual_env\": \"\",
             \"conda_env\": \"\",
             \"node_version\": \"\",
-            \"session_id\": $WARP_SESSION_ID,
+            \"session_id\": ${WARP_SESSION_ID:-},
             \"is_after_in_band_command\": true
             }}"
             return 0
         fi
 
         # If the files for tracking generator PIDs exist, clear them.
-        if [[ -n $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE && -f $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE ]]; then
-          echo "" > $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE
+        if [[ -n ${_WARP_GENERATOR_PIDS_STARTED_TMP_FILE:-} && -f $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE ]]; then
+          echo "" >| "$_WARP_GENERATOR_PIDS_STARTED_TMP_FILE"
         fi
-        if [[ -n $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE && -f $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE ]]; then
-          echo "" > $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE
+        if [[ -n ${_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE:-} && -f $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE ]]; then
+          echo "" >| "$_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE"
         fi
 
-        if [[ -z $WARP_INPUT_REPORTING_SUPPORTED ]]; then
+        if [[ -z ${WARP_INPUT_REPORTING_SUPPORTED:-} ]]; then
           WARP_INPUT_REPORTING_SUPPORTED=$(warp_input_reporting_supported)
         fi
 
         local honor_ps1
         local deref_ps1=""
         local escaped_ps1=""
-        if [[ "$WARP_HONOR_PS1" == "1" ]]; then
+        if [[ "${WARP_HONOR_PS1:-}" == "1" ]]; then
           honor_ps1="true"
         else
           honor_ps1="false"
 
           # If we haven't already, cache information about supported features.
-          if [[ -z $WARP_PS1_EXPANSION_SUPPORTED ]]; then
+          if [[ -z ${WARP_PS1_EXPANSION_SUPPORTED:-} ]]; then
             WARP_PS1_EXPANSION_SUPPORTED=$(warp_ps1_expanding_supported)
           fi
 
@@ -542,7 +606,7 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
             # last exit code has changed. So before the evaluation, we want to trick the shell
             # into returning the correct value for the $? that may be in PS1
             exit_code_hack() {
-              return $1
+              return "${1:-0}"
             }
             exit_code_hack $exit_code
             deref_ps1=${WARP_PS1@P}
@@ -553,7 +617,7 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
             deref_ps1=$(echo -e "\n" | PS1="$WARP_PS1" BASH_SILENCE_DEPRECATION_WARNING=1 "$BASH" --norc -i 2>&1 | command -p head -2 | command -p tail -1)
           fi
 
-          if [ "$WARP_IN_MSYS2" = false ]; then
+          if [ "${WARP_IN_MSYS2:-}" = false ]; then
             escaped_ps1=$(warp_escape_ps1 "$(echo "$deref_ps1")")
           fi
         fi
@@ -569,7 +633,7 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
 
         # Reset the report-input binding in case the user's bashrc modified it.
         # This is arbitrarily bound to ESC-i in all supported shells ("i" for input).
-        if [[ $WARP_INPUT_REPORTING_SUPPORTED == "1" ]]; then
+        if [[ ${WARP_INPUT_REPORTING_SUPPORTED:-} == "1" ]]; then
           bind -r '"\ei"'
           bind -x '"\ei":"warp_report_input"'
         fi
@@ -586,8 +650,8 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
         bind -x '"\ew":"warp_change_prompt_modes_to_warp_prompt"'
 
         local escaped_pwd
-        if [ "$WARP_IN_MSYS2" = false ]; then
-          if [ -n "$WSL_DISTRO_NAME" ]; then
+        if [ "${WARP_IN_MSYS2:-}" = false ]; then
+          if [ -n "${WSL_DISTRO_NAME:-}" ]; then
             # In WSL, avoid symlinks b/c on Windows `std::fs` is unable to resolve symlink inside WSL containers.
             escaped_pwd=$(warp_escape_json "$(pwd -P)")
           else
@@ -607,12 +671,12 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
         # blocks created during the bootstrap process don't have visible
         # prompts, and we don't want to invoke `git` before we've sourced the
         # user's rcfiles and have a fully-populated PATH.
-        if [[ -n "$WARP_BOOTSTRAPPED" ]]; then
-          if [[ -n "$VIRTUAL_ENV" ]] && [ "$WARP_IN_MSYS2" = false ]; then
+        if [[ -n "${WARP_BOOTSTRAPPED:-}" ]]; then
+          if [[ -n "${VIRTUAL_ENV:-}" ]] && [ "${WARP_IN_MSYS2:-}" = false ]; then
               escaped_virtual_env=$(warp_escape_json "$VIRTUAL_ENV")
           fi
 
-          if [[ -n "$CONDA_DEFAULT_ENV" ]] && [ "$WARP_IN_MSYS2" = false ]; then
+          if [[ -n "${CONDA_DEFAULT_ENV:-}" ]] && [ "${WARP_IN_MSYS2:-}" = false ]; then
               escaped_conda_env=$(warp_escape_json "$CONDA_DEFAULT_ENV")
           fi
 
@@ -620,7 +684,7 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
           # Warp sets WARP_PROMPT_NODE_VERSION_ENABLED to "0" when the chip is not in the
           # prompt (defaulting to enabled when unset), so we avoid spawning `node` on
           # every prompt when the chip is not shown.
-          if [[ "$WARP_PROMPT_NODE_VERSION_ENABLED" != "0" ]] && command -v node > /dev/null 2>&1 && [ "$WARP_IN_MSYS2" = false ]; then
+          if [[ "${WARP_PROMPT_NODE_VERSION_ENABLED:-}" != "0" ]] && command -v node > /dev/null 2>&1 && [ "${WARP_IN_MSYS2:-}" = false ]; then
               # Check for package.json in current directory and parent directories
               local current_dir="$PWD"
               local found_package_json=false
@@ -657,8 +721,8 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
                       # on `nvm use`). The cache vars are global (no `local`) so they
                       # persist across precmd invocations.
                       local node_cache_key="$PWD:$PATH"
-                      if [[ "$node_cache_key" == "$_WARP_NODE_VERSION_CACHE_KEY" ]]; then
-                          escaped_node_version="$_WARP_NODE_VERSION_CACHE_VALUE"
+                      if [[ "$node_cache_key" == "${_WARP_NODE_VERSION_CACHE_KEY:-}" ]]; then
+                          escaped_node_version="${_WARP_NODE_VERSION_CACHE_VALUE:-}"
                       else
                           local node_version=$(node --version 2>/dev/null)
                           if [[ -n "$node_version" ]]; then
@@ -681,7 +745,7 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
             # The git branch the user is on, or the git commit hash if they're not on a branch.
             git_head="${git_branch:-$(warp_git rev-parse --short HEAD 2> /dev/null)}"
           fi
-          if [ "$WARP_IN_MSYS2" = false ]; then
+          if [ "${WARP_IN_MSYS2:-}" = false ]; then
             escaped_git_head=$(warp_escape_json "$git_head")
             escaped_git_branch=$(warp_escape_json "$git_branch")
           fi
@@ -699,7 +763,7 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
         # We also pass the shell's notion of `honor_ps1` to ensure it's synced correctly on the Warp-side for prompt handling.
         # This is passed as a "real boolean" via the JSON payload (string interpolated into JSON string below).
         # We send the escaped PS1, if we are in active Warp prompt mode, for prompt preview rendering (note the shell's PS1 is unset in this case).
-        if [ "$WARP_IN_MSYS2" = true ]; then
+        if [ "${WARP_IN_MSYS2:-}" = true ]; then
           warp_send_hook_via_kv_pairs_start "Precmd"
           warp_send_hook_kv_pair "exit_code" "$exit_code"
           warp_send_hook_kv_pair "next_block_id" "$next_block_id"
@@ -709,10 +773,10 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
           warp_send_hook_kv_pair "honor_ps1" "$honor_ps1"
           warp_send_hook_kv_pair "git_head" "$git_head"
           warp_send_hook_kv_pair "git_branch" "$git_branch"
-          warp_send_hook_kv_pair "virtual_env" "$VIRTUAL_ENV"
-          warp_send_hook_kv_pair "conda_env" "$CONDA_DEFAULT_ENV"
-          warp_send_hook_kv_pair "node_version" "$node_version"
-          warp_send_hook_kv_pair "session_id" "$WARP_SESSION_ID"
+          warp_send_hook_kv_pair "virtual_env" "${VIRTUAL_ENV:-}"
+          warp_send_hook_kv_pair "conda_env" "${CONDA_DEFAULT_ENV:-}"
+          warp_send_hook_kv_pair "node_version" "${node_version:-}"
+          warp_send_hook_kv_pair "session_id" "${WARP_SESSION_ID:-}"
           warp_send_hook_via_kv_pairs_end
         else
           local escaped_json="{\"hook\": \"Precmd\", \"value\": {
@@ -727,11 +791,12 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
           \"virtual_env\": \"$escaped_virtual_env\",
           \"conda_env\": \"$escaped_conda_env\",
           \"node_version\": \"$escaped_node_version\",
-          \"session_id\": $WARP_SESSION_ID
+          \"session_id\": ${WARP_SESSION_ID:-}
           }}"
           warp_send_json_message "$escaped_json"
         fi
     }
+    function warp_precmd { __warp_run_relaxed __warp_precmd_impl "$@"; }
 
     warp_clear_on_next_block () {
         warp_send_json_message '{"hook": "ClearOnNextBlock"}'
@@ -813,30 +878,31 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
 
     # Report the current input buffer contents to Warp. This only works correctly
     # if `warp_input_reporting_supported` returns "1".
-    warp_report_input () {
-        if [ "$WARP_IN_MSYS2" = true ]; then
+    __warp_report_input_impl () {
+        if [ "${WARP_IN_MSYS2:-}" = true ]; then
             warp_send_hook_via_kv_pairs_start "InputBuffer"
-            warp_send_hook_kv_pair "buffer" "$READLINE_LINE"
-            warp_send_hook_kv_pair "session_id" "$WARP_SESSION_ID"
+            warp_send_hook_kv_pair "buffer" "${READLINE_LINE:-}"
+            warp_send_hook_kv_pair "session_id" "${WARP_SESSION_ID:-}"
             warp_send_hook_via_kv_pairs_end
         else
-            local escaped_input="$(warp_escape_json "$READLINE_LINE")"
-            warp_send_json_message "{ \"hook\": \"InputBuffer\", \"value\": { \"buffer\": \"$escaped_input\", \"session_id\": $WARP_SESSION_ID } }"
+            local escaped_input="$(warp_escape_json "${READLINE_LINE:-}")"
+            warp_send_json_message "{ \"hook\": \"InputBuffer\", \"value\": { \"buffer\": \"$escaped_input\", \"session_id\": ${WARP_SESSION_ID:-} } }"
         fi
         # This prevents bash from re-printing typeahead after we've removed it.
         READLINE_LINE=""
     }
+    function warp_report_input { __warp_run_relaxed __warp_report_input_impl "$@"; }
 
     # Check whether the prompt-related variables have OSC prompt marker sequences,
     # and if not, wrap them with the appropriate markers so that we can direct the
     # prompt bytes to the appropriate grids.
-    function warp_update_prompt_vars() {
+    function __warp_update_prompt_vars_impl() {
       # 133;A and 133;B are standard prompt marker OSCs.
       # See https://learn.microsoft.com/en-us/windows/terminal/tutorials/shell-integration and
       # https://gitlab.freedesktop.org/terminal-wg/specifications/-/merge_requests/6/diffs for details.
       local prompt_prefix=$'\e]133;A\a'
       local prompt_suffix=$'\e]133;B\a'
-      if [[ "$WARP_HONOR_PS1" != "1" ]] && [ "$WARP_USING_WINDOWS_CON_PTY" = true ]; then
+      if [[ "${WARP_HONOR_PS1:-}" != "1" ]] && [ "${WARP_USING_WINDOWS_CON_PTY:-}" = true ]; then
         local suffix="$prompt_suffix$RESET_GRID_OSC"
       else
         local suffix="$prompt_suffix"
@@ -854,8 +920,8 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
       # product behavior of Warp prompt switches only taking effect in new sessions.
       # Certain prompt plugins can reset the prompt to a non-empty value, after we've initially unset it.
       # Confirm that it is unset, if using built-in Warp prompt (update prompt vars is forced to run as the last precmd fn).
-      if [[ "$WARP_HONOR_PS1" != "1" ]]; then
-        if [[ "$PS1" != "" ]]; then
+      if [[ "${WARP_HONOR_PS1:-}" != "1" ]]; then
+        if [[ "${PS1:-}" != "" ]]; then
           # If the PS1 has its original value, then we save it in SAVED_PS1 so we can restore to this value, if we were to unset it for
           # the Warp prompt case, but the user wants to switch back to PS1 later.
           SAVED_PS1=$PS1
@@ -865,7 +931,7 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
         # for the Edit Prompt modal and onboarding prompt block.
       fi
 
-      if [[ -n "$PS1" ]]; then
+      if [[ -n "${PS1:-}" ]]; then
         # Remove any existing prompt/cursor markers from the prompt, before we re-modify it. Notably,
         # we want to wrap the latest version of the prompt (which may have been changed e.g. virtualenv
         # added).
@@ -885,14 +951,14 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
       fi
 
       # Unset the PS1, if we are using the Warp prompt.
-      if [[ "$WARP_HONOR_PS1" != "1" ]]; then
+      if [[ "${WARP_HONOR_PS1:-}" != "1" ]]; then
         PS1=""
       # Otherwise, if we are using the PS1, we use the normal prompt markers.
       else
-        if [[ "$PS1" != "\["*"\]" ]]; then
+        if [[ "${PS1:-}" != "\["*"\]" ]]; then
           # We surround the non-printable OSCs with cursor markers to make sure the shell does NOT
           # account for them when keeping track of its internal cursor position.
-          PS1="\[$prompt_prefix\]$ORIGINAL_PS1\[$suffix\]"
+          PS1="\[$prompt_prefix\]${ORIGINAL_PS1:-}\[$suffix\]"
         fi
       fi
 
@@ -906,7 +972,7 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
       filtered_precmd_functions=()
 
       # Loop through each function in the original precmd_functions array.
-      for func in "${precmd_functions[@]}"; do
+      for func in ${precmd_functions[@]+"${precmd_functions[@]}"}; do
         # Add the function to the filtered array if it's not warp_update_prompt_vars
         if [[ "$func" != "warp_update_prompt_vars" ]]; then
           filtered_precmd_functions+=("$func")
@@ -914,55 +980,60 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
       done
 
       # Assign the filtered array back to precmd_functions.
-      precmd_functions=("${filtered_precmd_functions[@]}")
+      precmd_functions=(${filtered_precmd_functions[@]+"${filtered_precmd_functions[@]}"})
 
       # Append warp_update_prompt_vars to the end of the precmd_functions array.
       precmd_functions+=("warp_update_prompt_vars")
     }
+    function warp_update_prompt_vars { __warp_run_relaxed __warp_update_prompt_vars_impl "$@"; }
     
     # Changes the WARP_HONOR_PS1 variable to 1, to indicate we want to use the PS1. Restores
     # the original PS1 value (which we unset for Warp prompt) and calls warp_update_prompt_vars
     # to refresh the prompt. Note that we use an "empty block" workaround to achieve instant
     # prompt switching in bash, since there is no built-in methods to repaint the prompt, unlike
     # Zsh/fish.
-    function warp_change_prompt_modes_to_ps1() {
-      PS1="$SAVED_PS1"
+    function __warp_change_prompt_modes_to_ps1_impl() {
+      PS1="${SAVED_PS1:-}"
       WARP_HONOR_PS1="1"
 
       warp_update_prompt_vars
     }
+    function warp_change_prompt_modes_to_ps1 { __warp_run_relaxed __warp_change_prompt_modes_to_ps1_impl "$@"; }
 
     # Changes the WARP_HONOR_PS1 variable to 0, to indicate we want to use the Warp prompt. Calls 
     # warp_update_prompt_vars to refresh the prompt (note the PS1 will be unset in this logic). 
     # Note that we use an "empty block" workaround to achieve instant prompt switching in bash, 
     # since there is no built-in methods to repaint the prompt, unlike Zsh/fish.
-    function warp_change_prompt_modes_to_warp_prompt() {
+    function __warp_change_prompt_modes_to_warp_prompt_impl() {
       WARP_HONOR_PS1="0"
 
       warp_update_prompt_vars
     }
+    function warp_change_prompt_modes_to_warp_prompt { __warp_run_relaxed __warp_change_prompt_modes_to_warp_prompt_impl "$@"; }
 
-    function clear() {
-        if [ "$WARP_IN_MSYS2" = true ]; then
+    function __warp_clear_impl() {
+        if [ "${WARP_IN_MSYS2:-}" = true ]; then
             warp_send_hook_via_kv_pairs_start "Clear"
-            warp_send_hook_kv_pair "session_id" "$WARP_SESSION_ID"
+            warp_send_hook_kv_pair "session_id" "${WARP_SESSION_ID:-}"
             warp_send_hook_via_kv_pairs_end
         else
-            warp_send_json_message "{\"hook\": \"Clear\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
+            warp_send_json_message "{\"hook\": \"Clear\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
         fi
     }
+    function clear { __warp_run_relaxed __warp_clear_impl "$@"; }
 
-    function warp_finish_update {
-      local update_id="$1"
-      if [ "$WARP_IN_MSYS2" = true ]; then
+    function __warp_finish_update_impl {
+      local update_id="${1-}"
+      if [ "${WARP_IN_MSYS2:-}" = true ]; then
         warp_send_hook_via_kv_pairs_start "FinishUpdate"
         warp_send_hook_kv_pair "update_id" "$update_id"
-        warp_send_hook_kv_pair "session_id" "$WARP_SESSION_ID"
+        warp_send_hook_kv_pair "session_id" "${WARP_SESSION_ID:-}"
         warp_send_hook_via_kv_pairs_end
       else
-        warp_send_json_message "{ \"hook\": \"FinishUpdate\", \"value\": { \"update_id\": \"$update_id\", \"session_id\": $WARP_SESSION_ID} }"
+        warp_send_json_message "{ \"hook\": \"FinishUpdate\", \"value\": { \"update_id\": \"$update_id\", \"session_id\": ${WARP_SESSION_ID:-}} }"
       fi
     }
+    function warp_finish_update { __warp_run_relaxed __warp_finish_update_impl "$@"; }
 
     # Check if the warp apt source file has been renamed to `warpdotdev.list.distUpgrade` due to an ubuntu version update.
     # If this occurred, we want to rename the source file back to `warpdotdev.list` to ensure updates can proceed.
@@ -971,8 +1042,8 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
     # The `.sources` file could only exist if a user manually created it; Ubuntu doesn't create one automatically for the
     # warp source file due to a bug in its update flow where it considers our source file to be "invalid" because it
     # contains a `signed-by` key.
-    function warp_handle_dist_upgrade {
-      local source_file_name="$1"
+    function __warp_handle_dist_upgrade_impl {
+      local source_file_name="${1-}"
 
       eval "$(command apt-config shell APT_SOURCESDIR 'Dir::Etc::sourceparts/d')"
 
@@ -987,10 +1058,11 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
         sudo cp "$APT_SOURCESDIR$source_file_name.list.distUpgrade" "$APT_SOURCESDIR$source_file_name.list"
       fi
     }
+    function warp_handle_dist_upgrade { __warp_run_relaxed __warp_handle_dist_upgrade_impl "$@"; }
 
     # The SSH logic only applies to local sessions, because we don't yet have support for bootstrapping
     # recursive SSH sessions.
-    if [[ $WARP_IS_LOCAL_SHELL_SESSION == "1" ]]; then
+    if [[ ${WARP_IS_LOCAL_SHELL_SESSION:-} == "1" ]]; then
         # This helper function determines whether the user's ssh arguments imply
         # creation of a non-interactive session or otherwise would conflict with
         # our SSH wrapper.  Returns 0 for an interactive session; >0 otherwise.
@@ -1180,14 +1252,14 @@ esac
 "
         }
 
-        function ssh() {
+        function __warp_ssh_impl() {
             if is_interactive_ssh_session "$@"; then
-                warp_send_json_message "{\"hook\": \"PreInteractiveSSHSession\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
+                warp_send_json_message "{\"hook\": \"PreInteractiveSSHSession\", \"value\": {\"session_id\": ${WARP_SESSION_ID:-}}}"
 
                 # If the SSH wrapper is not enabled for this session, don't use it.
-                if [ "$WARP_USE_SSH_WRAPPER" = "1" ]; then
+                if [ "${WARP_USE_SSH_WRAPPER:-}" = "1" ]; then
                     local TRACE_FLAG_IF_WARP_SHELL_DEBUG_MODE=""
-                    if [[ "$WARP_SHELL_DEBUG_MODE" == "1" ]]; then
+                    if [[ "${WARP_SHELL_DEBUG_MODE:-}" == "1" ]]; then
                         TRACE_FLAG_IF_WARP_SHELL_DEBUG_MODE="-x"
                     fi
                     warp_ssh_helper "$@"
@@ -1198,6 +1270,7 @@ esac
                 command ssh "$@"
             fi
         }
+        function ssh { __warp_run_relaxed __warp_ssh_impl "$@"; }
     fi
 
 
@@ -1229,6 +1302,9 @@ esac
         # issues in locales that use a comma as the decimal separator.
         rcfiles_start_time="$(LC_ALL="C"; echo $EPOCHREALTIME)"
 
+        # The rcfiles run under the options the shell started with, and whatever
+        # they leave turned on is what the user gets back at the end (#825).
+        eval "$__warp_bootstrap_opts_restore"
         if [[ -e /etc/profile ]]; then
             source /etc/profile;
         elif [[ -e /etc/bash.bashrc ]]; then
@@ -1257,6 +1333,7 @@ esac
         elif [[ -e "$HOME/.profile" ]]; then
             source "$HOME/.profile"
         fi
+        __warp_relax_opts __warp_bootstrap_opts_restore
 
         rcfiles_end_time="$(LC_ALL="C"; echo $EPOCHREALTIME)"
     fi
@@ -1434,7 +1511,7 @@ esac
         local function_names="`compgen -A function`"
         local builtins="`compgen -b`"
         local keywords="`compgen -k`"
-        if [ "$WARP_IN_MSYS2" = false ]; then
+        if [ "${WARP_IN_MSYS2:-}" = false ]; then
           # Note that for now we don't support dynamically changing HISTFILE within a session.
           local escaped_histfile="$(warp_escape_json "$HISTFILE")"
           local escaped_abbrs=""
@@ -1461,7 +1538,7 @@ esac
 
         local shell_plugins_list="$(printf '%s\n' "${shell_plugins[@]}")"
 
-        if [ "$WARP_IN_MSYS2" = false ]; then
+        if [ "${WARP_IN_MSYS2:-}" = false ]; then
           local escaped_shell_plugins=$(warp_escape_json "$shell_plugins_list")
           local escaped_path="$(warp_escape_json "$PATH")"
           local escaped_shell_options=$(warp_escape_json "$shell_options")
@@ -1469,10 +1546,10 @@ esac
 
         local _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || echo $USER)
         local _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n)
-        if [ "$WARP_IN_MSYS2" = true ]; then
+        if [ "${WARP_IN_MSYS2:-}" = true ]; then
           warp_send_hook_via_kv_pairs_start "Bootstrapped"
           warp_send_hook_kv_pair "histfile" "$HISTFILE"
-          warp_send_hook_kv_pair "session_id" "$WARP_SESSION_ID"
+          warp_send_hook_kv_pair "session_id" "${WARP_SESSION_ID:-}"
           warp_send_hook_kv_pair "shell" "bash"
           warp_send_hook_kv_pair "home_dir" "$HOME"
           warp_send_hook_kv_pair "user" "$_user"
@@ -1498,9 +1575,13 @@ esac
         else
           local escaped_editor="$(warp_escape_json "$EDITOR")"
           local escaped_shell_path="$(warp_escape_json "$BASH")"
-          local escaped_json="{\"hook\": \"Bootstrapped\", \"value\": {\"histfile\": \"$escaped_histfile\", \"session_id\": $WARP_SESSION_ID, \"shell\": \"bash\",  \"home_dir\": \"$HOME\", \"user\":\"$_user\", \"host\":\"$_hostname\", \"path\": \"$escaped_path\", \"editor\": \"$escaped_editor\", \"env_var_names\": \"$escaped_env_var_names\", \"abbreviations\": \"$escaped_abbrs\", \"aliases\": \"$escaped_aliases\", \"function_names\": \"$escaped_function_names\", \"builtins\": \"$escaped_builtins\", \"keywords\": \"$escaped_keywords\", \"shell_version\": \"$BASH_VERSION\", \"shell_options\": \"$escaped_shell_options\", \"rcfiles_start_time\": \"$rcfiles_start_time\", \"rcfiles_end_time\": \"$rcfiles_end_time\", \"shell_plugins\": \"$escaped_shell_plugins\", \"vi_mode_enabled\": \"$vi_mode_enabled\", \"os_category\": \"$os_category\", \"linux_distribution\": \"$linux_distribution\", \"wsl_name\": \"$WSL_DISTRO_NAME\", \"shell_path\": \"$escaped_shell_path\"}}"
+          local escaped_json="{\"hook\": \"Bootstrapped\", \"value\": {\"histfile\": \"$escaped_histfile\", \"session_id\": ${WARP_SESSION_ID:-}, \"shell\": \"bash\",  \"home_dir\": \"$HOME\", \"user\":\"$_user\", \"host\":\"$_hostname\", \"path\": \"$escaped_path\", \"editor\": \"$escaped_editor\", \"env_var_names\": \"$escaped_env_var_names\", \"abbreviations\": \"$escaped_abbrs\", \"aliases\": \"$escaped_aliases\", \"function_names\": \"$escaped_function_names\", \"builtins\": \"$escaped_builtins\", \"keywords\": \"$escaped_keywords\", \"shell_version\": \"$BASH_VERSION\", \"shell_options\": \"$escaped_shell_options\", \"rcfiles_start_time\": \"$rcfiles_start_time\", \"rcfiles_end_time\": \"$rcfiles_end_time\", \"shell_plugins\": \"$escaped_shell_plugins\", \"vi_mode_enabled\": \"$vi_mode_enabled\", \"os_category\": \"$os_category\", \"linux_distribution\": \"$linux_distribution\", \"wsl_name\": \"$WSL_DISTRO_NAME\", \"shell_path\": \"$escaped_shell_path\"}}"
           warp_send_json_message "$escaped_json"
         fi
     }
     warp_bootstrapped
+
+    # Hand the shell back with the user's own errexit/nounset/pipefail (#825).
+    eval "$__warp_bootstrap_opts_restore"
+    unset __warp_bootstrap_opts_restore
 fi

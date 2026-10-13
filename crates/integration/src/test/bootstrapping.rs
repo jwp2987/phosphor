@@ -375,6 +375,65 @@ pub fn test_zsh_bootstraps_with_nounset_option() -> Builder {
         ))
 }
 
+/// Regression test for #825: under bash `set -u` the precmd hook expanded an unset variable
+/// (`$_WARP_GENERATOR_COMMAND`), bash aborted the hook, Precmd was never emitted and the tab
+/// locked. The bash counterpart of `test_zsh_bootstraps_with_nounset_option`.
+///
+/// Enables nounset after bootstrap, then checks that the next command still completes (which
+/// needs both Preexec and the following CommandFinished/Precmd) and that the user's `set -u` is
+/// still in force afterwards -- the hooks relax it for their own bodies only.
+/// `script/test_bash_bootstrap_nounset` drives the same scenario without the app.
+pub fn test_bash_bootstraps_with_nounset_option() -> Builder {
+    new_builder()
+        .set_should_run_test(|| {
+            // Only run this one on bash
+            let (starter, _) = current_shell_starter_and_version();
+            matches!(starter.shell_type(), shell::ShellType::Bash)
+        })
+        .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
+        .with_step(execute_command_for_single_terminal_in_tab(
+            0,
+            "set -u".to_string(),
+            ExpectedExitStatus::Success,
+            (),
+        ))
+        .with_step(execute_command_for_single_terminal_in_tab(
+            0,
+            "echo 'nounset test passed'".to_string(),
+            ExpectedExitStatus::Success,
+            "nounset test passed",
+        ))
+        .with_step(execute_command_for_single_terminal_in_tab(
+            0,
+            "[[ $- == *u* ]] && echo nounset-still-on".to_string(),
+            ExpectedExitStatus::Success,
+            "nounset-still-on",
+        ))
+}
+
+/// Regression test for #825: a `set -u` in the user's rcfile used to apply to the rest of the
+/// bootstrap and to every hook after it. Bootstrap must complete, commands must run, and the
+/// rcfile's `set -u` must be what the user is left with.
+pub fn test_bash_bootstraps_with_nounset_in_rcfile() -> Builder {
+    new_builder()
+        .set_should_run_test(|| {
+            // Only run this one on bash
+            let (starter, _) = current_shell_starter_and_version();
+            matches!(starter.shell_type(), shell::ShellType::Bash)
+        })
+        .with_setup(|utils| {
+            let dir = utils.test_dir();
+            write_rc_files_for_test(dir, "set -u", [ShellRcType::Bash]);
+        })
+        .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
+        .with_step(execute_command_for_single_terminal_in_tab(
+            0,
+            "[[ $- == *u* ]] && echo rcfile-nounset-on".to_string(),
+            ExpectedExitStatus::Success,
+            "rcfile-nounset-on",
+        ))
+}
+
 /// Regression test for CORE-3804: a profile that selects PSReadLine's vi edit mode must not
 /// corrupt submitted commands.
 pub fn test_pwsh_vi_edit_mode_does_not_corrupt_commands() -> Builder {

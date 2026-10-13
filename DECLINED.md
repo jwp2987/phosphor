@@ -1493,3 +1493,42 @@ upstream's behavior is actually a defect rather than a preference.
   The fork-only `new_keyboard_mode_stack` marker is inert at re-pin (#752), so the row is also
   anchored on `KEYBOARD_MODE_STACK_MAX_DEPTH`, which exists at both the fork and the pin
   (`4111d08f9:crates/warp_terminal/src/model/grid/grid_handler.rs:94`). <!-- markers: keep:new_keyboard_mode_stack keep:KEYBOARD_MODE_STACK_MAX_DEPTH keep:test_keyboard_mode_stack_is_still_bounded_without_preallocation -->
+
+- **The bash hooks survive the user's `set -u` / `set -e` / `set -o pipefail` / `noclobber`**
+  (`#825`, `#838`, `#839`, 2026-10-13, `app/assets/bundled/bootstrap/bash_body.sh`,
+  `bash.sh`, `bash_init_shell.sh`, `bash_init_subshell.sh`, `zsh_init_subshell.sh`,
+  `unknown_init_subshell.sh`, `app/src/terminal/bootstrap.rs`). **Upstream:** the hooks
+  expand unset variables bare -- first `if [ ! -z  $_WARP_GENERATOR_COMMAND ]` in
+  `warp_precmd` (`42effe840:app/assets/bundled/bootstrap/bash_body.sh:462`, byte-identical),
+  then `$WARP_DISABLE_AUTO_TITLE`, `$SAVED_PS1`, `$VIRTUAL_ENV`,
+  `$WARP_SSH_REUSE_CONTROL_MASTER` and dozens more -- and run under whatever options the
+  user's shell has. **The defect:** type `set -u` at a bash prompt and the precmd hook aborts
+  with "unbound variable" before it emits Precmd; the block never finishes, Enter and ctrl-c
+  do nothing, `set +u` cannot be submitted, and only closing the tab recovers. A `set -u` in
+  `~/.bashrc` breaks bootstrap itself, and the subshell guard `[ -z $WARP_BOOTSTRAPPED ]`
+  aborts under it, so such a subshell is never Warpified (#839). Under `set -e`,
+  `warp_preexec` could return `kill -9`'s failure for an already-exited generator and exit
+  the shell (and `kill -9 $pids` only ever targeted the first PID, #838); under `noclobber`
+  `warp_precmd`'s truncation of the generator PID files failed after the first generator.
+  zsh already handled `setopt nounset` (`test_zsh_bootstraps_with_nounset_option`); bash
+  did not. **We do:** every Warp hook entry point (precmd, preexec, title hooks,
+  `warp_update_prompt_vars`, the `bind -x` handlers, `warp_run_generator_command`, `clear`,
+  `ssh`, ...) runs through `__warp_run_relaxed`, which turns errexit/nounset/pipefail off
+  for the hook's own body and restores exactly the caller's state on the way out, passing
+  `$?` in and the hook's status out; `warp_preexec` always returns 0 (it must never veto the
+  user's command); the PID files are truncated with `>|`. The bootstrap relaxes around
+  itself and hands back what the user's rcfiles turned on. Expansions reached outside the
+  relaxed bodies are nounset-safe (`${VAR:-}`); the remaining bare ones (`$WARP_IS_SUBSHELL`,
+  and `$HISTFILE` / `$EDITOR` / `$WSL_DISTRO_NAME` in `warp_bootstrapped`) are safe only
+  because they run relaxed. The bash/zsh subshell guard is `[ -z "${WARP_BOOTSTRAPPED-}" ]`
+  (fish keeps the bare form: it cannot parse `${...}`), and the shell-agnostic
+  `unknown_init_subshell.sh` asks `set | command grep` instead of expanding anything. The
+  vendored bash-preexec dispatcher got upstream-style `${...:-}` guards only -- it still runs
+  the user's own precmd/preexec functions under the user's options. **Not covered:** an
+  rcfile whose last command returns non-zero under `set -e` (e.g.
+  `[ -f ~/.fzf.bash ] && source ~/.fzf.bash`) still exits the shell, and so does a non-zero
+  status that reaches bash-preexec's own `__bp_set_ret_value` under `set -e`; both are
+  tracked separately. Checked without a build by `script/test_bash_bootstrap_nounset`
+  (real bash in a pty); through the app by `test_bash_bootstraps_with_nounset_option` and
+  `test_bash_bootstraps_with_nounset_in_rcfile`; the guards by
+  `test_init_subshell_command_guard_is_nounset_safe_for_bash_and_zsh_only`. <!-- markers: keep:test_bash_bootstraps_with_nounset_option keep:test_bash_bootstraps_with_nounset_in_rcfile keep:test_init_subshell_command_guard_is_nounset_safe_for_bash_and_zsh_only -->

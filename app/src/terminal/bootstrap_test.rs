@@ -128,12 +128,46 @@ fn test_init_subshell_command_powershell_uses_powershell_guard_not_posix() {
                 "expected a PowerShell-syntax bootstrap guard: {command}"
             );
             assert!(
-                !command.contains("[ -z $WARP_BOOTSTRAPPED ]"),
+                !command.contains("[ -z $WARP_BOOTSTRAPPED ]")
+                    && !command.contains(r#"[ -z "${WARP_BOOTSTRAPPED-}" ]"#),
                 "the POSIX guard is not valid PowerShell syntax: {command}"
             );
             assert!(
                 !command.contains("eval '"),
                 "PowerShell doesn't need the eval-wrapping bash/zsh/fish use: {command}"
+            );
+        });
+    });
+}
+
+/// #839: the subshell guard is typed into a shell whose rcfiles already ran. Under bash
+/// `set -u` / zsh `setopt nounset` a bare `$WARP_BOOTSTRAPPED` aborts the whole line, so bash
+/// and zsh must use the nounset-safe `${WARP_BOOTSTRAPPED-}` -- and fish, which cannot parse
+/// `${...}`, must keep the bare form.
+#[test]
+fn test_init_subshell_command_guard_is_nounset_safe_for_bash_and_zsh_only() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        app.read(|ctx| {
+            for shell_type in [ShellType::Bash, ShellType::Zsh] {
+                let command =
+                    init_subshell_command(Some(shell_type), &[], SessionId::from(1u64), ctx);
+                assert!(
+                    command.starts_with(r#" [ -z "${WARP_BOOTSTRAPPED-}" ] && eval '"#),
+                    "expected a nounset-safe guard for {shell_type:?}: {command}"
+                );
+            }
+
+            let command =
+                init_subshell_command(Some(ShellType::Fish), &[], SessionId::from(1u64), ctx);
+            assert!(
+                command.starts_with(" [ -z $WARP_BOOTSTRAPPED ] && eval '"),
+                "fish cannot parse `${{...}}`, so its guard must stay bare: {command}"
+            );
+            assert!(
+                !command.contains("${"),
+                "fish cannot parse `${{...}}`: {command}"
             );
         });
     });

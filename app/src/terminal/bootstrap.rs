@@ -293,9 +293,23 @@ pub fn init_subshell_command(
             // single-quoted `eval` argument, so no escaping is needed here.
             format!(" if (-not $global:WARP_BOOTSTRAPPED) {{ {subshell_script} }}")
         }
-        Some(shell_type) => {
+        Some(shell_type @ (ShellType::Bash | ShellType::Zsh)) => {
             let subshell_script =
                 init_subshell_script_for_shell(shell_type, &crate::ASSETS, vars, session_id, ctx);
+            // `${WARP_BOOTSTRAPPED-}`, not a bare `$WARP_BOOTSTRAPPED`: this is typed into a
+            // shell whose rcfiles already ran, and under their `set -u` / `setopt nounset` the
+            // bare expansion aborts the line, so the subshell is never Warpified (#839).
+            format!(r#" [ -z "${{WARP_BOOTSTRAPPED-}}" ] && eval '{subshell_script}'"#)
+        }
+        Some(ShellType::Fish) => {
+            let subshell_script = init_subshell_script_for_shell(
+                ShellType::Fish,
+                &crate::ASSETS,
+                vars,
+                session_id,
+                ctx,
+            );
+            // fish cannot parse `${...}` and has no nounset, so it keeps the bare expansion.
             format!(r#" [ -z $WARP_BOOTSTRAPPED ] && eval '{subshell_script}'"#)
         }
         None => init_subshell_script_for_unknown_shell(&crate::ASSETS, session_id),
