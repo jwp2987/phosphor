@@ -579,6 +579,18 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
   }
 
 
+  # sed commands that escape every C0 control character (and DEL) that has no short JSON escape as
+  # \u00XX. JSON forbids raw control characters inside strings, so a single one in a directory
+  # name, $VIRTUAL_ENV or $CONDA_DEFAULT_ENV made the whole Precmd payload unparseable, and the
+  # lost Precmd left the tab unable to run anything (#866). The script is built once, here, with
+  # the (#) flag so this file itself stays plain ASCII. (A NUL, which only zsh can hold, cannot be
+  # passed to sed as a pattern; it reaches the app raw and the app escapes it.)
+  WARP_ESCAPE_JSON_CTRL_SED=''
+  for warp_ctrl_code in 1 2 3 4 5 6 7 11 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do
+    WARP_ESCAPE_JSON_CTRL_SED="${WARP_ESCAPE_JSON_CTRL_SED} s/${(#)warp_ctrl_code}/\\\\u00${(l:2::0:)${(L)$(( [##16] warp_ctrl_code ))}}/g;"
+  done
+  unset warp_ctrl_code
+
   # Format a string value according to JSON syntax.
   warp_escape_json () {
       # Explanation of the sed replacements (each command is separated by a `;`):
@@ -587,6 +599,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
       # s/\t/\\t/g - Replace all tab characters with \t
       # s/\f/\\f/g - Replace all form feed characters with \f
       # s/\r/\\r/g - Replace all carriage return characters with \r
+      # $WARP_ESCAPE_JSON_CTRL_SED - Replace every other control character (and DEL) with \u00XX
       # $!s/$/\\n/ - On every line except the last, insert the \n escape at the end of the line
       #              Note: sed acts line-by-line, so it doesn't see the literal newline characters to replace
       #
@@ -598,8 +611,14 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
       # behind the various `'$'\b''` blocks in the command. All of these separate strings are then concatenated
       # together to form the full argument to send to sed.
       #
+      # LC_ALL=C makes sed and tr work byte by byte, so a value that is not valid UTF-8 (a directory
+      # name is arbitrary bytes) passes through unchanged instead of making a UTF-8-locale sed fail
+      # with "illegal byte sequence". Such bytes are not valid JSON on their own; the app decodes the
+      # payload lossily and shows each invalid byte as U+FFFD (see `handle_decoded_data` in
+      # app/src/terminal/model/ansi/mod.rs).
+      #
       # We also use 'command sed' to ensure that we aren't accidentally executing an alias or function named 'sed'
-      command -p sed -E 's/(["\\])/\\\1/g; s/'$'\b''/\\b/g; s/'$'\t''/\\t/g; s/'$'\f''/\\f/g; s/'$'\r''/\\r/g; $!s/$/\\n/' <<<"$*" | command -p tr -d '\n'
+      LC_ALL=C command -p sed -E 's/(["\\])/\\\1/g; s/'$'\b''/\\b/g; s/'$'\t''/\\t/g; s/'$'\f''/\\f/g; s/'$'\r''/\\r/g;'"${WARP_ESCAPE_JSON_CTRL_SED-} "'$!s/$/\\n/' <<<"$*" | LC_ALL=C command -p tr -d '\n'
   }
 
   warp_escape_ps1 () {
