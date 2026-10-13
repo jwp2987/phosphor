@@ -7668,10 +7668,8 @@ impl TerminalView {
             ShellCommandExecutorEvent::WriteToPty { input, mode } => {
                 self.write_agent_bytes_to_pty(input.to_vec(), mode, ctx);
             }
-            ShellCommandExecutorEvent::CancelExecution => {
-                // We need to manually invoke ctrl-c to terminate the running command because the
-                // user's ctrl-c was directed to the AIBlock instead of the command's shell block.
-                self.ctrl_c(ctx);
+            ShellCommandExecutorEvent::CancelExecution { action_id } => {
+                self.interrupt_cancelled_agent_command(action_id, ctx);
             }
             ShellCommandExecutorEvent::TransferControlToUser { reason, .. } => {
                 // Transfer control of the long-running command to the user.
@@ -8368,6 +8366,37 @@ impl TerminalView {
         true
     }
 
+    /// The user stopped the conversation while the agent still held its command (see
+    /// `ShellCommandExecutor::cancel_execution`): interrupt that command and hand it to the user
+    /// with a non-resuming `Stop`, as `stop_local_agent_conversation` does. Re-checked here
+    /// because the event is delivered after the cancel: if something else already took the
+    /// command over (and interrupted it), do nothing. Issue #850.
+    fn interrupt_cancelled_agent_command(
+        &mut self,
+        action_id: &AIAgentActionId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        {
+            let mut model = self.model.lock();
+            let active_block = model.block_list_mut().active_block_mut();
+            if !active_block.agent_holds_in_flight_command(action_id) {
+                return;
+            }
+            active_block.set_user_control_with_stop_reason();
+        }
+        self.interrupt_agent_command(ctx);
+    }
+
+    /// Interrupts the agent's command in the active block: first drops any copy of it still
+    /// parked in the PTY controller's write queue (waiting for the line editor), so it cannot
+    /// run after the ^C (#848), then sends the ^C. The ^C itself is written directly and
+    /// overtakes the queue; without the discard, the parked command would run once the line
+    /// editor became active, after the interrupt it was meant to receive (#850).
+    fn interrupt_agent_command(&mut self, ctx: &mut ViewContext<Self>) {
+        ctx.emit(Event::DiscardPendingCommandWrites);
+        self.user_write_ctrl_c_to_pty(ctx);
+    }
+
     /// Cancels a local agent conversation and tears down the command it is driving.
     /// Used by a follow-up Ctrl-C after the user already took control via `Stop`: it cancels
     /// the conversation's progress, interrupts the still-running command, and marks the
@@ -8398,8 +8427,11 @@ impl TerminalView {
         // Order matters, and guarantees exactly one ^C reaches the shell: decide what to
         // interrupt and hand the command to the user (`set_user_control_with_stop_reason`)
         // first, so cancelling the conversation's actions below finds the command already out
-        // of the agent's hands and does not interrupt it a second time; then drop a parked
-        // copy of an agent command and send the single ^C; then the `Cancelled` fallback.
+        // of the agent's hands -- the executor's manual-cancel interrupt
+        // (`ShellCommandExecutorEvent::CancelExecution`, #850) re-checks
+        // `agent_holds_in_flight_command` and stays out -- and does not interrupt it a second
+        // time; then drop a parked copy of an agent command and send the single ^C; then the
+        // `Cancelled` fallback.
         let visible_conversation_id = self
             .agent_view_controller
             .as_ref(ctx)
@@ -8455,11 +8487,10 @@ impl TerminalView {
 
         if let Some(is_agent_requested) = should_interrupt_active_command {
             if is_agent_requested {
-                // The agent's command may still be parked in the PTY write queue, waiting for
-                // the line editor; drop it so it never runs (#848).
-                ctx.emit(Event::DiscardPendingCommandWrites);
+                self.interrupt_agent_command(ctx);
+            } else {
+                self.user_write_ctrl_c_to_pty(ctx);
             }
-            self.user_write_ctrl_c_to_pty(ctx);
         }
 
         if !had_active_stream {
@@ -8611,12 +8642,15 @@ impl TerminalView {
             let has_alt_screen_selection = model.alt_screen().selection().is_some();
             let has_block_list_selection = model.block_list().selection().is_some();
             let active_block = model.block_list().active_block();
-            // An agent-requested command counts from the moment it executes, not only after
-            // `LONG_RUNNING_COMMAND_DURATION_MS`: in that first window ctrl-c otherwise fell
-            // through to `maybe_handle_ctrl_c_in_rich_content_block` and cancelled the whole
-            // conversation instead of interrupting the command (issue #850).
+            // An agent-requested command counts from the moment it is written to the shell --
+            // before preexec, and before `LONG_RUNNING_COMMAND_DURATION_MS` -- not only once it
+            // is long-running: in that window ctrl-c otherwise fell through to
+            // `maybe_handle_ctrl_c_in_rich_content_block`, cancelling the whole conversation
+            // while the command ran on, orphaned. Before preexec the ^C makes the shell abort
+            // the line; precmd then finishes the block and the tool call resolves with it
+            // (issue #850).
             let is_long_running = active_block.is_active_and_long_running()
-                || (active_block.is_agent_requested_command() && active_block.is_executing());
+                || active_block.is_agent_requested_command_in_flight();
             let is_agent_in_control_of_command = active_block.is_agent_in_control();
             // If the user already took control via `Stop` (e.g. an earlier Ctrl-C), capture the
             // conversation to cancel so a follow-up Ctrl-C tears down both command and conversation.
@@ -8807,6 +8841,15 @@ impl TerminalView {
             // A second Ctrl+C after Stop takeover should cancel both the command and conversation.
             if let Some(conversation_id) = conversation_id_to_stop {
                 self.stop_local_agent_conversation(conversation_id, ctx);
+            } else if self
+                .model
+                .lock()
+                .block_list()
+                .active_block()
+                .is_agent_requested_command_in_flight()
+            {
+                // The agent's command may not have reached the shell yet (#850).
+                self.interrupt_agent_command(ctx);
             } else {
                 self.user_write_ctrl_c_to_pty(ctx);
             }
@@ -20933,9 +20976,10 @@ impl TerminalView {
                 self.ctrl_c(ctx);
             }
             AIBlockEvent::InterruptRunningCommand => {
-                // Issue #850: the same path as the terminal's own ctrl-c keybinding, so an
-                // agent-run command is interrupted exactly like a user's.
-                self.handle_ctrl_c_input_event(0, ctx);
+                // Issue #850: straight to the terminal's ctrl-c, like `WindowsCtrlC` -- not
+                // `handle_ctrl_c_input_event`, whose pending-prompt-suggestion reject and
+                // agent-view exit checks could swallow it.
+                self.ctrl_c(ctx);
             }
             AIBlockEvent::AIOutputUpdated => {
                 self.model

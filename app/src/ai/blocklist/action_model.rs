@@ -1059,6 +1059,24 @@ impl BlocklistAIActionModel {
         );
     }
 
+    /// Test-only: registers `action` as a really running async action of `conversation_id` --
+    /// in the executor's `async_executing_actions` (so cancelling it goes through
+    /// `cancel_running_async_action` and the shell executor's `cancel_execution`) as well as in
+    /// `running_actions` -- without spawning its execution.
+    #[cfg(test)]
+    pub(crate) fn start_running_async_action_for_test(
+        &mut self,
+        action: AIAgentAction,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let action_id = action.id.clone();
+        self.executor.update(ctx, |executor, _| {
+            executor.insert_async_executing_action_for_test(action, conversation_id);
+        });
+        self.mark_action_running_for_test(conversation_id, &action_id);
+    }
+
     /// Queues the `actions` in the given iterator for the given conversation,
     /// to be dispatched in the order in which they appear in the iterator.
     pub(super) fn queue_actions(

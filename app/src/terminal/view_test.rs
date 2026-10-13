@@ -6611,7 +6611,16 @@ fn ctrl_c_interrupts_agent_command_before_it_counts_as_long_running() {
             let mut model = view.model.lock();
             let active_block = model.block_list_mut().active_block_mut();
             active_block.set_was_long_running(false.into());
+            // A start time in the future holds the block inside the grace window however slowly
+            // the test runs.
+            active_block.set_command_start_time_for_test(
+                std::time::Instant::now() + std::time::Duration::from_secs(3600),
+            );
             assert!(active_block.is_executing());
+            assert!(
+                !active_block.is_active_and_long_running(),
+                "precondition: the command must not yet count as long-running"
+            );
         });
 
         terminal.update(&mut app, |view, ctx| {
@@ -6627,6 +6636,108 @@ fn ctrl_c_interrupts_agent_command_before_it_counts_as_long_running() {
                 .conversation(&conversation_id)
                 .expect("conversation should exist");
             assert_eq!(conversation.status(), &ConversationStatus::InProgress);
+        });
+    })
+}
+
+/// #850, pre-preexec window: between the agent's command being written to the shell and
+/// preexec (up to a round trip on a remote session), ctrl-c used to cancel the conversation
+/// while the command ran on, orphaned. It must interrupt instead: the shell aborts the line,
+/// precmd finishes the block, and the tool call resolves with it.
+#[test]
+fn ctrl_c_interrupts_agent_command_written_but_not_yet_preexeced() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
+        let conversation_id = terminal.update(&mut app, |view, ctx| {
+            let conversation_id =
+                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                    history.start_new_conversation(view.view_id, false, false, ctx)
+                });
+            let mut model = view.model.lock();
+            let active_block = model.block_list_mut().active_block_mut();
+            // What `start_command_execution_with_ai_metadata` does when the command is written.
+            active_block.start();
+            active_block.set_agent_interaction_mode_for_requested_command(
+                AIAgentActionId::from("sleep-forever".to_owned()),
+                None,
+                conversation_id,
+            );
+            assert!(
+                active_block.is_command_grid_active(),
+                "precondition: no preexec yet"
+            );
+            assert!(!active_block.is_executing());
+            conversation_id
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_action(&TerminalAction::CtrlC, ctx);
+        });
+
+        assert_eq!(
+            *pty_writes.borrow(),
+            vec![vec![warp_terminal::model::escape_sequences::C0::ETX]]
+        );
+        terminal.read(&app, |_, ctx| {
+            let conversation = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&conversation_id)
+                .expect("conversation should exist");
+            assert_eq!(conversation.status(), &ConversationStatus::InProgress);
+        });
+    })
+}
+
+/// #850: the executor's manual-cancel interrupt (`ShellCommandExecutorEvent::CancelExecution`)
+/// writes one ^C and hands the command to the user with a non-resuming `Stop`; a second
+/// delivery (or one arriving after something else took the command over) writes nothing.
+#[test]
+fn cancel_execution_event_interrupts_an_agent_held_command_once() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+        let executor = terminal.read(&app, |view, ctx| {
+            view.ai_action_model.as_ref(ctx).shell_command_executor(ctx)
+        });
+
+        for _ in 0..2 {
+            executor.update(&mut app, |_, ctx| {
+                ctx.emit(
+                    crate::ai::blocklist::ShellCommandExecutorEvent::CancelExecution {
+                        action_id: AIAgentActionId::from("sleep-forever".to_owned()),
+                    },
+                );
+            });
+        }
+
+        assert_eq!(
+            *pty_writes.borrow(),
+            vec![vec![warp_terminal::model::escape_sequences::C0::ETX]]
+        );
+        terminal.read(&app, |view, _| {
+            let model = view.model.lock();
+            let active_block = model.block_list().active_block();
+            assert!(!active_block.is_agent_driving_command());
+            assert!(
+                active_block
+                    .long_running_control_state()
+                    .and_then(|state| state.user_take_over_reason())
+                    .is_some_and(UserTakeOverReason::is_stop)
+            );
         });
     })
 }
@@ -6760,6 +6871,65 @@ fn requested_command_card_is_rejectable_only_while_a_decision_is_pending() {
             !card_is_rejectable(&app, &card),
             "once the command runs the card must not claim ctrl-c"
         );
+    })
+}
+
+/// #850, end to end through the keymap: a real ctrl-c keystroke dispatched with focus on a
+/// running command's card (responder chain terminal -> AI block -> card, where approving with
+/// Enter leaves focus) is not claimed by the card's Reject binding and reaches the terminal's
+/// ctrl-c: exactly one ^C, the tool call still running, the conversation not cancelled.
+#[test]
+fn ctrl_c_keystroke_on_a_running_card_interrupts_the_command() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(crate::settings::import::model::ImportedConfigModel::new);
+        // Register the real keybindings: the terminal's ctrl-c and the card's ctrl-c -> Reject.
+        app.update(|ctx| {
+            crate::terminal::init(ctx);
+            crate::editor::init(ctx);
+            crate::ai::blocklist::block::init(ctx);
+        });
+        let (window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
+        let (card, action_id, conversation_id, pty_writes) =
+            setup_requested_command_card(&mut app, &terminal);
+        let action_model = terminal.read(&app, |view, _| view.ai_action_model.clone());
+        action_model.update(&mut app, |action_model, _ctx| {
+            action_model.mark_action_running_for_test(conversation_id, &action_id);
+        });
+        let ai_block_id = terminal.read(&app, |view, _| {
+            view.last_ai_block().expect("AI block should exist").id()
+        });
+        pty_writes.borrow_mut().clear();
+
+        let handled = app
+            .dispatch_keystroke(
+                window_id,
+                &[terminal.id(), ai_block_id, card.id()],
+                &warpui::keymap::Keystroke::parse("ctrl-c").expect("valid keystroke"),
+                false,
+            )
+            .expect("dispatch should succeed");
+
+        assert!(handled, "ctrl-c should be handled");
+        assert_eq!(
+            *pty_writes.borrow(),
+            vec![vec![warp_terminal::model::escape_sequences::C0::ETX]],
+            "ctrl-c on the running card must reach the PTY as exactly one ^C"
+        );
+        action_model.read(&app, |action_model, _| {
+            assert!(
+                action_model
+                    .get_action_status(&action_id)
+                    .is_some_and(|status| status.is_running()),
+                "the tool call must not be rejected/cancelled"
+            );
+        });
+        terminal.read(&app, |_, ctx| {
+            let conversation = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&conversation_id)
+                .expect("conversation should exist");
+            assert_ne!(conversation.status(), &ConversationStatus::Cancelled);
+        });
     })
 }
 
@@ -12430,4 +12600,208 @@ fn window_footer_bar_color_follows_session_change_on_in_band_metadata() {
             assert_eq!(view.window_footer_bar_color, None);
         });
     });
+}
+
+/// #850 x #848: the agent's `sleep 100000` -- running (or, with `executing: false`, written but
+/// not yet preexec'd) in a close-test terminal -- backed by a REAL running async action, i.e.
+/// one in `BlocklistAIActionExecutor::async_executing_actions`, so that cancelling the
+/// conversation or the action goes through `cancel_running_async_action` and the shell
+/// executor's `cancel_execution` exactly as in the app. Returns the terminal, the conversation
+/// and the action id.
+fn terminal_with_real_async_agent_command(
+    app: &mut App,
+    executing: bool,
+) -> (ViewHandle<TerminalView>, AIConversationId, AIAgentActionId) {
+    let (terminal, conversation_id) = terminal_with_agent_command(app, executing);
+    let action_id = AIAgentActionId::from("requested-command".to_owned());
+    let action_model = terminal.read(app, |view, _| view.ai_action_model.clone());
+    action_model.update(app, |action_model, ctx| {
+        action_model.start_running_async_action_for_test(
+            crate::ai::agent::AIAgentAction {
+                id: action_id.clone(),
+                task_id: TaskId::new("task".to_owned()),
+                action: crate::ai::agent::AIAgentActionType::RequestCommandOutput {
+                    command: "sleep 100000".to_owned(),
+                    is_read_only: None,
+                    is_risky: None,
+                    rationale: None,
+                    uses_pager: None,
+                    wait_until_completion: true,
+                    citations: vec![],
+                },
+                requires_result: true,
+            },
+            conversation_id,
+            ctx,
+        );
+    });
+    action_model.read(app, |action_model, _| {
+        assert!(
+            action_model
+                .get_action_status(&action_id)
+                .is_some_and(|status| status.is_running()),
+            "precondition: the agent's command is a running async action"
+        );
+    });
+    (terminal, conversation_id, action_id)
+}
+
+/// Closing a pane whose agent is running a command with a real async action: exactly one ^C and
+/// one discard. The close path's own interrupt runs first and hands the command to the user, so
+/// the executor's manual-cancel interrupt (`CancelExecution`) for the cancelled action stays out.
+#[test]
+fn closing_the_pane_with_a_real_async_agent_command_interrupts_once() {
+    App::test((), |mut app| async move {
+        let (terminal, _conversation_id, _action_id) =
+            terminal_with_real_async_agent_command(&mut app, true);
+        let (etx, discards) = count_close_pty_effects(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| view.suspend_agent_work_for_close(ctx));
+
+        assert_eq!(*etx.borrow(), 1, "exactly one ^C on close");
+        assert_eq!(*discards.borrow(), 1, "exactly one discard on close");
+    })
+}
+
+/// The status bar's stop on a running agent command (`cancel_action_with_id` with
+/// `ManuallyCancelled`, what `BlocklistAIStatusBar::cancel_active_request_or_action` calls) used
+/// to drop the tool call and leave the command running, orphaned. Now: one discard + one ^C, and
+/// the command is the user's.
+#[test]
+fn status_bar_stop_of_a_real_async_agent_command_interrupts_once() {
+    App::test((), |mut app| async move {
+        let (terminal, conversation_id, action_id) =
+            terminal_with_real_async_agent_command(&mut app, true);
+        let (etx, discards) = count_close_pty_effects(&mut app, &terminal);
+        let action_model = terminal.read(&app, |view, _| view.ai_action_model.clone());
+
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model.cancel_action_with_id(
+                conversation_id,
+                &action_id,
+                CancellationReason::ManuallyCancelled,
+                ctx,
+            );
+        });
+
+        assert_eq!(*etx.borrow(), 1);
+        assert_eq!(*discards.borrow(), 1);
+        terminal.read(&app, |view, _| {
+            assert!(
+                !view
+                    .model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_agent_driving_command()
+            );
+        });
+    })
+}
+
+/// Escape on a real async `wait_until_completion` agent command: `stop_local_agent_conversation`
+/// sends the only ^C (with one discard); the cancelled action's `CancelExecution` finds the
+/// command already the user's and adds nothing.
+#[test]
+fn escape_on_a_real_async_agent_command_interrupts_once() {
+    App::test((), |mut app| async move {
+        let (terminal, conversation_id, action_id) =
+            terminal_with_real_async_agent_command(&mut app, true);
+        terminal.update(&mut app, |view, ctx| {
+            view.ai_action_model
+                .as_ref(ctx)
+                .shell_command_executor(ctx)
+                .update(ctx, |executor, _| {
+                    executor.mark_awaiting_completion_for_test(action_id.clone());
+                });
+        });
+        let (etx, discards) = count_close_pty_effects(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_action(
+                &TerminalAction::MaybeDismissToolTip {
+                    from_keybinding: true,
+                },
+                ctx,
+            );
+        });
+
+        assert_eq!(*etx.borrow(), 1);
+        assert_eq!(*discards.borrow(), 1);
+        terminal.read(&app, |_, ctx| {
+            let conversation = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&conversation_id)
+                .expect("conversation should exist");
+            assert_eq!(conversation.status(), &ConversationStatus::Cancelled);
+        });
+    })
+}
+
+/// A `CancelExecution` that arrives after the command already finished must not ^C whatever is
+/// now at the prompt.
+#[test]
+fn cancel_execution_after_the_command_finished_sends_nothing() {
+    App::test((), |mut app| async move {
+        let (terminal, _conversation_id, action_id) =
+            terminal_with_real_async_agent_command(&mut app, true);
+        terminal.update(&mut app, |view, _| {
+            view.model.lock().finish_block_with_exit_code(0);
+        });
+        let (etx, discards) = count_close_pty_effects(&mut app, &terminal);
+        let executor = terminal.read(&app, |view, ctx| {
+            view.ai_action_model.as_ref(ctx).shell_command_executor(ctx)
+        });
+
+        executor.update(&mut app, |_, ctx| {
+            ctx.emit(
+                crate::ai::blocklist::ShellCommandExecutorEvent::CancelExecution { action_id },
+            );
+        });
+
+        assert_eq!(*etx.borrow(), 0);
+        assert_eq!(*discards.borrow(), 0);
+    })
+}
+
+/// ctrl-c on an agent command the shell has not reached yet (its write may still be parked in
+/// the PTY controller's queue, waiting for the line editor): the discard is requested BEFORE the
+/// ^C, so the parked command is dropped rather than run after the interrupt meant for it. (That
+/// the controller then drops the parked command is #848's `pty_controller_tests`.)
+#[test]
+fn ctrl_c_on_a_parked_agent_command_discards_it_before_the_interrupt() {
+    App::test((), |mut app| async move {
+        let (terminal, conversation_id, _action_id) =
+            terminal_with_real_async_agent_command(&mut app, false);
+        terminal.update(&mut app, |view, _| {
+            let mut model = view.model.lock();
+            let active_block = model.block_list_mut().active_block_mut();
+            // What `start_command_execution_with_ai_metadata` does when the command is written.
+            active_block.start();
+            assert!(active_block.is_command_grid_active());
+            assert!(active_block.is_agent_requested_command_in_flight());
+        });
+        let sequence: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let recorded = sequence.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
+                Event::DiscardPendingCommandWrites => recorded.borrow_mut().push("discard"),
+                Event::WriteBytesToPty { bytes } if bytes.contains(&C0::ETX) => {
+                    recorded.borrow_mut().push("etx")
+                }
+                _ => {}
+            });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_action(&TerminalAction::CtrlC, ctx);
+        });
+
+        assert_eq!(*sequence.borrow(), vec!["discard", "etx"]);
+        terminal.read(&app, |_, ctx| {
+            let conversation = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&conversation_id)
+                .expect("conversation should exist");
+            assert_eq!(conversation.status(), &ConversationStatus::InProgress);
+        });
+    })
 }

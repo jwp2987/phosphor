@@ -370,6 +370,13 @@ mod ctrl_c_reject_tests {
         );
     }
 
+    /// An untracked card (restored, or orphaned) has no pending decision and shows no buttons,
+    /// so it must not claim ctrl-c as a no-op Reject.
+    #[test]
+    fn ctrl_c_on_an_untracked_command_is_not_a_reject() {
+        assert_eq!(reject_disposition(true, None), RejectDisposition::Ignore);
+    }
+
     /// MCP tool calls have no process to interrupt; Reject keeps cancelling them in every state.
     #[test]
     fn mcp_tool_calls_keep_reject_in_every_state() {

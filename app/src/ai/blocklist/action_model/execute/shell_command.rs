@@ -17,7 +17,8 @@ use warpui::r#async::{Spawnable, Timer};
 use warpui::{Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
 
 use crate::ai::agent::{
-    AIAgentActionId, AIAgentActionType, AIAgentPtyWriteMode, ReadShellCommandOutputResult,
+    AIAgentActionId, AIAgentActionType, AIAgentPtyWriteMode, CancellationReason,
+    ReadShellCommandOutputResult,
     RequestCommandOutputResult, ShellCommandDelay, ShellCommandError,
     TransferShellCommandControlToUserResult, WriteToLongRunningShellCommandResult,
 };
@@ -808,7 +809,28 @@ impl ShellCommandExecutor {
         }
     }
 
-    pub(super) fn cancel_execution(&mut self, id: &AIAgentActionId, _ctx: &mut ModelContext<Self>) {
+    pub(super) fn cancel_execution(
+        &mut self,
+        id: &AIAgentActionId,
+        reason: Option<CancellationReason>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        // Issue #850: the user stopping the conversation (the status bar's stop / ctrl-c, which
+        // is `ManuallyCancelled`) used to drop this tool call while the command it had written
+        // kept running, orphaned -- including a command written but not yet preexec'd, where
+        // ctrl-c still reaches the status bar. Ask the terminal to interrupt it. Only for a
+        // manual stop, and only while the agent still holds the command with no CLI subagent
+        // in control (`should_interrupt_on_cancel`): other reasons (a follow-up, a user command,
+        // a revert, an optimistic subagent completion) and anything the user or subagent holds
+        // keep the pin's behaviour of leaving the process alone. Upstream declares
+        // `ShellCommandExecutorEvent::CancelExecution` but never emits it.
+        if matches!(reason, Some(CancellationReason::ManuallyCancelled))
+            && should_interrupt_on_cancel(&self.terminal_model.lock(), id)
+        {
+            ctx.emit(ShellCommandExecutorEvent::CancelExecution {
+                action_id: id.clone(),
+            });
+        }
         // The RequestedCommand path uses action id as the selector and cleans up
         // unconditionally. It can't rely on the `is_active_and_long_running()` guard:
         // within the ~50ms window after a command is spawned
@@ -1231,6 +1253,16 @@ impl BlockSelector {
     }
 }
 
+/// Whether cancelling `action_id`'s tool call should also interrupt its command: the active
+/// block is that agent-requested command, written and not yet finished (before or after
+/// preexec), and the agent still holds it with no CLI subagent in control.
+fn should_interrupt_on_cancel(model: &TerminalModel, action_id: &AIAgentActionId) -> bool {
+    model
+        .block_list()
+        .active_block()
+        .agent_holds_in_flight_command(action_id)
+}
+
 /// Returns the result from executing a requested command.
 fn action_result_for_requested_command(
     command: String,
@@ -1419,7 +1451,11 @@ pub enum ShellCommandExecutorEvent {
         input: Bytes,
         mode: AIAgentPtyWriteMode,
     },
-    CancelExecution,
+    /// Interrupt the in-flight agent-requested command for `action_id` (^C to the PTY): the
+    /// user stopped the conversation while the agent still held it. Issue #850.
+    CancelExecution {
+        action_id: AIAgentActionId,
+    },
     /// Emitted when the agent requests to transfer control of a long-running command to the user.
     TransferControlToUser {
         action_id: AIAgentActionId,

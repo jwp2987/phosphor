@@ -1817,6 +1817,14 @@ impl Block {
         self.was_long_running = was_long_running;
     }
 
+    /// Test-only: overrides the command start time `is_active_and_long_running` measures from,
+    /// so a test can hold a block deterministically inside (a future instant) or past the
+    /// `LONG_RUNNING_COMMAND_DURATION_MS` window.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_command_start_time_for_test(&mut self, start_time: Instant) {
+        self.header_grid.set_command_start_time_for_test(start_time);
+    }
+
     // Collateral of these two predicates, inherited from upstream `ee95ac0fd` and
     // deliberately NOT fixed here. Both narrow `visible_cursor_shape` (the argument
     // `BlockGrid::draw` takes for in-grid cursor-cell contrast styling) from `Some` to

@@ -223,9 +223,10 @@ fn enter_accepts_requested_command_context() -> ContextPredicate {
 ///
 /// Upstream gates this binding the same way (`REQUESTED_ACTION_BLOCKED_KEYMAP_CONTEXT`, set from
 /// `is_waiting_for_user_confirmation`); the fork's base predated that gate. The fork's flag is a
-/// little wider than upstream's `Blocked`-only one -- it also covers `Queued`, whose row carries
-/// the same ctrl-c Cancel button, and MCP tool calls in any state -- so that no existing Cancel
-/// affordance loses its advertised keystroke. Recorded in DECLINED.md (IMPROVED).
+/// little wider than upstream's `Blocked`-only one -- it also covers `Queued` and
+/// `Preprocessing`, whose rows carry the same ctrl-c Cancel button, and MCP tool calls in any
+/// state -- so that no existing Cancel affordance loses its advertised keystroke. Recorded in
+/// DECLINED.md (IMPROVED).
 fn ctrl_c_rejects_requested_command_context() -> ContextPredicate {
     id!(RequestedCommandView::ui_name()) & id!(REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT)
 }
@@ -234,13 +235,14 @@ fn ctrl_c_rejects_requested_command_context() -> ContextPredicate {
 /// action card should do, given the action's current status. Issue #850.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RejectDisposition {
-    /// A decision is still pending (`Blocked` / `Queued` / preprocessing / untracked): reject or
-    /// cancel the action, as before.
+    /// A decision is still pending (`Blocked` / `Queued` / `Preprocessing`): reject or cancel
+    /// the action, as before.
     Reject,
     /// The approved shell command is running: interrupt it (^C to the PTY) instead of cancelling
     /// the tool call, so the interrupted result is still reported to the model.
     InterruptRunningCommand,
-    /// The shell command already finished: there is nothing left to reject.
+    /// The shell command already finished, or the action model does not track it (a restored
+    /// or orphaned card, which shows no buttons): there is nothing left to reject.
     Ignore,
 }
 
@@ -256,8 +258,10 @@ pub(crate) fn reject_disposition(
     }
     match status {
         Some(AIActionStatus::RunningAsync) => RejectDisposition::InterruptRunningCommand,
-        Some(AIActionStatus::Finished(_)) => RejectDisposition::Ignore,
-        _ => RejectDisposition::Reject,
+        Some(AIActionStatus::Finished(_)) | None => RejectDisposition::Ignore,
+        Some(
+            AIActionStatus::Blocked | AIActionStatus::Queued | AIActionStatus::Preprocessing,
+        ) => RejectDisposition::Reject,
     }
 }
 
@@ -389,8 +393,10 @@ pub enum RequestedCommandViewEvent {
     Accepted,
     EnableAutoexecuteMode,
     Rejected,
-    /// A Reject request arrived while the approved command was already running: interrupt the
-    /// command (^C to the PTY) rather than cancelling the tool call. Issue #850.
+    /// A ctrl-c on the card that is not a Reject: hand it to the terminal's ctrl-c, which
+    /// interrupts a running command (^C to the PTY) rather than cancelling its tool call.
+    /// Emitted for a Reject on a running command, and for the Windows code-editor ctrl-c
+    /// fallback whenever no decision is pending. Issue #850.
     InterruptRunningCommand,
     UpdatedExpansionState { is_expanded: bool },
     TextSelected,
@@ -874,11 +880,19 @@ impl RequestedCommandView {
             // just below, or this row falls back to the generic "Cancelled by you." label
             // instead of "Rejected by you." -- see issue #692.
             //
-            // Issue #850: routed through `reject_or_interrupt` so a running command is
-            // interrupted rather than having its tool call cancelled out from under it.
+            // Issue #850: only while a decision is pending. Otherwise the key goes on to the
+            // terminal's ctrl-c, exactly as it bubbles there on other platforms once the
+            // card's keybinding stops claiming it: a running command is interrupted (its tool
+            // call is not cancelled out from under it), and on a finished card ctrl-c does
+            // whatever the terminal's ctrl-c does rather than being swallowed.
             #[cfg(windows)]
             CodeEditorEvent::WindowsCtrlC { copied_selection } if !copied_selection => {
-                self.reject_or_interrupt(ctx);
+                if self.reject_disposition(ctx) == RejectDisposition::Reject {
+                    self.rejected_by_user = true;
+                    ctx.emit(RequestedCommandViewEvent::Rejected);
+                } else {
+                    ctx.emit(RequestedCommandViewEvent::InterruptRunningCommand);
+                }
             }
             _ => {}
         }
