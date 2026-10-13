@@ -276,6 +276,16 @@ impl From<ShellType> for warp_util::path::ShellFamily {
     }
 }
 
+impl From<ShellType> for warp_util::path::ShellDialect {
+    fn from(value: ShellType) -> Self {
+        match value {
+            ShellType::Zsh | ShellType::Bash => Self::Posix,
+            ShellType::Fish => Self::Fish,
+            ShellType::PowerShell => Self::PowerShell,
+        }
+    }
+}
+
 impl ShellType {
     // Returns a shell type from a shell executable name
     pub fn from_name(name: &str) -> Option<Self> {

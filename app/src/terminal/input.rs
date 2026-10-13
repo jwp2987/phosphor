@@ -3822,8 +3822,21 @@ impl Input {
                     ctx.notify();
                 }
                 self.clear_buffer_and_reset_undo_stack(ctx);
-                let path_str = path.to_string_lossy().replace("'", "'\\''");
-                let cd_command = format!("cd '{path_str}'");
+                let path_str = path.to_string_lossy();
+                // A control character must not reach the PTY raw even inside quotes (#867).
+                let cd_command = if path_str
+                    .chars()
+                    .any(warp_util::path::needs_control_char_quoting)
+                {
+                    let dialect = self
+                        .editor
+                        .as_ref(ctx)
+                        .shell_dialect()
+                        .unwrap_or(warp_util::path::ShellDialect::Posix);
+                    format!("cd {}", dialect.escape(&path_str))
+                } else {
+                    format!("cd '{}'", path_str.replace("'", "'\\''"))
+                };
                 self.try_execute_command(&cd_command, ctx);
             }
             InlineReposMenuEvent::Dismissed => {
@@ -10065,7 +10078,7 @@ impl Input {
                 // non-image paths so the fallback matches the primary drop flow (e.g.
                 // `/mnt/c/...` in a WSL session).
                 if num_attached < image_filepaths.len() {
-                    let shell_family = self.editor.read(ctx, |editor, _| editor.shell_family());
+                    let shell_dialect = self.editor.read(ctx, |editor, _| editor.shell_dialect());
                     let converter = self
                         .active_session(ctx)
                         .as_deref()
@@ -10075,7 +10088,7 @@ impl Input {
                         None => image_filepaths.clone(),
                     };
                     let paths_str =
-                        warpui::clipboard_utils::escaped_paths_str(&transformed, shell_family);
+                        warpui::clipboard_utils::escaped_paths_str(&transformed, shell_dialect);
 
                     self.editor.update(ctx, |editor, ctx| {
                         editor.user_insert(&paths_str, ctx);
@@ -13914,7 +13927,7 @@ impl Input {
                 .windows_path_converter()
                 .map(|convert| Box::new(convert) as PathTransformerFn);
             self.editor.update(ctx, |editor, _| {
-                editor.set_shell_family(session.shell().shell_type().into());
+                editor.set_shell_dialect(session.shell_dialect());
                 editor.set_drag_drop_path_transformer(transformer);
             });
             self.input_suggestions.update(ctx, |input_suggestions, _| {

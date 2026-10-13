@@ -1892,3 +1892,32 @@ upstream's behavior is actually a defect rather than a preference.
   find that directory. The hook schema is `String`-typed. pwsh is unaffected: `ConvertTo-Json`
   escapes control characters. <!-- markers: keep:repair_hook_json keep:salvage_precmd keep:parse_dcs_precmd_repairs_raw_control_characters_and_invalid_utf8 keep:precmd_with_control_characters_and_invalid_utf8_still_reaches_a_usable_prompt keep:handle_decoded_data -->
 
+
+- **A control character in a file name is escaped, never inserted raw** (`#867`, 2026-10-13,
+  `crates/warp_util/src/path.rs`). **Upstream:** `ShellFamily::escape` backslash-prefixes the
+  characters matched by `POSIX_SHELL_ESCAPE_PATTERN`
+  (`4111d08f9:crates/warp_util/src/path.rs:34`, byte-identical), which lists `\n` and `\t` but
+  no other control character, and PowerShell's pattern is the same shape. **The defect:** the
+  input buffer is typed to the PTY, so a control character in it is acted on by the line
+  discipline and the shell's line editor before any quoting is parsed. Tab-completing a file
+  named `rc<CR>exit` and pressing Enter ran `exit` (bash, zsh and fish, torture run
+  2026-10-13); the same holds for `^U`, `^C` and the rest of C0. The `\n` case was wrong too:
+  backslash-newline is a line continuation, so the newline was dropped and the completion
+  named a different file. **We do:** a word with a control character (C0, DEL, C1, U+2028/9;
+  `needs_control_char_quoting`) is spelled per shell by `ShellDialect`, which is one level
+  finer than `ShellFamily` because bash/zsh and fish have no common spelling: bash/zsh get
+  `$'...'` with `\xHH` UTF-8 bytes, fish gets its unquoted `\xHH`/`\uHHHH` escapes, PowerShell
+  gets a double-quoted string with `$([char]0x..)`. Inside `$'...'`, `'` and `!` are written
+  `\x27`/`\x21` so bash 3.2's history scanner never sees them, and `shell_escape` keeps a
+  leading `~/` outside the quotes so the tilde still expands. Names without one escape exactly
+  as before. `shell_quote_arg` (AI tool probes, prompt chips, the history `cat`) applies the
+  same rule; words inside an `sh -c` script use `sh_script_quote_arg` instead, since dash has
+  no `$'...'` and the outer quoting already escapes the script. The in-band executor's fish
+  single-quote wrapper now doubles backslashes too (it collapsed `\\` and let a trailing `\`
+  swallow the closing quote). Callers that only know the family get the bash/zsh form, which fish rejects at
+  parse time without running anything. Tab completion, drag-and-drop, file paste, the remote
+  `ls` script, prompt-chip and repo `cd` commands, and env-var init strings pass the exact
+  shell; "attach path as context" refuses such a path, since it is inserted unescaped by
+  design. Round-trip checked in real bash 5.3, zsh 5.9 and fish 4.2 (`printf '%s' WORD`
+  reproduces the original bytes); the PowerShell form is unverified in a real shell.
+  <!-- markers: keep:needs_control_char_quoting keep:test_escape_control_characters_per_dialect keep:sh_script_quote_arg keep:POSIX_SHELL_ESCAPE_PATTERN keep:shell_escape_single_quotes -->

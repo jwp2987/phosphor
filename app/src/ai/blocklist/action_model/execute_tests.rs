@@ -285,6 +285,24 @@ mod path_shell_quoting {
         assert_eq!(command, r"test -f '/tmp/owner\'s file'");
     }
 
+    /// #867: the probe is typed into the PTY by the in-band executor, so a control character
+    /// in the path must be escaped, not single-quoted raw.
+    #[test]
+    fn is_file_path_escapes_control_characters() {
+        assert_eq!(
+            build_is_file_path_command("/tmp/rc\rexit", ShellType::Bash),
+            r"test -f $'/tmp/rc\x0Dexit'"
+        );
+        assert_eq!(
+            build_is_file_path_command("/tmp/rc\rexit", ShellType::Fish),
+            r"test -f /tmp/rc\x0Dexit"
+        );
+        assert_eq!(
+            build_is_git_repository_command("/tmp/a\nb", ShellType::Zsh),
+            r"git -C $'/tmp/a\x0Ab' rev-parse"
+        );
+    }
+
     #[test]
     fn is_git_repository_quotes_posix_path_as_single_argument() {
         let command = build_is_git_repository_command("/tmp/repo path", ShellType::Zsh);

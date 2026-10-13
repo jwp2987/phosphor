@@ -325,7 +325,7 @@ impl TerminalView {
                 // (#25383, GHSA-8659-m852-gmfx) fixed this with `shell_escape`; ported
                 // here as the same call. ; verified
                 // by reading only.
-                let escaped = self.shell_family(ctx).shell_escape(&path);
+                let escaped = self.shell_dialect_from_app(ctx).shell_escape(&path);
                 let did_execute_cd = self.input.update(ctx, |input, ctx| {
                     input.try_execute_command(&format!("cd {escaped}"), ctx)
                 });

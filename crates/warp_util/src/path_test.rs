@@ -230,7 +230,10 @@ fn test_posix_escape() {
         "\\~/test_dir/library%\\ 1\\$2"
     );
     assert_eq!(shell_family.escape("あい"), "あい");
-    assert_eq!(shell_family.escape("abc \n \t"), "abc\\ \\\n\\ \\\t");
+    // #867: this used to be `abc\ \<LF>\ \<TAB>`. A backslash-newline is a line continuation,
+    // so the newline was dropped (wrong file), and a raw control character in the buffer is
+    // acted on by the PTY before quoting is parsed. Control characters now force ANSI-C quoting.
+    assert_eq!(shell_family.escape("abc \n \t"), r"$'abc \x0A \x09'");
     assert_eq!(shell_family.escape(""), "''");
     assert_eq!(
         shell_family.escape("foo '\"' bar"),
@@ -246,9 +249,209 @@ fn test_powershell_escape() {
         "~/test_dir/library%` 1`$2"
     );
     assert_eq!(shell_family.escape("あい"), "あい");
-    assert_eq!(shell_family.escape("abc \n \t"), "abc` `\n` `\t");
+    // #867: was "abc` `<LF>` `<TAB>", raw control characters in the buffer.
+    assert_eq!(
+        shell_family.escape("abc \n \t"),
+        r#""abc $([char]0x000A) $([char]0x0009)""#
+    );
     assert_eq!(shell_family.escape(""), "''");
     assert_eq!(shell_family.escape("foo '\"' bar"), "foo` `'`\"`'` bar");
+}
+
+/// File names that defeated the pre-#867 escaping, each with the expected bash/zsh, fish and
+/// PowerShell spellings. The bash/zsh and fish forms were checked in real shells: passing the
+/// word to `printf '%s'` reproduces the original bytes exactly (bash 5.3, zsh 5.9, fish 4.2).
+const HOSTILE_NAMES: &[(&str, &str, &str, &str)] = &[
+    // (name, bash/zsh, fish, PowerShell)
+    (
+        "rc\rexit",
+        r"$'rc\x0Dexit'",
+        r"rc\x0Dexit",
+        r#""rc$([char]0x000D)exit""#,
+    ),
+    ("a\nb", r"$'a\x0Ab'", r"a\x0Ab", r#""a$([char]0x000A)b""#),
+    (
+        "t\tab",
+        r"$'t\x09ab'",
+        r"t\x09ab",
+        r#""t$([char]0x0009)ab""#,
+    ),
+    (
+        "esc\x1b[31mRED",
+        r"$'esc\x1B[31mRED'",
+        r"esc\x1B\[31mRED",
+        r#""esc$([char]0x001B)[31mRED""#,
+    ),
+    ("x\x01y", r"$'x\x01y'", r"x\x01y", r#""x$([char]0x0001)y""#),
+    (
+        "del\x7fz",
+        r"$'del\x7Fz'",
+        r"del\x7Fz",
+        r#""del$([char]0x007F)z""#,
+    ),
+    (
+        "trail\n",
+        r"$'trail\x0A'",
+        r"trail\x0A",
+        r#""trail$([char]0x000A)""#,
+    ),
+    ("\n", r"$'\x0A'", r"\x0A", r#""$([char]0x000A)""#),
+    // Quotes, backslashes and expansions combined with a control character: only `\` and `'`
+    // are special inside `$'...'` (`'` is written `\x27`, and `!` `\x21` so bash 3.2's history
+    // scanner never sees either); in PowerShell's double quotes, `` ` ``, `"` and `$` are.
+    (
+        "it's \"q\"\r$(x)`y` \\ z",
+        r#"$'it\x27s "q"\x0D$(x)`y` \\ z'"#,
+        r#"it\'s\ \"q\"\x0D\$\(x\)\`y\`\ \\\ z"#,
+        r#""it's `"q`"$([char]0x000D)`$(x)``y`` \ z""#,
+    ),
+    (
+        "hi!\r!!",
+        r"$'hi\x21\x0D\x21\x21'",
+        r"hi\!\x0D\!\!",
+        r#""hi!$([char]0x000D)!!""#,
+    ),
+    // A literal backslash-x in the name must not turn into a byte escape.
+    (
+        "bs\\x41\r",
+        r"$'bs\\x41\x0D'",
+        r"bs\\x41\x0D",
+        r#""bs\x41$([char]0x000D)""#,
+    ),
+    // C1 controls: bash/zsh get the UTF-8 bytes, which is locale independent.
+    (
+        "c1\u{85}x",
+        r"$'c1\xC2\x85x'",
+        r"c1\u0085x",
+        r#""c1$([char]0x0085)x""#,
+    ),
+    (
+        "ls\u{2028}sep",
+        r"$'ls\xE2\x80\xA8sep'",
+        r"ls\u2028sep",
+        r#""ls$([char]0x2028)sep""#,
+    ),
+    // A tilde stays literal; only `shell_escape` keeps a leading `~/` expandable.
+    (
+        "~lit\r",
+        r"$'~lit\x0D'",
+        r"\~lit\x0D",
+        r#""~lit$([char]0x000D)""#,
+    ),
+];
+
+#[test]
+fn test_escape_control_characters_per_dialect() {
+    for &(name, posix, fish, powershell) in HOSTILE_NAMES {
+        assert_eq!(ShellDialect::Posix.escape(name), posix, "{name:?}");
+        assert_eq!(ShellDialect::Fish.escape(name), fish, "{name:?}");
+        assert_eq!(
+            ShellDialect::PowerShell.escape(name),
+            powershell,
+            "{name:?}"
+        );
+        // The family-level API, used where the exact shell is unknown, gives the bash/zsh
+        // form for POSIX shells. fish rejects `$'` at parse time, so it fails closed.
+        assert_eq!(ShellFamily::Posix.escape(name), posix, "{name:?}");
+        assert_eq!(ShellFamily::PowerShell.escape(name), powershell, "{name:?}");
+        for dialect in [
+            ShellDialect::Posix,
+            ShellDialect::Fish,
+            ShellDialect::PowerShell,
+        ] {
+            let escaped = dialect.escape(name);
+            assert!(
+                !escaped.chars().any(needs_control_char_quoting),
+                "{dialect:?} left a control character in {escaped:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_shell_escape_keeps_home_prefix_with_control_characters() {
+    assert_eq!(
+        ShellDialect::Posix.shell_escape("~/rc\rexit"),
+        r"~/$'rc\x0Dexit'"
+    );
+    assert_eq!(
+        ShellDialect::Fish.shell_escape("~/rc\rexit"),
+        r"~/rc\x0Dexit"
+    );
+    assert_eq!(
+        ShellDialect::Posix.shell_escape("$HOME/a b\n"),
+        r"$HOME/$'a b\x0A'"
+    );
+    assert_eq!(
+        ShellDialect::PowerShell.shell_escape("~/a\rb"),
+        r#"~/"a$([char]0x000D)b""#
+    );
+    assert_eq!(
+        ShellDialect::PowerShell.shell_escape("~\\a\rb"),
+        r#"~\"a$([char]0x000D)b""#
+    );
+    // The quoted word starts after the separator: `~$'/rc\x0Dexit'` would not expand `~` in
+    // bash or zsh, because the `/` after it is quoted.
+    assert_eq!(
+        ShellDialect::Posix.shell_escape("~/d\r/f'!"),
+        r"~/$'d\x0D/f\x27\x21'"
+    );
+    // A POSIX backslash separator stays inside the quotes; outside it would escape the `$`.
+    assert_eq!(ShellDialect::Posix.shell_escape("~\\a\rb"), r"~$'\\a\x0Db'");
+    // Without a control character, nothing changes.
+    assert_eq!(ShellDialect::Posix.shell_escape("~/a b"), r"~/a\ b");
+    assert_eq!(ShellDialect::Posix.shell_escape("~/"), "~/");
+}
+
+#[test]
+fn test_ordinary_names_escape_unchanged_in_every_dialect() {
+    let names = [
+        "",
+        "plain.txt",
+        "あい",
+        "my file (1).txt",
+        "~/test_dir/library% 1$2",
+        "foo '\"' bar",
+        "a\\b",
+        "$'look-alike'",
+        "semi;colon|pipe&amp>gt<lt",
+        "emoji 😀 rtl \u{202E}x",
+    ];
+    for name in names {
+        for dialect in [ShellDialect::Posix, ShellDialect::Fish] {
+            assert_eq!(
+                dialect.escape(name),
+                ShellFamily::Posix.escape_metacharacters(name),
+                "{dialect:?} {name:?}"
+            );
+            assert_eq!(
+                dialect.shell_escape(name),
+                ShellFamily::Posix.shell_escape(name)
+            );
+        }
+        assert_eq!(
+            ShellDialect::PowerShell.escape(name),
+            ShellFamily::PowerShell.escape_metacharacters(name),
+            "{name:?}"
+        );
+    }
+    // Still borrowed when nothing needs escaping.
+    assert!(matches!(
+        ShellDialect::Fish.escape("plain.txt"),
+        std::borrow::Cow::Borrowed(_)
+    ));
+}
+
+#[test]
+fn test_needs_control_char_quoting() {
+    for c in [
+        '\0', '\r', '\n', '\t', '\x1b', '\x7f', '\u{80}', '\u{9f}', '\u{2028}', '\u{2029}',
+    ] {
+        assert!(needs_control_char_quoting(c), "{c:?}");
+    }
+    for c in [' ', 'a', '~', '\u{a0}', 'é', '\u{202e}', '😀'] {
+        assert!(!needs_control_char_quoting(c), "{c:?}");
+    }
 }
 
 #[test]
