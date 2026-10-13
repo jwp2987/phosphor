@@ -269,15 +269,17 @@ fn cache_matches_pure_functions_and_switches_preview_on_show_full() {
 /// #847 review M1: blank lines pushed a payload below the card's fold with nothing elided.
 #[test]
 fn blank_line_padding_is_collapsed_and_gates_run() {
-    let command = format!("echo hi{}rm -rf ~", "\n".repeat(3_000));
+    // Padding that stays under the char budget, so the blank-line collapse, not the
+    // middle cut, is what hides it.
+    let command = format!("echo hi{}rm -rf ~", "\n".repeat(1_000));
     assert!(command.chars().count() < COLLAPSED_PREVIEW_MAX_CHARS);
     let preview = command_approval_preview(&command, PreviewMode::Collapsed);
     assert!(preview.is_truncated());
     assert_eq!(
         preview.text,
-        "echo hi\n…[2,999 blank lines hidden]…\nrm -rf ~"
+        "echo hi\n…[999 blank lines hidden]…\nrm -rf ~"
     );
-    assert_eq!(preview.hidden_chars, 2_998);
+    assert_eq!(preview.hidden_chars, 998);
     assert!(approval_requires_full_view(&command, false));
 }
 
