@@ -150,6 +150,10 @@ impl PassiveSuggestionsModel {
         supported_tools: Vec<warp_multi_agent_api::ToolType>,
         ctx: &mut ModelContext<Self>,
     ) {
+        // A closed (undo-restorable) pane makes no suggestion requests (#848).
+        if self.ai_controller.as_ref(ctx).is_suspended_for_close() {
+            return;
+        }
         // Capture before the call — `Some` means there's a real conversation
         // the user can continue in; `None` means ephemeral.
         let continuable_conversation_id = followup_conversation_id;
@@ -453,6 +457,10 @@ impl PassiveSuggestionsModel {
         ctx: &mut ModelContext<Self>,
     ) {
         self.abort_pending_requests(ctx);
+        // A closed (undo-restorable) pane makes no suggestion requests (#848).
+        if self.ai_controller.as_ref(ctx).is_suspended_for_close() {
+            return;
+        }
         // Suppress passive suggestions in ambient-agent sessions.
         if self.ambient_agent_view_model.as_ref(ctx).is_ambient_agent() {
             return;

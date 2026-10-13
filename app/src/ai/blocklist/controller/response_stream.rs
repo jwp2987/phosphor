@@ -535,6 +535,11 @@ pub struct ResponseStream {
     /// resume. It carries the budget the resumed request must run with.
     pending_resume: Option<PendingResume>,
 
+    /// Set once the stream is cancelled. A cancelled stream neither retries (a retry parked by
+    /// `defer_retry_until_online` would otherwise fire a fresh request after the cancel) nor
+    /// keeps a scheduled resume (#848 follow-up).
+    cancelled: bool,
+
     /// Unique, internal id for the current request.
     ///
     /// This ensures that the model never emits events for a request that was already cancelled (or
@@ -566,6 +571,7 @@ impl ResponseStream {
             ai_identifiers: AIIdentifiers::default(),
             pending_title_generation: None,
             pending_resume: None,
+            cancelled: false,
             current_request_id: Some(Uuid::new_v4()),
         }
     }
@@ -636,6 +642,7 @@ impl ResponseStream {
             ai_identifiers,
             pending_title_generation,
             pending_resume: None,
+            cancelled: false,
             current_request_id: Some(request_id),
         }
     }
@@ -733,6 +740,9 @@ impl ResponseStream {
     }
 
     fn retry(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.cancelled {
+            return;
+        }
         // Charge the shared budget, not a retry-only counter: the next failure of this
         // request may have to recover by resuming instead, and it must see the attempts
         // already spent here.
@@ -803,6 +813,8 @@ impl ResponseStream {
         ctx: &mut ModelContext<Self>,
     ) {
         self.current_request_id = None;
+        self.cancelled = true;
+        self.pending_resume = None;
         let Some(cancellation_tx) = self.cancellation_tx.take() else {
             return;
         };
