@@ -1429,3 +1429,74 @@ fn test_closed_literal_quotes_away_from_placeholders_render() {
         );
     }
 }
+
+#[test]
+fn test_quoted_command_names_are_seen_unquoted() {
+    // Quoting a command name or flag does not change what runs, so the re-parsing check must
+    // see through it (review of d0f3ea65e: all of these executed the value).
+    for command in [
+        "'ssh' host {{x}}",
+        "\"ssh\" host {{x}}",
+        "s'sh' host {{x}}",
+        "'eval' {{x}}",
+        "e''val {{x}}",
+        "'bash' -c {{x}}",
+        "bash '-c' {{x}}",
+        "git -c 'alias.p=!sh -c x' p {{x}}",
+    ] {
+        let err = render_single_command(command, "$(touch pwned)")
+            .expect_err(&format!("{command:?} must be refused"));
+        assert!(err.contains("$(touch pwned)"), "{command:?}: {err}");
+    }
+    // A quoted literal containing separators is still one harmless word.
+    assert_eq!(
+        render_single_command("git worktree add -b {{x}} -- /wt 'a;ssh;b'", "main"),
+        Ok(vec![
+            "git worktree add -b main -- /wt 'a;ssh;b'".to_string()
+        ])
+    );
+}
+
+#[test]
+fn test_placeholder_as_arithmetic_variable_or_command_input_is_refused() {
+    for command in [
+        // A variable as the command name.
+        "$cmd {{x}}",
+        "FOO=1 $cmd {{x}}",
+        // PowerShell and cmd re-parsing.
+        "powershell -Command {{x}}",
+        "pwsh -c {{x}}",
+        "pwsh -EncodedCommand {{x}}",
+        "cmd /c {{x}}",
+        "cmd.exe /C {{x}}",
+        "Invoke-Command {{x}}",
+        "Start-Process {{x}}",
+        "git --% {{x}}",
+        // Arithmetic operands and variable names.
+        "let n={{x}}",
+        "declare -i n={{x}}",
+        "typeset -i n={{x}}",
+        "local n={{x}}",
+        "[[ {{x}} -eq 1 ]]",
+        "[ -d {{x}} ]",
+        "test {{x}} -eq 1",
+        "test -v {{x}}",
+        "read {{x}}",
+        "printf -v {{x}} x",
+    ] {
+        assert!(
+            render_single_command(command, "main").is_err(),
+            "{command:?} must be refused"
+        );
+    }
+    for command in [
+        "printf %s {{x}}",
+        "ls [abc]* {{x}}",
+        "test -d /tmp && cd {{x}}",
+    ] {
+        assert!(
+            render_single_command(command, "main").is_ok(),
+            "{command:?} should render"
+        );
+    }
+}

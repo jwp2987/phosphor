@@ -1551,7 +1551,12 @@ upstream's behavior is actually a defect rather than a preference.
   start with something that re-parses its arguments as code (`ssh`, `eval`, `sh -c` and other
   shells' `-c`, `watch`, `tmux`, `screen`, `docker`/`podman`/`kubectl exec`, `su`, `sudo ... sh
   -c`, `xargs`, `find -exec`, `script -c`, `trap`, `iex`/`Invoke-Expression`, `git -c alias.`)
-  is refused too: values are quoted for the local shell only, and that check cannot see
+  is refused too — also when the name or flag is quoted (`'ssh'`, `e''val`, `bash '-c'`),
+  since the word check reads each literal's content — as are `powershell`/`pwsh -Command`,
+  `cmd /c`, `Invoke-Command`, `Start-Process`, `--%`, `let`, `read`, `declare`/`typeset`/
+  `local`, `printf -v`, `test`/`[`/`[[` with `-v` or `-eq`-style comparisons, a placeholder
+  inside `[...]` and a `$variable` as the command name: values are quoted for the local shell
+  only, and that check cannot see
   aliases, functions or scripts, nor uses as an arithmetic operand, variable name or command
   name, which the tab-configs skill tells users to avoid. A command outside
   the whitelist, or whose value has no portable spelling (a control character, or `'` with

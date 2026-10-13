@@ -439,16 +439,25 @@ const QUOTE_CHARS: [char; 9] = [
     '\'', '"', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}', '\u{201C}', '\u{201D}', '\u{201E}',
 ];
 
-/// Shell syntax that a command with a substituted placeholder must not contain anywhere: a
-/// substituted word is quoted for "an ordinary argument word", and each of these opens a
-/// context where that quoting no longer means what it says (#878).
 /// Stands for a substituted placeholder in the residual command text that
 /// [`render_command`] checks: a private-use character no template plausibly contains.
 const PLACEHOLDER_MARK: char = '\u{E000}';
-/// Stands for a literal quoted string in the residual text once it has been checked.
+/// Stands for a literal quoted string in the residual text the syntax checks see.
 const LITERAL_MARK: char = '\u{E001}';
 
-/// Replaces each quoted literal in `residual` by [`LITERAL_MARK`], or says why one is unsafe.
+/// The residual command in the two forms [`render_command`] checks.
+struct StrippedCommand {
+    /// Each quoted literal replaced by [`LITERAL_MARK`]: for the syntax checks, which must not
+    /// look inside a literal (`'$(id)'` is inert).
+    marked: Vec<char>,
+    /// Each quoted literal replaced by its content, with whitespace and `; & | ( )` in it
+    /// mapped to `_`: for the word-level checks, which must see the word the shell runs —
+    /// `'ssh'`, `s'sh'` and `e''val` are `ssh` and `eval`, while `'a;ssh;b'` stays the one
+    /// harmless word `a_ssh_b`.
+    words: Vec<char>,
+}
+
+/// Checks the quoted literals in `residual`, or says why one is unsafe.
 ///
 /// A quoted string is allowed next to substituted placeholders only when it is a closed
 /// literal that every shell reads the same way and that contains no placeholder — exactly the
@@ -458,8 +467,9 @@ const LITERAL_MARK: char = '\u{E001}';
 /// pair such a literal, no substituted word can sit inside quotes in any shell. Anything else
 /// — an unclosed quote, a placeholder or line break inside quotes, a typographic quote outside
 /// one — is refused.
-fn strip_literal_quoted_strings(residual: &[char]) -> Result<Vec<char>, &'static str> {
-    let mut out = Vec::with_capacity(residual.len());
+fn strip_literal_quoted_strings(residual: &[char]) -> Result<StrippedCommand, &'static str> {
+    let mut marked = Vec::with_capacity(residual.len());
+    let mut words = Vec::with_capacity(residual.len());
     let mut index = 0;
     while index < residual.len() {
         let c = residual[index];
@@ -468,7 +478,8 @@ fn strip_literal_quoted_strings(residual: &[char]) -> Result<Vec<char>, &'static
             '"' => &['$', '`', '\\', '!', '\u{201C}', '\u{201D}', '\u{201E}'],
             c if QUOTE_CHARS.contains(&c) => return Err("a typographic quote"),
             c => {
-                out.push(c);
+                marked.push(c);
+                words.push(c);
                 index += 1;
                 continue;
             }
@@ -486,12 +497,23 @@ fn strip_literal_quoted_strings(residual: &[char]) -> Result<Vec<char>, &'static
         {
             return Err("quotes whose content the shells read differently");
         }
-        out.push(LITERAL_MARK);
+        marked.push(LITERAL_MARK);
+        words.extend(content.iter().map(|&inner| {
+            if inner.is_whitespace() || matches!(inner, ';' | '&' | '|' | '(' | ')') {
+                '_'
+            } else {
+                inner
+            }
+        }));
         index += length + 2;
     }
-    Ok(out)
+    Ok(StrippedCommand { marked, words })
 }
 
+/// Shell syntax that a command with a substituted placeholder must not contain anywhere: a
+/// substituted word is quoted for "an ordinary argument word", and each of these opens a
+/// context where that quoting no longer means what it says (#878). `residual` is the
+/// [`StrippedCommand::marked`] form.
 fn forbidden_syntax_around_placeholders(residual: &[char]) -> Option<&'static str> {
     let text: String = residual.iter().collect();
     for (needle, what) in [
@@ -501,11 +523,13 @@ fn forbidden_syntax_around_placeholders(residual: &[char]) -> Option<&'static st
         ("(e:", "a zsh `(e:...)` glob qualifier"),
         ("((", "`((...))`"),
         ("<<", "a heredoc"),
+        ("--%", "PowerShell's `--%` stop-parsing token"),
     ] {
         if text.contains(needle) {
             return Some(what);
         }
     }
+    let mut bracket_depth = 0usize;
     for (index, &c) in residual.iter().enumerate() {
         let what = match c {
             '\n' | '\r' => "a line break",
@@ -518,6 +542,17 @@ fn forbidden_syntax_around_placeholders(residual: &[char]) -> Option<&'static st
             {
                 "a comment"
             }
+            '[' => {
+                bracket_depth += 1;
+                continue;
+            }
+            ']' => {
+                bracket_depth = bracket_depth.saturating_sub(1);
+                continue;
+            }
+            // Inside `[...]` — a subscript, `[ ... ]`/`[[ ... ]]` test or glob class — a
+            // word may be evaluated as arithmetic or a pattern.
+            PLACEHOLDER_MARK if bracket_depth > 0 => "a placeholder inside `[...]`",
             _ => continue,
         };
         return Some(what);
@@ -525,15 +560,19 @@ fn forbidden_syntax_around_placeholders(residual: &[char]) -> Option<&'static st
     None
 }
 
-/// Commands that parse their arguments as shell (or PowerShell) code again, where a value
-/// quoted for the local shell is unquoted text: `ssh host {{x}}` runs `{{x}}`'s value on the
-/// remote shell. Best-effort, word-level: the first word of each `;`/`&`/`|`/`(`-separated
-/// segment (after `VAR=value` assignments and a path), plus the flags that make a command
-/// re-parse (`sh -c`, `docker exec`, `find -exec`, `git -c alias.*`, ...). It cannot see
-/// aliases, functions or scripts that do the same, which is why the docs say never to pass a
-/// placeholder to anything that re-parses it.
+/// Commands that parse their arguments as shell (or PowerShell / cmd) code again, where a
+/// value quoted for the local shell is unquoted text: `ssh host {{x}}` runs `{{x}}`'s value on
+/// the remote shell. Also the cheap arithmetic and variable-name cases: `let`, `read`,
+/// `declare`/`typeset`/`local`, `printf -v`, `test`/`[`/`[[` with `-v` or a numeric
+/// comparison, and a `$variable` as the command name. Best-effort, word-level: the first word
+/// of each `;`/`&`/`|`/`(`-separated segment (after `VAR=value` assignments and a path), plus
+/// the flags that make a command re-parse (`sh -c`, `docker exec`, `find -exec`,
+/// `git -c alias.*`, `cmd /c`, ...). `residual` is the [`StrippedCommand::words`] form, so a
+/// quoted command name is seen unquoted. It cannot see aliases, functions or scripts that do
+/// the same, which is why the docs say never to pass a placeholder to anything that re-parses
+/// it.
 fn reparsing_command(residual: &[char]) -> Option<&'static str> {
-    const ALWAYS: [&str; 10] = [
+    const ALWAYS: [&str; 15] = [
         "ssh",
         "eval",
         "watch",
@@ -544,11 +583,17 @@ fn reparsing_command(residual: &[char]) -> Option<&'static str> {
         "trap",
         "iex",
         "invoke-expression",
+        "invoke-command",
+        "start-process",
+        "let",
+        "read",
+        "source",
     ];
     const SHELLS: [&str; 7] = ["sh", "bash", "zsh", "fish", "dash", "ksh", "pwsh"];
     const PREFIXES: [&str; 8] = [
         "sudo", "doas", "env", "nohup", "time", "nice", "command", "exec",
     ];
+    const COMPARISONS: [&str; 7] = ["-eq", "-ne", "-lt", "-le", "-gt", "-ge", "-v"];
 
     let text: String = residual
         .iter()
@@ -561,13 +606,19 @@ fn reparsing_command(residual: &[char]) -> Option<&'static str> {
         })
         .collect();
     for segment in text.lines() {
-        let words: Vec<String> = segment
-            .split_whitespace()
-            .skip_while(|word| {
-                word.split_once('=').is_some_and(|(name, _)| {
-                    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                })
+        let mut raw_words = segment.split_whitespace().skip_while(|word| {
+            word.split_once('=').is_some_and(|(name, _)| {
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
             })
+        });
+        let Some(raw_first) = raw_words.next() else {
+            continue;
+        };
+        if raw_first.starts_with('$') {
+            return Some("a variable as the command name");
+        }
+        let words: Vec<String> = std::iter::once(raw_first)
+            .chain(raw_words)
             .map(|word| {
                 let base = word
                     .rsplit(|c: char| c == '/' || c == '\\')
@@ -579,9 +630,7 @@ fn reparsing_command(residual: &[char]) -> Option<&'static str> {
                     .unwrap_or(base)
             })
             .collect();
-        let Some(first) = words.first().map(String::as_str) else {
-            continue;
-        };
+        let first = words[0].as_str();
         let rest = &words[1..];
         let has = |flag: &str| rest.iter().any(|word| word == flag);
         let has_shell_c = |words: &[String]| {
@@ -594,8 +643,30 @@ fn reparsing_command(residual: &[char]) -> Option<&'static str> {
                     })
                 })
         };
+        let has_powershell_command = |words: &[String]| {
+            words
+                .iter()
+                .position(|word| matches!(word.as_str(), "powershell" | "pwsh"))
+                .is_some_and(|i| {
+                    words[i + 1..]
+                        .iter()
+                        .any(|word| word.starts_with("-c") || word.starts_with("-e"))
+                })
+        };
+        let has_cmd_c = |words: &[String]| {
+            words
+                .iter()
+                .position(|word| word == "cmd")
+                .is_some_and(|i| {
+                    words[i + 1..]
+                        .iter()
+                        .any(|word| word.starts_with("/c") || word.starts_with("/k"))
+                })
+        };
         let reparses = ALWAYS.contains(&first)
             || has_shell_c(&words[..])
+            || has_powershell_command(&words[..])
+            || has_cmd_c(&words[..])
             || (PREFIXES.contains(&first)
                 && (rest.iter().any(|word| ALWAYS.contains(&word.as_str()))
                     || has("-c")
@@ -610,6 +681,13 @@ fn reparsing_command(residual: &[char]) -> Option<&'static str> {
             || (first == "git" && rest.iter().any(|word| word.starts_with("alias.")));
         if reparses {
             return Some("a command that parses its arguments as shell code again");
+        }
+        let arithmetic_or_name = matches!(first, "declare" | "typeset" | "local")
+            || (first == "printf" && has("-v"))
+            || (matches!(first, "test" | "[" | "[[")
+                && COMPARISONS.iter().copied().any(|flag| has(flag)));
+        if arithmetic_or_name {
+            return Some("a command that reads its arguments as arithmetic or variable names");
         }
     }
     None
@@ -701,8 +779,8 @@ pub(crate) fn render_command(
     }
     residual.extend_from_slice(&chars[cursor..]);
     let checked = strip_literal_quoted_strings(&residual).and_then(|stripped| {
-        match forbidden_syntax_around_placeholders(&stripped)
-            .or_else(|| reparsing_command(&stripped))
+        match forbidden_syntax_around_placeholders(&stripped.marked)
+            .or_else(|| reparsing_command(&stripped.words))
         {
             Some(what) => Err(what),
             None => Ok(()),
