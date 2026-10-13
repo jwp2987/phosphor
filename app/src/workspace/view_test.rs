@@ -4104,6 +4104,70 @@ fn test_toggle_tab_group_collapsed_flips_state() {
     });
 }
 
+/// Regression test for #840: reopening a closed tab while the Tools panel shows
+/// the conversation list, with a second window open, panicked with
+/// "downcast should be type safe".
+///
+/// Activating the restored tab calls `LeftPanelView::set_active_pane_group`,
+/// which (conversation list active) re-syncs `AgentConversationsModel`, whose
+/// `ConversationNavigationData::all_conversations` walks every *other* window's
+/// terminals and asks `UndoCloseStack` whether each tab is closed. The restore
+/// used to run inside `UndoCloseStack::handle(ctx).update(..)`, so that read hit
+/// the checked-out singleton. The restoring window's own workspace is checked
+/// out too and is skipped by the registry walk, which is why a single window
+/// never crashed and the second window here is essential.
+#[test]
+fn test_reopening_a_closed_tab_with_conversation_list_open_and_second_window() {
+    let _conversation_list_guard =
+        FeatureFlag::InteractiveConversationManagementView.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        // The other window: its terminal is what `all_conversations` reaches.
+        let _other_window = mock_workspace(&mut app);
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.left_panel_view.update(ctx, |left_panel, ctx| {
+                left_panel.handle_action(&LeftPanelAction::ConversationListView, ctx);
+            });
+
+            // A second tab, closed into the undo stack.
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 2);
+            workspace.remove_tab(workspace.active_tab_index(), true, true, ctx);
+            assert_eq!(workspace.tab_count(), 1);
+        });
+
+        app.update(|ctx| {
+            assert!(
+                !UndoCloseStack::as_ref(ctx).is_empty(),
+                "the closed tab should be in the undo stack"
+            );
+        });
+
+        // What ctrl+alt+t dispatches. Going through the global action rather
+        // than calling `UndoCloseStack` directly keeps this test identical on
+        // the pre-fix code, where it panics inside the restore.
+        app.update(|ctx| ctx.dispatch_global_action("app:undo_close", &()));
+
+        workspace.read(&app, |workspace, _| {
+            assert_eq!(
+                workspace.tab_count(),
+                2,
+                "the closed tab should be reopened"
+            );
+        });
+        app.update(|ctx| {
+            assert!(
+                UndoCloseStack::as_ref(ctx).is_empty(),
+                "the reopened tab should have left the undo stack"
+            );
+        });
+    });
+}
+
 #[test]
 fn test_restoring_a_closed_tab_does_not_split_a_group() {
     // Regression: `restore_closed_tab` used to insert blindly at the tab's

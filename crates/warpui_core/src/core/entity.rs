@@ -58,6 +58,15 @@ pub trait SingletonEntity: Entity + Sized {
     fn as_ref(ctx: &crate::AppContext) -> &Self {
         ctx.get_singleton_model_as_ref()
     }
+
+    /// Returns the single model of this type, or `None` if it is currently
+    /// being updated further up the call stack (and so cannot be borrowed).
+    ///
+    /// Use this from code that can run re-entrantly inside an arbitrary model
+    /// update and can tolerate missing this model's state for one call.
+    fn try_as_ref(ctx: &crate::AppContext) -> Option<&Self> {
+        ctx.try_get_singleton_model_as_ref()
+    }
 }
 
 /// A trait for retrieving a handle to a singleton model by type.

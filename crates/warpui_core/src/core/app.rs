@@ -5878,9 +5878,34 @@ impl AppContext {
 
     pub(super) fn get_singleton_model_as_ref<T: SingletonEntity>(&self) -> &T {
         match self.singleton_models.get(&std::any::TypeId::of::<T>()) {
-            Some(model_handle) => model_handle
-                .downcast_ref(self)
-                .expect("downcast should be type safe"),
+            Some(model_handle) => model_handle.downcast_ref(self).unwrap_or_else(|| {
+                // The handle is registered under `T`'s `TypeId`, so the only way the
+                // lookup fails is that the model is absent from `models`: it is checked
+                // out by an in-progress `update` further up this call stack. This used
+                // to report "downcast should be type safe", which hid the re-entrancy
+                // (#840).
+                panic!(
+                    "Cannot read singleton model of type {:?} while it is being updated \
+                     (re-entrant read during its own update)",
+                    std::any::type_name::<T>()
+                )
+            }),
+            None => {
+                panic!(
+                    "Cannot get singleton model of type {:?} that was never registered",
+                    std::any::type_name::<T>()
+                );
+            }
+        }
+    }
+
+    /// Like [`Self::get_singleton_model_as_ref`], but returns `None` instead of
+    /// panicking when the singleton is currently checked out for an update
+    /// further up the call stack. Still panics if `T` was never registered:
+    /// that is a programming error, not a transient state.
+    pub(super) fn try_get_singleton_model_as_ref<T: SingletonEntity>(&self) -> Option<&T> {
+        match self.singleton_models.get(&std::any::TypeId::of::<T>()) {
+            Some(model_handle) => model_handle.downcast_ref(self),
             None => {
                 panic!(
                     "Cannot get singleton model of type {:?} that was never registered",

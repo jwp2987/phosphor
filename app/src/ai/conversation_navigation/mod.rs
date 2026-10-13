@@ -172,6 +172,10 @@ impl ConversationNavigationData {
 
         let active_window_id = app.windows().active_window();
         let registry = WorkspaceRegistry::as_ref(app);
+        // `None` when this runs re-entrantly inside an `UndoCloseStack` update
+        // (#840). Tabs are then treated as not closed for this one call; the
+        // next sync, once the update has returned, corrects them.
+        let undo_close_stack = UndoCloseStack::try_as_ref(app);
         for (window_id, workspace_handle) in registry.all_workspaces(app) {
             let workspace = workspace_handle.as_ref(app);
             let active_tab_pane_group_id = workspace.active_tab_pane_group().id();
@@ -194,8 +198,9 @@ impl ConversationNavigationData {
                     };
 
                     let is_closed = pane_group.is_pane_hidden_for_close(pane_id)
-                        || UndoCloseStack::as_ref(app)
-                            .is_pane_group_tab_in_stack(pane_group_handle.id());
+                        || undo_close_stack.is_some_and(|stack| {
+                            stack.is_pane_group_tab_in_stack(pane_group_handle.id())
+                        });
 
                     let terminal_view_id = terminal_view.id();
                     open_terminal_views.insert(terminal_view_id);
