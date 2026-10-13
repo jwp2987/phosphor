@@ -1,0 +1,359 @@
+#!/usr/bin/env python3
+"""Drive the real bash bootstrap in a pty under `set -u` and assert the hooks fire.
+
+WHY THIS EXISTS
+---------------
+#825: with `set -u` at a Phosphor bash prompt, the precmd hook expanded
+`$_WARP_GENERATOR_COMMAND` (unset), bash aborted the hook with "unbound
+variable", Precmd was never emitted, and the tab locked: Enter and ctrl-c did
+nothing and `set +u` could not even be submitted. Nothing in the Rust test
+suite runs the bootstrap scripts in a real bash, so this was invisible to it.
+
+The integration test `test_bash_bootstraps_with_nounset_option` covers the same
+ground through the app, but it needs a full build and a display. This script
+needs only bash and python3 and runs in about ten seconds, so a bootstrap edit
+can be checked without cargo.
+
+WHAT IT DOES
+------------
+Assembles the bootstrap the way `app/src/terminal/bootstrap.rs` does (expand
+`#include`, substitute the placeholders, drop comment and blank lines), runs it
+as the rcfile of an interactive bash in a pty with an isolated $HOME, decodes
+the DCS hook messages the shell writes, and checks, per scenario:
+
+  * every command typed after `set -u` still produces Preexec, CommandFinished
+    and Precmd (the lock-up in #825);
+  * an in-band generator under `set -u` still ends with its Precmd;
+  * the hooks hand the user's own options back: `set -u`/`set -o pipefail`
+    stay on, whether set at the prompt or in an rcfile;
+  * `$?` and `$_` still reach the next command line unchanged;
+  * under `set -e` and under `set -o noclobber` generators and commands keep
+    working and the shell stays alive.
+
+A check that waits for a block stops the scenario's waiting once one block has
+not finished: the remaining checks report FAIL at once instead of each running
+out its timeout.
+
+USAGE
+    script/test_bash_bootstrap_nounset [path/to/bash]
+
+Exit 0 when every scenario passes, 1 otherwise.
+"""
+
+import os
+import pty
+import re
+import select
+import shutil
+import sys
+import tempfile
+import time
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ASSETS = os.path.join(ROOT, "app", "assets")
+BOOTSTRAP = os.path.join(ASSETS, "bundled", "bootstrap")
+BASH = sys.argv[1] if len(sys.argv) > 1 else (shutil.which("bash") or "/bin/bash")
+SESSION_ID = "4242"
+HOOK_RE = re.compile(rb"\x1bP\$d([0-9a-f]*)\x9c")
+OSC_RE = re.compile(rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+CSI_RE = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def assemble(text):
+    """Mirror bootstrap.rs: inline #include, trim, drop blank and comment lines."""
+    out = []
+    for line in text.split("\n"):
+        if line.startswith("#include "):
+            with open(os.path.join(ASSETS, line[len("#include "):])) as f:
+                inc = f.read().replace("@@USING_CON_PTY_BOOLEAN@@", "false")
+            out.extend(assemble(inc).split("\n"))
+            continue
+        stripped = line.lstrip()
+        if len(stripped) < len(line):
+            line = " " + stripped
+        line = line.rstrip()
+        if not line.strip() or line.strip().startswith("#"):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def rcfile_contents():
+    with open(os.path.join(BOOTSTRAP, "bash_init_shell.sh")) as f:
+        init = f.read()
+    init = init.replace("@@WARP_SESSION_ID@@", SESSION_ID).replace(
+        "@@USING_CON_PTY_BOOLEAN@@", "false"
+    )
+    with open(os.path.join(BOOTSTRAP, "bash.sh")) as f:
+        body = assemble(f.read())
+    return init + "\n" + body + "\n"
+
+
+class Shell:
+    def __init__(self, profile=None):
+        self.home = tempfile.mkdtemp(prefix="phosphor-825-")
+        if profile is not None:
+            with open(os.path.join(self.home, ".bash_profile"), "w") as f:
+                f.write(profile + "\n")
+        rc = os.path.join(self.home, ".phosphor-rc")
+        with open(rc, "w") as f:
+            f.write(rcfile_contents())
+        env = {
+            "HOME": self.home,
+            "USER": os.environ.get("USER", "user"),
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "TERM": "xterm-256color",
+            "LANG": "C.UTF-8",
+            "WARP_IS_LOCAL_SHELL_SESSION": "1",
+        }
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:
+            os.chdir(self.home)
+            os.execve(BASH, [BASH, "--noprofile", "--rcfile", rc, "-i"], env)
+        self.buf = b""
+        self.dead = False
+        self.broken = False
+
+    def pump(self, timeout, until=None):
+        end = time.time() + timeout
+        while time.time() < end:
+            if until is not None and until():
+                return True
+            r, _, _ = select.select([self.fd], [], [], 0.05)
+            if not r:
+                continue
+            try:
+                data = os.read(self.fd, 65536)
+            except OSError:
+                data = b""
+            if not data:
+                self.dead = True
+                return until() if until else False
+            self.buf += data
+        return until() if until else False
+
+    def hooks(self):
+        names = []
+        for m in HOOK_RE.finditer(self.buf):
+            payload = bytes.fromhex(m.group(1).decode()).decode(errors="replace")
+            h = re.search(r'"hook":\s*"(\w+)"', payload)
+            names.append(h.group(1) if h else "?")
+        return names
+
+    def text(self):
+        """Output with hook messages and other escape sequences removed."""
+        raw = HOOK_RE.sub(b"", self.buf)
+        raw = OSC_RE.sub(b"", raw)
+        raw = CSI_RE.sub(b"", raw)
+        return raw.decode(errors="replace")
+
+    def wait_bootstrapped(self):
+        ok = self.pump(20, lambda: "Bootstrapped" in self.hooks())
+        self.broken = not ok
+        return ok
+
+    def _wait(self, cmd, until, timeout):
+        # Fail fast: once one block has not finished, the shell is locked or
+        # dead and every later wait would just run out its timeout.
+        if getattr(self, "broken", False):
+            return False
+        os.write(self.fd, (cmd + "\r").encode())
+        ok = self.pump(timeout, until)
+        if not ok:
+            self.broken = True
+        return ok
+
+    def run(self, cmd, expect=None, timeout=10):
+        """Type a command; wait for the Precmd that ends its block (and for
+        `expect`, a regex over the output, when given)."""
+        before = self.hooks().count("Precmd")
+        return self._wait(
+            cmd,
+            lambda: self.hooks().count("Precmd") > before
+            and (expect is None or re.search(expect, self.text()) is not None),
+            timeout,
+        )
+
+    def generator(self, n, timeout=10):
+        """Run an in-band generator the way the app does; wait for its output
+        and the Precmd that ends it."""
+        before = self.hooks().count("Precmd")
+        outputs = self.buf.count(b"\x1b]9277;A")
+        return self._wait(
+            f"warp_run_generator_command {n} 'echo gen{n}'",
+            lambda: self.hooks().count("Precmd") > before
+            and self.buf.count(b"\x1b]9277;A") > outputs,
+            timeout,
+        )
+
+    def close(self):
+        try:
+            os.kill(self.pid, 9)
+            os.waitpid(self.pid, 0)
+        except OSError:
+            pass
+        shutil.rmtree(self.home, ignore_errors=True)
+
+
+failures = []
+
+
+def check(cond, what, shell):
+    if cond:
+        print(f"  ok   {what}")
+        return
+    print(f"  FAIL {what}")
+    failures.append(what)
+    tail = shell.text()[-1200:]
+    print("       hooks: " + " ".join(shell.hooks()[-12:]))
+    print("       output tail:\n" + "\n".join("         | " + l for l in tail.splitlines()[-15:]))
+
+
+def has(shell, pattern):
+    return re.search(pattern, shell.text()) is not None
+
+
+def scenario_set_u_at_prompt():
+    print("set -u typed at the prompt")
+    sh = Shell()
+    try:
+        check(sh.wait_bootstrapped(), "bootstraps", sh)
+        check(sh.run("set -u"), "the `set -u` block finishes (Precmd)", sh)
+        n = len(sh.hooks())
+        check(sh.run("echo mark$((40+2))", r"mark42"), "the next command finishes (Precmd)", sh)
+        tail = sh.hooks()[n:]
+        check(
+            tail[:3] == ["Preexec", "CommandFinished", "Precmd"],
+            f"it emits Preexec, CommandFinished, Precmd (got {tail})",
+            sh,
+        )
+        check(has(sh, r"mark42"), "its output arrives", sh)
+        check(not has(sh, r"_WARP_\w+: unbound variable|WARP_\w+: unbound variable"),
+              "no Warp variable is reported unbound", sh)
+        check(sh.run('[[ $- == *u* ]] && echo nounset-$((1+1))-on || echo nounset-$((1+1))-off', r"nounset-2-o"), "option probe finishes", sh)
+        check(has(sh, r"nounset-2-on"), "nounset is still on for the user afterwards", sh)
+
+        check(sh.run("false"), "`false` finishes", sh)
+        check(sh.run('echo "status=$?"', r"status=\d"), "status probe finishes", sh)
+        check(has(sh, r"status=1"), "`$?` reaches the next command unchanged", sh)
+        check(sh.run("echo lastarg$((6*7))"), "`$_` setup finishes", sh)
+        check(sh.run('echo "underscore=$_"', r"underscore=[a-z0-9]"), "`$_` probe finishes", sh)
+        check(has(sh, r"underscore=lastarg42"), "`$_` reaches the next command unchanged", sh)
+
+        check(sh.generator(7), "an in-band generator under set -u emits its output and its Precmd", sh)
+        check(sh.run("echo after$((1+2))gen", r"after3gen"), "a command after the generator finishes", sh)
+        check(has(sh, r"after3gen"), "its output arrives", sh)
+        check(sh.run('[[ $- == *u* ]] && echo still-$((2+2))-on || echo still-$((2+2))-off', r"still-4-o"), "option probe finishes", sh)
+        check(has(sh, r"still-4-on"), "nounset survives the generator round trip", sh)
+    finally:
+        sh.close()
+
+
+def scenario_set_u_in_rcfile():
+    print("set -u and pipefail in ~/.bash_profile")
+    sh = Shell(profile="set -u\nset -o pipefail")
+    try:
+        check(sh.wait_bootstrapped(), "bootstraps", sh)
+        check(sh.run("echo rc$((3*3))", r"rc9"), "a command finishes (Precmd)", sh)
+        check(has(sh, r"rc9"), "its output arrives", sh)
+        check(sh.run('[[ $- == *u* ]] && echo rc-nounset-$((5+5))-on || echo rc-nounset-$((5+5))-off', r"rc-nounset-10-o"), "option probe finishes", sh)
+        check(has(sh, r"rc-nounset-10-on"), "the rcfile's nounset is in force after bootstrap", sh)
+        check(sh.run('[[ -o pipefail ]] && echo rc-pipefail-$((5+6))-on || echo rc-pipefail-$((5+6))-off', r"rc-pipefail-11-o"), "pipefail probe finishes", sh)
+        check(has(sh, r"rc-pipefail-11-on"), "the rcfile's pipefail is in force after bootstrap", sh)
+    finally:
+        sh.close()
+
+
+NOISE = r"unbound variable|cannot overwrite existing file|syntax error"
+
+
+def scenario_set_e_at_prompt():
+    print("set -e typed at the prompt")
+    sh = Shell()
+    try:
+        check(sh.wait_bootstrapped(), "bootstraps", sh)
+        check(sh.run("set -e"), "the `set -e` block finishes (Precmd)", sh)
+        check(sh.run("echo e$((1+1))", r"e2"), "the next command finishes (Precmd)", sh)
+        # Two generators: the second one's warp_preexec finds the first one's
+        # PID already finished, and the kill's non-zero status used to escape
+        # warp_preexec and exit the shell.
+        check(sh.generator(11), "a generator under set -e emits its output and its Precmd", sh)
+        check(sh.run("echo g$((2+3))", r"g5"), "a command after it finishes", sh)
+        check(sh.generator(12), "a second generator finishes", sh)
+        # Deterministic version of the race: a generator PID recorded as
+        # started but already gone. The next user command's warp_preexec
+        # tries to kill it, kill fails, and that status used to become
+        # warp_preexec's -- exiting the shell under set -e. The generator's own
+        # precmd does not reset the PID files, so the bogus PID survives to it.
+        before = sh.hooks().count("Precmd")
+        outputs = sh.buf.count(b"\x1b]9277;A")
+        check(
+            sh._wait(
+                'echo 2147483646 >> "$_WARP_GENERATOR_PIDS_STARTED_TMP_FILE"; '
+                "warp_run_generator_command 13 'echo gen13'",
+                lambda: sh.hooks().count("Precmd") > before
+                and sh.buf.count(b"\x1b]9277;A") > outputs,
+                10,
+            ),
+            "a stale generator PID is planted",
+            sh,
+        )
+        check(sh.run("echo alive$((9*9))", r"alive81"), "the shell is still alive afterwards", sh)
+        check(not sh.dead, "the shell did not exit", sh)
+        check(sh.run('[[ $- == *e* ]] && echo errexit-$((3+4))-on || echo errexit-$((3+4))-off',
+                     r"errexit-7-o"), "option probe finishes", sh)
+        check(has(sh, r"errexit-7-on"), "errexit is still on for the user afterwards", sh)
+        check(not has(sh, NOISE), "no hook reports an error", sh)
+    finally:
+        sh.close()
+
+
+def scenario_noclobber():
+    print("set -o noclobber typed at the prompt")
+    sh = Shell()
+    try:
+        check(sh.wait_bootstrapped(), "bootstraps", sh)
+        check(sh.run("set -o noclobber"), "the `set -o noclobber` block finishes (Precmd)", sh)
+        # warp_precmd truncates the generator PID files after every command;
+        # with plain `>` that fails under noclobber once the files exist.
+        check(sh.generator(21), "a generator under noclobber finishes", sh)
+        check(sh.run("echo n$((4*4))", r"n16"), "a command after it finishes", sh)
+        check(sh.generator(22), "a second generator finishes", sh)
+        check(sh.run("echo m$((5*5))", r"m25"), "a command after that finishes", sh)
+        check(not has(sh, NOISE), "no hook reports an error", sh)
+    finally:
+        sh.close()
+
+
+def scenario_options_untouched_without_set_u():
+    print("no strict options: the hooks turn nothing on")
+    sh = Shell()
+    try:
+        check(sh.wait_bootstrapped(), "bootstraps", sh)
+        check(sh.run("echo plain$((2*2))", r"plain4"), "a command finishes (Precmd)", sh)
+        check(sh.run('echo "opts:$-:"; [[ -o pipefail ]] && echo pipefail-$((1+6))-on || echo pipefail-$((1+6))-off', r"pipefail-7-o"),
+              "option probe finishes", sh)
+        m = re.search(r"opts:([^:$]*):", sh.text())
+        check(m is not None and "u" not in m.group(1) and "e" not in m.group(1),
+              f"neither nounset nor errexit was switched on (got {m.group(1) if m else None!r})", sh)
+        check(has(sh, r"pipefail-7-off"), "pipefail was not switched on", sh)
+    finally:
+        sh.close()
+
+
+def main():
+    print(f"bash: {BASH}")
+    scenario_set_u_at_prompt()
+    scenario_set_u_in_rcfile()
+    scenario_set_e_at_prompt()
+    scenario_noclobber()
+    scenario_options_untouched_without_set_u()
+    if failures:
+        print(f"\ntest_bash_bootstrap_nounset: {len(failures)} check(s) FAILED")
+        return 1
+    print("\ntest_bash_bootstrap_nounset: ok")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
