@@ -2010,6 +2010,35 @@ pub fn test_image_completion_drops_in_warp_input_stage() {
     assert_eq!(block.output_grid().len(), 0);
 }
 
+/// #876: an iTerm `width=`/`height=` in cells is an untrusted u32, and
+/// `cell_width * width` used to be computed in u32 and overflow (a panic with
+/// overflow checks). It must saturate and the image must still be placed.
+#[test]
+pub fn test_iterm_image_huge_cell_dimensions_do_not_overflow() {
+    use crate::terminal::model::iterm_image::ITermImageDimensionUnit;
+    use warpui::units::IntoPixels;
+
+    let _iterm_images = FeatureFlag::ITermImages.override_enabled(true);
+    let mut block = TestBlockBuilder::new()
+        .with_bootstrap_stage(BootstrapStage::ScriptExecution)
+        .with_size_info(SizeInfo::new(
+            pathfinder_geometry::vector::vec2f(80. * 8., 20. * 16.),
+            8.0.into_pixels(),
+            16.0.into_pixels(),
+            warpui::units::Pixels::zero(),
+            warpui::units::Pixels::zero(),
+        ))
+        .build();
+    block.start();
+
+    let mut image = test_iterm_image(3);
+    image.metadata.desired_width = Some((u32::MAX, ITermImageDimensionUnit::Cell));
+    image.metadata.desired_height = Some((u32::MAX, ITermImageDimensionUnit::Cell));
+    block.handle_completed_iterm_image(image);
+
+    assert!(block.output_grid().started());
+}
+
 // Ported from the oracle `ee95ac0fd` ("Fix double cursor in finished background
 // blocks", CORE-3798). Upstream shipped the fix without a test because the two
 // painting paths meet in the renderer, which has no automated coverage; the model-level

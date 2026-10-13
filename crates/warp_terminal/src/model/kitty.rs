@@ -16,6 +16,17 @@ use warpui::{
 
 use super::escape_sequences::C1;
 
+/// The largest width or height (`s=`/`v=`) accepted for a raw RGB/RGBA kitty
+/// transmission. Matches kitty's own limit; anything larger is rejected before
+/// any pixel data is read, decompressed or allocated (#876).
+pub const MAX_KITTY_IMAGE_DIMENSION: u32 = 10_000;
+
+/// The most image bytes a single kitty transmission may decode to, whatever
+/// the medium (direct payload, zlib output, file, shared memory). Matches
+/// kitty's own `MAX_DATA_SZ` and is exactly a `MAX_KITTY_IMAGE_DIMENSION`
+/// square RGBA image.
+pub const MAX_KITTY_IMAGE_BYTES: usize = 400_000_000;
+
 /// Actions specified by the [Kitty Image Protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
 #[derive(Debug, Clone)]
 pub enum KittyAction {
@@ -81,7 +92,14 @@ impl TryFrom<PendingKittyMessage> for KittyMessage {
         let mut decoded_payload = vec![];
 
         for payload in pending.payload {
-            decoded_payload.extend(base64_decode_padding_agnostic(&payload[..])?);
+            let decoded = base64_decode_padding_agnostic(&payload[..])?;
+            if decoded_payload.len().saturating_add(decoded.len()) > MAX_KITTY_IMAGE_BYTES {
+                return Err(KittyDecodeError::PayloadTooLarge {
+                    limit: MAX_KITTY_IMAGE_BYTES,
+                }
+                .into());
+            }
+            decoded_payload.extend(decoded);
         }
 
         Ok(KittyMessage {
@@ -95,6 +113,10 @@ impl TryFrom<KittyMessage> for KittyImage {
     type Error = InvalidKittyPayload;
 
     fn try_from(message: KittyMessage) -> Result<Self, InvalidKittyPayload> {
+        // Reject impossible raw-pixel dimensions before reading, decompressing
+        // or allocating anything on their behalf (#876).
+        raw_pixel_byte_count(&message.control_data)?;
+
         let decoded_data =
             decode_kitty_image_data(message.payload, message.control_data.compressed)?;
 
@@ -221,6 +243,11 @@ pub enum KittyDecodeError {
     InvalidBase64(String),
     InvalidCompression(String),
     InvalidUtf8(String),
+    /// The transmission decodes (or decompresses, or reads) to more than
+    /// `limit` bytes.
+    PayloadTooLarge {
+        limit: usize,
+    },
 }
 
 impl From<KittyDecodeError> for InvalidKittyPayload {
@@ -271,6 +298,9 @@ pub enum KittyRgbError {
         expected_bytes: usize,
         actual_bytes: usize,
     },
+    /// `s=`/`v=` exceed `MAX_KITTY_IMAGE_DIMENSION`, or their pixel byte count
+    /// is not addressable.
+    DimensionsTooLarge { width: u32, height: u32 },
 }
 
 impl From<KittyRgbError> for KittyError {
@@ -291,6 +321,9 @@ impl From<CustomHeaderCreationError> for KittyRgbError {
                 expected_bytes,
                 actual_bytes,
             },
+            CustomHeaderCreationError::DimensionsTooLarge { width, height } => {
+                KittyRgbError::DimensionsTooLarge { width, height }
+            }
         }
     }
 }
@@ -451,16 +484,16 @@ impl KittyPlacementData {
 
         let (desired_width_px, desired_height_px) = match (self.cols, self.rows) {
             (Some(width), None) => {
-                let desired_width_px = ((cell_width as u32) * width) as f32;
+                let desired_width_px = (cell_width as u32).saturating_mul(width) as f32;
                 (desired_width_px, desired_width_px / aspect_ratio)
             }
             (None, Some(height)) => {
-                let desired_height_px = ((cell_height as u32) * height) as f32;
+                let desired_height_px = (cell_height as u32).saturating_mul(height) as f32;
                 (desired_height_px * aspect_ratio, desired_height_px)
             }
             (Some(width), Some(height)) => (
-                ((cell_width as u32) * width) as f32,
-                ((cell_height as u32) * height) as f32,
+                (cell_width as u32).saturating_mul(width) as f32,
+                (cell_height as u32).saturating_mul(height) as f32,
             ),
             (None, None) => (width_px as f32, height_px as f32),
         };
@@ -741,8 +774,16 @@ fn read_file(decoded_payload: Vec<u8>, is_temp: bool) -> Result<Vec<u8>, Invalid
         Err(err) => return Err(KittyDecodeError::InvalidUtf8(err.to_string()).into()),
     };
 
-    let data = match fs::read(path) {
-        Ok(data) => data,
+    // Bounded: the path is chosen by whatever printed the escape sequence, and
+    // an unbounded `fs::read` of e.g. `/dev/zero` never returns.
+    let data = match read_at_most(fs::File::open(path), MAX_KITTY_IMAGE_BYTES) {
+        Ok(Some(data)) => data,
+        Ok(None) => {
+            return Err(KittyDecodeError::PayloadTooLarge {
+                limit: MAX_KITTY_IMAGE_BYTES,
+            }
+            .into());
+        }
         Err(err) => {
             return Err(InvalidKittyPayload::FileError(FileError::FileReadError(
                 err.to_string(),
@@ -810,17 +851,8 @@ fn read_shared_memory(
         }
     };
 
-    let bytes_per_pixel = match control_data.pixel_data_format {
-        KittyPixelDataFormat::Rgb24Bit => Some(3),
-        KittyPixelDataFormat::Rgba32Bit => Some(4),
-        KittyPixelDataFormat::Png => None,
-    };
-
-    let size = bytes_per_pixel.map(|bytes_per_pixel| {
-        (bytes_per_pixel * control_data.width * control_data.height) as usize
-    });
-
-    let data = read_from_shared_memory_fd(fd, size);
+    let data =
+        raw_pixel_byte_count(&control_data).and_then(|size| read_from_shared_memory_fd(fd, size));
 
     if let Err(err) = shm_unlink(path) {
         log::warn!("Failed to unlink kitty shm file (path = {path}): {err:?}");
@@ -854,6 +886,13 @@ fn read_from_shared_memory_fd(
     };
 
     let size = size.unwrap_or(file_size);
+
+    if size > MAX_KITTY_IMAGE_BYTES {
+        return Err(KittyDecodeError::PayloadTooLarge {
+            limit: MAX_KITTY_IMAGE_BYTES,
+        }
+        .into());
+    }
 
     if file_size < size {
         return Err(InvalidKittyPayload::ShmError(ShmError::ObjectTooSmall {
@@ -904,17 +943,66 @@ pub fn decode_kitty_image_data(
 ) -> Result<Vec<u8>, KittyDecodeError> {
     let mut result = payload;
 
+    if result.len() > MAX_KITTY_IMAGE_BYTES {
+        return Err(KittyDecodeError::PayloadTooLarge {
+            limit: MAX_KITTY_IMAGE_BYTES,
+        });
+    }
+
     if compressed {
-        let mut decoder = ZlibDecoder::new(&result[..]);
-        let mut decompresed_bytes = vec![];
-        match decoder.read_to_end(&mut decompresed_bytes) {
-            Ok(_) => {}
+        // Bounded: a few KB of zlib can inflate to gigabytes.
+        let decompressed = read_at_most(Ok(ZlibDecoder::new(&result[..])), MAX_KITTY_IMAGE_BYTES);
+        result = match decompressed {
+            Ok(Some(decompressed_bytes)) => decompressed_bytes,
+            Ok(None) => {
+                return Err(KittyDecodeError::PayloadTooLarge {
+                    limit: MAX_KITTY_IMAGE_BYTES,
+                });
+            }
             Err(err) => return Err(KittyDecodeError::InvalidCompression(err.to_string())),
         };
-        result = decompresed_bytes;
     }
 
     Ok(result)
+}
+
+/// Reads `reader` to the end, or returns `Ok(None)` as soon as it yields more
+/// than `limit` bytes, so an oversized source never gets fully buffered.
+fn read_at_most<R: Read>(
+    reader: std::io::Result<R>,
+    limit: usize,
+) -> std::io::Result<Option<Vec<u8>>> {
+    let mut data = vec![];
+    let read_limit = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
+    reader?.take(read_limit).read_to_end(&mut data)?;
+    Ok((data.len() <= limit).then_some(data))
+}
+
+/// The byte count a raw RGB/RGBA transmission's `s=`/`v=` describe, or `None`
+/// for PNG (whose dimensions come from the image itself). Errors if either
+/// dimension exceeds `MAX_KITTY_IMAGE_DIMENSION` (#876: these are untrusted
+/// `u32`s, and their product used to be computed in `u32` and overflow).
+fn raw_pixel_byte_count(
+    control_data: &KittyControlData,
+) -> Result<Option<usize>, InvalidKittyPayload> {
+    let image_format = match control_data.pixel_data_format {
+        KittyPixelDataFormat::Rgb24Bit => CustomImageFormat::Rgb,
+        KittyPixelDataFormat::Rgba32Bit => CustomImageFormat::Rgba,
+        KittyPixelDataFormat::Png => return Ok(None),
+    };
+    let (width, height) = (control_data.width, control_data.height);
+    let too_large = || {
+        InvalidKittyPayload::InvalidKittyImage(InvalidKittyImage::KittyRgbError(
+            KittyRgbError::DimensionsTooLarge { width, height },
+        ))
+    };
+    if width > MAX_KITTY_IMAGE_DIMENSION || height > MAX_KITTY_IMAGE_DIMENSION {
+        return Err(too_large());
+    }
+    match image_format.expected_byte_count(width, height) {
+        Some(count) if count <= MAX_KITTY_IMAGE_BYTES => Ok(Some(count)),
+        _ => Err(too_large()),
+    }
 }
 
 pub fn set_kitty_png_size(mut image: KittyImage) -> Result<KittyImage, KittyPngError> {
@@ -970,3 +1058,7 @@ pub fn create_kitty_ok_reply(image_id: u32) -> Vec<u8> {
 pub fn create_kitty_error_reply(image_id: u32, err: KittyError) -> Vec<u8> {
     create_kitty_reply(image_id, format!("{err:?}"))
 }
+
+#[cfg(test)]
+#[path = "kitty_tests.rs"]
+mod tests;

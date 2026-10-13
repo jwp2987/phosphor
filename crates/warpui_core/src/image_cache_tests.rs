@@ -710,3 +710,91 @@ fn test_different_fit_types_do_not_collide_in_rendered_image_cache() {
     assert_eq!(stretch.img.dimensions(), (8, 8));
     assert_ne!(cover.rgba_bytes(), stretch.rgba_bytes());
 }
+
+/// #876: `bytes_per_pixel * width * height` used to be computed in `u32` and
+/// overflowed (a panic with overflow checks, a silent wrap without them).
+#[test]
+fn expected_byte_count_does_not_overflow_u32() {
+    assert_eq!(CustomImageFormat::Rgba.expected_byte_count(4, 2), Some(32));
+    assert_eq!(CustomImageFormat::Rgb.expected_byte_count(4, 2), Some(24));
+    assert_eq!(
+        CustomImageFormat::Rgba.expected_byte_count(0, u32::MAX),
+        Some(0)
+    );
+
+    // 4 * 65536 * 65536 wraps to exactly 0 in u32.
+    #[cfg(target_pointer_width = "64")]
+    assert_eq!(
+        CustomImageFormat::Rgba.expected_byte_count(65_536, 65_536),
+        Some(1 << 34)
+    );
+    // 4 * (2^32 - 1)^2 does not even fit in a u64.
+    assert_eq!(
+        CustomImageFormat::Rgba.expected_byte_count(u32::MAX, u32::MAX),
+        None
+    );
+}
+
+/// #876: the exact width from the fuzz crash, with no pixel data, is an error
+/// rather than an arithmetic panic.
+#[test]
+fn prepend_custom_header_rejects_overflowing_dimensions() {
+    let result =
+        CustomImageHeader::prepend_custom_header(vec![], 2_555_555_558, 1, CustomImageFormat::Rgba);
+    assert!(
+        matches!(
+            result,
+            Err(CustomHeaderCreationError::ExpectedDataSizeMismatch {
+                actual_bytes: 0,
+                ..
+            }) | Err(CustomHeaderCreationError::DimensionsTooLarge { .. })
+        ),
+        "{result:?}"
+    );
+
+    // A wrapped-to-zero size must not be accepted with an empty payload.
+    let result =
+        CustomImageHeader::prepend_custom_header(vec![], 65_536, 65_536, CustomImageFormat::Rgba);
+    assert!(result.is_err(), "{result:?}");
+
+    let result = CustomImageHeader::prepend_custom_header(
+        vec![],
+        u32::MAX,
+        u32::MAX,
+        CustomImageFormat::Rgb,
+    );
+    assert!(result.is_err(), "{result:?}");
+}
+
+/// #876: a `warp-img:` header is reachable from any image payload a program
+/// prints (e.g. iTerm inline images), so its dimensions are untrusted too.
+#[test]
+fn custom_header_parse_rejects_overflowing_dimensions() {
+    // 4 * 65536 * 65536 wraps to 0 in u32, which used to match an empty body.
+    let err = CustomImageHeader::try_from_bytes(b"warp-img:rgba:65536:65536:")
+        .err()
+        .expect("an image whose size wraps to zero must be rejected");
+    assert!(
+        matches!(
+            err,
+            CustomHeaderParsingError::ExpectedDataSizeMismatch {
+                actual_bytes: 0,
+                ..
+            } | CustomHeaderParsingError::DimensionsTooLarge { .. }
+        ),
+        "{err:?}"
+    );
+
+    let err = CustomImageHeader::try_from_bytes(b"warp-img:rgba:4294967295:4294967295:")
+        .err()
+        .expect("u32::MAX x u32::MAX must be rejected");
+    assert!(
+        matches!(err, CustomHeaderParsingError::DimensionsTooLarge { .. }),
+        "{err:?}"
+    );
+
+    let (header, body) =
+        CustomImageHeader::try_from_bytes(b"warp-img:rgb:1:1:\x01\x02\x03").expect("valid");
+    assert_eq!((header.width, header.height), (1, 1));
+    assert_eq!(body, b"\x01\x02\x03");
+}

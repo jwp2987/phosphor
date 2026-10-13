@@ -1397,7 +1397,8 @@ impl ansi::Handler for GridHandler {
         if let Some((width, width_units)) = image.metadata.desired_width {
             desired_width_px = match width_units {
                 ITermImageDimensionUnit::Cell => {
-                    ((self.ansi_handler_state.cell_width as u32) * width) as f32
+                    // Saturating: `width` is an untrusted u32 from the OSC (#876).
+                    (self.ansi_handler_state.cell_width as u32).saturating_mul(width) as f32
                 }
                 ITermImageDimensionUnit::Percent => {
                     (self.columns() as f32)
@@ -1412,7 +1413,7 @@ impl ansi::Handler for GridHandler {
         if let Some((height, height_units)) = image.metadata.desired_height {
             desired_height_px = match height_units {
                 ITermImageDimensionUnit::Cell => {
-                    ((self.ansi_handler_state.cell_height as u32) * height) as f32
+                    (self.ansi_handler_state.cell_height as u32).saturating_mul(height) as f32
                 }
                 ITermImageDimensionUnit::Percent => {
                     self.ansi_handler_state.pane_size.y() * (height as f32) * 0.01

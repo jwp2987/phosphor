@@ -479,6 +479,26 @@ upstream's behavior is actually a defect rather than a preference.
   changed without dirty rows while the output grid had some also gets the full
   rescan; upstream ignored that change.
 
+- **Kitty/iTerm image sizes from the pty are bounded and computed without overflow**
+  (`#876`, 2026-10-13, `crates/warp_terminal/src/model/kitty.rs`,
+  `crates/warpui_core/src/image_cache.rs`, `app/src/terminal/model/grid/ansi_handler.rs`).
+  **Upstream:** multiplies the kitty `s=`/`v=` dimensions by bytes-per-pixel in `u32`
+  (`4111d08f9:crates/warpui_core/src/image_cache.rs:136` and `:253`,
+  `4111d08f9:crates/warp_terminal/src/model/kitty.rs:822`), the placement `c=`/`r=` and the
+  iTerm `width=`/`height=` cell counts by the cell size in `u32` (`kitty.rs:455-463`,
+  `4111d08f9:crates/warp_terminal/src/model/grid/ansi_handler.rs:1317`), and inflates zlib
+  payloads and reads `t=f`/`t=t` files with no size limit (`kitty.rs:745`, `:911`) -- all
+  byte-identical. **The defect:** every one of those numbers is printed by whatever runs in the
+  terminal. `\e_Gs=2555555558\e\\` panics with overflow checks on (found by cargo-fuzz); without
+  them `4*65536*65536` wraps to `0` and an empty payload is accepted as a 65536x65536 image; a
+  few KB of zlib or `t=f` on `/dev/zero` buffers until the process runs out of memory.
+  **We do:** byte counts are `u64` with `checked_mul` (`CustomImageFormat::expected_byte_count`)
+  and an overflow is an error reply; raw RGB/RGBA transmissions are rejected before any read or
+  decompression when `s`/`v` exceed `MAX_KITTY_IMAGE_DIMENSION` (10000), and every medium
+  (base64 payload, zlib output, file, shared memory) is capped at `MAX_KITTY_IMAGE_BYTES`
+  (400 MB) -- both kitty's own limits, so nothing kitty accepts is refused here; cell-count
+  products saturate. <!-- markers: keep:MAX_KITTY_IMAGE_DIMENSION keep:MAX_KITTY_IMAGE_BYTES keep:expected_byte_count -->
+
 - **Zero-command Agent Mode input fails closed instead of vacuously auto-approving**
   (`#746`, 2026-09-27, `app/src/ai/blocklist/permissions.rs`). **Upstream:**
   `can_autoexecute_command` decomposes the command line into `commands: Vec<String>` and
