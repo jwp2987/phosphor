@@ -1108,7 +1108,12 @@ upstream's behavior is actually a defect rather than a preference.
   `buffer_has_prose_colon_shape` helper the safety gate uses); a quoted head; a slash command
   head (`/plan`, `/model gpt`); any closed-class English function word among the other unquoted
   words (`the`, `it`, `and`, `sure`, `please`, `if`, `then`..., Unicode punctuation stripped);
-  and `exit`/`return`/`logout` with a non-numeric argument (`exit vim` ends the session).
+  the article `a` before a word of two or more letters/digits (`make a PR`, `make a README`;
+  `cat a b > c.txt`, `touch a`, `grep a file.txt` keep `a` as a file name — #831); an unquoted
+  word ending in a sentence comma (`rm -rf node_modules, reinstall` would run `rm -rf
+  "node_modules," reinstall`; flags like `cut -d,` / `awk -F,`, a bare `,` and quoted commas
+  are exempt — #831); and `exit`/`return`/`logout` with a non-numeric argument (`exit vim`
+  ends the session).
   Then **rule 1:** the head itself has command
   evidence (a curated command-word list, a one-off keyword, an explicit `./` `/` `~/` `../`
   path, or a completer `token_description` — an assignment prefix is *not* evidence) **and**
@@ -1120,21 +1125,32 @@ upstream's behavior is actually a defect rather than a preference.
   explicit path, or an assignment-prefixed word that is itself neither prose nor a function
   word (`FOO=bar mycmd` yes, `x=3 squared` and `DEBUG=1 why` no) **and** no later word reads as
   English prose — a stemmed English dictionary word, a word
-  from the StackOverflow vocabulary, or a Capitalised word like `kill Chrome`; ALL-CAPS
-  `DEBUG` is not prose, and neither is CamelCase (`PyTorch`) or a non-ASCII capital (`Émile`),
-  a known hole. A lone command word (`ls`) and the one-off NL word `yes` never qualify under
-  rule 2. **Residue, by design — both directions.** Recall: `cargo build --release`, `git
+  from the StackOverflow vocabulary, a regular derivation the dictionaries miss (a `re-` verb
+  on an English base, `reinstall`/`redeploy`/`reclone`, or an `-ly` adverb, `recursively`; six
+  or more lowercase letters — #831), a Capitalised word like `kill Chrome`, or an acronym used
+  as a noun (a closed list — `PR`, `CPU`, `RAM`, `PID`, `API`... — or any ALL-CAPS word with a
+  plural `s`, `TODOs`/`PRs` — #831); other ALL-CAPS words (`DEBUG`, `HOME`, `HEAD`, `README`:
+  signal, variable, ref and file names) are not prose, and neither is CamelCase (`PyTorch`) or
+  a non-ASCII capital (`Émile`), a known hole. A lone command word (`ls`) and the one-off NL
+  word `yes` never qualify under rule 2. **Residue, by design — both directions.** Recall: `cargo build --release`, `git
   push origin main` and similar "command word + English subcommand" lines are *not*
   pre-filtered (the classifier already handles them), and the function-word veto costs real
   commands with a bare function word as an argument — `grep -r for src`, `echo it > x`, `git
-  log --author me` — which likewise fall back to the classifier. Precision, i.e. prose that
+  log --author me` — which likewise fall back to the classifier; since #831 so do a bare
+  argument with a trailing comma (`echo a, b`), `a` before a word (`cat a bc`) and a
+  listed acronym (`kill -9 PID`). Measured on the #831 routing corpus (305 real commands, 193
+  requests, 137 adversarial inputs) and 425 lines of real shell history: 150/305 and 245/425
+  forced before and after, zero recall lost; prose forced to Shell went from 1/193 to 0/193
+  and adversarial from 40/137 to 16/137. Precision, i.e. prose that
   still runs: (1) the rule-1 residue class — terse, article-free imperatives joined by `;` or
   `&&` to a literal command, `clear cache; rm -rf node_modules`, `go home; rm -rf ~`, `kill
   time; sleep 600` — rule 1 checks the head and the operator's neighbor, not the words between
   them (the function-word veto is what catches the natural phrasing of the same requests); (2)
-  lowercase jargon after a known head (`kill chrome`, `watch netflix`, `ssh prod` run as
-  typed), including the per-keystroke prefix of a prose word (`kill th` is Shell for an instant
-  before `kill the` flips back); (3) an assignment-prefixed unknown head followed by jargon and
+  lowercase jargon after a known head (`kill chrome`, `watch netflix`, `ssh prod`, `env vars`,
+  `uptime stats` run as typed; so do an un-listed acronym or file-name-shaped noun, `find
+  TODO`, `make README.md`, and `rm -rf caches`, whose plural the dictionary misses),
+  including the per-keystroke prefix of a prose word (`kill th` is Shell for an instant before
+  `kill the` flips back); (3) an assignment-prefixed unknown head followed by jargon and
   no colon (`FOO=1 mytool frobnicate`). A substitution (`$(`, `<(`, `>(`) only counts as an
   operator when a command word opens it (`echo $(whoami)` yes, `make $(money) fast` no). The
   synchronous path is capped at 4 KiB; below that there is no further length bound. The

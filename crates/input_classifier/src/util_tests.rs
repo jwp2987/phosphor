@@ -481,6 +481,35 @@ fn test_is_unambiguous_shell_command_forces_shell_for_clear_commands() {
             "exit 1",
             "exit 1 && echo bye",
             "echo $TS > ~/t.txt",
+            // #831: ALL-CAPS signal, variable, ref and file names stay arguments; only acronyms
+            // used as nouns (`PR`, `CPU`, `TODOs`) read as prose.
+            "trap cleanup EXIT INT TERM",
+            "kill -s TERM 1234",
+            "echo $HOME",
+            "make VERBOSE=1",
+            "ls -la A",
+            "cat README",
+            "vim TODO",
+            "git diff HEAD",
+            "printenv PATH",
+            // #831: a comma that is a flag's value, a bare argument, quoted, or inside a word is
+            // not a sentence comma.
+            "sort -t, -k2 data.csv",
+            "cut -d, -f1 data.csv",
+            "cut -d , -f1 data.csv",
+            "awk -F, '{print $1}' data.csv",
+            "tr , ';' < in.csv",
+            "printf 'a,b'",
+            "mount -o remount,rw /",
+            "cp file{,.bak}",
+            // #831: `a` as a one-letter file name (last, or before a single letter / file name),
+            // and a `re-` word whose remainder is not English.
+            "touch a",
+            "make a",
+            "grep a file.txt",
+            "ls a b c",
+            "tar -cf a.tar a",
+            "git reflog",
         ] {
             assert!(
                 is_unambiguous_shell_command_for(buffer).await,
@@ -569,6 +598,32 @@ fn test_is_unambiguous_shell_command_leaves_prose_and_ambiguous_input_to_the_cla
             // An assignment-prefixed unknown head must itself be non-prose.
             "DEBUG=1 why",
             "x=3 squared",
+            // #831: the article `a` before a word, and acronyms used as English nouns. `kill -9
+            // PID` is a placeholder copied from documentation, not a runnable line.
+            "make a PR",
+            "make a README",
+            "make a CHANGELOG",
+            "open a PR",
+            "test PR 42",
+            "find TODOs",
+            "kill PID 4242",
+            "kill -9 PID",
+            "watch CPU",
+            "top 10 CPU hogs",
+            "free RAM",
+            // #831: a word ending in a sentence comma (bash would run `rm -rf "node_modules,"
+            // reinstall`), and `re-` / `-ly` derivations the dictionaries miss.
+            "rm -rf node_modules, reinstall",
+            "rm -rf dist, redeploy",
+            "rm -rf ~/proj, reclone",
+            "rm -rf .venv, recreate",
+            "rm *.log, regenerate",
+            "mv main.rs lib.rs, refactor",
+            "chmod -R 777 ~, fixperms",
+            "rm node_modules recursively",
+            "rm -rf node_modules reinstall",
+            "rm -rf node_modules -> reinstall",
+            "rm -rf node_modules + reinstall",
         ] {
             assert!(
                 !is_unambiguous_shell_command_for(buffer).await,

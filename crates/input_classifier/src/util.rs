@@ -347,12 +347,23 @@ lazy_static! {
     /// shell command line essentially never contains a bare `the`, `sure`, `it`, `and`... as an
     /// argument, while "make sure the build passes; rm -rf target and rebuild" or "find the bug;
     /// test it" are exactly the prose that otherwise has command shape. Deliberately excludes
-    /// `a` (`cat a b > c.txt` is a real command line).
+    /// `a` (`cat a b > c.txt` is a real command line); the article reading of `a` is handled by
+    /// [`is_prose_article`] instead (#831).
     static ref PROSE_FUNCTION_WORDS: HashSet<&'static str> = HashSet::from([
         "the", "an", "this", "that", "these", "those", "it", "its", "is", "are", "was", "were",
         "be", "been", "my", "me", "your", "our", "their", "them", "they", "we", "you", "i", "to",
         "for", "of", "with", "and", "into", "through", "why", "how", "what", "whether", "sure",
         "please", "should", "would", "could", "can", "then", "or", "if", "but", "so",
+    ]);
+
+    /// Acronyms that read as English nouns in a request ("open a PR", "watch CPU", "kill PID
+    /// 4242", "free RAM") and are not signal, variable, ref or file names a command line takes as
+    /// a bare argument (#831). [`is_prose_word`] otherwise treats every ALL-CAPS word as a shell
+    /// argument (`DEBUG`, `HOME`, `HEAD`, `README`), so this list is deliberately closed: it must
+    /// never contain a name that commonly appears unquoted in a command (`CI`, `IO`, `SYS`...).
+    static ref PROSE_ACRONYMS: HashSet<&'static str> = HashSet::from([
+        "PR", "MR", "CPU", "GPU", "RAM", "PID", "CVE", "API", "URL", "UI", "UX", "DNS", "SSL",
+        "TLS", "OOM", "VM", "LLM", "AI", "CLI", "IDE", "SDK",
     ]);
 }
 
@@ -688,13 +699,72 @@ fn is_function_word(word: &ShellWord) -> bool {
         )
 }
 
+/// True iff `words[index]` is the English article `a` rather than a one-letter file name (#831):
+/// an unquoted, lowercase `a` followed by an unquoted word of two or more ASCII letters and digits
+/// (`make a PR`, `make a README`, `open a PR`). A following single letter, flag, path, file name
+/// or quoted word leaves it an argument (`cat a b > c.txt`, `tar -xf a -C out`, `grep a
+/// file.txt`), and so does a trailing `a` (`touch a`, `make a`).
+fn is_prose_article(words: &[ShellWord], index: usize) -> bool {
+    let word = &words[index];
+    if word.quoted || word.text != "a" {
+        return false;
+    }
+    words.get(index + 1).is_some_and(|next| {
+        let text = strip_sentence_punctuation(&next.text);
+        !next.quoted && text.len() >= 2 && text.chars().all(|c| c.is_ascii_alphanumeric())
+    })
+}
+
+/// True iff `word` is an unquoted word ending in sentence comma punctuation (`node_modules,` in
+/// "rm -rf node_modules, reinstall"; `~,` in "chmod -R 777 ~, fixperms") (#831). A comma there
+/// separates clauses of a sentence; in a command line it would become part of the argument
+/// (`rm -rf "node_modules,"`), which nobody types on purpose. Flags that take a comma as their
+/// value (`cut -d,`, `awk -F,`, `sort -t,`), a bare `,` argument (`tr , x`) and quoted words
+/// (`printf 'a,'`) are not sentence commas.
+fn ends_in_sentence_comma(word: &ShellWord) -> bool {
+    !word.quoted
+        && word.text.ends_with(',')
+        && !word.text.starts_with('-')
+        && !word.text.trim_end_matches(',').is_empty()
+}
+
+/// True iff `text` (unquoted, sentence punctuation stripped) is an acronym used as an English
+/// noun (#831): one of the [`PROSE_ACRONYMS`], or any ALL-CAPS word with a lowercase plural `s`
+/// (`TODOs`, `PRs`, `PIDs`, `URLs`) — a spelling only prose produces.
+fn is_prose_acronym(text: &str) -> bool {
+    if PROSE_ACRONYMS.contains(text) {
+        return true;
+    }
+    text.strip_suffix('s')
+        .is_some_and(|stem| stem.len() >= 2 && stem.chars().all(|c| c.is_ascii_uppercase()))
+}
+
+/// True iff lowercase `text` is a regular English derivation that the dictionaries miss (#831):
+/// a `re-` verb whose base is English (`reinstall`, `redeploy`, `reclone`, `recreate`,
+/// `regenerate`) or an `-ly` adverb (`recursively`). Only plain lowercase ASCII words of six or
+/// more letters qualify, so short tool and package names (`redis`, `regex`) stay arguments; a
+/// longer `re-` name whose remainder is no English word (`reflog`, `readline`) does too.
+fn is_derived_english_word(text: &str) -> bool {
+    if text.len() < 6 || !text.chars().all(|c| c.is_ascii_lowercase()) {
+        return false;
+    }
+    if let Some(base) = text.strip_prefix("re") {
+        if is_ordinary_english_word(base) || is_word(base, WordDb::StackOverflow) {
+            return true;
+        }
+    }
+    text.ends_with("ly")
+}
+
 /// True iff `word` reads as a word of English prose rather than a command argument: unquoted, no
 /// shell syntax characters, no digits, and then either Capitalised (`Chrome`, `Netflix`, `Sarah` —
-/// an uppercase first letter followed by lowercase only; shell arguments are not proper nouns) or
-/// — after stripping trailing sentence punctuation — an ordinary English dictionary word
-/// (stemmed, via [`is_ordinary_english_word`]) or a word from the StackOverflow vocabulary.
-/// ALL-CAPS words (`DEBUG`, `HOME`: signal and variable names) and single letters (`cat a b`,
-/// `-x`'s bare `x`) are never prose; the function-word veto handles `i` on its own.
+/// an uppercase first letter followed by lowercase only; shell arguments are not proper nouns),
+/// an acronym used as a noun ([`is_prose_acronym`]: `PR`, `CPU`, `TODOs`), or — after stripping
+/// trailing sentence punctuation — an ordinary English dictionary word (stemmed, via
+/// [`is_ordinary_english_word`]), a word from the StackOverflow vocabulary, or a regular
+/// derivation of one ([`is_derived_english_word`]: `reinstall`, `recursively`). Other ALL-CAPS
+/// words (`DEBUG`, `HOME`, `README`: signal, variable and file names) and single letters (`cat a
+/// b`, `-x`'s bare `x`) are never prose; the function-word veto handles `i` on its own.
 fn is_prose_word(word: &ShellWord) -> bool {
     if word.quoted {
         return false;
@@ -707,6 +777,9 @@ fn is_prose_word(word: &ShellWord) -> bool {
     {
         return false;
     }
+    if is_prose_acronym(text) {
+        return true;
+    }
     let has_lowercase = text.chars().any(|c| c.is_lowercase());
     if text.starts_with(|c: char| c.is_ascii_uppercase())
         && has_lowercase
@@ -717,7 +790,9 @@ fn is_prose_word(word: &ShellWord) -> bool {
     if !has_lowercase && text.chars().any(|c| c.is_uppercase()) {
         return false;
     }
-    is_ordinary_english_word(text) || is_word(&text.to_lowercase(), WordDb::StackOverflow)
+    is_ordinary_english_word(text)
+        || is_word(&text.to_lowercase(), WordDb::StackOverflow)
+        || is_derived_english_word(text)
 }
 
 /// Fork-original (#808): a cheap, deterministic pre-filter run *before* any classifier (ML model,
@@ -742,8 +817,10 @@ fn is_prose_word(word: &ShellWord) -> bool {
 /// before the first operator ("run exactly this:", [`buffer_has_prose_colon_shape`]); a quoted
 /// head; a head that is a slash command rather than a path (`/plan`, `/model gpt`: starts with
 /// `/` with no further `/` or `.`); any [`PROSE_FUNCTION_WORDS`] member among the other unquoted
-/// words (`the`, `sure`, `it`, `and`...); and `exit` / `return` / `logout` with a non-numeric
-/// argument (`exit vim` ends the whole session, not vim).
+/// words (`the`, `sure`, `it`, `and`...); the article `a` before a word (`make a PR`,
+/// [`is_prose_article`]); a word ending in a sentence comma (`rm -rf node_modules, reinstall`,
+/// [`ends_in_sentence_comma`]); and `exit` / `return` / `logout` with a non-numeric argument
+/// (`exit vim` ends the whole session, not vim).
 ///
 /// **Rule 1 (operator):** the head itself carries command evidence — a known command word
 /// ([`UNAMBIGUOUS_SHELL_COMMAND_WORDS`] or a one-off keyword), an explicit path (`./x`, `/x`,
@@ -800,7 +877,10 @@ pub fn is_unambiguous_shell_command(input: &ParsedTokensSnapshot) -> bool {
         return false;
     }
     let remaining = &words[first_index + 1..];
-    if remaining.iter().any(is_function_word) {
+    if remaining.iter().any(is_function_word)
+        || (0..remaining.len()).any(|index| is_prose_article(remaining, index))
+        || remaining.iter().any(ends_in_sentence_comma)
+    {
         return false;
     }
     // `exit vim` / `exit tmux`: bash says "numeric argument required" and then exits the whole
