@@ -100,6 +100,10 @@ impl EarlyOutput {
         log::info!("Configured typeahead mode as {:?}", self.mode);
     }
 
+    pub fn typeahead_mode(&self) -> TypeaheadMode {
+        self.mode
+    }
+
     /// Returns a reference to the current typeahead.
     pub fn typeahead(&self) -> &str {
         &self.typeahead

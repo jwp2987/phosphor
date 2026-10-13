@@ -52,6 +52,7 @@ use super::secrets::{RespectObfuscatedSecrets, SecretAndHandle};
 use super::selection::ScrollDelta;
 use super::session::{BootstrapSessionType, InBandCommandOutputReceiver, SessionId};
 use super::tmux::commands::TmuxCommand;
+use super::early_output::TypeaheadMode;
 use super::typeahead_handoff::TypeaheadHandoff;
 use super::{
     super::{AltScreen, BlockList},
@@ -2708,6 +2709,7 @@ impl TerminalModel {
             // A block nobody started is a line the shell read from the tty itself: typeahead.
             let active_block = self.block_list.active_block();
             let shell_started = self.block_list.is_bootstrapped()
+                && self.block_list.early_output().typeahead_mode() == TypeaheadMode::ShellReported
                 && !active_block.started()
                 && !active_block.is_in_band_command_block()
                 && !self.shared_session_status.is_viewer();

@@ -61,6 +61,14 @@ pub enum ActiveDecision {
     Legacy,
     /// Drain queued writes without a request.
     Drain,
+    /// Drain queued writes (the shell's line holds no user bytes) and, if no precmd or preexec
+    /// arrives for a while, reset the counts and decide again: an Enter the counts consider
+    /// queued may have been consumed by a program (`read`, a password prompt, a subshell's
+    /// `exit`) and will never be answered by a prompt.
+    DrainAndWait {
+        /// The activity generation a stale-count reset is valid for.
+        activity_generation: u64,
+    },
     /// The editor took over without a request, because no user byte can be in the shell's line.
     /// Drain queued writes.
     Committed,
@@ -96,9 +104,8 @@ pub enum DeadlineOutcome {
     Stale,
     /// No report and no Enter: the editor simply keeps input.
     ReleaseEditor,
-    /// Run the deferred Enter without the report; a late report will be stashed.
-    SubmitWithoutReport,
-    /// The deferred Enter ran but wrote no command. Hand the held keys back to the editor.
+    /// No report in time, or the deferred Enter ran but wrote no command. Hand the held keys back
+    /// to the editor; the deferred Enter is not run, so a fragment is never submitted.
     GiveUp { held: Vec<u8> },
 }
 
@@ -309,7 +316,9 @@ impl TypeaheadHandoff {
                         self.state = HandoffState::EditorOwned;
                         ActiveDecision::Committed
                     } else {
-                        ActiveDecision::Drain
+                        ActiveDecision::DrainAndWait {
+                            activity_generation: self.activity_generation,
+                        }
                     }
                 } else if !can_request {
                     self.state = HandoffState::EditorOwned;
@@ -331,15 +340,28 @@ impl TypeaheadHandoff {
     /// A routed user write. In [`HandoffState::PtyOwned`] it is counted, both as line content
     /// and as in flight; in [`HandoffState::HoldAfterEnter`] it is held.
     pub fn on_user_bytes(&mut self, bytes: &[u8]) -> UserBytesRoute {
+        self.route_user_bytes(bytes, true)
+    }
+
+    /// A routed user write while a full-screen program (the alternate screen) runs. It reads the
+    /// tty raw, so the bytes never reach the shell's line: they are in flight, but neither line
+    /// content nor Enters for the shell (vim's `:wq\r` is answered by no prompt).
+    pub fn on_user_bytes_to_full_screen_program(&mut self, bytes: &[u8]) -> UserBytesRoute {
+        self.route_user_bytes(bytes, false)
+    }
+
+    fn route_user_bytes(&mut self, bytes: &[u8], reaches_shell_line: bool) -> UserBytesRoute {
         match &mut self.state {
             HandoffState::PtyOwned {
                 wrote_user_bytes,
                 enters_written,
                 ..
             } => {
-                let (enters, dirty) = scan_line_terminators(bytes, *wrote_user_bytes);
-                *enters_written = enters_written.saturating_add(enters);
-                *wrote_user_bytes = dirty;
+                if reaches_shell_line {
+                    let (enters, dirty) = scan_line_terminators(bytes, *wrote_user_bytes);
+                    *enters_written = enters_written.saturating_add(enters);
+                    *wrote_user_bytes = dirty;
+                }
                 self.writes_in_flight = self.writes_in_flight.saturating_add(1);
                 UserBytesRoute::WriteCounted
             }
@@ -425,11 +447,7 @@ impl TypeaheadHandoff {
                 self.state = HandoffState::EditorOwned;
                 DeadlineOutcome::ReleaseEditor
             }
-            Owner::Hold { released: false } => {
-                self.mark_released();
-                DeadlineOutcome::SubmitWithoutReport
-            }
-            Owner::Hold { released: true } => match mem::take(&mut self.state) {
+            Owner::Hold { .. } => match mem::take(&mut self.state) {
                 HandoffState::HoldAfterEnter { held, .. } => DeadlineOutcome::GiveUp { held },
                 other => {
                     self.state = other;
@@ -490,6 +508,21 @@ impl TypeaheadHandoff {
         }
     }
 
+    /// Whether Ctrl-D (EOT) should go to the pty: a command may be running or queued to read it,
+    /// or the shell's line holds typed bytes. At the prompt with an empty line, EOT would exit the
+    /// shell, so it is not written.
+    pub fn ctrl_d_reaches_a_reader(&self) -> bool {
+        match self.owner() {
+            Owner::Pty {
+                wrote_user_bytes,
+                enters_written,
+                precmds_seen,
+            } => wrote_user_bytes || enters_written > precmds_seen,
+            Owner::Hold { .. } => true,
+            Owner::Editor | Owner::AwaitingReport => false,
+        }
+    }
+
     /// Whether the pty owns input at the prompt with user bytes in the shell's line, so only a
     /// request can hand input to the editor.
     pub fn needs_request_at_prompt(&self) -> bool {
@@ -508,6 +541,33 @@ impl TypeaheadHandoff {
             *released = true;
         }
     }
+}
+
+/// The text of keys handed back to the editor: printable characters only. Escape sequences
+/// (arrow and function keys) are dropped whole rather than leaving their `[D` behind.
+pub fn printable_text(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let mut printable = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            // CSI (`ESC [`) and SS3 (`ESC O`) run to a final byte in `@`..=`~`; any other escape
+            // is ESC plus one character.
+            match chars.next() {
+                Some('[') | Some('O') => {
+                    for next in chars.by_ref() {
+                        if ('@'..='~').contains(&next) {
+                            break;
+                        }
+                    }
+                }
+                Some(_) | None => {}
+            }
+        } else if !ch.is_control() {
+            printable.push(ch);
+        }
+    }
+    printable
 }
 
 /// Counts line terminators in `bytes` and returns them with whether the line is still dirty

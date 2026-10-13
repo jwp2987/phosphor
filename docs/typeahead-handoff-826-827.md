@@ -228,13 +228,16 @@ on bash, zsh and fish. The pass criterion is 50/50 lines and 5/5 uncorrupted.
 `app/src/terminal/model/typeahead_handoff.rs` is a pure state machine owned by
 `TerminalModel` (so every routing and request decision is made under the model
 lock). It engages only for commands submitted from the input editor
-(`CommandExecutionSource::User`); agent, shared-session, in-band and
-queued-prompt-panel commands keep the old routing.
+(`CommandExecutionSource::User`), and only in shells that report their line
+(zsh, bash >= 4, fish, pwsh; not macOS's bash 3.2, which keeps the old routing
+because nothing could hand keys left in its line back to the editor). Agent,
+shared-session, in-band and queued-prompt-panel commands keep the old routing.
+`ZAP_UNSTABLE_FEATURES=all` does not enable it; it must be named.
 
 | state | entered on | keys typed on the terminal | focus |
 |---|---|---|---|
 | `EditorOwned` | start; a commit; a report | old routing (flag-off predicates) | old rules |
-| `PtyOwned { wrote_user_bytes, enters_written, precmds_seen }` | `write_command` accepted; a preexec for a block nobody started | every key class to the pty, counted (`\r`/`\n` = Enter) | terminal |
+| `PtyOwned { wrote_user_bytes, enters_written, precmds_seen }` | `write_command` accepted; a preexec for a block nobody started | every key class to the pty, counted (`\r`/`\n` = Enter; not counted as shell lines on the alternate screen) | terminal |
 | `AwaitingReport` | `ESC i` written | old routing (the editor has focus) | old rules (editor) |
 | `HoldAfterEnter { held, released }` | Enter in the editor while `AwaitingReport` | held, in order | terminal |
 
@@ -247,7 +250,10 @@ Transitions out of `PtyOwned`:
   in flight; otherwise wait, hold `PtyController`'s queued writes (an in-band
   command's kill prefix would destroy the unreported line), and retry when the
   in-flight count reaches zero or after 250 ms with no precmd/preexec (stale
-  counts are then reset). A shell without input reporting commits instead.
+  counts are then reset). With nothing in the shell's line but an Enter still
+  unanswered, queued writes drain and the same 250 ms quiet period resets the
+  counts and decides again: an Enter consumed by a program (`read`, a password
+  prompt, a subshell's `exit`) is answered by no prompt.
 - Ctrl-C: written to the pty; a running command's queued lines die with it, so
   the counts reset; at the prompt the editor takes over after 250 ms or the next
   precmd, whichever comes first. If the user typed after the Ctrl-C and no prompt
@@ -255,19 +261,38 @@ Transitions out of `PtyOwned`:
   decision, since no line-editor activation will.
 - A command the hand-off does not own (a queued-prompt-panel, agent or in-band
   command) written while the pty owns input still has its Enter counted, so its
-  precmd cannot make lines the user queued ahead of it look answered.
+  precmd cannot make lines the user queued ahead of it look answered. If the
+  shell's line may hold unreported user bytes, it is queued until the request,
+  which is written ahead of it, instead of killing them.
 - Ctrl-C while keys are held behind a deferred Enter cancels the deferred Enter
   and drops the held keys; nothing is written to the pty.
+- Ctrl-D goes to the pty only when something reads it (a command running or
+  queued, or bytes in the shell's line); EOT on an empty shell line would exit
+  the shell.
 
 Report handling: inserted at the front of the editor (the user's cursor stays
-put relative to their own text) and the editor keeps input. Enter while it is
-outstanding is deferred; the report (or a 500 ms deadline) runs it, then the held
-keys are written after the command as its typeahead. The 500 ms deadline runs from
-when the view handles the request (`PtyControllerEvent::TypeaheadHandoffChanged`),
-not from the Enter, so a deferred Enter waits at most what is left of it. A late
-report is stashed and
-inserted when the editor next owns input; a deferred Enter that wrote no command
-hands the held keys back to the editor after a second deadline.
+put relative to their own text) and the editor keeps input. Any Enter while it is
+outstanding is deferred, before menus or natural-language detection see the
+buffer (which holds only what was typed after the request); the report runs it,
+then the held keys are written after the command as its typeahead. If no report
+arrives within 1 s the deferred Enter is not run (it would submit a fragment): the
+held keys go into the editor and the late report is inserted at its front when it
+comes. The deadline runs from when the view handles the request
+(`PtyControllerEvent::TypeaheadHandoffChanged`), not from the Enter. A report that
+arrives after the next command was written is stashed and inserted when the editor
+next owns input; a deferred Enter that wrote no command hands the held keys back
+too. Keys handed back keep printable characters only (escape sequences are
+dropped whole).
+
+Known gaps, not addressed:
+- keybindings gated on the `LongRunningCommand` context (e.g. shift-enter) are
+  inactive while the pty owns input but the command is not yet long-running;
+- held keys skip `emit_non_editor_typed_event`, so synced panes and shared-session
+  viewers do not see them; synced follower panes write without counting;
+- bash's prompt-mode switch (`\ep`/`\ew` plus an empty command) writes a `\r` the
+  counts do not see (covered by the quiet-period reset);
+- a request after the quiet period can still land in cooked mode if the shell was
+  merely slow (no prompt within 250 ms of the last hook).
 
 Gated model fixes (flag on only): additive reports, precmd keeps a shell-reported
 report the editor has not inserted (input-matched typeahead, which can hold a
@@ -286,9 +311,6 @@ across the boundary):
   250 ms settle and reinitializes the editor under the user;
 - text typed into the shell's line between the prompt and the request is echoed
   by the shell and can show briefly as background output;
-- a command the hand-off does not own, written while the shell's line holds
-  unreported user bytes, still kills them with its kill prefix (its Enter is
-  counted, so no request goes out in cooked mode);
 - `\ei` makes ESC a key prefix in the shells' vi keymaps (keyseq timeout on a bare
   ESC typed into the shell's own line editor);
 - a request still waits on stale counts for 250 ms after a line the shell never

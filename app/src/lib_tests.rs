@@ -298,3 +298,16 @@ fn ctrl_c_cancels_third_party_harness_has_a_default_enable_path() {
          or the Cargo feature fell out of `default`"
     );
 }
+
+/// `ZAP_UNSTABLE_FEATURES=all` must not opt anyone into the typeahead hand-off (#826/#827); it
+/// stays reachable by name.
+#[test]
+fn typeahead_handoff_is_named_only_among_unstable_features() {
+    assert!(UNSTABLE_FEATURES_NAMED_ONLY.contains(&FeatureFlag::TypeaheadHandoff));
+    assert!(
+        UNSTABLE_FEATURES
+            .iter()
+            .any(|(name, flag)| *name == "typeahead_handoff"
+                && *flag == FeatureFlag::TypeaheadHandoff)
+    );
+}

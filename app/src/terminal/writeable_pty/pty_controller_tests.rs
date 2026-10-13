@@ -1445,6 +1445,11 @@ mod typeahead_handoff {
     /// A zsh session at its prompt, with the line editor active.
     fn harness(app: &mut App) -> Harness {
         let model = terminal_model();
+        model
+            .lock()
+            .block_list_mut()
+            .early_output_mut()
+            .init_session(&zsh_session_info());
         model.lock().start_command_execution();
         shell_runs_a_command(&model, "bootstrap");
         let (model_events_tx, model_events_rx) = async_channel::unbounded();
@@ -1706,6 +1711,49 @@ mod typeahead_handoff {
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
             let harness = harness(&mut app);
             submit(&mut app, &harness, "sleep 1");
+            user_types(&mut app, &harness, b"a\r");
+            shell_runs_a_command(&harness.model, "sleep 1");
+            line_editor_becomes_active(&mut app, &harness);
+
+            let outcome = harness.controller.update(&mut app, |controller, ctx| {
+                controller.write_command(
+                    "queued",
+                    SHELL,
+                    CommandExecutionSource::QueuedCommand,
+                    ctx,
+                )
+            });
+            assert_eq!(outcome, StartCommandOutcome::Accepted);
+            assert_eq!(
+                written(&harness).last(),
+                Some(&bytes_to_execute_command("queued", SHELL, false)),
+                "nothing typed is in the shell's line, so the command goes out at once"
+            );
+
+            for command in ["a", "queued"] {
+                shell_runs_a_command(&harness.model, command);
+                line_editor_becomes_active(&mut app, &harness);
+                assert!(
+                    !written(&harness).contains(&REQUEST.to_vec()),
+                    "no request while the shell still has lines to run"
+                );
+            }
+            assert_eq!(
+                harness.model.lock().typeahead_handoff().state(),
+                &HandoffState::EditorOwned
+            );
+        });
+    }
+
+    /// A queued-prompts-panel command fired while the user's unreported typeahead may be in the
+    /// shell's line waits for the request, which goes out ahead of it, instead of killing that
+    /// typeahead with its kill prefix.
+    #[test]
+    fn a_queued_command_waits_behind_an_unreported_user_line() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            submit(&mut app, &harness, "sleep 1");
             user_types(&mut app, &harness, b"a\rb");
             shell_runs_a_command(&harness.model, "sleep 1");
             line_editor_becomes_active(&mut app, &harness);
@@ -1719,18 +1767,22 @@ mod typeahead_handoff {
                 )
             });
             assert_eq!(outcome, StartCommandOutcome::Accepted);
-
-            for command in ["a", "queued"] {
-                shell_runs_a_command(&harness.model, command);
-                line_editor_becomes_active(&mut app, &harness);
-                assert!(
-                    !written(&harness).contains(&REQUEST.to_vec()),
-                    "no request while the shell still has lines to run"
-                );
-            }
             assert_eq!(
-                harness.model.lock().typeahead_handoff().state(),
-                &HandoffState::EditorOwned
+                written(&harness).len(),
+                2,
+                "the command must not reach the shell's line while `b` is unreported"
+            );
+
+            // The shell runs `a`; at its prompt `b` is the line: request it, then the command.
+            shell_runs_a_command(&harness.model, "a");
+            line_editor_becomes_active(&mut app, &harness);
+            let written = written(&harness);
+            assert_eq!(
+                &written[2..],
+                &[
+                    REQUEST.to_vec(),
+                    bytes_to_execute_command("queued", SHELL, false)
+                ]
             );
         });
     }
@@ -1769,6 +1821,35 @@ mod typeahead_handoff {
             assert_eq!(
                 harness.model.lock().typeahead_handoff().state(),
                 &HandoffState::AwaitingReport
+            );
+        });
+    }
+
+    /// A shell that cannot report its line keeps the pre-hand-off routing: nothing could hand
+    /// keys left in its line back to the editor.
+    #[test]
+    fn a_shell_without_input_reporting_does_not_engage_the_handoff() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            let mut bash_3_2 = SessionInfo::new_for_test();
+            bash_3_2.shell = Shell::new(
+                ShellType::Bash,
+                Some("3.2".to_owned()),
+                None,
+                Default::default(),
+                None,
+            );
+            harness
+                .model
+                .lock()
+                .block_list_mut()
+                .early_output_mut()
+                .init_session(&bash_3_2);
+            submit(&mut app, &harness, "sleep 1");
+            assert_eq!(
+                harness.model.lock().typeahead_handoff().state(),
+                &HandoffState::EditorOwned
             );
         });
     }

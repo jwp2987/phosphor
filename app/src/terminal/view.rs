@@ -489,7 +489,7 @@ use crate::terminal::model::terminal_model::{
     BlockSelectionCardinality, SelectedBlocks, WithinModel,
 };
 use crate::terminal::model::typeahead_handoff::{
-    DeadlineOutcome, InterruptOutcome, ReportDisposition, UserBytesRoute,
+    DeadlineOutcome, InterruptOutcome, ReportDisposition, UserBytesRoute, printable_text,
 };
 use crate::terminal::model::{
     ansi::{ClearMode, Handler},
@@ -9004,7 +9004,7 @@ impl TerminalView {
         if !self.is_input_box_visible(&model, ctx)
             || !model.block_list().is_bootstrapped()
             || (FeatureFlag::TypeaheadHandoff.is_enabled()
-                && model.typeahead_handoff().routes_keys_to_pty())
+                && model.typeahead_handoff().ctrl_d_reaches_a_reader())
         {
             // This is relevant for the case where the user enters CTRL-d while the
             // ssh wrapper command is being run. The EOT character doesn't stop
@@ -9380,7 +9380,13 @@ impl TerminalView {
                     .mark_received_user_input();
             }
             if FeatureFlag::TypeaheadHandoff.is_enabled() {
-                terminal_model.typeahead_handoff_mut().on_user_bytes(&bytes)
+                if terminal_model.is_alt_screen_active() {
+                    terminal_model
+                        .typeahead_handoff_mut()
+                        .on_user_bytes_to_full_screen_program(&bytes)
+                } else {
+                    terminal_model.typeahead_handoff_mut().on_user_bytes(&bytes)
+                }
             } else {
                 UserBytesRoute::Write
             }
@@ -9720,7 +9726,7 @@ impl TerminalView {
         /// How long a typeahead request may go unanswered before the editor stops waiting for it.
         /// The shell answers from its line editor without running anything, so a healthy report
         /// takes a round trip, not work.
-        const TYPEAHEAD_REPORT_DEADLINE: Duration = Duration::from_millis(500);
+        const TYPEAHEAD_REPORT_DEADLINE: Duration = Duration::from_millis(1000);
         ctx.spawn(
             Timer::after(TYPEAHEAD_REPORT_DEADLINE),
             move |me, _, ctx| {
@@ -9744,16 +9750,8 @@ impl TerminalView {
             DeadlineOutcome::ReleaseEditor => {
                 self.redetermine_terminal_focus(ctx);
             }
-            DeadlineOutcome::SubmitWithoutReport => {
-                self.submit_deferred_enter(ctx);
-                // Armed again so a submit that writes no command hands the held keys back.
-                self.arm_typeahead_report_deadline(request_generation, ctx);
-            }
             DeadlineOutcome::GiveUp { held } => {
-                let text: String = String::from_utf8_lossy(&held)
-                    .chars()
-                    .filter(|ch| !ch.is_control())
-                    .collect();
+                let text = printable_text(&held);
                 if !text.is_empty() {
                     self.input
                         .update(ctx, |input, ctx| input.system_insert(&text, ctx));
@@ -9769,22 +9767,20 @@ impl TerminalView {
         /// editor is not reinitialized under the user after it took over.
         const INTERRUPT_SETTLE: Duration = Duration::from_millis(250);
         let outcome = self.model.lock().typeahead_handoff_mut().on_interrupt();
-        if outcome == InterruptOutcome::AtPrompt {
-            ctx.spawn(Timer::after(INTERRUPT_SETTLE), |me, _, ctx| {
-                me.commit_typeahead_handoff_at_prompt(ctx);
-                // Keys typed since the interrupt are in the shell's line, and zsh usually runs no
-                // prompt cycle after ^C at the prompt, so no line-editor activation will come to
-                // ask for them.
-                let needs_request = me
-                    .model
-                    .lock()
-                    .typeahead_handoff()
-                    .needs_request_at_prompt();
-                if needs_request {
-                    ctx.emit(Event::RetryTypeaheadHandoffRequest);
-                }
-            });
+        if outcome == InterruptOutcome::NotOwned {
+            return;
         }
+        ctx.spawn(Timer::after(INTERRUPT_SETTLE), |me, _, ctx| {
+            me.commit_typeahead_handoff_at_prompt(ctx);
+            // zsh usually runs no prompt cycle after ^C at the prompt, so no line-editor
+            // activation will come to ask for keys typed since, or to notice that the counts were
+            // off because an earlier Enter was consumed by a program. The controller re-decides
+            // only if the shell's line editor is active, i.e. no command is running.
+            let still_pty_owned = me.model.lock().typeahead_handoff().is_pty_owned();
+            if still_pty_owned {
+                ctx.emit(Event::RetryTypeaheadHandoffRequest);
+            }
+        });
     }
 
     /// This function is invoked every time there is some form of view event

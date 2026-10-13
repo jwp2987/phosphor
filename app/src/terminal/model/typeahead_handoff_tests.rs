@@ -216,7 +216,7 @@ fn two_lines_typed_across_the_boundary_run_once_each_in_order() {
         match handoff.on_line_editor_active(true, true) {
             ActiveDecision::SendRequest => requests += 1,
             ActiveDecision::Committed => break,
-            ActiveDecision::Drain => {}
+            ActiveDecision::DrainAndWait { .. } => {}
             other => panic!("unexpected decision {other:?}"),
         }
         handoff.on_preexec(true);
@@ -252,25 +252,38 @@ fn deferred_enter_writes_report_then_command_then_held_keys() {
 }
 
 #[test]
-fn report_deadline_submits_and_a_late_report_is_stashed() {
+fn report_deadline_gives_up_without_submitting_a_fragment() {
     let mut handoff = awaiting_report();
     let generation = handoff.take_report_deadline_to_arm().unwrap();
     assert!(handoff.defer_enter());
+    handoff.on_user_bytes(b"ls");
     assert_eq!(
         handoff.on_report_deadline(generation),
-        DeadlineOutcome::SubmitWithoutReport
+        DeadlineOutcome::GiveUp {
+            held: b"ls".to_vec()
+        },
+        "the editor holds only what was typed after the request; submitting it would run a \
+         fragment (#827)"
     );
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+    // The late report still lands at the front of the editor.
+    assert_eq!(handoff.on_report(), ReportDisposition::InsertLegacy);
+    assert_eq!(
+        handoff.on_report_deadline(generation),
+        DeadlineOutcome::Stale
+    );
+}
+
+#[test]
+fn a_report_after_the_deferred_command_was_written_is_stashed() {
+    let mut handoff = awaiting_report();
+    assert!(handoff.defer_enter());
+    assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
     assert!(handoff.on_command_written().is_empty());
     assert_eq!(
         handoff.on_report(),
         ReportDisposition::Stash,
-        "a report that arrives after the deferred command was written must not be inserted \
-         into the editor that still shows that command"
-    );
-    // The command's deadline fires again: its request was answered by the command write.
-    assert_eq!(
-        handoff.on_report_deadline(generation),
-        DeadlineOutcome::Stale
+        "a report arriving while the editor still shows the submitted command must wait"
     );
 }
 
@@ -317,10 +330,86 @@ fn a_deadline_armed_for_an_earlier_request_is_void() {
     assert_eq!(handoff.state(), &HandoffState::AwaitingReport);
 }
 
+/// The counts expect a prompt for every Enter. An Enter consumed by something other than the
+/// shell's line editor is answered by none, so with nothing in the shell's line the decision is
+/// to drain and, after a quiet period, reset and decide again.
+fn consumed_enter_is_released_after_a_quiet_period(handoff: &mut TypeaheadHandoff) {
+    // The submitted command's own prompt.
+    handoff.on_precmd();
+    let ActiveDecision::DrainAndWait {
+        activity_generation,
+    } = handoff.on_line_editor_active(true, true)
+    else {
+        panic!("an unanswered Enter must arm the quiet period");
+    };
+    assert!(handoff.reset_stale_counts(activity_generation));
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Committed
+    );
+}
+
 #[test]
-fn stale_counts_reset_after_a_quiet_period_and_not_after_activity() {
+fn read_answered_with_y_and_enter_does_not_keep_the_pty() {
+    // `read x`, answered `y` Enter.
     let mut handoff = after_submit();
-    // `read x` consumes the Enter; no prompt follows it.
+    type_and_flush(&mut handoff, b"y\r");
+    consumed_enter_is_released_after_a_quiet_period(&mut handoff);
+}
+
+#[test]
+fn a_password_and_enter_do_not_keep_the_pty() {
+    // `sudo true`: the password and Enter go to sudo, which echoes nothing.
+    let mut handoff = after_submit();
+    type_and_flush(&mut handoff, b"hunter2\r");
+    consumed_enter_is_released_after_a_quiet_period(&mut handoff);
+}
+
+#[test]
+fn exit_from_a_subshell_does_not_keep_the_pty() {
+    // `bash`, then `exit` Enter typed into the inner (unwarpified) shell.
+    let mut handoff = after_submit();
+    type_and_flush(&mut handoff, b"exit\r");
+    consumed_enter_is_released_after_a_quiet_period(&mut handoff);
+}
+
+#[test]
+fn vim_write_quit_is_not_counted_as_a_shell_line() {
+    // `vim`, then `:wq` Enter on the alternate screen.
+    let mut handoff = after_submit();
+    assert_eq!(
+        handoff.on_user_bytes_to_full_screen_program(b":wq\r"),
+        UserBytesRoute::WriteCounted
+    );
+    assert_eq!(handoff.on_user_write_flushed(), 0);
+    handoff.on_precmd();
+    assert!(
+        handoff.try_commit_at_prompt(),
+        "vim's own Enter is answered by no prompt and must not hold the pty"
+    );
+}
+
+#[test]
+fn a_stale_count_reset_is_void_after_activity() {
+    let mut handoff = after_submit();
+    type_and_flush(&mut handoff, b"y\r");
+    handoff.on_precmd();
+    let ActiveDecision::DrainAndWait {
+        activity_generation,
+    } = handoff.on_line_editor_active(true, true)
+    else {
+        panic!("an unanswered Enter must arm the quiet period");
+    };
+    handoff.on_preexec(true);
+    assert!(
+        !handoff.reset_stale_counts(activity_generation),
+        "a preexec since the wait proves the shell is still working through the queue"
+    );
+}
+
+#[test]
+fn a_stale_count_reset_with_user_bytes_in_the_line_requests() {
+    let mut handoff = after_submit();
     type_and_flush(&mut handoff, b"y\rz");
     handoff.on_precmd();
     let ActiveDecision::Wait {
@@ -329,25 +418,7 @@ fn stale_counts_reset_after_a_quiet_period_and_not_after_activity() {
     else {
         panic!("a queued line must block the request");
     };
-
-    let mut busy = TypeaheadHandoff::default();
-    busy.on_command_written();
-    type_and_flush(&mut busy, b"y\rz");
-    busy.on_precmd();
-    let ActiveDecision::Wait {
-        activity_generation: busy_generation,
-    } = busy.on_line_editor_active(true, true)
-    else {
-        panic!("a queued line must block the request");
-    };
-    busy.on_preexec(true);
-    assert!(
-        !busy.reset_stale_counts(busy_generation),
-        "a preexec since the wait proves the shell is still working through the queue"
-    );
-
     assert!(handoff.reset_stale_counts(activity_generation));
-    assert_eq!(handoff.writes_in_flight(), 0);
     assert_eq!(
         handoff.on_line_editor_active(true, true),
         ActiveDecision::SendRequest
@@ -434,9 +505,11 @@ fn a_queued_command_written_behind_typeahead_keeps_its_precmd_from_running_ahead
     // The editor's command and `a` reach their prompts: the queued command has not.
     for _ in 0..2 {
         handoff.on_precmd();
-        assert_eq!(
-            handoff.on_line_editor_active(true, true),
-            ActiveDecision::Drain,
+        assert!(
+            matches!(
+                handoff.on_line_editor_active(true, true),
+                ActiveDecision::DrainAndWait { .. }
+            ),
             "a request now would be read in cooked mode, behind the queued command"
         );
     }
@@ -518,4 +591,24 @@ fn ctrl_c_while_holding_cancels_the_deferred_enter_and_held_keys() {
     assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
     assert!(handoff.cancel_deferred_enter());
     assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+}
+
+#[test]
+fn ctrl_d_reaches_the_pty_only_when_something_reads_it() {
+    let mut handoff = after_submit();
+    assert!(handoff.ctrl_d_reaches_a_reader(), "the command is running");
+    handoff.on_precmd();
+    assert!(
+        !handoff.ctrl_d_reaches_a_reader(),
+        "EOT on the shell's empty line would exit the shell"
+    );
+    type_and_flush(&mut handoff, b"ab");
+    assert!(handoff.ctrl_d_reaches_a_reader());
+    assert!(!TypeaheadHandoff::default().ctrl_d_reaches_a_reader());
+}
+
+#[test]
+fn given_back_keys_drop_escape_sequences_and_controls() {
+    assert_eq!(printable_text(b"ls\x1b[D-l\x1bOA\r\x7f\x1bbx"), "ls-lx");
+    assert_eq!(printable_text("é\x1b[1;5C".as_bytes()), "é");
 }

@@ -12982,3 +12982,102 @@ fn typeahead_handoff_ctrl_c_cancels_a_deferred_enter() {
         });
     })
 }
+
+/// The view's precmd handler hands input back to the editor when nothing was typed: no
+/// request, and the terminal stops owning keys.
+#[test]
+fn typeahead_handoff_precmd_hands_back_when_nothing_was_typed() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                let handoff = model.typeahead_handoff_mut();
+                handoff.on_command_written();
+                handoff.on_precmd();
+            }
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+        });
+
+        terminal.read(&app, |view, _| {
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::EditorOwned
+            );
+        });
+    })
+}
+
+/// Ctrl-D at the prompt with nothing typed would exit the shell; it is not written.
+#[test]
+fn typeahead_handoff_ctrl_d_on_an_empty_shell_line_is_not_written() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.block_list_mut().set_bootstrapped();
+                let handoff = model.typeahead_handoff_mut();
+                handoff.on_command_written();
+                // A further Enter the shell answers with a prompt; both prompts have come.
+                handoff.on_user_bytes(b"\r");
+                handoff.on_precmd();
+                handoff.on_precmd();
+                assert!(handoff.routes_keys_to_pty());
+            }
+            view.ctrl_d(ctx);
+            // With bytes in the shell's line, Ctrl-D is an edit there and is written.
+            view.model
+                .lock()
+                .typeahead_handoff_mut()
+                .on_user_bytes(b"ab");
+            view.ctrl_d(ctx);
+        });
+
+        assert_eq!(*pty_writes.borrow(), vec![vec![escape_sequences::C0::EOT]]);
+    })
+}
+
+/// Keys typed into a full-screen program (vim's `:wq` Enter) are written but are not lines for
+/// the shell: they must not leave the hand-off waiting for a prompt that never comes.
+#[test]
+fn typeahead_handoff_does_not_count_full_screen_enters() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.simulate_long_running_block("vim", "");
+                model.set_mode(ansi::Mode::SwapScreen {
+                    save_cursor_and_clear_screen: true,
+                });
+                assert!(model.is_alt_screen_active());
+                model.typeahead_handoff_mut().on_command_written();
+            }
+            view.keydown_on_terminal("\r", ctx);
+        });
+
+        assert_eq!(*pty_writes.borrow(), vec![b"\r".to_vec()]);
+        terminal.read(&app, |view, _| {
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::PtyOwned {
+                    wrote_user_bytes: false,
+                    enters_written: 1,
+                    precmds_seen: 0,
+                }
+            );
+        });
+    })
+}

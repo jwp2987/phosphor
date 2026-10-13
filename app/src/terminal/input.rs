@@ -12066,6 +12066,12 @@ impl Input {
             self.emit_submit_cli_agent_input(ctx);
             return;
         }
+        // Before anything classifies the buffer: while the report is outstanding the editor
+        // holds only what was typed after the request, which natural-language detection could
+        // send to the agent as a query of its own.
+        if self.defer_enter_for_typeahead_report(ctx) {
+            return;
+        }
         let command = self.editor.as_ref(ctx).buffer_text(ctx);
 
         ctx.emit(Event::Enter);
@@ -12314,10 +12320,6 @@ impl Input {
 
             self.submit_ai_query(None, ctx);
         } else {
-            if self.defer_enter_for_typeahead_report(ctx) {
-                return;
-            }
-
             // If we're submitting a shell command, we want to send telemetry for the input type.
             if FeatureFlag::NldImprovements.is_enabled() {
                 let input_model = self.ai_input_model.as_ref(ctx);
@@ -12428,9 +12430,9 @@ impl Input {
     }
 
     /// Defers this Enter while the typeahead hand-off waits for the shell's report of what the
-    /// user typed before the editor took over, so the command is submitted with that text in front
-    /// of it rather than as a fragment (`FeatureFlag::TypeaheadHandoff`). Returns whether it was
-    /// deferred.
+    /// user typed before the editor took over, so the buffer is submitted (or accepted by an open
+    /// menu, or sent to the agent) with that text in front of it rather than as a fragment
+    /// (`FeatureFlag::TypeaheadHandoff`). Returns whether it was deferred.
     fn defer_enter_for_typeahead_report(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         if !FeatureFlag::TypeaheadHandoff.is_enabled() {
             return false;
