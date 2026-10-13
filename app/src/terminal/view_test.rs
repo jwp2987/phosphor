@@ -9561,6 +9561,152 @@ fn completed_user_controlled_lrc_does_not_resume_in_a_closed_pane() {
     })
 }
 
+/// A conversation stopped mid-batch: a command awaiting approval, behind an earlier action of
+/// the same batch that already succeeded -- the shape in which cancelling the pending action
+/// makes the controller's `FinishedAction` subscriber send the batch's results as a follow-up.
+struct MidBatch {
+    terminal: ViewHandle<TerminalView>,
+    conversation_id: AIConversationId,
+    action_model: ModelHandle<BlocklistAIActionModel>,
+    blocked_action_id: AIAgentActionId,
+    sent_requests: Rc<RefCell<usize>>,
+}
+
+async fn mid_batch(app: &mut App) -> MidBatch {
+    use crate::ai::agent::{
+        AIAgentAction, AIAgentActionResult, AIAgentActionResultType, AIAgentActionType,
+        TransferShellCommandControlToUserResult,
+    };
+
+    initialize_app_for_terminal_view(app);
+    register_global_resource_handles(app);
+    let terminal = add_window_with_terminal(app, None);
+
+    let sent_requests = Rc::new(RefCell::new(0));
+    let controller = terminal.read(app, |view, _| view.ai_controller().clone());
+    let sent_requests_sub = sent_requests.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_model(&controller, move |_, event, _| {
+            if matches!(event, BlocklistAIControllerEvent::SentRequest { .. }) {
+                *sent_requests_sub.borrow_mut() += 1;
+            }
+        });
+    });
+
+    let conversation_id = terminal.update(app, |view, ctx| {
+        start_running_conversation_for_close(view, ctx)
+    });
+    let action_model = terminal.read(app, |view, _| view.ai_action_model.clone());
+
+    let blocked_action_id = AIAgentActionId::from("awaiting-approval".to_owned());
+    action_model.update(app, |action_model, ctx| {
+        action_model.queue_action_for_test(
+            AIAgentAction {
+                id: blocked_action_id.clone(),
+                task_id: TaskId::new("task".to_owned()),
+                action: AIAgentActionType::RequestCommandOutput {
+                    command: "free -h".to_owned(),
+                    is_read_only: None,
+                    is_risky: None,
+                    rationale: None,
+                    uses_pager: None,
+                    wait_until_completion: true,
+                    citations: vec![],
+                },
+                requires_result: false,
+            },
+            conversation_id,
+            ctx,
+        );
+    });
+    for _ in 0..64 {
+        let is_blocked = action_model.read(app, |action_model, _| {
+            action_model
+                .get_action_status(&blocked_action_id)
+                .is_some_and(|status| status.is_blocked())
+        });
+        if is_blocked {
+            break;
+        }
+        futures_lite::future::yield_now().await;
+    }
+    action_model.update(app, |action_model, _| {
+        assert!(
+            action_model
+                .get_action_status(&blocked_action_id)
+                .is_some_and(|status| status.is_blocked()),
+            "precondition: the command is blocked on approval"
+        );
+        action_model.push_finished_action_result_for_test(
+            conversation_id,
+            AIAgentActionResult {
+                id: AIAgentActionId::from("already-ran".to_owned()),
+                task_id: TaskId::new("task".to_owned()),
+                result: AIAgentActionResultType::TransferShellCommandControlToUser(
+                    TransferShellCommandControlToUserResult::Snapshot {
+                        block_id: BlockId::default(),
+                        grid_contents: "done".to_owned(),
+                        cursor: "<|cursor|>".to_owned(),
+                        is_alt_screen_active: false,
+                        is_preempted: false,
+                    },
+                ),
+            },
+        );
+    });
+
+    MidBatch {
+        terminal,
+        conversation_id,
+        action_model,
+        blocked_action_id,
+        sent_requests,
+    }
+}
+
+impl MidBatch {
+    /// What the reject button (or a close's action cancellation) does to the pending command.
+    fn cancel_blocked_action(&self, app: &mut App) {
+        let (conversation_id, blocked_action_id) =
+            (self.conversation_id, self.blocked_action_id.clone());
+        self.action_model.update(app, |action_model, ctx| {
+            action_model.cancel_action_with_id(
+                conversation_id,
+                &blocked_action_id,
+                CancellationReason::ManuallyCancelled,
+                ctx,
+            );
+        });
+    }
+
+    fn status(&self, app: &App) -> Option<ConversationStatus> {
+        BlocklistAIHistoryModel::handle(app).read(app, |history, _| {
+            history
+                .conversation(&self.conversation_id)
+                .map(|c| c.status().clone())
+        })
+    }
+}
+
+async fn let_subscribers_run() {
+    for _ in 0..16 {
+        futures_lite::future::yield_now().await;
+    }
+}
+
+/// Positive control for the mid-batch tests below: in an open pane, cancelling the pending
+/// action of a batch whose earlier action succeeded sends the batch's results as a follow-up.
+/// Without this, "no request was sent" in the tests below could be an artifact of the setup.
+#[test]
+fn open_pane_mid_batch_cancel_sends_the_follow_up() {
+    App::test((), |mut app| async move {
+        let batch = mid_batch(&mut app).await;
+        batch.cancel_blocked_action(&mut app);
+        let_subscribers_run().await;
+        assert_eq!(*batch.sent_requests.borrow(), 1);
+    })
+}
+
 /// #848 (blocker found in review): stopping a conversation mid-batch must not send a follow-up
 /// from the closed pane. Closing cancels the batch's still-pending action; every cancellation
 /// reaches the controller's `FinishedAction` subscriber, which sends the batch's results as a
@@ -9568,114 +9714,27 @@ fn completed_user_controlled_lrc_does_not_resume_in_a_closed_pane() {
 /// That request's auto-executable actions would then run in the closed pane's shell.
 #[test]
 fn closing_mid_batch_sends_no_follow_up_and_leaves_the_conversation_cancelled() {
-    use crate::ai::agent::{
-        AIAgentAction, AIAgentActionResult, AIAgentActionResultType, AIAgentActionType,
-        TransferShellCommandControlToUserResult,
-    };
-
     App::test((), |mut app| async move {
-        initialize_app_for_terminal_view(&mut app);
-        register_global_resource_handles(&mut app);
-        let terminal = add_window_with_terminal(&mut app, None);
+        let batch = mid_batch(&mut app).await;
 
-        let sent_requests = Rc::new(RefCell::new(0));
-        let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
-        let sent_requests_sub = sent_requests.clone();
-        app.update(|ctx| {
-            ctx.subscribe_to_model(&controller, move |_, event, _| {
-                if matches!(event, BlocklistAIControllerEvent::SentRequest { .. }) {
-                    *sent_requests_sub.borrow_mut() += 1;
-                }
-            });
-        });
-
-        let conversation_id = terminal.update(&mut app, |view, ctx| {
-            start_running_conversation_for_close(view, ctx)
-        });
-        let action_model = terminal.read(&app, |view, _| view.ai_action_model.clone());
-
-        // The batch: a command awaiting approval...
-        let blocked_action_id = AIAgentActionId::from("awaiting-approval".to_owned());
-        action_model.update(&mut app, |action_model, ctx| {
-            action_model.queue_action_for_test(
-                AIAgentAction {
-                    id: blocked_action_id.clone(),
-                    task_id: TaskId::new("task".to_owned()),
-                    action: AIAgentActionType::RequestCommandOutput {
-                        command: "free -h".to_owned(),
-                        is_read_only: None,
-                        is_risky: None,
-                        rationale: None,
-                        uses_pager: None,
-                        wait_until_completion: true,
-                        citations: vec![],
-                    },
-                    requires_result: false,
-                },
-                conversation_id,
-                ctx,
-            );
-        });
-        for _ in 0..64 {
-            let is_blocked = action_model.read(&app, |action_model, _| {
-                action_model
-                    .get_action_status(&blocked_action_id)
-                    .is_some_and(|status| status.is_blocked())
-            });
-            if is_blocked {
-                break;
-            }
-            futures_lite::future::yield_now().await;
-        }
-        // ...behind an earlier action that already succeeded.
-        action_model.update(&mut app, |action_model, _| {
-            assert!(
-                action_model
-                    .get_action_status(&blocked_action_id)
-                    .is_some_and(|status| status.is_blocked()),
-                "precondition: the command is blocked on approval"
-            );
-            action_model.push_finished_action_result_for_test(
-                conversation_id,
-                AIAgentActionResult {
-                    id: AIAgentActionId::from("already-ran".to_owned()),
-                    task_id: TaskId::new("task".to_owned()),
-                    result: AIAgentActionResultType::TransferShellCommandControlToUser(
-                        TransferShellCommandControlToUserResult::Snapshot {
-                            block_id: BlockId::default(),
-                            grid_contents: "done".to_owned(),
-                            cursor: "<|cursor|>".to_owned(),
-                            is_alt_screen_active: false,
-                            is_preempted: false,
-                        },
-                    ),
-                },
-            );
-        });
-
-        terminal.update(&mut app, |view, ctx| view.suspend_agent_work_for_close(ctx));
-        // Let every subscriber of the cancellations run.
-        for _ in 0..16 {
-            futures_lite::future::yield_now().await;
-        }
+        batch
+            .terminal
+            .update(&mut app, |view, ctx| view.suspend_agent_work_for_close(ctx));
+        let_subscribers_run().await;
 
         assert_eq!(
-            *sent_requests.borrow(),
+            *batch.sent_requests.borrow(),
             0,
             "no follow-up from a closed pane"
         );
-        terminal.read(&app, |view, ctx| {
+        assert_eq!(batch.status(&app), Some(ConversationStatus::Cancelled));
+        let conversation_id = batch.conversation_id;
+        batch.terminal.read(&app, |view, ctx| {
             assert!(
                 !view
                     .ai_controller()
                     .as_ref(ctx)
                     .has_active_stream_for_conversation(conversation_id, ctx)
-            );
-            assert_eq!(
-                BlocklistAIHistoryModel::as_ref(ctx)
-                    .conversation(&conversation_id)
-                    .map(|c| c.status().clone()),
-                Some(ConversationStatus::Cancelled)
             );
             assert!(
                 view.ai_action_model
@@ -9684,6 +9743,44 @@ fn closing_mid_batch_sends_no_follow_up_and_leaves_the_conversation_cancelled() 
                     .is_none_or(|results| results.is_empty()),
                 "the batch's earlier results must not ride along with the next prompt"
             );
+        });
+    })
+}
+
+/// The controller guard on its own, without the close path's up-front discard of the batch's
+/// earlier results: a suspended controller's `FinishedAction` subscriber sends nothing, puts
+/// the conversation back to `Cancelled` (the action model had moved it to `InProgress` when
+/// the mixed batch drained) and still unlocks a follow-up queued behind the approval.
+#[test]
+fn suspended_controller_mid_batch_cancel_sends_nothing_and_unlocks_the_queue() {
+    App::test((), |mut app| async move {
+        let batch = mid_batch(&mut app).await;
+        let conversation_id = batch.conversation_id;
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(
+                conversation_id,
+                QueuedQuery::new(
+                    "after the approval".to_owned(),
+                    QueuedQueryOrigin::PendingApprovalFollowUp,
+                ),
+                ctx,
+            );
+        });
+
+        batch.terminal.update(&mut app, |view, ctx| {
+            view.ai_controller().update(ctx, |controller, _| {
+                controller.set_suspended_for_close(true);
+            });
+        });
+        batch.cancel_blocked_action(&mut app);
+        let_subscribers_run().await;
+
+        assert_eq!(*batch.sent_requests.borrow(), 0);
+        assert_eq!(batch.status(&app), Some(ConversationStatus::Cancelled));
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            let queue = model.queue(conversation_id);
+            assert_eq!(queue.len(), 1, "unlocked, not sent");
+            assert_eq!(queue[0].origin(), QueuedQueryOrigin::ApprovalFollowUp);
         });
     })
 }

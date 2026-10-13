@@ -582,6 +582,25 @@ pub struct BlocklistAIController {
     suspended_for_close: bool,
 }
 
+/// `send_request_input`'s refusal while the pane is closed (#848). Expected, not a failure:
+/// callers log it at debug level rather than as an error.
+#[derive(Debug)]
+pub(crate) struct SuspendedForCloseError {
+    conversation_id: AIConversationId,
+}
+
+impl std::fmt::Display for SuspendedForCloseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "not sending a request from a closed pane (conversation {:?})",
+            self.conversation_id
+        )
+    }
+}
+
+impl std::error::Error for SuspendedForCloseError {}
+
 /// See `pending_byop_requests`.
 struct PendingByopRequest {
     request_input: RequestInput,
@@ -1109,6 +1128,8 @@ impl BlocklistAIController {
                     pending.category(),
                     pending.tool_call_count()
                 );
+            } else if e.downcast_ref::<SuspendedForCloseError>().is_some() {
+                log::debug!("{e}");
             } else {
                 log::error!("Failed to send agent request: {e:?}");
             }
@@ -1947,7 +1968,9 @@ impl BlocklistAIController {
             // Pending, the Err has already been re-written into pending_byop_requests
             // internally by send_request_input; other errors are handled by the
             // controller's existing paths.
-            if e.downcast_ref::<PendingByopToolResultsError>().is_none() {
+            if e.downcast_ref::<SuspendedForCloseError>().is_some() {
+                log::debug!("{e}");
+            } else if e.downcast_ref::<PendingByopToolResultsError>().is_none() {
                 log::error!("[byop-readiness] failed to flush pending BYOP request: {e:?}");
             }
         }
@@ -3359,10 +3382,10 @@ impl BlocklistAIController {
         // flushed BYOP request, a passive suggestion -- starts here, so this is the one guard
         // that keeps a closed pane from talking to a provider (#848).
         if self.suspended_for_close {
-            return Err(anyhow!(
-                "not sending a request from a closed pane (conversation {:?})",
-                request_input.conversation_id
-            ));
+            return Err(SuspendedForCloseError {
+                conversation_id: request_input.conversation_id,
+            }
+            .into());
         }
         let history_model = BlocklistAIHistoryModel::handle(ctx);
         let request_snapshot = self.conversation_snapshot_for_request(&request_input, ctx)?;

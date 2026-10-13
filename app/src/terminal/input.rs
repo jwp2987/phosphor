@@ -5664,6 +5664,11 @@ impl Input {
         if !is_next_command_enabled(ctx) {
             return;
         }
+        // A closed (undo-restorable) pane sends no request (#848); a user command left running
+        // in it may still finish while it waits in the undo stack.
+        if self.ai_controller.as_ref(ctx).is_suspended_for_close() {
+            return;
+        }
 
         // If the last block was empty, don't create any suggestions.
         // Also don't create suggestions for requested commands part of an agent mode conversation.

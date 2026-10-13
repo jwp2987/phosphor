@@ -8344,14 +8344,11 @@ impl TerminalView {
             .as_ref(ctx)
             .has_active_stream_for_conversation(conversation_id, ctx);
 
-        self.ai_controller.update(ctx, |controller, ctx| {
-            controller.cancel_conversation_progress(
-                conversation_id,
-                CancellationReason::ManuallyCancelled,
-                ctx,
-            );
-        });
-
+        // Order matters, and guarantees exactly one ^C reaches the shell: decide what to
+        // interrupt and hand the command to the user (`set_user_control_with_stop_reason`)
+        // first, so cancelling the conversation's actions below finds the command already out
+        // of the agent's hands and does not interrupt it a second time; then drop a parked
+        // copy of an agent command and send the single ^C; then the `Cancelled` fallback.
         let visible_conversation_id = self
             .agent_view_controller
             .as_ref(ctx)
@@ -8389,17 +8386,26 @@ impl TerminalView {
             };
 
             if active_block_matches && command_is_running {
+                let is_agent_requested = active_block.is_agent_requested_command();
                 active_block.set_user_control_with_stop_reason();
-                true
+                Some(is_agent_requested)
             } else {
-                false
+                None
             }
         };
 
-        if should_interrupt_active_command {
-            if interrupt_scope == StopInterruptScope::AgentCommandOnly {
+        self.ai_controller.update(ctx, |controller, ctx| {
+            controller.cancel_conversation_progress(
+                conversation_id,
+                CancellationReason::ManuallyCancelled,
+                ctx,
+            );
+        });
+
+        if let Some(is_agent_requested) = should_interrupt_active_command {
+            if is_agent_requested {
                 // The agent's command may still be parked in the PTY write queue, waiting for
-                // the line editor; drop it so it never runs in the closed pane (#848).
+                // the line editor; drop it so it never runs (#848).
                 ctx.emit(Event::DiscardPendingCommandWrites);
             }
             self.user_write_ctrl_c_to_pty(ctx);

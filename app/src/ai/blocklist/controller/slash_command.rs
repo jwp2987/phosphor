@@ -205,6 +205,9 @@ impl SlashCommandRequest {
                     });
                 }
             }
+            Err(e) if e.downcast_ref::<super::SuspendedForCloseError>().is_some() => {
+                log::debug!("{e}")
+            }
             Err(e) => log::error!("Failed to send agent slash command request: {e:?}"),
         }
     }
