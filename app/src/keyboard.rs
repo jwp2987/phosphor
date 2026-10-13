@@ -199,8 +199,10 @@ fn read_keybindings_file(path: &std::path::Path) -> KeybindingsFile {
     // does not deserialize an empty document into a map, so without this an
     // empty file would be reported as broken (before #858 it was silently
     // treated as missing, which was right for this case only).
+    // `---` and `...` are YAML document start/end markers.
     if contents.lines().all(|line| {
-        line.trim().is_empty() || line.trim_start().starts_with('#') || line.trim() == "---"
+        let line = line.trim();
+        line.is_empty() || line.starts_with('#') || line == "---" || line == "..."
     }) {
         return KeybindingsFile::Parsed(CustomKeybindings::default());
     }

@@ -177,7 +177,14 @@ mod keybindings_file {
     fn empty_or_comment_only_file_means_no_customizations() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("keybindings.yaml");
-        for contents in ["", "\n", "---\n", "# my bindings\n\n"] {
+        for contents in [
+            "",
+            "\n",
+            "---\n",
+            "---\n...\n",
+            "...\n",
+            "# my bindings\n\n",
+        ] {
             std::fs::write(&path, contents).unwrap();
             match read_keybindings_file(&path) {
                 KeybindingsFile::Parsed(map) => assert!(map.0.is_empty()),
