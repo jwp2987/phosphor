@@ -1167,20 +1167,32 @@ async fn most_recent_close_match<'a>(
 /// restarts. The rules:
 ///
 /// - An entry that failed with "command not found" never matches (the pin's original filter).
-/// - When the buffer [`reads_as_prose`](input_classifier::util::reads_as_prose) (a function word
-///   after the head, a trailing `?`, an apostrophe in a word...), only an entry that is known to
-///   have **exited 0** may match. A failed run is no evidence the line was a command, and neither
-///   is an entry with no exit code: a line imported from the shell's history file that this app
-///   never ran (or one still running) carries none, which is exactly how a mistake persists.
-///   Exit 0 is strict on purpose: `was_successful` also accepts 130 (ctrl-c), and interrupting a
-///   sentence that hung (`yes please`) proves nothing.
+/// - When the buffer [`reads_as_prose`](input_classifier::util::reads_as_prose) (the #808/#831
+///   pre-filter's own vetoes: a function word or the article `a` after the head, sentence
+///   punctuation, a trailing `?`, an apostrophe in a word...), only an entry that is known to
+///   have **exited 0** and whose text is the buffer's **exactly** (ignoring runs of whitespace)
+///   may match:
+///   - A failed run is no evidence the line was a command, and neither is an entry with no exit
+///     code. History-file lines this app ran get the exit code of their latest run back from the
+///     persisted command table (`History`'s `persisted_commands_summary` join), so they are judged
+///     like session commands; only a line the app never ran (typed in another terminal, or from
+///     before the table existed) or one still running has none — and a mistake typed elsewhere
+///     persists exactly that way.
+///   - Exit 0 is strict on purpose: `was_successful` also accepts 130 (ctrl-c), and interrupting
+///     a sentence that hung (`yes please`) proves nothing.
+///   - Exact, not the 0.9 cutoff: a prose-shaped line that genuinely ran (`echo is it the cache`)
+///     still re-runs from history, but its near-variants (`echo is it the caches`, or another
+///     sentence one word away) go to the classifier instead of riding on it.
 /// - A buffer with none of those prose signals keeps the original behavior, so re-running a real
-///   command (`cargo test` that failed, `ssh host` from `.bash_history`) still routes to Shell.
+///   command (`cargo test` that failed, `ssh host` from `.bash_history`) or a near-variant of one
+///   still routes to Shell.
 ///
 /// Known trade-off: shell syntax that shares those signals (`for i in ...; do ...; done`, `if
-/// true; then ...; fi`, `grep -r for src`, `scp f.txt host:`) also reads as prose, so a failed or
-/// history-file entry for it no longer short-circuits to Shell; it goes to the classifier, and an
-/// entry for it that exited 0 still matches.
+/// true; then ...; fi`, `grep -r for src`, `scp f.txt host:`, the quoted colon in `git commit -m
+/// "feat: x"`) also reads as prose, so it needs an exact exit-0 entry for the history shortcut;
+/// otherwise it goes to the classifier. Residual: command-headed prose with no veto word (`find
+/// large files`, `install docker`, `free up disk space`) does not read as prose, so a failed
+/// entry for it can still route it and its near-variants to Shell.
 fn shell_history_candidates<'a>(
     entries: impl Iterator<Item = &'a HistoryEntry>,
     buffer_text: &str,
@@ -1189,8 +1201,12 @@ fn shell_history_candidates<'a>(
     entries
         .filter(|entry| match entry.exit_code {
             Some(code) if code.was_command_not_found() => false,
-            Some(code) if code.value() == 0 => true,
-            _ => !buffer_reads_as_prose,
+            _ if !buffer_reads_as_prose => true,
+            Some(code) if code.value() == 0 => entry
+                .command
+                .split_whitespace()
+                .eq(buffer_text.split_whitespace()),
+            _ => false,
         })
         .map(|entry| (entry.command.to_string(), entry.start_ts))
         .collect()

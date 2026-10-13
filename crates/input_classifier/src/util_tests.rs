@@ -748,6 +748,10 @@ fn test_reads_as_prose_flags_sentences_that_start_with_a_command_word() {
         "find Josh's PR",
         "run exactly this: sleep 1",
         "  FOO=1 make it faster  ",
+        // The #831 word-level vetoes, shared with the pre-filter through `has_prose_veto_word`.
+        "make a PR",
+        "rm -rf node_modules, reinstall",
+        "rm -rf node_modules reinstall",
     ] {
         assert!(reads_as_prose(text), "expected {text:?} to read as prose");
     }
@@ -767,6 +771,8 @@ fn test_reads_as_prose_leaves_command_lines_alone() {
         "echo 'is it the cache'",
         "docker exec -it web sh",
         "FOO=bar mycmd --flag",
+        // A `re-` command word in subcommand position is not the misplaced-verb veto.
+        "brew reinstall foo",
         // The head is never inspected; only the words after it are.
         "this",
     ] {
@@ -787,8 +793,23 @@ fn test_reads_as_prose_flags_shell_syntax_that_uses_function_words() {
         "if true; then echo y; fi",
         "scp f.txt host:",
         "grep -r for src",
+        // The colon-shape test splits on whitespace without honouring quotes.
+        "git commit -m \"feat: x\"",
+        "curl -H \"Accept: application/json\" https://example.com",
     ] {
         assert!(reads_as_prose(text), "expected {text:?} to read as prose");
+    }
+}
+
+#[test]
+fn test_reads_as_prose_misses_command_headed_prose_without_a_veto_word() {
+    // Pinned residual (#832): no function word, article, sentence punctuation or misplaced `re-`
+    // word, so a failed history entry for these can still route them to Shell.
+    for text in ["find large files", "install docker", "free up disk space"] {
+        assert!(
+            !reads_as_prose(text),
+            "expected {text:?} not to read as prose"
+        );
     }
 }
 

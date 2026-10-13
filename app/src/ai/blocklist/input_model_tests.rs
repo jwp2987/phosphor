@@ -305,14 +305,36 @@ fn shell_syntax_with_function_words_needs_an_exit_0_entry() {
 }
 
 #[test]
+fn prose_needs_an_exact_exit_0_entry_not_a_near_variant() {
+    // A prose-shaped line that genuinely ran still re-runs from history, but only verbatim
+    // (whitespace runs aside): its near-variants go to the classifier instead of riding on it.
+    let history = [history_entry("echo is it the cache", Some(0))];
+    assert_eq!(
+        command_history_verdict(&history, "echo  is it the cache "),
+        Some(InputType::Shell),
+    );
+    assert_eq!(
+        command_history_verdict(&history, "echo is it the caches"),
+        None
+    );
+    // Same for a sentence one word away from an exit-0 entry: `main.py` once ran fine, the
+    // `main.rs` buffer is left to the classifier.
+    let history = [history_entry("echo find the bug in main.py", Some(0))];
+    assert_eq!(
+        command_history_verdict(&history, "echo find the bug in main.rs"),
+        None
+    );
+}
+
+#[test]
 fn prose_matches_an_older_exit_0_entry_past_a_newer_failure() {
     // Entries are filtered one by one, before matching: the newest entry's failure removes only
-    // that entry, so an older entry that exited 0 is still a candidate and wins (Shell). One
-    // successful run is the evidence the rule asks for, and a later failure does not undo it.
-    // (In production `History::commands` dedupes identical text down to the newest run, so this
-    // arises for near-variants: here `main.py` exited 0 once, `main.rs` failed afterwards.)
+    // that entry, so an older exit-0 entry with the same text is still a candidate and wins
+    // (Shell) here. In production the case does not arise: `History::commands` dedupes identical
+    // text down to its newest run (and the history-file join keeps the latest run's exit code),
+    // so the verdict there follows the newest run -- a failure, so the classifier decides.
     let history = [
-        history_entry("echo find the bug in main.py", Some(0)),
+        history_entry("echo find the bug in main.rs", Some(0)),
         history_entry("echo find the bug in main.rs", Some(1)),
     ];
     assert_eq!(
@@ -324,6 +346,13 @@ fn prose_matches_an_older_exit_0_entry_past_a_newer_failure() {
         command_history_verdict(&history[1..], "echo find the bug in main.rs"),
         None,
     );
+}
+
+#[test]
+fn failed_article_prose_does_not_force_shell() {
+    // `make a PR` reads as prose through the #831 article veto, shared with the pre-filter.
+    let history = [history_entry("make a PR", Some(2))];
+    assert_eq!(command_history_verdict(&history, "make a PR"), None);
 }
 
 const AI_LOCKED: InputConfig = InputConfig {

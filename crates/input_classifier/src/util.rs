@@ -771,6 +771,22 @@ fn is_misplaced_re_command_word(head: &str, remaining: &[ShellWord], index: usiz
     !(is_known_shell_command_word(previous) || is_flag)
 }
 
+/// The word-level prose vetoes shared by [`is_unambiguous_shell_command`] and [`reads_as_prose`]
+/// (#832), so the two cannot drift: any [`PROSE_FUNCTION_WORDS`] member, the article `a` before a
+/// word ([`is_prose_article`]), a word ending in a sentence comma or period
+/// ([`ends_in_sentence_punctuation`]), or a command-like `re-` word outside subcommand position
+/// ([`is_misplaced_re_command_word`]). `head` is the effective first word (assignments skipped,
+/// cut at any glued operator) and `remaining` the words after it.
+///
+/// Only vetoes belong here, never the Rule-2 body test ([`is_prose_word`]: dictionary words,
+/// acronyms, derived words), which would make `cargo build` read as prose.
+fn has_prose_veto_word(head: &str, remaining: &[ShellWord]) -> bool {
+    remaining.iter().any(is_function_word)
+        || (0..remaining.len()).any(|index| is_prose_article(remaining, index))
+        || remaining.iter().any(ends_in_sentence_punctuation)
+        || (0..remaining.len()).any(|index| is_misplaced_re_command_word(head, remaining, index))
+}
+
 /// True iff `text` (unquoted, sentence punctuation stripped) is an acronym used as an English
 /// noun (#831): one of the [`PROSE_ACRONYMS`], or any ALL-CAPS word with a lowercase plural `s`
 /// (`TODOs`, `PRs`, `PIDs`, `URLs`) — a spelling only prose produces.
@@ -927,11 +943,7 @@ pub fn is_unambiguous_shell_command(input: &ParsedTokensSnapshot) -> bool {
         return false;
     }
     let remaining = &words[first_index + 1..];
-    if remaining.iter().any(is_function_word)
-        || (0..remaining.len()).any(|index| is_prose_article(remaining, index))
-        || remaining.iter().any(ends_in_sentence_punctuation)
-        || (0..remaining.len()).any(|index| is_misplaced_re_command_word(head, remaining, index))
-    {
+    if has_prose_veto_word(head, remaining) {
         return false;
     }
     // `exit vim` / `exit tmux`: bash says "numeric argument required" and then exits the whole
@@ -994,23 +1006,35 @@ pub fn is_unambiguous_shell_command(input: &ParsedTokensSnapshot) -> bool {
 }
 
 /// Fork-original (#832): true iff `buffer_text` carries one of the prose vetoes that
-/// [`is_unambiguous_shell_command`] applies — a trailing `?`; quoting bash would reject, an
-/// apostrophe inside a word or a typographic quote ([`has_shell_safe_quoting`]); the prose colon
-/// shape ([`buffer_has_prose_colon_shape`]); or a [`PROSE_FUNCTION_WORDS`] member among the
-/// unquoted words after the effective first word (`find the bug in main.rs`, `make the tests pass
-/// please`, `find where config is loaded`).
+/// [`is_unambiguous_shell_command`] applies:
+///
+/// - a trailing `?`;
+/// - quoting bash would reject, an apostrophe inside a word or a typographic quote
+///   ([`has_shell_safe_quoting`]: `find Josh's PR`);
+/// - the prose colon shape ([`buffer_has_prose_colon_shape`]: `run exactly this: ...`);
+/// - after the effective first word, any word-level veto in [`has_prose_veto_word`], the same
+///   function the pre-filter calls: a [`PROSE_FUNCTION_WORDS`] member (`find the bug in main.rs`,
+///   `find where config is loaded`), the article `a` before a word (`make a PR`), a sentence
+///   comma or period (`rm -rf node_modules, reinstall`), or a misplaced `re-` command word
+///   (`rm -rf node_modules reinstall`).
 ///
 /// This is the same evidence the pre-filter uses to *refuse* a Shell verdict, exposed on its own
 /// so the command-history matcher can refuse to let a failed or unverified history entry force
 /// Shell for a buffer that reads as a sentence. It never says anything is a command: `false` only
-/// means "none of these vetoes fired", and the head word is not inspected (so `ssh me` and `cargo
-/// build` are judged on their arguments alone).
+/// means "none of these vetoes fired". The head word is only used as the context for the `re-`
+/// rule (`brew reinstall foo` is a subcommand), and the pre-filter's Rule-2 body test
+/// ([`is_prose_word`]) is deliberately not applied, so `cargo build` is not prose.
 ///
-/// Known trade-off: shell syntax that uses the same words or a trailing colon reads as prose too
-/// (`for i in $(seq 3); do echo $i; done`, `if true; then echo y; fi`, `grep -r for src`, `scp
-/// f.txt host:`). For the history matcher that only means a *failed* or exit-code-less entry for
-/// such a line no longer short-circuits to Shell; the line goes to the classifier, and an entry
-/// that exited 0 still matches.
+/// Known trade-offs: shell syntax that uses the same words or a colon-terminated word reads as
+/// prose too (`for i in $(seq 3); do echo $i; done`, `if true; then echo y; fi`, `grep -r for
+/// src`, `scp f.txt host:`, and — because the colon test splits on whitespace without honouring
+/// quotes — `git commit -m "feat: x"`, `curl -H "Accept: application/json" ...`). So does a `re-`
+/// command word after a head the pre-filter does not know (`ssh host reboot`). For the history
+/// matcher that only means a *failed* or exit-code-less entry for such a line no longer
+/// short-circuits to Shell; the line goes to the classifier, and an entry that exited 0 still
+/// matches. The opposite residual: command-headed prose with no veto word (`find large files`,
+/// `install docker`, `free up disk space`) does not read as prose here, so a failed entry for it
+/// can still route it to Shell from history.
 ///
 /// A buffer over [`MAX_PREFILTER_BYTES`] returns `false` without being scanned: this runs
 /// synchronously on the UI thread per keystroke, and a paste that size is not going to sit within
@@ -1023,11 +1047,22 @@ pub fn reads_as_prose(buffer_text: &str) -> bool {
     if text.ends_with('?') || !has_shell_safe_quoting(text) || buffer_has_prose_colon_shape(text) {
         return true;
     }
-    split_shell_words(text)
+    let words = split_shell_words(text);
+    let first_index = words
         .iter()
-        .skip_while(|word| !word.quoted && is_env_assignment_token(&word.text))
-        .skip(1)
-        .any(is_function_word)
+        .take_while(|word| !word.quoted && is_env_assignment_token(&word.text))
+        .count();
+    let Some(first) = words.get(first_index) else {
+        return false;
+    };
+    let head = first
+        .text
+        .split(|c: char| SHELL_WORD_TERMINATORS.contains(&c))
+        .next()
+        .unwrap_or("");
+    words
+        .get(first_index + 1..)
+        .is_some_and(|remaining| has_prose_veto_word(head, remaining))
 }
 
 #[cfg(test)]
