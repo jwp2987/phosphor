@@ -66,6 +66,114 @@ fn decode_script(bytes: &[u8]) -> &str {
     std::str::from_utf8(bytes).expect("should not fail to decode")
 }
 
+#[cfg(unix)]
+/// The `warp_escape_json` helper and the sed program it is built with, cut out of a bundled
+/// bootstrap script: from `start` through the line `end` that closes the function.
+fn warp_escape_json_snippet<'a>(script: &'a str, start: &str, end: &str) -> &'a str {
+    let start = script
+        .find(start)
+        .expect("the bootstrap script builds WARP_ESCAPE_JSON_CTRL_SED");
+    let definition = start
+        + script[start..]
+            .find("warp_escape_json")
+            .expect("the bootstrap script defines warp_escape_json");
+    let end = definition
+        + script[definition..]
+            .find(end)
+            .expect("warp_escape_json is closed")
+        + end.len();
+    &script[start..end]
+}
+
+/// #866: runs the real `warp_escape_json` from each bundled script in the real shell, and checks
+/// that its output is a valid JSON string body that round-trips exactly. Before the fix, ESC, BEL,
+/// `\x01` and DEL reached the payload raw, which strict JSON rejects. A value that is not UTF-8
+/// passes through byte for byte (the app decodes it lossily). A shell that is not installed is
+/// skipped, visibly.
+#[cfg(unix)]
+#[test]
+fn warp_escape_json_output_is_valid_json_in_every_shell() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::process::Command;
+
+    let bash = include_str!("../../assets/bundled/bootstrap/bash_body.sh");
+    let zsh = include_str!("../../assets/bundled/bootstrap/zsh_body.sh");
+    let fish = include_str!("../../assets/bundled/bootstrap/fish.sh");
+    let shells: [(&str, &[&str], &str); 3] = [
+        (
+            "bash",
+            &["--noprofile", "--norc"],
+            warp_escape_json_snippet(bash, "WARP_ESCAPE_JSON_CTRL_SED=''", "\n    }\n"),
+        ),
+        (
+            "zsh",
+            &["-f"],
+            warp_escape_json_snippet(zsh, "WARP_ESCAPE_JSON_CTRL_SED=''", "\n  }\n"),
+        ),
+        (
+            "fish",
+            &["--no-config"],
+            warp_escape_json_snippet(fish, "set -g WARP_ESCAPE_JSON_CTRL_SED", "\nend\n"),
+        ),
+    ];
+    let round_trips = [
+        "/h/esc\u{1b}[31mRED\u{1b}[0m",
+        "bell\u{7}ctl\u{1}\u{2}",
+        "del\u{7f}",
+        "emoji \u{1f600} rtl \u{202e}",
+        "quote\" back\\slash",
+        "tab\tcr\rff\u{c}bs\u{8}vt\u{b}",
+        "line one\nline two",
+    ];
+
+    for (shell, flags, snippet) in shells {
+        if !Command::new(shell)
+            .args(flags)
+            .args(["-c", "true"])
+            .status()
+            .is_ok_and(|status| status.success())
+        {
+            eprintln!("SKIPPED: {shell} is not installed");
+            continue;
+        }
+        let escape = |value: &[u8]| -> Vec<u8> {
+            let output = Command::new(shell)
+                .args(flags)
+                .arg("-c")
+                .arg(format!("{snippet}\nwarp_escape_json \"$WARP_TEST_VALUE\""))
+                .env("WARP_TEST_VALUE", OsStr::from_bytes(value))
+                .output()
+                .unwrap_or_else(|error| panic!("{shell} failed to run: {error}"));
+            assert!(
+                output.status.success(),
+                "{shell}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            output.stdout
+        };
+
+        for value in round_trips {
+            let escaped = escape(value.as_bytes());
+            let json = [&b"\""[..], &escaped, b"\""].concat();
+            let decoded: String = serde_json::from_slice(&json).unwrap_or_else(|error| {
+                panic!(
+                    "{shell}: {:?} escaped to invalid JSON {:?}: {error}",
+                    value,
+                    String::from_utf8_lossy(&escaped)
+                )
+            });
+            assert_eq!(decoded, value, "{shell} did not round-trip");
+        }
+
+        assert_eq!(
+            escape(b"bad\xff\xfe"),
+            b"bad\xff\xfe",
+            "{shell}: bytes that are not UTF-8 pass through unchanged"
+        );
+    }
+}
+
 /// `ShellType::PowerShell` used to `todo!()` in `init_subshell_script_for_shell` (#800,
 /// `TODO(PLAT-750)`). This exercises the real bundled `pwsh_init_subshell.ps1` asset (not
 /// a stub), so it also covers "the new .ps1 asset loads and contains the session-id

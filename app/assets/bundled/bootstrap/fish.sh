@@ -563,14 +563,15 @@ function warp_escape_json
     # represents a single `\` in the above regex explanation. We also close the single-quoted string in order to
     # insert literal characters (Fish supports literals with escapes when not quoting)
     #
-    # LC_ALL=C (set through `env`, so fish's own locale is untouched) makes sed and tr work byte by
-    # byte, so a value that is not valid UTF-8 (a directory name is arbitrary bytes) passes through
+    # LC_ALL=C (a per-command prefix assignment, which fish 3.1+ supports and this file already uses
+    # for `git`, so fish's own locale is untouched and no `env` exec is added) makes sed and tr work
+    # byte by byte, so a value that is not valid UTF-8 (a directory name is arbitrary bytes) passes through
     # unchanged instead of making a UTF-8-locale sed fail with "illegal byte sequence". Such bytes
     # are not valid JSON on their own; the app decodes the payload lossily and shows each invalid
     # byte as U+FFFD (see `handle_decoded_data` in app/src/terminal/model/ansi/mod.rs).
     #
     # We also use 'command sed' to ensure that we aren't accidentally executing a function named 'sed'
-    string join \n $argv | command env LC_ALL=C sed -E 's/(["\\\\])/\\\\\\1/g; s/'\b'/\\\\b/g; s/'\t'/\\\\t/g; s/'\f'/\\\\f/g; s/'\r'/\\\\r/g;'"$WARP_ESCAPE_JSON_CTRL_SED"' $!s/$/\\\\n/' | command env LC_ALL=C tr -d '\n'
+    string join \n $argv | LC_ALL=C command sed -E 's/(["\\\\])/\\\\\\1/g; s/'\b'/\\\\b/g; s/'\t'/\\\\t/g; s/'\f'/\\\\f/g; s/'\r'/\\\\r/g;'"$WARP_ESCAPE_JSON_CTRL_SED"' $!s/$/\\\\n/' | LC_ALL=C command tr -d '\n'
 end
 
 function warp_bootstrapped

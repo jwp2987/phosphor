@@ -797,6 +797,52 @@ fn repair_hook_json_escapes_only_inside_strings() {
 }
 
 #[test]
+fn parse_decoded_hook_passes_a_valid_payload_through_unchanged() {
+    let payload = br#"{
+        "hook": "Precmd",
+        "value": {
+            "exit_code": 0,
+            "next_block_id": "block_id",
+            "pwd": "/a \"quoted\" \\ path\t\u001b",
+            "honor_ps1": true,
+            "session_id": 167303092612201
+        }
+    }"#;
+    assert_eq!(repair_hook_json(payload), None);
+    let strict = serde_json::from_slice::<DProtoHook>(payload).expect("fixture is valid JSON");
+    let parsed = parse_decoded_hook(payload).expect("a valid payload parses");
+    assert_eq!(
+        serde_json::to_value(&parsed).unwrap(),
+        serde_json::to_value(&strict).unwrap()
+    );
+}
+
+/// A backslash directly followed by a raw control character is an invalid escape, not a raw
+/// control character in a string, so the repair leaves it alone and the hook is still rejected.
+/// The bootstrap scripts never emit it: they escape every backslash before anything else, so a
+/// `\` from a value always reaches the payload as `\\`.
+#[test]
+fn parse_dcs_precmd_with_backslash_before_raw_control_character_is_still_rejected() {
+    let payload = [
+        &br#"{"hook": "Precmd", "value": {"exit_code": 0, "next_block_id": "block_id", "#[..],
+        br#""pwd": "/a"#,
+        b"\\\x1b",
+        br#"", "session_id": 167303092612201}}"#,
+    ]
+    .concat();
+    assert_eq!(repair_hook_json(&payload), None);
+    let bytes = [
+        HEX_ENCODED_JSON_DCS_START,
+        hex::encode(&payload).as_bytes(),
+        DCS_END,
+    ]
+    .concat();
+    let (_, handler) = parse_bytes(&bytes);
+
+    assert!(handler.d_proto_hooks.is_empty());
+}
+
+#[test]
 fn parse_dcs_precmd_salvages_invalid_display_field() {
     let bytes = hex_encoded_dcs_string(
         r#"{

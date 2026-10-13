@@ -868,18 +868,32 @@ fn parse_decoded_hook(decoded_data: &[u8]) -> Result<DProtoHook, serde_json::Err
         .and_then(|repaired| serde_json::from_str::<DProtoHook>(repaired).ok())
     {
         log::warn!(
-            "Repaired malformed {} hook payload (raw control characters or invalid UTF-8): \
-             {strict_error}",
-            hook.name()
+            "Repaired malformed {} hook payload (raw control characters or invalid UTF-8): {}",
+            hook.name(),
+            describe_parse_error(&strict_error)
         );
         return Ok(hook);
     }
     let text = repaired.unwrap_or_else(|| String::from_utf8_lossy(decoded_data).into_owned());
     if let Some(hook) = salvage_precmd(&text) {
-        log::warn!("Salvaged malformed Precmd hook payload by dropping fields: {strict_error}");
+        log::warn!(
+            "Salvaged malformed Precmd hook payload by dropping fields: {}",
+            describe_parse_error(&strict_error)
+        );
         return Ok(hook);
     }
     Err(strict_error)
+}
+
+/// Describes a hook parse error by its category and position only. `serde_json`'s message can quote
+/// the offending value -- a path, a prompt -- so it is not logged at warn.
+fn describe_parse_error(error: &serde_json::Error) -> String {
+    format!(
+        "{:?} error at line {}, column {}",
+        error.classify(),
+        error.line(),
+        error.column()
+    )
 }
 
 impl<'a, H, W> VtePerform for Performer<'a, H, W>
