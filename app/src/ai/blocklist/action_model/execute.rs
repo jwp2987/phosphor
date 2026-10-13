@@ -895,6 +895,22 @@ impl BlocklistAIActionExecutor {
         )
     }
 
+    /// Test-only: records `action` as executing asynchronously without spawning it.
+    #[cfg(test)]
+    pub(crate) fn insert_async_executing_action_for_test(
+        &mut self,
+        action: AIAgentAction,
+        conversation_id: AIConversationId,
+    ) {
+        self.async_executing_actions.insert(
+            action.id.clone(),
+            AsyncExecutingAction {
+                action,
+                conversation_id,
+            },
+        );
+    }
+
     pub fn cancel_running_async_action(
         &mut self,
         action_id: &AIAgentActionId,
@@ -908,7 +924,7 @@ impl BlocklistAIActionExecutor {
         if let Some(running) = self.async_executing_actions.remove(action_id) {
             if running.is_shell_command_action() {
                 self.shell_command_executor.update(ctx, |executor, ctx| {
-                    executor.cancel_execution(&running.action.id, ctx);
+                    executor.cancel_execution(&running.action.id, reason, ctx);
                 });
             }
             ctx.emit(BlocklistAIActionExecutorEvent::FinishedAction {

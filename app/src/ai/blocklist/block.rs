@@ -3225,6 +3225,23 @@ impl AIBlock {
         }
     }
 
+    /// Test-only: inserts a requested-command card for `action_id`, wired to this block exactly
+    /// as a streamed `RequestCommandOutput` would be, and returns it.
+    #[cfg(test)]
+    pub(crate) fn insert_requested_command_for_test(
+        &mut self,
+        action_id: &AIAgentActionId,
+        command: &str,
+        ctx: &mut ViewContext<Self>,
+    ) -> ViewHandle<RequestedCommandView> {
+        self.handle_requested_command_stream_update(action_id, command, &[], ctx);
+        self.requested_commands
+            .get(action_id)
+            .expect("requested command was just inserted")
+            .view
+            .clone()
+    }
+
     fn handle_requested_command_view_event(
         &mut self,
         action_id: &AIAgentActionId,
@@ -3252,6 +3269,11 @@ impl AIBlock {
             }
             RequestedCommandViewEvent::Rejected => {
                 self.cancel_action(action_id, ctx);
+            }
+            RequestedCommandViewEvent::InterruptRunningCommand => {
+                // Issue #850: hand the interrupt to the terminal, which owns the PTY. The tool
+                // call stays live and reports the interrupted result once the command exits.
+                ctx.emit(AIBlockEvent::InterruptRunningCommand);
             }
             RequestedCommandViewEvent::UpdatedExpansionState { is_expanded } => {
                 // We only care about expansion state updates when the command
@@ -3419,6 +3441,8 @@ impl AIBlock {
             // There's nothing to do here for MCP tool calls; their expanded state
             // doesn't change the blocklist like it does for requested commands.
             RequestedCommandViewEvent::UpdatedExpansionState { .. } => {}
+            // `reject_disposition` never yields an interrupt for an MCP tool call.
+            RequestedCommandViewEvent::InterruptRunningCommand => {}
             RequestedCommandViewEvent::OpenActiveAgentProfileEditor => {
                 ctx.emit(AIBlockEvent::OpenActiveAgentProfileEditor);
             }
@@ -5637,6 +5661,9 @@ pub enum AIBlockEvent {
     OpenThemeChooser,
     #[cfg(windows)]
     WindowsCtrlC,
+    /// A Reject request landed on a requested command that is already running; the terminal
+    /// should interrupt it the way ctrl-c interrupts a user's command. Issue #850.
+    InterruptRunningCommand,
     AIOutputUpdated,
     ActionFinished,
     /// Emitted when text is selected within any `ChildView` of an `AIBlock`. This includes

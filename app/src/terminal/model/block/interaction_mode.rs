@@ -219,6 +219,28 @@ impl Block {
         self.requested_command_action_id().is_some()
     }
 
+    /// Whether this is an agent-requested command that has been written to the shell and has
+    /// not finished: from the moment the block starts with the agent's metadata (before preexec,
+    /// while the shell may still be reading the line) through execution. Unlike
+    /// `is_active_and_long_running`, there is no `LONG_RUNNING_COMMAND_DURATION_MS` grace period
+    /// and no wait for preexec. Issue #850.
+    pub fn is_agent_requested_command_in_flight(&self) -> bool {
+        self.is_agent_requested_command()
+            && !self.finished()
+            && (self.is_executing() || self.is_command_grid_active())
+    }
+
+    /// Whether this block is `action_id`'s agent-requested command, in flight, and still held
+    /// by the agent with no CLI subagent in control -- i.e. stopping the agent's tool call must
+    /// also interrupt it, and nobody else has. The one predicate behind both the executor's
+    /// manual-cancel interrupt request and the terminal acting on it (#850).
+    pub fn agent_holds_in_flight_command(&self, action_id: &AIAgentActionId) -> bool {
+        self.requested_command_action_id() == Some(action_id)
+            && self.is_agent_requested_command_in_flight()
+            && self.is_agent_driving_command()
+            && !self.is_agent_in_control()
+    }
+
     /// Returns the `long_running_control_state` associated with this block, if any.
     pub fn long_running_control_state(&self) -> Option<&LongRunningCommandControlState> {
         self.interaction_mode.long_running_control_state()

@@ -5187,7 +5187,7 @@ impl TuiTerminalSessionView {
                     mode: *mode,
                 });
             }
-            ShellCommandExecutorEvent::CancelExecution => {
+            ShellCommandExecutorEvent::CancelExecution { .. } => {
                 ctx.emit(TuiTerminalSessionEvent::InterruptPty);
             }
             ShellCommandExecutorEvent::TransferControlToUser {
