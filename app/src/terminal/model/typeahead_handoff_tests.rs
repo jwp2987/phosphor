@@ -259,6 +259,24 @@ fn a_report_after_the_deferred_command_was_written_is_stashed() {
     );
 }
 
+/// A line-consuming program answered the user's Enter, so no prompt follows it: the quiet
+/// period releases the pty back to the editor.
+fn consumed_enter_is_released_after_a_quiet_period(handoff: &mut TypeaheadHandoff) {
+    // The submitted command's own prompt.
+    handoff.on_precmd();
+    let ActiveDecision::DrainAndWait {
+        activity_generation,
+    } = handoff.on_line_editor_active(true, true)
+    else {
+        panic!("an unanswered Enter must arm the quiet period");
+    };
+    assert!(handoff.reset_stale_counts(activity_generation));
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Committed
+    );
+}
+
 #[test]
 fn read_answered_with_y_and_enter_does_not_keep_the_pty() {
     // `read x`, answered `y` Enter.
