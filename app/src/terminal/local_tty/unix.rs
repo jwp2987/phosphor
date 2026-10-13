@@ -42,7 +42,7 @@ use std::{
     mem::MaybeUninit,
     os::unix::{
         fs::DirBuilderExt,
-        io::{AsRawFd, FromRawFd, RawFd},
+        io::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd},
     },
     path::{Path, PathBuf},
     ptr,
@@ -479,6 +479,11 @@ fn spawn_command_in_pty(
 ) -> Result<PtySpawnInfo> {
     let (leader, follower) = make_pty(size.to_winsize())?;
 
+    // Own the leader until the spawn succeeds. Every early return below
+    // (most likely `command.spawn()` failing with EMFILE when the process is
+    // out of fds) used to leak it, one fd per failed tab (#882).
+    let leader_owned = unsafe { OwnedFd::from_raw_fd(leader) };
+
     // Close the follower at the end of this function.
     // We need to keep it alive long enough for fork().
     let _file = unsafe { File::from_raw_fd(follower) };
@@ -593,7 +598,7 @@ fn spawn_command_in_pty(
     Ok(PtySpawnInfo {
         result: PtySpawnResult {
             pid: spawned.id(),
-            leader_fd: leader,
+            leader_fd: leader_owned.into_raw_fd(),
         },
         child: spawned,
     })
