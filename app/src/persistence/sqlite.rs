@@ -1525,7 +1525,8 @@ fn reconstruct_database(path: &Path) -> Result<SqliteConnection> {
 
 fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<WriterHandles> {
     let (tx, rx) = std::sync::mpsc::sync_channel(CHANNEL_SIZE);
-    let mut current_conn = conn;
+    // `None` while paused: the connection is closed before the file is removed.
+    let mut current_conn = Some(conn);
     let handle = thread::Builder::new()
         .name("SQLite Writer".into())
         .spawn(move || {
@@ -1553,7 +1554,7 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                         ModelEvent::ReconstructAndResume => {
                             match reconstruct_database(&database_path) {
                                 Ok(conn) => {
-                                    current_conn = conn;
+                                    current_conn = Some(conn);
                                     paused = false;
                                     log::info!("SQLite Writer is resumed");
                                 }
@@ -1572,6 +1573,19 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                             paused = true;
                             log::info!("SQLite Writer is paused");
 
+                            // Close the connection while the file still exists, so
+                            // the close checkpoints into the real database and
+                            // removes its own `-wal`. Closing it afterwards would
+                            // unlink, by name, the `-wal` of a database created
+                            // since (#920). Nothing is leaked: while paused there
+                            // is no connection at all.
+                            if let Some(mut old) = current_conn.take() {
+                                if let Err(e) = old.batch_execute("PRAGMA wal_checkpoint(TRUNCATE);") {
+                                    log::warn!("Failed to checkpoint WAL before removal: {e:?}");
+                                }
+                                drop(old);
+                            }
+
                             if let Err(err) = std::fs::remove_file(&database_path) {
                                 report_error!(anyhow::Error::new(err)
                                     .context("Error removing SQLite database"));
@@ -1584,8 +1598,8 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                             // main database and clear it before exiting, to avoid
                             // sqlite3_open triggering a "WAL mode database file
                             // was recovered" recovery on the next startup.
-                            if let Err(e) =
-                                current_conn.batch_execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                            if let Some(conn) = current_conn.as_mut()
+                                && let Err(e) = conn.batch_execute("PRAGMA wal_checkpoint(TRUNCATE);")
                             {
                                 log::warn!("Failed to checkpoint WAL on shutdown: {e:?}");
                             }
@@ -1597,7 +1611,10 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                 log::info!("Ignoring event as SQLite Writer is on pause");
                                 continue;
                             }
-                            match handle_model_event(event, &mut current_conn) {
+                            let Some(conn) = current_conn.as_mut() else {
+                                continue;
+                            };
+                            match handle_model_event(event, conn) {
                                 Ok(()) => {
                                     super::database_notice::record_write_outcome(
                                         &database_path,
