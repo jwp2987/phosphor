@@ -1,3 +1,8 @@
+#![allow(
+    clippy::disallowed_types,
+    reason = "these tests spawn real shells to check rendered tab-config commands"
+)]
+
 use std::collections::HashMap;
 use std::path::Path;
 

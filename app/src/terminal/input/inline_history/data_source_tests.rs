@@ -1,3 +1,8 @@
+#![allow(
+    clippy::disallowed_types,
+    reason = "tests poll a real wall-clock deadline for the async mixer"
+)]
+
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

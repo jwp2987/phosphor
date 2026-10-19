@@ -12853,7 +12853,7 @@ impl TerminalView {
                             let model = self.model.lock();
                             compute(model.block_list())
                         });
-                        active_session.note_user_command(&command);
+                        active_session.note_user_command(command);
                     }
                     if !active_session.has_attempted_to_load_external_commands() {
                         ctx.background_executor()
