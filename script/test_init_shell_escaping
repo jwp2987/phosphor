@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Run the real InitShell snippets with hostile user/hostname values and check
+the emitted payload is valid JSON that round-trips the exact value (#879).
+
+WHY THIS EXISTS
+---------------
+The earliest bootstrap lines (`*_init_shell.sh`, `*_init_subshell.sh`, and the
+copies embedded in the ssh wrappers of bash_body.sh / zsh_body.sh / fish.sh)
+print the user and hostname into the InitShell JSON before any helper such as
+`warp_escape_json` exists. They escaped only `\\` and `"`, so a tab, newline,
+ESC or other control character produced invalid JSON and relied on the
+receiving-side repair (`repair_hook_json`). They now escape every control
+character with parameter expansion and builtins only (no external process).
+
+WHAT IT DOES
+------------
+For each shell (bash, zsh, fish; whichever are installed) and each script that
+carries the snippet, it replaces only the two lines that *read* the user and
+hostname with the hostile value (passed via the environment), runs the script
+in the real shell, decodes the DCS/OSC payload, and asserts
+`json.loads(payload)["value"]["user"]` equals the original (and likewise
+hostname). Embedded copies are extracted from the wrapper source and un-quoted
+the way the enclosing shell would.
+
+pwsh builds the payload with ConvertTo-Json, which escapes everything; it is
+run too when installed.
+
+USAGE
+    script/test_init_shell_escaping
+Exit 0 when every case passes, 1 otherwise. Missing shells are reported as
+SKIP and fail the run when CI is set.
+"""
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+BOOT = os.path.join(ROOT, "app", "assets", "bundled", "bootstrap")
+
+HOSTILE = [
+    "plain",
+    "CORP\\jdoe",
+    'a"b',
+    "tab\there",
+    "back\\slash\\\\two",
+    "esc\x1b[31mred",
+    "cr\rlf",
+    "nl\nmid",
+    "bell\x07bs\x08ff\x0cvt\x0b",
+    "c0" + "".join(chr(i) for i in range(1, 32) if i != 10) + "end",
+    "del\x7fdel",
+    "unié中\U0001f600",
+    "mix\\\"\t\\n\x1b\\u0041",
+    "",
+]
+
+
+def read(name):
+    with open(os.path.join(BOOT, name)) as f:
+        return f.read()
+
+
+def fill(text):
+    return text.replace("@@WARP_SESSION_ID@@", "4242").replace(
+        "@@USING_CON_PTY_BOOLEAN@@", "false"
+    )
+
+
+def snippet_lines(text, start_re, end_re):
+    lines = text.split("\n")
+    s = next(i for i, l in enumerate(lines) if re.search(start_re, l))
+    e = next(i for i in range(s, len(lines)) if re.search(end_re, lines[i]))
+    return "\n".join(lines[s : e + 1])
+
+
+def unquote_one_liner(line, fish):
+    """Extract the zsh_env_script one-liner and undo the enclosing quoting."""
+    m = re.search(r"'(unsetopt ZLE RCS GLOBAL_RCS;.*?)' \| command", line)
+    body = m.group(1).replace("'\"'\"'", "'")
+    body = body.replace("'$remote_session_id'", "4242").replace("'$WARP_HONOR_PS1'", "0")
+    if fish:
+        body = body.replace("\\\\", "\\")
+    return fill(body)
+
+
+def cases():
+    """(label, shell, script text with {U}/{H} acquisition not yet replaced)."""
+    out = []
+    for sh, files in (
+        ("bash", ["bash_init_shell.sh", "bash_init_subshell.sh"]),
+        ("zsh", ["zsh_init_shell.sh", "zsh_init_subshell.sh"]),
+        ("fish", ["fish_init_shell.sh", "fish_init_subshell.sh"]),
+    ):
+        for f in files:
+            out.append((f, sh, fill(read(f))))
+    # Embedded copies in the ssh wrappers.
+    for fname, fish in (("bash_body.sh", False), ("zsh_body.sh", False), ("fish.sh", True)):
+        text = read(fname)
+        blk = snippet_lines(text, r"^\s*_hostname=\$\(command -pv hostname", r"^\s*_msg=")
+        if fish:
+            blk = blk.replace("\\\\", "\\")
+        blk = fill(blk)
+        if blk.endswith("'\""):
+            blk = blk[:-2]  # closes the enclosing quoting of the ssh wrapper
+        # The remote bash rcfile; its _msg is emitted by the next printf, so emit here.
+        out.append((fname + " (embedded bash)", "bash", "WARP_SESSION_ID=4242\n" + blk + "\nprintf '\\eP$d%s\\x9c' \"$_msg\"\n"))
+        one = next(l for l in text.split("\n") if "unsetopt ZLE RCS GLOBAL_RCS" in l)
+        out.append((fname + " (embedded zsh)", "zsh", unquote_one_liner(one, fish)))
+    return out
+
+
+def instrument(sh, text, user, host):
+    """Replace only the lines that read the user/hostname."""
+    lines = []
+    if sh == "fish":
+        for l in text.split("\n"):
+            if re.match(r"\s*set _hostname \(", l):
+                l = 'set _hostname (printf "%s" "$T_HOST")'
+            elif re.match(r"\s*set _user \(", l):
+                l = 'set _user (printf "%s" "$T_USER")'
+            lines.append(l)
+    else:
+        for l in text.split("\n"):
+            lead = re.match(r"\s*", l).group(0)
+            if re.match(r"\s*_hostname=\$\(", l):
+                l = lead + '_hostname=$(printf "%s" "$T_HOST")'
+            elif re.match(r"\s*_user=\$\(", l):
+                l = lead + '_user=$(printf "%s" "$T_USER")'
+            lines.append(l)
+        if "unsetopt ZLE RCS GLOBAL_RCS;" in text:  # one-liner
+            t = text
+            t = re.sub(r"_hostname=\$\(.*?\); _user=", '_hostname=$(printf "%s" "$T_HOST"); _user=', t, count=1)
+            t = re.sub(r"_user=\$\(.*?\); _ju=", '_user=$(printf "%s" "$T_USER"); _ju=', t, count=1)
+            return t
+    return "\n".join(lines)
+
+
+def expected(sh, v):
+    if sh == "fish":
+        # fish splits command substitution on newlines and drops the final empty one.
+        parts = v.split("\n")
+        if parts and parts[-1] == "":
+            parts.pop()
+        return "\\n".join(parts) if False else "\n".join(parts)
+    return v.rstrip("\n")  # POSIX command substitution strips trailing newlines
+
+
+HOOK = re.compile(rb"\x1bP\$d([0-9a-f]*)\x9c|\x1b\]9278;d;([0-9a-f]*)\x07")
+
+
+def run(sh, binpath, text, user, host):
+    env = {"PATH": os.environ["PATH"], "T_USER": user, "T_HOST": host, "HOME": "/tmp", "LANG": "C.UTF-8"}
+    if sh == "bash":
+        cmd = [binpath, "--noprofile", "--norc", "-c", text]
+    elif sh == "zsh":
+        cmd = [binpath, "-f", "-c", text]
+    else:
+        cmd = [binpath, "--no-config", "-c", text]
+    p = subprocess.run(cmd, env=env, capture_output=True, stdin=subprocess.DEVNULL, timeout=30)
+    m = HOOK.search(p.stdout)
+    if not m:
+        return None, p
+    return bytes.fromhex((m.group(1) or m.group(2)).decode()).decode("utf-8", "strict"), p
+
+
+def main():
+    shells = {s: shutil.which(s) for s in ("bash", "zsh", "fish")}
+    fails = 0
+    total = 0
+    for label, sh, text in cases():
+        if not shells[sh]:
+            print(f"SKIP {label}: {sh} not installed")
+            if os.environ.get("CI"):
+                fails += 1
+            continue
+        for v in HOSTILE:
+            # Vary which side carries the hostile value; the other stays benign.
+            for user, host in ((v, "host"), ("user", v)):
+                total += 1
+                src = instrument(sh, text, user, host)
+                try:
+                    payload, p = run(sh, shells[sh], src, user, host)
+                    if payload is None:
+                        raise AssertionError("no hook emitted; stderr=%r" % p.stderr[:200])
+                    d = json.loads(payload)["value"]
+                    eu, eh = expected(sh, user), expected(sh, host)
+                    if d["user"] != eu or d["hostname"] != eh:
+                        raise AssertionError("round-trip %r/%r != %r/%r" % (d["user"], d["hostname"], eu, eh))
+                except Exception as e:  # noqa: BLE001
+                    fails += 1
+                    print(f"FAIL {label} [{sh}] user={user!r} host={host!r}: {e}")
+    pw = shutil.which("pwsh")
+    print("pwsh:", pw or "not installed (SKIP; pwsh uses ConvertTo-Json)")
+    print(f"{total - fails if fails < total else 0}/{total} cases passed" if not fails else f"{fails} FAILED of {total}")
+    return 1 if fails else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

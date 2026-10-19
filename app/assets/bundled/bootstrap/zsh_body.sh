@@ -785,10 +785,14 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
     # prefix of the ones it saw, leaving residue such as `62c` or `10;rgb:...`,
     # which is removed from the start of the text only (replies queue up before
     # anything the user typed). Replies are plain ASCII so the loops stay cheap.
+    # Colour components: a reply that ends in BEL or ESC \ may have 1-4 digit components; an
+    # unterminated one (or the ESC-less residue) is matched at a consistent width of 1-4 digits,
+    # never a greedy 1-4 per component, or text such as `echo` typed right after it would lose its leading
+    # hex letters.
     function __warp_strip_terminal_replies {
         __warp_stripped=$1
         local esc=$'\e' bel=$'\a' m
-        local re_any='('"$esc"'\[[?>=]?[0-9;]*[cR])|('"$esc"'\][0-9;]*;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}('"$bel"'|'"$esc"'\\)?)|([0-9]+(;[0-9]+)?;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4})'
+        local re_any='('"$esc"'\[[?>=]?[0-9;]*[cR])|('"$esc"'\][0-9;]*;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}('"$bel"'|'"$esc"'\\))|('"$esc"'\][0-9;]*;rgba?:([0-9a-fA-F]{4}/[0-9a-fA-F]{4}/[0-9a-fA-F]{4}|[0-9a-fA-F]{3}/[0-9a-fA-F]{3}/[0-9a-fA-F]{3}|[0-9a-fA-F]{2}/[0-9a-fA-F]{2}/[0-9a-fA-F]{2}|[0-9a-fA-F]{1}/[0-9a-fA-F]{1}/[0-9a-fA-F]{1}))|([0-9]+(;[0-9]+)?;rgba?:([0-9a-fA-F]{4}/[0-9a-fA-F]{4}/[0-9a-fA-F]{4}|[0-9a-fA-F]{3}/[0-9a-fA-F]{3}/[0-9a-fA-F]{3}|[0-9a-fA-F]{2}/[0-9a-fA-F]{2}/[0-9a-fA-F]{2}|[0-9a-fA-F]{1}/[0-9a-fA-F]{1}/[0-9a-fA-F]{1}))'
         local re_lead='^(([0-9]+(;[0-9]+)*c)|(;?[0-9]+R))'
         while [[ $__warp_stripped =~ $re_any ]]; do
             m=${MATCH}
@@ -1110,7 +1114,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
           # Hex-encode the ZSH environment script we use to bootstrap remote zsh b/c it contains control characters
           # We decode on the SSH server using xxd if its available, otherwise fall back to a for-loop over each byte
           # and use printf to convert back to plaintext
-          local zsh_env_script=$(printf '%s' 'unsetopt ZLE RCS GLOBAL_RCS; WARP_SESSION_ID='$remote_session_id'; WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@; _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n); _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || echo $USER); _ju=${_user//\\/\\\\}; _ju=${_ju//\"/\\\"}; _jh=${_hostname//\\/\\\\}; _jh=${_jh//\"/\\\"}; _msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"zsh\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d '"'"' \n'"'"'); printf '"'"'\e]9278;d;%s\x07'"'"' $_msg; unset _hostname _user _msg _ju _jh' | command -p od -An -v -tx1 | command -p tr -d ' \n')
+          local zsh_env_script=$(printf '%s' 'unsetopt ZLE RCS GLOBAL_RCS; WARP_SESSION_ID='$remote_session_id'; WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@; _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n); _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || echo $USER); _ju=${_user//\\/\\\\}; _ju=${_ju//\"/\\\"}; _jh=${_hostname//\\/\\\\}; _jh=${_jh//\"/\\\"}; for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do _c=${(#)_i}; _x=$(( [##16] _i )); _h="\\u00${(l:2::0:)_x}"; _ju=${_ju//$_c/$_h}; _jh=${_jh//$_c/$_h}; done; _msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"zsh\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d '"'"' \n'"'"'); printf '"'"'\e]9278;d;%s\x07'"'"' $_msg; unset _hostname _user _msg _ju _jh _i _c _h _x' | command -p od -An -v -tx1 | command -p tr -d ' \n')
 
           # Optionally attach to an existing ControlMaster the user already
           # runs for this destination instead of creating our own. Resolve
@@ -1205,12 +1209,12 @@ case "'${SHELL##*/}'" in
       WARP_HONOR_PS1="'$WARP_HONOR_PS1'"
       _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n)
       _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || echo $USER)
-      _ju=${_user//\\/\\\\}; _ju=${_ju//\"/\\\"}; _jh=${_hostname//\\/\\\\}; _jh=${_jh//\"/\\\"}
+      _ju=${_user//\\/\\\\}; _ju=${_ju//\"/\\\"}; _jh=${_hostname//\\/\\\\}; _jh=${_jh//\"/\\\"}; for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do printf -v _o %03o $_i; printf -v _c "\\$_o"; printf -v _h "\\\\u%04x" $_i; _ju=${_ju//$_c/$_h}; _jh=${_jh//$_c/$_h}; done
       _msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"bash\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d " \n")'"
       WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@
       if [[ "'$OS'" == Windows_NT ]]; then WARP_IN_MSYS2=true; else WARP_IN_MSYS2=false; fi
       printf '\''"'\e]9278;d;%s\x07'"'\'' \""'$_msg'"\"'
-      unset _hostname _user _msg _ju _jh
+      unset _hostname _user _msg _ju _jh _i _o _c _h
     )
       ;;
   zsh) WARP_TMP_DIR="'$(command -p mktemp -d warptmp.XXXXXX)'"

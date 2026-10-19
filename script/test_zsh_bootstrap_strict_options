@@ -304,6 +304,18 @@ REPLIES = [
 ]
 
 
+def colour_cases():
+    """(label, reply) pairs: terminated replies of every width, and unterminated ones."""
+    out = []
+    for digits, comp in ((1, "f"), (2, "cc"), (3, "fff"), (4, "ffff")):
+        body = b"\x1b]11;rgb:" + "/".join([comp] * 3).encode()
+        out.append((f"{digits}-digit, BEL", body + b"\x07"))
+        out.append((f"{digits}-digit, ESC \\", body + b"\x1b\\"))
+    out.append(("2-digit, unterminated", b"\x1b]4;1;rgb:cc/00/00"))
+    out.append(("4-digit, unterminated", b"\x1b]10;rgb:ffff/ffff/ffff"))
+    return out
+
+
 def scenario_terminal_replies_in_typeahead():
     print("replies to terminal queries are not reported as typeahead")
     # #829: replies written while nothing reads them are later read by zle as
@@ -335,6 +347,19 @@ def scenario_terminal_replies_in_typeahead():
             check(got == "echo 62c", f"ordinary typed text is untouched (got {got!r})", sh)
         else:
             check(False, "the second input buffer is reported", sh)
+        # Text that starts with hex letters right after a reply must survive, whatever the
+        # reply's colour width or terminator (an over-greedy strip ate `ec` of `echo`).
+        for label, reply in colour_cases():
+            sh.pump(0.3)
+            n = len([1 for h, _ in sh.hooks() if h == "InputBuffer"])
+            os.write(sh.fd, reply)
+            sh.pump(0.3)
+            os.write(sh.fd, b"echo x")
+            sh.pump(0.3)
+            os.write(sh.fd, b"\x1bi")
+            ok = sh.pump(5, lambda: len([1 for h, _ in sh.hooks() if h == "InputBuffer"]) > n)
+            got = [v for h, v in sh.hooks() if h == "InputBuffer"][-1]["buffer"] if ok else None
+            check(got == "echo x", f"colour reply ({label}) is stripped, text kept (got {got!r})", sh)
     finally:
         sh.close()
 

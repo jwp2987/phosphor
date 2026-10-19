@@ -639,14 +639,17 @@ end
 # #829: a reply to a terminal query (DA, an OSC colour query, a cursor position report)
 # that nobody was reading can end up in the typeahead. Drop those before reporting it.
 # Complete replies are removed anywhere; the ESC-less residue of one (`62c`, `10;rgb:...`)
-# only from the start of the text.
+# only from the start of the text. A reply ending in BEL or ESC \ may have 1-4 digit colour
+# components; an unterminated one or a residue is matched at a consistent width of 1-4 digits (a greedy 1-4 would eat
+# the leading hex letters of text typed right after it, e.g. `echo`).
 function __warp_strip_terminal_replies
     # `string` splits piped input into lines, so the start-of-text anchor below has to
     # be applied to an argument, not to the pipe.
     set -l text (string join \n -- $argv | string collect \
         | string replace -r -a '\e\[[?>=]?[0-9;]*[cR]' '' \
-        | string replace -r -a '\e\][0-9;]*;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}(?:\a|\e\\\\)?' '' \
-        | string replace -r -a '[0-9]+(?:;[0-9]+)?;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}' '' \
+        | string replace -r -a '\e\][0-9;]*;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}(?:\a|\e\\\\)' '' \
+        | string replace -r -a '\e\][0-9;]*;rgba?:(?:[0-9a-fA-F]{4}/[0-9a-fA-F]{4}/[0-9a-fA-F]{4}|[0-9a-fA-F]{3}/[0-9a-fA-F]{3}/[0-9a-fA-F]{3}|[0-9a-fA-F]{2}/[0-9a-fA-F]{2}/[0-9a-fA-F]{2}|[0-9a-fA-F]{1}/[0-9a-fA-F]{1}/[0-9a-fA-F]{1})' '' \
+        | string replace -r -a '[0-9]+(?:;[0-9]+)?;rgba?:(?:[0-9a-fA-F]{4}/[0-9a-fA-F]{4}/[0-9a-fA-F]{4}|[0-9a-fA-F]{3}/[0-9a-fA-F]{3}/[0-9a-fA-F]{3}|[0-9a-fA-F]{2}/[0-9a-fA-F]{2}/[0-9a-fA-F]{2}|[0-9a-fA-F]{1}/[0-9a-fA-F]{1}/[0-9a-fA-F]{1})' '' \
         | string collect)
     string replace -r '\A(?:[0-9]+(?:;[0-9]+)*c|;?[0-9]+R)+' '' -- (string join \n -- $text | string collect)
 end
@@ -750,7 +753,7 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         # Hex-encode the ZSH environment script we use to bootstrap remote zsh b/c it contains control characters
         # We decode on the SSH server using xxd if its available, otherwise fall back to a for-loop over each byte
         # and use printf to convert back to plaintext
-        set -l zsh_env_script (printf '%s' 'unsetopt ZLE RCS GLOBAL_RCS; WARP_SESSION_ID='$remote_session_id'; WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@; WARP_HONOR_PS1='$WARP_HONOR_PS1'; _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || uname -n); _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || echo $USER); _ju=${_user//\\\\/\\\\\\\\}; _ju=${_ju//\\"/\\\\\\"}; _jh=${_hostname//\\\\/\\\\\\\\}; _jh=${_jh//\\"/\\\\\\"}; _msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"zsh\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d " \n"); printf '"'"'\x1b\x50\x24\x64%s\x9c'"'"' $_msg; unset _hostname _user _msg _ju _jh' | command od -An -v -tx1 | command tr -d ' \n')
+        set -l zsh_env_script (printf '%s' 'unsetopt ZLE RCS GLOBAL_RCS; WARP_SESSION_ID='$remote_session_id'; WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@; WARP_HONOR_PS1='$WARP_HONOR_PS1'; _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || uname -n); _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || echo $USER); _ju=${_user//\\\\/\\\\\\\\}; _ju=${_ju//\\"/\\\\\\"}; _jh=${_hostname//\\\\/\\\\\\\\}; _jh=${_jh//\\"/\\\\\\"}; for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do _c=${(#)_i}; _x=$(( [##16] _i )); _h="\\\\u00${(l:2::0:)_x}"; _ju=${_ju//$_c/$_h}; _jh=${_jh//$_c/$_h}; done; _msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"zsh\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d " \n"); printf '"'"'\x1b\x50\x24\x64%s\x9c'"'"' $_msg; unset _hostname _user _msg _ju _jh _i _c _h _x' | command od -An -v -tx1 | command tr -d ' \n')
 
         # Optionally attach to an existing ControlMaster the user already
         # runs for this destination instead of creating our own. Resolve
@@ -835,12 +838,12 @@ bash)
       WARP_HONOR_PS1="'$WARP_HONOR_PS1'"
       _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || uname -n)
       _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || echo $USER)
-      _ju=${_user//\\\\/\\\\\\\\}; _ju=${_ju//\\"/\\\\\\"}; _jh=${_hostname//\\\\/\\\\\\\\}; _jh=${_jh//\\"/\\\\\\"}
+      _ju=${_user//\\\\/\\\\\\\\}; _ju=${_ju//\\"/\\\\\\"}; _jh=${_hostname//\\\\/\\\\\\\\}; _jh=${_jh//\\"/\\\\\\"}; for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do printf -v _o %03o $_i; printf -v _c "\\\\$_o"; printf -v _h "\\\\\\\\u%04x" $_i; _ju=${_ju//$_c/$_h}; _jh=${_jh//$_c/$_h}; done
       _msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"bash\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d " \n")'"
       WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@
       if [[ "'$OS'" == Windows_NT ]]; then WARP_IN_MSYS2=true; else WARP_IN_MSYS2=false; fi
       printf '\''"'\eP$d%s\x9c'"'\'' \""'$_msg'"\"'
-      unset _hostname _user _msg _ju _jh
+      unset _hostname _user _msg _ju _jh _i _o _c _h
     )
     ;;
 zsh) WARP_TMP_DIR="'$(mktemp -d warptmp.XXXXXX)'"
