@@ -115,3 +115,133 @@ fn recording_a_write_failure_wakes_the_ui_and_leaves_the_notice() {
     assert!(!notice.persistence_disabled);
     record_write_outcome(db, None);
 }
+
+#[test]
+fn damage_messages_are_classified_as_corrupt() {
+    let path = Path::new("/nonexistent/dir/warp.sqlite");
+    for message in [
+        "database disk image is malformed",
+        "file is not a database",
+        "malformed database schema (blocks)",
+        "no such table: blocks",
+    ] {
+        assert_eq!(
+            classify_database_problem(message, path),
+            DatabaseProblem::Corrupt,
+            "{message}"
+        );
+    }
+}
+
+/// Damage and a vanished file are reported once per failing stretch, and the
+/// log is only asked to repeat the first line (#911).
+#[test]
+fn damage_is_reported_once_per_stretch_and_rearms_on_success() {
+    let _ = take_database_problem_notice();
+    let db = Path::new("/nonexistent/dir/stretch.sqlite");
+    record_write_outcome(db, None);
+
+    let msg = Some("file is not a database");
+    assert_eq!(record_write_outcome(db, msg), WriteFailureLog::First);
+    for _ in 0..20 {
+        assert_eq!(record_write_outcome(db, msg), WriteFailureLog::Repeat);
+    }
+    let notice = take_database_problem_notice().expect("one notice");
+    assert_eq!(notice.problem, DatabaseProblem::Corrupt);
+    assert!(take_database_problem_notice().is_none(), "exactly one");
+
+    // A different damage message in the same stretch is still the same stretch.
+    assert_eq!(
+        record_write_outcome(db, Some("database disk image is malformed")),
+        WriteFailureLog::Repeat
+    );
+    assert!(take_database_problem_notice().is_none());
+
+    record_write_outcome(db, None);
+    assert_eq!(
+        record_write_problem(db, DatabaseProblem::FileReplaced),
+        WriteFailureLog::First
+    );
+    assert_eq!(
+        take_database_problem_notice().unwrap().problem,
+        DatabaseProblem::FileReplaced
+    );
+    record_write_outcome(db, None);
+
+    // Unclassifiable errors are logged every time and never noticed.
+    assert_eq!(
+        record_write_outcome(db, Some("no such column: x")),
+        WriteFailureLog::Always
+    );
+    assert!(take_database_problem_notice().is_none());
+}
+
+#[test]
+fn partial_restore_notice_is_queued_behind_other_notices() {
+    let _ = take_database_problem_notice();
+    let db = Path::new("/nonexistent/dir/partial.sqlite");
+    record_partial_restore(db, 2);
+    record_startup_failure(db, "attempt to write a readonly database");
+    assert_eq!(
+        take_database_problem_notice().unwrap().problem,
+        DatabaseProblem::PartialRestore { skipped_tabs: 2 }
+    );
+    assert_eq!(
+        take_database_problem_notice().unwrap().problem,
+        DatabaseProblem::ReadOnly
+    );
+    assert!(take_database_problem_notice().is_none());
+}
+
+#[test]
+fn sqlite_error_log_is_limited_per_code() {
+    let mut seen = Vec::new();
+    assert!(sqlite_error_rate_limit(&mut seen, 26, 100));
+    assert!(!sqlite_error_rate_limit(&mut seen, 26, 101));
+    assert!(!sqlite_error_rate_limit(&mut seen, 26, 159));
+    assert!(sqlite_error_rate_limit(&mut seen, 11, 101), "other code");
+    assert!(sqlite_error_rate_limit(&mut seen, 26, 160), "after a minute");
+}
+
+#[test]
+fn deleted_or_replaced_file_is_detected_and_a_healthy_one_is_not_flagged() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("warp.sqlite");
+    std::fs::write(&db, b"x").unwrap();
+    let opened = file_identity(&db).expect("regular file has an identity");
+    assert_eq!(check_file_unchanged(&db, opened), None);
+
+    // Rewriting or truncating in place keeps the inode: not a replacement.
+    std::fs::write(&db, b"").unwrap();
+    assert_eq!(check_file_unchanged(&db, opened), None);
+
+    // Deleted.
+    std::fs::remove_file(&db).unwrap();
+    assert_eq!(
+        check_file_unchanged(&db, opened),
+        Some(DatabaseProblem::FileReplaced)
+    );
+
+    // Replaced by a directory.
+    std::fs::create_dir(&db).unwrap();
+    assert_eq!(
+        check_file_unchanged(&db, opened),
+        Some(DatabaseProblem::FileReplaced)
+    );
+    std::fs::remove_dir(&db).unwrap();
+
+    // A different file at the path (a healthy database put back) is a
+    // replacement too: it is reported, never written to.
+    #[cfg(unix)]
+    {
+        let keep = dir.path().join("keep");
+        std::fs::write(&keep, b"x").unwrap();
+        std::fs::write(&db, b"y").unwrap();
+        let first = file_identity(&db).unwrap();
+        std::fs::rename(&keep, &db).unwrap();
+        assert_eq!(
+            check_file_unchanged(&db, first),
+            Some(DatabaseProblem::FileReplaced)
+        );
+    }
+}

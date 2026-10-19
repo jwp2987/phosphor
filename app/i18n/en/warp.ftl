@@ -3843,5 +3843,12 @@ workspace-database-write-failing-toast = Phosphor can't save to its saved-state 
 workspace-database-reason-read-only = the file or its folder is read-only.
 workspace-database-reason-disk-full = the disk is full.
 workspace-database-reason-other = { $detail }.
+workspace-database-reason-corrupt = the file is damaged.
+workspace-database-reason-replaced = the file was deleted or replaced while Phosphor was running. Phosphor left it alone and stopped saving until you restart.
+workspace-database-partial-restore-toast = Some saved tabs couldn't be restored from { $path }: { $skipped ->
+    [0] the saved session could not be read, so Phosphor started empty.
+    [one] one tab was damaged and left out.
+   *[other] { $skipped } tabs were damaged and left out.
+} The database itself was left untouched.
 workspace-settings-file-restored-toast = { $path } was deleted while Phosphor was running and has been restored. Quit Phosphor first to reset settings.
 workspace-settings-save-failed-toast = Couldn't save your settings to { $path }: { $reason }. Changes will be lost when Phosphor restarts. Check that the file and its folder are writable.

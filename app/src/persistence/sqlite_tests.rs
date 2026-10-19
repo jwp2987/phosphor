@@ -29,7 +29,7 @@ use crate::{
 
 use super::{
     codebase_index_has_embeddings, decode_path, deduplicate_events, encode_path,
-    get_all_codebase_index_metadata, read_sqlite_data, save_app_state,
+    get_all_codebase_index_metadata, read_sqlite_data, read_sqlite_data_counting, save_app_state,
     save_codebase_index_embeddings, save_codebase_index_metadata, setup_database,
     setup_database_or_quarantine, start_writer,
 };
@@ -205,6 +205,33 @@ fn test_sqlite_round_trips_vertical_tabs_panel_open() {
             .collect::<Vec<_>>(),
         vec![false, true]
     );
+}
+
+/// #911: tabs whose rows do not read back are counted, so the user is told
+/// the restore was partial instead of getting fewer tabs in silence.
+#[test]
+fn damaged_tab_rows_are_counted_as_skipped() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+    let app_state = AppState {
+        windows: vec![test_terminal_window_snapshot(false)],
+        active_window_index: Some(0),
+        block_lists: Default::default(),
+        running_mcp_servers: Default::default(),
+    };
+    save_app_state(&mut conn, &app_state).expect("app state should save");
+
+    let skipped = std::cell::Cell::new(0);
+    read_sqlite_data_counting(&mut conn, None, &skipped).expect("loads");
+    assert_eq!(skipped.get(), 0, "an intact database skips nothing");
+
+    diesel::sql_query("delete from pane_nodes")
+        .execute(&mut conn)
+        .expect("rows deleted");
+    let restored = read_sqlite_data_counting(&mut conn, None, &skipped).expect("loads");
+    assert_eq!(skipped.get(), 1);
+    assert!(restored.app_state.windows[0].tabs.is_empty());
 }
 
 fn test_workspace_metadata(path: &str) -> ai::workspace::WorkspaceMetadata {

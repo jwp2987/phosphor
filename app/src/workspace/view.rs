@@ -2792,8 +2792,28 @@ impl Workspace {
                 .with_object_id("log_fallback".to_owned()),
             );
         }
-        if let Some(notice) = crate::persistence::take_database_problem_notice() {
+        while let Some(notice) = crate::persistence::take_database_problem_notice() {
+            if let crate::persistence::DatabaseProblem::PartialRestore { skipped_tabs } =
+                &notice.problem
+            {
+                toasts.push(
+                    DismissibleToast::error(crate::t!(
+                        "workspace-database-partial-restore-toast",
+                        path = friendly(&notice.path),
+                        skipped = *skipped_tabs
+                    ))
+                    .with_object_id("database_partial_restore".to_owned()),
+                );
+                continue;
+            }
             let reason = match &notice.problem {
+                crate::persistence::DatabaseProblem::Corrupt => {
+                    crate::t!("workspace-database-reason-corrupt")
+                }
+                crate::persistence::DatabaseProblem::FileReplaced => {
+                    crate::t!("workspace-database-reason-replaced")
+                }
+                crate::persistence::DatabaseProblem::PartialRestore { .. } => continue,
                 crate::persistence::DatabaseProblem::ReadOnly => {
                     crate::t!("workspace-database-reason-read-only")
                 }
