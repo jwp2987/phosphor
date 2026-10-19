@@ -2013,3 +2013,114 @@ fn half_truncated_database_is_recovered() {
         ),
     }
 }
+
+/// #902: the prewarm thread and a second opener migrating one empty database
+/// at the same time must all succeed, with the schema applied exactly once and
+/// nothing quarantined.
+#[test]
+fn concurrent_setup_of_a_fresh_database_all_succeed() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let barrier = Arc::new(std::sync::Barrier::new(8));
+    let handles: Vec<_> = (0..8)
+        .map(|_| {
+            let path = database_path.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                setup_database_or_quarantine(&path)
+                    .map(drop)
+                    .map_err(|e| format!("{e:#}"))
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle
+            .join()
+            .expect("thread should not panic")
+            .expect("a concurrent migrator must not fail");
+    }
+    assert_database_fully_migrated_and_unquarantined(tempdir.path(), &database_path);
+}
+
+fn assert_database_fully_migrated_and_unquarantined(dir: &std::path::Path, db: &std::path::Path) {
+    use diesel::{Connection, SqliteConnection};
+    use diesel_migrations::MigrationHarness;
+    let mut conn = SqliteConnection::establish(db.to_str().unwrap()).expect("open");
+    assert!(
+        !conn
+            .has_pending_migration(::persistence::MIGRATIONS)
+            .expect("check pending"),
+        "every migration should be applied"
+    );
+    let quarantined = std::fs::read_dir(dir)
+        .expect("read_dir")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_name().to_string_lossy().contains("corrupt"))
+        .count();
+    assert_eq!(quarantined, 0, "a migration race must never quarantine");
+}
+
+/// Child half of [`concurrent_processes_setup_of_a_fresh_database_all_succeed`]:
+/// does nothing unless the parent set the environment variable.
+#[test]
+fn migration_race_child_process() {
+    let Some(path) = std::env::var_os("PHOSPHOR_TEST_MIGRATION_RACE_DB") else {
+        return;
+    };
+    let path = PathBuf::from(path);
+    let go = path.with_extension("go");
+    while !go.exists() {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    setup_database_or_quarantine(&path).expect("a concurrent migrator must not fail");
+}
+
+/// #902 across processes: several processes migrating one empty database at
+/// once must all succeed.
+#[test]
+fn concurrent_processes_setup_of_a_fresh_database_all_succeed() {
+    if std::env::var_os("PHOSPHOR_TEST_MIGRATION_RACE_DB").is_some() {
+        return;
+    }
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let exe = std::env::current_exe().expect("current exe");
+    let children: Vec<_> = (0..4)
+        .map(|_| {
+            std::process::Command::new(&exe)
+                .args([
+                    "--exact",
+                    "persistence::sqlite::tests::migration_race_child_process",
+                ])
+                .arg("--test-threads=1")
+                .env("PHOSPHOR_TEST_MIGRATION_RACE_DB", &database_path)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn child")
+        })
+        .collect();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    std::fs::write(database_path.with_extension("go"), b"").expect("go file");
+    for child in children {
+        let output = child.wait_with_output().expect("child output");
+        assert!(
+            output.status.success(),
+            "child failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert_database_fully_migrated_and_unquarantined(tempdir.path(), &database_path);
+}
+
+/// #902: a lost migration race is recognised, and is not "unusable".
+#[test]
+fn migration_race_error_is_recognised_and_not_unusable() {
+    let message = "unique constraint failed: __diesel_schema_migrations.version";
+    assert!(super::error_is_migration_race(message));
+    assert!(!super::error_means_unusable_database(message));
+    assert!(!super::error_may_be_transient_io(message));
+    assert!(!super::error_is_migration_race("malformed database schema"));
+}

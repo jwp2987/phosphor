@@ -1,12 +1,11 @@
 use std::time::Duration;
 
 use warp_core::ui::appearance::Appearance;
-use warpui::keymap::Keystroke;
 use warpui::platform::WindowStyle;
 use warpui::{App, TypedActionView, ViewHandle};
 
 use super::{
-    is_expand_toggle_keystroke, toast_message_is_truncated, truncate_toast_message,
+    toast_message_is_truncated, truncate_toast_message,
     DismissibleToast, DismissibleToastAction, DismissibleToastStack, ToastFlavor,
     COLLAPSED_MAX_CHARS, COLLAPSED_MAX_LINES,
 };
@@ -31,19 +30,6 @@ fn newline_heavy_message_is_truncated_to_collapsed_lines() {
     let collapsed = truncate_toast_message(message);
     assert_eq!(collapsed.lines().count(), COLLAPSED_MAX_LINES);
     assert!(collapsed.ends_with('…'));
-}
-
-#[test]
-fn expand_toggle_accepts_enter_and_space_without_modifiers() {
-    assert!(is_expand_toggle_keystroke(
-        &Keystroke::parse("enter").expect("enter should parse")
-    ));
-    assert!(is_expand_toggle_keystroke(
-        &Keystroke::parse("space").expect("space should parse")
-    ));
-    assert!(!is_expand_toggle_keystroke(
-        &Keystroke::parse("ctrl-enter").expect("ctrl-enter should parse")
-    ));
 }
 
 #[test]

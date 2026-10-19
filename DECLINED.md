@@ -2464,3 +2464,10 @@ orchestration trees (children are looked up in memory). The attempted design is 
   one thing this code must never do. The cost is that saving resumes at the next launch, which
   opens whatever is at the path normally. Reverse only for the "path missing" case if history loss
   proves acceptable.
+
+## Toast "Show more" has no keyboard toggle — declined 2026-10-19 (#902, #908)
+
+The expand/collapse button of `DismissibleToast` used to toggle on Enter and Space. Key events reach every
+`EventHandler` in the window, not only the focused one, and elements here are not focusable, so a visible toast
+swallowed every space typed into every input. The handler was removed; the toggle is mouse-only. Reverse only
+together with a focusable toast button (keys routed to it only while it holds focus).

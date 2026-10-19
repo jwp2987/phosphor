@@ -1434,10 +1434,82 @@ fn setup_database(database_path: &Path) -> Result<SqliteConnection> {
         safe: ("Connecting to SQLite database"),
         full: ("Connecting to SQLite database at {db_url}")
     );
-    conn.run_pending_migrations(persistence::MIGRATIONS)
-        .map_err(|e| anyhow!(e))
-        .context("Failed to perform migrations")?;
+    run_migrations_single_writer(&mut conn)?;
     Ok(conn)
+}
+
+/// How long a migrator waits for another process that is migrating the same
+/// database. A cold migration takes a few hundred milliseconds; this only has
+/// to outlast a slow disk.
+const MIGRATION_LOCK_TIMEOUT_MS: u32 = 30_000;
+
+/// How many times a migrator re-checks after losing a race to another one.
+const MIGRATION_RACE_RETRIES: usize = 5;
+
+/// Whether `message` (lowercased) is a second migrator losing the race to the
+/// first: it read the applied-migrations list before the other committed, and
+/// then tried to record a version that is now there (#902).
+fn error_is_migration_race(message: &str) -> bool {
+    message.contains("unique constraint failed: __diesel_schema_migrations")
+}
+
+/// Runs the pending migrations so that exactly one process or thread writes
+/// the schema at a time (#902).
+///
+/// The app opens `warp.sqlite` for migration from a prewarm thread, and a
+/// second app process (a relaunch racing the previous instance's shutdown, or
+/// two launches at once) can do the same on the same empty file. Diesel reads
+/// the applied versions and then runs each migration in its own transaction,
+/// so two migrators both see "nothing applied", and the loser fails with
+/// `UNIQUE constraint failed: __diesel_schema_migrations.version`.
+///
+/// Nothing is done when no migration is pending, which is every launch but the
+/// first after an upgrade, so the common path takes no write lock. Otherwise
+/// the whole run happens inside one `BEGIN IMMEDIATE` transaction: SQLite
+/// serialises that across processes, and once it is held `run_pending_migrations`
+/// re-reads the applied versions, so a migrator that waited finds nothing left
+/// to do. A race lost anyway (e.g. an older build without the lock) is retried
+/// as "already migrated, re-check" rather than reported as a failure.
+fn run_migrations_single_writer(conn: &mut SqliteConnection) -> Result<()> {
+    let pending = |conn: &mut SqliteConnection| {
+        conn.has_pending_migration(persistence::MIGRATIONS)
+            .map_err(|e| anyhow!(e))
+            .context("Failed to check for pending migrations")
+    };
+    if !pending(conn)? {
+        return Ok(());
+    }
+    conn.batch_execute(&format!(
+        "PRAGMA busy_timeout = {MIGRATION_LOCK_TIMEOUT_MS};"
+    ))?;
+    let mut result = Ok(());
+    for attempt in 0..=MIGRATION_RACE_RETRIES {
+        result = conn
+            .immediate_transaction(|conn| {
+                conn.run_pending_migrations(persistence::MIGRATIONS)
+                    .map(|_| ())
+                    .map_err(|e| anyhow!(e))
+            })
+            .context("Failed to perform migrations");
+        let raced = result
+            .as_ref()
+            .err()
+            .is_some_and(|err| error_is_migration_race(&underlying_error_message(err)));
+        if !raced {
+            break;
+        }
+        log::info!("Another process migrated the database first; re-checking (attempt {attempt})");
+        std::thread::sleep(std::time::Duration::from_millis(50 * (attempt as u64 + 1)));
+    }
+    // Restore the normal timeout for the writer's lifetime.
+    if let Err(err) = conn.batch_execute("PRAGMA busy_timeout = 1000;") {
+        log::warn!("Failed to restore SQLite busy_timeout: {err:#}");
+    }
+    if result.is_err() && !pending(conn).unwrap_or(true) {
+        // Someone else finished the job while this migrator was failing.
+        return Ok(());
+    }
+    result
 }
 
 /// The path at which the sqlite database is located.
