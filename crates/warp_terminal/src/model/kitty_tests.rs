@@ -91,9 +91,15 @@ fn size_that_wraps_to_zero_is_not_accepted() {
 fn dimension_cap_boundary() {
     let max = MAX_KITTY_IMAGE_DIMENSION;
 
-    // At the cap the dimensions are fine; the (empty) payload is what's wrong.
-    let result = kitty_action_from_chunks(format!("a=t,f=32,s={max},v={max}").as_bytes());
+    // At the dimension cap (with the other side small enough to stay under the byte cap) the
+    // dimensions are fine; the (empty) payload is what's wrong.
+    let result = kitty_action_from_chunks(format!("a=t,f=32,s={max},v=1").as_bytes());
     assert!(is_size_mismatch(&result), "{result:?}");
+
+    // A square at the cap would be 400 MB of RGBA, over the byte cap (#880, which is kept
+    // under the image cache's 320 MB budget), so it is rejected up front too.
+    let result = kitty_action_from_chunks(format!("a=t,f=32,s={max},v={max}").as_bytes());
+    assert!(is_dimensions_too_large(&result), "{result:?}");
 
     // One past the cap in either dimension is rejected up front.
     for control in [
@@ -104,20 +110,26 @@ fn dimension_cap_boundary() {
         assert!(is_dimensions_too_large(&result), "{control}: {result:?}");
     }
 
-    // The byte cap is exactly a cap-sized RGBA square.
+    // The byte cap is exactly an 8192x8192 RGBA square, and it stays under the
+    // asset cache's 320 MB budget.
+    assert!(MAX_KITTY_IMAGE_BYTES < 320 * 1000 * 1000);
+    let side = 8192;
     let mut control_data = KittyControlData {
-        width: max,
-        height: max,
+        width: side,
+        height: side,
         ..Default::default()
     };
     assert_eq!(
         raw_pixel_byte_count(&control_data).unwrap(),
         Some(MAX_KITTY_IMAGE_BYTES)
     );
+    control_data.height = side + 1;
+    assert!(raw_pixel_byte_count(&control_data).is_err());
+    control_data.height = side;
     control_data.pixel_data_format = KittyPixelDataFormat::Rgb24Bit;
     assert_eq!(
         raw_pixel_byte_count(&control_data).unwrap(),
-        Some(3 * max as usize * max as usize)
+        Some(3 * side as usize * side as usize)
     );
     control_data.pixel_data_format = KittyPixelDataFormat::Png;
     control_data.width = u32::MAX;

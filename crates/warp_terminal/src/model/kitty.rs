@@ -21,10 +21,12 @@ use super::escape_sequences::C1;
 pub const MAX_KITTY_IMAGE_DIMENSION: u32 = 10_000;
 
 /// The most image bytes a single kitty transmission may decode to, whatever
-/// the medium (direct payload, zlib output, file, shared memory). Matches
-/// kitty's own `MAX_DATA_SZ` and is exactly a `MAX_KITTY_IMAGE_DIMENSION`
-/// square RGBA image.
-pub const MAX_KITTY_IMAGE_BYTES: usize = 400_000_000;
+/// the medium (direct payload, zlib output, file, shared memory). Equal to
+/// `MAX_DECODED_IMAGE_BYTES` (exactly an 8192x8192 RGBA image), which sits under
+/// the asset cache's 320 MB budget, so an accepted image is never decoded only
+/// to be evicted straight away (#880). Kitty's own `MAX_DATA_SZ` is 400 MB, so a
+/// raw image between the two sizes that kitty accepts is refused here.
+pub const MAX_KITTY_IMAGE_BYTES: usize = warpui::image_cache::MAX_DECODED_IMAGE_BYTES as usize;
 
 /// The most base64 text one kitty transmission may accumulate across all its
 /// chunks (and the most a single APC sequence may buffer) before the terminal
