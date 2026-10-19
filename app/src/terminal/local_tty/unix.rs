@@ -768,11 +768,19 @@ fn winsize_cells(cells: usize) -> libc::c_ushort {
     cells.clamp(1, libc::c_ushort::MAX as usize) as libc::c_ushort
 }
 
+/// The narrowest width the pty is ever told it has.
+///
+/// zsh corrupts its heap and aborts (SIGABRT, "double free or corruption") when
+/// redrawing a prompt on a 2-column terminal that is also only 1-2 rows tall,
+/// which is exactly the floor `SizeInfo::new` produces for a tiny pane (#870).
+/// The grid may be narrower than this; the shell is simply told 3 columns.
+const MIN_PTY_COLUMNS: usize = 3;
+
 impl ToWinsize for &SizeInfo {
     fn to_winsize(&self) -> winsize {
         winsize {
             ws_row: winsize_cells(self.rows),
-            ws_col: winsize_cells(self.columns),
+            ws_col: winsize_cells(self.columns.max(MIN_PTY_COLUMNS)),
             ws_xpixel: self.pane_width_px().as_f32() as libc::c_ushort,
             ws_ypixel: self.pane_height_px().as_f32() as libc::c_ushort,
         }

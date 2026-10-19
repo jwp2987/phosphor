@@ -212,7 +212,12 @@ fn docker_sandbox_command_exports_node_version_chip_flag() {
 fn winsize_never_zero_and_never_wraps() {
     let tiny = SizeInfo::new_without_font_metrics(1, 2).with_rows_and_columns(0, 0);
     let win = (&tiny).to_winsize();
-    assert_eq!((win.ws_row, win.ws_col), (1, 1));
+    assert_eq!((win.ws_row, win.ws_col), (1, MIN_PTY_COLUMNS as u16));
+
+    // #870: a tiny pane's 2-column floor crashes zsh, so the pty is told 3.
+    let floor = SizeInfo::new_without_font_metrics(1, 2);
+    let win = (&floor).to_winsize();
+    assert_eq!((win.ws_row, win.ws_col), (1, MIN_PTY_COLUMNS as u16));
 
     let huge = SizeInfo::new_without_font_metrics(1, 2).with_rows_and_columns(65_536, 70_000);
     let win = (&huge).to_winsize();
