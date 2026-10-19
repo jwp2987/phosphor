@@ -489,7 +489,8 @@ use crate::terminal::model::terminal_model::{
     BlockSelectionCardinality, SelectedBlocks, WithinModel,
 };
 use crate::terminal::model::typeahead_handoff::{
-    HeldKeysRelease, InterruptOutcome, ReportDisposition, UserBytesRoute, text_for_editor,
+    HeldKeysRelease, InterruptOutcome, ReportDisposition, UserBytesRoute, forces_shell_submit,
+    text_for_editor,
 };
 use crate::terminal::model::{
     ansi::{ClearMode, Handler},
@@ -9877,10 +9878,10 @@ impl TerminalView {
             HeldKeysRelease::ToEditor(held) => {
                 let text = text_for_editor(&held);
                 self.input.update(ctx, |input, ctx| {
-                    if !text.is_empty() {
+                    if forces_shell_submit(&text) {
                         input.system_insert(&text, ctx);
+                        input.submit_next_enter_as_shell_command();
                     }
-                    input.submit_next_enter_as_shell_command();
                 });
             }
         }

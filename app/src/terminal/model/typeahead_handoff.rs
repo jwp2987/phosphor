@@ -628,6 +628,13 @@ impl TypeaheadHandoff {
     }
 }
 
+/// Whether text released into the editor should force the next Enter to run as a shell command.
+/// Empty text inserts nothing, so a flag set for it would stay armed and misroute a later
+/// natural-language Enter to the shell.
+pub fn forces_shell_submit(text: &str) -> bool {
+    !text.is_empty()
+}
+
 /// The text of keys handed back to the editor, as the shell's line editor would have left it:
 /// Backspace (DEL, ^H) erases a character, ^U the line, ^W a word; Enter (`\r`, `\n`) becomes
 /// a newline and Tab stays, so a multi-line paste survives; well-formed escape sequences (CSI,

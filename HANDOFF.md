@@ -339,8 +339,8 @@ since landed; `script/precheck` green on the combined tree except the regenerate
 Next wave (reviewed, being box-tested as `integ/r14c` / later): #847 (approval card can no longer
 hide part of a command — 5 refutation rounds), #849 (incremental markdown for streamed answers),
 #878 (worktree tab-config command injection), #881 (subagent restore crash), #882 (EMFILE panic),
-design H for #826/#827 behind `FeatureFlag::TypeaheadHandoff` (off everywhere; named-only in
-`ZAP_UNSTABLE_FEATURES`).
+design H for #826/#827 behind `FeatureFlag::TypeaheadHandoff` (**default ON since 2026-10-18**; opt out with
+`ZAP_DISABLED_FEATURES=typeahead_handoff`; hands-on `ta.sh`/`bburst.sh` run with a build still owed).
 
 **Operational lessons:**
 - **The box was reachable all along.** "No route to host" from the laptop for ~9 hours was the

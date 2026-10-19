@@ -3152,6 +3152,11 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
     // corporate VPN / company proxy scenarios.
     flags.insert(FeatureFlag::HttpProxySettings);
 
+    // The typeahead hand-off (#826/#827): default ON on every channel since 2026-10-18. It is
+    // inserted here rather than gated by a Cargo feature so that it can be switched off at
+    // runtime, without a rebuild, with `ZAP_DISABLED_FEATURES=typeahead_handoff` (below).
+    flags.insert(FeatureFlag::TypeaheadHandoff);
+
     let extra_flags: &[FeatureFlag] = &[
         #[cfg(feature = "autoupdate")]
         FeatureFlag::Autoupdate,
@@ -3554,11 +3559,62 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
     // insertion -- `FeatureFlag::SshRemoteServer` -- so a `cargo run` does NOT enable
     // the flags listed in `UNSTABLE_FEATURES`. This env var is the only enable path
     // for them, in dev builds and release builds alike.
-    if let Ok(raw) = std::env::var("ZAP_UNSTABLE_FEATURES") {
-        flags.extend(unstable_features_from_env_value(&raw));
-    }
+    apply_feature_env_overrides(
+        &mut flags,
+        std::env::var("ZAP_UNSTABLE_FEATURES").ok().as_deref(),
+        std::env::var("ZAP_DISABLED_FEATURES").ok().as_deref(),
+    );
 
     flags
+}
+
+/// Applies the `ZAP_UNSTABLE_FEATURES` (enable) then `ZAP_DISABLED_FEATURES` (disable) values to
+/// `flags`. Disabling is applied last, so it wins over the unstable list. Pure, so the precedence
+/// is testable without touching the process environment.
+fn apply_feature_env_overrides(
+    flags: &mut HashSet<FeatureFlag>,
+    unstable: Option<&str>,
+    disabled: Option<&str>,
+) {
+    if let Some(raw) = unstable {
+        flags.extend(unstable_features_from_env_value(raw));
+    }
+    if let Some(raw) = disabled {
+        for flag in disabled_features_from_env_value(raw) {
+            flags.remove(&flag);
+        }
+    }
+}
+
+/// Default-on flags that `ZAP_DISABLED_FEATURES` can switch back off, by name.
+const DISABLEABLE_FEATURES: &[(&str, FeatureFlag)] =
+    &[("typeahead_handoff", FeatureFlag::TypeaheadHandoff)];
+
+/// The flags a `ZAP_DISABLED_FEATURES` value disables: comma- or whitespace-separated names from
+/// `DISABLEABLE_FEATURES`, with `-` accepted for `_`. Unknown names disable nothing and are
+/// logged, naming the valid ones; there is no `all`, so a typo can never silently turn off more
+/// than was named.
+fn disabled_features_from_env_value(raw: &str) -> HashSet<FeatureFlag> {
+    let normalized = raw.trim().to_ascii_lowercase().replace('-', "_");
+    let requested: HashSet<&str> = normalized
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    for token in &requested {
+        if !DISABLEABLE_FEATURES.iter().any(|(name, _)| name == token) {
+            let valid: Vec<&str> = DISABLEABLE_FEATURES.iter().map(|(name, _)| *name).collect();
+            log::warn!(
+                "ZAP_DISABLED_FEATURES: unrecognised feature {token:?} ignored; valid names: {}",
+                valid.join(", ")
+            );
+        }
+    }
+    DISABLEABLE_FEATURES
+        .iter()
+        .filter(|(name, _)| requested.contains(name))
+        .map(|(_, flag)| *flag)
+        .collect()
 }
 
 /// The flags a `ZAP_UNSTABLE_FEATURES` value enables: comma- or whitespace-separated names from
@@ -3665,16 +3721,14 @@ const UNSTABLE_FEATURES: &[(&str, FeatureFlag)] = &[
         FeatureFlag::MultiLevelOrchestration,
     ),
     ("local_docker_sandbox", FeatureFlag::LocalDockerSandbox),
-    // The typeahead hand-off redesign (#826/#827). It changes routing on the hottest input
-    // path, so it ships dark and this is its only enable path until the torture repros
-    // (`ta.sh`, `bburst.sh`) pass with it on. Named-only: see `UNSTABLE_FEATURES_NAMED_ONLY`.
-    ("typeahead_handoff", FeatureFlag::TypeaheadHandoff),
 ];
 
 /// Unstable features that `ZAP_UNSTABLE_FEATURES=all` (or `*`) does not enable: each must be
-/// named. For a feature that changes how every keystroke is routed, opting into "everything
-/// unstable" must not silently opt into it too.
-const UNSTABLE_FEATURES_NAMED_ONLY: &[FeatureFlag] = &[FeatureFlag::TypeaheadHandoff];
+/// named. Currently empty: the typeahead hand-off (#826/#827) was the only member and is now
+/// default-on (see `enabled_features`), so it is no longer an unstable feature at all; its
+/// opt-out is `ZAP_DISABLED_FEATURES=typeahead_handoff`. Keep the mechanism for the next flag
+/// that changes how every keystroke is routed.
+const UNSTABLE_FEATURES_NAMED_ONLY: &[FeatureFlag] = &[];
 
 #[cfg(test)]
 #[path = "lib_tests.rs"]
