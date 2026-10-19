@@ -226,7 +226,10 @@ fn damaged_tab_rows_are_counted_as_skipped() {
     read_sqlite_data_counting(&mut conn, None, &skipped).expect("loads");
     assert_eq!(skipped.get(), 0, "an intact database skips nothing");
 
-    diesel::RunQueryDsl::execute(diesel::sql_query("delete from pane_nodes"), &mut conn)
+    diesel::connection::SimpleConnection::batch_execute(
+        &mut conn,
+        "PRAGMA foreign_keys = OFF; delete from pane_nodes;",
+    )
         .expect("rows deleted");
     let restored = read_sqlite_data_counting(&mut conn, None, &skipped).expect("loads");
     assert_eq!(skipped.get(), 1);
