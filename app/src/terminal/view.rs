@@ -562,7 +562,7 @@ use super::ssh::warpify::{
 };
 use super::ssh::SSH_WARPIFY_TIMEOUT_DURATION;
 use super::warpify::success_block::{WarpifySuccessBlock, WarpifySuccessBlockEvent};
-use super::warpify::trigger_state::{SshBlockState, WarpifyState};
+use super::warpify::trigger_state::{ssh_output_is_payload_only, SshBlockState, WarpifyState};
 use super::warpify::WarpificationSource;
 use super::{should_right_click_paste, GridType, HistoryEvent};
 use crate::antivirus::AntivirusInfo;
@@ -12291,18 +12291,27 @@ impl TerminalView {
 
                     // #856: an ssh command that ends after a warpification script was typed
                     // into it (killed while hung, or never warpified) has that script echoed
-                    // into its output -- ~70 lines of bootstrap. Keep the command line and
-                    // drop the unreadable dump. Only for the block the script went into.
+                    // into its output. Drop it only when the visible output is nothing but
+                    // that echo (plus a kill message): real ssh errors, banners and session
+                    // output are kept.
                     if self.warpify_state.block_id().as_ref()
                         == Some(&block_completed_event.block_id)
-                        && self.warpify_state.take_ssh_payload_written()
                     {
-                        let show_ssh_block_debug = BlockVisibilitySettings::as_ref(ctx)
-                            .should_show_ssh_block
-                            .value();
-                        if !show_ssh_block_debug {
+                        let payloads = self.warpify_state.take_ssh_payloads_written();
+                        if !payloads.is_empty() {
+                            let show_ssh_block_debug = BlockVisibilitySettings::as_ref(ctx)
+                                .should_show_ssh_block
+                                .value();
                             self.update_long_running_ssh_block_with_lock(|block| {
-                                block.set_should_hide_output_grid(true);
+                                if ssh_output_is_payload_only(
+                                    &block.output_to_string_force_full_grid_contents(),
+                                    &payloads,
+                                ) {
+                                    block.set_ssh_payload_only(true);
+                                    if !show_ssh_block_debug {
+                                        block.set_should_hide_output_grid(true);
+                                    }
+                                }
                             });
                         }
                     }
@@ -26829,12 +26838,10 @@ impl TerminalView {
         // provokes is validated against an ID this client chose. Mirrors
         // `write_init_subshell_bytes_to_pty`.
         let session_id = self.mint_registered_session_id();
-        self.warpify_state.mark_ssh_payload_written();
-        self.clear_line_editor_and_write_to_pty(
-            convert_script_to_one_line(&begin_warpify_ssh_session_command(session_id, ctx))
-                .into_bytes(),
-            ctx,
-        );
+        let payload =
+            convert_script_to_one_line(&begin_warpify_ssh_session_command(session_id, ctx));
+        self.warpify_state.mark_ssh_payload_written(&payload);
+        self.clear_line_editor_and_write_to_pty(payload.into_bytes(), ctx);
     }
 
     fn continue_warpify_ssh_session(
@@ -26849,9 +26856,10 @@ impl TerminalView {
         // the remote host; both quote this ID.
         let session_id = self.mint_registered_session_id();
         if let Some(script) = warpify_ssh_session_command(uname, shell_type, session_id, ctx) {
-            self.warpify_state.mark_ssh_payload_written();
+            let payload = convert_script_to_one_line(&script);
+            self.warpify_state.mark_ssh_payload_written(&payload);
             self.clear_line_editor_and_write_to_pty_with_mac_workaround_hack(
-                convert_script_to_one_line(&script).into_bytes(),
+                payload.into_bytes(),
                 ctx,
             );
         } else {
@@ -26874,11 +26882,9 @@ impl TerminalView {
         self.model
             .lock()
             .set_pending_warp_initiated_control_mode_with_install_tmux(install_with_root_method);
-        self.warpify_state.mark_ssh_payload_written();
-        self.clear_line_editor_and_write_to_pty(
-            convert_script_to_one_line(install_script).into_bytes(),
-            ctx,
-        );
+        let payload = convert_script_to_one_line(install_script);
+        self.warpify_state.mark_ssh_payload_written(&payload);
+        self.clear_line_editor_and_write_to_pty(payload.into_bytes(), ctx);
     }
 
     fn begin_ssh_warpify_timeout(&mut self, duration: Duration, ctx: &mut ViewContext<Self>) {

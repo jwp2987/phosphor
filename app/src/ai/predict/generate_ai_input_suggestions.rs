@@ -115,15 +115,15 @@ impl HistoryContext {
 ///
 /// Blocks that hold the shell bootstrap (the script typed into the shell, and the startup
 /// scripts it runs) are not something the user ran, and an ssh command whose output was
-/// replaced because it only held an echoed warpification script (`output_grid_hidden`, see
-/// the block-completed handler in `terminal/view.rs`) has nothing but bootstrap text in it
+/// only an echoed warpification script (`ssh_payload_only`, see the
+/// block-completed handler in `terminal/view.rs`) has nothing but bootstrap text in it
 /// (#856).
 pub(crate) fn is_user_context_block(
     stage: crate::terminal::model::bootstrap::BootstrapStage,
-    output_grid_hidden: bool,
+    ssh_payload_only: bool,
 ) -> bool {
     use crate::terminal::model::bootstrap::BootstrapStage;
-    !output_grid_hidden
+    !ssh_payload_only
         && !matches!(
             stage,
             BootstrapStage::WarpInput | BootstrapStage::ScriptExecution
@@ -147,7 +147,7 @@ pub fn get_context_messages(
         .filter(|block| {
             block.state() == BlockState::DoneWithExecution
                 && !block.is_in_band_command_block()
-                && is_user_context_block(block.bootstrap_stage(), block.should_hide_output_grid())
+                && is_user_context_block(block.bootstrap_stage(), block.is_ssh_payload_only())
         })
         .collect();
 

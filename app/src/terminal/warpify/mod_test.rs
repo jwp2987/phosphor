@@ -210,3 +210,58 @@ fn pwsh_subshell_bootstrap_success_block_keeps_multiple_rc_commands_separate() {
          {command:?}"
     );
 }
+
+mod ssh_payload_only {
+    use crate::terminal::warpify::trigger_state::ssh_output_is_payload_only;
+
+    fn payload() -> Vec<String> {
+        vec!["echo hi;if true; then ls; fi".to_owned()]
+    }
+
+    #[test]
+    fn echo_alone_is_payload_only() {
+        assert!(ssh_output_is_payload_only(
+            "echo hi;if true;\n then ls; fi\n",
+            &payload()
+        ));
+    }
+
+    #[test]
+    fn truncated_echo_with_kill_message_is_payload_only() {
+        assert!(ssh_output_is_payload_only("echo hi;if tr", &payload()));
+        assert!(ssh_output_is_payload_only(
+            "echo hi;if tr\nKilled by signal 15.\n",
+            &payload()
+        ));
+        assert!(ssh_output_is_payload_only(
+            "echo hi;if true; then ls; fi\nConnection to host.example closed.\n",
+            &payload()
+        ));
+    }
+
+    #[test]
+    fn echo_plus_error_is_kept() {
+        assert!(!ssh_output_is_payload_only(
+            "echo hi;if true; then ls; fi\nPermission denied (publickey).\n",
+            &payload()
+        ));
+        assert!(!ssh_output_is_payload_only(
+            "ssh: connect to host x port 22: Connection refused\necho hi;if true; then ls; fi",
+            &payload()
+        ));
+    }
+
+    #[test]
+    fn normal_session_is_kept() {
+        assert!(!ssh_output_is_payload_only(
+            "Welcome to Ubuntu\nuser@host:~$ ls\n",
+            &payload()
+        ));
+        assert!(!ssh_output_is_payload_only("", &payload()));
+        assert!(!ssh_output_is_payload_only(
+            "Killed by signal 15.",
+            &payload()
+        ));
+        assert!(!ssh_output_is_payload_only("anything", &[]));
+    }
+}

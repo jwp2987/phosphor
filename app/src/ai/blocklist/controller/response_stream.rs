@@ -90,6 +90,12 @@ pub(crate) fn set_retry_wait(
     }
 }
 
+/// Conversations that already have a countdown pulse chain running, so a retry and a resume
+/// that overlap share one chain instead of each starting their own.
+static PULSING_RETRY_WAITS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<AIConversationId>>,
+> = std::sync::LazyLock::new(Default::default);
+
 /// Returns whether there was a wait to clear.
 pub(crate) fn clear_retry_wait(conversation_id: AIConversationId) -> bool {
     RETRY_WAITS
@@ -825,14 +831,27 @@ impl ResponseStream {
     /// `conversation_id` is waiting, so the countdown ticks. A views-only nudge: it emits no
     /// history event, so no other consumer of the model sees it.
     fn pulse_retry_wait(conversation_id: AIConversationId, ctx: &mut ModelContext<Self>) {
+        // One chain per conversation: a second caller while one is running just has its
+        // wait picked up by the running chain's next tick.
+        let started = PULSING_RETRY_WAITS
+            .lock()
+            .is_ok_and(|mut pulsing| pulsing.insert(conversation_id));
+        if started {
+            Self::pulse_retry_wait_tick(conversation_id, ctx);
+        }
+    }
+
+    fn pulse_retry_wait_tick(conversation_id: AIConversationId, ctx: &mut ModelContext<Self>) {
         BlocklistAIHistoryModel::handle(ctx).update(ctx, |_, ctx| ctx.notify());
         if current_retry_wait(conversation_id).is_some() {
             let _ = ctx.spawn(
                 async move {
                     warpui::r#async::Timer::after(Duration::from_secs(1)).await;
                 },
-                move |_, _, ctx| Self::pulse_retry_wait(conversation_id, ctx),
+                move |_, _, ctx| Self::pulse_retry_wait_tick(conversation_id, ctx),
             );
+        } else if let Ok(mut pulsing) = PULSING_RETRY_WAITS.lock() {
+            pulsing.remove(&conversation_id);
         }
     }
 

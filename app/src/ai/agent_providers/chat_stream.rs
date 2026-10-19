@@ -5662,7 +5662,7 @@ fn byop_stream_error_to_api_error(
 ) -> AIApiError {
     // The HTML-page message is complete and actionable; a "BYOP stream error:" prefix would
     // only bury it.
-    let base = match mapped {
+    let base = match &mapped {
         OpenAiCompatibleError::HtmlResponse(message) => message.clone(),
         _ => format!("BYOP stream error: {mapped}"),
     };

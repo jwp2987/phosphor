@@ -158,7 +158,17 @@ impl BlocklistAIStatusBar {
         let history_model = BlocklistAIHistoryModel::handle(ctx);
         // The response stream nudges the history model (without emitting an event) once a
         // second while a retry waits, so the countdown in the warping indicator ticks.
-        ctx.observe(&history_model, |_, _, ctx| ctx.notify());
+        // Only re-render when this view's own conversation is the one waiting.
+        ctx.observe(&history_model, |me, _, ctx| {
+            let waiting = me
+                .active_exchange_model
+                .as_ref()
+                .and_then(|model| model.conversation(ctx))
+                .is_some_and(|conversation| current_retry_wait(conversation.id()).is_some());
+            if waiting {
+                ctx.notify();
+            }
+        });
         ctx.subscribe_to_model(&history_model, move |me, _, event, ctx| {
             if event
                 .terminal_view_id()
