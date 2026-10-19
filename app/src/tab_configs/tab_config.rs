@@ -596,7 +596,7 @@ const PRECOMMANDS: [&str; 20] = [
 /// commands that evaluate or forward their arguments as code, and builtins that read an
 /// argument as arithmetic, a variable name or code to run later. Matched by basename,
 /// case-insensitively, also with a version suffix removed (`python3.14`, `perl5.40.1`).
-const DENIED_COMMANDS: [&str; 81] = [
+const DENIED_COMMANDS: [&str; 100] = [
     // Shells and interpreters.
     "sh",
     "bash",
@@ -663,6 +663,27 @@ const DENIED_COMMANDS: [&str; 81] = [
     "functions",
     "alias",
     "hash",
+    // Wrappers that run the command in their arguments, which are not modelled as
+    // precommands (#884): tracers, sandboxes, namespaces, remote and container runners.
+    "strace",
+    "ltrace",
+    "dbus-run-session",
+    "sshpass",
+    "xvfb-run",
+    "unshare",
+    "chroot",
+    "systemd-run",
+    "nix-shell",
+    "wsl",
+    "runuser",
+    "nsenter",
+    "firejail",
+    "bwrap",
+    "proot",
+    "fakeroot",
+    "gdb",
+    "valgrind",
+    "parallel",
     // Read an argument as arithmetic or a variable name.
     "let",
     "read",
@@ -681,6 +702,37 @@ const DENIED_COMMANDS: [&str; 81] = [
     "readonly",
     "ulimit",
     "kill",
+];
+
+/// Variables whose value a shell or program evaluates as a command later: prompts, editors,
+/// pagers, `GIT_SSH_COMMAND`, `BASH_ENV`. A placeholder as their value is code that runs at the
+/// next prompt or the next `git` call.
+const EVALUATED_VARIABLES: [&str; 25] = [
+    "PS0",
+    "PS1",
+    "PS2",
+    "PS3",
+    "PS4",
+    "PROMPT",
+    "RPROMPT",
+    "RPS1",
+    "PROMPT_COMMAND",
+    "EDITOR",
+    "VISUAL",
+    "PAGER",
+    "MANPAGER",
+    "GIT_PAGER",
+    "GIT_EDITOR",
+    "GIT_SEQUENCE_EDITOR",
+    "GIT_SSH",
+    "GIT_SSH_COMMAND",
+    "GIT_ASKPASS",
+    "SSH_ASKPASS",
+    "BASH_ENV",
+    "ENV",
+    "LESSOPEN",
+    "LESSCLOSE",
+    "FCEDIT",
 ];
 
 /// How a precommand's own options are laid out: the short options and long options that
@@ -839,9 +891,45 @@ fn command_word_problem(word: &str) -> Option<&'static str> {
         Some("a command name that is not a plain word")
     } else if is_denied_command(&command_name(word)) {
         Some("a command that runs its input or arguments as code")
+    } else if is_proc_exe(word) {
+        // `/proc/self/exe` is whatever program is running, typically the shell itself.
+        Some("a /proc/.../exe path as the command name")
     } else {
         None
     }
+}
+
+/// `/proc/self/exe`, `/proc/<pid>/exe` and `/proc/thread-self/exe`.
+fn is_proc_exe(word: &str) -> bool {
+    word.strip_prefix("/proc/")
+        .is_some_and(|rest| rest.ends_with("/exe") && !rest.contains("//"))
+}
+
+/// Checks the whole segment, whatever its command word is, for a placeholder as the value of a
+/// variable that is evaluated later (#884). Only segments that contain a placeholder are
+/// checked.
+fn segment_evaluates_placeholder(words: &[&str]) -> Option<&'static str> {
+    if !words.iter().any(|word| word.contains(PLACEHOLDER_MARK)) {
+        return None;
+    }
+    for (at, &word) in words.iter().enumerate() {
+        if is_assignment(word)
+            && let Some((name, value)) = word.split_once('=')
+            && value.contains(PLACEHOLDER_MARK)
+            && EVALUATED_VARIABLES.contains(&name.trim_end_matches('+'))
+        {
+            return Some("a placeholder as the value of a variable the shell evaluates later");
+        }
+        // fish: `set -gx PS1 {{x}}`.
+        if EVALUATED_VARIABLES.contains(&word)
+            && words
+                .get(at + 1)
+                .is_some_and(|next| next.contains(PLACEHOLDER_MARK))
+        {
+            return Some("a placeholder as the value of a variable the shell evaluates later");
+        }
+    }
+    None
 }
 
 /// Checks the command word of every segment of a command that substitutes a placeholder.
@@ -865,10 +953,12 @@ fn command_word_problem(word: &str) -> Option<&'static str> {
 /// and `set -A`.
 ///
 /// `residual` is the [`StrippedCommand::words`] form, so a quoted command name is seen
-/// unquoted. Wrappers it does not model (`strace`, `dbus-run-session`, ...), aliases,
-/// functions and scripts, and values that a shell evaluates later (`PS1`, `PROMPT_COMMAND`,
-/// `GIT_SSH_COMMAND`) are invisible here; placeholders are supported only as ordinary
-/// arguments to ordinary commands.
+/// unquoted. Wrappers that run another command but are not precommands (`strace`,
+/// `dbus-run-session`, `unshare`, ...) are in [`DENIED_COMMANDS`]; a segment with a placeholder
+/// is also refused when the placeholder is the value of a variable evaluated later
+/// ([`EVALUATED_VARIABLES`]: `PS1`, `PROMPT_COMMAND`, `GIT_SSH_COMMAND`, `EDITOR`, ...; #884).
+/// Aliases, functions and scripts defined elsewhere are invisible here; placeholders are
+/// supported only as ordinary arguments to ordinary commands.
 fn reparsing_command(residual: &[char]) -> Option<&'static str> {
     let text: String = residual
         .iter()
@@ -898,6 +988,9 @@ fn reparsing_command(residual: &[char]) -> Option<&'static str> {
     }
 
     for words in segments {
+        if let Some(problem) = segment_evaluates_placeholder(&words) {
+            return Some(problem);
+        }
         let mut index = 0;
         while let Some(&word) = words.get(index) {
             if LEADING_KEYWORDS.contains(&word) || is_assignment(word) {
@@ -969,7 +1062,7 @@ fn reparsing_command(residual: &[char]) -> Option<&'static str> {
 fn arguments_evaluate_code(command: &str, rest: &[&str]) -> bool {
     let has = |flag: &str| rest.iter().any(|word| *word == flag);
     match command {
-        "docker" | "podman" | "kubectl" => has("exec"),
+        "docker" | "podman" | "kubectl" | "nerdctl" => has("exec") || has("run"),
         "find" => ["-exec", "-execdir", "-ok", "-okdir"]
             .iter()
             .any(|flag| has(*flag)),

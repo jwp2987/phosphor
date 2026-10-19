@@ -1707,3 +1707,53 @@ fn test_round_six_over_refusals_render() {
         );
     }
 }
+
+/// #884: wrappers that run another command, and values a shell evaluates later.
+#[test]
+fn test_unmodelled_wrappers_and_later_evaluated_values_are_refused() {
+    for command in [
+        "strace -o /dev/null sh -c {{x}}",
+        "dbus-run-session -- sh -c {{x}}",
+        "/proc/self/exe -c {{x}}",
+        "/proc/1234/exe -c {{x}}",
+        "sshpass -p pw ssh host {{x}}",
+        "xvfb-run sh -c {{x}}",
+        "unshare -r sh -c {{x}}",
+        "chroot /srv sh -c {{x}}",
+        "systemd-run --user sh -c {{x}}",
+        "docker run img sh -c {{x}}",
+        "nix-shell --run {{x}}",
+        "wsl bash -c {{x}}",
+        "export PS1={{x}}",
+        "export PROMPT_COMMAND={{x}}",
+        "GIT_SSH_COMMAND={{x}} git ls-remote origin",
+        "env GIT_SSH_COMMAND={{x}} git fetch",
+        "export EDITOR={{x}}",
+        "PAGER={{x}} git log",
+        "BASH_ENV={{x}} true",
+        "set -gx PS1 {{x}}",
+        "command {{x}}",
+        "env {{x}}",
+    ] {
+        assert!(
+            render_single_command(command, "main").is_err(),
+            "{command:?} must be refused"
+        );
+    }
+}
+
+/// The same variables with literal values, and unrelated names, still render.
+#[test]
+fn test_evaluated_variable_check_does_not_over_refuse() {
+    for (command, expected) in [
+        ("EDITOR=vim git commit {{x}}", "EDITOR=vim git commit main"),
+        ("MYPAGER={{x}} true", "MYPAGER=main true"),
+        ("docker build -t {{x}} .", "docker build -t main ."),
+    ] {
+        assert_eq!(
+            render_single_command(command, "main"),
+            Ok(vec![expected.to_string()]),
+            "{command:?}"
+        );
+    }
+}
