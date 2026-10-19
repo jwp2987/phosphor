@@ -2066,6 +2066,46 @@ impl GridHandler {
         self.grid.truncate_to_cursor_cols();
     }
 
+    /// Moves the cursor back to `point` and blanks everything from there on (the cell at
+    /// `point` included), leaving the grid ready for new text to be written at `point`. Used to
+    /// replace the echoed text of an agent command with the command the user should see
+    /// (#904). The rows themselves stay allocated; finishing the grid trims them.
+    ///
+    /// Returns `false`, changing nothing, when `point` has already scrolled into history (a
+    /// command echo taller than the visible region): its start can no longer be rewound to.
+    pub fn truncate_from_point(&mut self, point: Point) -> bool {
+        let Some(start_row) = point.row.checked_sub(self.history_size()) else {
+            return false;
+        };
+        let last_row = self
+            .grid
+            .cursor
+            .point
+            .row
+            .0
+            .max(self.grid.max_cursor_point.row.0)
+            .min(self.grid.visible_rows().saturating_sub(1));
+        if start_row > last_row {
+            return false;
+        }
+        for row_idx in start_row..=last_row {
+            let from_col = if row_idx == start_row { point.col } else { 0 };
+            let row = &mut self.grid[VisibleRow(row_idx)];
+            for col in from_col..row.occ {
+                row[col] = Cell::default();
+            }
+            row.occ = row.occ.min(from_col);
+        }
+        self.update_cursor(|cursor| {
+            cursor.point.row = VisibleRow(start_row);
+            cursor.point.col = point.col;
+            cursor.input_needs_wrap = false;
+        });
+        self.grid.max_cursor_point = self.grid.cursor.point;
+        self.content_generation.bump();
+        true
+    }
+
     /// Resets all cells after the cursor in the cursor row to the default cell.
     fn reset_trailing_cells_in_cursor_row(&mut self) {
         let cursor_point = self.grid.cursor.point;

@@ -116,7 +116,7 @@ fn fish_uses_block_scoped_exports_and_keeps_status() {
     let wrapped = wrap_command(Some(ShellType::Fish), "cd /tmp");
     assert_eq!(wrapped.lines().count(), 1);
     assert!(
-        wrapped.starts_with("begin; set -lx PAGER 'cat'"),
+        wrapped.starts_with(" begin; set -lx PAGER 'cat'"),
         "{wrapped}"
     );
     assert!(wrapped.contains("set -lx AWS_PAGER ''"), "{wrapped}");
@@ -164,7 +164,10 @@ fn unsafe_commands_keep_the_subshell() {
         for shell in POSIX {
             assert!(needs_subshell(shell, command), "{command}");
             let wrapped = wrap_command(Some(shell), command);
-            assert!(wrapped.starts_with("(unset PAGER"), "{command}: {wrapped}");
+            assert!(
+                wrapped.starts_with(": __phosphor_ap_subshell; (unset PAGER"),
+                "{command}: {wrapped}"
+            );
             assert!(wrapped.contains("PAGER=cat"), "{wrapped}");
             assert!(wrapped.ends_with(')'), "{wrapped}");
         }
@@ -214,7 +217,7 @@ fn exit_after_a_heredoc_is_still_seen() {
 #[test]
 fn fish_never_needs_a_subshell() {
     assert!(!needs_subshell(ShellType::Fish, "exit 1"));
-    assert!(wrap_command(Some(ShellType::Fish), "exit 1").starts_with("begin;"));
+    assert!(wrap_command(Some(ShellType::Fish), "exit 1").starts_with(" begin;"));
 }
 
 #[test]
@@ -328,4 +331,93 @@ fn ansi_c_quoting_keeps_escaped_quotes_inside_the_word() {
     assert!(!needs_subshell(ShellType::Bash, "echo $'it\\'s; exit 1'"));
     assert!(needs_subshell(ShellType::Bash, "echo $'it\\'s'; exit 1"));
     assert!(needs_subshell(ShellType::Bash, "echo $'a'\nexit 1"));
+}
+
+#[test]
+fn exec_into_shell_is_detected_at_the_top_level() {
+    for (command, expected) in [
+        ("exec bash", Some("bash")),
+        ("exec zsh -l", Some("zsh")),
+        ("exec /usr/bin/fish", Some("fish")),
+        ("exec -l bash", Some("bash")),
+        ("exec -a login bash", Some("bash")),
+        ("exec env FOO=1 bash", Some("bash")),
+        ("cd /tmp && exec bash", Some("bash")),
+        ("echo hi\nexec sh\n", Some("sh")),
+        ("(exec bash)", Some("bash")),
+        ("exec \"$SHELL\"", Some("$SHELL")),
+        ("FOO=1 exec bash", Some("bash")),
+        ("exec bash -l", Some("bash")),
+        ("exec bash --login -i", Some("bash")),
+        ("exec \"${SHELL:-/bin/sh}\"", Some("$SHELL")),
+        ("exec ${SHELL}", Some("$SHELL")),
+        ("exec $(command -v zsh)", Some("$SHELL")),
+        ("exec \"$(which fish)\"", Some("$SHELL")),
+        ("exec `which fish`", Some("$SHELL")),
+        ("eval 'exec bash'", Some("bash")),
+        ("eval exec zsh", Some("zsh")),
+        ("exec nice bash", Some("bash")),
+        ("exec sudo -i", Some("sudo")),
+        ("exec doas sh", Some("sh")),
+        ("exec su", Some("su")),
+        // Runs something and ends.
+        ("exec bash -c 'echo hi'", None),
+        ("exec sh script.sh", None),
+        ("exec env X=1 sh run.sh", None),
+        ("exec zsh -lc 'make'", None),
+        ("exec sudo make install", None),
+        ("exec $EDITOR file.txt", None),
+        ("eval 'echo hi'", None),
+        // Not a shell, or no program at all: these end on their own.
+        ("exec ls -la", None),
+        ("exec python3 script.py", None),
+        ("exec 3<file", None),
+        ("exec >log.txt", None),
+        ("exec", None),
+        ("echo exec bash", None),
+        ("bash -c 'exec bash'", None),
+        ("# exec bash", None),
+    ] {
+        for shell in [
+            Some(ShellType::Bash),
+            Some(ShellType::Zsh),
+            Some(ShellType::Fish),
+            None,
+        ] {
+            assert_eq!(
+                exec_into_shell(shell, command).as_deref(),
+                expected,
+                "{command:?} under {shell:?}"
+            );
+        }
+    }
+    // PowerShell has no `exec`.
+    assert_eq!(
+        exec_into_shell(Some(ShellType::PowerShell), "exec bash"),
+        None
+    );
+}
+
+#[test]
+fn every_bash_zsh_wrapper_form_carries_the_history_marker() {
+    for shell in POSIX {
+        for command in [
+            "ls",
+            "ls # c",
+            "echo a\necho b",
+            "exit 1",
+            "exec ls",
+            "set -e",
+        ] {
+            let wrapped = wrap_command(Some(shell), command);
+            assert!(wrapped.contains(HISTORY_MARKER), "{command}: {wrapped}");
+        }
+    }
+}
+
+#[test]
+fn fish_wrapper_starts_with_a_space_so_fish_keeps_it_out_of_history() {
+    for command in ["ls", "echo a\necho b"] {
+        assert!(wrap_command(Some(ShellType::Fish), command).starts_with(" begin;"));
+    }
 }

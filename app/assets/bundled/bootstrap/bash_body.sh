@@ -475,6 +475,12 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         return
       fi
 
+      # Phosphor (#904): an agent command typed in its wrapper (agent_shell_wrap.rs
+      # HISTORY_MARKER) must not title the tab with the wrapper; keep the idle title.
+      case "${BASH_COMMAND:-}" in
+        *__phosphor_ap_*) return ;;
+      esac
+
       cmd="${1-}"
       # warp_set_title_active_on_preexec is a preexec_function, which accepts 1 argument 
       #(currently invoked command)
@@ -1486,9 +1492,9 @@ fi' RETURN
     # HISTIGNORE value which may been set in an RC file sourced above. It is important to
     # ensure that this happens _after_ the user's RC files have been sourced.
     if [[ ! -z $HISTIGNORE ]]; then
-        HISTIGNORE="*warp_run_generator_command*:$HISTIGNORE"
+        HISTIGNORE="*warp_run_generator_command*:*__phosphor_ap_*:$HISTIGNORE"
     else
-        HISTIGNORE="*warp_run_generator_command*"
+        HISTIGNORE="*warp_run_generator_command*:*__phosphor_ap_*"
     fi
 
     # If the user has PROMPT_COMMAND set in their bootstrap scripts,

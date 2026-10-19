@@ -652,6 +652,11 @@ pub const WAKEUP_THROTTLE_PERIOD: Duration =
 
 pub const EXECUTE_PENDING_COMMAND_DELAY: Duration = Duration::from_millis(100);
 
+/// How long the agent's command gets to react to an interrupt (^C) before the stop is escalated:
+/// the conversation is cancelled, the command handed to the user and the agent view left
+/// (#899, #900). Long enough for an ordinary process to run its signal handlers and exit.
+const AGENT_INTERRUPT_GRACE: Duration = Duration::from_secs(3);
+
 pub const WARP_PROMPT_HEIGHT_LINES: f32 = 0.9;
 
 const SCROLLBAR_WIDTH: ScrollbarWidth = ScrollbarWidth::Auto;
@@ -2344,6 +2349,11 @@ enum StopInterruptScope {
     UserCtrlC,
     /// Closing the pane (#848): only a command the agent of this conversation is running.
     AgentCommandOnly,
+    /// An interrupt the agent's command already got and ignored (#899): hand the command over
+    /// and cancel the conversation like `AgentCommandOnly`, but write NO further ^C. A second
+    /// SIGINT is "abort now" to programs that clean up on the first (terraform, docker compose,
+    /// npm, rsync).
+    HandOverOnly,
 }
 
 type ConversationFinishedCallback =
@@ -7655,7 +7665,11 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         match event {
-            ShellCommandExecutorEvent::ExecuteCommand { command, action_id } => {
+            ShellCommandExecutorEvent::ExecuteCommand {
+                command,
+                action_id,
+                display_command,
+            } => {
                 let Some(session_id) = self.active_block_session_id() else {
                     return;
                 };
@@ -7752,6 +7766,11 @@ impl TerminalView {
                 }
                 let block_id = model.active_block_id().clone();
                 drop(model);
+                if let Some(display_command) = display_command {
+                    self.model
+                        .lock()
+                        .set_agent_display_command(action_id.clone(), display_command.clone());
+                }
 
                 ctx.emit(Event::ExecuteCommand(ExecuteCommandEvent {
                     command,
@@ -8551,6 +8570,75 @@ impl TerminalView {
         }
         ctx.emit(Event::DiscardPendingCommandWrites);
         self.user_write_ctrl_c_to_pty(ctx);
+
+        // A foreground process can ignore ^C (a nested interactive shell, `trap '' INT`), which
+        // used to leave the agent's command, its tool call and the agent view stuck for good:
+        // Stop did nothing, and the pane had neither an input nor a terminal (#899, #900). If
+        // the same command is still running after the grace period, stop means stop.
+        let block_id = self.model.lock().block_list().active_block().id().clone();
+        ctx.spawn(Timer::after(AGENT_INTERRUPT_GRACE), move |me, _, ctx| {
+            me.escalate_agent_command_that_ignored_interrupt(&block_id, ctx)
+        });
+    }
+
+    /// Runs [`AGENT_INTERRUPT_GRACE`] after an interrupt of the agent's command. If that command
+    /// is still running, the interrupt was ignored: hand the command to the user with a
+    /// non-resuming stop, cancel the conversation (which ends the agent's wait and marks its
+    /// tool call cancelled) and leave the agent view, so the pane is never left with a command
+    /// nobody can stop and no terminal to see it in (#899, #900).
+    fn escalate_agent_command_that_ignored_interrupt(
+        &mut self,
+        block_id: &BlockId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let (conversation_to_stop, action_id) = {
+            let model = self.model.lock();
+            let active_block = model.block_list().active_block();
+            if active_block.id() != block_id
+                || active_block.finished()
+                || !active_block.is_agent_requested_command()
+                || !(active_block.is_active_and_long_running()
+                    || active_block.is_agent_requested_command_in_flight())
+            {
+                return;
+            }
+            // Only a command the agent still holds: after a stop took it over, the
+            // conversation is already cancelled and only the view is left to restore.
+            let conversation_to_stop = active_block
+                .requested_command_action_id()
+                .is_some_and(|action_id| active_block.agent_holds_in_flight_command(action_id))
+                .then(|| active_block.ai_conversation_id())
+                .flatten();
+            (
+                conversation_to_stop,
+                active_block.requested_command_action_id().cloned(),
+            )
+        };
+        if let Some(conversation_id) = conversation_to_stop {
+            // No ^C: the interrupt was already delivered, and the grace period only decides
+            // that the agent has waited long enough. A command that is cleaning up on that
+            // first ^C (graceful shutdown) is left to finish, now in the user's hands.
+            self.stop_local_agent_conversation_with_interrupt_scope(
+                conversation_id,
+                StopInterruptScope::HandOverOnly,
+                ctx,
+            );
+        }
+        // The command is still running and is now the user's: show it, so the user can see
+        // what they are typing into (an agent's command block is hidden by default).
+        if let Some(action_id) = action_id {
+            self.model
+                .lock()
+                .block_list_mut()
+                .set_visibility_of_block_for_ai_action(&action_id, true);
+        }
+        if self.agent_view_controller.as_ref(ctx).is_active() {
+            self.agent_view_controller.update(ctx, |controller, ctx| {
+                controller.exit_agent_view_without_confirmation(ctx);
+            });
+        }
+        self.redetermine_global_focus(ctx);
+        ctx.notify();
     }
 
     /// Drops the agent command held behind the user's typeahead (`FeatureFlag::TypeaheadHandoff`)
@@ -8644,7 +8732,7 @@ impl TerminalView {
                 // and not the idle prompt, which carries no agent metadata. No execution-state
                 // check: an agent command written to the shell before preexec must be
                 // interrupted too.
-                StopInterruptScope::AgentCommandOnly => (
+                StopInterruptScope::AgentCommandOnly | StopInterruptScope::HandOverOnly => (
                     block_is_this_conversations
                         && active_block.is_agent_requested_command()
                         && active_block.is_agent_driving_command(),
@@ -8669,7 +8757,9 @@ impl TerminalView {
             );
         });
 
-        if let Some(is_agent_requested) = should_interrupt_active_command {
+        if let Some(is_agent_requested) = should_interrupt_active_command
+            && interrupt_scope != StopInterruptScope::HandOverOnly
+        {
             if is_agent_requested {
                 self.interrupt_agent_command(ctx);
             } else {

@@ -27,6 +27,23 @@ use super::{
 use crate::terminal::{event_listener::ChannelEventListener, SizeInfo};
 use warp_terminal::model::{KeyboardModes, KeyboardModesApplyBehavior};
 
+/// `text` with every control character other than a newline shown as its Unicode control
+/// picture (ESC -> U+241B, TAB -> U+2409, DEL -> U+2421), and `\r\n` folded to `\n`. The
+/// command comes from the model and is fed to the terminal parser, so it must not be able to
+/// move the cursor, set a title or start an escape sequence.
+pub(super) fn visible_command_text(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .chars()
+        .map(|c| match c {
+            '\n' => '\n',
+            c if (c as u32) < 0x20 => char::from_u32(0x2400 + c as u32).unwrap_or('?'),
+            '\u{7f}' => '\u{2421}',
+            c if ('\u{80}'..='\u{9f}').contains(&c) => '\u{fffd}',
+            c => c,
+        })
+        .collect()
+}
+
 macro_rules! delegate {
     ($self:ident.$method:ident( $( $arg:expr_2021 ),* )) => {
         match $self.receiving_chars_for_prompt {
@@ -658,6 +675,39 @@ impl HeaderGrid {
         if self.command_should_show_as_empty_when_finished() {
             self.linefeed();
         }
+    }
+
+    /// Replaces the command text echoed into the grid with `text`, keeping the prompt (#904).
+    ///
+    /// An agent command is typed into the shell wrapped (pager overrides, restore, status
+    /// capture), and the shell echoes all of it; the block, its title and the text handed to
+    /// the model as context should show the command the agent actually asked for. Does nothing
+    /// once the grid is finished or when the command start is unknown.
+    pub fn replace_command_text(&mut self, text: &str) {
+        let Some(CommandStartPoint::CommandStart { point }) = self.cached_command_start_point
+        else {
+            return;
+        };
+        if self.prompt_and_command_grid.finished() {
+            return;
+        }
+        // The shell's echo of Enter leaves the cursor at column 0 of a later row; keep that shape.
+        let cursor = self.prompt_and_command_grid.grid_handler().cursor_point();
+        let ended_with_newline = cursor.col == 0 && cursor.row > point.row;
+        if !self
+            .prompt_and_command_grid
+            .grid_handler_mut()
+            .truncate_from_point(point)
+        {
+            return;
+        }
+        let mut bytes = visible_command_text(text)
+            .replace('\n', "\r\n")
+            .into_bytes();
+        if ended_with_newline {
+            bytes.extend_from_slice(b"\r\n");
+        }
+        Processor::new().parse_bytes(&mut self.prompt_and_command_grid, &bytes, &mut io::sink());
     }
 
     pub fn is_command_finished(&self) -> bool {
