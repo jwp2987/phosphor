@@ -870,3 +870,58 @@ mod child_env {
         );
     }
 }
+
+#[test]
+fn command_may_change_head_detects_head_moving_git_commands() {
+    use super::command_may_change_head as f;
+    for yes in [
+        "git switch main",
+        "git checkout -b x",
+        "git -C /repo switch -",
+        "git -c core.editor=true rebase main",
+        "cd foo && git pull --ff-only",
+        "git status; git stash pop",
+        "git worktree add ../w",
+        "git reset --hard HEAD~1",
+    ] {
+        assert!(f(yes), "{yes}");
+    }
+    for no in [
+        "git status",
+        "git log --oneline",
+        "git diff",
+        "ls && cargo test",
+        "git commit -m 'switch'",
+    ] {
+        assert!(!f(no), "{no}");
+    }
+}
+
+#[test]
+fn read_head_branch_sync_reads_branch_detached_and_worktree_head() {
+    use super::read_head_branch_sync as read;
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::create_dir_all(repo.join("src/deep")).unwrap();
+    std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/feature/x\n").unwrap();
+    assert_eq!(read(&repo.join("src/deep")).as_deref(), Some("feature/x"));
+
+    std::fs::write(
+        repo.join(".git/HEAD"),
+        "0123456789abcdef0123456789abcdef01234567\n",
+    )
+    .unwrap();
+    assert_eq!(read(&repo).as_deref(), Some("0123456"));
+
+    // Linked worktree: `.git` is a file pointing at the real gitdir.
+    let wt = tmp.path().join("wt");
+    let gitdir = repo.join(".git/worktrees/wt");
+    std::fs::create_dir_all(&wt).unwrap();
+    std::fs::create_dir_all(&gitdir).unwrap();
+    std::fs::write(gitdir.join("HEAD"), "ref: refs/heads/other\n").unwrap();
+    std::fs::write(wt.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+    assert_eq!(read(&wt).as_deref(), Some("other"));
+
+    assert_eq!(read(&tmp.path().join("nowhere")), None);
+}

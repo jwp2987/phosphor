@@ -1681,6 +1681,14 @@ impl BlocklistAIContextModel {
             .filter(|branch| !branch.trim().is_empty())
     }
 
+    /// Freshness: the live model is no longer throttled for HEAD / branch-ref
+    /// changes (`LocalGitRepoStatusModel::is_head_change` bypasses the 5s throttle),
+    /// so after `git switch a; git switch b` it reports `b` within one metadata load,
+    /// never lagging the shell's own prompt value. That is why live can win outright
+    /// instead of needing a timestamp comparison against the block's precmd value.
+    /// The one residual gap, an agent-run command that just moved HEAD, is closed by
+    /// `action_result_context`, which reads `.git/HEAD` synchronously.
+    ///
     /// Chooses the git context for a request. The live branch wins over the
     /// prompt-metadata values from the active block, which are only refreshed when
     /// the shell emits a prompt and so go stale after a switch made elsewhere (#892).
@@ -1690,6 +1698,15 @@ impl BlocklistAIContextModel {
         block_branch: Option<String>,
     ) -> Option<AIAgentContext> {
         if let Some(live) = live_branch {
+            // The live model reports the short commit SHA when HEAD is detached.
+            // Keep the SHA as `head` and leave `branch` unset so the prompt renders
+            // it as a detached HEAD rather than as a branch called "abc1234".
+            if crate::util::git::looks_like_commit_sha(&live) {
+                return Some(AIAgentContext::Git {
+                    head: live,
+                    branch: None,
+                });
+            }
             // Keep the block's head only when it describes the same branch; otherwise
             // it is the stale pre-switch value.
             let head = if block_branch.as_deref() == Some(live.as_str()) {

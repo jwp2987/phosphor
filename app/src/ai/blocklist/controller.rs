@@ -9,7 +9,8 @@ pub mod response_stream;
 pub(super) mod shared_session;
 mod slash_command;
 use input_context::{
-    add_pending_file_attachments, input_context_for_request, parse_context_attachments,
+    action_result_context, add_pending_file_attachments, input_context_for_request,
+    parse_context_attachments,
 };
 pub use slash_command::*;
 
@@ -1875,12 +1876,11 @@ impl BlocklistAIController {
             return;
         }
 
-        let context = input_context_for_request(
-            false,
+        let context = action_result_context(
+            &finished_results,
             self.context_model.as_ref(ctx),
             self.active_session.as_ref(ctx),
             Some(conversation_id),
-            vec![],
             ctx,
         );
         let request_input = RequestInput::for_actions_results(
@@ -1932,12 +1932,11 @@ impl BlocklistAIController {
             action_model.drain_finished_action_results(conversation_id)
         });
         if !finished_results.is_empty() {
-            let context = input_context_for_request(
-                false,
+            let context = action_result_context(
+                &finished_results,
                 self.context_model.as_ref(ctx),
                 self.active_session.as_ref(ctx),
                 Some(conversation_id),
-                vec![],
                 ctx,
             );
             for result in finished_results {

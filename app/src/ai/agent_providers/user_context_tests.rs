@@ -349,3 +349,23 @@ fn environment_context_reflects_branch_change() {
     assert!(after.contains("Git branch: feature/x"), "{after}");
     assert!(!after.contains("Git branch: main"), "{after}");
 }
+
+/// #892: a detached HEAD keeps the commit visible and is labelled as detached.
+#[test]
+fn environment_context_marks_detached_head() {
+    let ctx = vec![AIAgentContext::Git {
+        head: "abc1234".into(),
+        branch: None,
+    }];
+    let out = render_environment_context(&ctx).expect("should render");
+    assert!(
+        out.contains("Git branch: (detached HEAD at abc1234)"),
+        "{out}"
+    );
+    let bare = vec![AIAgentContext::Git {
+        head: String::new(),
+        branch: None,
+    }];
+    let out = render_environment_context(&bare).expect("should render");
+    assert!(out.contains("Git branch: (detached HEAD)"), "{out}");
+}

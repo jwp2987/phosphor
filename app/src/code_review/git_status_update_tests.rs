@@ -55,3 +55,28 @@ fn parse_branch_tracking_counts_accepts_git_rev_list_output() {
         None
     );
 }
+
+/// #892: HEAD / branch-ref changes skip the 5s metadata throttle; index churn and
+/// ordinary file edits stay throttled.
+#[test]
+fn head_changes_bypass_throttle_but_file_churn_does_not() {
+    let head_update = RepositoryUpdate {
+        commit_updated: true,
+        ..Default::default()
+    };
+    assert!(LocalGitRepoStatusModel::is_head_change(&head_update));
+
+    let mut edit = RepositoryUpdate::default();
+    edit.modified
+        .insert(TargetFile::new(PathBuf::from("/repo/src/main.rs"), false));
+    assert!(!LocalGitRepoStatusModel::is_head_change(&edit));
+
+    let lock = RepositoryUpdate {
+        index_lock_detected: true,
+        ..Default::default()
+    };
+    assert!(!LocalGitRepoStatusModel::is_head_change(&lock));
+    assert!(!LocalGitRepoStatusModel::is_head_change(
+        &RepositoryUpdate::default()
+    ));
+}
