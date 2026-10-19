@@ -4,6 +4,8 @@ members = [
   "app",
 ]
 resolver = "2"
+# Vendored crates that declare their own [workspace] (#864).
+exclude = ["lib/cosmic-text"]
 
 # Include all members except serve-wasm (since it's a helper helper for serving
 # wasm binaries and not something we want to regularly compile or run
