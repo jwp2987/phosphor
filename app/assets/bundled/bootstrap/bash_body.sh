@@ -916,16 +916,41 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         warp_at_least_bash_version "4.0"
     }
 
+    # #829: a reply to a terminal query (DA, an OSC colour query, a cursor position
+    # report) written while no command was reading it is later read by the line
+    # editor as typed text, and the typeahead report hands it back as input.
+    # Sets __warp_stripped to "$1" without those replies. Complete replies (with
+    # their ESC) are removed anywhere; readline has already swallowed the ESC [ ?
+    # prefix of the ones it saw, leaving residue such as `62c` or `10;rgb:...`,
+    # which is removed from the start of the text only (replies queue up before
+    # anything the user typed). Replies are plain ASCII so the loops stay cheap.
+    __warp_strip_terminal_replies () {
+        __warp_stripped=$1
+        local esc=$'\e' bel=$'\a' m
+        local re_any='('"$esc"'\[[?>=]?[0-9;]*[cR])|('"$esc"'\][0-9;]*;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}('"$bel"'|'"$esc"'\\)?)|([0-9]+(;[0-9]+)?;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4})'
+        local re_lead='^(([0-9]+(;[0-9]+)*c)|(;?[0-9]+R))'
+        while [[ $__warp_stripped =~ $re_any ]]; do
+            m=${BASH_REMATCH[0]}
+            __warp_stripped=${__warp_stripped/"$m"/}
+        done
+        while [[ $__warp_stripped =~ $re_lead ]]; do
+            m=${BASH_REMATCH[0]}
+            __warp_stripped=${__warp_stripped#"$m"}
+            # A residue can be followed by more of the same, now at the start.
+        done
+    }
+
     # Report the current input buffer contents to Warp. This only works correctly
     # if `warp_input_reporting_supported` returns "1".
     __warp_report_input_impl () {
+        __warp_strip_terminal_replies "${READLINE_LINE:-}"
         if [ "${WARP_IN_MSYS2:-}" = true ]; then
             warp_send_hook_via_kv_pairs_start "InputBuffer"
-            warp_send_hook_kv_pair "buffer" "${READLINE_LINE:-}"
+            warp_send_hook_kv_pair "buffer" "$__warp_stripped"
             warp_send_hook_kv_pair "session_id" "${WARP_SESSION_ID:-}"
             warp_send_hook_via_kv_pairs_end
         else
-            local escaped_input="$(warp_escape_json "${READLINE_LINE:-}")"
+            local escaped_input="$(warp_escape_json "$__warp_stripped")"
             warp_send_json_message "{ \"hook\": \"InputBuffer\", \"value\": { \"buffer\": \"$escaped_input\", \"session_id\": ${WARP_SESSION_ID:-} } }"
         fi
         # This prevents bash from re-printing typeahead after we've removed it.

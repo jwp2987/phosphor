@@ -636,8 +636,23 @@ end
 # the fish line editor.
 # This is arbitrarily bound to ESC-i in all supported shells ("i" for input).
 # Binding to ESC-1 caused bootstrap failures with vi keybindings.
+# #829: a reply to a terminal query (DA, an OSC colour query, a cursor position report)
+# that nobody was reading can end up in the typeahead. Drop those before reporting it.
+# Complete replies are removed anywhere; the ESC-less residue of one (`62c`, `10;rgb:...`)
+# only from the start of the text.
+function __warp_strip_terminal_replies
+    # `string` splits piped input into lines, so the start-of-text anchor below has to
+    # be applied to an argument, not to the pipe.
+    set -l text (string join \n -- $argv | string collect \
+        | string replace -r -a '\e\[[?>=]?[0-9;]*[cR]' '' \
+        | string replace -r -a '\e\][0-9;]*;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}(?:\a|\e\\\\)?' '' \
+        | string replace -r -a '[0-9]+(?:;[0-9]+)?;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}' '' \
+        | string collect)
+    string replace -r '\A(?:[0-9]+(?:;[0-9]+)*c|;?[0-9]+R)+' '' -- (string join \n -- $text | string collect)
+end
+
 function warp_report_input
-    set -l escaped_input (warp_escape_json (commandline))
+    set -l escaped_input (warp_escape_json (__warp_strip_terminal_replies (commandline)))
     warp_send_json_message "{ \"hook\": \"InputBuffer\", \"value\": { \"buffer\": \"$escaped_input\", \"session_id\": $WARP_SESSION_ID } }"
     # This prevents fish from rendering typeahead as background output once we've collected it.
     commandline ''

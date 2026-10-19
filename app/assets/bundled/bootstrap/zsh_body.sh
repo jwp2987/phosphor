@@ -772,8 +772,33 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
     warp_title "$CMD"
   }
 
+  # #829: a reply to a terminal query (DA, an OSC colour query, a cursor position
+    # report) written while no command was reading it is later read by the line
+    # editor as typed text, and the typeahead report hands it back as input.
+    # Sets __warp_stripped to "$1" without those replies. Complete replies (with
+    # their ESC) are removed anywhere; zle has already swallowed the ESC [ ?
+    # prefix of the ones it saw, leaving residue such as `62c` or `10;rgb:...`,
+    # which is removed from the start of the text only (replies queue up before
+    # anything the user typed). Replies are plain ASCII so the loops stay cheap.
+    function __warp_strip_terminal_replies {
+        __warp_stripped=$1
+        local esc=$'\e' bel=$'\a' m
+        local re_any='('"$esc"'\[[?>=]?[0-9;]*[cR])|('"$esc"'\][0-9;]*;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}('"$bel"'|'"$esc"'\\)?)|([0-9]+(;[0-9]+)?;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4})'
+        local re_lead='^(([0-9]+(;[0-9]+)*c)|(;?[0-9]+R))'
+        while [[ $__warp_stripped =~ $re_any ]]; do
+            m=${MATCH}
+            __warp_stripped=${__warp_stripped/"$m"/}
+        done
+        while [[ $__warp_stripped =~ $re_lead ]]; do
+            m=${MATCH}
+            __warp_stripped=${__warp_stripped#"$m"}
+            # A residue can be followed by more of the same, now at the start.
+        done
+    }
+
   function warp_report_input {
-    local escaped_input="$(warp_escape_json "$BUFFER")"
+    __warp_strip_terminal_replies "$BUFFER"
+    local escaped_input="$(warp_escape_json "$__warp_stripped")"
     warp_send_json_message "{ \"hook\": \"InputBuffer\", \"value\": { \"buffer\": \"$escaped_input\", \"session_id\": $WARP_SESSION_ID } }"
     # This prevents zsh from printing typeahead as background output after we've fetched it.
     BUFFER=""
