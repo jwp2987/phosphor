@@ -5,7 +5,16 @@
 //! exit code (unlike `(cmd) | cat`) but the subshell also swallowed every `cd`, `export` and
 //! venv activation the agent ran, while the block list showed them as having run in the
 //! user's session. The command now runs in a group in the current shell: the pager variables
-//! are saved, overridden, and restored afterwards, and the command's own status is re-raised.
+//! are saved, overridden, and restored afterwards, and the command's own status is handed on.
+//!
+//! The command runs as the left side of `{ cmd; } && rc=0 || rc=$?`, a context in which
+//! errexit (`set -e`, zsh `ERR_EXIT` / `ERR_RETURN`) is suppressed: a failing agent command
+//! must not exit the user's shell or skip the restore. The status is re-raised as `$?` only
+//! when errexit is off (re-raising would exit the shell); otherwise `__phosphor_ap_rc` is left
+//! set and the precmd hook in the bootstrap scripts prefers it over `$?`.
+//!
+//! Known limitation: zsh rejects a bare `}` argument (`echo }`) as a parse error, in or out of
+//! a group; that is zsh's own behaviour, not something the wrapper introduces.
 //!
 //! A command that, at its top level, would change or end the shell itself in a way a group
 //! cannot contain (`exit`, `exec`, `set -e`, `trap`, ...) keeps the subshell form; see
@@ -84,6 +93,15 @@ pub(crate) fn posix_restore() -> String {
     )
 }
 
+/// Runs `action` only when no errexit-like option is on in the user's shell.
+fn errexit_guard(shell_type: ShellType, action: &str) -> String {
+    let is_on = match shell_type {
+        ShellType::Zsh => "case $- in *e*) true;; *) [[ -o errreturn ]];; esac".to_owned(),
+        _ => "case $- in *e*) true;; *) false;; esac".to_owned(),
+    };
+    format!("if {is_on}; then :; else {action}; fi")
+}
+
 /// The old behaviour: unset then export inside a subshell. Used for commands that cannot
 /// safely run in a group.
 fn posix_subshell_prelude() -> String {
@@ -116,6 +134,15 @@ fn pwsh_override() -> String {
         .join("; ")
 }
 
+/// Taken inside the `try`, straight after the command: the `finally` block's own statements
+/// would otherwise overwrite `$?` and `$LASTEXITCODE` before `Warp-Precmd` reads them.
+const PWSH_CAPTURE: &str = "$__phosphor_ap_ok = $?; $__phosphor_ap_ec = $LASTEXITCODE";
+
+/// The last statements of the wrapper: put the captured status back. `$?` can only be made
+/// false by a failing command, so a silent failed lookup stands in for it. The two capture
+/// variables are removed by `Warp-Precmd`.
+const PWSH_RERAISE: &str = "$global:LASTEXITCODE = $__phosphor_ap_ec; if (-not $__phosphor_ap_ok) { Get-Item -LiteralPath 'Variable:\\__phosphor_ap_failed' -ErrorAction SilentlyContinue }";
+
 /// `$env:` is process-wide, so the restore must be explicit; `finally` also runs on Ctrl-C.
 fn pwsh_restore() -> &'static str {
     "foreach ($__phosphor_ap_v in @($__phosphor_ap.Keys)) { [Environment]::SetEnvironmentVariable($__phosphor_ap_v, $__phosphor_ap[$__phosphor_ap_v]) }; Remove-Variable __phosphor_ap, __phosphor_ap_v -ErrorAction SilentlyContinue"
@@ -128,6 +155,11 @@ fn needs_own_line_closer(command: &str) -> bool {
         || command.contains('#')
         || command.ends_with('&')
         || command.ends_with(';')
+        || command.ends_with('\\')
+}
+
+fn shell_type_is_pwsh(shell_type: ShellType) -> bool {
+    shell_type == ShellType::PowerShell
 }
 
 /// Wraps `command` for `shell_type`; see the module docs. Unknown shells get the command
@@ -139,6 +171,15 @@ pub(super) fn wrap_command(shell_type: Option<ShellType>, command: &str) -> Stri
     };
     // A trailing blank line would only clutter the blocklist display.
     let command = command.trim_end();
+    // A trailing line continuation joins the next line to the command, which would swallow
+    // the closing token even when it is alone on its line; a blank line absorbs the join.
+    let continued;
+    let command = if command.ends_with('\\') && !shell_type_is_pwsh(shell_type) {
+        continued = format!("{command}\n");
+        continued.as_str()
+    } else {
+        command
+    };
     let own_line = needs_own_line_closer(command);
     let subshell = needs_subshell(shell_type, command);
 
@@ -153,16 +194,25 @@ pub(super) fn wrap_command(shell_type: Option<ShellType>, command: &str) -> Stri
         }
         ShellType::Zsh | ShellType::Bash => {
             let head = format!("{}; {}", posix_save(), posix_export());
-            // `unset` would clobber `$?`, so the status is re-raised by an `eval` that
-            // expands the saved value first and only then unsets its holder.
+            // The command runs as the left side of an `&&` / `||` list, where errexit
+            // (`set -e`, zsh `ERR_EXIT` / `ERR_RETURN`) is suppressed, so a failing agent
+            // command can neither kill the user's shell nor skip the restore. The status is
+            // handed over in a variable.
+            let status = format!("&& {MARKER_RC}=0 || {MARKER_RC}=$?");
+            // With errexit off the status is also re-raised as `$?` (`unset` would clobber it,
+            // so an `eval` expands the saved value first), so the user's next `$?` is right.
+            // With errexit on, re-raising would exit the shell; the marker is left set for
+            // the precmd hook, which prefers it over `$?` and unsets it.
+            let reraise = format!(r#"eval "unset {MARKER_RC}; (exit ${MARKER_RC})""#);
             let tail = format!(
-                r#"{MARKER_RC}=$?; {restore}; eval "unset {MARKER_RC}; (exit ${MARKER_RC})""#,
-                restore = posix_restore()
+                "{restore}; {guard}",
+                restore = posix_restore(),
+                guard = errexit_guard(shell_type, &reraise)
             );
             if own_line {
-                format!("{{ {head}\n{command}\n{tail}\n}}")
+                format!("{{ {head}\n{{\n{command}\n}} {status}; {tail}\n}}")
             } else {
-                format!("{{ {head}; {command}; {tail}; }}")
+                format!("{{ {head}; {{ {command}; }} {status}; {tail}; }}")
             }
         }
         ShellType::Fish => {
@@ -180,12 +230,16 @@ pub(super) fn wrap_command(shell_type: Option<ShellType>, command: &str) -> Stri
             let save = pwsh_save();
             let over = pwsh_override();
             let restore = pwsh_restore();
+            let capture = PWSH_CAPTURE;
+            let reraise = PWSH_RERAISE;
             if own_line {
                 format!(
-                    "{call} {{ {save}; {over}\ntry {{\n{command}\n}} finally {{ {restore} }}\n}}"
+                    "{call} {{ {save}; {over}\ntry {{\n{command}\n{capture}\n}} finally {{ {restore} }}\n{reraise}\n}}"
                 )
             } else {
-                format!("{call} {{ {save}; {over}; try {{ {command} }} finally {{ {restore} }} }}")
+                format!(
+                    "{call} {{ {save}; {over}; try {{ {command}; {capture} }} finally {{ {restore} }}; {reraise} }}"
+                )
             }
         }
     }
@@ -227,6 +281,7 @@ fn is_prefix_word(word: &str) -> bool {
             | "builtin"
             | "command"
             | "nohup"
+            | "noglob"
     )
 }
 
@@ -269,6 +324,12 @@ fn is_error_behaviour_option(word: &str) -> bool {
 fn posix_command_needs_subshell(name: &str, args: &[String]) -> bool {
     match name {
         "exit" | "exec" | "trap" | "ulimit" => true,
+        // `eval` runs its arguments in the current shell, so `eval exit` or `eval "set -e"`
+        // is `exit` / `set -e`.
+        "eval" => {
+            let text = args.join(" ");
+            !text.is_empty() && needs_subshell(ShellType::Bash, &text)
+        }
         "set" => args.iter().any(|arg| {
             let is_cluster = (arg.starts_with('-') || arg.starts_with('+'))
                 && arg.len() > 1
@@ -282,6 +343,27 @@ fn posix_command_needs_subshell(name: &str, args: &[String]) -> bool {
         "unset" => args.iter().any(|arg| arg == "PATH"),
         _ => false,
     }
+}
+
+/// Index just past the `))` that closes an arithmetic expression whose `((` ended at
+/// `start`, or the end of input. Nested parentheses are counted.
+fn skip_arithmetic(chars: &[char], start: usize) -> usize {
+    let mut depth = 2usize;
+    let mut i = start;
+    while i < chars.len() {
+        match chars[i] {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i + 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    i
 }
 
 /// A cheap, forgiving shell tokenizer: splits `command` into simple commands made of
@@ -356,6 +438,29 @@ fn simple_commands(command: &str) -> Vec<Vec<String>> {
                     i += 1;
                 }
                 i += 1;
+            }
+            // ANSI-C quoting: `$'it\'s'`; a backslash escapes the next character.
+            '$' if chars.get(i + 1) == Some(&'\'') => {
+                s.in_word = true;
+                i += 2;
+                while i < chars.len() && chars[i] != '\'' {
+                    if chars[i] == '\\' && i + 1 < chars.len() {
+                        i += 1;
+                    }
+                    s.cur.push(chars[i]);
+                    i += 1;
+                }
+                i += 1;
+            }
+            // Arithmetic: `$((1<<2))` inside a word, or `(( x << 2 ))` as a command. The
+            // `<<` inside is a shift, never a heredoc, so the whole thing is skipped.
+            '$' if chars.get(i + 1) == Some(&'(') && chars.get(i + 2) == Some(&'(') => {
+                s.push('$');
+                i = skip_arithmetic(&chars, i + 3);
+            }
+            '(' if chars.get(i + 1) == Some(&'(') && !s.in_word && s.words.is_empty() => {
+                s.end_command();
+                i = skip_arithmetic(&chars, i + 2);
             }
             '#' if !s.in_word => {
                 while i < chars.len() && chars[i] != '\n' {

@@ -2338,6 +2338,21 @@ fn known_pager_names_are_exact() {
 }
 
 #[test]
+fn pager_group_closes_only_with_exactly_one_pager_and_known_spawners() {
+    assert!(is_closable_pager_group(&["git", "less"]));
+    assert!(is_closable_pager_group(&["man", "sh", "less"]));
+    assert!(is_closable_pager_group(&["less"]));
+    // No pager: a spawner alone is not a stalled pager.
+    assert!(!is_closable_pager_group(&["git"]));
+    assert!(!is_closable_pager_group::<&str>(&[]));
+    // Two pagers, or anything unknown in the group, goes to the user.
+    assert!(!is_closable_pager_group(&["less", "more"]));
+    assert!(!is_closable_pager_group(&["git", "less", "ssh"]));
+    assert!(!is_closable_pager_group(&["vim", "less"]));
+    assert!(!is_closable_pager_group(&["python3"]));
+}
+
+#[test]
 fn stall_tracker_measures_an_unchanged_screen_and_resets_on_change() {
     let t0 = std::time::Instant::now();
     let sec = |n| t0 + Duration::from_secs(n);

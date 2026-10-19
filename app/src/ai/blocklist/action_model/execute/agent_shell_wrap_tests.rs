@@ -20,10 +20,22 @@ fn posix_group_runs_in_the_current_shell_and_restores() {
             "{wrapped}"
         );
         assert!(wrapped.contains("AWS_PAGER= "), "{wrapped}");
-        assert!(wrapped.contains("; cd /tmp && make; "), "{wrapped}");
-        // Status is captured immediately after the command, restored, then re-raised.
-        assert!(wrapped.contains("__phosphor_ap_rc=$?; for "), "{wrapped}");
+        // The command is the left side of an `&&` / `||` list (errexit-exempt); its status is
+        // captured immediately, the pagers restored, then the status re-raised -- but only
+        // when no errexit option is on, since re-raising would exit the user's shell.
+        assert!(
+            wrapped.contains(
+                "; { cd /tmp && make; } && __phosphor_ap_rc=0 || __phosphor_ap_rc=$?; for "
+            ),
+            "{wrapped}"
+        );
         assert!(wrapped.contains("(exit $__phosphor_ap_rc)"), "{wrapped}");
+        assert!(wrapped.contains("case $- in *e*) true;;"), "{wrapped}");
+        assert_eq!(
+            wrapped.contains("[[ -o errreturn ]]"),
+            shell == ShellType::Zsh,
+            "{wrapped}"
+        );
         assert!(wrapped.contains("unset __phosphor_ap_v __phosphor_ap_active"));
         assert!(
             !wrapped.contains('\n'),
@@ -52,7 +64,11 @@ fn multiline_heredoc_closer_is_alone_on_its_line() {
         assert_eq!(lines[lines.len() - 1], "}", "{wrapped}");
         // Heredoc terminator keeps its own line, followed by our status capture line.
         assert_eq!(lines[lines.len() - 3], "PY", "{wrapped}");
-        assert!(lines[lines.len() - 2].starts_with("__phosphor_ap_rc=$?;"));
+        assert!(
+            lines[lines.len() - 2]
+                .starts_with("} && __phosphor_ap_rc=0 || __phosphor_ap_rc=$?; for "),
+            "{wrapped}"
+        );
     }
 }
 
@@ -114,7 +130,9 @@ fn pwsh_saves_and_restores_process_environment_in_finally() {
     let wrapped = wrap_command(Some(ShellType::PowerShell), "Set-Location /tmp");
     assert!(wrapped.starts_with(". { $__phosphor_ap = @{}"), "{wrapped}");
     assert!(
-        wrapped.contains("try { Set-Location /tmp } finally {"),
+        wrapped.contains(&format!(
+            "try {{ Set-Location /tmp; {PWSH_CAPTURE} }} finally {{"
+        )),
         "{wrapped}"
     );
     let exits = wrap_command(Some(ShellType::PowerShell), "exit 3");
@@ -203,4 +221,107 @@ fn fish_never_needs_a_subshell() {
 fn unknown_shell_is_passed_through_byte_exact() {
     let command = "echo hi   \n\n";
     assert_eq!(wrap_command(None, command), command);
+}
+
+#[test]
+fn errexit_cannot_see_the_agent_command_or_the_reraise() {
+    // The command must sit in an `&&` / `||` list so `set -e` / `ERR_EXIT` / `ERR_RETURN`
+    // are suppressed for it, and the failing re-raise must be guarded by an errexit test.
+    for shell in POSIX {
+        for command in ["false", "true && false", "a\nb"] {
+            let wrapped = wrap_command(Some(shell), command);
+            let status = "} && __phosphor_ap_rc=0 || __phosphor_ap_rc=$?";
+            assert!(wrapped.contains(status), "{wrapped}");
+            let reraise = wrapped.find("(exit $__phosphor_ap_rc)").unwrap();
+            let guard = wrapped.find("case $- in *e*) true;;").unwrap();
+            assert!(guard < reraise, "{wrapped}");
+            assert!(wrapped.find(status).unwrap() < guard, "{wrapped}");
+            // The pagers are restored before anything that could return early.
+            assert!(
+                wrapped
+                    .find("unset __phosphor_ap_v __phosphor_ap_active")
+                    .unwrap()
+                    < guard,
+                "{wrapped}"
+            );
+        }
+    }
+}
+
+#[test]
+fn pwsh_captures_status_inside_try_and_restores_it_last() {
+    for command in ["Get-Item /nope", "Get-Item /nope\nls", "ls # x"] {
+        let wrapped = wrap_command(Some(ShellType::PowerShell), command);
+        let capture = wrapped.find(PWSH_CAPTURE).expect("status is captured");
+        let finally = wrapped.find("} finally {").unwrap();
+        assert!(capture < finally, "captured inside the try: {wrapped}");
+        let reraise = wrapped.rfind(PWSH_RERAISE).expect("status is put back");
+        assert!(reraise > finally, "re-raised after the finally: {wrapped}");
+        assert!(wrapped.ends_with("}"), "{wrapped}");
+        assert!(
+            wrapped[reraise + PWSH_RERAISE.len()..]
+                .trim_start()
+                .starts_with('}')
+        );
+    }
+    assert!(PWSH_CAPTURE.contains("$?") && PWSH_CAPTURE.contains("$LASTEXITCODE"));
+    assert!(PWSH_RERAISE.contains("$global:LASTEXITCODE"));
+}
+
+#[test]
+fn trailing_backslash_cannot_swallow_the_closer() {
+    for shell in POSIX {
+        let wrapped = wrap_command(Some(shell), "ls /x \\");
+        // The continuation joins the next (blank) line, so the closer is not consumed.
+        assert!(wrapped.contains("\nls /x \\\n\n} && "), "{wrapped}");
+        assert!(wrapped.ends_with("\n}"), "{wrapped}");
+    }
+    let fish = wrap_command(Some(ShellType::Fish), "ls /x \\");
+    assert!(fish.contains("ls /x \\\n\nend"), "{fish}");
+}
+
+#[test]
+fn eval_and_noglob_forward_to_the_command_they_run() {
+    for command in [
+        "eval exit",
+        "eval exit 3",
+        "eval \"set -e\"",
+        "eval 'trap true EXIT'",
+        "noglob exit",
+    ] {
+        for shell in POSIX {
+            assert!(needs_subshell(shell, command), "{command}");
+        }
+    }
+    for command in ["eval echo hi", "eval \"cd /tmp\"", "noglob ls *", "eval"] {
+        for shell in POSIX {
+            assert!(!needs_subshell(shell, command), "{command}");
+        }
+    }
+}
+
+#[test]
+fn arithmetic_shifts_are_not_heredocs() {
+    // If `<<` here opened a heredoc, the `exit` on the next line would be swallowed as body.
+    for command in [
+        "echo $((1<<2))\nexit 1",
+        "(( x << 2 ))\nexit 1",
+        "x=$(( (1<<2) + (3<<1) ))\nexit 1",
+        "(( x <<= 2 ))\nexit 1",
+    ] {
+        assert!(needs_subshell(ShellType::Bash, command), "{command}");
+    }
+    // A real heredoc still hides its body.
+    assert!(!needs_subshell(
+        ShellType::Bash,
+        "cat <<EOF\nexit 1\nEOF\necho done"
+    ));
+}
+
+#[test]
+fn ansi_c_quoting_keeps_escaped_quotes_inside_the_word() {
+    // `\'` does not end the quote, so `; exit` below is inside the string.
+    assert!(!needs_subshell(ShellType::Bash, "echo $'it\\'s; exit 1'"));
+    assert!(needs_subshell(ShellType::Bash, "echo $'it\\'s'; exit 1"));
+    assert!(needs_subshell(ShellType::Bash, "echo $'a'\nexit 1"));
 }

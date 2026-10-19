@@ -22,6 +22,8 @@ When `wait_until_complete=false`, the tool returns a `LongRunningCommandSnapshot
 
 For one-shot commands (`ls`, `git status`, `cargo test`, etc.) keep the default `wait_until_complete=true`.
 
+Even with `wait_until_complete=true` you may get `status: "running"` with a `command_id` instead of a final result. That means the command has not finished: it stalled (its screen stopped changing, for example on a pager or a prompt such as `Continue? [y/N]` or a password) or it exceeded the 120 s wait. The command is still alive in the user's terminal. Do not re-run it. Look at `output`, then either answer a stalled prompt or close a stalled program with `write_to_long_running_shell_command` (for example `y\n`, or `q` for a pager), or keep waiting with `read_shell_command_output` using the `command_id`. If the output shows a slow but healthy command (a long build), poll `read_shell_command_output` rather than writing anything.
+
 # Approval flags
 
 - `is_read_only=true` — command only reads info (ls/cat/git status/grep/...) and is safe to auto-approve.

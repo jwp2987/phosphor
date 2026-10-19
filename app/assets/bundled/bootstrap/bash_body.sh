@@ -536,6 +536,9 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         # executed within this block instead of the actual last
         # command that was run.
         local exit_code=$?
+        # Phosphor (#855): an agent command run under errexit hands its status over here
+        # instead of re-raising it (which would exit the user's shell).
+        if [ -n "${__phosphor_ap_rc-}" ]; then exit_code=$__phosphor_ap_rc; unset __phosphor_ap_rc; fi
         if [ -n "${__phosphor_ap_active-}" ]; then __phosphor_ap_restore_pagers; fi
         # Compute the next block ID once so the CommandFinished hook and the following Precmd hook
         # report the same ID. The Precmd carries this completion metadata so the client can classify

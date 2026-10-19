@@ -941,6 +941,44 @@ pub fn is_known_pager_name(name: &str) -> bool {
     matches!(name.trim(), "less" | "more" | "most" | "pager")
 }
 
+/// Process names that routinely sit in a pager's process group and hand it their output:
+/// the command that spawned the pager (`git log`, `man`, `psql`, ...), a pager, or a shell
+/// wrapper around either.
+pub fn is_pager_spawner_name(name: &str) -> bool {
+    is_known_pager_name(name)
+        || matches!(
+            name.trim(),
+            "git"
+                | "man"
+                | "systemctl"
+                | "journalctl"
+                | "psql"
+                | "aws"
+                | "gh"
+                | "bat"
+                | "sh"
+                | "bash"
+                | "zsh"
+                | "fish"
+        )
+}
+
+/// Whether the foreground process group is a known pager that Phosphor may send `q` to:
+/// EXACTLY one member is a known pager and every other member is a known pager spawner. A
+/// pager is rarely the group leader (`git log` is, `less` is a member), so the whole group
+/// is judged. Anything else -- an editor, `ssh`, an unknown program next to a `less` -- is
+/// not ours to close.
+pub fn is_closable_pager_group<S: AsRef<str>>(names: &[S]) -> bool {
+    let pagers = names
+        .iter()
+        .filter(|name| is_known_pager_name(name.as_ref()))
+        .count();
+    pagers == 1
+        && names
+            .iter()
+            .all(|name| is_pager_spawner_name(name.as_ref()))
+}
+
 /// A stable fingerprint of whatever is on screen, for [`StallTracker`].
 pub fn screen_fingerprint(parts: impl std::hash::Hash) -> u64 {
     use std::hash::Hasher as _;

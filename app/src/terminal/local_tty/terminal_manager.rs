@@ -73,7 +73,7 @@ use {
     crate::terminal::local_tty::terminal_attributes::Event as TerminalAttributesPollerEvent,
     crate::terminal::model::block::{
         FullscreenStall, FullscreenStallDetector, PromptDetection, PromptDetector,
-        is_known_pager_name,
+        is_closable_pager_group,
     },
     crate::terminal::model::terminal_model::BlockIndex,
     crate::terminal::model_events::ModelEvent as TerminalModelEvent,
@@ -1092,8 +1092,8 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
                 poller_for_name
                     .as_ref()?
                     .as_ref(ctx)
-                    .foreground_process_name()
-                    .map(|name| is_known_pager_name(&name))
+                    .foreground_process_names()
+                    .map(|names| is_closable_pager_group(&names))
             },
         );
         match stall {

@@ -172,8 +172,6 @@ impl ShellCommandExecutor {
         self.awaiting_completion_action_ids.contains(action_id)
     }
 
-    /// Whether any `wait_until_completion` request is in flight. Cheap, and needs no
-    /// terminal-model lock, so per-poll callers can bail out on it first.
     /// Records that Phosphor closed a pager the waited command `action_id` had opened, so the
     /// result handed to the model says the output may be incomplete.
     pub fn note_pager_closed(&mut self, action_id: &AIAgentActionId) {
@@ -190,6 +188,8 @@ impl ShellCommandExecutor {
         handles_command_snapshots_for(providers, llm.id.as_str())
     }
 
+    /// Whether any `wait_until_completion` request is in flight. Cheap, and needs no
+    /// terminal-model lock, so per-poll callers can bail out on it first.
     pub fn has_any_awaiting_completion(&self) -> bool {
         !self.awaiting_completion_action_ids.is_empty()
     }
