@@ -24,6 +24,21 @@ impl AssetProvider for Assets {
             "big-test.svg" => Ok(Cow::Borrowed(
                 br##"<svg width="1000" height="1000" viewBox="0 0 1000 1000" xmlns="http://www.w3.org/2000/svg"><rect width="1000" height="1000" fill="#336699"/></svg>"##,
             )),
+            "heavy.rgba" => {
+                let mut bytes = b"warp-img:rgba:1024:1024:".to_vec();
+                bytes.extend(std::iter::repeat_n(0x80u8, 1024 * 1024 * 4));
+                Ok(Cow::Owned(bytes))
+            }
+            "many-nodes.svg" => {
+                let mut svg = String::from(
+                    r##"<svg width="1000" height="1000" xmlns="http://www.w3.org/2000/svg">"##,
+                );
+                for _ in 0..(MAX_SVG_NODES + 1) {
+                    svg.push_str(r##"<rect width="1" height="1"/>"##);
+                }
+                svg.push_str("</svg>");
+                Ok(Cow::Owned(svg.into_bytes()))
+            }
             "fit-test.rgba" => Ok(Cow::Borrowed(
                 b"warp-img:rgba:4:2:\xff\x00\x00\xff\xff\x00\x00\xff\x00\x00\xff\xff\x00\x00\xff\xff\x00\xff\x00\xff\x00\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff",
             )),
@@ -1003,4 +1018,253 @@ fn rendered_sizes_per_asset_are_bounded() {
     }
     let cache = image_cache.images.read();
     assert!(cache.values().all(|sizes| sizes.len() <= MAX_RENDERED_SIZES_PER_ASSET));
+}
+
+fn request(
+    image_cache: &ImageCache,
+    asset_cache: &AssetCache,
+    path: &'static str,
+    side: i32,
+) -> DeferredImage {
+    image_cache.image_deferred(
+        AssetSource::Bundled { path },
+        Vector2I::new(side, side),
+        FitType::Contain,
+        AnimatedImageBehavior::FullAnimation,
+        CacheOption::BySize,
+        None,
+        asset_cache,
+    )
+}
+
+fn wait_until(mut done: impl FnMut() -> bool) {
+    for _ in 0..2000 {
+        if done() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("condition never became true");
+}
+
+fn is_failed(deferred: &DeferredImage) -> bool {
+    matches!(deferred, DeferredImage::State(AssetState::FailedToLoad(_)))
+}
+
+#[test]
+fn evict_then_restart_ignores_the_old_result() {
+    let asset_cache = new_asset_cache();
+    let image_cache = ImageCache::new();
+    // The first job fails; evicting while it runs must make its result irrelevant.
+    image_cache.test_hook.set(1);
+    assert!(matches!(
+        request(&image_cache, &asset_cache, "big-test.svg", 300),
+        DeferredImage::Pending { .. }
+    ));
+    image_cache.evict_image(&AssetSource::Bundled {
+        path: "big-test.svg",
+    });
+    image_cache.test_hook.set(0);
+    wait_until(|| image_cache.inflight.load(Ordering::Acquire) == 0);
+    // New generation for the same key.
+    assert!(matches!(
+        request(&image_cache, &asset_cache, "big-test.svg", 300),
+        DeferredImage::Pending { .. }
+    ));
+    let image = wait_for_deferred_big_svg(&image_cache, &asset_cache, 300);
+    assert!(matches!(image.as_ref(), Image::Static(_)));
+    assert!(image_cache.failed.borrow().is_empty());
+}
+
+#[test]
+fn inflight_cap_defers_the_third_request_until_a_slot_frees() {
+    let asset_cache = new_asset_cache();
+    let image_cache = ImageCache::new();
+    image_cache.test_hook.set(3);
+    for side in [300, 301] {
+        assert!(matches!(
+            request(&image_cache, &asset_cache, "big-test.svg", side),
+            DeferredImage::Pending { .. }
+        ));
+    }
+    assert_eq!(image_cache.inflight.load(Ordering::Acquire), 2);
+    assert!(matches!(
+        request(&image_cache, &asset_cache, "big-test.svg", 302),
+        DeferredImage::Pending { .. }
+    ));
+    assert_eq!(image_cache.pending.borrow().len(), 2, "third must not start");
+    assert_eq!(image_cache.inflight.load(Ordering::Acquire), 2);
+    image_cache.test_hook.set(0);
+    wait_until(|| image_cache.inflight.load(Ordering::Acquire) == 0);
+    wait_for_deferred_big_svg(&image_cache, &asset_cache, 302);
+}
+
+#[test]
+fn failures_and_panics_are_remembered_not_retried() {
+    let asset_cache = new_asset_cache();
+    let image_cache = ImageCache::new();
+    for (hook, side) in [(1, 300), (2, 301)] {
+        image_cache.test_hook.set(hook);
+        assert!(matches!(
+            request(&image_cache, &asset_cache, "big-test.svg", side),
+            DeferredImage::Pending { .. }
+        ));
+        wait_until(|| is_failed(&request(&image_cache, &asset_cache, "big-test.svg", side)));
+        // Healthy again, but the failed key is not retried.
+        image_cache.test_hook.set(0);
+        assert!(is_failed(&request(
+            &image_cache,
+            &asset_cache,
+            "big-test.svg",
+            side
+        )));
+        assert!(image_cache.pending.borrow().is_empty());
+    }
+    wait_until(|| image_cache.live_threads.load(Ordering::Acquire) == 0);
+    assert_eq!(image_cache.inflight.load(Ordering::Acquire), 0);
+    // Other sizes still work after a panic.
+    wait_for_deferred_big_svg(&image_cache, &asset_cache, 305);
+}
+
+#[test]
+fn byte_budget_drops_the_least_recently_used_size() {
+    let asset_cache = new_asset_cache();
+    let image_cache = ImageCache::new();
+    image_cache.test_budget.set(1_500_000);
+    for side in [300, 301, 302, 303] {
+        wait_for_deferred_big_svg(&image_cache, &asset_cache, side);
+    }
+    // Touch 300 so that 301 is now the least recently used.
+    assert!(matches!(
+        request(&image_cache, &asset_cache, "big-test.svg", 300),
+        DeferredImage::State(AssetState::Loaded { .. })
+    ));
+    wait_for_deferred_big_svg(&image_cache, &asset_cache, 304);
+    let cached: Vec<i32> = {
+        let cache = image_cache.images.read();
+        let mut sides: Vec<i32> = cache
+            .values()
+            .flat_map(|sizes| sizes.keys().map(|k| k.bounds.x()))
+            .collect();
+        sides.sort();
+        sides
+    };
+    assert_eq!(cached, vec![300, 302, 303, 304]);
+    let total: usize = image_cache.used.borrow().values().map(|e| e.bytes).sum();
+    assert_eq!(total, image_cache.total_bytes.get());
+    assert!(total <= 1_500_000);
+}
+
+#[test]
+fn evict_image_clears_all_bookkeeping() {
+    let asset_cache = new_asset_cache();
+    let image_cache = ImageCache::new();
+    wait_for_deferred_big_svg(&image_cache, &asset_cache, 300);
+    image_cache.test_hook.set(3);
+    assert!(matches!(
+        request(&image_cache, &asset_cache, "big-test.svg", 301),
+        DeferredImage::Pending { .. }
+    ));
+    image_cache.evict_image(&AssetSource::Bundled {
+        path: "big-test.svg",
+    });
+    assert!(image_cache.images.read().is_empty());
+    assert!(image_cache.used.borrow().is_empty());
+    assert!(image_cache.pending.borrow().is_empty());
+    assert!(image_cache.failed.borrow().is_empty());
+    assert_eq!(image_cache.total_bytes.get(), 0);
+    wait_until(|| image_cache.inflight.load(Ordering::Acquire) == 0);
+}
+
+#[test]
+fn evict_size_keeps_the_bookkeeping_consistent() {
+    let asset_cache = new_asset_cache();
+    let image_cache = ImageCache::new();
+    wait_for_deferred_big_svg(&image_cache, &asset_cache, 300);
+    wait_for_deferred_big_svg(&image_cache, &asset_cache, 301);
+    image_cache.evict_size(
+        &AssetSource::Bundled {
+            path: "big-test.svg",
+        },
+        Vector2I::new(300, 300),
+        FitType::Contain,
+        AnimatedImageBehavior::FullAnimation,
+    );
+    assert_eq!(image_cache.used.borrow().len(), 1);
+    let total: usize = image_cache.used.borrow().values().map(|e| e.bytes).sum();
+    assert_eq!(total, image_cache.total_bytes.get());
+}
+
+#[test]
+fn large_bitmap_scaling_is_deferred() {
+    let asset_cache = new_asset_cache();
+    let image_cache = ImageCache::new();
+    let source = AssetSource::Bundled {
+        path: "heavy.rgba",
+    };
+    let _: AssetState<ImageType> = asset_cache.load_asset(source);
+    let mut image = None;
+    let mut saw_pending = false;
+    for _ in 0..2000 {
+        match request(&image_cache, &asset_cache, "heavy.rgba", 100) {
+            DeferredImage::Pending { .. } => saw_pending = true,
+            DeferredImage::State(AssetState::Loaded { data }) => {
+                image = Some(data);
+                break;
+            }
+            DeferredImage::State(AssetState::FailedToLoad(err)) => panic!("failed: {err}"),
+            DeferredImage::State(_) => {}
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(saw_pending, "a 1M pixel bitmap must be scaled off-thread");
+    let image = image.expect("scaled image");
+    let Image::Static(image) = image.as_ref() else {
+        panic!("expected a static image");
+    };
+    assert_eq!(image.size(), Vector2I::new(100, 100));
+}
+
+#[test]
+fn a_stuck_rasterisation_times_out_and_frees_its_slot() {
+    let asset_cache = new_asset_cache();
+    let image_cache = ImageCache::new();
+    image_cache.test_deadline_ms.set(50);
+    image_cache.test_hook.set(3);
+    assert!(matches!(
+        request(&image_cache, &asset_cache, "big-test.svg", 300),
+        DeferredImage::Pending { .. }
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    assert!(is_failed(&request(
+        &image_cache,
+        &asset_cache,
+        "big-test.svg",
+        300
+    )));
+    // The slot is free again while the stuck thread is still running.
+    assert_eq!(image_cache.inflight.load(Ordering::Acquire), 0);
+    image_cache.test_hook.set(0);
+    wait_for_deferred_big_svg(&image_cache, &asset_cache, 301);
+    // The stuck thread finishing later must not release its slot a second time.
+    wait_until(|| image_cache.live_threads.load(Ordering::Acquire) == 0);
+    assert_eq!(image_cache.inflight.load(Ordering::Acquire), 0);
+    assert!(is_failed(&request(
+        &image_cache,
+        &asset_cache,
+        "big-test.svg",
+        300
+    )));
+}
+
+#[test]
+fn an_svg_with_too_many_nodes_is_refused() {
+    let asset_cache = new_asset_cache();
+    let image_cache = ImageCache::new();
+    wait_until(|| {
+        matches!(
+            request(&image_cache, &asset_cache, "many-nodes.svg", 300),
+            DeferredImage::State(AssetState::FailedToLoad(_))
+        )
+    });
 }

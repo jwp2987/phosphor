@@ -1022,8 +1022,57 @@ const ASYNC_RASTER_MIN_PIXELS: u64 = 1_000_000;
 const ASYNC_SVG_MIN_PIXELS: u64 = 250_000;
 /// Failed deferred rasterisations remembered so the render path does not retry every frame.
 const MAX_REMEMBERED_RASTER_FAILURES: usize = 256;
+/// A background rasterisation older than this is given up on: the key is marked failed (which
+/// stops the render path polling) and its slot is freed, so one pathological SVG cannot starve
+/// every other image (#880).
+const RASTER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+/// Raster threads alive at once, including ones given up on but not yet returned. Past this a new
+/// request fails instead of spawning.
+const MAX_LIVE_RASTER_THREADS: usize = 6;
+/// SVGs with more nodes than this are not rasterised in the background (they can take many
+/// seconds); the image is reported as failed to load.
+const MAX_SVG_NODES: usize = 100_000;
+/// Bytes of rendered sizes kept across the whole cache; the least recently used go first.
+const MAX_RENDERED_BYTES: usize = 256 * 1024 * 1024;
 
 type RenderedKey = (u64, RenderedImageCacheKey);
+
+struct PendingRaster {
+    generation: u64,
+    started: std::time::Instant,
+    /// Set once this job's `inflight` slot has been released (by the job or by the deadline).
+    abandoned: Arc<std::sync::atomic::AtomicBool>,
+}
+
+struct UsedEntry {
+    stamp: u64,
+    bytes: usize,
+}
+
+fn image_bytes(image: &Image) -> usize {
+    match image {
+        Image::Static(image) => image.rgba_bytes().len(),
+        Image::Animated(image) => image
+            .frames
+            .iter()
+            .map(|frame| frame.image.rgba_bytes().len())
+            .sum(),
+    }
+}
+
+fn svg_node_count(tree: &usvg::Tree) -> usize {
+    let mut count = 0;
+    let mut stack = vec![tree.root()];
+    while let Some(group) = stack.pop() {
+        for node in group.children() {
+            count += 1;
+            if let usvg::Node::Group(child) = node {
+                stack.push(child);
+            }
+        }
+    }
+    count
+}
 
 /// A finished background rasterisation, handed to the foreground (#880).
 struct ReadyRaster {
@@ -1066,15 +1115,24 @@ pub struct ImageCache {
     /// clones share the same underlying map.
     images: Rc<RwLock<HashMap<u64, HashMap<RenderedImageCacheKey, Rc<Image>>>>>,
     /// Use stamps for `images` entries, to drop the least recently used size (#880).
-    used: Rc<RefCell<HashMap<RenderedKey, u64>>>,
+    used: Rc<RefCell<HashMap<RenderedKey, UsedEntry>>>,
+    total_bytes: Rc<Cell<usize>>,
     clock: Rc<Cell<u64>>,
     /// Rasterisations running off the UI thread, with the generation they were started under. A
     /// result whose generation no longer matches (the asset was evicted meanwhile) is dropped.
-    pending: Rc<RefCell<HashMap<RenderedKey, u64>>>,
+    pending: Rc<RefCell<HashMap<RenderedKey, PendingRaster>>>,
     failed: Rc<RefCell<HashMap<RenderedKey, String>>>,
     next_generation: Rc<Cell<u64>>,
     ready: Arc<Mutex<Vec<ReadyRaster>>>,
     inflight: Arc<AtomicUsize>,
+    live_threads: Arc<AtomicUsize>,
+    /// Test hooks: 0 = none, 1 = the job fails, 2 = the job panics, 3 = the job stalls 1.5 s.
+    #[cfg(test)]
+    test_hook: Rc<Cell<u8>>,
+    #[cfg(test)]
+    test_deadline_ms: Rc<Cell<u64>>,
+    #[cfg(test)]
+    test_budget: Rc<Cell<usize>>,
 }
 
 impl ImageCache {
@@ -1091,7 +1149,20 @@ impl ImageCache {
 
         cache.remove(&cache_key);
         drop(cache);
-        self.used.borrow_mut().retain(|k, _| k.0 != cache_key);
+        let freed: usize = {
+            let mut used = self.used.borrow_mut();
+            let mut freed = 0;
+            used.retain(|k, entry| {
+                let keep = k.0 != cache_key;
+                if !keep {
+                    freed += entry.bytes;
+                }
+                keep
+            });
+            freed
+        };
+        self.total_bytes
+            .set(self.total_bytes.get().saturating_sub(freed));
         self.pending.borrow_mut().retain(|k, _| k.0 != cache_key);
         self.failed.borrow_mut().retain(|k, _| k.0 != cache_key);
     }
@@ -1133,6 +1204,8 @@ impl ImageCache {
                 cache.remove(&cache_key);
             }
         }
+        drop(cache);
+        self.forget_used((cache_key, rendered_key));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1202,7 +1275,11 @@ impl ImageCache {
             std::mem::take(&mut *guard)
         };
         for item in ready {
-            let current = self.pending.borrow().get(&item.key) == Some(&item.generation);
+            let current = self
+                .pending
+                .borrow()
+                .get(&item.key)
+                .is_some_and(|p| p.generation == item.generation);
             if !current {
                 continue;
             }
@@ -1211,46 +1288,110 @@ impl ImageCache {
                 Ok(image) => self.insert_rendered(item.key.0, item.key.1, Rc::new(image)),
                 Err(message) => {
                     log::warn!("Background image rasterisation failed: {message}");
-                    let mut failed = self.failed.borrow_mut();
-                    if failed.len() >= MAX_REMEMBERED_RASTER_FAILURES {
-                        failed.clear();
-                    }
-                    failed.insert(item.key, message);
+                    self.remember_failure(item.key, message);
                 }
             }
         }
     }
 
+    fn forget_used(&self, key: RenderedKey) {
+        if let Some(entry) = self.used.borrow_mut().remove(&key) {
+            self.total_bytes
+                .set(self.total_bytes.get().saturating_sub(entry.bytes));
+        }
+    }
+
+    fn byte_budget(&self) -> usize {
+        #[cfg(test)]
+        if self.test_budget.get() != 0 {
+            return self.test_budget.get();
+        }
+        MAX_RENDERED_BYTES
+    }
+
+    fn raster_deadline(&self) -> std::time::Duration {
+        #[cfg(test)]
+        if self.test_deadline_ms.get() != 0 {
+            return std::time::Duration::from_millis(self.test_deadline_ms.get());
+        }
+        RASTER_DEADLINE
+    }
+
     /// Inserts a rendered size, dropping the least recently used sizes of the asset beyond
-    /// [`MAX_RENDERED_SIZES_PER_ASSET`].
+    /// [`MAX_RENDERED_SIZES_PER_ASSET`] and the least recently used sizes overall beyond the
+    /// byte budget.
     fn insert_rendered(&self, cache_key: u64, key: RenderedImageCacheKey, image: Rc<Image>) {
+        let bytes = image_bytes(&image);
         let mut cache = self.images.write();
-        let inner = cache.entry(cache_key).or_default();
-        inner.insert(key, image);
-        let mut used = self.used.borrow_mut();
+        cache.entry(cache_key).or_default().insert(key, image);
         let stamp = self.clock.get() + 1;
         self.clock.set(stamp);
-        used.insert((cache_key, key), stamp);
-        while inner.len() > MAX_RENDERED_SIZES_PER_ASSET {
-            let Some(oldest) = inner
-                .keys()
-                .filter(|k| **k != key)
-                .min_by_key(|k| used.get(&(cache_key, **k)).copied().unwrap_or(0))
-                .copied()
-            else {
-                break;
-            };
-            inner.remove(&oldest);
-            used.remove(&(cache_key, oldest));
+        {
+            let mut used = self.used.borrow_mut();
+            if let Some(old) = used.insert((cache_key, key), UsedEntry { stamp, bytes }) {
+                self.total_bytes
+                    .set(self.total_bytes.get().saturating_sub(old.bytes));
+            }
+            self.total_bytes.set(self.total_bytes.get() + bytes);
+        }
+        let mut victims: Vec<RenderedKey> = Vec::new();
+        {
+            let used = self.used.borrow();
+            let stamp_of = |k: &RenderedKey| used.get(k).map_or(0, |e| e.stamp);
+            // Per-asset cap.
+            let mut own: Vec<RenderedKey> = cache
+                .get(&cache_key)
+                .map(|m| m.keys().map(|k| (cache_key, *k)).collect())
+                .unwrap_or_default();
+            own.retain(|k| k.1 != key);
+            own.sort_by_key(stamp_of);
+            let over = (own.len() + 1).saturating_sub(MAX_RENDERED_SIZES_PER_ASSET);
+            victims.extend(own.into_iter().take(over));
+            // Global byte budget.
+            let mut total = self.total_bytes.get();
+            for v in &victims {
+                total = total.saturating_sub(used.get(v).map_or(0, |e| e.bytes));
+            }
+            if total > self.byte_budget() {
+                let mut all: Vec<&RenderedKey> = used
+                    .keys()
+                    .filter(|k| **k != (cache_key, key) && !victims.contains(k))
+                    .collect();
+                all.sort_by_key(|k| stamp_of(k));
+                for k in all {
+                    if total <= self.byte_budget() {
+                        break;
+                    }
+                    total = total.saturating_sub(used.get(k).map_or(0, |e| e.bytes));
+                    victims.push(*k);
+                }
+            }
+        }
+        for victim in victims {
+            if let Some(inner) = cache.get_mut(&victim.0) {
+                inner.remove(&victim.1);
+                if inner.is_empty() {
+                    cache.remove(&victim.0);
+                }
+            }
+            self.forget_used(victim);
         }
     }
 
     fn touch(&self, cache_key: u64, key: RenderedImageCacheKey) {
         let stamp = self.clock.get() + 1;
         self.clock.set(stamp);
-        if let Some(slot) = self.used.borrow_mut().get_mut(&(cache_key, key)) {
-            *slot = stamp;
+        if let Some(entry) = self.used.borrow_mut().get_mut(&(cache_key, key)) {
+            entry.stamp = stamp;
         }
+    }
+
+    fn remember_failure(&self, key: RenderedKey, message: String) {
+        let mut failed = self.failed.borrow_mut();
+        if failed.len() >= MAX_REMEMBERED_RASTER_FAILURES {
+            failed.clear();
+        }
+        failed.insert(key, message);
     }
 
     /// Decides what to do about a missing rendered size on the deferred path. Returns `None` when
@@ -1271,6 +1412,21 @@ impl ImageCache {
         let rendered_key = (cache_key, key);
         if let Some(message) = self.failed.borrow().get(&rendered_key) {
             return Some(Err(anyhow!("{message}")));
+        }
+        let expired = self
+            .pending
+            .borrow()
+            .get(&rendered_key)
+            .map(|p| p.started.elapsed() >= self.raster_deadline());
+        if expired == Some(true) {
+            if let Some(p) = self.pending.borrow_mut().remove(&rendered_key) {
+                if !p.abandoned.swap(true, Ordering::AcqRel) {
+                    self.inflight.fetch_sub(1, Ordering::AcqRel);
+                }
+            }
+            log::warn!("Image rasterisation timed out; giving up on it");
+            self.remember_failure(rendered_key, "image rasterisation timed out".to_owned());
+            return Some(Err(anyhow!("image rasterisation timed out")));
         }
         out.pending = true;
         out.stale = existing.and_then(|map| {
@@ -1293,18 +1449,45 @@ impl ImageCache {
             // Not started; the caller repaints shortly and asks again.
             return Some(Ok(()));
         }
+        if self.live_threads.load(Ordering::Acquire) >= MAX_LIVE_RASTER_THREADS {
+            out.pending = false;
+            out.stale = None;
+            self.remember_failure(
+                rendered_key,
+                "too many stuck image rasterisations".to_owned(),
+            );
+            return Some(Err(anyhow!("too many stuck image rasterisations")));
+        }
         let generation = self.next_generation.get() + 1;
         self.next_generation.set(generation);
         let data = data.clone();
         let ready = self.ready.clone();
         let inflight = self.inflight.clone();
+        let live = self.live_threads.clone();
+        let abandoned = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(test)]
+        let hook = self.test_hook.get();
         inflight.fetch_add(1, Ordering::AcqRel);
+        live.fetch_add(1, Ordering::AcqRel);
         let spawned = std::thread::Builder::new()
             .name("image-raster".into())
             .spawn({
-                let inflight = inflight.clone();
+                let (inflight, live, abandoned) =
+                    (inflight.clone(), live.clone(), abandoned.clone());
                 move || {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        #[cfg(test)]
+                        match hook {
+                            1 => return Err(anyhow!("test failure")),
+                            2 => panic!("test panic"),
+                            3 => std::thread::sleep(std::time::Duration::from_millis(1500)),
+                            _ => {}
+                        }
+                        if let ImageType::Svg { svg } = &data {
+                            if svg_node_count(svg) > MAX_SVG_NODES {
+                                return Err(anyhow!("SVG has too many nodes to rasterise"));
+                            }
+                        }
                         data.to_image(
                             key.bounds,
                             key.fit_type,
@@ -1325,16 +1508,27 @@ impl ImageCache {
                             generation,
                             result,
                         });
-                    inflight.fetch_sub(1, Ordering::AcqRel);
+                    if !abandoned.swap(true, Ordering::AcqRel) {
+                        inflight.fetch_sub(1, Ordering::AcqRel);
+                    }
+                    live.fetch_sub(1, Ordering::AcqRel);
                 }
             });
         match spawned {
             Ok(_) => {
-                self.pending.borrow_mut().insert(rendered_key, generation);
+                self.pending.borrow_mut().insert(
+                    rendered_key,
+                    PendingRaster {
+                        generation,
+                        started: std::time::Instant::now(),
+                        abandoned,
+                    },
+                );
                 Some(Ok(()))
             }
             Err(_) => {
                 inflight.fetch_sub(1, Ordering::AcqRel);
+                live.fetch_sub(1, Ordering::AcqRel);
                 out.pending = false;
                 out.stale = None;
                 None
