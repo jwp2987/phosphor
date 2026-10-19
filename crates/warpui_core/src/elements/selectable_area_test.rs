@@ -132,3 +132,33 @@ fn capture_clicks_within_bounds_stops_the_click_from_leaking_through() {
     // reach the element painted beneath it.
     assert_center_click_reaches_element_beneath(true, 0);
 }
+
+/// A bare mouse-down (`is_selecting`, head == tail) or a head with no tail is not a selection,
+/// so the answer output cap is not lifted by a plain click (#872).
+#[test]
+fn has_selection_ignores_bare_clicks_and_headless_tails() {
+    let handle = SelectionHandle::default();
+    assert!(!handle.has_selection());
+
+    let point = SelectionBound::Relative(Vector2F::new(3., 4.));
+    {
+        let mut s = handle.selection.lock().unwrap();
+        s.is_selecting = true;
+        s.head = Some(point);
+        s.tail = Some(point);
+    }
+    assert!(!handle.has_selection());
+
+    {
+        let mut s = handle.selection.lock().unwrap();
+        s.is_selecting = false;
+        s.tail = None;
+    }
+    assert!(!handle.has_selection());
+
+    {
+        let mut s = handle.selection.lock().unwrap();
+        s.tail = Some(SelectionBound::Relative(Vector2F::new(30., 4.)));
+    }
+    assert!(handle.has_selection());
+}

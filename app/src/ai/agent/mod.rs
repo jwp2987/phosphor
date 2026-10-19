@@ -660,6 +660,35 @@ impl AIAgentOutput {
         result.join("\n")
     }
 
+    /// Only what the model wrote: the Markdown of its text messages, with code fences, tables and
+    /// images, but none of the tool calls, action results, todo/subagent notices or other UI
+    /// chrome that [`Self::format_for_copy`] also includes (#890).
+    pub fn format_response_for_copy(&self) -> String {
+        self.messages
+            .iter()
+            .filter_map(|message| match &message.message {
+                AIAgentOutputMessageType::Text(text) => Some(
+                    text.sections
+                        .iter()
+                        .map(|section| match section {
+                            AIAgentTextSection::PlainText { text } => text.text().to_string(),
+                            AIAgentTextSection::Code { .. }
+                            | AIAgentTextSection::Table { .. }
+                            | AIAgentTextSection::Image { .. }
+                            | AIAgentTextSection::MermaidDiagram { .. } => {
+                                format!("{}", MarkdownTextSection(section))
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                ),
+                _ => None,
+            })
+            .filter(|text| !text.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
     pub fn extend_citations(&mut self, citations: Vec<AIAgentCitation>) {
         let new_citations: Vec<_> = citations
             .into_iter()
@@ -3289,6 +3318,23 @@ impl AIAgentExchange {
             Some(annotation) => format!("{streamed_text}\n\n{annotation}"),
             None => streamed_text,
         }
+    }
+
+    /// The model's answer text for this exchange, without prompt, tool calls or annotations
+    /// (#890). Like [`Self::format_output_for_copy`], partial output of an errored or cancelled
+    /// exchange is kept.
+    pub fn format_response_for_copy(&self) -> String {
+        let output = match &self.output_status {
+            AIAgentOutputStatus::Streaming { output } => output.as_ref(),
+            AIAgentOutputStatus::Finished { finished_output } => match finished_output {
+                FinishedAIAgentOutput::Success { output } => Some(output),
+                FinishedAIAgentOutput::Error { output, .. } => output.as_ref(),
+                FinishedAIAgentOutput::Cancelled { output, .. } => output.as_ref(),
+            },
+        };
+        output
+            .map(|output| output.get().format_response_for_copy())
+            .unwrap_or_default()
     }
 
     /// Format the entire exchange (both input and output) for copying to clipboard.

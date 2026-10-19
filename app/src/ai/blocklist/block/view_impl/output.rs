@@ -112,8 +112,10 @@ use warp_core::channel::ChannelState;
 
 use super::common::{
     format_elapsed_seconds, render_debug_footer, render_failed_output, render_informational_footer,
-    render_output_status_text, render_scrollable_collapsible_content, render_text_sections,
-    DebugFooterProps, FailedOutputProps, FindContext, TextSectionsProps,
+    render_output_status_text, render_scrollable_collapsible_content,
+    render_show_full_output_button, render_text_sections,
+    DebugFooterProps, FailedOutputProps, FindContext, OutputBudget, OutputCapProps,
+    TextSectionsProps, MAX_COLLAPSED_OUTPUT_BYTES, MAX_COLLAPSED_OUTPUT_LINES,
     STATUS_FOOTER_VERTICAL_PADDING, STATUS_ICON_SIZE_DELTA,
 };
 use super::imported_comments::render_imported_comments;
@@ -272,6 +274,9 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                 let mut table_section_index = 0;
                 let mut image_section_index = 0;
                 let mut action_index = 0;
+                // One allowance for the whole answer, spanning every Text message (#872).
+                let mut output_budget =
+                    OutputBudget::new(MAX_COLLAPSED_OUTPUT_LINES, MAX_COLLAPSED_OUTPUT_BYTES);
 
                 fn open_code_block_action(source: CodeSource) -> AIBlockAction {
                     AIBlockAction::OpenCodeInWarp { source }
@@ -279,6 +284,10 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
 
                 fn copy_code_action(snippet: String) -> AIBlockAction {
                     AIBlockAction::CopyAIBlockCodeSnippet(snippet)
+                }
+
+                fn show_full_output_action() -> AIBlockAction {
+                    AIBlockAction::ShowFullOutput
                 }
 
                 for output_message in output.messages.iter() {
@@ -337,6 +346,14 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                                     resolved_blocklist_image_sources: Some(
                                         props.resolved_blocklist_image_sources,
                                     ),
+                                    output_cap: Some(OutputCapProps {
+                                        expanded: props.state_handles.output_expanded,
+                                        has_selection: props
+                                            .state_handles
+                                            .selection_handle
+                                            .has_selection(),
+                                        budget: &mut output_budget,
+                                    }),
                                 },
                                 app,
                             );
@@ -1066,6 +1083,21 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                     if let AIAgentOutputMessageType::Action(..) = output_message.message {
                         action_index += 1;
                     }
+                }
+
+                if output_budget.truncated && !props.state_handles.output_expanded {
+                    let theme = appearance.theme();
+                    output_items.add_child(
+                        render_show_full_output_button(
+                            &props.state_handles.show_full_output_button_handle,
+                            show_full_output_action,
+                            output_budget.hidden_lines,
+                            blended_colors::text_main(theme, theme.surface_1()),
+                            app,
+                        )
+                        .with_agent_output_item_spacing(app)
+                        .finish(),
+                    );
                 }
 
                 // Only render suggested rules and prompts if the response is complete.
@@ -3414,6 +3446,8 @@ fn render_collapsible_text_block_section(
             resolved_code_block_paths: Some(props.resolved_code_block_paths),
             #[cfg(feature = "local_fs")]
             resolved_blocklist_image_sources: Some(props.resolved_blocklist_image_sources),
+            // Reasoning scrolls in its own capped pane.
+            output_cap: None,
         },
         app,
     );

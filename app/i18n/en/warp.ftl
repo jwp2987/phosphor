@@ -297,6 +297,8 @@ ai-block-check-now =  · Check now
 ai-block-check-now-tooltip = Ask the agent to check this command now, skipping its timer.
 ai-block-resume-conversation = Resume conversation
 ai-block-continue-conversation = Continue conversation
+ai-block-show-full-output = Show full output ({ $lines } more lines)
+ai-block-code-truncated-note = Truncated — show full output to run
 ai-block-fork-conversation = Fork conversation
 ai-block-show-credit-usage-details = Show credit usage details
 ai-block-follow-up-existing-conversation = Follow up with existing conversation
@@ -2588,6 +2590,7 @@ menu-input-show-hint-text = Show input hint text
 # --- AI block overflow menu (terminal/view.rs) ---
 menu-ai-block-copy = Copy
 menu-ai-block-copy-prompt = Copy prompt
+menu-ai-block-copy-response = Copy response
 menu-ai-block-copy-output-as-markdown = Copy output as Markdown
 menu-ai-block-copy-url = Copy URL
 menu-ai-block-copy-path = Copy path

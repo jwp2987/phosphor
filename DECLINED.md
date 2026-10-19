@@ -806,9 +806,11 @@ upstream's behavior is actually a defect rather than a preference.
   chunk equal the full conversion's (tested byte-by-byte against it), and when the exchange
   finishes the message is re-converted once in full (`Task::finalize_streamed_text`), so the
   settled output is exactly upstream's, including after a feature flag toggled mid-stream.
-  Parsing work per chunk is bounded by the chunk; other O(message) costs remain (#872): the
-  renderer lays out the whole message every frame, extending parsed text a renderer still
-  holds copies it, and a table or single line that is still streaming is re-parsed whole.
+  Parsing work per chunk is bounded by the chunk; other O(message) costs remain (#872):
+  extending parsed text a renderer still holds copies it, and a table or single line that is
+  still streaming is re-parsed whole. The renderer no longer lays out the whole message: past
+  2000 lines / 256 KiB the rest of an answer sits behind a per-block "Show full output" button
+  (never while selecting; a focused find match beyond the cut lifts it).
 
 - **glibc malloc is tuned at startup: at most 2 arenas, fixed 128 KiB trim threshold**
   (`#816`, 2026-10-12, `app/src/alloc.rs`, called first thing in `warp::run`). **Upstream:**

@@ -10,12 +10,14 @@ use warpui::App;
 #[cfg(feature = "local_fs")]
 use super::{blocklist_image_asset_source, ResolvedBlocklistImageSources};
 use super::{
-    collect_visual_markdown_lightbox_collection, compute_visual_section_width,
-    display_query_without_context_references, image_tooltip_handles_for_group,
-    inline_image_source_label, is_supported_blocklist_image_source, lightbox_trigger_for_section,
-    query_context_references, query_prefix_highlight_len, render_scrollable_collapsible_content,
-    should_render_query_and_header, should_show_agent_command_status, text_sections_with_indices,
-    warping_footer_height, CollapsibleElementState, CollapsibleExpansionState,
+    collect_visual_markdown_lightbox_collection, compute_visual_section_width, line_count,
+    step_for_group, IndexedImageSection, RenderableImageGroup,
+    display_query_without_context_references, focused_match_is_hidden,
+    image_tooltip_handles_for_group, inline_image_source_label, is_supported_blocklist_image_source,
+    lightbox_trigger_for_section, query_context_references, query_prefix_highlight_len,
+    render_scrollable_collapsible_content, should_render_query_and_header,
+    should_show_agent_command_status, text_sections_with_indices, truncate_formatted_text,
+    warping_footer_height, CollapsibleElementState, CollapsibleExpansionState, OutputBudget,
     QueryContextReference, VisualMarkdownLightboxCollection,
 };
 use crate::{
@@ -508,4 +510,201 @@ fn is_supported_blocklist_image_source_covers_common_local_formats() {
     // Non-image extensions stay rejected.
     assert!(!is_supported_blocklist_image_source("doc.pdf"));
     assert!(!is_supported_blocklist_image_source("notes.md"));
+}
+
+#[test]
+fn output_budget_keeps_everything_under_the_cap() {
+    let mut budget = OutputBudget::new(10, 1000);
+    assert_eq!(budget.take_lines([5, 5, 5].into_iter()), 3);
+    assert!(!budget.is_exhausted());
+}
+
+#[test]
+fn output_budget_stops_at_the_line_limit_without_scanning_the_rest() {
+    let mut budget = OutputBudget::new(2, 1000);
+    let mut scanned = 0;
+    let kept = budget.take_lines((0..1_000_000).inspect(|_| scanned += 1).map(|_| 1));
+    assert_eq!(kept, 2);
+    // Only one extra element is pulled to notice the budget ran out (#872: O(kept)).
+    assert!(scanned <= 3, "scanned {scanned}");
+    assert!(budget.is_exhausted());
+}
+
+#[test]
+fn output_budget_keeps_one_oversized_line_then_stops() {
+    let mut budget = OutputBudget::new(10, 100);
+    assert_eq!(budget.take_lines([10_000, 1, 1].into_iter()), 1);
+    assert!(budget.is_exhausted());
+}
+
+#[test]
+fn output_budget_is_shared_across_sections() {
+    let mut budget = OutputBudget::new(3, 1000);
+    assert_eq!(budget.take_lines([1, 1].into_iter()), 2);
+    assert_eq!(budget.take_lines([1, 1].into_iter()), 1);
+    assert_eq!(budget.take_lines([1].into_iter()), 0);
+}
+
+#[test]
+fn focused_match_beyond_the_cut_lifts_the_cap() {
+    assert!(!focused_match_is_hidden(None, 0, 5));
+    assert!(!focused_match_is_hidden(Some((0, 4)), 0, 5));
+    assert!(focused_match_is_hidden(Some((0, 5)), 0, 5));
+    assert!(focused_match_is_hidden(Some((2, 0)), 0, 5));
+    assert!(!focused_match_is_hidden(Some((0, 99)), 1, 0));
+}
+
+#[test]
+fn truncate_formatted_text_keeps_the_leading_lines() {
+    let text = markdown_parser::FormattedText::new(vec![
+        markdown_parser::FormattedTextLine::LineBreak,
+        markdown_parser::FormattedTextLine::HorizontalRule,
+        markdown_parser::FormattedTextLine::LineBreak,
+    ]);
+    assert_eq!(truncate_formatted_text(&text, 2).lines.len(), 2);
+    assert_eq!(truncate_formatted_text(&text, 10).lines.len(), 3);
+}
+
+#[test]
+fn output_budget_charges_code_by_lines_and_cuts_at_the_line_limit() {
+    let mut budget = OutputBudget::new(2, 1000);
+    let code = "a\nb\nc\nd\n";
+    let end = budget.take_text_prefix(code);
+    assert_eq!(&code[..end], "a\nb\n");
+    assert!(budget.is_exhausted());
+    // Nothing is left for a following block.
+    assert_eq!(budget.take_text_prefix("e\n"), 0);
+}
+
+#[test]
+fn output_budget_cuts_one_giant_code_line_at_a_char_boundary() {
+    let mut budget = OutputBudget::new(10, 5);
+    let code = "ééééé\nnext";
+    let end = budget.take_text_prefix(code);
+    assert!(code.is_char_boundary(end));
+    assert!(end <= 5 && end > 0);
+    assert!(budget.is_exhausted());
+}
+
+#[test]
+fn output_budget_keeps_code_that_fits_whole() {
+    let mut budget = OutputBudget::new(10, 1000);
+    let code = "a\nb";
+    assert_eq!(budget.take_text_prefix(code), code.len());
+    assert!(!budget.is_exhausted());
+}
+
+#[test]
+fn output_budget_hides_a_table_that_does_not_fit_and_exhausts() {
+    let mut budget = OutputBudget::new(5, 1000);
+    assert!(budget.take_block(3, 10));
+    assert!(!budget.take_block(3, 10));
+    assert!(budget.is_exhausted());
+}
+
+#[test]
+fn output_budget_hidden_lines_only_count_what_was_noted() {
+    let mut budget = OutputBudget::new(1, 100);
+    assert!(!budget.truncated);
+    budget.note_hidden(4);
+    budget.note_hidden(2);
+    assert!(budget.truncated);
+    assert_eq!(budget.hidden_lines, 6);
+}
+
+#[test]
+fn line_count_counts_a_final_unterminated_line() {
+    assert_eq!(line_count("a\nb"), 2);
+    assert_eq!(line_count("a\nb\n"), 2);
+    assert_eq!(line_count("a"), 1);
+}
+
+fn test_image(source: &str, layout: AgentOutputImageLayout) -> AIAgentTextSection {
+    AIAgentTextSection::Image {
+        image: AgentOutputImage {
+            alt_text: String::new(),
+            source: source.to_string(),
+            title: None,
+            markdown_source: format!("![]({source})"),
+            layout,
+        },
+    }
+}
+
+/// The skipped tail of a capped answer must advance the image-handle counter exactly as
+/// rendering it would, or a later message indexes the wrong tooltip handles (#872). Built from
+/// pre-collected groups so it needs no asset cache or feature flag.
+#[test]
+fn skipped_image_groups_advance_counters_like_the_render_path() {
+    let sections = vec![
+        // Group of two inline images split by a blank line (3 sections), then a block image,
+        // a text section, and a final inline image.
+        test_image("a.png", AgentOutputImageLayout::Inline),
+        AIAgentTextSection::PlainText {
+            text: "\n".to_string().into(),
+        },
+        test_image("b.png", AgentOutputImageLayout::Inline),
+        test_image("c.png", AgentOutputImageLayout::Block),
+        AIAgentTextSection::PlainText {
+            text: "tail".to_string().into(),
+        },
+        test_image("d.png", AgentOutputImageLayout::Inline),
+    ];
+    let indexed = text_sections_with_indices(&sections, 0).collect_vec();
+    let image_at = |i: usize| IndexedImageSection {
+        section_index: indexed[i].0,
+        image: match indexed[i].1 {
+            AIAgentTextSection::Image { image } => image,
+            _ => unreachable!(),
+        },
+    };
+    let groups = vec![
+        RenderableImageGroup {
+            images: vec![image_at(0), image_at(2)],
+            consumed_sections: 3,
+        },
+        RenderableImageGroup {
+            images: vec![image_at(3)],
+            consumed_sections: 1,
+        },
+        RenderableImageGroup {
+            images: vec![image_at(5)],
+            consumed_sections: 1,
+        },
+    ];
+    let steps = groups
+        .iter()
+        .map(|g| {
+            let step = step_for_group(g);
+            (step.handles, step.sections)
+        })
+        .collect_vec();
+    assert_eq!(steps, vec![(2, 3), (1, 1), (1, 1)]);
+    // A later message starts at handle 4, the same as after rendering every section.
+    assert_eq!(steps.iter().map(|s| s.0).sum::<usize>(), 4);
+
+    // An unrenderable image (empty group) still advances one section and one handle.
+    let empty = RenderableImageGroup {
+        images: vec![],
+        consumed_sections: 0,
+    };
+    let step = step_for_group(&empty);
+    assert_eq!((step.handles, step.sections), (1, 1));
+}
+
+/// A table shown on one frame stays shown when a later streaming frame grows it past the
+/// budget, and still charges the budget so the rest of the answer is bounded.
+#[test]
+fn shown_table_survives_growing_past_the_budget() {
+    let shown = std::sync::atomic::AtomicBool::new(false);
+    let mut budget = OutputBudget::new(10, 1000);
+    assert!(budget.admit_table(&shown, 4, 100));
+    // Next frame: fresh budget, table has grown beyond it.
+    let mut budget = OutputBudget::new(10, 1000);
+    assert!(budget.admit_table(&shown, 50, 5000));
+    assert!(budget.is_exhausted());
+    // A never-shown table that is too big is still hidden.
+    let other = std::sync::atomic::AtomicBool::new(false);
+    let mut budget = OutputBudget::new(10, 1000);
+    assert!(!budget.admit_table(&other, 50, 5000));
 }

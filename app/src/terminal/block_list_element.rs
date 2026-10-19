@@ -691,6 +691,8 @@ pub struct BlockListElement {
     scroll_position: ScrollPosition,
     is_terminal_focused: bool,
     is_terminal_selecting: bool,
+    /// See `TerminalViewRenderContext::rich_content_drag_selecting` (#890).
+    rich_content_drag_selecting: Arc<AtomicBool>,
     /// This map contains the IDs of sessions that were subshells as keys. Their corresponding
     /// values are the command that spawned the subshell, which is needed to paint the "flag"
     subshell_sessions: HashMap<SessionId, SubshellSource>,
@@ -895,6 +897,19 @@ fn visible_rich_content_views_for_event_dispatch(
     view_ids
 }
 
+/// How far to scroll (in pixels, positive scrolls toward older content) while a rich content
+/// block is drag-selected with the pointer at `y`: zero inside `[top, bottom]`, and growing
+/// polynomially with the distance past either edge, like the terminal grid's selection scroll.
+fn rich_content_selection_scroll_delta(y: f32, top: f32, bottom: f32) -> f32 {
+    if y < top {
+        POLYNOMIAL_SCROLLING.accelerated_delta(top - y)
+    } else if y > bottom {
+        -POLYNOMIAL_SCROLLING.accelerated_delta(y - bottom)
+    } else {
+        0.
+    }
+}
+
 /// Determines whether, after RichContent handles an event, further propagation to
 /// other blocks or terminal text should be blocked.
 fn should_stop_after_rich_content_handles_event(event: &Event) -> bool {
@@ -1037,6 +1052,7 @@ impl BlockListElement {
             scroll_position: terminal_view_render_context.scroll_position,
             is_terminal_focused: terminal_view_render_context.is_terminal_focused,
             is_terminal_selecting: terminal_view_render_context.is_terminal_selecting,
+            rich_content_drag_selecting: terminal_view_render_context.rich_content_drag_selecting,
             subshell_sessions: terminal_view_render_context.spawning_command_for_subshell_sessions,
             subshell_flags: HashMap::new(),
             size: None,
@@ -4614,7 +4630,8 @@ impl Element for BlockListElement {
         // that region — breaking selection auto-scroll when dragging downward.
         // This matches the pattern used by SelectableArea, Draggable, Resizable,
         // and both Scrollable variants, which all use `raw_event()` for drags.
-        let event_at_z_index = if self.is_terminal_selecting
+        let event_at_z_index = if (self.is_terminal_selecting
+            || self.rich_content_drag_selecting.load(Ordering::Relaxed))
             && matches!(
                 event.raw_event(),
                 Event::LeftMouseDragged { .. } | Event::LeftMouseUp { .. }
@@ -4627,6 +4644,25 @@ impl Element for BlockListElement {
             };
             e
         };
+
+        // The flag only ever outlives a selection drag by accident, so reset it generously: on
+        // release, on any new press (re-set below if that press starts a selection), on a
+        // non-synthetic mouse move (only delivered while no button is held, so the release was
+        // missed), and whenever the pane is not focused (blur, tab switch, hidden view).
+        if matches!(
+            event_at_z_index,
+            Event::LeftMouseUp { .. } | Event::LeftMouseDown { .. }
+        ) || matches!(
+            event_at_z_index,
+            Event::MouseMoved {
+                is_synthetic: false,
+                ..
+            }
+        ) || !self.pane_state.is_focused()
+        {
+            self.rich_content_drag_selecting
+                .store(false, Ordering::Relaxed);
+        }
 
         let mut handled = false;
         let events_to_propagate_on = matches!(
@@ -4736,6 +4772,47 @@ impl Element for BlockListElement {
                     if let Some(rich_content) = self.rich_content_elements.get_mut(&view_id) {
                         let rich_content_handled = rich_content.dispatch_event(event, ctx, app);
                         handled |= rich_content_handled;
+                        if rich_content_handled {
+                            match event.raw_event() {
+                                // Only a press that started a text selection arms the drag
+                                // handling; a handled press on a button, inner scrollbar,
+                                // editor or resizer must not (#890).
+                                Event::LeftMouseDown { .. } => {
+                                    let started_selection = match self
+                                        .rich_content_metadata
+                                        .get(&view_id)
+                                    {
+                                        Some(RichContentMetadata::AIBlock(metadata)) => metadata
+                                            .ai_block_handle
+                                            .as_ref(app)
+                                            .is_selecting_text(app),
+                                        _ => false,
+                                    };
+                                    self.rich_content_drag_selecting
+                                        .store(started_selection, Ordering::Relaxed);
+                                }
+                                // A rich content block is drag-selecting: scroll the block list
+                                // when the pointer is past its top or bottom edge, faster the
+                                // further out it is, like the terminal grid does (#890).
+                                Event::LeftMouseDragged { position, .. }
+                                    if self.rich_content_drag_selecting.load(Ordering::Relaxed) =>
+                                {
+                                    if let Some(bounds) = self.bounds {
+                                        let delta = rich_content_selection_scroll_delta(
+                                            position.y(),
+                                            bounds.origin_y(),
+                                            bounds.lower_left().y() - BOTTOM_VERTICAL_MARGIN,
+                                        );
+                                        if delta != 0. {
+                                            ctx.dispatch_typed_action(TerminalAction::Scroll {
+                                                delta: delta.into_lines(),
+                                            });
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
                         if rich_content_handled && should_stop_after_rich_content_handles_event {
                             return true;
                         }
@@ -5102,6 +5179,24 @@ mod tests {
             visible_rich_content_views_for_event_dispatch(Some(&visible_items)),
             vec![third_view_id, second_view_id, first_view_id]
         );
+    }
+
+    #[test]
+    fn rich_content_selection_scroll_delta_is_zero_inside_and_grows_past_the_edges() {
+        let (top, bottom) = (100., 500.);
+        assert_eq!(rich_content_selection_scroll_delta(300., top, bottom), 0.);
+        assert_eq!(rich_content_selection_scroll_delta(100., top, bottom), 0.);
+        assert_eq!(rich_content_selection_scroll_delta(500., top, bottom), 0.);
+
+        let near_top = rich_content_selection_scroll_delta(90., top, bottom);
+        let far_top = rich_content_selection_scroll_delta(0., top, bottom);
+        assert!(near_top > 0.);
+        assert!(far_top > near_top);
+
+        let near_bottom = rich_content_selection_scroll_delta(510., top, bottom);
+        let far_bottom = rich_content_selection_scroll_delta(700., top, bottom);
+        assert!(near_bottom < 0.);
+        assert!(far_bottom < near_bottom);
     }
 
     #[test]

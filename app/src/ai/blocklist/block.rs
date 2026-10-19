@@ -359,6 +359,9 @@ impl ActionButtonTheme for RewindButtonTheme {
 pub(crate) struct TableSectionHandles {
     pub scroll_handle: ClippedScrollStateHandle,
     pub state_handle: TableStateHandle,
+    /// Whether the output cap has already let this table be shown; once shown it stays shown
+    /// while it streams larger.
+    pub shown: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Default)]
@@ -371,6 +374,11 @@ pub(super) struct AIBlockStateHandles {
     /// wraps the image in a `Hoverable` whose `is_hovered()` state would
     /// reset every frame if we built the handle inline.
     image_section_tooltip_handles: Vec<MouseStateHandle>,
+
+    /// Whether the user chose "show full output" for this block's capped answer (#872).
+    /// Persistent so the choice survives re-renders.
+    output_expanded: bool,
+    show_full_output_button_handle: MouseStateHandle,
 
     /// Only applies to text selections made at the `AIBlock` level. Child views of the `AIBlock`
     /// are responsible for managing their own text selection states.
@@ -4030,6 +4038,19 @@ impl AIBlock {
         self.client_ids.conversation_id
     }
 
+    /// Whether a text-selection drag is in progress in this block (true from the mouse-down
+    /// that started it until the mouse is released), in the block's own selection area or in one
+    /// of its embedded code editors. Buttons and inner scrollbars do not set it, so the block
+    /// list uses it to tell a selection drag from any handled press. A drag started in a table
+    /// is covered by the block's selection area, which owns table selection.
+    pub fn is_selecting_text(&self, app: &AppContext) -> bool {
+        self.state_handles.selection_handle.is_selecting()
+            || self
+                .code_editor_views
+                .iter()
+                .any(|editor| editor.view.as_ref(app).is_selecting())
+    }
+
     /// This block's file diff cards (CodeDiffViews), newest first — the order
     /// a rewind must revert them in. The rewind dispatches the reverts itself
     /// (`RewindReverts`), because two edits to one file, in this block or
@@ -5290,6 +5311,55 @@ impl AIBlock {
         }
     }
 
+    /// The model's answer text (no prompt, tool calls or UI chrome) for every exchange from the
+    /// preceding user query to the next one, i.e. the same scope as
+    /// [`Self::get_output_text_since_preceding_user_query`] (#890).
+    pub fn get_response_text_since_preceding_user_query(&self, app: &AppContext) -> String {
+        let history = BlocklistAIHistoryModel::as_ref(app);
+        let own_response = || match self.model.status(app).output_to_render() {
+            Some(output) => output.get().format_response_for_copy(),
+            None => String::new(),
+        };
+        let Some(exchange_id) = self.model.exchange_id(app) else {
+            return own_response();
+        };
+        let Some(conversation) = history
+            .conversation_id_for_exchange(exchange_id, self.terminal_view_id)
+            .and_then(|conversation_id| history.conversation(&conversation_id))
+        else {
+            return own_response();
+        };
+        let exchanges: Vec<_> = conversation.root_task_exchanges().collect();
+        let Some(current_idx) = exchanges
+            .iter()
+            .position(|exchange| exchange.id == exchange_id)
+        else {
+            return own_response();
+        };
+        let start_idx = (0..=current_idx)
+            .rev()
+            .find(|i| exchanges[*i].has_user_query())
+            .unwrap_or(current_idx);
+        let end_idx = exchanges
+            .iter()
+            .enumerate()
+            .skip(start_idx + 1)
+            .find(|(_, exchange)| exchange.has_user_query())
+            .map_or(exchanges.len(), |(i, _)| i);
+        let response = exchanges
+            .iter()
+            .take(end_idx)
+            .skip(start_idx)
+            .map(|exchange| exchange.format_response_for_copy())
+            .filter(|text| !text.is_empty())
+            .join("\n\n");
+        if response.is_empty() {
+            own_response()
+        } else {
+            response
+        }
+    }
+
     /// Writes `text` to the clipboard, unless it's empty (after trimming), in which case it shows
     /// a toast instead of clobbering the clipboard.
     /// Without this, an AI block copy action (`CopyQuery`, `CopyOutput`, `Copy`,
@@ -5758,6 +5828,9 @@ pub enum AIBlockAction {
 
     CopyAIBlockCodeSnippet(String),
 
+    /// Lift the rendered-output cap on this block's answer (#872).
+    ShowFullOutput,
+
     /// Continue the conversation using this response
     ContinueConversation,
 
@@ -5835,6 +5908,9 @@ pub enum AIBlockAction {
     /// Copy all AI output from the previous user query to the next user query.
     /// Note that this contains more than just this block, since from the user perspective everything after the user query appears like one block.
     CopyOutput,
+    /// Copy only the model's answer text from the previous user query to the next one: no prompt,
+    /// tool calls, command blocks or other UI chrome (#890).
+    CopyResponse,
     /// Copy complete conversation history
     CopyConversation,
     /// Copy the ai block's command
@@ -5964,6 +6040,10 @@ impl TypedActionView for AIBlock {
             }
             AIBlockAction::CopyOnSelect(selection) => {
                 self.maybe_copy_on_select(selection.clone(), ctx);
+            }
+            AIBlockAction::ShowFullOutput => {
+                self.state_handles.output_expanded = true;
+                ctx.notify();
             }
             AIBlockAction::CopyAIBlockCodeSnippet(text) => {
                 ctx.clipboard()
@@ -6232,6 +6312,10 @@ impl TypedActionView for AIBlock {
                 // Copy all AI output from preceding user query until the next user query
                 let output_text = self.get_output_text_since_preceding_user_query(ctx);
                 self.write_copied_text_or_toast_if_empty(output_text, ctx);
+            }
+            AIBlockAction::CopyResponse => {
+                let response_text = self.get_response_text_since_preceding_user_query(ctx);
+                self.write_copied_text_or_toast_if_empty(response_text, ctx);
             }
             AIBlockAction::Copy => {
                 // Copy the preceding user query and all AI output until the next user query

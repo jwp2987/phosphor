@@ -215,6 +215,21 @@ impl SelectionHandle {
             .is_selecting
     }
 
+    /// Whether a selection exists, either being dragged out right now or left behind after the
+    /// mouse button was released. Unlike [`Self::is_selecting`], which is only true while the
+    /// mouse is down, this stays true until the selection is cleared. A bare click (head and
+    /// tail on the same point, no semantic expansion) is not a selection.
+    pub fn has_selection(&self) -> bool {
+        let selection = self.selection.lock().expect("Should not be poisoned.");
+        // `is_selecting` alone does not count: every mouse-down sets it, so a bare click would
+        // otherwise look like a selection until mouse-up. A head with no tail is no selection.
+        selection.head.is_some()
+            && selection.tail.is_some()
+            && (selection.head != selection.tail
+                || selection.expanded_head.is_some()
+                || selection.expanded_tail.is_some())
+    }
+
     pub fn clear(&self) {
         self.selection
             .lock()

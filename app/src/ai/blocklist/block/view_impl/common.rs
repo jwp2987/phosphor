@@ -7,6 +7,7 @@ use crate::ai::blocklist::controller::response_stream::{current_retry_wait, retr
 use std::borrow::Cow;
 #[cfg(feature = "local_fs")]
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::iter;
 use std::path::Path;
 #[cfg(feature = "local_fs")]
@@ -1187,6 +1188,186 @@ pub struct TextSectionsProps<'a, V, A: 'static> {
     pub resolved_code_block_paths: Option<&'a HashMap<PathBuf, Option<PathBuf>>>,
     #[cfg(feature = "local_fs")]
     pub resolved_blocklist_image_sources: Option<&'a ResolvedBlocklistImageSources>,
+    /// When `Some`, very long output is cut off at [`MAX_COLLAPSED_OUTPUT_LINES`] /
+    /// [`MAX_COLLAPSED_OUTPUT_BYTES`] with a "show full output" button (#872). `None` renders
+    /// everything.
+    pub output_cap: Option<OutputCapProps<'a>>,
+}
+
+/// Caller-owned state for the rendered-output cap of [`render_text_sections`] (#872).
+pub struct OutputCapProps<'a> {
+    /// Persistent, per-block: once the user clicks "show full output" it stays expanded.
+    pub expanded: bool,
+    /// Whether the block has a text selection, mid-drag or left behind after mouse-up. The cap
+    /// never cuts under a selection, or the selected text would vanish.
+    pub has_selection: bool,
+    /// The allowance for the whole answer. The caller creates it once per block render and
+    /// passes it to every `render_text_sections` call so the cap spans all Text messages, then
+    /// reads `truncated`/`hidden_lines` back to render the "show full output" button once.
+    pub budget: &'a mut OutputBudget,
+}
+
+/// Rendering lays out every line of an agent answer each frame, so a multi-megabyte answer
+/// stalls the UI. Beyond these limits the rest is hidden behind a "show full output" button.
+pub const MAX_COLLAPSED_OUTPUT_LINES: usize = 2_000;
+pub const MAX_COLLAPSED_OUTPUT_BYTES: usize = 256 * 1024;
+
+/// The remaining line/byte allowance of a capped answer, shared across all its text sections
+/// (plain text, code blocks and tables) and across its Text messages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OutputBudget {
+    lines_left: usize,
+    bytes_left: usize,
+    /// Lines (or one per hidden image/diagram) cut so far, for the button label.
+    pub hidden_lines: usize,
+    /// Whether anything visible was cut.
+    pub truncated: bool,
+    /// Set when a focused find match beyond the cut lifted the cap for the rest of the answer.
+    pub lifted: bool,
+}
+
+impl OutputBudget {
+    pub fn new(max_lines: usize, max_bytes: usize) -> Self {
+        Self {
+            lines_left: max_lines,
+            bytes_left: max_bytes,
+            hidden_lines: 0,
+            truncated: false,
+            lifted: false,
+        }
+    }
+
+    pub(super) fn is_exhausted(&self) -> bool {
+        self.lines_left == 0 || self.bytes_left == 0
+    }
+
+    /// Records that something visible, worth `lines` lines, was cut.
+    pub(super) fn note_hidden(&mut self, lines: usize) {
+        self.truncated = true;
+        self.hidden_lines += lines;
+    }
+
+    /// How many leading lines (with the given byte lengths) fit in the budget, consuming it.
+    /// At least one line is kept while any budget remains, so one enormous paragraph still
+    /// shows. Stops scanning as soon as the budget runs out, so it is O(kept), not O(total).
+    pub(super) fn take_lines(&mut self, line_lens: impl Iterator<Item = usize>) -> usize {
+        let mut kept = 0;
+        for len in line_lens {
+            if self.is_exhausted() {
+                break;
+            }
+            kept += 1;
+            self.lines_left -= 1;
+            self.bytes_left = self.bytes_left.saturating_sub(len);
+        }
+        kept
+    }
+
+    /// Charges an indivisible block (a table) of `lines` lines / `bytes` bytes. Returns whether
+    /// it fits. When it does not, the budget is exhausted so nothing after it is shown out of
+    /// order.
+    pub(super) fn take_block(&mut self, lines: usize, bytes: usize) -> bool {
+        if !self.is_exhausted() && lines <= self.lines_left && bytes <= self.bytes_left {
+            self.lines_left -= lines;
+            self.bytes_left -= bytes;
+            true
+        } else {
+            self.lines_left = 0;
+            false
+        }
+    }
+
+    /// [`Self::take_block`] for a table that may still be streaming. A table that was already
+    /// shown on an earlier frame stays shown, with its cost charged (saturating) against the
+    /// budget, so a table growing past the budget does not vanish and take everything after
+    /// it along.
+    pub(super) fn admit_table(
+        &mut self,
+        shown: &std::sync::atomic::AtomicBool,
+        lines: usize,
+        bytes: usize,
+    ) -> bool {
+        if shown.load(std::sync::atomic::Ordering::Relaxed) {
+            self.lines_left = self.lines_left.saturating_sub(lines);
+            self.bytes_left = self.bytes_left.saturating_sub(bytes);
+            return true;
+        }
+        let fits = self.take_block(lines, bytes);
+        if fits {
+            shown.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        fits
+    }
+
+    /// The byte length of the leading part of `text` that fits in the budget, consuming it.
+    /// Returns `text.len()` when everything fits. A single line longer than the remaining bytes
+    /// is cut mid-line (at a char boundary), so one giant line cannot defeat the cap. Stops
+    /// scanning once the budget runs out, so it is O(kept).
+    pub(super) fn take_text_prefix(&mut self, text: &str) -> usize {
+        let mut end = 0;
+        for line in text.split_inclusive('\n') {
+            if self.is_exhausted() {
+                return end;
+            }
+            let content_len = line.trim_end_matches('\n').len();
+            if content_len > self.bytes_left {
+                let mut cut = self.bytes_left;
+                while !line.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                self.lines_left = 0;
+                self.bytes_left = 0;
+                return end + cut;
+            }
+            end += line.len();
+            self.lines_left -= 1;
+            self.bytes_left -= content_len;
+        }
+        text.len()
+    }
+}
+
+/// The number of lines in `text`, counting a final unterminated line.
+fn line_count(text: &str) -> usize {
+    text.bytes().filter(|byte| *byte == b'\n').count() + usize::from(!text.ends_with('\n'))
+}
+
+/// Whether the focused find match lies at or after the cut point `(section, line)`, in which
+/// case the cap must lift so the match is reachable (#872, cf. #819).
+pub(super) fn focused_match_is_hidden(
+    focused: Option<(usize, usize)>,
+    cut_section: usize,
+    cut_line: usize,
+) -> bool {
+    focused.is_some_and(|location| location >= (cut_section, cut_line))
+}
+
+fn focused_output_location(find_context: Option<FindContext<'_>>) -> Option<(usize, usize)> {
+    let find_context = find_context?;
+    let match_id = find_context.model.focused_rich_content_match_id()?;
+    match find_context
+        .state
+        .location_for_match(match_id)?
+        .text_location
+    {
+        TextLocation::Output {
+            section_index,
+            line_index,
+        } => Some((section_index, line_index)),
+        _ => None,
+    }
+}
+
+/// The first `keep` lines of `formatted_text` as a new shared value.
+fn truncate_formatted_text(formatted_text: &FormattedText, keep: usize) -> Arc<FormattedText> {
+    Arc::new(FormattedText::new(
+        formatted_text
+            .lines
+            .iter()
+            .take(keep)
+            .cloned()
+            .collect::<VecDeque<_>>(),
+    ))
 }
 
 pub fn render_text_sections<V: View, A: Action>(
@@ -1208,8 +1389,74 @@ pub fn render_text_sections<V: View, A: Action>(
         app,
     );
     let mut indexed_section_offset = 0;
+    // Output cap (#872). Never cut while a selection exists, mid-drag or after mouse-up; a
+    // focused find match beyond the cut lifts it. `None` once lifted or when uncapped.
+    let mut cap_budget: Option<&mut OutputBudget> = match props.output_cap {
+        Some(cap)
+            if !cap.expanded
+                && !cap.has_selection
+                && !props.is_selecting_text
+                && !cap.budget.lifted =>
+        {
+            Some(cap.budget)
+        }
+        _ => None,
+    };
+    let focused_match = if cap_budget.is_some() {
+        focused_output_location(props.find_context)
+    } else {
+        None
+    };
     while indexed_section_offset < indexed_sections.len() {
         let (section_index, section) = indexed_sections[indexed_section_offset];
+        if cap_budget
+            .as_ref()
+            .is_some_and(|budget| budget.is_exhausted())
+        {
+            if focused_match_is_hidden(focused_match, section_index, 0) {
+                lift_output_cap(&mut cap_budget);
+            } else if let Some(budget) = cap_budget.as_deref_mut() {
+                // Skip the section, but keep the per-kind handle counters aligned.
+                let mut consumed = 1;
+                match section {
+                    AIAgentTextSection::PlainText { text } => {
+                        if !text.text().trim().is_empty() {
+                            budget.note_hidden(
+                                text.formatted_lines
+                                    .as_ref()
+                                    .map_or(1, |lines| lines.lines().len()),
+                            );
+                        }
+                    }
+                    AIAgentTextSection::Code { code, .. } => {
+                        *props.starting_code_section_index += 1;
+                        budget.note_hidden(line_count(code));
+                    }
+                    AIAgentTextSection::Table { table } => {
+                        *props.starting_table_section_index += 1;
+                        budget.note_hidden(line_count(&table.markdown_source));
+                    }
+                    AIAgentTextSection::Image { image } => {
+                        // Advance exactly as the render path does for the same group.
+                        let step = image_group_step(
+                            &indexed_sections,
+                            indexed_section_offset,
+                            image,
+                            props.current_working_directory,
+                            #[cfg(feature = "local_fs")]
+                            props.resolved_blocklist_image_sources,
+                            app,
+                        );
+                        *props.starting_image_section_index += step.handles;
+                        consumed = step.sections;
+                        budget.note_hidden(1);
+                    }
+                    AIAgentTextSection::MermaidDiagram { .. } => budget.note_hidden(1),
+                }
+                indexed_section_offset += consumed;
+                continue;
+            }
+        }
         if let AIAgentTextSection::Image { image } = section {
             let image_group = collect_renderable_image_group(
                 &indexed_sections,
@@ -1271,10 +1518,28 @@ pub fn render_text_sections<V: View, A: Action>(
 
                 match &text.formatted_lines {
                     Some(formatted_text) => {
+                        let mut rendered_text = formatted_text.formatted_text_arc();
+                        if let Some(budget) = cap_budget.as_deref_mut() {
+                            let total = formatted_text.lines().len();
+                            let keep = budget.take_lines(
+                                formatted_text
+                                    .lines()
+                                    .iter()
+                                    .map(|line| line.raw_text().len()),
+                            );
+                            if keep < total {
+                                if focused_match_is_hidden(focused_match, section_index, keep) {
+                                    lift_output_cap(&mut cap_budget);
+                                } else {
+                                    budget.note_hidden(total - keep);
+                                    rendered_text = truncate_formatted_text(&rendered_text, keep);
+                                }
+                            }
+                        }
                         column.add_child(render_rich_text_output_text_section(
                             RichTextSectionProps {
                                 is_restored: props.model.is_restored(),
-                                formatted_text: formatted_text.formatted_text_arc(),
+                                formatted_text: rendered_text,
                                 text_color: props.text_color,
                                 is_ai_input_enabled: props.is_ai_input_enabled,
                                 section_index,
@@ -1308,17 +1573,35 @@ pub fn render_text_sections<V: View, A: Action>(
                 language,
                 source,
             } => {
-                let editor_view = props
+                let mut editor_view = props
                     .embedded_code_editor_views
                     .get(*props.starting_code_section_index)
                     .map(|view| &view.view);
+                // An over-budget block renders its first lines through the plain code block
+                // (the embedded editor holds the whole text) with the same show-full button.
+                let mut shown_code: &str = code;
+                let mut full_code = None;
+                if let Some(budget) = cap_budget.as_deref_mut() {
+                    let end = budget.take_text_prefix(code);
+                    if end < code.len() {
+                        if focused_match_is_hidden(focused_match, section_index, 0) {
+                            lift_output_cap(&mut cap_budget);
+                        } else {
+                            budget.note_hidden(line_count(&code[end..]));
+                            shown_code = &code[..end];
+                            full_code = Some(code.as_str());
+                            editor_view = None;
+                        }
+                    }
+                }
                 let button_handles = props
                     .code_snippet_button_handles
                     .get(*props.starting_code_section_index);
                 *props.starting_code_section_index += 1;
                 column.add_child(render_code_output_section(
                     CodeSectionProps {
-                        code_snippet: code,
+                        code_snippet: shown_code,
+                        full_code,
                         editor_view,
                         button_handles,
                         language: language.as_ref(),
@@ -1343,6 +1626,21 @@ pub fn render_text_sections<V: View, A: Action>(
                     .get(*props.starting_table_section_index)
                     .cloned()
                     .unwrap_or_default();
+                if let Some(budget) = cap_budget.as_deref_mut() {
+                    let lines = line_count(&table.markdown_source);
+                    if !budget.admit_table(&table_handles.shown, lines, table.markdown_source.len())
+                    {
+                        if focused_match_is_hidden(focused_match, section_index, 0) {
+                            lift_output_cap(&mut cap_budget);
+                        } else {
+                            // A table cannot be cut mid-way; hide it whole.
+                            *props.starting_table_section_index += 1;
+                            budget.note_hidden(lines);
+                            indexed_section_offset += 1;
+                            continue;
+                        }
+                    }
+                }
                 *props.starting_table_section_index += 1;
                 column.add_child(render_table_section(
                     table,
@@ -1392,6 +1690,110 @@ pub fn render_text_sections<V: View, A: Action>(
         indexed_section_offset += 1;
     }
     column.finish()
+}
+
+/// Drops the cap for the rest of the answer, remembering that on the shared budget.
+fn lift_output_cap(cap_budget: &mut Option<&mut OutputBudget>) {
+    if let Some(budget) = cap_budget.take() {
+        budget.lifted = true;
+    }
+}
+
+/// How an image section at some offset advances the section and image-handle counters.
+struct ImageGroupStep {
+    /// Image tooltip handles consumed.
+    handles: usize,
+    /// Text sections consumed.
+    sections: usize,
+}
+
+/// How far an image section advances the counters when skipped. Mirrors the render path, which
+/// advances by the same renderable group, so later messages index the same handles (#872).
+fn image_group_step(
+    indexed_sections: &[(usize, &AIAgentTextSection)],
+    offset: usize,
+    image: &AgentOutputImage,
+    current_working_directory: Option<&String>,
+    #[cfg(feature = "local_fs")] resolved_blocklist_image_sources: Option<
+        &ResolvedBlocklistImageSources,
+    >,
+    app: &AppContext,
+) -> ImageGroupStep {
+    let group = collect_renderable_image_group(
+        indexed_sections,
+        offset,
+        image.layout.clone(),
+        current_working_directory,
+        #[cfg(feature = "local_fs")]
+        resolved_blocklist_image_sources,
+        app,
+    );
+    step_for_group(&group)
+}
+
+/// The pure arithmetic of [`image_group_step`]: an unrenderable (empty) group still consumes one
+/// section and one handle, as the render path does.
+fn step_for_group(group: &RenderableImageGroup<'_>) -> ImageGroupStep {
+    if group.images.is_empty() {
+        ImageGroupStep {
+            handles: 1,
+            sections: 1,
+        }
+    } else {
+        ImageGroupStep {
+            handles: group.images.len(),
+            sections: group.consumed_sections.max(1),
+        }
+    }
+}
+
+/// The "show full output" button, rendered once after the whole answer by the caller that owns
+/// the [`OutputBudget`].
+pub fn render_show_full_output_button<A: Action>(
+    button_handle: &MouseStateHandle,
+    show_full_action: fn() -> A,
+    hidden_lines: usize,
+    text_color: ColorU,
+    app: &AppContext,
+) -> Box<dyn Element> {
+    let appearance = Appearance::as_ref(app);
+    let style = UiComponentStyles {
+        font_color: Some(text_color),
+        font_size: Some(appearance.monospace_font_size()),
+        font_family_id: Some(appearance.ui_font_family()),
+        padding: Some(Coords {
+            top: 4.,
+            bottom: 4.,
+            left: 8.,
+            right: 8.,
+        }),
+        border_radius: Some(CornerRadius::with_all(Radius::Pixels(4.))),
+        ..Default::default()
+    };
+    let hover_style = UiComponentStyles {
+        background: Some(blended_colors::neutral_4(appearance.theme()).into()),
+        ..style
+    };
+    Flex::row()
+        .with_child(
+            appearance
+                .ui_builder()
+                .button(
+                    warpui::ui_components::button::ButtonVariant::Text,
+                    button_handle.clone(),
+                )
+                .with_centered_text_label(crate::t!(
+                    "ai-block-show-full-output",
+                    lines = hidden_lines
+                ))
+                .with_style(style)
+                .with_hovered_styles(hover_style)
+                .with_clicked_styles(hover_style)
+                .build()
+                .on_click(move |ctx, _, _| ctx.dispatch_typed_action(show_full_action()))
+                .finish(),
+        )
+        .finish()
 }
 
 fn text_sections_with_indices(
@@ -2809,6 +3211,9 @@ type CopyCodeActionFactory<A> = &'static dyn Fn(String) -> A;
 
 pub struct CodeSectionProps<'a, A: 'static> {
     pub code_snippet: &'a str,
+    /// Set when `code_snippet` is a truncated prefix (#872): the whole snippet, so copy still
+    /// copies everything. Execute and insert are disabled for a cut snippet.
+    pub full_code: Option<&'a str>,
     pub editor_view: Option<&'a ViewHandle<CodeEditorView>>,
     pub button_handles: Option<&'a CodeSnippetButtonHandles>,
     pub language: Option<&'a ProgrammingLanguage>,
@@ -2902,6 +3307,25 @@ pub fn render_code_output_section<A: Action>(
         .finish()
     });
 
+    // A truncated snippet cannot be run or inserted and is not highlighted; say why.
+    let language_text: Option<Box<dyn Element>> = if props.full_code.is_some() {
+        let note = Text::new_inline(
+            crate::t!("ai-block-code-truncated-note"),
+            appearance.ui_font_family(),
+            appearance.monospace_font_size(),
+        )
+        .with_color(blended_colors::text_sub(theme, theme.surface_3()))
+        .finish();
+        Some(
+            Flex::row()
+                .with_spacing(8.)
+                .with_children(language_text.into_iter().chain(iter::once(note)))
+                .finish(),
+        )
+    } else {
+        language_text
+    };
+
     let allow_execution = props.language.is_none_or(|lang| lang.is_shell());
 
     match props.editor_view {
@@ -2990,7 +3414,8 @@ pub fn render_code_output_section<A: Action>(
                         }
                         _ => None,
                     },
-                    on_execute: if allow_execution {
+                    // Never run or insert a snippet that was cut short (#872).
+                    on_execute: if allow_execution && props.full_code.is_none() {
                         Some(Box::new(|code_snippet, ctx| {
                             ctx.dispatch_typed_action(WorkspaceAction::RunAISuggestedCommand(
                                 code_snippet,
@@ -3000,13 +3425,17 @@ pub fn render_code_output_section<A: Action>(
                         None
                     },
                     on_copy: if let Some(action_factory) = props.copy_code_action_factory {
-                        Some(Box::new(|code_snippet, ctx| {
-                            ctx.dispatch_typed_action(action_factory(code_snippet));
+                        // Copy the whole snippet even when only a prefix is shown (#872).
+                        let full_code = props.full_code.map(str::to_owned);
+                        Some(Box::new(move |code_snippet, ctx| {
+                            ctx.dispatch_typed_action(action_factory(
+                                full_code.clone().unwrap_or(code_snippet),
+                            ));
                         }))
                     } else {
                         None
                     },
-                    on_insert: if source.is_some() {
+                    on_insert: if source.is_some() && props.full_code.is_none() {
                         Some(Box::new(move |insert_text, ctx| {
                             ctx.dispatch_typed_action(
                                 crate::workspace::WorkspaceAction::InsertInInput {
