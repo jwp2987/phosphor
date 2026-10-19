@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""Drive the real fish bootstrap in a pty (end to end) and assert the hooks fire.
+
+WHY THIS EXISTS
+---------------
+The bash and zsh bootstraps have pty-driving scripts (`test_bash_bootstrap_nounset`,
+`test_zsh_bootstrap_strict_options`); fish had none, so #829 (terminal query replies
+leaking into the reported typeahead) and #879 (JSON escaping of the earliest
+payloads) were only unit-tested for fish. This runs the actual scripts in a real
+fish. Needs only fish and python3 (no cargo).
+
+WHAT IT DOES
+------------
+Assembles `fish_init_shell.sh` + `fish.sh` the way `app/src/terminal/bootstrap.rs`
+does (expand `#include`, substitute placeholders, drop comment and blank lines),
+starts an interactive fish in a pty with an isolated, deliberately hostile $HOME
+(tab, newline, quote, backslash, ESC, unicode in the directory name), sources the
+scripts and checks:
+
+  * InitShell and Bootstrapped arrive and every hook payload is valid JSON;
+  * `home_dir` in Bootstrapped round-trips the hostile $HOME exactly (#879);
+  * `false`, `true` each produce Preexec, CommandFinished and Precmd;
+  * #829: replies to DA / OSC colour / cursor-position queries typed into the
+    line editor are NOT reported by ESC-i, while the real text is, and ordinary
+    text such as `echo 62c` is untouched.
+
+USAGE
+    script/test_fish_bootstrap [path/to/fish]
+Exit 0 when every check passes, 1 otherwise.
+"""
+
+import json
+import os
+import pty
+import re
+import select
+import shlex
+import shutil
+import sys
+import tempfile
+import time
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ASSETS = os.path.join(ROOT, "app", "assets")
+BOOTSTRAP = os.path.join(ASSETS, "bundled", "bootstrap")
+FISH = sys.argv[1] if len(sys.argv) > 1 else shutil.which("fish")
+if not FISH:
+    print("test_fish_bootstrap: fish not installed")
+    sys.exit(1 if os.environ.get("CI") else 0)
+HOOK_RE = re.compile(rb"\x1bP\$d([0-9a-f]*)\x9c")
+HOSTILE_DIR = "ph\tx\nq\"b\\s\x1bzé中"
+
+
+def assemble(text):
+    out = []
+    for line in text.split("\n"):
+        if line.startswith("#include "):
+            with open(os.path.join(ASSETS, line[len("#include "):])) as f:
+                out.extend(assemble(f.read()).split("\n"))
+            continue
+        stripped = line.lstrip()
+        if len(stripped) < len(line):
+            line = " " + stripped
+        line = line.rstrip()
+        if not line.strip() or line.strip().startswith("#"):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def script_text():
+    with open(os.path.join(BOOTSTRAP, "fish_init_shell.sh")) as f:
+        init = f.read()
+    with open(os.path.join(BOOTSTRAP, "fish.sh")) as f:
+        body = f.read()
+    text = assemble(init) + "\n" + assemble(body) + "\n"
+    return text.replace("@@WARP_SESSION_ID@@", "4242").replace("@@USING_CON_PTY_BOOLEAN@@", "false")
+
+
+class Shell:
+    def __init__(self):
+        self.base = tempfile.mkdtemp(prefix="phosphor-fish-")
+        self.home = os.path.join(self.base, HOSTILE_DIR)
+        os.makedirs(self.home)
+        self.script = os.path.join(self.base, "boot.fish")
+        with open(self.script, "w") as f:
+            f.write(script_text())
+        env = {
+            "HOME": self.home,
+            "XDG_CONFIG_HOME": os.path.join(self.base, "cfg"),
+            "XDG_DATA_HOME": os.path.join(self.base, "data"),
+            "USER": os.environ.get("USER", "user"),
+            "PATH": os.environ["PATH"],
+            "TERM": "xterm-256color",
+            "LANG": "C.UTF-8",
+            "WARP_IS_LOCAL_SHELL_SESSION": "1",
+        }
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:
+            os.chdir(self.base)
+            os.execve(FISH, [FISH, "--no-config", "-i"], env)
+        self.buf = b""
+        self.broken = False
+
+    def pump(self, timeout, until=None):
+        end = time.time() + timeout
+        while time.time() < end:
+            if until is not None and until():
+                return True
+            r, _, _ = select.select([self.fd], [], [], 0.05)
+            if not r:
+                continue
+            try:
+                data = os.read(self.fd, 65536)
+            except OSError:
+                data = b""
+            if not data:
+                return until() if until else False
+            self.buf += data
+        return until() if until else False
+
+    def raw_hooks(self):
+        return [bytes.fromhex(m.group(1).decode()) for m in HOOK_RE.finditer(self.buf)]
+
+    def hooks(self):
+        out = []
+        for p in self.raw_hooks():
+            try:
+                j = json.loads(p)
+            except ValueError:
+                continue
+            out.append((j.get("hook", "?"), j.get("value") or {}))
+        return out
+
+    def names(self):
+        return [n for n, _ in self.hooks()]
+
+    def bootstrap(self):
+        self.pump(2)
+        os.write(self.fd, (f"source {shlex.quote(self.script)}; echo boot$(math 20+22)done\r").encode())
+        ok = self.pump(30, lambda: "Bootstrapped" in self.names() and b"boot42done" in self.buf)
+        self.broken = not ok
+        self.pump(1.5)
+        return ok
+
+    def cycle(self, cmd, timeout=8):
+        if self.broken:
+            return None
+        n = len(self.hooks())
+        before = self.names().count("Precmd")
+        os.write(self.fd, (cmd + "\r").encode())
+        ok = self.pump(timeout, lambda: self.names().count("Precmd") > before)
+        if not ok:
+            self.broken = True
+        self.pump(0.2)
+        return self.hooks()[n:]
+
+    def input_buffer(self, typed):
+        n = len([1 for h, _ in self.hooks() if h == "InputBuffer"])
+        for t in typed:
+            self.pump(0.2)
+            os.write(self.fd, t)
+        self.pump(0.4)
+        os.write(self.fd, b"\x1bi")
+        if not self.pump(6, lambda: len([1 for h, _ in self.hooks() if h == "InputBuffer"]) > n):
+            return None
+        return [v for h, v in self.hooks() if h == "InputBuffer"][-1]["buffer"]
+
+    def close(self):
+        try:
+            os.kill(self.pid, 9)
+            os.waitpid(self.pid, 0)
+        except OSError:
+            pass
+        shutil.rmtree(self.base, ignore_errors=True)
+
+
+failures = []
+
+
+def check(cond, what, sh):
+    if cond:
+        print(f"  ok   {what}")
+        return
+    print(f"  FAIL {what}")
+    failures.append(what)
+    print("       hooks: " + " ".join(sh.names()[-12:]))
+    print("       tail: " + repr(sh.buf[-400:]))
+
+
+REPLIES = [
+    b"\x1b[?62c",
+    b"\x1b[>0;95;0c",
+    b"\x1b]10;rgb:ffff/ffff/ffff\x07",
+    b"\x1b]11;rgb:0000/0000/0000\x1b\\",
+    b"\x1b]4;1;rgb:cc/00/00\x07",
+    b"\x1b[24;80R",
+]
+# Unterminated colour replies followed by text starting with hex letters: the text must survive.
+HEXLEAD = [b"\x1b]4;1;rgb:cc/00/00", b"\x1b]10;rgb:ffff/ffff/ffff"]
+
+
+def main():
+    sh = Shell()
+    try:
+        print(f"fish: {FISH}")
+        check(sh.bootstrap(), "bootstraps (InitShell and Bootstrapped arrive)", sh)
+        names = sh.names()
+        check("InitShell" in names, "InitShell hook arrived", sh)
+        bad = [p for p in sh.raw_hooks() if not _valid(p)]
+        check(not bad, f"every hook payload is valid JSON ({len(bad)} bad)", sh)
+        boot = [v for h, v in sh.hooks() if h == "Bootstrapped"]
+        if boot:
+            got = boot[-1].get("home_dir")
+            check(got == sh.home, f"home_dir round-trips the hostile $HOME (got {got!r})", sh)
+        for cmd, code in (("false", 1), ("true", 0)):
+            hs = sh.cycle(cmd)
+            ns = [n for n, _ in hs] if hs is not None else []
+            check(ns[:1] == ["Preexec"] and "CommandFinished" in ns and ns[-1:] == ["Precmd"], f"`{cmd}` gives Preexec, CommandFinished, Precmd", sh)
+            fin = [v for n, v in (hs or []) if n == "CommandFinished"]
+            check(bool(fin) and fin[0].get("exit_code") == code, f"`{cmd}` exit code is {code}", sh)
+        # #829
+        got = sh.input_buffer(REPLIES + [b"echo kept"])
+        check(got == "echo kept", f"#829: only the typed text is reported (got {got!r})", sh)
+        os.write(sh.fd, b"\x03")
+        sh.pump(0.5)
+        got = sh.input_buffer([b"echo 62c"])
+        check(got == "echo 62c", f"#829: ordinary text `echo 62c` is untouched (got {got!r})", sh)
+        for r in HEXLEAD:
+            os.write(sh.fd, b"\x03")
+            sh.pump(0.5)
+            got = sh.input_buffer([r, b"echo kept"])
+            check(got == "echo kept", f"#829: hex-letter text after {r!r} is kept (got {got!r})", sh)
+        check(not [p for p in sh.raw_hooks() if not _valid(p)], "all hook payloads still valid JSON at the end", sh)
+    finally:
+        sh.close()
+    print("test_fish_bootstrap: " + ("ok" if not failures else "FAILED"))
+    return 1 if failures else 0
+
+
+def _valid(p):
+    try:
+        json.loads(p)
+        return True
+    except ValueError:
+        return False
+
+
+if __name__ == "__main__":
+    sys.exit(main())
