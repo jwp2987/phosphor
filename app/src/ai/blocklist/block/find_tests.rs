@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::{compute_find_matches, query_find_matches};
-use crate::ai::agent::{AIAgentInput, UserQueryMode};
+use crate::ai::agent::{AIAgentAttachment, AIAgentInput, UserQueryMode};
 use crate::terminal::find::FindOptions;
 
 fn user_query_input(query: &str, mode: UserQueryMode) -> AIAgentInput {
@@ -127,5 +127,64 @@ fn query_find_matches_uses_input_index_and_skips_non_query_inputs() {
     assert_eq!(
         query_find_matches(&inputs, Some(&a), &opts("alpha")),
         vec![(0, 7..12), (1, 0..5)]
+    );
+}
+
+fn input_with_refs(query: &str, refs: &[&str]) -> AIAgentInput {
+    AIAgentInput::UserQuery {
+        query: query.to_string(),
+        context: Arc::new([]),
+        static_query_type: None,
+        referenced_attachments: refs
+            .iter()
+            .map(|r| (r.to_string(), AIAgentAttachment::PlainText("x".into())))
+            .collect(),
+        user_query_mode: UserQueryMode::Normal,
+        running_command: None,
+        intended_agent: None,
+    }
+}
+
+// #939: find must match the text the block renders, with @-references stripped.
+#[test]
+fn query_find_matches_after_at_reference_start_middle_end() {
+    // Rendered: "look here" / "see look now" / "see look"
+    let cases = [
+        ("@a.txt look here", "look", 0..4),
+        ("see @a.txt look now", "look", 4..8),
+        ("see look @a.txt", "look", 4..8),
+    ];
+    for (query, needle, range) in cases {
+        let inputs = [input_with_refs(query, &["@a.txt"])];
+        assert_eq!(
+            query_find_matches(&inputs, None, &opts(needle)),
+            vec![(0, range)],
+            "{query}"
+        );
+    }
+}
+
+#[test]
+fn query_find_matches_agent_prefix_plus_reference_and_multiple_references() {
+    let query = "see @a.txt then @b.rs target".to_string();
+    let inputs = [input_with_refs(&query, &["@a.txt", "@b.rs"])];
+    // Rendered: "/agent see then target"
+    assert_eq!(
+        query_find_matches(&inputs, Some(&query), &opts("target")),
+        vec![(0, 16..22)]
+    );
+    assert_eq!(
+        query_find_matches(&inputs, Some(&query), &opts("then")),
+        vec![(0, 11..15)]
+    );
+}
+
+#[test]
+fn query_find_matches_reference_not_in_query_is_unchanged() {
+    // An attachment whose label is absent from the text is not a context reference.
+    let inputs = [input_with_refs("plain target", &["@missing"])];
+    assert_eq!(
+        query_find_matches(&inputs, None, &opts("target")),
+        vec![(0, 6..12)]
     );
 }

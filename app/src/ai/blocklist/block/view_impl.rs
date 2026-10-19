@@ -913,15 +913,8 @@ impl View for AIBlock {
             .enumerate()
             .find_map(|(input_index, input)| {
                 let element_below_user_query = input.element_below_user_query(input_props, app);
-                let mut user_query =
-                    input.display_user_query(initial_conversation_query.as_ref())?;
-                let context_references = common::query_context_references(input, &user_query);
-                if !context_references.is_empty() {
-                    user_query = common::display_query_without_context_references(
-                        &user_query,
-                        &context_references,
-                    );
-                }
+                let (user_query, context_references) =
+                    common::rendered_query_text(input, initial_conversation_query.as_ref())?;
                 let query_prefix_highlight_len =
                     common::query_prefix_highlight_len(input, &user_query);
 
