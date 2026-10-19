@@ -800,6 +800,10 @@ pub struct AppContext {
     /// When set, all focus changes to this window are suppressed.
     /// Used during tab drag to prevent the new window from stealing focus.
     suppress_focus_for_window: Option<WindowId>,
+    /// Windows whose active-window focus check (#842) was deferred because the
+    /// presenter's mounted-view snapshot was stale; consumed after the next
+    /// full layout in `build_scene`.
+    focus_check_after_layout: HashSet<WindowId>,
 
     /// An optional provider that creates an [`AssetSource`] for loading a
     /// fallback font from a URL string. Injected by the application layer so
@@ -903,6 +907,7 @@ impl AppContext {
             view_parents: Default::default(),
             structural_parent_to_children: Default::default(),
             suppress_focus_for_window: None,
+            focus_check_after_layout: Default::default(),
             fallback_font_source_provider: None,
         };
 
@@ -3065,6 +3070,7 @@ impl AppContext {
         if !self.windows.contains_key(&window_id) {
             log::info!("missing core window data!");
         }
+        self.focus_check_after_layout.remove(&window_id);
         let (Some(window), Some(bounds)) = (
             self.windows.remove(&window_id),
             self.window_bounds.remove(&window_id),
@@ -3238,6 +3244,17 @@ impl AppContext {
                     log::debug!(
                         "Received window_id={window_id:?} with window size {size:?}. Skipping render"
                     );
+                    // `invalidate` above already replaced the updated views'
+                    // elements with fresh ones that have never been laid out or
+                    // painted, and the invalidation that said so is consumed. Owe
+                    // the window a full layout on its next frame: otherwise a
+                    // paint-only frame (`skip_layout`) would paint those elements
+                    // unlaid, and they would drop every event (#841/#842).
+                    self.window_invalidations
+                        .entry(window_id)
+                        .or_default()
+                        .redraw_requested = true;
+                    presenter.mark_layout_stale();
                     break;
                 }
 
@@ -3258,6 +3275,12 @@ impl AppContext {
                 // Cache the last position cache after rendering.
                 self.last_frame_position_cache
                     .insert(window_id, presenter.position_cache().clone());
+            }
+
+            // A focus check deferred because the mounted snapshot was stale
+            // (#842) can now be judged against a fresh layout.
+            if !skip_layout && self.focus_check_after_layout.remove(&window_id) {
+                self.refocus_root_if_focus_unreachable(window_id);
             }
 
             // Synthesize a MouseMoved event in case any elements
@@ -4687,6 +4710,82 @@ impl AppContext {
             .or_default()
             .updated
             .insert(view_id);
+    }
+
+    /// Defensive recovery run when a window becomes the active window again
+    /// (#842). If the window's focused view no longer exists, or is not in the
+    /// element tree (for example a dismissed context menu that is still alive
+    /// but no longer rendered), no key event can reach it and the window looks
+    /// dead to the keyboard. Move focus back to the window's root view so the
+    /// normal focus logic can take over.
+    ///
+    /// "Not in the element tree" is judged from the presenter's mounted-view
+    /// snapshot, which only a full layout rebuilds. So it is judged only when
+    /// the window has no pending invalidation and its last frame did a full
+    /// layout; otherwise the check is deferred to the next full layout. A view
+    /// whose parent is mounted (a row of a lazily laid-out list that is
+    /// scrolled out of view) keeps focus, and TUI views are never judged.
+    pub(crate) fn refocus_root_if_focus_unreachable(&mut self, window_id: WindowId) {
+        let Some(focused) = self.focused_view_id(window_id) else {
+            return;
+        };
+        let Some(root) = self.root_view_id(window_id) else {
+            return;
+        };
+        if focused == root {
+            return;
+        }
+        let Some(view_name) = self.view_name(window_id, focused).map(str::to_owned) else {
+            log::info!(
+                "window {window_id:?} became active with focused view {focused:?} that no \
+                 longer exists; refocusing the root view"
+            );
+            self.focus(window_id, root);
+            return;
+        };
+        #[cfg(feature = "tui")]
+        if self
+            .windows
+            .get(&window_id)
+            .is_some_and(|w| w.tui_views.contains_key(&focused))
+        {
+            return;
+        }
+        let has_pending_invalidation =
+            self.window_invalidations.get(&window_id).is_some_and(|i| {
+                !i.updated.is_empty() || !i.removed.is_empty() || i.redraw_requested
+            }) || autotracking::windows_with_invalidations().contains(&window_id);
+        // Defer first: if the presenter is busy (mid-frame) or the layout is not
+        // current, the check must run after the next full layout, not be dropped.
+        self.focus_check_after_layout.insert(window_id);
+        let Some(presenter) = self.presenter(window_id) else {
+            self.focus_check_after_layout.remove(&window_id);
+            return;
+        };
+        let Ok(presenter) = presenter.try_borrow() else {
+            return;
+        };
+        if has_pending_invalidation || !presenter.layout_is_current() {
+            log::debug!(
+                "window {window_id:?}: deferring focus reachability check of {view_name} \
+                 ({focused:?}) until after the next full layout"
+            );
+            return;
+        }
+        let reachable = presenter.is_view_reachable(focused);
+        drop(presenter);
+        self.focus_check_after_layout.remove(&window_id);
+        if reachable {
+            log::debug!(
+                "window {window_id:?}: focused view {view_name} ({focused:?}) is reachable"
+            );
+            return;
+        }
+        log::info!(
+            "window {window_id:?} became active with unreachable focused view {view_name} \
+             ({focused:?}); refocusing the root view"
+        );
+        self.focus(window_id, root);
     }
 
     fn focus(&mut self, window_id: WindowId, focused_id: EntityId) {

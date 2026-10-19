@@ -204,6 +204,9 @@ impl AppCallbackDispatcher {
             WindowManager::handle(ctx).update(ctx, |state, ctx| {
                 state.set_active_window(active_window_id, ctx);
             });
+            if let Some(window_id) = active_window_id {
+                ctx.refocus_root_if_focus_unreachable(window_id);
+            }
         });
 
         if let Some(callback) = &mut self.callbacks.on_active_window_changed {

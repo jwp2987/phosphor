@@ -12203,7 +12203,7 @@ impl TerminalView {
                 // If we failed to bootstrap by the time we exited, show the
                 // bootstrap block so the user might be able to see what went wrong.
                 if !self.is_login_shell_bootstrapped {
-                    self.show_initialization_block();
+                    self.show_initialization_block(ctx);
                 }
 
                 if !self.pty_spawn_failed {
@@ -27009,11 +27009,14 @@ impl TerminalView {
         send_telemetry_from_ctx!(TelemetryEvent::WarpifyFooterShown { is_ssh }, ctx);
     }
 
-    fn show_initialization_block(&mut self) {
+    fn show_initialization_block(&mut self, ctx: &mut ViewContext<Self>) {
         self.model
             .lock()
             .block_list_mut()
             .set_show_bootstrap_block(true);
+        // Un-hiding the bootstrap block changes the block list's contents, so the
+        // view must redraw (#820).
+        ctx.notify();
     }
 
     pub(super) fn toggle_file_tree(
@@ -28304,7 +28307,7 @@ impl TypedActionView for TerminalView {
                     });
                 }
             }
-            ShowInitializationBlock => self.show_initialization_block(),
+            ShowInitializationBlock => self.show_initialization_block(ctx),
             LoadAgentModeConversation => {
                 self.load_agent_mode_conversation(ctx);
             }
