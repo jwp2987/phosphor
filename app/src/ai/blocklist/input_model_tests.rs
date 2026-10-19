@@ -1253,11 +1253,11 @@ fn pending_prose_with_unknown_first_word_settles_to_ai_at_submit() {
             ));
             input_model.read(app, |model, _| model.input_type())
         };
-        // No #834 request word (`the`, `it`, ...), so only the unknown-head rule can move these.
+        // No #834 request word (`the`, `it`, ...), so only the unknown-head rule can move these (`my`, `when`, `which`, `can`, `where` are not request words).
         for prose in [
-            "summarize everything for me please",
-            "tell Josh what happened please",
-            "explain why builds are slow?",
+            "tell Josh when my build finished",
+            "frobnicate which tests can fail",
+            "explain where my config lives",
         ] {
             assert_eq!(enter(&mut app, prose, true), InputType::AI, "{prose}");
             // Head is an alias/function/builtin/PATH executable, or the session has no data:
@@ -1287,11 +1287,11 @@ fn pending_typeahead_with_unknown_first_word_stays_shell() {
     App::test((), |mut app| async move {
         let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
         let input_model = build_autodetecting_input_model(&mut app, SHELL_UNLOCKED);
-        let text = "summarize everything for me please";
+        let text = "tell Josh when my build finished";
         input_model.update(&mut app, |model, ctx| {
             model.apply_autodetected_input_type(InputType::Shell, ctx);
             model.note_detection_requested(text.to_owned());
-            model.note_typeahead_inserted("summarize every".to_owned());
+            model.note_typeahead_inserted("tell Josh when".to_owned());
         });
         settle_for_submit_with_head(&mut app, &input_model, text, true);
         input_model.read(&app, |model, _| {
