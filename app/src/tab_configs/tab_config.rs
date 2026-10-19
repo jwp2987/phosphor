@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -596,7 +596,7 @@ const PRECOMMANDS: [&str; 20] = [
 /// commands that evaluate or forward their arguments as code, and builtins that read an
 /// argument as arithmetic, a variable name or code to run later. Matched by basename,
 /// case-insensitively, also with a version suffix removed (`python3.14`, `perl5.40.1`).
-const DENIED_COMMANDS: [&str; 100] = [
+const DENIED_COMMANDS: &[&str] = &[
     // Shells and interpreters.
     "sh",
     "bash",
@@ -663,6 +663,12 @@ const DENIED_COMMANDS: [&str; 100] = [
     "functions",
     "alias",
     "hash",
+    // Alias definitions in fish (`abbr`) and PowerShell (#884).
+    "abbr",
+    "set-alias",
+    "new-alias",
+    "sal",
+    "nal",
     // Wrappers that run the command in their arguments, which are not modelled as
     // precommands (#884): tracers, sandboxes, namespaces, remote and container runners.
     "strace",
@@ -964,8 +970,10 @@ fn segment_evaluates_placeholder(words: &[&str]) -> Option<&'static str> {
 /// `dbus-run-session`, `unshare`, ...) are in [`DENIED_COMMANDS`]; a segment with a placeholder
 /// is also refused when the placeholder is the value of a variable evaluated later
 /// ([`EVALUATED_VARIABLES`]: `PS1`, `PROMPT_COMMAND`, `GIT_SSH_COMMAND`, `EDITOR`, ...; #884).
-/// Aliases, functions and scripts defined elsewhere are invisible here; placeholders are
-/// supported only as ordinary arguments to ordinary commands.
+/// Aliases and functions defined by an earlier command of the same pane are caught by
+/// [`defined_then_used_with_placeholder`]; ones defined elsewhere (rc files, scripts) are
+/// invisible here, and placeholders are supported only as ordinary arguments to ordinary
+/// commands.
 fn reparsing_command(residual: &[char]) -> Option<&'static str> {
     let text: String = residual
         .iter()
@@ -1060,6 +1068,161 @@ fn reparsing_command(residual: &[char]) -> Option<&'static str> {
                 index += 1;
             }
             index += options.positional;
+        }
+    }
+    None
+}
+
+/// What [`scan_definitions`] found in one command.
+struct DefinitionScan {
+    /// Names the command defines for later use: `alias NAME=...` (also fish `alias NAME ...`
+    /// and PowerShell `Set-Alias`/`New-Alias`), `NAME() {...}`, `function NAME` and
+    /// `hash -p PATH NAME`.
+    defined: Vec<String>,
+    /// Every word outside the definitions themselves.
+    used: HashSet<String>,
+}
+
+fn is_word_break(c: char) -> bool {
+    c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '{' | '}')
+}
+
+/// Finds the names `command` defines and the words it uses (#884). Quotes and backslashes are
+/// treated as spaces and each `{{placeholder}}` as [`PLACEHOLDER_MARK`]: only names matter
+/// here, and over-collecting only ever makes the check refuse more.
+fn scan_definitions(command: &str) -> DefinitionScan {
+    let raw: Vec<char> = command.chars().collect();
+    let mut chars: Vec<char> = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i] == '{'
+            && raw.get(i + 1) == Some(&'{')
+            && let Some(end) =
+                (i + 2..raw.len().saturating_sub(1)).find(|&k| raw[k] == '}' && raw[k + 1] == '}')
+        {
+            chars.push(PLACEHOLDER_MARK);
+            i = end + 2;
+            continue;
+        }
+        let c = raw[i];
+        chars.push(if QUOTE_CHARS.contains(&c) || c == '\\' {
+            ' '
+        } else {
+            c
+        });
+        i += 1;
+    }
+
+    let mut defined: Vec<String> = Vec::new();
+    // `name()` / `name ()`: record the name and blank the whole `name()` out.
+    let mut at = 0;
+    while at < chars.len() {
+        if chars[at] == '(' {
+            let mut close = at + 1;
+            while chars.get(close).is_some_and(|c| c.is_whitespace()) {
+                close += 1;
+            }
+            if chars.get(close) == Some(&')') {
+                let mut end = at;
+                while end > 0 && chars[end - 1].is_whitespace() {
+                    end -= 1;
+                }
+                let mut start = end;
+                while start > 0 && !is_word_break(chars[start - 1]) {
+                    start -= 1;
+                }
+                if start < end {
+                    defined.push(chars[start..end].iter().collect());
+                    for c in &mut chars[start..=close] {
+                        *c = ' ';
+                    }
+                    at = close + 1;
+                    continue;
+                }
+            }
+        }
+        at += 1;
+    }
+
+    let text: String = chars
+        .iter()
+        .map(|&c| {
+            if matches!(c, ';' | '&' | '|' | '(' | ')' | '{' | '}') {
+                '\n'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let mut used = HashSet::new();
+    for line in text.lines() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        fn non_options<'a>(words: &[&'a str], from: usize) -> Vec<&'a str> {
+            words[from..]
+                .iter()
+                .copied()
+                .filter(|word| !word.starts_with('-'))
+                .collect()
+        }
+        if let Some(at) = words.iter().position(|word| {
+            matches!(
+                word.to_ascii_lowercase().as_str(),
+                "alias" | "set-alias" | "new-alias" | "sal" | "nal"
+            )
+        }) {
+            let names = non_options(&words, at + 1);
+            defined.extend(
+                names
+                    .iter()
+                    .filter_map(|word| word.split_once('=').map(|(name, _)| name.to_string())),
+            );
+            // fish: `alias NAME VALUE`.
+            defined.extend(names.first().map(|name| name.to_string()));
+            continue;
+        }
+        if let Some(at) = words.iter().position(|word| *word == "hash")
+            && words[at + 1..]
+                .iter()
+                .any(|word| short_option_letters(word).contains('p'))
+        {
+            defined.extend(non_options(&words, at + 1).into_iter().map(str::to_string));
+            continue;
+        }
+        if let Some(at) = words.iter().position(|word| *word == "function") {
+            defined.extend(
+                non_options(&words, at + 1)
+                    .first()
+                    .map(|name| name.to_string()),
+            );
+            used.extend(
+                words[..at]
+                    .iter()
+                    .chain(non_options(&words, at + 1).iter().skip(1))
+                    .map(|word| word.to_string()),
+            );
+            continue;
+        }
+        used.extend(words.iter().map(|word| word.to_string()));
+    }
+    defined.retain(|name| !name.is_empty() && !name.contains([PLACEHOLDER_MARK, '=']));
+    DefinitionScan { defined, used }
+}
+
+/// Whether a pane's commands define an alias, function or hashed command and then use that
+/// name in a command that substitutes a placeholder (#884): each command is checked on its
+/// own, so a definition in one command is otherwise invisible to the check on the next, and
+/// `alias q=sh` followed by `q -c {{x}}` would run the value. `commands` pairs each command's
+/// template with whether rendering substituted anything into it.
+fn defined_then_used_with_placeholder(commands: &[(String, bool)]) -> Option<&'static str> {
+    let mut defined: HashSet<String> = HashSet::new();
+    for (command, has_placeholder) in commands {
+        let scan = scan_definitions(command);
+        defined.extend(scan.defined);
+        if *has_placeholder && scan.used.iter().any(|word| defined.contains(word)) {
+            return Some(
+                "an alias, function or hashed command defined in the same pane, whose \
+                 definition the placeholder check cannot see",
+            );
         }
     }
     None
@@ -1521,6 +1684,7 @@ fn resolve_pane_node(
             .unwrap_or_default();
 
         let command_values = command_values_for_pane(context, directory.as_deref());
+        let mut scanned: Vec<(String, bool)> = Vec::new();
         let commands: Vec<CommandTemplate> = node
             .commands
             .as_deref()
@@ -1528,13 +1692,24 @@ fn resolve_pane_node(
             .iter()
             .map(|cmd| {
                 upgrade_legacy_worktree_path(cmd, directory.as_deref())
-                    .and_then(|cmd| render_command(&cmd, &command_values))
+                    .and_then(|cmd| {
+                        let exec = render_command(&cmd, &command_values)?;
+                        scanned.push((cmd.to_string(), exec != *cmd));
+                        Ok(exec)
+                    })
                     .map(|exec| CommandTemplate { exec })
                     .map_err(|err| {
                         ResolveError::UnsafeCommand(format!("pane '{}': {err}", node.id))
                     })
             })
             .collect::<Result<_, _>>()?;
+        if let Some(what) = defined_then_used_with_placeholder(&scanned) {
+            return Err(ResolveError::UnsafeCommand(format!(
+                "pane '{}': the commands substitute a placeholder but also use {what}; \
+                 write the whole command out instead of defining a shortcut for it",
+                node.id
+            )));
+        }
 
         let explicitly_focused = node.is_focused == Some(true);
         let is_focused = explicitly_focused || auto_focus_first_leaf;

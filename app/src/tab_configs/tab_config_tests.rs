@@ -1799,3 +1799,81 @@ fn test_container_run_allows_only_an_image_placeholder() {
         );
     }
 }
+
+fn render_commands(commands: &[&str], value: &str) -> Result<Vec<String>, String> {
+    let config: TabConfig = toml::from_str(&build_test_tab_config_toml(
+        "Definitions",
+        commands.iter().map(|command| command.to_string()).collect(),
+    ))
+    .unwrap();
+    let params = HashMap::from([("x".to_string(), value.to_string())]);
+    try_render_tab_config(&config, &params, None).map(|(_, template)| match template {
+        PaneTemplateType::PaneTemplate { commands, .. } => {
+            commands.into_iter().map(|command| command.exec).collect()
+        }
+        PaneTemplateType::PaneBranchTemplate { .. } => panic!("Expected PaneTemplate"),
+    })
+}
+
+/// #884: a definition in one command is invisible to the check on the next, so an alias,
+/// function or hashed command defined earlier in the pane and used with a placeholder is
+/// refused.
+#[test]
+fn test_earlier_definitions_used_with_a_placeholder_are_refused() {
+    for commands in [
+        // Alias then use.
+        &["alias q=sh", "q -c {{x}}"][..],
+        &["alias -g Q=sh", "echo hi | Q -c {{x}}"],
+        // Function then use: POSIX, `function`, fish.
+        &["f() { sh \"$@\"; }", "f -c {{x}}"],
+        &["f ()  { :; }", "f {{x}}"],
+        &["function f { sh; }", "f -c {{x}}"],
+        &["function f --description x; sh $argv; end", "f -c {{x}}"],
+        // fish `alias NAME VALUE`, PowerShell.
+        &["alias q 'sh -c'", "q {{x}}"],
+        &["Set-Alias q sh", "q -c {{x}}"],
+        &["New-Alias -Name q sh", "q {{x}}"],
+        // `hash -p` maps a name to any program.
+        &["hash -p /bin/sh xx", "xx -c {{x}}"],
+        &["hash -p /bin/sh xx; xx -c {{x}}"],
+        // Defined and used in one command.
+        &["f() { :; }; f {{x}}"],
+        &["function f; :; end; f {{x}}"],
+        &["alias q={{x}}; q"],
+        &["Set-Alias q {{x}}"],
+        &["abbr -a q {{x}}"],
+    ] {
+        assert!(
+            render_commands(commands, "touch pwned").is_err(),
+            "{commands:?} must be refused"
+        );
+    }
+}
+
+#[test]
+fn test_definitions_not_used_with_a_placeholder_still_render() {
+    for (commands, expected) in [
+        (
+            &["alias ll='ls -l'", "cd {{x}}"][..],
+            vec!["alias ll='ls -l'", "cd main"],
+        ),
+        (&["f() { :; }", "cd {{x}}"], vec!["f() { :; }", "cd main"]),
+        (
+            &["function greet; echo hi; end", "cd {{x}}"],
+            vec!["function greet; echo hi; end", "cd main"],
+        ),
+        // A definition and a use with no placeholder at all.
+        (&["f() { :; }; f"], vec!["f() { :; }; f"]),
+        // The #884 note: containers keep working.
+        (
+            &["export FOO=1", "docker run -it {{x}}"],
+            vec!["export FOO=1", "docker run -it main"],
+        ),
+    ] {
+        assert_eq!(
+            render_commands(commands, "main"),
+            Ok(expected.into_iter().map(str::to_string).collect()),
+            "{commands:?}"
+        );
+    }
+}

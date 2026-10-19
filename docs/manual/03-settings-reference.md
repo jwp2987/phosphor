@@ -159,8 +159,13 @@ application sharing one settings file, so most keys affect both; a few are
 TUI-only and a few are GUI-only. Both are marked in the tables below.
 
 **…reset a setting?** Delete its line from `settings.toml`. The default is used
-whenever a key is absent. Deleting the whole file resets every public setting.
-Private settings are unaffected by deleting `settings.toml`.
+whenever a key is absent. Deleting the whole file while Phosphor is closed resets
+every public setting. If you delete it while Phosphor is running, Phosphor writes
+your current settings back instead (a file that vanished by accident should not
+silently reset everything), so quit first to reset. A `settings.toml` larger than
+2 MB is not read, and a path that is a directory is reported as such; in both
+cases defaults are used and the file is left alone. Private settings are
+unaffected by deleting `settings.toml`.
 
 **…keep one settings file across several machines?** You can. Platform-specific
 keys will be reported as unknown on the platforms that do not compile them, which
