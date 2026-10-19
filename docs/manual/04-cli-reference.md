@@ -636,7 +636,7 @@ either direction.
 | `OZ_HARNESS` | set by Phosphor for a spawned agent | Name of the harness the child was launched under (`oz`, `claude`, …). Exported for hooks; nothing in Phosphor reads it back. |
 | `OZ_AGENT_MAILBOX_ROOT` | `agent message send`/`list` | Overrides the mailbox root directory. Ignored when empty. |
 | `OZ_MESSAGE_LISTENER_MANAGED_EXTERNALLY`, `OZ_MESSAGE_LISTENER_STATE_ROOT` (legacy aliases `OZ_PARENT_LISTENER_MANAGED_EXTERNALLY`, `OZ_PARENT_STATE_ROOT`) | set by Phosphor for a Claude child harness | Tell the Claude plugin that Phosphor owns the message-listener lifecycle, and where the shared state lives. |
-| `ZAP_DISABLED_FEATURES` | feature-flag init | Comma-separated names of default-on flags to switch off. Currently only `typeahead_handoff` (the #826/#827 typeahead hand-off, on by default since 2026-10-18). Unknown names are ignored; there is no `all`. Wins over `ZAP_UNSTABLE_FEATURES`. |
+| `ZAP_DISABLED_FEATURES` | feature-flag init | Comma-separated names of default-on flags to switch off. Currently only `typeahead_handoff` (the #826/#827 typeahead hand-off, on by default since 2026-10-18). `-` is accepted for `_`. Unknown names are ignored with a logged warning that names the valid ones; there is no `all`. Wins over `ZAP_UNSTABLE_FEATURES`. |
 | `ZAP_UNSTABLE_FEATURES` | feature-flag init | Comma-separated unstable feature names, or `all`/`*`. This is the only enable path for a handful of off-by-default subsystems; it does **not** enable the `provider` subcommand. |
 | `SHELL` | `completions` with no argument | Used to infer which shell to generate for. |
 

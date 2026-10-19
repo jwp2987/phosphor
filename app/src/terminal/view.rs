@@ -9859,6 +9859,16 @@ impl TerminalView {
     fn release_held_keys(&mut self, release: HeldKeysRelease, ctx: &mut ViewContext<Self>) {
         match release {
             HeldKeysRelease::ToPty(held) => self.write_to_pty(held, ctx),
+            HeldKeysRelease::ToPtyThenEditor { lines, fragment } => {
+                self.write_to_pty(lines, ctx);
+                let text = text_for_editor(&fragment);
+                self.input.update(ctx, |input, ctx| {
+                    if !text.is_empty() {
+                        input.system_insert(&text, ctx);
+                    }
+                    input.submit_next_enter_as_shell_command();
+                });
+            }
             HeldKeysRelease::ToEditor(held) => {
                 let text = text_for_editor(&held);
                 self.input.update(ctx, |input, ctx| {

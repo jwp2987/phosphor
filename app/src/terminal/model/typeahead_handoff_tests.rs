@@ -629,6 +629,33 @@ fn keys_held_behind_an_unsubmitted_enter_are_released_where_they_belong() {
     );
 }
 
+/// A trailing fragment after an Enter goes back to the editor instead of raw to the pty, where
+/// the next command's kill prefix would destroy it; a bracketed paste is never split.
+#[test]
+fn a_trailing_fragment_after_held_lines_goes_back_to_the_editor() {
+    let mut handoff = awaiting_report();
+    assert!(handoff.defer_enter());
+    handoff.on_user_bytes(b"echo 1\recho 2\rec");
+    assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
+    assert_eq!(
+        handoff.release_after_unsubmitted_enter(),
+        Some(HeldKeysRelease::ToPtyThenEditor {
+            lines: b"echo 1\recho 2\r".to_vec(),
+            fragment: b"ec".to_vec(),
+        })
+    );
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+
+    let mut handoff = awaiting_report();
+    assert!(handoff.defer_enter());
+    handoff.on_user_bytes(b"\x1b[200~a\nb\x1b[201~c");
+    assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
+    assert_eq!(
+        handoff.release_after_unsubmitted_enter(),
+        Some(HeldKeysRelease::ToPty(b"\x1b[200~a\nb\x1b[201~c".to_vec()))
+    );
+}
+
 #[test]
 fn the_session_ending_releases_everything() {
     let mut handoff = awaiting_report();

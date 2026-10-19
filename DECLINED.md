@@ -2285,5 +2285,5 @@ upstream's behavior is actually a defect rather than a preference.
   while a command finishes are dropped or fragmented (same code at `4111d08f9`). **We do:** the pty
   owns input from submit until the shell's line is reported; opt out with
   `ZAP_DISABLED_FEATURES=typeahead_handoff`. Two known gaps are accepted (agent / queued-prompt
-  commands arriving inside the report window; raw release of held bytes) -- see
+  commands arriving inside the report window; raw release of held bytes: a fragment may be dropped or execute separately) -- see
   `docs/typeahead-handoff-826-827.md`. Expected divergence, not drift.

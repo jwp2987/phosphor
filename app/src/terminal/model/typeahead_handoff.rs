@@ -114,6 +114,11 @@ pub enum HeldKeysRelease {
     /// next Enter would submit them as one multi-line buffer -- to the agent, if natural-language
     /// detection took it for a query (#826 N1).
     ToPty(Vec<u8>),
+    /// Shell lines (an Enter in them) followed by an unfinished fragment with no Enter: the lines
+    /// to the pty as typed, the fragment back into the editor, where the user can see and finish
+    /// it. Written raw, the fragment would sit unreported in the shell's line while the state is
+    /// `EditorOwned`, and the next command's kill prefix would destroy it.
+    ToPtyThenEditor { lines: Vec<u8>, fragment: Vec<u8> },
 }
 
 /// What a Ctrl-C written while the pty owns input means for the hand-off.
@@ -491,8 +496,19 @@ impl TypeaheadHandoff {
         }
         match mem::take(&mut self.state) {
             HandoffState::HoldAfterEnter { held, .. } => {
-                if held.iter().any(|byte| matches!(byte, b'\r' | b'\n')) {
-                    Some(HeldKeysRelease::ToPty(held))
+                let last_terminator = held.iter().rposition(|byte| matches!(byte, b'\r' | b'\n'));
+                if let Some(index) = last_terminator {
+                    // A bracketed paste may hold a `\n` that is not a shell line; splitting there
+                    // would cut the paste in two, so such input stays whole and raw.
+                    let has_paste = held.windows(6).any(|w| w == b"\x1b[200~");
+                    if index + 1 == held.len() || has_paste {
+                        Some(HeldKeysRelease::ToPty(held))
+                    } else {
+                        let fragment = held[index + 1..].to_vec();
+                        let mut lines = held;
+                        lines.truncate(index + 1);
+                        Some(HeldKeysRelease::ToPtyThenEditor { lines, fragment })
+                    }
                 } else {
                     Some(HeldKeysRelease::ToEditor(held))
                 }

@@ -328,6 +328,8 @@ fn disabled_features_env_value_names_the_typeahead_handoff() {
         " TYPEAHEAD_HANDOFF ",
         "foo, typeahead_handoff",
         "typeahead_handoff warp_control_cli",
+        "typeahead-handoff",
+        "TYPEAHEAD-HANDOFF,foo",
     ] {
         assert!(
             disabled_features_from_env_value(named).contains(&FeatureFlag::TypeaheadHandoff),
@@ -335,7 +337,16 @@ fn disabled_features_env_value_names_the_typeahead_handoff() {
         );
     }
     // No wildcard and no unknown names: a typo never disables anything.
-    for other in ["", "all", "*", "typeahead", "warp_control_cli"] {
+    // (`typeahead_handoff=0` is one unrecognised token, warned about and ignored.)
+    for other in [
+        "",
+        "all",
+        "*",
+        "typeahead",
+        "warp_control_cli",
+        "typeahead_handoff=0",
+        "typeaheadhandoff",
+    ] {
         assert!(
             disabled_features_from_env_value(other).is_empty(),
             "{other:?}"
@@ -350,4 +361,21 @@ fn typeahead_handoff_is_enabled_by_default() {
     if std::env::var_os("ZAP_DISABLED_FEATURES").is_none() {
         assert!(enabled_features().contains(&FeatureFlag::TypeaheadHandoff));
     }
+}
+
+#[test]
+fn disabled_features_wins_over_unstable_features() {
+    let mut flags: HashSet<FeatureFlag> = [FeatureFlag::TypeaheadHandoff].into_iter().collect();
+    apply_feature_env_overrides(
+        &mut flags,
+        Some("typeahead_handoff all"),
+        Some("typeahead_handoff"),
+    );
+    assert!(!flags.contains(&FeatureFlag::TypeaheadHandoff));
+
+    // Unset or unrelated values leave a default-on flag on.
+    let mut flags: HashSet<FeatureFlag> = [FeatureFlag::TypeaheadHandoff].into_iter().collect();
+    apply_feature_env_overrides(&mut flags, Some("typeahead_handoff"), None);
+    apply_feature_env_overrides(&mut flags, None, Some("typeahead"));
+    assert!(flags.contains(&FeatureFlag::TypeaheadHandoff));
 }

@@ -337,7 +337,7 @@ Known gaps, not addressed (accepted when the flag went default-on, 2026-10-18; b
 race inside the sub-second report window and degrade to the pre-hand-off behaviour for that
 one command, never to a hang or to input loss in the common path):
 - Agent and queued-prompts-panel commands are not held while a report is awaited (`AwaitingReport`/`Hold`): `holds_queued_writes` is only true for `PtyOwned{wrote_user_bytes}`, so such a command is written ahead of the user's deferred Enter, the user's submit is then coalesced, and released held lines can reach the agent command's stdin.
-- Releasing held bytes to the pty writes them raw and returns to `EditorOwned`: a trailing piece with no Enter (`ls⏎ec`) sits unreported in the shell's line, and text typed to continue a line after a menu-accepted Enter runs as a separate command; a `\n` inside a bracketed paste is treated as a shell line.
+- Releasing held bytes behind a deferred Enter whose submit wrote no command: shell lines go to the pty as typed, and a trailing fragment with no Enter (`echo 1⏎ec`) now goes back into the editor. Two cases remain raw: input containing a bracketed paste (not split), and the held bytes written after a command that *was* submitted (they ride behind it and are reported at the next prompt). A fragment may still be dropped or execute separately: text typed to continue a line after a menu-accepted Enter runs as its own command, and a `\n` inside a bracketed paste is treated as a shell line.
 - keybindings gated on the `LongRunningCommand` context (e.g. shift-enter) are
   inactive while the pty owns input but the command is not yet long-running;
 - held keys skip `emit_non_editor_typed_event`, so synced panes and shared-session

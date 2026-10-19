@@ -3556,20 +3556,31 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
     // insertion -- `FeatureFlag::SshRemoteServer` -- so a `cargo run` does NOT enable
     // the flags listed in `UNSTABLE_FEATURES`. This env var is the only enable path
     // for them, in dev builds and release builds alike.
-    if let Ok(raw) = std::env::var("ZAP_UNSTABLE_FEATURES") {
-        flags.extend(unstable_features_from_env_value(&raw));
-    }
+    apply_feature_env_overrides(
+        &mut flags,
+        std::env::var("ZAP_UNSTABLE_FEATURES").ok().as_deref(),
+        std::env::var("ZAP_DISABLED_FEATURES").ok().as_deref(),
+    );
 
-    // Opt-out for default-on flags that have a runtime kill switch: `ZAP_DISABLED_FEATURES` is
-    // a comma- or whitespace-separated list of names from `DISABLEABLE_FEATURES`. Applied last,
-    // so it wins over `ZAP_UNSTABLE_FEATURES` and over every list above.
-    if let Ok(raw) = std::env::var("ZAP_DISABLED_FEATURES") {
-        for flag in disabled_features_from_env_value(&raw) {
+    flags
+}
+
+/// Applies the `ZAP_UNSTABLE_FEATURES` (enable) then `ZAP_DISABLED_FEATURES` (disable) values to
+/// `flags`. Disabling is applied last, so it wins over the unstable list. Pure, so the precedence
+/// is testable without touching the process environment.
+fn apply_feature_env_overrides(
+    flags: &mut HashSet<FeatureFlag>,
+    unstable: Option<&str>,
+    disabled: Option<&str>,
+) {
+    if let Some(raw) = unstable {
+        flags.extend(unstable_features_from_env_value(raw));
+    }
+    if let Some(raw) = disabled {
+        for flag in disabled_features_from_env_value(raw) {
             flags.remove(&flag);
         }
     }
-
-    flags
 }
 
 /// Default-on flags that `ZAP_DISABLED_FEATURES` can switch back off, by name.
@@ -3577,15 +3588,25 @@ const DISABLEABLE_FEATURES: &[(&str, FeatureFlag)] =
     &[("typeahead_handoff", FeatureFlag::TypeaheadHandoff)];
 
 /// The flags a `ZAP_DISABLED_FEATURES` value disables: comma- or whitespace-separated names from
-/// `DISABLEABLE_FEATURES`. Unknown names are ignored; there is no `all`, so a typo can never
-/// silently turn off more than was named.
+/// `DISABLEABLE_FEATURES`, with `-` accepted for `_`. Unknown names disable nothing and are
+/// logged, naming the valid ones; there is no `all`, so a typo can never silently turn off more
+/// than was named.
 fn disabled_features_from_env_value(raw: &str) -> HashSet<FeatureFlag> {
-    let normalized = raw.trim().to_ascii_lowercase();
+    let normalized = raw.trim().to_ascii_lowercase().replace('-', "_");
     let requested: HashSet<&str> = normalized
         .split(|c: char| c == ',' || c.is_whitespace())
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .collect();
+    for token in &requested {
+        if !DISABLEABLE_FEATURES.iter().any(|(name, _)| name == token) {
+            let valid: Vec<&str> = DISABLEABLE_FEATURES.iter().map(|(name, _)| *name).collect();
+            log::warn!(
+                "ZAP_DISABLED_FEATURES: unrecognised feature {token:?} ignored; valid names: {}",
+                valid.join(", ")
+            );
+        }
+    }
     DISABLEABLE_FEATURES
         .iter()
         .filter(|(name, _)| requested.contains(name))
