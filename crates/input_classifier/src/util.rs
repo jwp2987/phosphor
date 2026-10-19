@@ -1203,6 +1203,43 @@ pub fn reads_as_request_to_agent(buffer_text: &str) -> bool {
     !is_one_off_shell_command_keyword(head) && reads_as_command_headed_prose(buffer_text)
 }
 
+/// Fork-original (#833): the prose test for a line whose first word the session's shell does not
+/// know (no alias, function, builtin, keyword or `$PATH` executable of that name). The caller
+/// establishes that fact from the session's own bootstrap data; this predicate only says whether
+/// the line is clearly prose rather than a command with a typo'd or missing head.
+///
+/// Deliberately conservative -- every one of these keeps the line Shell: fewer than three words
+/// (a bare word or pair is a typo'd command far more often than a sentence); a head that is
+/// quoted, an assignment (`X=1 cmd`), a path (`./x`, `~/x`, `/x`, anything with `/`), a flag, a
+/// variable or not purely alphabetic; any shell operator or expansion character anywhere
+/// (`| & ; < > ( ) ` $ \`, newline); unsafe quoting; or no prose evidence in the whole line
+/// ([`has_no_prose_evidence`] is false only when a function word, article, sentence comma/period,
+/// `?` ending, colon shape or dictionary-English word is present).
+pub fn reads_as_prose_with_unknown_head(buffer_text: &str) -> bool {
+    let text = buffer_text.trim();
+    if text.is_empty()
+        || text.len() > MAX_PREFILTER_BYTES
+        || text.contains(['\n', '\r', '\\', '|', '&', ';', '<', '>', '(', ')', '`', '$'])
+        || !has_shell_safe_quoting(text)
+    {
+        return false;
+    }
+    let words = split_shell_words(text);
+    if words.len() < 3 {
+        return false;
+    }
+    let head = &words[0];
+    if head.quoted
+        || is_env_assignment_token(&head.text)
+        || !head.text.chars().all(|c| c.is_ascii_alphabetic())
+        || is_one_off_shell_command_keyword(&head.text)
+        || COMPOUND_COMMAND_HEADS.contains(&head.text.as_str())
+    {
+        return false;
+    }
+    !has_no_prose_evidence(text)
+}
+
 /// Fork-original (#886): true iff `buffer_text` carries no prose evidence anywhere, the head word
 /// included: it does not end in `?`, its quoting is shell-safe, it has no prose colon shape, and
 /// no unquoted word is a [`PROSE_FUNCTION_WORDS`] member, the article `a` before a word, a word

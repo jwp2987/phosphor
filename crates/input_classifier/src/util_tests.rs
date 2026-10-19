@@ -1024,3 +1024,49 @@ fn test_reads_as_request_to_agent_hard_negatives_for_real_commands() {
         assert!(!reads_as_request_to_agent(text), "{text:?}");
     }
 }
+
+/// #833: the prose test for a line whose first word the session's shell does not know.
+#[test]
+fn test_reads_as_prose_with_unknown_head_accepts_clear_prose() {
+    for text in [
+        "summarize the open issues for me",
+        "tell the team about the outage",
+        "frobnicate the widgets, then ship it",
+        "explain why the build is slow?",
+    ] {
+        assert!(reads_as_prose_with_unknown_head(text), "{text:?}");
+    }
+}
+
+#[test]
+fn test_reads_as_prose_with_unknown_head_keeps_command_shapes_shell() {
+    for text in [
+        // Too short: a typo'd command or a bare word.
+        "frobnicate",
+        "frobnicate the",
+        // Paths, assignments, non-word heads.
+        "./run the tests now",
+        "~/bin/run the tests now",
+        "/usr/bin/run the tests now",
+        "FOO=1 summarize the open issues",
+        "foo-bar the open issues",
+        "$HOME the open issues",
+        "'summarize' the open issues",
+        // Shell operators and expansions anywhere.
+        "summarize the issues | less",
+        "summarize the issues > out.txt",
+        "summarize the issues && echo it",
+        "summarize the $(date) issues",
+        "summarize the issues; ls",
+        "summarize (the) issues",
+        "summarize the\nissues",
+        // One-off keyword and compound heads.
+        "echo the open issues for me",
+        "for the open issues in me",
+        // No prose evidence at all.
+        "frob b22 b23",
+        "xtecho b5 blk.txt",
+    ] {
+        assert!(!reads_as_prose_with_unknown_head(text), "{text:?}");
+    }
+}
