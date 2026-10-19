@@ -882,6 +882,12 @@ fn parse_decoded_hook(decoded_data: &[u8]) -> Result<DProtoHook, serde_json::Err
         );
         return Ok(hook);
     }
+    if let Some(hook) = salvage_precmd_essentials(&text) {
+        log::warn!(
+            "Salvaged unparseable Precmd hook payload from its essential fields: {strict_error}"
+        );
+        return Ok(hook);
+    }
     Err(strict_error)
 }
 

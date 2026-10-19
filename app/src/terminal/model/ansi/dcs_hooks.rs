@@ -651,15 +651,34 @@ pub(super) fn repair_hook_json(payload: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(payload);
     let mut repaired = matches!(text, std::borrow::Cow::Owned(_));
     let mut out = String::with_capacity(text.len() + 16);
+    let chars: Vec<char> = text.chars().collect();
     let mut in_string = false;
     let mut after_backslash = false;
-    for c in text.chars() {
+    for (index, &c) in chars.iter().enumerate() {
         if !in_string {
             in_string = c == '"';
         } else if after_backslash {
             after_backslash = false;
         } else if c == '\\' {
-            after_backslash = true;
+            // A backslash that does not start a valid JSON escape (a `CORP\jdoe` login, a Windows
+            // path) is a literal backslash that the shell failed to double (#879). It is
+            // doubled here. One followed by a control character is left alone, so that payload is
+            // still rejected as before.
+            let next = chars.get(index + 1).copied();
+            let valid = match next {
+                Some('"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't') => true,
+                Some('u') => chars
+                    .get(index + 2..index + 6)
+                    .is_some_and(|hex| hex.iter().all(char::is_ascii_hexdigit)),
+                _ => false,
+            };
+            if valid || next.is_none_or(|next| next < '\u{20}') {
+                after_backslash = true;
+            } else {
+                out.push_str("\\\\");
+                repaired = true;
+                continue;
+            }
         } else if c == '"' {
             in_string = false;
         } else if c < '\u{20}' {
@@ -670,6 +689,35 @@ pub(super) fn repair_hook_json(payload: &[u8]) -> Option<String> {
         out.push(c);
     }
     repaired.then_some(out)
+}
+
+/// Last resort for a `Precmd` whose payload cannot be parsed as JSON at all: pulls the three fields
+/// that make the prompt usable (`exit_code`, `next_block_id`, `session_id`) straight out of the
+/// text and drops everything else, so a rejected Precmd does not leave the tab unable to run
+/// commands (#879). Returns `None` unless all three are found, so a payload that is wrong in those
+/// fields is still rejected.
+pub(super) fn salvage_precmd_essentials(payload: &str) -> Option<DProtoHook> {
+    use regex::Regex;
+    use std::sync::LazyLock;
+
+    static EXIT_CODE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#""exit_code"\s*:\s*(-?\d+)"#).expect("valid regex"));
+    static NEXT_BLOCK_ID: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#""next_block_id"\s*:\s*"([\w.:-]+)""#).expect("valid regex"));
+    static SESSION_ID: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#""session_id"\s*:\s*(\d+)"#).expect("valid regex"));
+
+    if !payload.contains("\"Precmd\"") {
+        return None;
+    }
+    let capture = |regex: &Regex| Some(regex.captures(payload)?.get(1)?.as_str().to_owned());
+    let value = serde_json::json!({
+        "exit_code": capture(&EXIT_CODE)?.parse::<i64>().ok()?,
+        "next_block_id": capture(&NEXT_BLOCK_ID)?,
+        "session_id": capture(&SESSION_ID)?.parse::<u64>().ok()?,
+    });
+    let value = PrecmdHookValue::deserialize(value).ok()?;
+    Some(DProtoHook::Precmd { value })
 }
 
 /// Salvages a `Precmd` hook whose payload is well-formed JSON but has a field of the wrong type,
