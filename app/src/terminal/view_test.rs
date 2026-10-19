@@ -3103,6 +3103,69 @@ fn test_retained_line_eviction_shifts_view_state_in_one_step() {
     })
 }
 
+/// #915: the cap must work through the real path -- the setting value reaching the model via the
+/// view's settings subscription, then the view's own eviction entry point -- and must count the
+/// scrollback history that lives in flat storage, not just the live grid rows.
+#[test]
+fn test_max_retained_lines_setting_bounds_retained_history() {
+    // Release builds enable this flag; it moves a finished block's scrollback into flat storage.
+    let _flat = FeatureFlag::MaximizeFlatStorage.override_enabled(true);
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::ToastStack);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let output = (0..300)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        terminal.update(&mut app, |view, _| {
+            let mut model = view.model.lock();
+            for _ in 0..8 {
+                model.simulate_block("seq", output.as_str());
+            }
+            assert!(
+                model
+                    .block_list()
+                    .blocks()
+                    .iter()
+                    .any(|block| block.flat_storage_lines() > 0),
+                "finished output must have scrollback history in flat storage"
+            );
+        });
+
+        // Setting off (the default): nothing is evicted.
+        let before = terminal.read(&app, |view, _| {
+            view.model.lock().block_list().blocks().len()
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.maybe_evict_retained_blocks(ctx);
+        });
+        let after = terminal.read(&app, |view, _| {
+            view.model.lock().block_list().blocks().len()
+        });
+        assert_eq!(before, after, "setting off must not evict");
+
+        // Turn the cap on through the settings model, as settings.toml / the UI does.
+        TerminalSettings::handle(&app).update(&mut app, |settings, ctx| {
+            report_if_error!(settings.maximum_grid_size.set_value(100, ctx));
+            report_if_error!(settings.max_retained_lines.set_value(800, ctx));
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.maybe_evict_retained_blocks(ctx);
+            let model = view.model.lock();
+            let blocks = model.block_list().blocks();
+            let total: usize = blocks.iter().map(|b| b.retained_lines()).sum();
+            assert!(blocks.len() < before, "old blocks must have been evicted");
+            assert!(blocks.len() >= 2, "recent blocks are kept");
+            // Eviction stops as soon as the total fits, so dropping one more block would not
+            // have been needed: the total is within budget.
+            assert!(total <= 800, "retained lines {total} exceed the cap");
+            assert!(model.block_list().evicted_total() > 0);
+        });
+    })
+}
+
 #[test]
 fn test_stamped_layout_actions_resolve_across_eviction() {
     App::test((), |mut app| async move {

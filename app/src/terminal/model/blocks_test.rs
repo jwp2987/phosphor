@@ -925,13 +925,13 @@ fn test_eviction_partial_budget_keeps_recent_blocks_and_stays_consistent() {
     let total: usize = block_list
         .blocks()
         .iter()
-        .map(|b| b.grid_storage_lines())
+        .map(|b| b.retained_lines())
         .sum();
     let first_two: usize = block_list
         .blocks()
         .iter()
         .take(2)
-        .map(|b| b.grid_storage_lines())
+        .map(|b| b.retained_lines())
         .sum();
 
     // Budget that is exceeded until exactly the first two blocks are gone.
@@ -3317,4 +3317,34 @@ fn test_max_visible_columns_tracks_visible_blocks() {
             .all(|block| !block.is_visible(&transcript_scope))
     );
     assert_eq!(block_list.max_visible_columns(), None);
+}
+
+#[test]
+fn test_retained_lines_counts_flat_storage_history() {
+    // Release builds enable this flag; it moves a finished block's scrollback into flat storage.
+    let _flat = FeatureFlag::MaximizeFlatStorage.override_enabled(true);
+    let mut block_list =
+        new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+    let output = (0..2000)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    let seq_index = insert_block(&mut block_list, "seq\n", &output);
+    insert_block(&mut block_list, "echo\n", "done\n");
+    let seq_id = block_list.blocks()[seq_index.0].id().clone();
+    let block = &block_list.blocks()[seq_index.0];
+    // History lives in flat storage; the live grid holds only the visible rows (#915).
+    assert!(block.flat_storage_lines() > 0);
+    assert_eq!(
+        block.retained_lines(),
+        block.grid_storage_lines() + block.flat_storage_lines()
+    );
+    assert!(block.retained_lines() > block.grid_storage_lines());
+
+    // A cap below this block's history evicts it.
+    block_list.update_max_grid_size(10);
+    block_list.update_max_retained_lines(500);
+    assert!(block_list.evict_oldest_blocks_over_line_budget().count >= 1);
+    assert!(block_list.block_with_id(&seq_id).is_none());
+    assert_block_indices_consistent(&block_list);
 }

@@ -3086,6 +3086,13 @@ impl Block {
             .sum()
     }
 
+    /// Every line this block retains: the live grid rows plus the scrollback history that lives
+    /// in flat storage. A finished block's output is almost entirely flat-storage history, so
+    /// `grid_storage_lines` alone undercounts it to roughly the visible rows (#915).
+    pub fn retained_lines(&self) -> usize {
+        self.grid_storage_lines() + self.flat_storage_lines()
+    }
+
     pub fn grid_storage_bytes(&self) -> usize {
         self.all_grids_iter()
             .map(|grid| grid.grid_storage().estimated_memory_usage_bytes())
