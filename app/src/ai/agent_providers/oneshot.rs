@@ -262,6 +262,38 @@ pub fn resolve_active_ai_oneshot(
     })
 }
 
+/// Resolve the model that explains a requested command on the approval card: the base model
+/// the agent conversation in `terminal_view_id` is currently using, falling back to
+/// [`resolve_active_ai_oneshot`] when that model is not BYOP-coded. `None` means no usable
+/// BYOP provider is configured for either.
+///
+/// The base model comes first because it is the model the user picked for the agent that
+/// asked to run the command, so it already has whatever capability the user trusts for
+/// shell work; the active-AI model is often a small, cheap one.
+pub fn resolve_explain_command_oneshot(
+    app: &AppContext,
+    terminal_view_id: Option<EntityId>,
+) -> Option<OneshotConfig> {
+    let llm_prefs = LLMPreferences::as_ref(app);
+    let id = llm_prefs
+        .get_active_base_model(app, terminal_view_id)
+        .id
+        .clone();
+    let Some((provider, api_key, model_id)) = super::lookup_byop(app, &id) else {
+        return resolve_active_ai_oneshot(app, terminal_view_id);
+    };
+    let reasoning_effort =
+        llm_prefs.get_reasoning_effort(terminal_view_id, provider.api_type, &model_id);
+    Some(OneshotConfig {
+        base_url: provider.resolved_base_url(),
+        api_key,
+        model_id,
+        api_type: provider.api_type,
+        reasoning_effort,
+        extra_headers: provider.extra_headers.clone(),
+    })
+}
+
 /// Resolve the active profile's `next_command_model` (falling back to `base_model`);
 /// if it decodes to a valid BYOP encoding, return an `OneshotConfig`, otherwise `None`.
 pub fn resolve_next_command_oneshot(

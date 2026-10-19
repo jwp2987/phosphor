@@ -1,5 +1,6 @@
 use lazy_static::lazy_static;
 use parking_lot::FairMutex;
+use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
 use settings::Setting as _;
 use std::borrow::Cow;
@@ -19,7 +20,8 @@ use warpui::clipboard::ClipboardContent;
 use warpui::elements::{
     ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Fill, Highlight, ScrollbarWidth,
 };
-use warpui::r#async::Timer;
+use warpui::fonts::{Properties, Weight};
+use warpui::r#async::{SpawnedFutureHandle, Timer};
 use warpui::text_layout::TextStyle;
 use warpui::ui_components::components::UiComponent as _;
 use warpui::{
@@ -35,6 +37,7 @@ use warpui::{
 };
 
 use crate::ai::agent::{AIAgentActionResult, AIAgentActionType};
+use crate::ai::agent_providers::oneshot::resolve_explain_command_oneshot;
 use warpui::{EntityId, EventContext};
 
 use crate::ai::agent::CancellationReason;
@@ -78,7 +81,7 @@ use crate::util::bindings::keybinding_name_to_keystroke;
 use crate::view_components::action_button::{ButtonSize, KeystrokeSource, NakedTheme};
 use crate::view_components::compactible_action_button::{
     CompactibleActionButton, RenderCompactibleActionButton, LARGE_SIZE_SWITCH_THRESHOLD,
-    MEDIUM_SIZE_SWITCH_THRESHOLD, SMALL_SIZE_SWITCH_THRESHOLD,
+    MEDIUM_SIZE_SWITCH_THRESHOLD, SMALL_SIZE_SWITCH_THRESHOLD, XLARGE_SIZE_SWITCH_THRESHOLD,
 };
 use crate::view_components::compactible_split_action_button::CompactibleSplitActionButton;
 use crate::{
@@ -92,6 +95,9 @@ use crate::ui_components::json_tree::{
 };
 
 use super::command_approval_preview::{self, ApprovalPreviewCache, ZERO_WIDTH_BREAK};
+use super::command_explanation::{
+    self, ExplainPress, ExplanationState, LocalRiskCategory, LocalRiskFlag, RiskLevel,
+};
 use super::inline_action_icons::{self, icon_size};
 
 /// The vertical padding applied to the requested command row's content body.
@@ -456,6 +462,8 @@ pub enum RequestedCommandViewAction {
     ShowFullCommand,
     /// The "Read to the end to run" placeholder for Run. It does nothing but redraw.
     ReadFullCommandToEnd,
+    /// Asks a BYOP model to explain the command, or hides the explanation shown (issue #891).
+    ExplainCommand,
     OpenActiveAgentProfileEditor,
     SelectText,
     CopyOnSelect(String),
@@ -485,6 +493,12 @@ pub struct RequestedCommandView {
     minimize_button: CompactibleActionButton,
     show_full_command_button: CompactibleActionButton,
     read_to_end_button: CompactibleActionButton,
+    explain_button: CompactibleActionButton,
+    /// The "Explain" result for this card, tied to the exact text it describes (issue #891).
+    explanation: ExplanationState,
+    /// The in-flight explanation request, aborted when the card is approved, rejected,
+    /// dismissed or its text changes.
+    explanation_request: Option<SpawnedFutureHandle>,
     /// The command text whose full view the user opened, and when. Run is offered for an elided
     /// command only while this matches `command_text`, [`FULL_VIEW_DWELL`] has passed, and the
     /// full view is scrolled to its end -- see [`Self::review_state`].
@@ -658,6 +672,16 @@ impl RequestedCommandView {
             ctx,
         );
 
+        let explain_button = CompactibleActionButton::new(
+            crate::t!("ai-requested-command-explain"),
+            None,
+            ButtonSize::InlineActionHeader,
+            RequestedCommandViewAction::ExplainCommand,
+            Icon::HelpCircle,
+            Arc::new(NakedTheme),
+            ctx,
+        );
+
         let is_finished = action_model
             .as_ref(ctx)
             .get_action_result(&action_id)
@@ -708,6 +732,7 @@ impl RequestedCommandView {
                             }
                         }
 
+                        me.cancel_explanation_request();
                         me.destroy_editor();
 
                         if me.is_header_expanded {
@@ -737,6 +762,7 @@ impl RequestedCommandView {
 
                         let is_view_only = me.action_model.as_ref(ctx).is_view_only();
                         me.sync_command_from_result_for_viewer(&action_result, is_view_only);
+                        me.cancel_explanation_request();
                         me.destroy_editor();
 
                         match &action_result.result {
@@ -820,6 +846,9 @@ impl RequestedCommandView {
             minimize_button,
             show_full_command_button,
             read_to_end_button,
+            explain_button,
+            explanation: ExplanationState::Idle,
+            explanation_request: None,
             full_view_opened: None,
             edit_flag: Rc::new(Cell::new(false)),
             user_committed_edit: false,
@@ -912,6 +941,7 @@ impl RequestedCommandView {
         match self.reject_disposition(ctx) {
             RejectDisposition::Reject => {
                 self.rejected_by_user = true;
+                self.cancel_explanation_request();
                 ctx.emit(RequestedCommandViewEvent::Rejected);
             }
             RejectDisposition::InterruptRunningCommand => {
@@ -948,6 +978,7 @@ impl RequestedCommandView {
     fn on_command_text_changed(&mut self, ctx: &mut ViewContext<Self>) {
         self.user_committed_edit = true;
         self.command_preview_scroll_state = ClippedScrollStateHandle::new();
+        self.drop_stale_explanation();
         let conversation_id = self.client_ids.conversation_id;
         let action_id = self.action_id.clone();
         let command = self.command_text.clone();
@@ -1094,8 +1125,73 @@ impl RequestedCommandView {
                 });
             }
         }
+        self.cancel_explanation_request();
         ctx.emit(RequestedCommandViewEvent::Accepted);
         true
+    }
+
+    /// Explain: sends `command_text` to a BYOP model through the one-shot path, which keeps
+    /// the exchange out of the conversation's history, and shows the reply on the card. A
+    /// second press hides an explanation already shown. See [`command_explanation`].
+    fn explain_command(&mut self, ctx: &mut ViewContext<Self>) {
+        match self.explanation.on_press(&self.command_text) {
+            ExplainPress::Ignore => return,
+            ExplainPress::Dismiss => {
+                self.cancel_explanation_request();
+                ctx.notify();
+                return;
+            }
+            ExplainPress::Start => self.cancel_explanation_request(),
+        }
+        // The explanation is drawn in the card's body, which a collapsed card does not show.
+        if !self.is_header_expanded {
+            self.set_is_header_expanded(true, ctx);
+        }
+
+        let terminal_view_id = BlocklistAIHistoryModel::as_ref(ctx)
+            .terminal_view_id_for_conversation(&self.client_ids.conversation_id);
+        let Some(cfg) = resolve_explain_command_oneshot(ctx, terminal_view_id) else {
+            self.explanation = ExplanationState::NoProvider;
+            ctx.notify();
+            return;
+        };
+        let command = self.command_text.clone();
+        self.explanation = ExplanationState::Loading {
+            command: command.clone(),
+            model_id: cfg.model_id.clone(),
+        };
+        let handle = ctx.spawn(
+            async move {
+                let reply = command_explanation::request_explanation(&cfg, &command)
+                    .await
+                    .map_err(|err| format!("{err:#}"));
+                (command, reply)
+            },
+            |me, (command, reply), ctx| {
+                if me.explanation.finish(&command, reply) {
+                    me.explanation_request = None;
+                    ctx.notify();
+                }
+            },
+        );
+        self.explanation_request = Some(handle);
+        ctx.notify();
+    }
+
+    /// Aborts any in-flight explanation request and hides the explanation.
+    fn cancel_explanation_request(&mut self) {
+        if let Some(handle) = self.explanation_request.take() {
+            handle.abort();
+        }
+        self.explanation = ExplanationState::Idle;
+    }
+
+    /// Drops an explanation, shown or in flight, that describes text other than
+    /// `command_text`.
+    fn drop_stale_explanation(&mut self) {
+        if self.explanation.is_stale_for(&self.command_text) {
+            self.cancel_explanation_request();
+        }
     }
 
     fn handle_editor_event(
@@ -1538,6 +1634,7 @@ impl RequestedCommandView {
         if change != StreamedTextChange::Unchanged {
             // New content: whether the preview is scrolled to its end is unknown until relaid.
             self.command_preview_scroll_state = ClippedScrollStateHandle::new();
+            self.drop_stale_explanation();
             // Keep the model's pending action, which other accept paths run, equal to what the
             // card shows. A review mark is keyed on the exact text, so the changed text is
             // unmarked by construction. Only a pending action is updated, so ordinary streaming
@@ -1925,9 +2022,10 @@ impl RequestedCommandView {
                             let action_buttons: Vec<Rc<dyn RenderCompactibleActionButton>> = vec![
                                 Rc::new(self.cancel_button.clone()),
                                 Rc::new(self.edit_button.clone()),
+                                Rc::new(self.explain_button.clone()),
                                 self.accept_or_show_full_button(),
                             ];
-                            (action_buttons, LARGE_SIZE_SWITCH_THRESHOLD)
+                            (action_buttons, XLARGE_SIZE_SWITCH_THRESHOLD)
                         }
                         RequestedActionViewType::McpTool => {
                             let action_buttons: Vec<Rc<dyn RenderCompactibleActionButton>> = vec![
@@ -2161,6 +2259,132 @@ impl RequestedCommandView {
         column.finish()
     }
 
+    /// The "Explain" panel under the command preview, or `None` when there is nothing to show
+    /// for the text currently on the card (issue #891).
+    fn maybe_render_explanation(&self, app: &AppContext) -> Option<Box<dyn Element>> {
+        if self.is_editing || !self.explanation.is_visible_for(&self.command_text) {
+            return None;
+        }
+        let appearance = Appearance::as_ref(app);
+        let theme = appearance.theme();
+        let main_color = blended_colors::text_main(theme, theme.background());
+        let sub_color = blended_colors::text_sub(theme, theme.background());
+
+        let mut column = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        match &self.explanation {
+            ExplanationState::Idle => return None,
+            ExplanationState::NoProvider => column.add_child(explanation_text(
+                crate::t!("ai-command-explanation-no-provider"),
+                theme.ui_warning_color(),
+                false,
+                appearance,
+            )),
+            ExplanationState::Loading { model_id, .. } => column.add_child(explanation_text(
+                crate::t!("ai-command-explanation-loading", model = model_id.clone()),
+                sub_color,
+                false,
+                appearance,
+            )),
+            ExplanationState::Failed {
+                model_id, error, ..
+            } => column.add_child(explanation_text(
+                crate::t!(
+                    "ai-command-explanation-failed",
+                    model = model_id.clone(),
+                    error = error.clone()
+                ),
+                theme.ui_error_color(),
+                false,
+                appearance,
+            )),
+            ExplanationState::Ready {
+                model_id,
+                explanation,
+                ..
+            } => {
+                let (verdict, verdict_color) = match explanation.effective_risk() {
+                    Some(RiskLevel::Destructive) => (
+                        crate::t!("ai-command-explanation-risk-destructive"),
+                        theme.ui_error_color(),
+                    ),
+                    Some(RiskLevel::Caution) => (
+                        crate::t!("ai-command-explanation-risk-caution"),
+                        theme.ui_warning_color(),
+                    ),
+                    Some(RiskLevel::Safe) => (
+                        crate::t!("ai-command-explanation-risk-safe"),
+                        // Neutral, not green: "safe" here is only the absence of a finding.
+                        main_color,
+                    ),
+                    None => (
+                        crate::t!("ai-command-explanation-risk-unknown"),
+                        theme.ui_warning_color(),
+                    ),
+                };
+                column.add_child(explanation_text(verdict, verdict_color, true, appearance));
+                let risk_color = match explanation.effective_risk() {
+                    Some(RiskLevel::Safe) => main_color,
+                    Some(RiskLevel::Caution | RiskLevel::Destructive) | None => verdict_color,
+                };
+                for risk in &explanation.risks {
+                    column.add_child(explanation_text(
+                        format!("\u{2022} {risk}"),
+                        risk_color,
+                        false,
+                        appearance,
+                    ));
+                }
+                if !explanation.local_flags.is_empty() {
+                    column.add_child(explanation_text(
+                        crate::t!("ai-command-explanation-local-flags"),
+                        sub_color,
+                        false,
+                        appearance,
+                    ));
+                    for flag in &explanation.local_flags {
+                        let color = match flag.category.level() {
+                            RiskLevel::Destructive => theme.ui_error_color(),
+                            RiskLevel::Caution | RiskLevel::Safe => theme.ui_warning_color(),
+                        };
+                        column.add_child(explanation_text(
+                            format!("\u{2022} {}", local_risk_flag_text(flag)),
+                            color,
+                            false,
+                            appearance,
+                        ));
+                    }
+                }
+                if !explanation.explanation.is_empty() {
+                    column.add_child(
+                        Container::new(explanation_text(
+                            explanation.explanation.clone(),
+                            main_color,
+                            false,
+                            appearance,
+                        ))
+                        .with_padding_top(4.)
+                        .finish(),
+                    );
+                }
+                column.add_child(
+                    Container::new(explanation_text(
+                        crate::t!("ai-command-explanation-footer", model = model_id.clone()),
+                        sub_color,
+                        false,
+                        appearance,
+                    ))
+                    .with_padding_top(4.)
+                    .finish(),
+                );
+            }
+        }
+        Some(
+            Container::new(column.finish())
+                .with_padding_top(12.)
+                .finish(),
+        )
+    }
+
     fn get_header_title_text(&self, app: &AppContext) -> String {
         match &self.action_type {
             RequestedActionViewType::Command => format_command_text(self.command_text()),
@@ -2311,7 +2535,17 @@ impl View for RequestedCommandView {
             let editing_editor = self.editor.as_ref().filter(|_| self.is_editing);
             let body = match editing_editor {
                 Some(editor) => ChildView::new(editor).finish(),
-                None => self.render_command_preview(app),
+                None => {
+                    let preview = self.render_command_preview(app);
+                    match self.maybe_render_explanation(app) {
+                        Some(explanation) => Flex::column()
+                            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                            .with_child(preview)
+                            .with_child(explanation)
+                            .finish(),
+                        None => preview,
+                    }
+                }
             };
             let body = Container::new(body)
                 .with_horizontal_padding(INLINE_ACTION_HORIZONTAL_PADDING)
@@ -2576,6 +2810,7 @@ impl TypedActionView for RequestedCommandView {
             }
             RequestedCommandViewAction::ShowFullCommand => self.show_full_command(ctx),
             RequestedCommandViewAction::ReadFullCommandToEnd => ctx.notify(),
+            RequestedCommandViewAction::ExplainCommand => self.explain_command(ctx),
             RequestedCommandViewAction::ToggleAcceptMenu => {
                 self.toggle_accept_split_button_menu(ctx)
             }
@@ -2754,6 +2989,61 @@ fn cancel_explanation_for_reason(
 fn denylisted_command_message(result: &RequestCommandOutputResult) -> Option<&'static str> {
     matches!(result, RequestCommandOutputResult::Denylisted { .. })
         .then_some(*COMMAND_DENYLISTED_MESSAGE)
+}
+
+/// One selectable, wrapping line of the "Explain" panel, in the size of the preview's notes.
+fn explanation_text(
+    text: String,
+    color: ColorU,
+    bold: bool,
+    appearance: &Appearance,
+) -> Box<dyn Element> {
+    let mut text = Text::new(
+        text,
+        appearance.ui_font_family(),
+        appearance.monospace_font_size() - 1.,
+    )
+    .with_color(color)
+    .with_selectable(true);
+    if bold {
+        text = text.with_style(Properties::default().weight(Weight::Bold));
+    }
+    Container::new(text.finish())
+        .with_padding_bottom(2.)
+        .finish()
+}
+
+fn local_risk_category_label(category: LocalRiskCategory) -> String {
+    match category {
+        LocalRiskCategory::DeletesData => crate::t!("ai-command-risk-deletes-data"),
+        LocalRiskCategory::OverwritesData => crate::t!("ai-command-risk-overwrites-data"),
+        LocalRiskCategory::RewritesHistory => crate::t!("ai-command-risk-rewrites-history"),
+        LocalRiskCategory::PrivilegeOrPermissions => crate::t!("ai-command-risk-privilege"),
+        LocalRiskCategory::RunsRemoteCode => crate::t!("ai-command-risk-remote-code"),
+        LocalRiskCategory::StopsServices => crate::t!("ai-command-risk-stops-services"),
+        LocalRiskCategory::KillsProcesses => crate::t!("ai-command-risk-kills-processes"),
+        LocalRiskCategory::RebootsOrShutsDown => crate::t!("ai-command-risk-reboots"),
+        LocalRiskCategory::WritesFiles => crate::t!("ai-command-risk-writes-files"),
+        LocalRiskCategory::RemovesPackages => crate::t!("ai-command-risk-removes-packages"),
+    }
+}
+
+fn local_risk_flag_text(flag: &LocalRiskFlag) -> String {
+    let category = local_risk_category_label(flag.category);
+    let trigger = format!("`{}`", flag.trigger);
+    match &flag.remote_host {
+        Some(host) => crate::t!(
+            "ai-command-explanation-flag-on-host",
+            category = category,
+            trigger = trigger,
+            host = host.clone()
+        ),
+        None => crate::t!(
+            "ai-command-explanation-flag",
+            category = category,
+            trigger = trigger
+        ),
+    }
 }
 
 #[cfg(test)]

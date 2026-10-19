@@ -25,8 +25,8 @@
 //! - [`EMBEDDED`] -- the minijinja `.j2` templates (the system prompt and its partials).
 //!   Has an mtime cache; if nothing changed, the parsed Environment is reused.
 //! - [`EMBEDDED_RAW`] -- plain text fed directly to the model (13 tool descriptions +
-//!   the conversation-title and commit-message prompts). Does **not** go through minijinja;
-//!   see that constant's comment.
+//!   the conversation-title, commit-message and explain-command prompts). Does **not** go
+//!   through minijinja; see that constant's comment.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -228,6 +228,10 @@ const EMBEDDED_RAW: &[(&str, &str)] = &[
         "tasks/commit_message_system.md",
         include_str!("prompts/tasks/commit_message_system.md"),
     ),
+    (
+        "tasks/explain_command_system.md",
+        include_str!("prompts/tasks/explain_command_system.md"),
+    ),
 ];
 
 /// Look up a plain-text asset: use the override version if present in the override dir, otherwise the built-in.
@@ -282,6 +286,14 @@ pub fn title_system_prompt() -> Cow<'static, str> {
 pub fn commit_message_system_prompt() -> Cow<'static, str> {
     raw_asset("tasks/commit_message_system.md")
         .expect("tasks/commit_message_system.md is registered in EMBEDDED_RAW")
+}
+
+/// Get the system prompt used to explain a requested command on the approval card
+/// (`tasks/explain_command_system.md`). Same one-shot, hot-reloadable shape as
+/// [`commit_message_system_prompt`].
+pub fn explain_command_system_prompt() -> Cow<'static, str> {
+    raw_asset("tasks/explain_command_system.md")
+        .expect("tasks/explain_command_system.md is registered in EMBEDDED_RAW")
 }
 
 /// Read a user-supplied raw prompt file (path relative to the prompt template
