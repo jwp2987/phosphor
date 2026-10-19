@@ -298,3 +298,15 @@ fn assembled_payload_is_bounded() {
         Err(KittyDecodeError::PayloadTooLarge { limit: 6 })
     ));
 }
+
+/// #880: f=100 is PNG only; a GIF (or any other decoder-reachable format) must
+/// be rejected rather than handed to a decoder.
+#[test]
+fn f100_rejects_non_png_payloads() {
+    let mut gif = b"GIF89a".to_vec();
+    gif.extend_from_slice(&[1, 0, 1, 0, 0, 0, 0]);
+    let payload = base64::engine::general_purpose::STANDARD.encode(&gif);
+    let control = format!("a=t,f=100;{payload}");
+    let result = kitty_action_from_chunks(control.as_bytes());
+    assert!(result.is_err(), "{result:?}");
+}

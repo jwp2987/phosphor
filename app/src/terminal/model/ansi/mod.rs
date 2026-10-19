@@ -51,7 +51,7 @@ use std::{io, str};
 use vte::{Params, Parser as VteParser, Perform as VtePerform};
 use warpui::color::ColorU;
 
-use super::kitty::parse_kitty_chunk;
+use super::kitty::{parse_kitty_chunk, MAX_KITTY_BASE64_BYTES};
 use super::terminal_model::TmuxInstallationState;
 
 /// Marks an OSC as one that is sent by Zap logic registered in the shell.
@@ -399,6 +399,7 @@ struct ProcessorState {
     preceding_char: Option<char>,
     dcs_data: DcsData,
     apc_data: Vec<u8>,
+    apc_overflowed: bool,
     tmux_control_mode: Option<TmuxControlMode>, // Present if control mode is active
     sync_output: SyncOutputState,
 }
@@ -416,6 +417,7 @@ impl Default for Processor {
                 preceding_char: None,
                 dcs_data: DcsData::default(),
                 apc_data: vec![],
+                apc_overflowed: false,
                 tmux_control_mode: None,
                 sync_output: SyncOutputState::Inactive,
             },
@@ -1745,13 +1747,30 @@ where
 
     fn apc_start(&mut self) {
         self.state.apc_data.clear();
+        self.state.apc_overflowed = false;
     }
 
     fn apc_put(&mut self, byte: u8) {
+        // An endless APC would otherwise grow without bound (#877). Past the
+        // cap, drop the buffer and mark the sequence overflowed; apc_end then
+        // ignores it.
+        if self.state.apc_overflowed {
+            return;
+        }
+        if self.state.apc_data.len() >= MAX_KITTY_BASE64_BYTES {
+            self.state.apc_overflowed = true;
+            self.state.apc_data = vec![];
+            return;
+        }
         self.state.apc_data.push(byte);
     }
 
     fn apc_end(&mut self) {
+        if std::mem::take(&mut self.state.apc_overflowed) {
+            log::warn!("Dropping APC sequence larger than {MAX_KITTY_BASE64_BYTES} bytes");
+            self.state.apc_data.clear();
+            return;
+        }
         let first_byte = match self.state.apc_data.first() {
             Some(&first_byte) => first_byte,
             None => return,

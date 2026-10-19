@@ -927,9 +927,14 @@ upstream's behavior is actually a defect rather than a preference.
   inside the remaining columns and `MAX_IMAGE_CELL_HEIGHT` rows (aspect kept when only one of
   `c`/`r` is given), as iTerm's already were; cell-count products saturate. **Not covered:**
   the file and shared-memory media (`t=f`/`t=t`/`t=s`) are latent -- default builds
-  leave the app's `local_fs` feature off -- and #824 stays open for them. Their reads are now capped
-  at 400 MB, but opening a FIFO still blocks. Raw APC bytes are also still accumulated
-  without limit before a transmission completes.
+  leave the app's `local_fs` feature off. If enabled, their reads are capped at 400 MB, must
+  resolve (symlinks followed) to a regular file outside `/proc`, `/sys` and `/dev` (so a FIFO
+  never blocks), and `t=t` needs a temp-dir path containing `tty-graphics-protocol` (#824);
+  still read on the pty thread. Raw APC bytes and chunked transmissions are capped at
+  `MAX_KITTY_BASE64_BYTES` (the base64 size of 400 MB) before completion; past it the
+  transmission is dropped with an error reply (#877). Kitty `f=100` accepts only PNG, and
+  pty-supplied image sizes (kitty and iTerm) are read from the header only; GIF/WebP/PNG/JPEG
+  decoding is bounded by `MAX_DECODED_IMAGE_DIMENSION` and `MAX_DECODED_IMAGE_BYTES` (#880).
   <!-- markers: keep:MAX_KITTY_IMAGE_DIMENSION keep:MAX_KITTY_IMAGE_BYTES keep:expected_byte_count -->
 
 - **Zero-command Agent Mode input fails closed instead of vacuously auto-approving**

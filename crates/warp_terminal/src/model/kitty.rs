@@ -6,10 +6,9 @@ use rand::Rng;
 use std::cmp::min;
 use std::io::Read;
 #[cfg(feature = "local_fs")]
-use std::{env, fs, str};
+use std::{env, fs, path::Path, str};
 use warpui::image_cache::{resize_dimensions, FitType};
 use warpui::{
-    assets::asset_cache::Asset,
     image_cache::{CustomHeaderCreationError, CustomImageFormat, CustomImageHeader, ImageType},
     util::{parse_i32, parse_u32},
 };
@@ -26,6 +25,12 @@ pub const MAX_KITTY_IMAGE_DIMENSION: u32 = 10_000;
 /// kitty's own `MAX_DATA_SZ` and is exactly a `MAX_KITTY_IMAGE_DIMENSION`
 /// square RGBA image.
 pub const MAX_KITTY_IMAGE_BYTES: usize = 400_000_000;
+
+/// The most base64 text one kitty transmission may accumulate across all its
+/// chunks (and the most a single APC sequence may buffer) before the terminal
+/// stops buffering and drops it: the base64 length of `MAX_KITTY_IMAGE_BYTES`,
+/// plus a little slack for the control data (#877).
+pub const MAX_KITTY_BASE64_BYTES: usize = MAX_KITTY_IMAGE_BYTES.div_ceil(3) * 4 + 4096;
 
 /// Actions specified by the [Kitty Image Protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
 #[derive(Debug, Clone)]
@@ -813,8 +818,14 @@ fn read_file(decoded_payload: Vec<u8>, is_temp: bool) -> Result<Vec<u8>, Invalid
         Err(err) => return Err(KittyDecodeError::InvalidUtf8(err.to_string()).into()),
     };
 
-    // Bounded: the path is chosen by whatever printed the escape sequence, and
-    // an unbounded `fs::read` of e.g. `/dev/zero` never returns.
+    // The path is chosen by whatever printed the escape sequence (#824), so
+    // mirror kitty's own restrictions before opening anything: a regular file
+    // outside /proc, /sys and /dev, and for `t=t` one that is in a temp dir and
+    // carries the protocol's marker. Opening a FIFO would block forever.
+    let path = validate_kitty_file_path(path, is_temp)?;
+    let path = path.as_str();
+
+    // Bounded: an unbounded `fs::read` of e.g. a huge file never returns.
     let data = match read_at_most(fs::File::open(path), MAX_KITTY_IMAGE_BYTES) {
         Ok(Some(data)) => data,
         Ok(None) => {
@@ -835,6 +846,49 @@ fn read_file(decoded_payload: Vec<u8>, is_temp: bool) -> Result<Vec<u8>, Invalid
     }
 
     Ok(data)
+}
+
+/// Directories a kitty `t=f` / `t=t` path may never resolve into: they hold
+/// device nodes and pseudo-files that are unbounded or block on read.
+#[cfg(feature = "local_fs")]
+const KITTY_FORBIDDEN_PATH_PREFIXES: [&str; 3] = ["/proc", "/sys", "/dev"];
+
+/// Resolves symlinks in `path` and checks it is something we may read: not
+/// under a forbidden prefix, a regular file (not a FIFO, device or directory),
+/// and, for `t=t`, a temp-dir path containing `tty-graphics-protocol`.
+/// Returns the canonical path to read.
+#[cfg(feature = "local_fs")]
+fn validate_kitty_file_path(path: &str, is_temp: bool) -> Result<String, InvalidKittyPayload> {
+    let file_error = |message: &str| {
+        InvalidKittyPayload::FileError(FileError::FileReadError(message.to_owned()))
+    };
+
+    let canonical = fs::canonicalize(path)
+        .map_err(|err| InvalidKittyPayload::FileError(FileError::FileReadError(err.to_string())))?;
+    let canonical = canonical
+        .to_str()
+        .ok_or_else(|| file_error("path is not valid UTF-8"))?
+        .to_owned();
+
+    // `/dev/shm` is a legitimate temp dir despite being under /dev.
+    let forbidden = KITTY_FORBIDDEN_PATH_PREFIXES
+        .iter()
+        .any(|prefix| Path::new(&canonical).starts_with(prefix));
+    if forbidden && !(is_temp && Path::new(&canonical).starts_with("/dev/shm")) {
+        return Err(file_error("path is in a forbidden directory"));
+    }
+
+    if is_temp && !(is_path_in_temp_dir(path) && path.contains("tty-graphics-protocol")) {
+        return Err(file_error(
+            "temporary file must be in a temp dir and named for the graphics protocol",
+        ));
+    }
+
+    match fs::metadata(&canonical) {
+        Ok(metadata) if metadata.is_file() => Ok(canonical),
+        Ok(_) => Err(file_error("not a regular file")),
+        Err(err) => Err(file_error(&err.to_string())),
+    }
 }
 
 #[cfg(feature = "local_fs")]
@@ -1057,17 +1111,19 @@ fn raw_pixel_byte_count(
 }
 
 pub fn set_kitty_png_size(mut image: KittyImage) -> Result<KittyImage, KittyPngError> {
-    let image_type = match ImageType::try_from_bytes(&image.data[..]) {
-        Ok(image_type) => image_type,
+    // f=100 is PNG per the protocol. Anything else (GIF, WebP, SVG, ...) would
+    // be an unbounded decoder reachable from pty output (#880).
+    if !ImageType::is_png(&image.data[..]) {
+        return Err(KittyPngError::InvalidBytes(
+            "Kitty f=100 payload is not a PNG.".to_string(),
+        ));
+    }
+
+    // Header-only: the full decode happens later, off this thread, in the asset
+    // cache, and the dimension limits are enforced here.
+    let image_size = match ImageType::dimensions_from_bytes(&image.data[..]) {
+        Ok(image_size) => image_size,
         Err(err) => return Err(KittyPngError::InvalidBytes(err.to_string())),
-    };
-    let image_size = match image_type.image_size() {
-        Some(image_size) => image_size,
-        None => {
-            return Err(KittyPngError::InvalidBytes(
-                "Could not retrieve image size from ImageType for Kitty PNG.".to_string(),
-            ))
-        }
     };
 
     image.metadata.image_size = image_size.to_f32();
@@ -1113,3 +1169,36 @@ pub fn create_kitty_error_reply(image_id: u32, err: KittyError) -> Vec<u8> {
 #[cfg(test)]
 #[path = "kitty_tests.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "local_fs"))]
+mod local_fs_path_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_device_and_pseudo_file_paths() {
+        for path in [
+            "/dev/zero",
+            "/dev/null",
+            "/proc/self/environ",
+            "/sys/kernel",
+        ] {
+            assert!(validate_kitty_file_path(path, false).is_err(), "{path}");
+        }
+    }
+
+    #[test]
+    fn rejects_directories_and_temp_without_marker() {
+        let dir = env::temp_dir();
+        assert!(validate_kitty_file_path(dir.to_str().unwrap(), false).is_err());
+
+        let plain = dir.join(format!("kitty-824-plain-{}", std::process::id()));
+        fs::write(&plain, b"x").unwrap();
+        let plain_str = plain.to_str().unwrap();
+        assert!(validate_kitty_file_path(plain_str, false).is_ok());
+        assert!(
+            validate_kitty_file_path(plain_str, true).is_err(),
+            "t=t needs the tty-graphics-protocol marker"
+        );
+        fs::remove_file(&plain).unwrap();
+    }
+}
