@@ -257,9 +257,10 @@ fn cli_subagent_has_room_to_layout(max_size: Vector2F) -> bool {
 /// the bubble's full pre-collapse size. A bubble in that state must not be hit-tested by
 /// a pointer event, since nothing is actually painted at that position this frame.
 ///
-/// The one exception is a drag the bubble already owns (`has_active_drag`, from
-/// `CLISubagentView::is_resize_dragging`): its `LeftMouseDragged`/`LeftMouseUp` must
-/// still get through, or the drag is left stuck with no mouse-up ever reaching it.
+/// `LeftMouseUp` is always delivered, as in base, so a gesture can always finish.
+/// `LeftMouseDragged` is delivered only for a drag the bubble already owns
+/// (`has_active_drag`, from `CLISubagentView::is_resize_dragging`), or the resize is
+/// left stuck mid-drag.
 /// `MouseMoved` (hover/cursor-style) and `ScrollWheel` are never let through for a
 /// bubble that wasn't laid out this frame -- a drag in progress is driven by
 /// `LeftMouseDragged`, not `MouseMoved`, so hover has no owned interaction to complete.
@@ -274,7 +275,10 @@ fn cli_subagent_should_receive_pointer_event(
         return true;
     }
     match event {
-        Event::LeftMouseDragged { .. } | Event::LeftMouseUp { .. } => has_active_drag,
+        Event::LeftMouseDragged { .. } => has_active_drag,
+        // Always delivered (as in base): a mouse-up can only finish a gesture, never start
+        // one on stale geometry, and withholding it risks leaving state stuck.
+        Event::LeftMouseUp { .. } => true,
         Event::LeftMouseDown { .. }
         | Event::RightMouseDown { .. }
         | Event::MouseMoved { .. }
@@ -5212,10 +5216,11 @@ mod tests {
         assert!(cli_subagent_has_room_to_layout(vec2f(972., 686.)));
     }
 
-    // #803: a bubble not laid out this frame (no active drag) must ignore every
-    // pointer event -- a fresh mouse-down must not start a gesture on its stale
+    // #803: a bubble not laid out this frame (no active drag) must ignore these
+    // pointer events -- a fresh mouse-down must not start a gesture on its stale
     // hit-box, a drag it doesn't own must not continue into it, and hover must not
-    // land on it either.
+    // land on it either. `LeftMouseUp` is deliberately NOT in this list: base always
+    // delivers it, see `cli_subagent_not_laid_out_still_receives_left_mouse_up`.
     #[test]
     fn cli_subagent_not_laid_out_without_active_drag_ignores_pointer_events() {
         let position = vec2f(4., 8.);
@@ -5229,10 +5234,6 @@ mod tests {
                 is_first_mouse: false,
             },
             Event::LeftMouseDragged {
-                position,
-                modifiers,
-            },
-            Event::LeftMouseUp {
                 position,
                 modifiers,
             },
@@ -5261,6 +5262,22 @@ mod tests {
                  with no active drag"
             );
         }
+    }
+
+    // #803: restores base behaviour -- `LeftMouseUp` reaches a bubble that wasn't laid
+    // out this frame whether or not it owns a drag.
+    #[test]
+    fn cli_subagent_not_laid_out_still_receives_left_mouse_up() {
+        let event = Event::LeftMouseUp {
+            position: vec2f(4., 8.),
+            modifiers: ModifiersState::default(),
+        };
+        assert!(cli_subagent_should_receive_pointer_event(
+            &event, false, false
+        ));
+        assert!(cli_subagent_should_receive_pointer_event(
+            &event, false, true
+        ));
     }
 
     // #803: a bubble not laid out this frame but with an active resize drag must still

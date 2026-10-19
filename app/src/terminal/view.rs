@@ -24160,9 +24160,6 @@ impl TerminalView {
         let cli_subagent_active_drag_block_ids: HashSet<BlockId> = self
             .cli_subagent_views
             .iter()
-            .filter(|&(block_id, _)| {
-                !self.should_suppress_collapsed_cli_subagent_bubble(block_id, model)
-            })
             .filter(|&(_, view)| view.as_ref(app).is_resize_dragging())
             .map(|(id, _)| id.clone())
             .collect();
