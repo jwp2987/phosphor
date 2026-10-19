@@ -687,6 +687,12 @@ impl BlockListHoverState {
     }
 }
 
+/// Whether the terminal takes a key. The live focus decides alone whenever it is known; the
+/// render-time snapshot is only the fallback (#934).
+fn terminal_accepts_keys(snapshot_focused: bool, live_focus: Option<bool>) -> bool {
+    live_focus.unwrap_or(snapshot_focused)
+}
+
 pub struct BlockListElement {
     model: Arc<FairMutex<TerminalModel>>,
     size_info: SizeInfo,
@@ -1440,8 +1446,23 @@ impl BlockListElement {
     /// That way, we'll receive a `warpui::Event::TypedCharacters` event for printable characters.
     /// So `TerminalAction::KeyDown` is for control characters only while
     /// `TerminalAction::TypedCharacters` is for characters that can go into the editor.
+    /// Whether the terminal itself holds focus right now. The snapshot taken at the last render
+    /// is stale in the frames after the focus moved (a command written from the editor hands
+    /// the keys to the terminal before the next frame), and keys typed meanwhile were dropped
+    /// by both the editor and this element (#934). The live focus decides whenever it is known,
+    /// as the editor does, so exactly one of the two accepts a key.
+    fn terminal_focused_now(&self, ctx: &EventContext) -> bool {
+        terminal_accepts_keys(
+            self.is_terminal_focused,
+            ctx.live_focus_is_exactly(self.terminal_view_id),
+        )
+    }
+
     fn key_down(&mut self, chars: &str, ctx: &mut EventContext) -> bool {
-        if self.is_terminal_focused && !chars.is_empty() && chars.chars().all(|c| c.is_control()) {
+        if self.terminal_focused_now(ctx)
+            && !chars.is_empty()
+            && chars.chars().all(|c| c.is_control())
+        {
             ctx.dispatch_typed_action(TerminalAction::KeyDown(chars.to_string()));
             true
         } else {
@@ -1450,7 +1471,7 @@ impl BlockListElement {
     }
 
     fn typed_characters(&mut self, chars: &str, ctx: &mut EventContext) -> bool {
-        if self.is_terminal_focused && !chars.is_empty() {
+        if self.terminal_focused_now(ctx) && !chars.is_empty() {
             ctx.dispatch_typed_action(TerminalAction::TypedCharacters(chars.to_string()));
         }
         true
@@ -4853,7 +4874,7 @@ impl Element for BlockListElement {
             } => {
                 // If this isn't the currently focused session, it shouldn't receive the keydown
                 // event.
-                if !self.is_terminal_focused {
+                if !self.terminal_focused_now(ctx) {
                     return false;
                 }
 
@@ -5169,6 +5190,17 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #934: right after a command from the editor is written, focus moves to the terminal but
+    /// the elements still hold the snapshot of the frame before. Keys typed in that gap were
+    /// taken by neither the editor nor the terminal. The live focus must win over the snapshot.
+    #[test]
+    fn terminal_takes_keys_by_live_focus_not_the_stale_snapshot() {
+        assert!(super::terminal_accepts_keys(false, Some(true)));
+        assert!(!super::terminal_accepts_keys(true, Some(false)));
+        assert!(super::terminal_accepts_keys(true, None));
+        assert!(!super::terminal_accepts_keys(false, None));
+    }
 
     #[test]
     fn rich_content_event_dispatch_prefers_last_painted_item() {
