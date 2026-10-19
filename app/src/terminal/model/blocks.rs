@@ -3471,6 +3471,11 @@ impl BlockList {
     }
 
     pub fn reinit_shell(&mut self) {
+        // The background block (if any) sits just before the active block; once the
+        // active block is replaced it would never be finished (#821).
+        if !self.active_block().is_for_in_band_command {
+            self.finish_background_block();
+        }
         let active_block = self.active_block_mut();
         active_block.finish(0);
         self.update_active_block_height();

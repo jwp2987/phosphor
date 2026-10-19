@@ -3999,16 +3999,8 @@ impl AIBlock {
 
     fn handle_find_match_focus_change(&mut self, ctx: &mut ViewContext<Self>) {
         // Get the currently focused match ID from the terminal's find model
-        let focused_match_id = self
-            .find_model
-            .as_ref(ctx)
-            .block_list_find_run()
-            .and_then(|run| match run.focused_match() {
-                Some(crate::terminal::find::BlockListMatch::RichContent { match_id, .. }) => {
-                    Some(*match_id)
-                }
-                _ => None,
-            });
+        // Works for both the sync and async find paths (#819).
+        let focused_match_id = self.find_model.as_ref(ctx).focused_rich_content_match_id();
 
         let Some(match_id) = focused_match_id else {
             return;

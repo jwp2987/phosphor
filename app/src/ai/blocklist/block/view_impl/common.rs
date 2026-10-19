@@ -46,7 +46,6 @@ use warpui::{
 
 use super::{add_highlights_to_rich_text, add_highlights_to_text, output::LinkActionConstructors};
 use crate::ai::agent::MessageId;
-use crate::terminal::find::BlockListMatch;
 use crate::terminal::grid_renderer::{FOCUSED_MATCH_COLOR, MATCH_COLOR};
 use crate::uri::link_policy::openable_untrusted_content_url;
 use crate::{
@@ -3020,13 +3019,10 @@ pub fn get_highlight_ranges_for_find_matches(
     find_model: &TerminalFindModel,
 ) -> impl Iterator<Item = HighlightedRange> + use<> {
     let find_match_locations = find_state.matches_for_location(location);
+    // Works for both the sync and async find paths (#819).
     let focused_match_location = find_model
-        .block_list_find_run()
-        .and_then(|run| match run.focused_match() {
-            Some(BlockListMatch::RichContent { match_id, .. }) => Some(match_id),
-            _ => None,
-        })
-        .and_then(|match_id| find_state.location_for_match(*match_id));
+        .focused_rich_content_match_id()
+        .and_then(|match_id| find_state.location_for_match(match_id));
     let mut highlighted_ranges = vec![];
     for find_match_location in find_match_locations {
         let is_focused_match =

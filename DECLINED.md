@@ -850,6 +850,13 @@ upstream's behavior is actually a defect rather than a preference.
   after a query change rescans the active block. Newly, a prompt-and-command grid that
   changed without dirty rows while the output grid had some also gets the full
   rescan; upstream ignored that change.
+  **Update (`#822`):** edits the cursor does not trace -- erase above/below, insert/delete
+  lines, reverse scrolls, partial scroll regions, DECALN -- now set a flag on the grid that
+  makes `take_find_dirty_rows_range` return `None`, so the very next wakeup rescans the
+  block whole rather than waiting for a later quiet wakeup. A full-screen `CSI S` is
+  indistinguishable from a linefeed scroll and is not flagged. **Update (`#823`):** when a
+  background block shifts the active block's index, the stale indices are dropped and
+  rescanned.
 
 - **Input-type detection is not swallowed after an explicit write, not decided by typing
   speed, and never re-run on submitted text** (`#833`, 2026-10-13,
