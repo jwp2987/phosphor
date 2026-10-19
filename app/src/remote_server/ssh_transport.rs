@@ -736,6 +736,87 @@ async fn download_remote_server_tarball(download_url: &str, tarball_path: &Path)
     ))
 }
 
+/// The install itself (dev cross-compile upload, download script, SCP fallback). Split out of
+/// `install_binary` so the caller can clean up after ANY failure (#931).
+async fn install_binary_impl(socket_path: &Path) -> Result<(), String> {
+    log::info!(
+        "Installing remote server binary to {}",
+        remote_server::setup::remote_server_binary()
+    );
+
+    // Zap fork: a DEBUG source build (no release tag) takes the
+    // dev-mode path — cross-compiling and uploading the local
+    // `warp` binary instead of downloading a stale GitHub release.
+    // On failure (missing cross-compile prerequisites, etc.), print
+    // a warning and fall back to the download install, so the dev
+    // experience isn't broken. Release builds skip this whole block
+    // and behave unchanged.
+    if remote_server::setup::is_dev_source_build() {
+        log::info!(
+            "dev remote-server: detected DEBUG source build, switching to local cross-compile install"
+        );
+        match dev_install_local_binary(socket_path).await {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                log::warn!(
+                    "dev remote-server: local cross-compile install unavailable, falling back to download install: {error:#}"
+                );
+                // Fell through — continue with the regular download install flow below.
+            }
+        }
+    }
+
+    match run_install_script(socket_path, None, remote_server::setup::INSTALL_TIMEOUT).await {
+        Ok(()) => verify_installed_binary(socket_path)
+            .await
+            .map_err(|error| format!("{error:#}")),
+        // All of the policy lives in `route_install_failure`, which is
+        // what the tests exercise. This arm must stay a two-way
+        // dispatch with no judgement of its own: the previous version
+        // consulted a boolean predicate here, and the predicate was
+        // well tested while this call site was not tested at all.
+        Err(error) => match route_install_failure(&error) {
+            InstallFallbackRoute::Fail(message) => {
+                log::error!("remote-server install failed, no fallback: {message}");
+                Err(message)
+            }
+            InstallFallbackRoute::ScpFallback => {
+                log::warn!("remote-server install failed, trying SCP fallback: {error}");
+                match scp_install_fallback(socket_path).await {
+                    Ok(()) => Ok(()),
+                    Err(fallback_error) => {
+                        Err(format!("{error}; SCP fallback failed: {fallback_error:#}"))
+                    }
+                }
+            }
+        },
+    }
+}
+
+/// Best-effort remote cleanup after a failed install: removes the staged tarball, a partial
+/// (non-executable) binary, and the install directory iff it is empty -- never a working
+/// install. See `setup::install_failure_cleanup_command`.
+async fn cleanup_failed_install(socket_path: &Path) {
+    let cmd = remote_server::setup::install_failure_cleanup_command();
+    match remote_server::ssh::run_ssh_command(
+        socket_path,
+        &cmd,
+        remote_server::setup::CHECK_TIMEOUT,
+    )
+    .await
+    {
+        Ok(output) if output.status.success() => {
+            log::info!("remote-server install failed; cleaned up leftovers on the remote");
+        }
+        Ok(output) => log::warn!(
+            "remote-server install cleanup exited with {:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        ),
+        Err(error) => log::warn!("remote-server install cleanup failed to run: {error:#}"),
+    }
+}
+
 async fn scp_install_fallback(socket_path: &Path) -> Result<()> {
     let platform = detect_remote_platform(socket_path).await?;
     let download_url = remote_server::setup::download_tarball_url(&platform);
@@ -857,14 +938,17 @@ impl RemoteTransport for SshTransport {
             // exists, something was installed there before, so any mismatch
             // with the client's expected binary path should be auto-updated
             // rather than surfaced as a first-time install prompt.
-            let cmd = format!("test -d {}", remote_server::setup::remote_server_dir());
+            // #931: "the directory exists" is not "an install exists" -- a failed install
+            // used to leave it empty, making every later connect silently retry instead of
+            // offering the choice. Require an executable binary inside it.
+            let cmd = remote_server::setup::prior_install_probe_command();
             let output = remote_server::ssh::run_ssh_command(
                 &socket_path,
                 &cmd,
                 remote_server::setup::CHECK_TIMEOUT,
             )
             .await?;
-            // `test -d` exits 0 when present, 1 when missing.
+            // The probe exits 0 when a complete prior install exists, 1 when not.
             // Anything else is treated as a check failure.
             match output.status.code() {
                 Some(0) => Ok(true),
@@ -885,58 +969,11 @@ impl RemoteTransport for SshTransport {
     fn install_binary(&self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
         let socket_path = self.socket_path.clone();
         Box::pin(async move {
-            log::info!(
-                "Installing remote server binary to {}",
-                remote_server::setup::remote_server_binary()
-            );
-
-            // Zap fork: a DEBUG source build (no release tag) takes the
-            // dev-mode path — cross-compiling and uploading the local
-            // `warp` binary instead of downloading a stale GitHub release.
-            // On failure (missing cross-compile prerequisites, etc.), print
-            // a warning and fall back to the download install, so the dev
-            // experience isn't broken. Release builds skip this whole block
-            // and behave unchanged.
-            if remote_server::setup::is_dev_source_build() {
-                log::info!("dev remote-server: detected DEBUG source build, switching to local cross-compile install");
-                match dev_install_local_binary(&socket_path).await {
-                    Ok(()) => return Ok(()),
-                    Err(error) => {
-                        log::warn!(
-                            "dev remote-server: local cross-compile install unavailable, falling back to download install: {error:#}"
-                        );
-                        // Fell through — continue with the regular download install flow below.
-                    }
-                }
+            let result = install_binary_impl(&socket_path).await;
+            if result.is_err() {
+                cleanup_failed_install(&socket_path).await;
             }
-
-            match run_install_script(&socket_path, None, remote_server::setup::INSTALL_TIMEOUT)
-                .await
-            {
-                Ok(()) => verify_installed_binary(&socket_path)
-                    .await
-                    .map_err(|error| format!("{error:#}")),
-                // All of the policy lives in `route_install_failure`, which is
-                // what the tests exercise. This arm must stay a two-way
-                // dispatch with no judgement of its own: the previous version
-                // consulted a boolean predicate here, and the predicate was
-                // well tested while this call site was not tested at all.
-                Err(error) => match route_install_failure(&error) {
-                    InstallFallbackRoute::Fail(message) => {
-                        log::error!("remote-server install failed, no fallback: {message}");
-                        Err(message)
-                    }
-                    InstallFallbackRoute::ScpFallback => {
-                        log::warn!("remote-server install failed, trying SCP fallback: {error}");
-                        match scp_install_fallback(&socket_path).await {
-                            Ok(()) => Ok(()),
-                            Err(fallback_error) => {
-                                Err(format!("{error}; SCP fallback failed: {fallback_error:#}"))
-                            }
-                        }
-                    }
-                },
-            }
+            result
         })
     }
 

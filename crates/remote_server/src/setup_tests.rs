@@ -1266,3 +1266,139 @@ fn dev_source_build_is_independent_of_the_cargo_profile() {
          a release-profile source build is still a source build"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #931: a failed install must not leave an empty install directory that later
+// reads as "already installed", and the prior-install probe must demand a
+// complete executable binary, not just the directory.
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+fn sh_status(cmd: &str) -> i32 {
+    Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("failed to spawn sh")
+        .code()
+        .expect("terminated by signal")
+}
+
+/// The remote login shell may be fish/csh; the probe is wrapped in `sh -c '...'`, so run the
+/// full command string through `sh -c` exactly like the ssh layer hands it over.
+#[cfg(unix)]
+#[test]
+fn prior_install_probe_requires_an_executable_binary_not_just_the_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("remote-server");
+    let d = dir.to_str().unwrap();
+    let probe = prior_install_probe_command_for(d, "phosphor-oss");
+
+    // No directory at all.
+    assert_eq!(sh_status(&probe), 1);
+
+    // The empty directory a failed install used to leave behind: NOT an install.
+    std::fs::create_dir_all(&dir).unwrap();
+    assert_eq!(sh_status(&probe), 1, "an empty directory is not a prior install");
+
+    // Unrelated files (bundled resources, pid files, a staged tarball) are not an install.
+    std::fs::create_dir_all(dir.join("bundled_resources")).unwrap();
+    std::fs::write(dir.join("server-abc.pid"), "1").unwrap();
+    std::fs::write(dir.join("zap-upload.tar.gz"), "x").unwrap();
+    assert_eq!(sh_status(&probe), 1);
+
+    // A non-executable (partial) binary is not an install.
+    let bin = dir.join("phosphor-oss-0.1.12");
+    std::fs::write(&bin, "partial").unwrap();
+    assert_eq!(sh_status(&probe), 1, "a non-executable binary is not an install");
+
+    // A complete, executable versioned binary is.
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(sh_status(&probe), 0);
+
+    // So is the unversioned dev-slot binary.
+    std::fs::remove_file(&bin).unwrap();
+    let dev = dir.join("phosphor-oss");
+    std::fs::write(&dev, "x").unwrap();
+    std::fs::set_permissions(&dev, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(sh_status(&probe), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn failure_cleanup_removes_leftovers_but_never_a_working_install() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("remote-server");
+    let d = dir.to_str().unwrap();
+    let bin = format!("{d}/phosphor-oss-0.1.12");
+    let cleanup = install_failure_cleanup_command_for(d, &bin);
+
+    // Empty directory (also what OLD builds left behind): repaired.
+    std::fs::create_dir_all(&dir).unwrap();
+    assert_eq!(sh_status(&cleanup), 0);
+    assert!(!dir.exists(), "an empty install dir must be removed");
+
+    // Staged tarball + partial non-executable binary: both removed, then the dir.
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("zap-upload.tar.gz"), "x").unwrap();
+    std::fs::write(&bin, "partial").unwrap();
+    assert_eq!(sh_status(&cleanup), 0);
+    assert!(!dir.exists());
+
+    // A working install (executable binary + resources) is left completely alone.
+    std::fs::create_dir_all(dir.join("bundled_resources")).unwrap();
+    std::fs::write(&bin, "good").unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(sh_status(&cleanup), 0);
+    assert!(std::path::Path::new(&bin).exists());
+    assert!(dir.join("bundled_resources").is_dir());
+
+    // Missing directory: still exits 0.
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(sh_status(&cleanup), 0);
+}
+
+/// The script itself removes the install directory it created when it then fails (here: the
+/// documented no-pinned-digest refusal), and leaves a pre-existing directory alone.
+#[cfg(unix)]
+#[test]
+fn install_script_failure_does_not_leave_an_empty_install_dir() {
+    let home = tempfile::tempdir().expect("failed to create temp HOME");
+    let install_dir = home.path().join(".phosphor/remote-server");
+    let script = install_script(None);
+    let run = |script: &str| {
+        Command::new(bash_path())
+            .arg("-c")
+            .arg(script)
+            .env("HOME", home.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("failed to spawn bash")
+    };
+
+    let output = run(&script);
+    assert_eq!(output.status.code(), Some(4));
+    assert!(
+        !install_dir.exists(),
+        "a failed install left {} behind",
+        install_dir.display()
+    );
+
+    // A directory that already existed (e.g. holding a working install) is never removed.
+    std::fs::create_dir_all(&install_dir).unwrap();
+    std::fs::write(install_dir.join("keep-me"), "x").unwrap();
+    let output = run(&script);
+    assert_eq!(output.status.code(), Some(4));
+    assert!(install_dir.join("keep-me").exists());
+    // Staging dir from the failed run is gone too.
+    let leftovers: Vec<_> = std::fs::read_dir(&install_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(leftovers.len(), 1, "unexpected leftovers: {leftovers:?}");
+}

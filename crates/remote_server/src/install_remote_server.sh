@@ -108,6 +108,12 @@ install_dir="{install_dir}"
 case "$install_dir" in
   "~"|"~/"*) install_dir="${HOME}${install_dir#\~}" ;;
 esac
+# Remember whether this run created the install directory. A failed install must not leave
+# an EMPTY directory behind: the client treats the directory's existence as "something was
+# installed here" and would silently retry the install on every later connect instead of
+# offering the install/continue choice (#931).
+created_install_dir=0
+[ -d "$install_dir" ] || created_install_dir=1
 mkdir -p "$install_dir"
 
 tmpdir=$(mktemp -d "$install_dir/.install.XXXXXX")
@@ -116,7 +122,14 @@ tmpdir=$(mktemp -d "$install_dir/.install.XXXXXX")
 # been moved to its final path, or the script has already failed for another
 # reason — and that other error is more worth surfacing to the caller.
 cleanup() {
+  status=$?
   rm -rf "$tmpdir" 2>/dev/null || true
+  # `rmdir` only removes an EMPTY directory, so this can never delete a previous install, the
+  # resources tree, or anything the user put there -- and only a run that failed, and created
+  # the directory itself, even tries.
+  if [ "$status" -ne 0 ] && [ "$created_install_dir" -eq 1 ]; then
+    rmdir "$install_dir" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT
 
