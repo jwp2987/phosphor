@@ -196,6 +196,17 @@ impl AIApiError {
         }
     }
 
+    /// Whether the provider is throttling us (HTTP 429, however it reached us), as opposed to
+    /// a dropped connection or a server fault.
+    pub fn is_rate_limited(&self) -> bool {
+        match self {
+            AIApiError::ServerOverloaded => true,
+            AIApiError::ErrorStatus(status, _, _) => *status == http::StatusCode::TOO_MANY_REQUESTS,
+            AIApiError::Transport(e) => e.status() == Some(http::StatusCode::TOO_MANY_REQUESTS),
+            _ => false,
+        }
+    }
+
     pub fn is_retryable(&self) -> bool {
         fn is_retryable_status(status: http::StatusCode) -> bool {
             !status.is_client_error()
@@ -234,6 +245,16 @@ mod tests {
         );
 
         assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn rate_limited_is_429_only() {
+        let rl = AIApiError::ErrorStatus(http::StatusCode::TOO_MANY_REQUESTS, String::new(), None);
+        let srv = AIApiError::ErrorStatus(http::StatusCode::BAD_GATEWAY, String::new(), None);
+        assert!(rl.is_rate_limited());
+        assert!(AIApiError::ServerOverloaded.is_rate_limited());
+        assert!(!srv.is_rate_limited());
+        assert!(!AIApiError::NoContextFound.is_rate_limited());
     }
 
     fn now() -> chrono::DateTime<chrono::Utc> {
