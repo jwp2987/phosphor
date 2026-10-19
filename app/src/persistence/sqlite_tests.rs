@@ -2062,7 +2062,7 @@ fn concurrent_processes_setup_of_a_fresh_database_all_succeed() {
             std::process::Command::new(&exe)
                 .args([
                     "--exact",
-                    "persistence::sqlite_tests::migration_race_child_process",
+                    "persistence::sqlite::tests::migration_race_child_process",
                 ])
                 .arg("--test-threads=1")
                 .env("PHOSPHOR_TEST_MIGRATION_RACE_DB", &database_path)
