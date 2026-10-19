@@ -246,6 +246,14 @@ impl MonospaceFontSize {
     }
 }
 
+impl UiFontSize {
+    // Same bounds as the terminal font: `ui_font_size = 0` in settings.toml
+    // must not reach the UI text layout (#863).
+    fn validate(&self, new_value: f32) -> f32 {
+        validated_font_size("ui_font_size", new_value, DEFAULT_UI_FONT_SIZE)
+    }
+}
+
 impl NotebookFontSize {
     fn validate(&self, new_value: f32) -> f32 {
         validated_font_size("notebook_font_size", new_value, DEFAULT_NOTEBOOK_FONT_SIZE)

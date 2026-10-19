@@ -883,3 +883,87 @@ fn test_early_save_failure_is_reported_when_receiver_attaches() {
     assert_eq!(reported.iter().filter(|p| **p == file_path).count(), 1);
     assert!(take_save_failure_receiver().is_none());
 }
+
+#[test]
+fn test_deleted_settings_file_is_restored_from_memory_not_reset() {
+    use super::super::UserPreferences;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("settings.toml");
+    std::fs::write(&file_path, "# mine\n[font]\nfont_size = 17.0\nfont_name = \"Hack\"\n").unwrap();
+    let (prefs, error) = TomlBackedUserPreferences::new(file_path.clone());
+    assert!(error.is_none());
+
+    // The watcher fires after the user deletes the file while the app runs.
+    std::fs::remove_file(&file_path).unwrap();
+    prefs.reload_from_disk().unwrap();
+
+    // Nothing was reset, and the whole file is back, not just one key (#862).
+    assert_eq!(
+        prefs
+            .read_value_with_hierarchy("font_size", Some("font"))
+            .unwrap(),
+        Some("17.0".to_string())
+    );
+    let on_disk = std::fs::read_to_string(&file_path).unwrap();
+    assert!(on_disk.contains("font_size") && on_disk.contains("Hack"));
+    assert!(on_disk.contains("# mine"));
+}
+
+#[test]
+fn test_deleted_empty_settings_file_is_not_recreated() {
+    use super::super::UserPreferences;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("settings.toml");
+    let (prefs, _) = TomlBackedUserPreferences::new(file_path.clone());
+    prefs.reload_from_disk().unwrap();
+    assert!(!file_path.exists());
+}
+
+#[test]
+fn test_settings_file_that_is_a_directory_reports_not_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("settings.toml");
+    std::fs::create_dir(&file_path).unwrap();
+    let (_, error) = TomlBackedUserPreferences::new(file_path.clone());
+    assert!(matches!(error, Some(Error::NotAFile(path)) if path == file_path));
+    assert!(file_path.is_dir(), "the directory is left alone");
+}
+
+#[test]
+fn test_oversized_settings_file_is_refused_and_left_untouched() {
+    use super::super::UserPreferences;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("settings.toml");
+    let size = MAX_SETTINGS_FILE_BYTES as usize + 1;
+    let mut contents = String::from("[font]\nfont_size = 17.0\n");
+    contents.push_str(&"#".repeat(size - contents.len()));
+    std::fs::write(&file_path, &contents).unwrap();
+
+    let (prefs, error) = TomlBackedUserPreferences::new(file_path.clone());
+    assert!(matches!(error, Some(Error::TooLarge { .. })));
+    // Defaults are used, and writes are inhibited so the file survives.
+    assert_eq!(
+        prefs
+            .read_value_with_hierarchy("font_size", Some("font"))
+            .unwrap(),
+        None
+    );
+    assert!(prefs
+        .write_value_with_hierarchy("font_size", "12.0".to_string(), Some("font"), None)
+        .is_err());
+    assert_eq!(std::fs::read_to_string(&file_path).unwrap().len(), size);
+}
+
+#[test]
+fn test_settings_file_at_the_size_limit_is_parsed() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("settings.toml");
+    let mut contents = String::from("[font]\nfont_size = 17.0\n");
+    contents.push_str(&"#".repeat(MAX_SETTINGS_FILE_BYTES as usize - contents.len()));
+    std::fs::write(&file_path, &contents).unwrap();
+    let (_, error) = TomlBackedUserPreferences::new(file_path);
+    assert!(error.is_none());
+}

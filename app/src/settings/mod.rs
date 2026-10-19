@@ -88,6 +88,10 @@ use warp_core::user_preferences::GetUserPreferences as _;
 pub enum SettingsFileError {
     /// The entire file failed to parse as valid TOML.
     FileParseFailed(String),
+    /// The settings path exists but cannot be used as a settings file at all:
+    /// it is a directory (#895), or it is too large to parse (#863). The
+    /// string is the reason, phrased for the user. The file is never touched.
+    FileUnusable(String),
     /// Individual setting values failed to deserialize. Contains the storage
     /// keys of the settings that could not be loaded.
     InvalidSettings(Vec<String>),
@@ -111,6 +115,7 @@ impl std::fmt::Display for SettingsFileError {
             Self::FileParseFailed(_) => {
                 write!(f, "Couldn't parse due to invalid syntax")
             }
+            Self::FileUnusable(reason) => write!(f, "{reason}"),
             Self::InvalidSettings(keys) => match keys.as_slice() {
                 [key] => write!(f, "Invalid value for '{key}'"),
                 _ => write!(f, "Invalid values for: {}", keys.join(", ")),
@@ -128,6 +133,17 @@ impl std::fmt::Display for SettingsFileError {
 }
 
 impl SettingsFileError {
+    /// Classifies why the settings file could not be loaded: a path that is
+    /// not a file, or a file too large to parse, gets its own message instead
+    /// of "invalid syntax".
+    pub fn from_load_error(err: &warpui_extras::user_preferences::Error) -> Self {
+        use warpui_extras::user_preferences::Error;
+        match err {
+            Error::NotAFile(_) | Error::TooLarge { .. } => Self::FileUnusable(err.to_string()),
+            _ => Self::FileParseFailed(err.to_string()),
+        }
+    }
+
     /// Returns the user-facing `(heading, description)` pair used to present
     /// this error. Shared between the workspace-level banner
     /// (`Workspace::render_settings_error_banner`) and the settings nav rail
@@ -137,6 +153,10 @@ impl SettingsFileError {
             Self::FileParseFailed(_) => (
                 "Your settings file contains an error.".to_owned(),
                 format!("{self}. Open the file to fix it."),
+            ),
+            Self::FileUnusable(reason) => (
+                "Your settings file can't be used.".to_owned(),
+                format!("{reason}. Default settings are in use and nothing was overwritten."),
             ),
             Self::InvalidSettings(keys) => match keys.len() {
                 1 => (

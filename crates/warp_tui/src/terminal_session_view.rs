@@ -183,6 +183,7 @@ pub(crate) const CTRL_C_KILL_CHILD_HINT: &str = "ctrl-c again to kill child agen
 const RUNNING_COMMAND_DETACH_HINT: &str = "ctrl-c to return to command";
 const STARTING_SHELL_HINT: &str = "Starting shell...";
 const SETTINGS_PARSE_FAILED_HINT: &str = "Settings failed to load: invalid syntax.";
+const SETTINGS_UNUSABLE_HINT: &str = "Settings file can't be used; defaults are in use.";
 const SETTINGS_INVALID_VALUES_HINT: &str = "Settings failed to load: invalid values.";
 /// Distinct from the two above: nothing failed to load. The file is fine, it
 /// just also contains lines naming settings this build doesn't have, and those
@@ -196,6 +197,7 @@ const SETTINGS_UNKNOWN_KEYS_HINT: &str = "Settings file has unrecognized keys; t
 fn settings_file_error_hint(error: &SettingsFileError) -> &'static str {
     match error {
         SettingsFileError::FileParseFailed(_) => SETTINGS_PARSE_FAILED_HINT,
+        SettingsFileError::FileUnusable(_) => SETTINGS_UNUSABLE_HINT,
         SettingsFileError::InvalidSettings(_) => SETTINGS_INVALID_VALUES_HINT,
         SettingsFileError::UnknownKeys(_) => SETTINGS_UNKNOWN_KEYS_HINT,
     }
