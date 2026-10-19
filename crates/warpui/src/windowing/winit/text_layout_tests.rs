@@ -955,3 +955,61 @@ fn test_word_longer_than_shaping_limit_still_lays_out() -> Result<()> {
     );
     Ok(())
 }
+
+/// Lays out `text` with each `(char_len, bold)` span and returns the total glyph count.
+fn glyph_count_with_spans(text: &str, spans: &[(usize, bool)]) -> usize {
+    use crate::fonts::Weight;
+    let (font_db, roboto) = init_fonts();
+    let line_style = LineStyle {
+        font_size: FONT_SIZE,
+        line_height_ratio: DEFAULT_UI_LINE_HEIGHT_RATIO,
+        baseline_ratio: DEFAULT_TOP_BOTTOM_RATIO,
+        fixed_width_tab_size: None,
+    };
+    let mut start = 0;
+    let runs: Vec<_> = spans
+        .iter()
+        .map(|(len, bold)| {
+            let properties = Properties {
+                weight: if *bold { Weight::Bold } else { Weight::Normal },
+                ..Properties::default()
+            };
+            let range = start..start + len;
+            start += len;
+            (
+                range,
+                StyleAndFont::new(roboto, properties, TextStyle::new()),
+            )
+        })
+        .collect();
+    let line = font_db.text_layout_system().layout_line(
+        text,
+        line_style,
+        &runs,
+        f32::MAX,
+        crate::text_layout::ClipConfig::default(),
+    );
+    line.runs.iter().map(|run| run.glyphs.len()).sum()
+}
+
+/// #864: two words over the limit in differently styled spans, a word that crosses a style
+/// boundary, and a long word starting in a non-default style all used to lose glyphs (the
+/// attrs-list-defaults heuristic can only match one span).
+#[test]
+fn test_long_words_in_mixed_styles_keep_all_glyphs() {
+    const N: usize = 20_000;
+
+    // Two long words, regular then bold.
+    let text = format!("{} {}", "a".repeat(N), "b".repeat(N));
+    let count = glyph_count_with_spans(&text, &[(N + 1, false), (N, true)]);
+    assert_eq!(count, 2 * N + 1, "two long words in different styles");
+
+    // Bold first, regular second.
+    let count = glyph_count_with_spans(&text, &[(N + 1, true), (N, false)]);
+    assert_eq!(count, 2 * N + 1, "two long words, bold then regular");
+
+    // One long word crossing a style boundary, with a trailing `;`.
+    let text = format!("{};", "c".repeat(2 * N));
+    let count = glyph_count_with_spans(&text, &[(N, false), (N, true), (1, false)]);
+    assert_eq!(count, 2 * N + 1, "word crossing a style boundary");
+}

@@ -776,8 +776,9 @@ upstream's behavior is actually a defect rather than a preference.
       edit stays on the card and in the pending action.
 
   **Not done here:**
-  - The renderer bug itself (in `fonts.rs` / cosmic-text) still affects any other text with a
-    word over 16,384 chars, including the card's edit-mode editor.
+  - The renderer bug itself is fixed (#864): `lib/cosmic-text` is vendored with the empty-run
+    shaping skipped (`lib/cosmic-text/CHANGES-PHOSPHOR.md`), so no text surface drops a word over
+    16,384 chars any more. The card's display-only break points above stay as defence in depth.
   - This entry covers the GUI card only. The TUI shell command view draws its own editor in
     terminal cells, and its accept marks the text it runs as shown. Whether it can hide part
     of a command is tracked in #865.

@@ -160,6 +160,7 @@ $AdditionalLicenses = @(
     # Vendored path dependency: skipped by about.toml/deny.toml as a path dep,
     # so `cargo about` never reaches it.
     @{ Name = 'genai (rust-genai)'; License = 'MIT OR Apache-2.0'; Path = 'lib\rust-genai\LICENSE-MIT' },
+    @{ Name = 'cosmic-text (vendored, #864 fix)'; License = 'MIT OR Apache-2.0'; Path = 'lib\cosmic-text\LICENSE-MIT' },
     @{ Name = 'winit (vendored keyboard/keycode types)'; License = 'Apache-2.0'; Path = 'crates\warpui_core\src\platform\LICENSE-WINIT' },
     @{ Name = 'Chromium / Blink (dashed-border stroke geometry)'; License = 'BSD-3-Clause'; Path = 'crates\warpui\src\rendering\LICENSE-CHROMIUM' },
     @{ Name = 'base16 syntax theme'; License = 'MIT'; Path = 'app\assets\bundled\syntax_theme\LICENSE-BASE16' },
