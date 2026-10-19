@@ -737,7 +737,9 @@ impl EventedPty for Pty {
         let res = unsafe { libc::ioctl(self.fd.as_raw_fd(), libc::TIOCSWINSZ, &win as *const _) };
 
         if res < 0 {
-            panic!("ioctl TIOCSWINSZ failed: {}", io::Error::last_os_error());
+            // A failed resize (e.g. EBADF/EIO after the child exited) must not
+            // take down the PTY reader thread; log and keep going.
+            log::warn!("ioctl TIOCSWINSZ failed: {}", io::Error::last_os_error());
         }
     }
 

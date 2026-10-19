@@ -667,6 +667,13 @@ impl ansi::Handler for GridHandler {
         self.scroll_up_relative(origin, lines)
     }
 
+    fn explicit_scroll_up(&mut self, lines: usize) -> ScrollDelta {
+        // `CSI n S` shifts rows the cursor never visits, even when it scrolls the whole
+        // screen, so find cannot trace it from the cursor (#822).
+        self.find_unlocalized_change = true;
+        self.scroll_up(lines)
+    }
+
     fn scroll_down(&mut self, lines: usize) -> ScrollDelta {
         self.content_generation.bump();
         self.find_unlocalized_change = true;

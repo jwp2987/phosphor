@@ -3176,6 +3176,28 @@ fn test_find_dirty_range_reports_unlocalised_edits() {
     assert!(grid.take_find_dirty_rows_range().is_some());
 }
 
+/// #822: an explicit full-screen `CSI n S` moves rows the cursor never visits, so it must be
+/// flagged, while the identical scroll caused by a linefeed at the bottom row is traced by the
+/// cursor and must not be.
+#[test]
+fn test_find_explicit_full_screen_scroll_up_is_unlocalised() {
+    let mut grid = content_generation_test_grid();
+    let _ = grid.take_find_dirty_rows_range();
+    grid.explicit_scroll_up(1);
+    grid.on_finish_byte_processing(&ansi::ProcessorInput::new(&[]));
+    assert!(grid.find_has_unlocalized_change());
+    assert_eq!(grid.take_find_dirty_rows_range(), None);
+
+    // A linefeed at the bottom of the screen scrolls the whole screen but stays localised.
+    let mut grid = content_generation_test_grid();
+    let _ = grid.take_find_dirty_rows_range();
+    for _ in 0..5 {
+        grid.linefeed();
+    }
+    grid.on_finish_byte_processing(&ansi::ProcessorInput::new(&[]));
+    assert!(!grid.find_has_unlocalized_change());
+}
+
 #[test]
 fn test_content_generation_is_unique_per_grid_instance() {
     let grid = content_generation_test_grid();

@@ -489,6 +489,12 @@ impl ansi::Handler for AltScreen {
         lines_scrolled
     }
 
+    fn explicit_scroll_up(&mut self, lines: usize) -> ScrollDelta {
+        let lines_scrolled = self.ansi_handler().explicit_scroll_up(lines);
+        self.rotate_selection(lines_scrolled);
+        lines_scrolled
+    }
+
     fn scroll_down(&mut self, lines: usize) -> ScrollDelta {
         let lines_scrolled = self.ansi_handler().scroll_down(lines);
         self.rotate_selection(lines_scrolled);

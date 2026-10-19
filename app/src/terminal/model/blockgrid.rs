@@ -953,6 +953,10 @@ impl ansi::Handler for BlockGrid {
         self.ansi_handler().scroll_up(lines)
     }
 
+    fn explicit_scroll_up(&mut self, lines: usize) -> ScrollDelta {
+        self.ansi_handler().explicit_scroll_up(lines)
+    }
+
     fn scroll_down(&mut self, lines: usize) -> ScrollDelta {
         self.ansi_handler().scroll_down(lines)
     }

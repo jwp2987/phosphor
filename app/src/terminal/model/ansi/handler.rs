@@ -111,6 +111,16 @@ pub trait Handler {
     /// Scroll down `rows` rows.
     fn scroll_down(&mut self, _: usize) -> ScrollDelta;
 
+    /// Scroll up `rows` rows in response to an explicit `CSI n S`, as opposed to the scroll
+    /// a linefeed at the bottom of the scroll region causes.
+    ///
+    /// A linefeed scroll is traced by the cursor, but an explicit scroll moves content that
+    /// the cursor does not describe. Handlers that track that (find's dirty rows, #822)
+    /// override this; the default treats it like any other scroll.
+    fn explicit_scroll_up(&mut self, rows: usize) -> ScrollDelta {
+        self.scroll_up(rows)
+    }
+
     /// Insert `count` blank lines.
     fn insert_blank_lines(&mut self, _: usize) -> ScrollDelta;
 

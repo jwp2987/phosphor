@@ -574,6 +574,10 @@ impl ansi::Handler for EarlyOutputHandler<'_> {
         delegate!(self.scroll_up(rows))
     }
 
+    fn explicit_scroll_up(&mut self, rows: usize) -> ScrollDelta {
+        delegate!(self.explicit_scroll_up(rows))
+    }
+
     fn scroll_down(&mut self, rows: usize) -> ScrollDelta {
         delegate!(self.scroll_down(rows))
     }
