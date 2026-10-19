@@ -480,6 +480,40 @@ pub fn binary_check_command() -> String {
     format!("{} --version", remote_server_binary())
 }
 
+/// Shell command (run on the remote) that exits 0 only when a COMPLETE prior install exists:
+/// a regular, executable file named `<binary>` or `<binary>-<version>` inside `dir`.
+///
+/// The bare existence of `dir` is not evidence of an install: a failed install used to leave
+/// an empty directory behind, after which every connect skipped the install/continue choice
+/// and silently retried (#931). Wrapped in `sh -c` so it does not depend on the remote login
+/// shell (fish/csh reject `for ... do ... done`).
+pub fn prior_install_probe_command_for(dir: &str, binary: &str) -> String {
+    format!(
+        "sh -c 'for f in {dir}/{binary} {dir}/{binary}-*; do if [ -f \"$f\" ] && [ -x \"$f\" ]; then exit 0; fi; done; exit 1'"
+    )
+}
+
+/// [`prior_install_probe_command_for`] for this channel's install directory and binary name.
+pub fn prior_install_probe_command() -> String {
+    prior_install_probe_command_for(&remote_server_dir(), binary_name())
+}
+
+/// Shell command (run on the remote after a FAILED install) that removes what a failed install
+/// can leave behind: the staged SCP tarball, a non-executable (so necessarily partial) binary,
+/// and the install directory itself if -- and only if -- it is empty. It never touches an
+/// executable binary, the resources tree, or any other file, so it is safe after a failed
+/// update over a working install too. Always exits 0.
+pub fn install_failure_cleanup_command_for(dir: &str, binary_path: &str) -> String {
+    format!(
+        "sh -c 'rm -f {dir}/zap-upload.tar.gz; if [ -e {binary_path} ] && [ ! -x {binary_path} ]; then rm -f {binary_path}; fi; rmdir {dir} 2>/dev/null; true'"
+    )
+}
+
+/// [`install_failure_cleanup_command_for`] for this channel.
+pub fn install_failure_cleanup_command() -> String {
+    install_failure_cleanup_command_for(&remote_server_dir(), &remote_server_binary())
+}
+
 /// Returns the shell command to remove the current remote-server binary.
 ///
 /// The global bundled resources directory (see
