@@ -1128,11 +1128,22 @@ impl ImageCache {
 
                 // Otherwise, create the correctly-sized image struct and
                 // insert it into the cache (if necessary).
+                let timing_start = image_timing_enabled().then(std::time::Instant::now);
                 let image =
                     match data.to_image(bounds, fit_type, needs_resize, animated_image_behavior) {
                         Ok(image) => Rc::new(image),
                         Err(err) => return AssetState::FailedToLoad(Rc::new(err)),
                     };
+                if let Some(start) = timing_start {
+                    log::info!(
+                        "IMGTIMING to_image {} us kind={} bounds={}x{} resize={}",
+                        start.elapsed().as_micros(),
+                        data.type_str(),
+                        bounds.x(),
+                        bounds.y(),
+                        needs_resize
+                    );
+                }
                 if let Some(cache) = cache {
                     let mut images_cache = RwLockUpgradableReadGuard::upgrade(cache);
                     images_cache
@@ -1145,6 +1156,12 @@ impl ImageCache {
             }
         }
     }
+}
+
+/// Env-gated (`PHOSPHOR_IMG_TIMING`) UI-thread timing of render-time `to_image` (#880).
+fn image_timing_enabled() -> bool {
+    static ON: LazyLock<bool> = LazyLock::new(|| std::env::var_os("PHOSPHOR_IMG_TIMING").is_some());
+    *ON
 }
 
 impl Entity for ImageCache {
