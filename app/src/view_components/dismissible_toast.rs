@@ -75,12 +75,6 @@ fn truncate_toast_message(message: &str) -> String {
     }
 }
 
-/// Whether `keystroke` should toggle a toast's expand/collapse state: an
-/// unmodified Enter or Space, matching standard button-activation keys.
-fn is_expand_toggle_keystroke(keystroke: &Keystroke) -> bool {
-    keystroke.is_unmodified_enter() || keystroke.is_unmodified_key(" ")
-}
-
 struct ToastData<A: Action + Clone> {
     /// The toast itself.
     dismissible_toast: DismissibleToast<A>,
@@ -557,18 +551,13 @@ impl<A: Action + Clone> DismissibleToast<A> {
                     ctx.dispatch_typed_action(DismissibleToastAction::ToggleMessageExpanded(uuid))
                 })
                 .finish();
+            // Deliberately no `on_keydown` here (#902). Key events reach every
+            // `EventHandler` in the window, not only the focused one, so a
+            // handler that toggles on Enter/Space and stops propagation makes
+            // the visible toast swallow every space typed into any input for as
+            // long as it is on screen. The toggle is mouse-only.
             let toggle_button = EventHandler::new(toggle_button)
                 .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
-                .on_keydown(move |ctx, _, keystroke| {
-                    if is_expand_toggle_keystroke(keystroke) {
-                        ctx.dispatch_typed_action(DismissibleToastAction::ToggleMessageExpanded(
-                            uuid,
-                        ));
-                        DispatchEventResult::StopPropagation
-                    } else {
-                        DispatchEventResult::PropagateToParent
-                    }
-                })
                 .finish();
             right_aligned.add_child(
                 Container::new(toggle_button)
