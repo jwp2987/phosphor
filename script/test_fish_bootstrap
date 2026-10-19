@@ -209,6 +209,17 @@ def colour_cases():
         out.append((f"{digits}-digit, ESC \\", body + b"\x1b\\"))
     out.append(("2-digit, unterminated", b"\x1b]4;1;rgb:cc/00/00"))
     out.append(("4-digit, unterminated", b"\x1b]10;rgb:ffff/ffff/ffff"))
+    # #914: window-op, DECRQM and XTVERSION replies leaked into the next command.
+    for label, reply in (
+        ("CSI 18t text-area size", b"\x1b[8;45;124t"),
+        ("CSI 14t pixel size", b"\x1b[4;800;1000t"),
+        ("CSI 19t screen size", b"\x1b[9;50;200t"),
+        ("CSI 13t position", b"\x1b[3;0;0t"),
+        ("DECRQM", b"\x1b[?2026;2$y"),
+        ("XTVERSION", b"\x1bP>|Phosphor(0.1.12)\x1b\\"),
+        ("XTVERSION other terminal", b"\x1bP>|xterm(367)\x1b\\"),
+    ):
+        out.append((label, reply))
     return out
 
 

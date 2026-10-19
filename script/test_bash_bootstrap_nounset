@@ -90,8 +90,14 @@ def rcfile_contents():
 
 
 class Shell:
-    def __init__(self, profile=None, home_prefix="phosphor-825-"):
+    def __init__(self, profile=None, home_prefix="phosphor-825-", bashrc=None, extra=None):
         self.home = tempfile.mkdtemp(prefix=home_prefix)
+        for name, body in (extra or {}).items():
+            with open(os.path.join(self.home, name), "w") as f:
+                f.write(body)
+        if bashrc is not None:
+            with open(os.path.join(self.home, ".bashrc"), "w") as f:
+                f.write(bashrc + "\n")
         if profile is not None:
             with open(os.path.join(self.home, ".bash_profile"), "w") as f:
                 f.write(profile + "\n")
@@ -314,14 +320,39 @@ def scenario_set_e_failure_in_rcfile_still_exits():
 
 
 def scenario_set_e_nested_source_failure_in_rcfile_still_exits():
-    print("set -e in ~/.bash_profile: a sourced file that returns non-zero still exits, as natively")
-    sh = Shell(profile="set -e\nsource <(echo '[ -f /nonexistent-$$ ] && true')\necho not-reached")
+    print("set -e in ~/.bash_profile: a failing command inside a sourced file still exits, as natively")
+    # (#913 made the nested file's *trailing status* non-fatal; a command that fails in the
+    # middle of it must still exit.)
+    sh = Shell(profile="set -e\nsource <(echo 'false; echo not-reached')\necho not-reached")
     try:
         sh.pump(15, lambda: sh.dead)
         check(sh.dead, "the shell exits", sh)
         check("Bootstrapped" not in sh.hooks(), "it never bootstraps", sh)
     finally:
         sh.close()
+
+
+def scenario_nested_rc_trailing_failure():
+    print("set -e and a trailing failure in a NESTED rcfile (.bash_profile -> .bashrc)")
+    # #913: .bash_profile = `[ -f ~/.bashrc ] && . ~/.bashrc`; .bashrc ends with `set -e` and
+    # `[ -f /nope ] && source /nope`. #846 only relaxed errexit for the outermost file, so
+    # the nested file's status 1 killed the shell ("exited prematurely").
+    fail = "[ -f /nonexistent-$$ ] && source /nonexistent-$$"
+    cases = (
+        ("profile -> bashrc", "set -e\n" + fail, {}),
+        ("three levels", "set -e\n. ~/.bashrc.d-aliases", {".bashrc.d-aliases": "alias ll='ls -l'\n" + fail + "\n"}),
+    )
+    for label, rc, extra in cases:
+        sh = Shell(profile="[ -f ~/.bashrc ] && . ~/.bashrc", bashrc=rc, extra=extra)
+        try:
+            check(sh.wait_bootstrapped(), f"{label}: bootstraps", sh)
+            check(not sh.dead, f"{label}: the shell did not exit", sh)
+            check(sh.run("echo nested$((3+4))", r"nested7"), f"{label}: a command finishes (Precmd)", sh)
+            check(sh.run('[[ $- == *e* ]] && echo nested-e-$((1+8))-on || echo nested-e-$((1+8))-off', r"nested-e-9-o"),
+                  f"{label}: option probe finishes", sh)
+            check(has(sh, r"nested-e-9-on"), f"{label}: the rcfile's errexit is back in force", sh)
+        finally:
+            sh.close()
 
 
 def scenario_set_e_own_return_trap_trailing_failure():
@@ -497,6 +528,17 @@ def colour_cases():
         out.append((f"{digits}-digit, ESC \\", body + b"\x1b\\"))
     out.append(("2-digit, unterminated", b"\x1b]4;1;rgb:cc/00/00"))
     out.append(("4-digit, unterminated", b"\x1b]10;rgb:ffff/ffff/ffff"))
+    # #914: window-op, DECRQM and XTVERSION replies leaked into the next command.
+    for label, reply in (
+        ("CSI 18t text-area size", b"\x1b[8;45;124t"),
+        ("CSI 14t pixel size", b"\x1b[4;800;1000t"),
+        ("CSI 19t screen size", b"\x1b[9;50;200t"),
+        ("CSI 13t position", b"\x1b[3;0;0t"),
+        ("DECRQM", b"\x1b[?2026;2$y"),
+        ("XTVERSION", b"\x1bP>|Phosphor(0.1.12)\x1b\\"),
+        ("XTVERSION other terminal", b"\x1bP>|xterm(367)\x1b\\"),
+    ):
+        out.append((label, reply))
     return out
 
 
@@ -557,6 +599,7 @@ def main():
     scenario_set_e_trailing_failure_in_rcfile()
     scenario_set_e_failure_in_rcfile_still_exits()
     scenario_set_e_nested_source_failure_in_rcfile_still_exits()
+    scenario_nested_rc_trailing_failure()
     scenario_set_e_own_return_trap_trailing_failure()
     scenario_set_e_own_return_trap_failure_still_exits()
     scenario_return_trap_in_rcfile_function()

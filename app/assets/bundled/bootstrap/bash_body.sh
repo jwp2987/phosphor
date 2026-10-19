@@ -940,8 +940,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     __warp_strip_terminal_replies () {
         __warp_stripped=$1
         local esc=$'\e' bel=$'\a' m
-        local re_any='('"$esc"'\[[?>=]?[0-9;]*[cR])|('"$esc"'\][0-9;]*;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}('"$bel"'|'"$esc"'\\))|('"$esc"'\][0-9;]*;rgba?:([0-9a-fA-F]{4}/[0-9a-fA-F]{4}/[0-9a-fA-F]{4}|[0-9a-fA-F]{3}/[0-9a-fA-F]{3}/[0-9a-fA-F]{3}|[0-9a-fA-F]{2}/[0-9a-fA-F]{2}/[0-9a-fA-F]{2}|[0-9a-fA-F]{1}/[0-9a-fA-F]{1}/[0-9a-fA-F]{1}))|([0-9]+(;[0-9]+)?;rgba?:([0-9a-fA-F]{4}/[0-9a-fA-F]{4}/[0-9a-fA-F]{4}|[0-9a-fA-F]{3}/[0-9a-fA-F]{3}/[0-9a-fA-F]{3}|[0-9a-fA-F]{2}/[0-9a-fA-F]{2}/[0-9a-fA-F]{2}|[0-9a-fA-F]{1}/[0-9a-fA-F]{1}/[0-9a-fA-F]{1}))'
-        local re_lead='^(([0-9]+(;[0-9]+)*c)|(;?[0-9]+R))'
+        local re_any='('"$esc"'\[[?>=]?[0-9;]*[cRt])|('"$esc"'\[\??[0-9;]*\$y)|('"$esc"'P>\|[^'"$esc"']*'"$esc"'\\)|('"$esc"'\][0-9;]*;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}('"$bel"'|'"$esc"'\\))|('"$esc"'\][0-9;]*;rgba?:([0-9a-fA-F]{4}/[0-9a-fA-F]{4}/[0-9a-fA-F]{4}|[0-9a-fA-F]{3}/[0-9a-fA-F]{3}/[0-9a-fA-F]{3}|[0-9a-fA-F]{2}/[0-9a-fA-F]{2}/[0-9a-fA-F]{2}|[0-9a-fA-F]{1}/[0-9a-fA-F]{1}/[0-9a-fA-F]{1}))|([0-9]+(;[0-9]+)?;rgba?:([0-9a-fA-F]{4}/[0-9a-fA-F]{4}/[0-9a-fA-F]{4}|[0-9a-fA-F]{3}/[0-9a-fA-F]{3}/[0-9a-fA-F]{3}|[0-9a-fA-F]{2}/[0-9a-fA-F]{2}/[0-9a-fA-F]{2}|[0-9a-fA-F]{1}/[0-9a-fA-F]{1}/[0-9a-fA-F]{1}))'
+        local re_lead='^(([0-9]+(;[0-9]+)*c)|(;?[0-9]+R)|([0-9]*(;[0-9]*)+t)|([0-9;]+\$y)|(>\|[A-Za-z][A-Za-z0-9_.-]*\([^)]*\)))'
         while [[ $__warp_stripped =~ $re_any ]]; do
             m=${BASH_REMATCH[0]}
             __warp_stripped=${__warp_stripped/"$m"/}
@@ -1391,8 +1391,13 @@ esac
         # script and would. So each `source` below drops errexit as it returns
         # (the RETURN trap, which fires before bash checks the status) and
         # __warp_rc_done switches it back on. `set -e; false` inside the file
-        # still exits, as natively. Only the outermost `source` returns at the
-        # depth recorded here, so a file the rcfile sources keeps errexit.
+        # still exits, as natively. #913: this applies to a file the rcfile sources
+        # too (`.bash_profile` -> `.bashrc` ending in `set -e` and a failing
+        # `[ -f x ] && source x`): its trailing status would otherwise kill the
+        # shell at the outer file's `. ~/.bashrc`. Errexit stays off until the
+        # outermost `source` returns and __warp_rc_done puts it back, so a failing
+        # command later in the outer file, after such a nested source, no longer
+        # exits. A failing command inside the nested file itself still does.
         #
         # #896: a RETURN trap is global, so an rcfile that installs its own
         # (`trap '...' RETURN`) replaced this one and the shell died anyway. While
@@ -1403,7 +1408,7 @@ esac
         # file under `||` or `&&`, which would silence errexit inside it too.
         # A RETURN trap installed inside a function also fires when that function
         # returns, which would run the user's command early, hence the FUNCNAME test.
-        __warp_rc_return_trap='if [[ ${#BASH_SOURCE[@]} -le $__warp_rc_depth ]]; then case $- in *e*) __warp_rc_errexit=1; set +e;; esac; fi'
+        __warp_rc_return_trap='case $- in *e*) __warp_rc_errexit=1; set +e;; esac'
         trap () {
             local __warp_t_cmd __warp_t_sig __warp_t_rest=() __warp_t_ret=
             if [[ ${1-} == -- ]]; then shift; elif [[ ${1-} == -* && ${1-} != - ]]; then builtin trap "$@"; return; fi
@@ -1430,7 +1435,6 @@ fi' RETURN
                 set -e
             fi
         }
-        __warp_rc_depth=${#BASH_SOURCE[@]}
         if [[ -e /etc/profile ]]; then
             builtin trap "$__warp_rc_return_trap" RETURN; source /etc/profile; __warp_rc_done
         elif [[ -e /etc/bash.bashrc ]]; then

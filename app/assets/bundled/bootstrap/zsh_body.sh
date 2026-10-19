@@ -796,8 +796,8 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
     function __warp_strip_terminal_replies {
         __warp_stripped=$1
         local esc=$'\e' bel=$'\a' m
-        local re_any='('"$esc"'\[[?>=]?[0-9;]*[cR])|('"$esc"'\][0-9;]*;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}('"$bel"'|'"$esc"'\\))|('"$esc"'\][0-9;]*;rgba?:([0-9a-fA-F]{4}/[0-9a-fA-F]{4}/[0-9a-fA-F]{4}|[0-9a-fA-F]{3}/[0-9a-fA-F]{3}/[0-9a-fA-F]{3}|[0-9a-fA-F]{2}/[0-9a-fA-F]{2}/[0-9a-fA-F]{2}|[0-9a-fA-F]{1}/[0-9a-fA-F]{1}/[0-9a-fA-F]{1}))|([0-9]+(;[0-9]+)?;rgba?:([0-9a-fA-F]{4}/[0-9a-fA-F]{4}/[0-9a-fA-F]{4}|[0-9a-fA-F]{3}/[0-9a-fA-F]{3}/[0-9a-fA-F]{3}|[0-9a-fA-F]{2}/[0-9a-fA-F]{2}/[0-9a-fA-F]{2}|[0-9a-fA-F]{1}/[0-9a-fA-F]{1}/[0-9a-fA-F]{1}))'
-        local re_lead='^(([0-9]+(;[0-9]+)*c)|(;?[0-9]+R))'
+        local re_any='('"$esc"'\[[?>=]?[0-9;]*[cRt])|('"$esc"'\[\??[0-9;]*\$y)|('"$esc"'P>\|[^'"$esc"']*'"$esc"'\\)|('"$esc"'\][0-9;]*;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}('"$bel"'|'"$esc"'\\))|('"$esc"'\][0-9;]*;rgba?:([0-9a-fA-F]{4}/[0-9a-fA-F]{4}/[0-9a-fA-F]{4}|[0-9a-fA-F]{3}/[0-9a-fA-F]{3}/[0-9a-fA-F]{3}|[0-9a-fA-F]{2}/[0-9a-fA-F]{2}/[0-9a-fA-F]{2}|[0-9a-fA-F]{1}/[0-9a-fA-F]{1}/[0-9a-fA-F]{1}))|([0-9]+(;[0-9]+)?;rgba?:([0-9a-fA-F]{4}/[0-9a-fA-F]{4}/[0-9a-fA-F]{4}|[0-9a-fA-F]{3}/[0-9a-fA-F]{3}/[0-9a-fA-F]{3}|[0-9a-fA-F]{2}/[0-9a-fA-F]{2}/[0-9a-fA-F]{2}|[0-9a-fA-F]{1}/[0-9a-fA-F]{1}/[0-9a-fA-F]{1}))'
+        local re_lead='^(([0-9]+(;[0-9]+)*c)|(;?[0-9]+R)|([0-9]*(;[0-9]*)+t)|([0-9;]+\$y)|(>\|[A-Za-z][A-Za-z0-9_.-]*\([^)]*\)))'
         while [[ $__warp_stripped =~ $re_any ]]; do
             m=${MATCH}
             __warp_stripped=${__warp_stripped/"$m"/}
@@ -1476,6 +1476,11 @@ esac
   fi
 
   precmd_functions+=(warp_precmd warp_update_prompt_vars)
+  # The command that is running right now (this bootstrap) owes the app a Precmd. Normally
+  # warp_precmd clears this at the first prompt; if a user precmd function dies first (#912,
+  # `: ${X:?}`) zsh abandons the precmd stage before reaching it, and _warp_repair_hooks emits
+  # the owed Precmd from zle-line-init even at the very first prompt.
+  _WARP_PRECMD_PENDING=1
   preexec_functions+=(warp_preexec)
   _WARP_HOOKS_INSTALLED=1
 

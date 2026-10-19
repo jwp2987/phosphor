@@ -646,12 +646,14 @@ function __warp_strip_terminal_replies
     # `string` splits piped input into lines, so the start-of-text anchor below has to
     # be applied to an argument, not to the pipe.
     set -l text (string join \n -- $argv | string collect \
-        | string replace -r -a '\e\[[?>=]?[0-9;]*[cR]' '' \
+        | string replace -r -a '\e\[[?>=]?[0-9;]*[cRt]' '' \
+        | string replace -r -a '\e\[\??[0-9;]*\$y' '' \
+        | string replace -r -a '\eP>\|[^\e]*\e\\\\' '' \
         | string replace -r -a '\e\][0-9;]*;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}(?:\a|\e\\\\)' '' \
         | string replace -r -a '\e\][0-9;]*;rgba?:(?:[0-9a-fA-F]{4}/[0-9a-fA-F]{4}/[0-9a-fA-F]{4}|[0-9a-fA-F]{3}/[0-9a-fA-F]{3}/[0-9a-fA-F]{3}|[0-9a-fA-F]{2}/[0-9a-fA-F]{2}/[0-9a-fA-F]{2}|[0-9a-fA-F]{1}/[0-9a-fA-F]{1}/[0-9a-fA-F]{1})' '' \
         | string replace -r -a '[0-9]+(?:;[0-9]+)?;rgba?:(?:[0-9a-fA-F]{4}/[0-9a-fA-F]{4}/[0-9a-fA-F]{4}|[0-9a-fA-F]{3}/[0-9a-fA-F]{3}/[0-9a-fA-F]{3}|[0-9a-fA-F]{2}/[0-9a-fA-F]{2}/[0-9a-fA-F]{2}|[0-9a-fA-F]{1}/[0-9a-fA-F]{1}/[0-9a-fA-F]{1})' '' \
         | string collect)
-    string replace -r '\A(?:[0-9]+(?:;[0-9]+)*c|;?[0-9]+R)+' '' -- (string join \n -- $text | string collect)
+    string replace -r '\A(?:[0-9]+(?:;[0-9]+)*c|;?[0-9]+R|[0-9]*(?:;[0-9]*)+t|[0-9;]+\$y|>\|[A-Za-z][A-Za-z0-9_.-]*\([^)]*\))+' '' -- (string join \n -- $text | string collect)
 end
 
 function warp_report_input

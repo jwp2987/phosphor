@@ -476,7 +476,7 @@ impl ansi::Handler for GridHandler {
         self.content_generation.bump();
         log::trace!("Reporting xtversion");
         let version = ChannelState::app_version().unwrap_or("");
-        let _ = writer.write_all(format!("\x1bP>|Zap({version})\x1b\\").as_bytes());
+        let _ = writer.write_all(format!("\x1bP>|Phosphor({version})\x1b\\").as_bytes());
     }
 
     fn device_status<W: std::io::Write>(&mut self, writer: &mut W, arg: usize) {
