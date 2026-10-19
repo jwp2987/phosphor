@@ -44,7 +44,14 @@ pub struct ExpandedConfig {
     /// Mouse state handle for expansion toggle
     pub toggle_mouse_state: MouseStateHandle,
     pub expands_upwards: bool,
+    /// Optional button drawn before the chevron (e.g. Stop on a running command card). The
+    /// header then switches to the button's compact variant below
+    /// [`TRAILING_BUTTON_SIZE_SWITCH_THRESHOLD`].
+    pub trailing_button: Option<Rc<dyn RenderCompactibleActionButton>>,
 }
+
+/// Header width (before UI scaling) under which a trailing button renders icon-only.
+pub const TRAILING_BUTTON_SIZE_SWITCH_THRESHOLD: f32 = 360.;
 
 impl ExpandedConfig {
     pub fn new(is_expanded: bool, toggle_mouse_state: MouseStateHandle) -> Self {
@@ -54,7 +61,13 @@ impl ExpandedConfig {
             on_right_click: None,
             toggle_mouse_state,
             expands_upwards: false,
+            trailing_button: None,
         }
+    }
+
+    pub fn with_trailing_button(mut self, button: Rc<dyn RenderCompactibleActionButton>) -> Self {
+        self.trailing_button = Some(button);
+        self
     }
 
     pub fn with_expands_upwards(mut self) -> Self {
@@ -396,7 +409,54 @@ impl HeaderConfig {
                     .with_width(icon_size(app))
                     .finish();
 
-                    self.render_header(app, Some(expanded_icon))
+                    match expansion_config.trailing_button.clone() {
+                        Some(button) => {
+                            let make_row = |button_element: Box<dyn Element>,
+                                            icon: Box<dyn Element>| {
+                                Flex::row()
+                                    .with_main_axis_alignment(MainAxisAlignment::End)
+                                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                                    .with_main_axis_size(MainAxisSize::Min)
+                                    .with_child(
+                                        Container::new(button_element)
+                                            .with_margin_right(ICON_MARGIN)
+                                            .finish(),
+                                    )
+                                    .with_child(icon)
+                                    .finish()
+                            };
+                            let make_icon = || {
+                                ConstrainedBox::new(render_expansion_icon(
+                                    expansion_config.is_expanded,
+                                    expansion_config.expands_upwards,
+                                    appearance,
+                                    app,
+                                ))
+                                .with_height(icon_size(app))
+                                .with_width(icon_size(app))
+                                .finish()
+                            };
+                            let regular_header = self.clone().render_header(
+                                app,
+                                Some(make_row(button.render_expanded_button(), make_icon())),
+                            );
+                            let compact_header = self.render_header(
+                                app,
+                                Some(make_row(button.render_compact_button(), make_icon())),
+                            );
+                            let size_switch_threshold = TRAILING_BUTTON_SIZE_SWITCH_THRESHOLD
+                                * appearance.monospace_ui_scalar();
+                            SizeConstraintSwitch::new(
+                                regular_header,
+                                vec![(
+                                    SizeConstraintCondition::WidthLessThan(size_switch_threshold),
+                                    compact_header,
+                                )],
+                            )
+                            .finish()
+                        }
+                        None => self.render_header(app, Some(expanded_icon)),
+                    }
                 }
                 InteractionMode::RightClickable(_) => self.render_header(app, None),
             }

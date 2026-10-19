@@ -293,6 +293,20 @@ pub(crate) fn reject_disposition(
     }
 }
 
+/// Whether the card shows its visible Stop button (issue #871): only for a shell command whose
+/// approved action is still running and whose block has not already finished. The button routes
+/// through [`reject_or_interrupt`], so this must agree with
+/// [`RejectDisposition::InterruptRunningCommand`].
+pub(crate) fn shows_stop_button(
+    is_requested_command: bool,
+    status: Option<&AIActionStatus>,
+    block_finished: bool,
+) -> bool {
+    !block_finished
+        && reject_disposition(is_requested_command, status)
+            == RejectDisposition::InterruptRunningCommand
+}
+
 pub fn init(app: &mut AppContext) {
     use warpui::keymap::macros::*;
 
@@ -494,6 +508,9 @@ pub struct RequestedCommandView {
     show_full_command_button: CompactibleActionButton,
     read_to_end_button: CompactibleActionButton,
     explain_button: CompactibleActionButton,
+    /// Visible Stop control on the running-command card (issue #871). Routes through
+    /// [`Self::reject_or_interrupt`], which interrupts the command.
+    stop_button: CompactibleActionButton,
     /// The "Explain" result for this card, tied to the exact text it describes (issue #891).
     explanation: ExplanationState,
     /// The in-flight explanation request, aborted when the card is approved, rejected,
@@ -682,6 +699,16 @@ impl RequestedCommandView {
             ctx,
         );
 
+        let stop_button = CompactibleActionButton::new(
+            crate::t!("ai-requested-command-stop"),
+            None,
+            ButtonSize::InlineActionHeader,
+            RequestedCommandViewAction::Reject,
+            Icon::StopFilled,
+            Arc::new(NakedTheme),
+            ctx,
+        );
+
         let is_finished = action_model
             .as_ref(ctx)
             .get_action_result(&action_id)
@@ -847,6 +874,7 @@ impl RequestedCommandView {
             show_full_command_button,
             read_to_end_button,
             explain_button,
+            stop_button,
             explanation: ExplanationState::Idle,
             explanation_request: None,
             full_view_opened: None,
@@ -2068,9 +2096,19 @@ impl RequestedCommandView {
                 });
             }
             Some(AIActionStatus::RunningAsync) if self.action_type.is_requested_command() => {
-                config = config.with_interaction_mode(InteractionMode::ManuallyExpandable(
-                    self.get_expansion_config(requested_command_block, app),
-                ));
+                // Keep the expandable output, and add a visible Stop control beside the
+                // chevron (issue #871). Only while the command is actually still running.
+                let mut expansion_config = self.get_expansion_config(requested_command_block, app);
+                if shows_stop_button(
+                    true,
+                    action_status.as_ref(),
+                    requested_command_block.is_some_and(|block| block.finished()),
+                ) {
+                    expansion_config =
+                        expansion_config.with_trailing_button(Rc::new(self.stop_button.clone()));
+                }
+                config = config
+                    .with_interaction_mode(InteractionMode::ManuallyExpandable(expansion_config));
             }
             Some(AIActionStatus::Finished(result)) => {
                 // Determine if command should be expandable based on whether it actually executed.

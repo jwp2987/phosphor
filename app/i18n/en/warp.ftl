@@ -3612,6 +3612,8 @@ ai-requested-command-denylisted = Not run -- this command is on your denylist.
 # "Explain" on the requested-command approval card (issue #891,
 # app/src/ai/blocklist/inline_action/requested_command.rs + command_explanation.rs).
 ai-requested-command-explain = Explain
+# Stop button on the card of an approved command that is still running (issue #871).
+ai-requested-command-stop = Stop
 ai-command-explanation-loading = Asking { $model } what this command does...
 ai-command-explanation-no-provider = No AI provider is configured, so this command can't be explained. Add a provider and model in Settings > AI > Providers.
 ai-command-explanation-failed = Couldn't explain this command ({ $model }): { $error }

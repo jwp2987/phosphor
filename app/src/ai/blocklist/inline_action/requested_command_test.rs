@@ -338,7 +338,7 @@ mod ctrl_c_reject_tests {
 
     use super::super::{
         REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT, RejectDisposition,
-        ctrl_c_rejects_requested_command_context, reject_disposition,
+        ctrl_c_rejects_requested_command_context, reject_disposition, shows_stop_button,
     };
     use super::*;
     use crate::ai::agent::task::TaskId;
@@ -385,6 +385,35 @@ mod ctrl_c_reject_tests {
             reject_disposition(true, Some(&finished_status())),
             RejectDisposition::Ignore
         );
+    }
+
+    /// Issue #871: the visible Stop button appears exactly while the approved command runs.
+    #[test]
+    fn stop_button_shows_only_while_the_command_runs() {
+        assert!(shows_stop_button(
+            true,
+            Some(&AIActionStatus::RunningAsync),
+            false
+        ));
+        assert!(!shows_stop_button(
+            true,
+            Some(&AIActionStatus::RunningAsync),
+            true
+        ));
+        for status in [
+            AIActionStatus::Blocked,
+            AIActionStatus::Queued,
+            AIActionStatus::Preprocessing,
+            finished_status(),
+        ] {
+            assert!(!shows_stop_button(true, Some(&status), false), "{status:?}");
+        }
+        assert!(!shows_stop_button(true, None, false));
+        assert!(!shows_stop_button(
+            false,
+            Some(&AIActionStatus::RunningAsync),
+            false
+        ));
     }
 
     /// An untracked card (restored, or orphaned) has no pending decision and shows no buttons,
