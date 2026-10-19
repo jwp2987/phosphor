@@ -37,7 +37,11 @@ fn test_powershell_encoded_command_has_no_trailing_nul() {
     let decoded_bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded)
         .expect("should be valid base64");
-    assert_eq!(decoded_bytes.len() % 2, 0, "UTF-16LE byte count must be even");
+    assert_eq!(
+        decoded_bytes.len() % 2,
+        0,
+        "UTF-16LE byte count must be even"
+    );
 
     let decoded_utf16: Vec<u16> = decoded_bytes
         .chunks_exact(2)
@@ -102,4 +106,125 @@ fn non_fallback_sources_never_claim_unsupported_shell() {
     };
     assert!(!ShellStarterSource::UserDefault(starter()).is_known_unsupported_default_shell());
     assert!(!ShellStarterSource::Environment(starter()).is_known_unsupported_default_shell());
+}
+
+/// Runs the exact argv `arguments_for_session_spawning_command` produces for fish through a
+/// real fish, with a hostile `whoami`/`hostname`, and checks that InitShell is emitted and the
+/// payload parses and round-trips (#898: one backslash level was lost between the asset and
+/// fish's argv, `'\'` was an unterminated string, and no fish pane ever started; the older
+/// `script/test_fish_bootstrap` sources the asset directly so it could not see this).
+#[cfg(unix)]
+fn assert_fish_init_shell_from_args(
+    fish: &std::path::Path,
+    args_for: impl FnOnce(&std::path::Path) -> Vec<OsString>,
+) {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::{Command, Stdio};
+
+    let dir = tempfile::tempdir().unwrap();
+    let hostile = "a\\b\"c\td\u{1}e\\\\";
+    for (name, value) in [
+        ("whoami", format!("u{hostile}")),
+        ("hostname", format!("h{hostile}")),
+    ] {
+        let path = dir.path().join(name);
+        let body = format!(
+            "#!/bin/sh\nprintf '%s\\n' '{}'\n",
+            value.replace('\'', "'\\''")
+        );
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let args = args_for(fish);
+    let path = format!(
+        "{}:{}",
+        dir.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let output = Command::new(fish)
+        .args(&args)
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("Unexpected end of string") && !stderr.contains("Unsupported use"),
+        "fish rejected the init command: {stderr}"
+    );
+
+    let stdout = output.stdout;
+    let start = stdout
+        .windows(3)
+        .position(|w| w == b"\x1bP$")
+        .unwrap_or_else(|| panic!("no DCS emitted; stderr: {stderr}"));
+    let rest = &stdout[start + 4..];
+    let end = rest
+        .iter()
+        .position(|b| *b == 0x9c)
+        .expect("DCS terminator");
+    let hex = std::str::from_utf8(&rest[..end]).unwrap();
+    let bytes: Vec<u8> = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+        .collect();
+    let json: serde_json::Value =
+        serde_json::from_slice(&bytes).expect("InitShell payload must be valid JSON");
+    assert_eq!(json["hook"], "InitShell");
+    assert_eq!(json["value"]["shell"], "fish");
+    assert_eq!(json["value"]["user"], format!("u{hostile}"));
+    assert_eq!(json["value"]["hostname"], format!("h{hostile}"));
+}
+
+#[cfg(unix)]
+fn find_fish() -> Option<std::path::PathBuf> {
+    let fish = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|d| d.join("fish"))
+        .find(|p| p.is_file());
+    if fish.is_none() {
+        if std::env::var_os("CI").is_some() {
+            panic!("fish must be installed in CI");
+        }
+        eprintln!("fish not installed; skipping");
+    }
+    fish
+}
+
+#[cfg(unix)]
+#[test]
+fn fish_init_command_from_real_launch_args_emits_init_shell() {
+    let Some(fish) = find_fish() else { return };
+    assert_fish_init_shell_from_args(&fish, |fish| {
+        arguments_for_session_spawning_command(
+            fish.to_str().unwrap(),
+            ShellType::Fish,
+            SessionId::from(4242u64),
+        )
+    });
+}
+
+/// #909: a tab-config pane with `shell = "fish"` resolves to an `AvailableShell` and goes
+/// through `ShellStarter::init` -> `to_shell_starter_source` -> `ShellStarter::Direct`, not
+/// straight through `arguments_for_session_spawning_command`. Run the args that path really
+/// produces.
+#[cfg(unix)]
+#[test]
+fn fish_tab_config_pane_shell_starter_args_emit_init_shell() {
+    let Some(fish) = find_fish() else { return };
+    assert_fish_init_shell_from_args(&fish, |fish| {
+        let available =
+            crate::terminal::available_shells::AvailableShell::try_from(fish.to_str().unwrap())
+                .expect("fish resolves as a tab-config shell");
+        let source = ShellStarter::init(available).expect("fish has a starter");
+        let source = warpui::r#async::block_on(source.to_shell_starter_source())
+            .expect("fish starter source");
+        match ShellStarter::from(source) {
+            ShellStarter::Direct(starter) => starter.args().clone(),
+            _ => panic!("fish should start directly"),
+        }
+    });
 }

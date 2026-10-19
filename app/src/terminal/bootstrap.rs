@@ -260,7 +260,9 @@ pub fn init_shell_script_for_shell(
     let script = match shell_type {
         ShellType::Zsh => load_and_escape_script("bundled/bootstrap/zsh_init_shell.sh", assets),
         ShellType::Bash => load_and_escape_script("bundled/bootstrap/bash_init_shell.sh", assets),
-        ShellType::Fish => load_and_escape_script("bundled/bootstrap/fish_init_shell.sh", assets),
+        ShellType::Fish => {
+            load_and_escape_fish_script("bundled/bootstrap/fish_init_shell.sh", assets)
+        }
         ShellType::PowerShell => load_script("bundled/bootstrap/pwsh_init_shell.ps1", assets),
     };
     script.replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string())
@@ -359,7 +361,7 @@ fn init_subshell_script_for_shell(
             load_and_escape_script("bundled/bootstrap/bash_init_subshell.sh", assets)
         }
         ShellType::Fish => {
-            load_and_escape_script("bundled/bootstrap/fish_init_subshell.sh", assets)
+            load_and_escape_fish_script("bundled/bootstrap/fish_init_subshell.sh", assets)
         }
         ShellType::PowerShell => load_script("bundled/bootstrap/pwsh_init_subshell.ps1", assets),
     };
@@ -423,6 +425,17 @@ pub fn raw_init_shell_script_for_shell(
 ///   whole lines.
 fn load_and_escape_script(file_path: &str, assets: &dyn AssetProvider) -> String {
     load_script(file_path, assets)
+        .replace('\'', r#"'"'"'"#)
+        .replace("@@USING_CON_PTY_BOOLEAN@@", &(cfg!(windows).to_string()))
+}
+
+/// Like [`load_and_escape_script`], for a script that fish will receive as a single-quoted
+/// string. Unlike POSIX shells, fish processes `\\` and `\'` escapes inside single quotes, so a
+/// literal backslash must be doubled first (#898: `'\\'` in the asset reached fish as the
+/// unterminated `'\'`, and no fish pane ever started).
+fn load_and_escape_fish_script(file_path: &str, assets: &dyn AssetProvider) -> String {
+    load_script(file_path, assets)
+        .replace('\\', r"\\")
         .replace('\'', r#"'"'"'"#)
         .replace("@@USING_CON_PTY_BOOLEAN@@", &(cfg!(windows).to_string()))
 }
