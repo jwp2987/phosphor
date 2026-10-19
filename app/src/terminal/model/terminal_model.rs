@@ -151,6 +151,19 @@ impl FindOptions {
     }
 }
 
+impl FindOptions {
+    /// Re-keys `blocks_to_include_in_results` after the `count` oldest blocks were evicted
+    /// (#889), dropping indices that no longer exist.
+    pub fn shift_for_evicted_blocks(&mut self, count: usize) {
+        if let Some(indices) = &mut self.blocks_to_include_in_results {
+            indices.retain(|index| index.0 >= count);
+            for index in indices.iter_mut() {
+                *index = BlockIndex(index.0 - count);
+            }
+        }
+    }
+}
+
 pub enum FindOption {
     ResetWithSameQuery,
     Query(String),
@@ -935,6 +948,16 @@ impl SelectedBlocks {
         }
     }
 
+    /// Re-keys the selection after the `count` oldest blocks were evicted (#889): ranges that
+    /// lay entirely within the evicted blocks are dropped, others shift down by `count`.
+    pub fn shift_for_evicted_blocks(&mut self, count: usize) {
+        self.ranges.retain(|range| range.end().0 >= count);
+        for range in &mut self.ranges {
+            range.pivot = BlockIndex(range.pivot.0.saturating_sub(count));
+            range.tail = BlockIndex(range.tail.0.saturating_sub(count));
+        }
+    }
+
     /// Remove all block selections.
     pub fn reset(&mut self) {
         self.ranges = vec![];
@@ -1542,6 +1565,10 @@ impl TerminalModel {
 
     pub fn update_max_grid_size(&mut self, new_size: usize) {
         self.block_list_mut().update_max_grid_size(new_size);
+    }
+
+    pub fn update_max_retained_lines(&mut self, lines: usize) {
+        self.block_list_mut().update_max_retained_lines(lines);
     }
 
     #[cfg(any(test, feature = "integration_tests"))]
@@ -2167,6 +2194,9 @@ impl TerminalModel {
 
     pub fn set_shared_session_status(&mut self, shared_session_status: SharedSessionStatus) {
         self.shared_session_status = shared_session_status;
+        // Block indices are shared with peers, so never evict from a shared session (#889).
+        let suppress = self.shared_session_status.is_sharer_or_viewer();
+        self.block_list_mut().set_block_eviction_suppressed(suppress);
     }
 
     /// Returns whether this terminal is viewing a shared session.

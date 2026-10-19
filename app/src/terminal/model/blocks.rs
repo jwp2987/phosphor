@@ -310,6 +310,17 @@ pub struct BlockList {
     /// The max scroll limit for each block.
     max_grid_size_limit: usize,
 
+    /// Session-wide cap on retained output lines (`terminal.max_retained_lines`, #889).
+    /// `None` means unlimited, which is the default.
+    max_retained_lines: Option<usize>,
+
+    /// Eviction is never performed while true (shared sessions index blocks across peers).
+    block_eviction_suppressed: bool,
+
+    /// Blocks that must not be evicted (bookmarked, or attached as AI context). Kept in sync
+    /// by the view.
+    eviction_protected_block_ids: HashSet<BlockId>,
+
     /// The event proxy that proxies terminal events (such as wakeups) to the view.
     event_proxy: ChannelEventListener,
 
@@ -729,6 +740,9 @@ impl BlockList {
             size: sizes.size,
             next_gap_height_in_lines: None,
             max_grid_size_limit: sizes.max_block_scroll_limit,
+            max_retained_lines: None,
+            block_eviction_suppressed: false,
+            eviction_protected_block_ids: HashSet::new(),
             event_proxy: event_proxy.clone(),
             selection: None,
             rich_content_selections: Vec::new(),
@@ -950,6 +964,19 @@ impl BlockList {
 
     pub fn update_max_grid_size(&mut self, new_size: usize) {
         self.max_grid_size_limit = new_size;
+    }
+
+    /// Sets `terminal.max_retained_lines`. `0` means unlimited.
+    pub fn update_max_retained_lines(&mut self, lines: usize) {
+        self.max_retained_lines = (lines > 0).then_some(lines);
+    }
+
+    pub fn set_block_eviction_suppressed(&mut self, suppressed: bool) {
+        self.block_eviction_suppressed = suppressed;
+    }
+
+    pub fn set_eviction_protected_block_ids(&mut self, ids: HashSet<BlockId>) {
+        self.eviction_protected_block_ids = ids;
     }
 
     pub fn active_block_index(&self) -> BlockIndex {
@@ -3503,6 +3530,69 @@ impl BlockList {
 
         self.active_block_mut().start();
         self.early_output.reset_user_input();
+        self.evict_oldest_blocks_over_line_budget();
+    }
+
+    /// The effective retained-line budget, if any. Never lower than the per-block limit, so a
+    /// single block is not truncated by it.
+    fn retained_lines_budget(&self) -> Option<usize> {
+        if self.block_eviction_suppressed {
+            return None;
+        }
+        self.max_retained_lines
+            .map(|limit| limit.max(self.max_grid_size_limit))
+    }
+
+    /// Evicts the oldest finished blocks while total grid storage exceeds the configured
+    /// `terminal.max_retained_lines` (#889). No-op when the setting is off. Stops at the first
+    /// block that cannot be evicted (unfinished, active, or protected). Returns the number of
+    /// blocks removed and emits [`TerminalEvent::BlocksEvicted`].
+    pub(super) fn evict_oldest_blocks_over_line_budget(&mut self) -> usize {
+        match self.retained_lines_budget() {
+            Some(budget) => self.evict_oldest_blocks_to_budget(budget),
+            None => 0,
+        }
+    }
+
+    pub(super) fn evict_oldest_blocks_to_budget(&mut self, line_budget: usize) -> usize {
+        let mut total: usize = self.blocks.iter().map(|b| b.grid_storage_lines()).sum();
+        let last = self.blocks.len().saturating_sub(1);
+        let mut evict_count = 0;
+        for (i, block) in self.blocks.iter().enumerate() {
+            if total <= line_budget {
+                break;
+            }
+            if i >= last
+                || !block.finished()
+                || self.eviction_protected_block_ids.contains(block.id())
+            {
+                break;
+            }
+            total = total.saturating_sub(block.grid_storage_lines());
+            evict_count += 1;
+        }
+        if evict_count == 0 {
+            return 0;
+        }
+
+        self.clear_selection();
+        self.clear_smart_select_override();
+        self.clear_scroll_position_before_filter();
+        let height_before = self.block_heights.summary().height;
+        let mut block_ids = Vec::with_capacity(evict_count);
+        for _ in 0..evict_count {
+            if let Some(block) = self.remove_block_at_index(BlockIndex::zero()) {
+                block_ids.push(block.id().clone());
+            }
+        }
+        let removed_height = height_before - self.block_heights.summary().height;
+        self.event_proxy.send_terminal_event(TerminalEvent::BlocksEvicted {
+            count: evict_count,
+            block_ids,
+            removed_height,
+        });
+        self.event_proxy.send_wakeup_event();
+        evict_count
     }
 
     /// Prepares an active block whose command start was not observed.

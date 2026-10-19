@@ -49,6 +49,36 @@ impl ScrollState {
         self.position
     }
 
+    /// Compensates a top-anchored scroll position for `removed_height` lines having been removed
+    /// from the top of the block list (#889). Bottom-anchored and follow-bottom positions are
+    /// unaffected.
+    pub fn shift_for_removed_height(&mut self, removed_height: Lines) {
+        let shift = |scroll_lines: ScrollLines| match scroll_lines {
+            ScrollLines::ScrollTop(top) => {
+                ScrollLines::ScrollTop((top - removed_height).max(Lines::zero()))
+            }
+            other => other,
+        };
+        self.position = match self.position {
+            ScrollPosition::FixedAtPosition { scroll_lines } => ScrollPosition::FixedAtPosition {
+                scroll_lines: shift(scroll_lines),
+            },
+            ScrollPosition::FixedWithinLongRunningBlock {
+                scroll_lines,
+                num_output_lines_truncated,
+            } => ScrollPosition::FixedWithinLongRunningBlock {
+                scroll_lines: shift(scroll_lines),
+                num_output_lines_truncated,
+            },
+            ScrollPosition::WaterfallGapFollowsBottomOfMostRecentBlock {
+                scroll_top_in_lines,
+            } => ScrollPosition::WaterfallGapFollowsBottomOfMostRecentBlock {
+                scroll_top_in_lines: (scroll_top_in_lines - removed_height).max(Lines::zero()),
+            },
+            other => other,
+        };
+    }
+
     /// Possibly updates the scroll position, returning whether it was actually changed.
     pub fn update(
         &mut self,

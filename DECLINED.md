@@ -452,6 +452,20 @@ these as expected, not as drift to reconcile.
 Each entry must say what upstream does, what we do instead, and the evidence that
 upstream's behavior is actually a defect rather than a preference.
 
+- **Opt-in cap on total retained output per tab, `terminal.max_retained_lines`**
+  (`#889`, 2026-10-18, `app/src/terminal/model/blocks.rs`
+  `evict_oldest_blocks_over_line_budget`, `app/src/terminal/settings.rs`).
+  **Upstream:** only `maximum_grid_size` exists and it bounds a single block
+  (`4111d08f9:app/src/terminal/settings.rs`); finished blocks are retained forever, so a
+  session that keeps running high-volume commands grows linearly (soak: +155 MiB/h,
+  ~2.3 MiB per 200k-line burst, no plateau). **We do:** a user setting, edited in
+  settings.toml or Features > "Maximum lines retained per tab", default `0` = unlimited
+  (behaviour unchanged unless opted in). When total grid lines exceed it (never below
+  `maximum_grid_size`), `start_active_block` evicts the oldest finished blocks and emits
+  `BlocksEvicted`, on which the view shifts every `BlockIndex`-keyed structure, re-runs find
+  and shows a one-time notice. Never evicts the active block, an unfinished block, a
+  bookmarked block or one attached as AI context; disabled in shared sessions.
+  <!-- markers: keep:evict_oldest_blocks_over_line_budget keep:BlocksEvicted keep:max_retained_lines -->
 - **Reopening a closed item runs the restore with `UndoCloseStack` free**
   (`#840`, 2026-10-13, `app/src/undo_close/stack.rs`,
   `app/src/ai/conversation_navigation/mod.rs`, `crates/warpui_core/src/core/entity.rs`).

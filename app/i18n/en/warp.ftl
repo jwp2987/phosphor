@@ -1170,6 +1170,9 @@ settings-features-notify-needs-attention = Notify when a command or agent needs 
 settings-features-play-notification-sounds = Play notification sounds
 settings-features-default-session-mode = Default mode for new sessions
 settings-features-block-rows-description = Setting the limit above 100k lines may impact performance. Maximum rows supported is { $max_rows }.
+settings-features-max-retained-lines = Maximum lines retained per tab (0 = unlimited)
+settings-features-max-retained-lines-description = Total lines of output kept across all blocks in a tab. When exceeded, the oldest finished blocks are removed. Bookmarked blocks, blocks attached as AI context, and running commands are never removed. Values below the per-block limit are raised to it. 0 keeps everything.
+terminal-older-output-removed-notice = Older output was removed to stay within your scrollback limit (Settings > Features > Maximum lines retained per tab).
 settings-features-toast-duration-label = Toast notifications stay visible for
 settings-features-tab-key-behavior = Tab key behavior
 settings-features-graphics-backend-label = Preferred graphics backend

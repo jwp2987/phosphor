@@ -71,8 +71,8 @@ use crate::terminal::session_settings::{
     SessionSettingsChangedEvent,
 };
 use crate::terminal::settings::{
-    MaximumGridSize, Osc52ClipboardAccess, Osc52ClipboardAccessSetting, ShowTerminalZeroStateBlock,
-    TerminalSettings, UseAudibleBell,
+    MaxRetainedLines, MaximumGridSize, Osc52ClipboardAccess, Osc52ClipboardAccessSetting,
+    ShowTerminalZeroStateBlock, TerminalSettings, UseAudibleBell,
 };
 use crate::terminal::warpify::settings::{EnableSshWrapper, WarpifySettings};
 use crate::terminal::{BlockListSettings, SnackbarEnabled};
@@ -752,6 +752,9 @@ const MAX_BLOCK_SIZE_INPUT_BOX_WIDTH: f32 = 80.;
 
 const MIN_MAX_GRID_SIZE: usize = 100;
 
+/// Upper bound for `terminal.max_retained_lines`.
+const MAX_RETAINED_LINES: usize = 1_000_000_000;
+
 const MOUSE_SCROLL_EDITOR_WIDTH: f32 = 40.;
 
 const MIN_MOUSE_SCROLL_MULTIPLIER: f32 = 1.0;
@@ -1296,6 +1299,9 @@ pub struct FeaturesPageView {
 
     max_block_size_input_editor: ViewHandle<EditorView>,
     valid_max_block_size: bool,
+
+    max_retained_lines_input_editor: ViewHandle<EditorView>,
+    valid_max_retained_lines: bool,
 
     mouse_scroll_input_editor: ViewHandle<EditorView>,
     valid_mouse_scroll_multiplier: bool,
@@ -2136,6 +2142,14 @@ impl FeaturesPageView {
         ctx.subscribe_to_model(
             &TerminalSettings::handle(ctx),
             |me, terminal_settings, event, ctx| {
+                if matches!(event, TerminalSettingsChangedEvent::MaxRetainedLines { .. }) {
+                    me.max_retained_lines_input_editor.update(ctx, |editor, ctx| {
+                        editor.set_buffer_text(
+                            &format!("{}", *terminal_settings.as_ref(ctx).max_retained_lines),
+                            ctx,
+                        );
+                    });
+                }
                 if matches!(event, TerminalSettingsChangedEvent::MaximumGridSize { .. }) {
                     me.max_block_size_input_editor.update(ctx, |editor, ctx| {
                         editor.set_buffer_text(
@@ -2400,6 +2414,26 @@ impl FeaturesPageView {
             me.handle_block_size_editor_event(event, ctx);
         });
 
+        // Editor for the session-wide retained-lines cap (#889). 0 means unlimited.
+        let retained_lines_editor = ctx.add_typed_action_view(|ctx| {
+            EditorView::single_line(width_and_height_editor_options.clone(), ctx)
+        });
+        retained_lines_editor.update(ctx, |editor, ctx| {
+            editor.set_buffer_text(
+                &format!(
+                    "{}",
+                    *TerminalSettings::handle(ctx)
+                        .as_ref(ctx)
+                        .max_retained_lines
+                        .value()
+                ),
+                ctx,
+            );
+        });
+        ctx.subscribe_to_view(&retained_lines_editor, move |me, _, event, ctx| {
+            me.handle_retained_lines_editor_event(event, ctx);
+        });
+
         let mouse_scroll_input_editor = ctx.add_typed_action_view(|ctx| {
             EditorView::single_line(width_and_height_editor_options.clone(), ctx)
         });
@@ -2512,6 +2546,9 @@ impl FeaturesPageView {
             max_block_size_input_editor: block_size_editor,
             valid_max_block_size: true,
 
+            max_retained_lines_input_editor: retained_lines_editor,
+            valid_max_retained_lines: true,
+
             ssh_wrapper_toggled: false,
 
             word_boundary_editor,
@@ -2607,6 +2644,7 @@ impl FeaturesPageView {
         let mut session_widgets: Vec<Box<dyn SettingsWidget<View = Self>>> = vec![];
 
         session_widgets.push(Box::new(BlockLimitWidget::default()));
+        session_widgets.push(Box::new(MaxRetainedLinesWidget::default()));
 
         if !FeatureFlag::SSHTmuxWrapper.is_enabled()
             && WarpifySettings::as_ref(ctx)
@@ -3155,6 +3193,67 @@ impl FeaturesPageView {
                 );
             });
         }
+    }
+
+    fn retained_lines_input_is_valid(input: usize, ctx: &AppContext) -> bool {
+        // 0 turns the cap off. Otherwise the cap must be at least the per-block limit, so a
+        // single block is never truncated by it.
+        let min = *TerminalSettings::as_ref(ctx).maximum_grid_size.value();
+        input == 0 || (min..=MAX_RETAINED_LINES).contains(&input)
+    }
+
+    pub fn handle_retained_lines_editor_event(
+        &mut self,
+        event: &EditorEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match event {
+            EditorEvent::Edited(_) => {
+                let buffer_text = self
+                    .max_retained_lines_input_editor
+                    .as_ref(ctx)
+                    .buffer_text(ctx);
+                self.valid_max_retained_lines = buffer_text
+                    .trim()
+                    .parse::<usize>()
+                    .is_ok_and(|input| Self::retained_lines_input_is_valid(input, ctx));
+                ctx.notify();
+            }
+            EditorEvent::Enter | EditorEvent::Blurred => self.set_max_retained_lines(ctx),
+            EditorEvent::Escape => ctx.emit(FeaturesSettingsPageEvent::FocusModal),
+            _ => {}
+        }
+    }
+
+    fn set_max_retained_lines(&mut self, ctx: &mut ViewContext<Self>) {
+        let buffer_text = self
+            .max_retained_lines_input_editor
+            .as_ref(ctx)
+            .buffer_text(ctx);
+        let current = *TerminalSettings::as_ref(ctx).max_retained_lines.value();
+
+        let new_value = buffer_text.trim().parse::<usize>().ok().map(|input| {
+            if input == 0 {
+                0
+            } else {
+                input.clamp(
+                    *TerminalSettings::as_ref(ctx).maximum_grid_size.value(),
+                    MAX_RETAINED_LINES,
+                )
+            }
+        });
+        // Invalid input resets the field to the last known value.
+        let shown = new_value.unwrap_or(current);
+        self.valid_max_retained_lines = true;
+        self.max_retained_lines_input_editor.update(ctx, |editor, ctx| {
+            editor.set_buffer_text(&format!("{shown}"), ctx);
+        });
+        if shown != current {
+            TerminalSettings::handle(ctx).update(ctx, |settings, ctx| {
+                report_if_error!(settings.max_retained_lines.set_value(shown, ctx));
+            });
+        }
+        ctx.notify();
     }
 
     fn handle_mouse_scroll_input_editor_event(
@@ -4937,6 +5036,64 @@ impl SettingsWidget for BlockLimitWidget {
             appearance,
             input_field,
             Some(block_maximum_rows_description()),
+        )
+    }
+}
+
+#[derive(Default)]
+struct MaxRetainedLinesWidget {}
+
+impl SettingsWidget for MaxRetainedLinesWidget {
+    type View = FeaturesPageView;
+
+    fn search_terms(&self) -> &str {
+        "retained lines scrollback total output memory limit evict tab"
+    }
+
+    fn render(
+        &self,
+        view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let border_color: Option<Fill> = match view.valid_max_retained_lines {
+            false => Some(themes::theme::Fill::error().into()),
+            true => Default::default(),
+        };
+        let input_field = appearance
+            .ui_builder()
+            .text_input(view.max_retained_lines_input_editor.clone())
+            .with_style(UiComponentStyles {
+                width: Some(MAX_BLOCK_SIZE_INPUT_BOX_WIDTH + 40.),
+                padding: Some(Coords {
+                    top: 4.,
+                    bottom: 4.,
+                    left: 6.,
+                    right: 6.,
+                }),
+                background: Some(appearance.theme().surface_2().into()),
+                border_color,
+                ..Default::default()
+            })
+            .build()
+            .finish();
+
+        render_body_item::<FeaturesPageAction>(
+            crate::t!("settings-features-max-retained-lines"),
+            None,
+            LocalOnlyIconState::for_setting(
+                MaxRetainedLines::storage_key(),
+                MaxRetainedLines::sync_to_cloud(),
+                &mut view
+                    .button_mouse_states
+                    .local_only_icon_tooltip_states
+                    .borrow_mut(),
+                app,
+            ),
+            ToggleState::Enabled,
+            appearance,
+            input_field,
+            Some(crate::t!("settings-features-max-retained-lines-description")),
         )
     }
 }

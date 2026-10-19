@@ -295,6 +295,15 @@ impl ModelEventDispatcher {
                 ModelEvent::CursorBlinkingChange(is_blinking)
             }
             Event::TerminalClear => ModelEvent::TerminalClear,
+            Event::BlocksEvicted {
+                count,
+                block_ids,
+                removed_height,
+            } => ModelEvent::BlocksEvicted {
+                count,
+                block_ids,
+                removed_height,
+            },
             Event::TmuxControlModeReady { primary_pane } => {
                 ModelEvent::TmuxControlModeReady { primary_pane }
             }
@@ -453,6 +462,13 @@ pub enum ModelEvent {
         Arc<dyn Fn(&str) -> String + Sync + Send + 'static>,
     ),
     CursorBlinkingChange(bool),
+    /// Sent when the oldest finished blocks were evicted to honor `terminal.max_retained_lines`
+    /// (#889). All `BlockIndex`-keyed state outside the model must shift down by `count`.
+    BlocksEvicted {
+        count: usize,
+        block_ids: Vec<BlockId>,
+        removed_height: warpui::units::Lines,
+    },
     TerminalClear,
     Bell,
     Exit {
