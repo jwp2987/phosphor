@@ -2452,3 +2452,15 @@ orchestration trees (children are looked up in memory). The attempted design is 
   output ordering (a parser-wide change) for a code path that is compiled out of default builds.
   The *decode* half is asynchronous (`#880`: `AssetCache::insert_raw_asset_bytes_async`).
   Reverse only alongside a decision to make the pty parser able to suspend on a pending image.
+
+- **A `warp.sqlite` deleted or replaced while the app runs is reported, not re-created** (`#911`,
+  2026-10-19, `persistence/sqlite.rs` writer, `persistence/database_notice.rs`). The writer records
+  the file's device and inode when it opens it and checks the path before each write. If the path is
+  missing, is not a regular file, or is a different file, the writer stops writing, shows the
+  "can't save" notice once, and never closes its connection (closing a WAL connection would
+  checkpoint and delete the `-wal` at that path). **Declined:** re-creating a fresh database
+  mid-session. A different file at the path may be a healthy database the user put back, and a new
+  one would hold only the current snapshot, not the history; overwriting or quarantining it is the
+  one thing this code must never do. The cost is that saving resumes at the next launch, which
+  opens whatever is at the path normally. Reverse only for the "path missing" case if history loss
+  proves acceptable.
