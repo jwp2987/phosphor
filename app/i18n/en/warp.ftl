@@ -3826,4 +3826,5 @@ workspace-database-write-failing-toast = Phosphor can't save to its saved-state 
 workspace-database-reason-read-only = the file or its folder is read-only.
 workspace-database-reason-disk-full = the disk is full.
 workspace-database-reason-other = { $detail }.
+workspace-settings-file-restored-toast = { $path } was deleted while Phosphor was running and has been restored. Quit Phosphor first to reset settings.
 workspace-settings-save-failed-toast = Couldn't save your settings to { $path }: { $reason }. Changes will be lost when Phosphor restarts. Check that the file and its folder are writable.

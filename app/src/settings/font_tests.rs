@@ -67,4 +67,17 @@ fn ui_font_size_rejects_out_of_range_values_from_storage() {
         );
     }
     assert_eq!(*UiFontSize::new(Some(14.0)).value(), 14.0);
+    // The slider's bounds, not the wider terminal-font ones.
+    assert_eq!(
+        *UiFontSize::new(Some(UI_FONT_SIZE_MAX + 1.0)).value(),
+        DEFAULT_UI_FONT_SIZE
+    );
+    assert_eq!(
+        *UiFontSize::new(Some(UI_FONT_SIZE_MIN - 1.0)).value(),
+        DEFAULT_UI_FONT_SIZE
+    );
+    assert_eq!(
+        *UiFontSize::new(Some(UI_FONT_SIZE_MAX)).value(),
+        UI_FONT_SIZE_MAX
+    );
 }

@@ -100,9 +100,30 @@ pub fn classify_database_problem(message: &str, db_path: &Path) -> DatabaseProbl
     }
 }
 
+/// Wakes the UI when a notice is recorded after startup (#860). The notice
+/// slot is written from the SQLite writer thread, which cannot reach the UI.
+static NOTICE_WAKE: Mutex<Option<async_channel::Sender<()>>> = Mutex::new(None);
+
+/// Returns the receiver that gets a message whenever a notice is recorded, once.
+/// The channel holds at most one message, so a burst wakes the UI once.
+pub fn take_notice_wake_receiver() -> Option<async_channel::Receiver<()>> {
+    let mut slot = NOTICE_WAKE.lock().ok()?;
+    if slot.is_some() {
+        return None;
+    }
+    let (tx, rx) = async_channel::bounded(1);
+    *slot = Some(tx);
+    Some(rx)
+}
+
 fn set_notice(notice: DatabaseProblemNotice) {
     if let Ok(mut slot) = PROBLEM_NOTICE.lock() {
         *slot = Some(notice);
+    }
+    if let Ok(wake) = NOTICE_WAKE.lock() {
+        if let Some(tx) = wake.as_ref() {
+            let _ = tx.try_send(());
+        }
     }
 }
 

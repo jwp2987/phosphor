@@ -973,3 +973,68 @@ fn test_settings_file_at_the_size_limit_is_parsed() {
     let (_, error) = TomlBackedUserPreferences::new(file_path);
     assert!(error.is_none());
 }
+
+/// #862: an editor that saves by delete + rename must not trigger a restore.
+#[test]
+fn test_delete_then_rename_save_is_not_treated_as_deletion() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("settings.toml");
+    std::fs::write(&file_path, "[font]\nfont_size = 17.0\n").unwrap();
+    let (prefs, _) = TomlBackedUserPreferences::new(file_path.clone());
+
+    std::fs::remove_file(&file_path).unwrap();
+    let rewriter_path = file_path.clone();
+    let rewriter = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(&rewriter_path, "[font]\nfont_size = 21.0\n").unwrap();
+    });
+    prefs.reload_from_disk().unwrap();
+    rewriter.join().unwrap();
+
+    // The editor's version won; the in-memory one did not overwrite it.
+    assert!(
+        std::fs::read_to_string(&file_path)
+            .unwrap()
+            .contains("21.0")
+    );
+}
+
+/// #863: a runtime reload that finds the file too big (or a directory) must
+/// inhibit writes, and a later good reload must lift the inhibition.
+#[test]
+fn test_runtime_too_large_or_not_a_file_inhibits_writes_until_reload_succeeds() {
+    use super::super::UserPreferences;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("settings.toml");
+    std::fs::write(&file_path, "[font]\nfont_size = 17.0\n").unwrap();
+    let (prefs, error) = TomlBackedUserPreferences::new(file_path.clone());
+    assert!(error.is_none());
+
+    let mut big = String::from("[font]\nfont_size = 17.0\n");
+    big.push_str(&"#".repeat(MAX_SETTINGS_FILE_BYTES as usize));
+    std::fs::write(&file_path, &big).unwrap();
+    assert!(matches!(
+        prefs.reload_from_disk(),
+        Err(Error::TooLarge { .. })
+    ));
+    assert!(prefs.write_inhibited.get());
+    assert!(
+        prefs
+            .write_value_with_hierarchy("font_size", "12.0".to_string(), Some("font"), None)
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file_path).unwrap().len(),
+        big.len()
+    );
+
+    std::fs::write(&file_path, "[font]\nfont_size = 18.0\n").unwrap();
+    prefs.reload_from_disk().unwrap();
+    assert!(!prefs.write_inhibited.get());
+
+    std::fs::remove_file(&file_path).unwrap();
+    std::fs::create_dir(&file_path).unwrap();
+    assert!(matches!(prefs.reload_from_disk(), Err(Error::NotAFile(_))));
+    assert!(prefs.write_inhibited.get());
+}

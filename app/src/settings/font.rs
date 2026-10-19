@@ -247,10 +247,17 @@ impl MonospaceFontSize {
 }
 
 impl UiFontSize {
-    // Same bounds as the terminal font: `ui_font_size = 0` in settings.toml
-    // must not reach the UI text layout (#863).
+    // `ui_font_size = 0` in settings.toml must not reach the UI text layout
+    // (#863); the bounds are the ones the UI slider offers.
     fn validate(&self, new_value: f32) -> f32 {
-        validated_font_size("ui_font_size", new_value, DEFAULT_UI_FONT_SIZE)
+        if new_value.is_finite() && (UI_FONT_SIZE_MIN..=UI_FONT_SIZE_MAX).contains(&new_value) {
+            new_value
+        } else {
+            log::warn!(
+                "ui_font_size {new_value} is outside {UI_FONT_SIZE_MIN}..={UI_FONT_SIZE_MAX}; using {DEFAULT_UI_FONT_SIZE}"
+            );
+            DEFAULT_UI_FONT_SIZE
+        }
     }
 }
 

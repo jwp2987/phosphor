@@ -121,6 +121,12 @@ pub fn take_database_problem_notice() -> Option<DatabaseProblemNotice> {
     database_notice::take_database_problem_notice()
 }
 
+/// Returns, once, a receiver that gets a message whenever a database notice is
+/// recorded, so the UI can show it without waiting for a window change (#860).
+pub fn take_database_notice_wake_receiver() -> Option<async_channel::Receiver<()>> {
+    database_notice::take_notice_wake_receiver()
+}
+
 /// Prewarms the SQLite connection + runs migrations on a background thread.
 /// Should be called before `app_builder.run`, so SQLite initialization can
 /// run concurrently with winit / wgpu initialization, saving ~70-90ms on cold

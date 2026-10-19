@@ -94,3 +94,24 @@ fn notices_are_recorded_once_and_taken_once() {
     record_write_outcome(db, Some("no such column: x"));
     assert!(take_database_problem_notice().is_none());
 }
+
+/// #860: a notice recorded from the writer thread wakes the UI, which then
+/// finds it in the slot.
+#[test]
+fn recording_a_write_failure_wakes_the_ui_and_leaves_the_notice() {
+    let wake = take_notice_wake_receiver().expect("the receiver is available once");
+    assert!(take_notice_wake_receiver().is_none());
+    let db = Path::new("/nonexistent/dir/wake.sqlite");
+    record_write_outcome(db, None);
+    assert!(
+        wake.try_recv().is_err(),
+        "nothing recorded, nothing to wake"
+    );
+
+    record_write_outcome(db, Some("database or disk is full"));
+    assert!(wake.try_recv().is_ok());
+    let notice = take_database_problem_notice().expect("the notice is pending");
+    assert_eq!(notice.problem, DatabaseProblem::DiskFull);
+    assert!(!notice.persistence_disabled);
+    record_write_outcome(db, None);
+}

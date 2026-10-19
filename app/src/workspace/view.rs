@@ -2684,6 +2684,23 @@ impl Workspace {
         ctx: &mut ViewContext<Self>,
     ) {
         ctx.subscribe_to_model(&WarpConfig::handle(ctx), move |_me, _, event, ctx| {
+            if let WarpConfigUpdateEvent::SettingsFileRestored { path } = event {
+                const OBJECT_ID: &str = "settings_file_restored";
+                let path_string = path.display().to_string();
+                let friendly_path = user_friendly_path(
+                    &path_string,
+                    dirs::home_dir().as_ref().and_then(|h| h.to_str()),
+                );
+                let toast = DismissibleToast::error(crate::t!(
+                    "workspace-settings-file-restored-toast",
+                    path = friendly_path.to_string()
+                ))
+                .with_object_id(OBJECT_ID.to_owned());
+                toast_stack.update(ctx, |toast_stack, ctx| {
+                    toast_stack.dismiss_toasts_by_prefix(OBJECT_ID, ctx);
+                    toast_stack.add_persistent_toast(toast, ctx);
+                });
+            }
             if let WarpConfigUpdateEvent::SettingsSaveFailed { path, reason } = event {
                 const OBJECT_ID: &str = "settings_save_failed";
                 let path_string = path.display().to_string();
@@ -2721,10 +2738,20 @@ impl Workspace {
         if active_window.is_none() || active_window == Some(ctx.window_id()) {
             Self::show_database_notices(&toast_stack, ctx);
         }
+        let toast_stack_for_wake = toast_stack.clone();
         ctx.subscribe_to_model(&WindowManager::handle(ctx), move |_me, _, event, ctx| {
             let StateEvent::ValueChanged { current, .. } = event;
             if current.active_window == Some(ctx.window_id()) {
                 Self::show_database_notices(&toast_stack, ctx);
+            }
+        });
+        // A notice recorded by the SQLite writer thread after startup (a disk
+        // that fills up) wakes the UI here; only the active window shows it.
+        ctx.subscribe_to_model(&WarpConfig::handle(ctx), move |_me, _, event, ctx| {
+            if matches!(event, WarpConfigUpdateEvent::DatabaseNoticeRaised)
+                && ctx.windows().active_window() == Some(ctx.window_id())
+            {
+                Self::show_database_notices(&toast_stack_for_wake, ctx);
             }
         });
     }

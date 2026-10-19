@@ -209,10 +209,7 @@ fn send_crash_report(
 /// unwritable or file-instead-of-directory state directory used to leave the
 /// server unable to bind, so crash reporting silently never started (#861).
 fn socket_dir(state_dir: PathBuf, fallback: PathBuf) -> PathBuf {
-    let usable = std::fs::create_dir_all(&state_dir).is_ok()
-        && state_dir
-            .metadata()
-            .is_ok_and(|m| m.is_dir() && !m.permissions().readonly());
+    let usable = std::fs::create_dir_all(&state_dir).is_ok() && dir_is_writable(&state_dir);
     if usable {
         state_dir
     } else {
@@ -223,6 +220,62 @@ fn socket_dir(state_dir: PathBuf, fallback: PathBuf) -> PathBuf {
         );
         fallback
     }
+}
+
+/// Whether files can really be created in `dir`: a write probe, because the
+/// read-only permission bit says nothing about a directory owned by another
+/// user (mode 755) or a read-only mount (#861).
+fn dir_is_writable(dir: &std::path::Path) -> bool {
+    if !dir.metadata().is_ok_and(|m| m.is_dir()) {
+        return false;
+    }
+    let probe = dir.join(format!(".phosphor-write-probe-{}", std::process::id()));
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// A per-user, owner-only (0700) directory inside the shared `base` (the temp
+/// dir), so the crash-report socket is not reachable by other local users.
+/// Falls back to `base` itself if it cannot be made private.
+#[cfg(unix)]
+fn private_socket_dir(base: PathBuf) -> PathBuf {
+    use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let uid = unsafe { libc::geteuid() };
+    let dir = base.join(format!("phosphor-crash-{uid}"));
+    let created = match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+        Ok(()) => true,
+        Err(err) => err.kind() == std::io::ErrorKind::AlreadyExists,
+    };
+    // Fails if the directory belongs to someone else, which also rejects a
+    // directory pre-planted by another user.
+    let private = created
+        && std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).is_ok()
+        && dir_is_writable(&dir);
+    if private {
+        dir
+    } else {
+        log::warn!(
+            "Could not create a private directory {}; placing the crash-report socket in {}",
+            dir.display(),
+            base.display()
+        );
+        base
+    }
+}
+
+#[cfg(not(unix))]
+fn private_socket_dir(base: PathBuf) -> PathBuf {
+    base
 }
 
 #[cfg(test)]
@@ -236,9 +289,17 @@ impl MinidumpGuard {
         let socket_name = format!("wcr-{}.sock", Uuid::new_v4().simple());
         let socket_path = if cfg!(target_os = "macos") {
             // On macOS, the maximum length of a socket path is fairly short, so use the temp directory.
-            std::env::temp_dir().join(socket_name)
+            private_socket_dir(std::env::temp_dir()).join(socket_name)
         } else {
-            socket_dir(warp_core::paths::state_dir(), std::env::temp_dir()).join(socket_name)
+            let temp = std::env::temp_dir();
+            let dir = socket_dir(warp_core::paths::state_dir(), temp.clone());
+            // In the shared temp dir the socket goes in a private subdirectory.
+            let dir = if dir == temp {
+                private_socket_dir(temp)
+            } else {
+                dir
+            };
+            dir.join(socket_name)
         };
 
         let child =
