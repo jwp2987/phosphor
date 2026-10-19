@@ -200,7 +200,10 @@ fn sqlite_error_log_is_limited_per_code() {
     assert!(!sqlite_error_rate_limit(&mut seen, 26, 101));
     assert!(!sqlite_error_rate_limit(&mut seen, 26, 159));
     assert!(sqlite_error_rate_limit(&mut seen, 11, 101), "other code");
-    assert!(sqlite_error_rate_limit(&mut seen, 26, 160), "after a minute");
+    assert!(
+        sqlite_error_rate_limit(&mut seen, 26, 160),
+        "after a minute"
+    );
 }
 
 #[test]
