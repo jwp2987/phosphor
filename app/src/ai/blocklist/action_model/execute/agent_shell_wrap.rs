@@ -289,35 +289,72 @@ pub(super) fn needs_subshell(shell_type: ShellType, command: &str) -> bool {
     })
 }
 
-/// Programs that, once `exec`ed, leave an interactive shell holding the terminal (#899, #900).
+/// Programs that, once `exec`ed with nothing to run, leave an interactive shell holding the
+/// terminal (#899, #900). `su` opens a login shell the same way.
 const SHELL_PROGRAMS: &[&str] = &[
     "sh", "bash", "zsh", "fish", "dash", "ksh", "mksh", "ash", "csh", "tcsh", "pwsh", "nu",
-    "xonsh", "elvish",
+    "xonsh", "elvish", "su",
 ];
 
-/// If `command` would, at its top level, `exec` into a shell, returns that shell's name.
+/// Words that run another program: `exec nice bash` is `exec bash`.
+const EXEC_PASS_THROUGH: &[&str] = &[
+    "env", "nice", "sudo", "doas", "nohup", "time", "command", "stdbuf",
+];
+
+/// Arguments after a shell that still leave it interactive.
+const INTERACTIVE_SHELL_ARGS: &[&str] = &["-l", "-i", "--login", "--interactive", "--", "-"];
+
+/// If `command` would, at its top level, `exec` into an interactive shell, returns that shell's
+/// name.
 ///
 /// `exec bash` replaces the process the command runs in. Unwrapped it replaces the user's own
 /// hooked shell; in the subshell form it replaces the subshell, which becomes a second
 /// interactive shell holding the terminal with none of Phosphor's hooks: the command never
 /// finishes, so the agent's tool call never returns, and ^C is ignored at its prompt (#899,
-/// #900). There is no way to run that on the agent's behalf that ends, so it is refused
-/// up front with an explanation the model can act on.
+/// #900). There is no way to run that on the agent's behalf that ends, so it is refused up
+/// front with an explanation the model can act on.
+///
+/// Only an `exec` that leaves the shell interactive counts: `exec bash -c 'cmd'`, `exec sh
+/// script.sh` and `exec env X=1 sh run.sh` run something and end. A target that is not known
+/// until runtime (`exec "$SHELL"`, `exec $(command -v zsh)`, `` exec `which fish` ``) is
+/// treated as a shell, since the only reason to `exec` the login shell is to become it.
 pub(super) fn exec_into_shell(shell_type: Option<ShellType>, command: &str) -> Option<String> {
     if shell_type == Some(ShellType::PowerShell) {
         return None;
     }
+    if exec_of_backtick_substitution(command) {
+        return Some("$SHELL".to_owned());
+    }
     simple_commands(command).iter().find_map(|words| {
         let (name, args) = command_name_and_args(words)?;
-        if name != "exec" {
-            return None;
+        match name {
+            "exec" => exec_target_shell(args),
+            // `eval` runs its arguments in the current shell: `eval 'exec bash'`.
+            "eval" => {
+                let text = args.join(" ");
+                (!text.is_empty())
+                    .then(|| exec_into_shell(shell_type, &text))
+                    .flatten()
+            }
+            _ => None,
         }
-        exec_target_shell(args)
     })
 }
 
+/// `` exec `which fish` ``: the scanner ends a command at a backtick, so the target is lost.
+fn exec_of_backtick_substitution(command: &str) -> bool {
+    let mut prev_exec = false;
+    for word in command.split_whitespace() {
+        if prev_exec && word.starts_with('`') {
+            return true;
+        }
+        prev_exec = word == "exec";
+    }
+    false
+}
+
 fn exec_target_shell(args: &[String]) -> Option<String> {
-    let mut iter = args.iter();
+    let mut iter = args.iter().peekable();
     while let Some(arg) = iter.next() {
         if arg == "--" {
             continue;
@@ -335,14 +372,31 @@ fn exec_target_shell(args: &[String]) -> Option<String> {
         }
         let base = arg.rsplit('/').next().unwrap_or(arg);
         let base = base.strip_suffix(".exe").unwrap_or(base);
-        if base == "env" {
+        let rest: Vec<&String> = iter.clone().collect();
+        if matches!(base, "sudo" | "doas")
+            && rest
+                .iter()
+                .any(|a| matches!(a.as_str(), "-i" | "-s" | "--login" | "--shell"))
+        {
+            return Some(base.to_owned());
+        }
+        if EXEC_PASS_THROUGH.contains(&base) {
             continue;
         }
-        // `exec "$SHELL"` / `exec $SHELL`: the user's login shell, by definition a shell.
-        if matches!(arg.as_str(), "$SHELL" | "${SHELL}" | "$0" | "${0}") {
-            return Some("$SHELL".to_owned());
+        let rest_is_interactive = rest
+            .iter()
+            .all(|a| INTERACTIVE_SHELL_ARGS.contains(&a.as_str()));
+        // `exec "$SHELL"`, `exec "${SHELL:-/bin/sh}"`, `$0`, or a `$(...)` substitution (the
+        // scanner leaves a lone `$` for it): a shell chosen at runtime.
+        let dynamic = arg == "$"
+            || arg.starts_with("$(")
+            || arg.starts_with("$SHELL")
+            || arg.starts_with("${SHELL")
+            || matches!(arg.as_str(), "$0" | "${0}");
+        if dynamic {
+            return rest_is_interactive.then(|| "$SHELL".to_owned());
         }
-        return SHELL_PROGRAMS.contains(&base).then(|| base.to_owned());
+        return (SHELL_PROGRAMS.contains(&base) && rest_is_interactive).then(|| base.to_owned());
     }
     None
 }

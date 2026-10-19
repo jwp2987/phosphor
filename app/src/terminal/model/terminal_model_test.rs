@@ -2593,3 +2593,12 @@ fn agent_display_command_does_not_touch_other_blocks() {
         "ls -la"
     );
 }
+
+#[test]
+fn display_command_controls_are_shown_not_executed() {
+    use crate::terminal::model::header_grid::visible_command_text;
+    assert_eq!(
+        visible_command_text("a\x1b]0;x\x07b\tc\r\nd\re\x7f\u{9b}"),
+        "a\u{241b}]0;x\u{2407}b\u{2409}c\nd\u{240d}e\u{2421}\u{fffd}"
+    );
+}

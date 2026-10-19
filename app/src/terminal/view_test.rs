@@ -7782,14 +7782,15 @@ fn ignored_interrupt_of_agent_command_escalates_to_a_stop() {
                 "the command is the user's after the escalated stop"
             );
         });
-        assert!(
+        assert_eq!(
             pty_writes
                 .borrow()
                 .iter()
                 .filter(|write| **write == vec![warp_terminal::model::escape_sequences::C0::ETX])
-                .count()
-                >= 2,
-            "the escalation interrupts once more along with the stop"
+                .count(),
+            1,
+            "only the user's own ^C: the escalation must not send a second SIGINT, which \
+             programs cleaning up on the first treat as 'abort now'"
         );
     })
 }

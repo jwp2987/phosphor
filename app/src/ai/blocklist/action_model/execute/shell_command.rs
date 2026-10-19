@@ -1005,11 +1005,12 @@ fn exec_into_shell_refusal(command: &str, shell: &str) -> RequestCommandOutputRe
         block_id: BlockId::new(),
         command: command.to_owned(),
         output: format!(
-            "The command was not run. `exec {shell}` replaces the terminal's shell with a new \
-             interactive one that never exits on its own, so this tool call could never \
-             finish and the user would lose their terminal session. To run something in a \
-             different shell, use a non-interactive invocation instead, for example \
-             `{shell} -c '<commands>'`, or just run the commands directly."
+            "The command was not run. `exec {shell}` with nothing to run replaces the terminal's \
+             shell with a new interactive one that never exits on its own, so this tool call \
+             could never finish and the user would lose their terminal session. To run \
+             something in a different shell, run it non-interactively instead, for example \
+             `exec {shell} -c '<commands>'` or `{shell} script.sh`, or just run the commands \
+             directly."
         ),
         exit_code: ExitCode::from(1),
         start_ts: None,

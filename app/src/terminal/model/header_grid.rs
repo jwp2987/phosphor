@@ -27,6 +27,23 @@ use super::{
 use crate::terminal::{event_listener::ChannelEventListener, SizeInfo};
 use warp_terminal::model::{KeyboardModes, KeyboardModesApplyBehavior};
 
+/// `text` with every control character other than a newline shown as its Unicode control
+/// picture (ESC -> U+241B, TAB -> U+2409, DEL -> U+2421), and `\r\n` folded to `\n`. The
+/// command comes from the model and is fed to the terminal parser, so it must not be able to
+/// move the cursor, set a title or start an escape sequence.
+pub(super) fn visible_command_text(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .chars()
+        .map(|c| match c {
+            '\n' => '\n',
+            c if (c as u32) < 0x20 => char::from_u32(0x2400 + c as u32).unwrap_or('?'),
+            '\u{7f}' => '\u{2421}',
+            c if ('\u{80}'..='\u{9f}').contains(&c) => '\u{fffd}',
+            c => c,
+        })
+        .collect()
+}
+
 macro_rules! delegate {
     ($self:ident.$method:ident( $( $arg:expr_2021 ),* )) => {
         match $self.receiving_chars_for_prompt {
@@ -684,8 +701,7 @@ impl HeaderGrid {
         {
             return;
         }
-        let mut bytes = text
-            .replace("\r\n", "\n")
+        let mut bytes = visible_command_text(text)
             .replace('\n', "\r\n")
             .into_bytes();
         if ended_with_newline {

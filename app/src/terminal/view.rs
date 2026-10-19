@@ -2349,6 +2349,11 @@ enum StopInterruptScope {
     UserCtrlC,
     /// Closing the pane (#848): only a command the agent of this conversation is running.
     AgentCommandOnly,
+    /// An interrupt the agent's command already got and ignored (#899): hand the command over
+    /// and cancel the conversation like `AgentCommandOnly`, but write NO further ^C. A second
+    /// SIGINT is "abort now" to programs that clean up on the first (terraform, docker compose,
+    /// npm, rsync).
+    HandOverOnly,
 }
 
 type ConversationFinishedCallback =
@@ -8610,7 +8615,14 @@ impl TerminalView {
             )
         };
         if let Some(conversation_id) = conversation_to_stop {
-            self.stop_local_agent_conversation(conversation_id, ctx);
+            // No ^C: the interrupt was already delivered, and the grace period only decides
+            // that the agent has waited long enough. A command that is cleaning up on that
+            // first ^C (graceful shutdown) is left to finish, now in the user's hands.
+            self.stop_local_agent_conversation_with_interrupt_scope(
+                conversation_id,
+                StopInterruptScope::HandOverOnly,
+                ctx,
+            );
         }
         // The command is still running and is now the user's: show it, so the user can see
         // what they are typing into (an agent's command block is hidden by default).
@@ -8720,7 +8732,7 @@ impl TerminalView {
                 // and not the idle prompt, which carries no agent metadata. No execution-state
                 // check: an agent command written to the shell before preexec must be
                 // interrupted too.
-                StopInterruptScope::AgentCommandOnly => (
+                StopInterruptScope::AgentCommandOnly | StopInterruptScope::HandOverOnly => (
                     block_is_this_conversations
                         && active_block.is_agent_requested_command()
                         && active_block.is_agent_driving_command(),
@@ -8745,7 +8757,9 @@ impl TerminalView {
             );
         });
 
-        if let Some(is_agent_requested) = should_interrupt_active_command {
+        if let Some(is_agent_requested) = should_interrupt_active_command
+            && interrupt_scope != StopInterruptScope::HandOverOnly
+        {
             if is_agent_requested {
                 self.interrupt_agent_command(ctx);
             } else {
