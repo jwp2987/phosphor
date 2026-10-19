@@ -1012,3 +1012,21 @@ fn user_accept_is_refused_while_the_approval_card_is_editing() {
         });
     });
 }
+
+#[test]
+fn estimated_command_rows_counts_lines_and_soft_wraps() {
+    assert_eq!(super::estimated_command_rows("echo hi"), 1);
+    assert_eq!(super::estimated_command_rows("a\nb\nc\nd\ne"), 5);
+    assert_eq!(super::estimated_command_rows("a\n\n\n\n\n\npayload"), 7);
+    assert_eq!(super::estimated_command_rows(&"x".repeat(200)), 5);
+}
+
+#[test]
+fn command_review_note_reports_hidden_rows() {
+    let command = "x\n".repeat(40);
+    let rows = super::estimated_command_rows(&command);
+    let note = super::command_review_note(&command, rows, super::COMMAND_REVIEW_MAX_ROWS);
+    assert!(note.contains("more rows"), "{note}");
+    let short = super::command_review_note("a\nb\nc\nd\ne", 5, 5);
+    assert!(short.contains("shown in full"), "{short}");
+}

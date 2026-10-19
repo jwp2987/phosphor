@@ -41,6 +41,13 @@ use crate::tui_permission_prompt::{
     TuiPermissionPrompt, TuiPermissionPromptEvent, render_permission_card,
 };
 const COMMAND_AUTO_EXPAND_DELAY: Duration = Duration::from_secs(3);
+/// Rows the command editor shows before the user has been made to review a long command.
+const COMMAND_EDITOR_ROWS: u32 = 4;
+/// Most rows the editor grows to when a long command must be reviewed before it runs.
+const COMMAND_REVIEW_MAX_ROWS: u32 = 24;
+/// Assumed soft-wrap width when estimating how many rows a command needs. Deliberately narrow so
+/// the estimate errs towards gating.
+const COMMAND_REVIEW_WRAP_COLS: usize = 40;
 const SHELL_COMMAND_EDITING: &str = "TuiShellCommandEditing";
 
 pub(crate) fn init(app: &mut AppContext) {
@@ -130,6 +137,8 @@ pub(super) struct TuiShellCommandView {
     command_editor: ViewHandle<TuiEditorView>,
     permission_prompt: ViewHandle<TuiPermissionPrompt>,
     command_was_edited: bool,
+    /// The exact command text the user was shown in the expanded editor (#865).
+    reviewed_command: Option<String>,
     state: ShellCommandViewState,
     command_running: Cell<bool>,
     header_mouse_state: MouseStateHandle,
@@ -149,6 +158,38 @@ pub(super) enum TuiShellCommandViewAction {
     SaveCommandEdit,
     ToggleExpanded,
 }
+/// Rough number of editor rows `command` needs, counting every line and soft wraps at a narrow
+/// width. Over-estimates on purpose: the cost of a false positive is one extra Enter.
+fn estimated_command_rows(command: &str) -> u32 {
+    command
+        .split('\n')
+        .map(|line| {
+            line.chars()
+                .count()
+                .div_ceil(COMMAND_REVIEW_WRAP_COLS)
+                .max(1) as u32
+        })
+        .sum()
+}
+
+/// The note shown under the expanded editor, with counts for anything still out of view.
+fn command_review_note(command: &str, rows: u32, shown: u32) -> String {
+    let lines = command.split('\n').count();
+    let chars = command.chars().count();
+    if rows > shown {
+        format!(
+            "Long command ({lines} lines, {chars} chars). About {} more rows are below the \
+             visible area: press e and scroll to read them, then press Enter again to run.",
+            rows - shown
+        )
+    } else {
+        format!(
+            "Long command ({lines} lines, {chars} chars), shown in full above. \
+             Press Enter again to run."
+        )
+    }
+}
+
 impl TuiShellCommandView {
     pub(super) fn new(
         action: AIAgentAction,
@@ -163,7 +204,8 @@ impl TuiShellCommandView {
             AIAgentActionType::RequestCommandOutput { .. }
         ));
         let command = Self::action_command(&action).to_owned();
-        let command_editor = ctx.add_typed_action_tui_view(|ctx| TuiEditorView::multiline(4, ctx));
+        let command_editor =
+            ctx.add_typed_action_tui_view(|ctx| TuiEditorView::multiline(COMMAND_EDITOR_ROWS, ctx));
         command_editor.update(ctx, |editor, ctx| editor.set_text(command, ctx));
         let prompt_action_id = action.id.clone();
         let prompt_action_model = action_model.clone();
@@ -206,6 +248,7 @@ impl TuiShellCommandView {
             command_editor,
             permission_prompt,
             command_was_edited: false,
+            reviewed_command: None,
             state: ShellCommandViewState::new_collapsed(),
             command_running: Cell::new(false),
             header_mouse_state: MouseStateHandle::default(),
@@ -278,15 +321,29 @@ impl TuiShellCommandView {
             self.invalidate_layout(ctx);
             return;
         }
+        let rows = estimated_command_rows(&command);
+        if rows > COMMAND_EDITOR_ROWS && self.reviewed_command.as_deref() != Some(command.as_str())
+        {
+            // The 4-row editor may be hiding part of this command (extra lines, a long line,
+            // blank-line padding). Grow it so the command is on screen, say what is still hidden,
+            // and require a second Accept on the same text (#865).
+            let shown = rows.min(COMMAND_REVIEW_MAX_ROWS);
+            self.command_editor
+                .update(ctx, |editor, ctx| editor.set_viewport_rows(shown, ctx));
+            self.reviewed_command = Some(command.clone());
+            self.permission_prompt.update(ctx, |prompt, ctx| {
+                prompt.set_body_error(Some(command_review_note(&command, rows, shown)), ctx);
+            });
+            self.invalidate_layout(ctx);
+            return;
+        }
         let action_id = self.action.id.clone();
         self.action_model.update(ctx, |action_model, ctx| {
             // The action model refuses a user accept of a command that the GUI approval card
             // would elide, until that card's "Show full command" was used (issue #847). This view
-            // does not use that card. It puts the exact text in its own editor, which is drawn in
-            // terminal cells rather than through the GUI text shaper that dropped long words.
-            // Accepting here therefore vouches for the text itself. Whether the 4-row editor can
-            // still scroll part of a command out of view is tracked as a separate TUI follow-up
-            // to #847.
+            // does not use that card. The text goes through the terminal-cell renderer rather
+            // than the GUI text shaper that dropped long words, and a command that the 4-row
+            // editor could clip was shown in the expanded editor above before reaching here.
             action_model.mark_full_command_shown(self.conversation_id, &action_id, &command);
             action_model.handle_requested_command_accepted(&action_id, command, ctx);
         });
