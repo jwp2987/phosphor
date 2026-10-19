@@ -1225,14 +1225,14 @@ impl TextLayoutSystem {
         // compatible with the span a very long word starts in. Other words are
         // far below the limit and are unaffected by the empty run.
         let mut defaults = Attrs::new();
-        if let Some(start) = Self::longest_long_word_start(text) {
-            if let Some((_, attrs)) = spans.iter().find(|(range, _)| range.contains(&start)) {
-                let compatible = attrs.as_attrs();
-                defaults.family = compatible.family;
-                defaults.stretch = compatible.stretch;
-                defaults.style = compatible.style;
-                defaults.weight = compatible.weight;
-            }
+        if let Some(start) = Self::longest_long_word_start(text)
+            && let Some((_, attrs)) = spans.iter().find(|(range, _)| range.contains(&start))
+        {
+            let compatible = attrs.as_attrs();
+            defaults.family = compatible.family;
+            defaults.stretch = compatible.stretch;
+            defaults.style = compatible.style;
+            defaults.weight = compatible.weight;
         }
 
         let mut attrs_list = AttrsList::new(defaults);

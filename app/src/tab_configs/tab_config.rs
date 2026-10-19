@@ -1713,7 +1713,7 @@ fn kubectl_run_evaluates_placeholder(rest: &[&str]) -> bool {
         let is_image = !after_separator
             && (word
                 .strip_prefix("--image=")
-                .is_some_and(|value| marked(value))
+                .is_some_and(&marked)
                 || (index > 0 && args[index - 1] == "--image"));
         if !is_image {
             return true;

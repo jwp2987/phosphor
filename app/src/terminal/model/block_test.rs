@@ -2354,7 +2354,7 @@ fn pager_group_closes_only_with_exactly_one_pager_and_known_spawners() {
 
 #[test]
 fn stall_tracker_measures_an_unchanged_screen_and_resets_on_change() {
-    let t0 = std::time::Instant::now();
+    let t0 = instant::Instant::now();
     let sec = |n| t0 + Duration::from_secs(n);
     let mut tracker = StallTracker::default();
     assert_eq!(tracker.observe(Some(1), sec(0)), Duration::ZERO);
@@ -2367,7 +2367,7 @@ fn stall_tracker_measures_an_unchanged_screen_and_resets_on_change() {
 
 #[test]
 fn fullscreen_detector_closes_a_known_pager_once_and_never_before_the_threshold() {
-    let t0 = std::time::Instant::now();
+    let t0 = instant::Instant::now();
     let sec = |n| t0 + Duration::from_secs(n);
     let mut detector = FullscreenStallDetector::default();
     let mut asked = 0;
@@ -2399,7 +2399,7 @@ fn fullscreen_detector_closes_a_known_pager_once_and_never_before_the_threshold(
 #[test]
 fn fullscreen_detector_never_closes_what_it_cannot_identify() {
     for pager in [None, Some(false)] {
-        let t0 = std::time::Instant::now();
+        let t0 = instant::Instant::now();
         let sec = |n| t0 + Duration::from_secs(n);
         let mut detector = FullscreenStallDetector::default();
         for s in 0..5 {
@@ -2422,7 +2422,7 @@ fn fullscreen_detector_never_closes_what_it_cannot_identify() {
 
 #[test]
 fn fullscreen_detector_ignores_screens_that_keep_changing_or_are_ineligible() {
-    let t0 = std::time::Instant::now();
+    let t0 = instant::Instant::now();
     let mut detector = FullscreenStallDetector::default();
     for s in 0..20u64 {
         let at = t0 + Duration::from_secs(s);

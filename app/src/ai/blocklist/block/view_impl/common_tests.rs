@@ -658,7 +658,7 @@ fn skipped_image_groups_advance_counters_like_the_render_path() {
             _ => unreachable!(),
         },
     };
-    let groups = vec![
+    let groups = [
         RenderableImageGroup {
             images: vec![image_at(0), image_at(2)],
             consumed_sections: 3,

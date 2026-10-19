@@ -4355,14 +4355,14 @@ impl TypedActionView for AISettingsPageView {
             } => {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     let mut providers = settings.agent_providers.value().clone();
-                    if let Some(p) = providers.iter_mut().find(|p| p.id == *provider_id) {
-                        if let Some(m) = p.models.get_mut(*model_index) {
-                            m.handles_command_snapshots = match m.handles_command_snapshots {
-                                None => Some(true),
-                                Some(true) => Some(false),
-                                Some(false) => None,
-                            };
-                        }
+                    if let Some(p) = providers.iter_mut().find(|p| p.id == *provider_id)
+                        && let Some(m) = p.models.get_mut(*model_index)
+                    {
+                        m.handles_command_snapshots = match m.handles_command_snapshots {
+                            None => Some(true),
+                            Some(true) => Some(false),
+                            Some(false) => None,
+                        };
                     }
                     report_settings_write_error!(
                         settings.agent_providers.set_value(providers, ctx),

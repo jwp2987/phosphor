@@ -794,7 +794,7 @@ impl ShellCommandExecutor {
                                 stall_fingerprint(&model, &block_selector)
                             };
                             let stalled_for =
-                                tracker.observe(fingerprint, std::time::Instant::now());
+                                tracker.observe(fingerprint, instant::Instant::now());
                             if stalled_for >= STALL_SNAPSHOT_AFTER {
                                 break WakeReason::Stalled;
                             }

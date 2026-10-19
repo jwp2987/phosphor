@@ -340,10 +340,8 @@ pub fn command_may_change_head(command: &str) -> bool {
                 break;
             }
         }
-        if let Some(&sub) = tokens.peek() {
-            if HEAD_CHANGING.contains(&sub) {
-                return true;
-            }
+        if let Some(&sub) = tokens.peek() && HEAD_CHANGING.contains(&sub) {
+            return true;
         }
     }
     false

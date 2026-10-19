@@ -385,16 +385,16 @@ impl ImageType {
     /// formats without a raster header (SVG, `warp-img:`). Errors if the image
     /// is larger than the decode limits.
     pub fn dimensions_from_bytes(data: &[u8]) -> Result<Vector2I> {
-        if data.first() != Some(&b'<') && !data.starts_with(b"warp-img:") {
-            if let Ok(ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP | ImageFormat::Gif) =
+        if data.first() != Some(&b'<')
+            && !data.starts_with(b"warp-img:")
+            && let Ok(ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP | ImageFormat::Gif) =
                 image::guess_format(data)
-            {
-                let (width, height) = image::ImageReader::new(std::io::Cursor::new(data))
-                    .with_guessed_format()?
-                    .into_dimensions()?;
-                check_decoded_size(width, height)?;
-                return Ok(Vector2I::new(width as i32, height as i32));
-            }
+        {
+            let (width, height) = image::ImageReader::new(std::io::Cursor::new(data))
+                .with_guessed_format()?
+                .into_dimensions()?;
+            check_decoded_size(width, height)?;
+            return Ok(Vector2I::new(width as i32, height as i32));
         }
         <ImageType as Asset>::try_from_bytes(data)?
             .image_size()
@@ -409,6 +409,9 @@ impl ImageType {
 
 /// An image decoded off the UI thread. Unlike [`ImageType`] it is `Send` (the SVG tree is not yet
 /// behind an `Rc`), so a background task can hand it to the foreground (#880).
+// A short-lived value moved once from the decode task to the foreground; boxing the SVG tree
+// would only add an allocation.
+#[allow(clippy::large_enum_variant)]
 pub enum DecodedImage {
     Svg(usvg::Tree),
     Static(Arc<StaticImage>),

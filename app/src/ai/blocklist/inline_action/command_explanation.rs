@@ -545,10 +545,8 @@ fn split_simple_commands(line: &str) -> Vec<SimpleCommand> {
             }
             '\\' => {
                 b.in_word = true;
-                if let Some(escaped) = chars.next() {
-                    if escaped != '\n' {
-                        b.word.push(escaped);
-                    }
+                if let Some(escaped) = chars.next() && escaped != '\n' {
+                    b.word.push(escaped);
                 }
             }
             '>' | '&' if c == '>' || chars.peek() == Some(&'>') => {
@@ -956,12 +954,8 @@ fn collect_simple_command_flags(
                 name.to_owned(),
                 remote_host,
             );
-            if name == "su" {
-                if let Some(inner) = shell_c_script(args) {
-                    if depth < MAX_NESTING {
-                        collect_flags(inner, remote_host, depth + 1, flags);
-                    }
-                }
+            if name == "su" && let Some(inner) = shell_c_script(args) && depth < MAX_NESTING {
+                collect_flags(inner, remote_host, depth + 1, flags);
             }
         }
         "eval" => {
@@ -1219,10 +1213,8 @@ fn collect_simple_command_flags(
                 host = Some(arg.as_str());
                 break;
             }
-            if let Some(host) = host {
-                if !rest.is_empty() && depth < MAX_NESTING {
-                    collect_flags(&rest.join(" "), Some(host), depth + 1, flags);
-                }
+            if let Some(host) = host && !rest.is_empty() && depth < MAX_NESTING {
+                collect_flags(&rest.join(" "), Some(host), depth + 1, flags);
             }
         }
         _ => {}
