@@ -152,7 +152,7 @@ use crate::terminal::view::ssh_remote_server_choice_view::{
 };
 use crate::terminal::view::ssh_remote_server_failed_banner::{
     SshRemoteServerFailedBanner, SshRemoteServerFailedBannerEvent, SshRemoteServerFailureKind,
-    describe_legacy_fallback_reason, describe_unsupported_reason,
+    describe_unsupported_reason, legacy_fallback_shows_banner,
 };
 use crate::terminal::view::telemetry::PromptSuggestionFallbackReason;
 use crate::workspaces::user_workspaces::UserWorkspacesEvent;
@@ -9317,6 +9317,10 @@ impl TerminalView {
     /// Receiving the warpui::Event::KeyDown event from a child element.
     /// Generally, this should be control characters rather than printable characters.
     fn keydown_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
+        // Ctrl-C / Ctrl-D still reach the ssh process so the user can abort.
+        if !matches!(characters, "\u{3}" | "\u{4}") && self.swallow_input_during_ssh_setup(ctx) {
+            return;
+        }
         if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
             self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
             self.highlighted_link.invalidate();
@@ -9334,6 +9338,39 @@ impl TerminalView {
             self.update_scroll_position_locking(ScrollPositionUpdate::AfterKeydownOnTerminal, ctx);
             self.redetermine_global_focus(ctx);
         }
+    }
+
+    /// True while the SSH remote-server setup owns the session: the
+    /// install/continue dialog is up, or the check/install/connect is in
+    /// flight. The remote shell is not bootstrapped yet, and the bootstrap
+    /// script is injected into it as soon as setup resolves, so any byte the
+    /// user types now lands in the middle of that script. A stray Enter also
+    /// completes a block, which advances the bootstrap stage machine early
+    /// (the `next_stage` error storm and the pane stuck at "Starting
+    /// shell...", #917). Keystrokes are therefore dropped rather than
+    /// queued -- replaying a queued Enter into a half-bootstrapped shell is
+    /// exactly the corruption being avoided -- and focus is handed back to
+    /// the dialog so the next key drives it.
+    fn swallow_input_during_ssh_setup(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        let dialog_up = self.active_ssh_remote_server_choice_block().is_some();
+        let setup_in_flight = FeatureFlag::SshRemoteServer.is_enabled()
+            && self
+                .model
+                .lock()
+                .pending_session_id()
+                .is_some_and(|sid| {
+                    self.sessions
+                        .as_ref(ctx)
+                        .remote_server_setup_state(sid)
+                        .is_some_and(|state| state.is_in_progress())
+                });
+        if !(dialog_up || setup_in_flight) {
+            return false;
+        }
+        if dialog_up {
+            self.redetermine_global_focus(ctx);
+        }
+        true
     }
 
     fn should_write_typed_chars_to_pty(&self, ctx: &mut ViewContext<Self>) -> bool {
@@ -9366,6 +9403,9 @@ impl TerminalView {
     /// We can assume `characters` consists of all printable characters, and therefore,
     /// can go into the input box.
     fn typed_characters_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
+        if self.swallow_input_during_ssh_setup(ctx) {
+            return;
+        }
         self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
 
         if self.should_write_typed_chars_to_pty(ctx) {
@@ -9730,13 +9770,22 @@ impl TerminalView {
             // dismissible banner it shows below is shown at most once per
             // session by construction -- it cannot reappear after dismissal
             // because nothing emits this event for that session again.
+            //
+            // #916: `NoConnectedClient` is what the user's own "Continue
+            // without installing" (or `NeverInstall`) produces, and it also
+            // fires while a connect is still pending or after a failure that
+            // already has its own banner. None of those is an error, so it
+            // shows nothing (v0.1.12 parity); only the feature-disabled case
+            // keeps a neutral note, with no red `ERROR:` detail line.
             SessionsEvent::LegacySshFallback { session_id, reason } => {
-                self.show_ssh_remote_server_failed_banner(
-                    session_id,
-                    SshRemoteServerFailureKind::Legacy,
-                    &describe_legacy_fallback_reason(&reason),
-                    ctx,
-                );
+                if legacy_fallback_shows_banner(&reason) {
+                    self.show_ssh_remote_server_failed_banner(
+                        session_id,
+                        SshRemoteServerFailureKind::Legacy,
+                        "",
+                        ctx,
+                    );
+                }
             }
             _ => {}
         }

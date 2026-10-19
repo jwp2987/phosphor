@@ -126,6 +126,18 @@ pub fn describe_legacy_fallback_reason(reason: &LegacySshFallbackReason) -> Stri
     }
 }
 
+/// Whether a legacy-SSH fallback deserves a banner at all (#916). Declining
+/// the install ("Continue without installing", or the `NeverInstall` mode) is
+/// a legitimate choice and surfaces as `NoConnectedClient`; showing a red
+/// error for it was a regression against v0.1.12. Only the feature-disabled
+/// case, which the user did not choose, keeps a (neutral) note.
+pub fn legacy_fallback_shows_banner(reason: &LegacySshFallbackReason) -> bool {
+    match reason {
+        LegacySshFallbackReason::FeatureDisabled => true,
+        LegacySshFallbackReason::NoConnectedClient => false,
+    }
+}
+
 pub struct SshRemoteServerFailedBanner {
     session_id: SessionId,
     kind: SshRemoteServerFailureKind,
