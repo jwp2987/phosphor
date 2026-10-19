@@ -64,6 +64,8 @@ use self::model::{AgentConversation, AgentConversationData, Project};
 pub use sqlite::database_file_path;
 #[cfg(any(feature = "local_fs", feature = "integration_tests"))]
 pub use sqlite::establish_ro_connection;
+#[cfg(any(feature = "local_fs", feature = "integration_tests"))]
+pub use sqlite::shared_ro_connection;
 /// Read paths for the codebase embedding index. New in this fork — at the pin
 /// this data was on the server, so nothing local read it.
 #[cfg(any(feature = "local_fs", feature = "integration_tests"))]
@@ -93,6 +95,18 @@ pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<Writer
             sqlite::initialize(ctx)
         } else {
             (None, None)
+        }
+    }
+}
+
+/// If startup found `warp.sqlite` unusable and moved it aside (#860), returns
+/// where it went -- once -- so the UI can tell the user.
+pub fn take_database_recovery_notice() -> Option<PathBuf> {
+    cfg_if::cfg_if! {
+        if #[cfg(feature = "local_fs")] {
+            sqlite::take_database_recovery_notice().map(|notice| notice.moved_to)
+        } else {
+            None
         }
     }
 }

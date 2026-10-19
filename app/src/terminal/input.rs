@@ -3390,10 +3390,8 @@ impl Input {
         };
 
         #[cfg(feature = "local_fs")]
-        if let Some(db_url) = crate::persistence::database_file_path().to_str() {
-            if let Ok(conn) = crate::persistence::establish_ro_connection(db_url) {
-                input.conn = Some(Arc::new(Mutex::new(conn)));
-            }
+        {
+            input.conn = crate::persistence::shared_ro_connection();
         }
 
         if input.model.lock().shared_session_status().is_viewer() {

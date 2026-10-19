@@ -4,6 +4,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use sha2::{Digest, Sha256};
 use toml_edit::{value, Array, DocumentMut, InlineTable, Item, Table, Value};
@@ -21,6 +22,64 @@ const INDENT: &str = "  ";
 /// the longest line of the container's current rendering, so already-broken
 /// children don't defeat the check.
 const MAX_INLINE_WIDTH: usize = 100;
+
+/// A failed attempt to write the settings file (#862).
+#[derive(Clone, Debug)]
+pub struct SaveFailure {
+    /// The settings file that could not be written.
+    pub path: PathBuf,
+    /// Why, as the OS reported it.
+    pub message: String,
+}
+
+/// Where save failures go. Failures that happen before the UI has taken the
+/// receiver (the store is built long before the workspace exists) are buffered
+/// and delivered on attach, instead of being lost.
+enum SaveFailureSink {
+    Pending(Vec<SaveFailure>),
+    Attached(async_channel::Sender<SaveFailure>),
+}
+
+/// Upper bound on failures buffered before a receiver exists.
+const MAX_PENDING_SAVE_FAILURES: usize = 16;
+
+static SAVE_FAILURE_SINK: Mutex<SaveFailureSink> = Mutex::new(SaveFailureSink::Pending(Vec::new()));
+
+fn report_save_failure(failure: SaveFailure) {
+    let Ok(mut sink) = SAVE_FAILURE_SINK.lock() else {
+        return;
+    };
+    match &mut *sink {
+        SaveFailureSink::Pending(pending) => {
+            if pending.len() < MAX_PENDING_SAVE_FAILURES {
+                pending.push(failure);
+            }
+        }
+        SaveFailureSink::Attached(tx) => {
+            let _ = tx.try_send(failure);
+        }
+    }
+}
+
+/// Returns the receiving end of the settings-save-failure channel, once.
+///
+/// Every store reports a failed save here, on the transition from "saving
+/// works" to "saving fails" (not on each retry), so the UI can tell the user
+/// instead of the failure living only in the log. The store itself is
+/// single-threaded and has no way to reach the UI. Failures that happened
+/// before this call are already queued on the returned receiver.
+pub fn take_save_failure_receiver() -> Option<async_channel::Receiver<SaveFailure>> {
+    let mut sink = SAVE_FAILURE_SINK.lock().ok()?;
+    let SaveFailureSink::Pending(pending) = &mut *sink else {
+        return None;
+    };
+    let (tx, rx) = async_channel::unbounded();
+    for failure in pending.drain(..) {
+        let _ = tx.try_send(failure);
+    }
+    *sink = SaveFailureSink::Attached(tx);
+    Some(rx)
+}
 
 /// An implementation of the [`UserPreferences`] trait using a TOML file for
 /// persistence.
@@ -53,6 +112,10 @@ pub struct TomlBackedUserPreferences {
     /// Cleared on successful [`reload_from_disk`](Self::reload_from_disk)
     /// and re-derived by the settings reload logic.
     write_inhibited_keys: RefCell<HashSet<String>>,
+
+    /// Whether the last write to the file failed, so a failure is reported
+    /// once rather than on every subsequent setting change (#862).
+    save_failing: Cell<bool>,
 }
 
 impl TomlBackedUserPreferences {
@@ -85,6 +148,7 @@ impl TomlBackedUserPreferences {
                 document: RefCell::new(document),
                 write_inhibited: Cell::new(write_inhibited),
                 write_inhibited_keys: RefCell::new(HashSet::new()),
+                save_failing: Cell::new(false),
             },
             error,
         )
@@ -233,8 +297,25 @@ impl TomlBackedUserPreferences {
         // returned. A symlinked settings file is written through (see
         // `crate::atomic_file`).
         let data = self.document.borrow().to_string();
-        crate::atomic_file::write(&self.file_path, data)?;
-        Ok(())
+        match crate::atomic_file::write(&self.file_path, data) {
+            Ok(()) => {
+                self.save_failing.set(false);
+                Ok(())
+            }
+            Err(err) => {
+                log::warn!(
+                    "Failed to save settings file at {}: {err}",
+                    self.file_path.display()
+                );
+                if !self.save_failing.replace(true) {
+                    report_save_failure(SaveFailure {
+                        path: self.file_path.clone(),
+                        message: err.to_string(),
+                    });
+                }
+                Err(err.into())
+            }
+        }
     }
 
     /// Navigates to or creates the table for the given hierarchy path.

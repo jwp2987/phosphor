@@ -596,7 +596,7 @@ const PRECOMMANDS: [&str; 20] = [
 /// commands that evaluate or forward their arguments as code, and builtins that read an
 /// argument as arithmetic, a variable name or code to run later. Matched by basename,
 /// case-insensitively, also with a version suffix removed (`python3.14`, `perl5.40.1`).
-const DENIED_COMMANDS: [&str; 81] = [
+const DENIED_COMMANDS: [&str; 100] = [
     // Shells and interpreters.
     "sh",
     "bash",
@@ -663,6 +663,27 @@ const DENIED_COMMANDS: [&str; 81] = [
     "functions",
     "alias",
     "hash",
+    // Wrappers that run the command in their arguments, which are not modelled as
+    // precommands (#884): tracers, sandboxes, namespaces, remote and container runners.
+    "strace",
+    "ltrace",
+    "dbus-run-session",
+    "sshpass",
+    "xvfb-run",
+    "unshare",
+    "chroot",
+    "systemd-run",
+    "nix-shell",
+    "wsl",
+    "runuser",
+    "nsenter",
+    "firejail",
+    "bwrap",
+    "proot",
+    "fakeroot",
+    "gdb",
+    "valgrind",
+    "parallel",
     // Read an argument as arithmetic or a variable name.
     "let",
     "read",
@@ -681,6 +702,37 @@ const DENIED_COMMANDS: [&str; 81] = [
     "readonly",
     "ulimit",
     "kill",
+];
+
+/// Variables whose value a shell or program evaluates as a command later: prompts, editors,
+/// pagers, `GIT_SSH_COMMAND`, `BASH_ENV`. A placeholder as their value is code that runs at the
+/// next prompt or the next `git` call.
+const EVALUATED_VARIABLES: [&str; 25] = [
+    "PS0",
+    "PS1",
+    "PS2",
+    "PS3",
+    "PS4",
+    "PROMPT",
+    "RPROMPT",
+    "RPS1",
+    "PROMPT_COMMAND",
+    "EDITOR",
+    "VISUAL",
+    "PAGER",
+    "MANPAGER",
+    "GIT_PAGER",
+    "GIT_EDITOR",
+    "GIT_SEQUENCE_EDITOR",
+    "GIT_SSH",
+    "GIT_SSH_COMMAND",
+    "GIT_ASKPASS",
+    "SSH_ASKPASS",
+    "BASH_ENV",
+    "ENV",
+    "LESSOPEN",
+    "LESSCLOSE",
+    "FCEDIT",
 ];
 
 /// How a precommand's own options are laid out: the short options and long options that
@@ -839,9 +891,52 @@ fn command_word_problem(word: &str) -> Option<&'static str> {
         Some("a command name that is not a plain word")
     } else if is_denied_command(&command_name(word)) {
         Some("a command that runs its input or arguments as code")
+    } else if is_proc_exe(word) {
+        // `/proc/self/exe` is whatever program is running, typically the shell itself.
+        Some("a /proc/.../exe path as the command name")
     } else {
         None
     }
+}
+
+/// `/proc/self/exe`, `/proc/<pid>/exe` and `/proc/thread-self/exe`.
+fn is_proc_exe(word: &str) -> bool {
+    word.strip_prefix("/proc/")
+        .is_some_and(|rest| rest.ends_with("/exe") && !rest.contains("//"))
+}
+
+/// Checks the whole segment, whatever its command word is, for a placeholder as the value of a
+/// variable that is evaluated later (#884). Only segments that contain a placeholder are
+/// checked.
+fn segment_evaluates_placeholder(words: &[&str]) -> Option<&'static str> {
+    if !words.iter().any(|word| word.contains(PLACEHOLDER_MARK)) {
+        return None;
+    }
+    for (at, &word) in words.iter().enumerate() {
+        if is_assignment(word)
+            && let Some((name, value)) = word.split_once('=')
+            && value.contains(PLACEHOLDER_MARK)
+            && EVALUATED_VARIABLES.contains(&name.trim_end_matches('+'))
+        {
+            return Some("a placeholder as the value of a variable the shell evaluates later");
+        }
+        // fish: `set -gx PS1 {{x}}`. Only after `set` and its options: a bare word that
+        // happens to be a variable's name (`echo PS1 {{x}}`) is just an argument.
+        let after_set = words[..at]
+            .iter()
+            .rev()
+            .find(|earlier| !earlier.starts_with('-'))
+            .is_some_and(|earlier| matches!(*earlier, "set" | "setenv"));
+        if after_set
+            && EVALUATED_VARIABLES.contains(&word)
+            && words
+                .get(at + 1)
+                .is_some_and(|next| next.contains(PLACEHOLDER_MARK))
+        {
+            return Some("a placeholder as the value of a variable the shell evaluates later");
+        }
+    }
+    None
 }
 
 /// Checks the command word of every segment of a command that substitutes a placeholder.
@@ -858,17 +953,19 @@ fn command_word_problem(word: &str) -> Option<&'static str> {
 /// a command word in turn. Options that make a precommand run a shell are refused
 /// ([`is_shell_running_option`]), including when a placeholder is attached (`env -S{{x}}`);
 /// `flock` permutes its arguments, so all its words are checked for `-c`. A few commands are
-/// refused only with the arguments that make them evaluate code: `docker`/`podman`/`kubectl
+/// refused only with the arguments that make them evaluate code: `docker`/`podman`/`nerdctl` `run` with a placeholder outside the image argument, `kubectl
 /// exec`, `find -exec`, `script -c` (in any short-option cluster) or `--command`, `git -c
 /// alias.*` or a `git -c` whose value is a placeholder, `test`/`[`/`[[` with an arithmetic or
 /// name operator, `printf`/`print` with `-v` or a numeric conversion, `export -i`, `wait -p`
 /// and `set -A`.
 ///
 /// `residual` is the [`StrippedCommand::words`] form, so a quoted command name is seen
-/// unquoted. Wrappers it does not model (`strace`, `dbus-run-session`, ...), aliases,
-/// functions and scripts, and values that a shell evaluates later (`PS1`, `PROMPT_COMMAND`,
-/// `GIT_SSH_COMMAND`) are invisible here; placeholders are supported only as ordinary
-/// arguments to ordinary commands.
+/// unquoted. Wrappers that run another command but are not precommands (`strace`,
+/// `dbus-run-session`, `unshare`, ...) are in [`DENIED_COMMANDS`]; a segment with a placeholder
+/// is also refused when the placeholder is the value of a variable evaluated later
+/// ([`EVALUATED_VARIABLES`]: `PS1`, `PROMPT_COMMAND`, `GIT_SSH_COMMAND`, `EDITOR`, ...; #884).
+/// Aliases, functions and scripts defined elsewhere are invisible here; placeholders are
+/// supported only as ordinary arguments to ordinary commands.
 fn reparsing_command(residual: &[char]) -> Option<&'static str> {
     let text: String = residual
         .iter()
@@ -898,6 +995,9 @@ fn reparsing_command(residual: &[char]) -> Option<&'static str> {
     }
 
     for words in segments {
+        if let Some(problem) = segment_evaluates_placeholder(&words) {
+            return Some(problem);
+        }
         let mut index = 0;
         while let Some(&word) = words.get(index) {
             if LEADING_KEYWORDS.contains(&word) || is_assignment(word) {
@@ -969,7 +1069,8 @@ fn reparsing_command(residual: &[char]) -> Option<&'static str> {
 fn arguments_evaluate_code(command: &str, rest: &[&str]) -> bool {
     let has = |flag: &str| rest.iter().any(|word| *word == flag);
     match command {
-        "docker" | "podman" | "kubectl" => has("exec"),
+        "docker" | "podman" | "nerdctl" => has("exec") || container_run_evaluates_placeholder(rest),
+        "kubectl" => has("exec") || kubectl_run_evaluates_placeholder(rest),
         "find" => ["-exec", "-execdir", "-ok", "-okdir"]
             .iter()
             .any(|flag| has(*flag)),
@@ -991,6 +1092,180 @@ fn arguments_evaluate_code(command: &str, rest: &[&str]) -> bool {
         "set" => has("-A") || has("+A"),
         _ => false,
     }
+}
+
+/// How `docker run`-style options consume the next word.
+enum RunOption {
+    /// A boolean flag: takes no value.
+    Flag,
+    /// Takes a value: the next word, or the rest of the word when attached.
+    Value,
+    /// Not known: the next word may or may not be its value.
+    Unknown,
+}
+
+/// Classifies a `docker`/`podman`/`nerdctl run` option word (starting with `-`).
+fn container_run_option_kind(option: &str) -> RunOption {
+    const FLAG_LONG: &[&str] = &[
+        "rm",
+        "privileged",
+        "detach",
+        "interactive",
+        "tty",
+        "publish-all",
+        "init",
+        "read-only",
+        "sig-proxy",
+        "oom-kill-disable",
+        "no-healthcheck",
+        "disable-content-trust",
+        "quiet",
+        "help",
+    ];
+    const VALUE_LONG: &[&str] = &[
+        "name",
+        "user",
+        "workdir",
+        "env",
+        "env-file",
+        "volume",
+        "publish",
+        "network",
+        "mount",
+        "entrypoint",
+        "hostname",
+        "memory",
+        "cpus",
+        "label",
+        "add-host",
+        "cap-add",
+        "cap-drop",
+        "device",
+        "dns",
+        "expose",
+        "group-add",
+        "ipc",
+        "pid",
+        "platform",
+        "pull",
+        "restart",
+        "security-opt",
+        "shm-size",
+        "tmpfs",
+        "ulimit",
+        "uts",
+        "volumes-from",
+        "cidfile",
+        "link",
+        "log-driver",
+        "log-opt",
+        "mac-address",
+        "runtime",
+        "stop-signal",
+        "stop-timeout",
+        "userns",
+        "annotation",
+        "cgroupns",
+    ];
+    if let Some(long) = option.strip_prefix("--") {
+        if long.contains('=') || FLAG_LONG.contains(&long) {
+            RunOption::Flag
+        } else if VALUE_LONG.contains(&long) {
+            RunOption::Value
+        } else {
+            RunOption::Unknown
+        }
+    } else {
+        let letters = short_option_letters(option);
+        for (at, letter) in letters.char_indices() {
+            if "ditPq".contains(letter) {
+                continue;
+            }
+            if "evpwulmcah".contains(letter) {
+                // The value is the next word only when the letter ends the whole word
+                // (`-p 80`); `-p80` carries it attached.
+                return if at + 1 == letters.len() && letters.len() + 1 == option.len() {
+                    RunOption::Value
+                } else {
+                    RunOption::Flag
+                };
+            }
+            return RunOption::Unknown;
+        }
+        RunOption::Flag
+    }
+}
+
+/// Whether a `docker`/`podman`/`nerdctl run` segment puts a placeholder anywhere but the image
+/// argument (#884). The image is a name the container runtime pulls, not code; options
+/// (mounts, `--privileged`, `--entrypoint`, environment) and everything after the image (the
+/// command the container runs) are refused. A segment with no placeholder is not restricted.
+fn container_run_evaluates_placeholder(rest: &[&str]) -> bool {
+    let marked = |word: &str| word.contains(PLACEHOLDER_MARK);
+    let Some(run) = rest.iter().position(|word| *word == "run") else {
+        return false;
+    };
+    if rest[..run].iter().any(|word| marked(word)) {
+        return true;
+    }
+    let args = &rest[run + 1..];
+    let mut index = 0;
+    while let Some(&word) = args.get(index) {
+        if word == "--" {
+            index += 1;
+            break;
+        }
+        if !word.starts_with('-') || word == "-" {
+            break;
+        }
+        if marked(word) {
+            return true;
+        }
+        match container_run_option_kind(word) {
+            RunOption::Flag => index += 1,
+            RunOption::Value => {
+                if args.get(index + 1).is_some_and(|value| marked(value)) {
+                    return true;
+                }
+                index += 2;
+            }
+            // Cannot tell whether the next word is the image: refuse any placeholder.
+            RunOption::Unknown => return args.iter().any(|word| marked(word)),
+        }
+    }
+    // `args[index]` is the image; whatever follows is the container's command.
+    args.get(index + 1..)
+        .is_some_and(|after| after.iter().any(|word| marked(word)))
+}
+
+/// Whether a `kubectl run` segment puts a placeholder anywhere but the value of `--image`.
+fn kubectl_run_evaluates_placeholder(rest: &[&str]) -> bool {
+    let marked = |word: &str| word.contains(PLACEHOLDER_MARK);
+    let Some(run) = rest.iter().position(|word| *word == "run") else {
+        return false;
+    };
+    if rest[..run].iter().any(|word| marked(word)) {
+        return true;
+    }
+    let args = &rest[run + 1..];
+    let mut after_separator = false;
+    for (index, &word) in args.iter().enumerate() {
+        if word == "--" {
+            after_separator = true;
+        }
+        if !marked(word) {
+            continue;
+        }
+        let is_image = !after_separator
+            && (word
+                .strip_prefix("--image=")
+                .is_some_and(|value| marked(value))
+                || (index > 0 && args[index - 1] == "--image"));
+        if !is_image {
+            return true;
+        }
+    }
+    false
 }
 
 fn has_numeric_conversion(word: &str) -> bool {

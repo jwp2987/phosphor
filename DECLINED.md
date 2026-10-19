@@ -405,6 +405,21 @@ Filed as cloud or as decisions, but actually in scope. Do not add these here.
   to the `ToggleSettingActionPair` list in `settings_view/mod.rs` so they reach the command
   palette on every platform.
 
+## Tab config `docker run {{image}}` — placeholder as the image is allowed (#884)
+
+`docker|podman|nerdctl run` with a placeholder is refused only when the placeholder is
+in an option, its value, or after the image (the container's command); a placeholder
+that *is* the image argument renders, because dev-container tab configs such as
+`docker run -it {{image}}` are a main use case (`app/src/tab_configs/tab_config.rs`,
+`container_run_evaluates_placeholder`). `kubectl run` allows a placeholder only as the
+`--image` value. **Residual risk:** an image value that begins with `-` is quoted but
+still reaches the runtime as an option (`docker run -it '--privileged'`). Values come
+from the user's own tab-config form, not from untrusted input, so this is accepted;
+the check is structural and an option the table does not know makes it refuse any
+placeholder in that segment.
+
+---
+
 ## The import test is necessary, not sufficient
 
 `SCOPE-*.md` classifies a pin file by reading its import list: anything reaching

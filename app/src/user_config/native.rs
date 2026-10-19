@@ -66,6 +66,22 @@ impl super::WarpConfig {
             &WarpManagedPathsWatcher::handle(ctx),
             Self::handle_warp_managed_paths_event,
         );
+        // Settings writes that fail (#862) are reported by the settings file
+        // store over a channel, because it cannot reach the UI itself.
+        if let Some(failures) =
+            warpui_extras::user_preferences::toml_backed::take_save_failure_receiver()
+        {
+            ctx.spawn_stream_local(
+                failures,
+                |_, failure, ctx| {
+                    ctx.emit(WarpConfigUpdateEvent::SettingsSaveFailed {
+                        path: failure.path,
+                        reason: failure.message,
+                    });
+                },
+                |_, _| {},
+            );
+        }
 
         Self {
             theme_config: load_theme_configs(&themes_dir()),

@@ -30,7 +30,8 @@ use crate::{
 use super::{
     codebase_index_has_embeddings, decode_path, deduplicate_events, encode_path,
     get_all_codebase_index_metadata, read_sqlite_data, save_app_state,
-    save_codebase_index_embeddings, save_codebase_index_metadata, setup_database, start_writer,
+    save_codebase_index_embeddings, save_codebase_index_metadata, setup_database,
+    setup_database_or_quarantine, start_writer,
 };
 
 #[test]
@@ -1674,4 +1675,189 @@ fn test_sqlite_drops_too_small_bounds_on_read() {
         restored.windows[0].bounds.is_none(),
         "tiny persisted bounds must be discarded on read so users recover from a corrupt DB"
     );
+}
+
+/// #860: random bytes in `warp.sqlite` must not disable persistence forever.
+/// The file is moved aside (not deleted) and a working database is created.
+#[test]
+fn corrupt_database_is_moved_aside_and_recreated() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let garbage = b"this is definitely not a sqlite database, just text".repeat(200);
+    std::fs::write(&database_path, &garbage).expect("garbage written");
+
+    let mut conn =
+        setup_database_or_quarantine(&database_path).expect("a fresh database should be created");
+    read_sqlite_data(&mut conn, None).expect("the fresh database should be readable");
+
+    let moved: Vec<_> = std::fs::read_dir(tempdir.path())
+        .expect("read_dir")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("warp.sqlite.corrupt-"))
+        })
+        .collect();
+    assert_eq!(moved.len(), 1, "the unusable file should be kept aside");
+    assert_eq!(std::fs::read(&moved[0]).expect("read moved"), garbage);
+}
+
+/// #860: a directory where the database should be is also moved aside.
+#[test]
+fn directory_in_place_of_database_is_moved_aside() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    std::fs::create_dir(&database_path).expect("directory created");
+
+    setup_database_or_quarantine(&database_path).expect("a fresh database should be created");
+    assert!(database_path.is_file());
+}
+
+/// A healthy database is left alone.
+#[test]
+fn healthy_database_is_not_quarantined() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    drop(setup_database(&database_path).expect("database should initialize"));
+
+    setup_database_or_quarantine(&database_path).expect("reopen");
+    let entries = std::fs::read_dir(tempdir.path())
+        .expect("read_dir")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_name().to_string_lossy().contains("corrupt"))
+        .count();
+    assert_eq!(entries, 0);
+}
+
+#[test]
+fn only_content_errors_mean_an_unusable_database() {
+    assert!(super::error_means_unusable_database(
+        "database disk image is malformed"
+    ));
+    assert!(super::error_means_unusable_database(
+        "file is not a database"
+    ));
+    // A newer build's schema, or a migration bug, must never trigger a move.
+    assert!(!super::error_means_unusable_database(
+        "no such table: blocks"
+    ));
+    assert!(!super::error_means_unusable_database("no such column: foo"));
+    // Transient or environmental conditions must never trigger a move.
+    assert!(!super::error_means_unusable_database("database is locked"));
+    assert!(!super::error_means_unusable_database(
+        "database or disk is full"
+    ));
+    assert!(!super::error_means_unusable_database("disk i/o error"));
+}
+
+fn corrupt_copies(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found: Vec<_> = std::fs::read_dir(dir)
+        .expect("read_dir")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.to_string_lossy().contains(".corrupt-"))
+        .collect();
+    found.sort();
+    found
+}
+
+/// #860: a database migrated by a newer build (a migration this build does not
+/// know) is healthy and must never be quarantined, even if a read fails with
+/// "no such column".
+#[test]
+fn database_with_unknown_future_migration_is_not_quarantined() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    use diesel::connection::SimpleConnection;
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+    conn.batch_execute(
+        "INSERT INTO __diesel_schema_migrations (version) VALUES ('99991231235959')",
+    )
+    .expect("future migration recorded");
+    drop(conn);
+
+    assert!(super::database_has_unknown_migrations(&database_path));
+    assert!(super::quarantine_unusable_database(&database_path).is_err());
+    assert!(database_path.is_file());
+    assert!(corrupt_copies(tempdir.path()).is_empty());
+    assert!(!super::error_means_unusable_database(
+        "no such column: future_column"
+    ));
+}
+
+/// A database created in this process is never quarantined.
+#[test]
+fn freshly_created_database_is_not_quarantined() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    drop(setup_database_or_quarantine(&database_path).expect("created"));
+    assert!(super::quarantine_unusable_database(&database_path).is_err());
+    assert!(database_path.is_file());
+    assert!(corrupt_copies(tempdir.path()).is_empty());
+}
+
+/// Two quarantines in the same second must keep both files.
+#[test]
+fn quarantines_in_the_same_second_do_not_overwrite_each_other() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    std::fs::write(&database_path, b"first").expect("write");
+    std::fs::write(tempdir.path().join("warp.sqlite-wal"), b"first-wal").expect("write");
+    let first = super::quarantine_database_files(&database_path, 100).expect("first");
+    std::fs::write(&database_path, b"second").expect("write");
+    let second = super::quarantine_database_files(&database_path, 100).expect("second");
+
+    assert_ne!(first, second);
+    assert_eq!(std::fs::read(&first).expect("read"), b"first");
+    assert_eq!(std::fs::read(&second).expect("read"), b"second");
+    let wal = tempdir.path().join("warp.sqlite.corrupt-100-wal");
+    assert_eq!(std::fs::read(wal).expect("wal moved"), b"first-wal");
+    assert!(!database_path.exists());
+}
+
+/// A failed sidecar rename aborts the quarantine and leaves the original.
+#[test]
+fn failed_sidecar_rename_leaves_the_original_in_place() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    std::fs::write(&database_path, b"main").expect("write");
+    std::fs::write(tempdir.path().join("warp.sqlite-shm"), b"shm").expect("write");
+    std::fs::write(tempdir.path().join("warp.sqlite-wal"), b"wal").expect("write");
+
+    let result = super::quarantine_database_files_with(&database_path, 7, &|from, to| {
+        if to.to_string_lossy().ends_with("-shm") {
+            Err(std::io::Error::other("injected failure"))
+        } else {
+            std::fs::rename(from, to)
+        }
+    });
+    assert!(result.is_err());
+    assert_eq!(std::fs::read(&database_path).expect("main kept"), b"main");
+    assert_eq!(
+        std::fs::read(tempdir.path().join("warp.sqlite-wal")).expect("wal restored after rollback"),
+        b"wal"
+    );
+    assert_eq!(
+        std::fs::read(tempdir.path().join("warp.sqlite-shm")).expect("shm kept"),
+        b"shm"
+    );
+    assert!(corrupt_copies(tempdir.path()).is_empty());
+}
+
+/// A transient-looking error on a database with a valid header and a passing
+/// quick_check is not damage.
+#[test]
+fn transient_error_on_valid_database_is_not_damage() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    drop(setup_database(&database_path).expect("database should initialize"));
+    assert_eq!(super::has_valid_sqlite_header(&database_path), Some(true));
+    assert!(super::error_may_be_transient_io("disk i/o error"));
+    assert!(!super::transient_error_confirms_damage(&database_path));
+
+    let garbage = tempdir.path().join("garbage.sqlite");
+    std::fs::write(&garbage, b"definitely not sqlite, long enough header").expect("write");
+    assert!(super::transient_error_confirms_damage(&garbage));
 }

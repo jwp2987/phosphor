@@ -811,3 +811,75 @@ fn test_flush_writes_through_symlink_and_leaves_no_temp_file() {
         .collect();
     assert_eq!(names, vec![std::ffi::OsString::from("settings.toml")]);
 }
+
+/// #862: a failed save must reach the caller as an error and be remembered
+/// (so the UI is told once per failure streak, not on every retry), and a
+/// later successful save must clear that state.
+#[test]
+fn test_failed_save_is_reported_then_recovers() {
+    use super::super::UserPreferences;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("settings.toml");
+    let (prefs, parse_error) = TomlBackedUserPreferences::new(file_path.clone());
+    assert!(parse_error.is_none());
+
+    prefs
+        .write_value_with_hierarchy("font_size", "13.0".to_string(), Some("font"), None)
+        .unwrap();
+    assert!(!prefs.save_failing.get());
+
+    // A directory where the file belongs: the rename cannot succeed.
+    std::fs::remove_file(&file_path).unwrap();
+    std::fs::create_dir(&file_path).unwrap();
+    let result =
+        prefs.write_value_with_hierarchy("font_size", "14.0".to_string(), Some("font"), None);
+    assert!(result.is_err(), "a failed save must not look successful");
+    assert!(prefs.save_failing.get());
+
+    // Still failing: stays flagged (and is not re-reported).
+    assert!(
+        prefs
+            .write_value_with_hierarchy("font_size", "15.0".to_string(), Some("font"), None)
+            .is_err()
+    );
+    assert!(prefs.save_failing.get());
+
+    std::fs::remove_dir(&file_path).unwrap();
+    prefs
+        .write_value_with_hierarchy("font_size", "16.0".to_string(), Some("font"), None)
+        .unwrap();
+    assert!(!prefs.save_failing.get());
+    // The in-memory document held everything the whole time, so the rewrite
+    // is the full settings, not just the latest key.
+    assert!(
+        std::fs::read_to_string(&file_path)
+            .unwrap()
+            .contains("font_size")
+    );
+}
+
+/// #862: a save failure that happens before the UI takes the receiver (the
+/// store is built long before the workspace) is delivered once it attaches.
+#[test]
+fn test_early_save_failure_is_reported_when_receiver_attaches() {
+    use super::super::UserPreferences;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("early-settings.toml");
+    let (prefs, _) = TomlBackedUserPreferences::new(file_path.clone());
+    std::fs::create_dir(&file_path).unwrap();
+    assert!(
+        prefs
+            .write_value_with_hierarchy("font_size", "14.0".to_string(), Some("font"), None)
+            .is_err()
+    );
+
+    let receiver = take_save_failure_receiver().expect("the receiver is available once");
+    let mut reported = Vec::new();
+    while let Ok(failure) = receiver.try_recv() {
+        reported.push(failure.path);
+    }
+    assert_eq!(reported.iter().filter(|p| **p == file_path).count(), 1);
+    assert!(take_save_failure_receiver().is_none());
+}

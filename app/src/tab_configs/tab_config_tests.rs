@@ -1707,3 +1707,95 @@ fn test_round_six_over_refusals_render() {
         );
     }
 }
+
+/// #884: wrappers that run another command, and values a shell evaluates later.
+#[test]
+fn test_unmodelled_wrappers_and_later_evaluated_values_are_refused() {
+    for command in [
+        "strace -o /dev/null sh -c {{x}}",
+        "dbus-run-session -- sh -c {{x}}",
+        "/proc/self/exe -c {{x}}",
+        "/proc/1234/exe -c {{x}}",
+        "sshpass -p pw ssh host {{x}}",
+        "xvfb-run sh -c {{x}}",
+        "unshare -r sh -c {{x}}",
+        "chroot /srv sh -c {{x}}",
+        "systemd-run --user sh -c {{x}}",
+        "docker run img sh -c {{x}}",
+        "nix-shell --run {{x}}",
+        "wsl bash -c {{x}}",
+        "export PS1={{x}}",
+        "export PROMPT_COMMAND={{x}}",
+        "GIT_SSH_COMMAND={{x}} git ls-remote origin",
+        "env GIT_SSH_COMMAND={{x}} git fetch",
+        "export EDITOR={{x}}",
+        "PAGER={{x}} git log",
+        "BASH_ENV={{x}} true",
+        "set -gx PS1 {{x}}",
+        "command {{x}}",
+        "env {{x}}",
+    ] {
+        assert!(
+            render_single_command(command, "main").is_err(),
+            "{command:?} must be refused"
+        );
+    }
+}
+
+/// The same variables with literal values, and unrelated names, still render.
+#[test]
+fn test_evaluated_variable_check_does_not_over_refuse() {
+    for (command, expected) in [
+        ("EDITOR=vim git commit {{x}}", "EDITOR=vim git commit main"),
+        ("MYPAGER={{x}} true", "MYPAGER=main true"),
+        ("docker build -t {{x}} .", "docker build -t main ."),
+    ] {
+        assert_eq!(
+            render_single_command(command, "main"),
+            Ok(vec![expected.to_string()]),
+            "{command:?}"
+        );
+    }
+}
+
+/// #884: `docker run -it {{image}}` is the dev-container use case and renders; a placeholder in
+/// an option or after the image (the container's command) is refused.
+#[test]
+fn test_container_run_allows_only_an_image_placeholder() {
+    for (command, expected) in [
+        ("docker run -it {{image}}", "docker run -it main"),
+        ("podman run --rm -it {{image}}", "podman run --rm -it main"),
+        (
+            "docker run -v /src:/src -e A=b {{image}}",
+            "docker run -v /src:/src -e A=b main",
+        ),
+        (
+            "docker run alpine && echo {{image}}",
+            "docker run alpine && echo main",
+        ),
+        ("echo PS1 {{x}}", "echo PS1 main"),
+        ("set -gx FOO {{x}}", "set -gx FOO main"),
+    ] {
+        assert_eq!(
+            render_single_command(command, "main"),
+            Ok(vec![expected.to_string()]),
+            "{command:?}"
+        );
+    }
+    for command in [
+        "docker run {{x}} img",
+        "docker run img {{x}}",
+        "docker run -v {{x}}:/mnt img",
+        "docker run --privileged{{x}} img",
+        "docker run --mystery {{x}} img",
+        "docker run -it img sh {{x}}",
+        "nerdctl run --entrypoint {{x}} img",
+        "kubectl run pod --image=img -- sh {{x}}",
+        "set -gx PS1 {{x}}",
+    ] {
+        assert!(
+            render_single_command(command, "main").is_err(),
+            "{command:?} must be refused"
+        );
+    }
+}

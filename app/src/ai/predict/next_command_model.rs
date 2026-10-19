@@ -219,13 +219,7 @@ pub enum NextCommandModelEvent {
 impl NextCommandModel {
     pub fn new(sessions: ModelHandle<Sessions>, model: Arc<FairMutex<TerminalModel>>) -> Self {
         #[cfg(feature = "local_fs")]
-        let conn = crate::persistence::database_file_path()
-            .to_str()
-            .and_then(|db_url| {
-                crate::persistence::establish_ro_connection(db_url)
-                    .ok()
-                    .map(|conn| Arc::new(Mutex::new(conn)))
-            });
+        let conn = crate::persistence::shared_ro_connection();
         Self {
             sessions,
             model,

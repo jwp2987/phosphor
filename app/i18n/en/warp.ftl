@@ -3793,3 +3793,5 @@ workflow-enum-variants = Variants
 quit-warning-dont-save = Don't Save
 quit-warning-show-running-processes = Show running processes
 quit-warning-save-changes-title = Save changes?
+workspace-database-recovered-toast = Phosphor's saved-state database could not be read, so it was moved to { $path } and a fresh one was created. Your windows, tabs and history from before may not be restored.
+workspace-settings-save-failed-toast = Couldn't save your settings to { $path }: { $reason }. Changes will be lost when Phosphor restarts. Check that the file and its folder are writable.

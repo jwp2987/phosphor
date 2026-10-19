@@ -760,33 +760,55 @@ fn init_internal(
         None => !stdout_is_a_tty && !in_ci && !integration_test,
     };
 
-    let state = LogState::new(
+    let mut state = LogState::new(
         use_logfile,
         init_log_directory()?,
         ChannelState::logfile_name().into_owned(),
         frontend,
     );
+    // #861: an unusable state directory (read-only, or a file in its place)
+    // must not stop the app from starting. Fall back to terminal logging and
+    // say, once the logger exists, which path was the problem.
+    let mut log_file_failure = None;
+    let mut log_file_target = None;
     if use_logfile {
-        let file = setup_log_files_for_current_execution(
+        let setup = setup_log_files_for_current_execution(
             &state.log_directory,
             &state.logfile_name,
             is_from_crash_recovery_process,
-        )?;
-        // Crash-recovery logs are short-lived (the file is renamed into place
-        // by the parent on crash, and otherwise deleted on clean exit), so
-        // skip in-session rotation for them — `max_file_size_bytes` only
-        // applies to the main process's `warp.log`.
-        let target: Box<dyn std::io::Write + Send + 'static> = if is_from_crash_recovery_process {
-            Box::new(file)
-        } else {
-            crate::rotation::wrap_for_rotation(
-                file,
-                &state.log_directory,
-                &state.logfile_name,
-                max_file_size_bytes,
-                state.max_rotation,
-            )?
-        };
+        )
+        .and_then(|file| {
+            // Crash-recovery logs are short-lived (the file is renamed into place
+            // by the parent on crash, and otherwise deleted on clean exit), so
+            // skip in-session rotation for them -- `max_file_size_bytes` only
+            // applies to the main process's `warp.log`.
+            let target: Box<dyn std::io::Write + Send + 'static> = if is_from_crash_recovery_process
+            {
+                Box::new(file)
+            } else {
+                crate::rotation::wrap_for_rotation(
+                    file,
+                    &state.log_directory,
+                    &state.logfile_name,
+                    max_file_size_bytes,
+                    state.max_rotation,
+                )?
+            };
+            Ok(target)
+        });
+        match setup {
+            Ok(target) => log_file_target = Some(target),
+            Err(err) => {
+                log_file_failure = Some(format!(
+                    "Cannot write logs to {}: {err:#}. Logging to the terminal instead; \
+                     check that this directory exists and is writable.",
+                    state.log_directory.display()
+                ));
+                state.use_logfile = false;
+            }
+        }
+    }
+    if let Some(target) = log_file_target {
         base_logger.target(env_logger::Target::Pipe(target));
         base_logger.format(format_for_file_output);
     } else {
@@ -801,9 +823,13 @@ fn init_internal(
 
     base_logger.init();
 
+    if let Some(message) = log_file_failure {
+        log::error!("{message}");
+    }
+
     // If we're logging to a file, initialize the `log_panics` crate, which
     // will install a panic hook that writes out panics using `log::error`.
-    if use_logfile {
+    if state.use_logfile {
         log_panics::init();
     }
 

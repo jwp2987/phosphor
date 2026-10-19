@@ -73,6 +73,14 @@ pub enum WarpConfigUpdateEvent {
     /// user's custom bindings are not in effect and the file will not be
     /// rewritten until it is fixed (#858). Holds the reason.
     KeybindingsFileError(String),
+    /// `settings.toml` could not be written (read-only file or directory,
+    /// a directory in its place, a full disk), so the change just made is
+    /// not saved (#862). Holds the path and the OS's reason.
+    #[allow(dead_code)]
+    SettingsSaveFailed {
+        path: std::path::PathBuf,
+        reason: String,
+    },
 }
 
 /// Singleton model containing user configurable file entities like themes, launch configs, and
