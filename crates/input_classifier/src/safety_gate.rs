@@ -17,7 +17,8 @@ use crate::{
     ClassificationResult, Context, InputClassificationResult, InputClassifier,
     InputClassifierDecisionSource, InputType,
     util::{
-        first_token_forces_ai_override, is_unambiguous_shell_command, reads_as_request_to_agent,
+        first_token_forces_ai_override, is_unambiguous_shell_command, known_command_head,
+        reads_as_request_to_agent,
     },
 };
 
@@ -74,6 +75,19 @@ impl<C: InputClassifier> InputClassifier for SafetyGatedClassifier<C> {
             return InputClassificationResult::new(
                 InputType::AI,
                 InputClassifierDecisionSource::ProseAfterCommandHead,
+            );
+        }
+        // #906: the other direction. A classifier that says AI for a line whose command the
+        // session knows (`grep this that`, `make the build`, `nohup grep this the file`) is
+        // vetoed unless the line reads as a request. Unknown heads, session data that cannot say
+        // keep the classifier's verdict, so prose still routes.
+        if matches!(result.input_type, InputType::AI)
+            && known_command_head(&input)
+            && !reads_as_request_to_agent(&input.buffer_text)
+        {
+            return InputClassificationResult::new(
+                InputType::Shell,
+                InputClassifierDecisionSource::KnownCommandHeadNotARequest,
             );
         }
         result

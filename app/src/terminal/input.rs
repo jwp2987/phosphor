@@ -12103,8 +12103,18 @@ impl Input {
                 .next()
                 .zip(self.active_session(ctx))
                 .is_some_and(|(word, session)| session.knows_command_word(word) == Some(false));
+        // #906: the mirror image, for the effective head (after `nohup`, `env`, `timeout 5`...).
+        let head_known_to_shell = prompt_session_is_the_target
+            && input_classifier::util::effective_head_word(&snapshot.buffer_text)
+                .zip(self.active_session(ctx))
+                .is_some_and(|(word, session)| session.knows_command_word(&word) == Some(true));
         self.ai_input_model.update(ctx, |model, ctx| {
-            model.settle_pending_detection_for_submit(&snapshot, head_unknown_to_shell, ctx);
+            model.settle_pending_detection_for_submit(
+                &snapshot,
+                head_unknown_to_shell,
+                head_known_to_shell,
+                ctx,
+            );
         });
     }
 

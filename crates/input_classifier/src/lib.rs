@@ -5,6 +5,8 @@ mod input_type;
 #[cfg(feature = "onnx")]
 mod onnx;
 mod parser;
+#[cfg(test)]
+mod request_corpus;
 mod safety_gate;
 pub mod test_utils;
 pub mod util;
@@ -55,6 +57,11 @@ pub enum InputClassifierDecisionSource {
     /// logs`) or it ends in `?`, so the safety gate overrode it to AI. See
     /// `util::reads_as_command_headed_prose`.
     ProseAfterCommandHead,
+    /// Fork-original, not in the pin (#906): a classifier scored the input as AI, but its
+    /// effective head is a command the session knows and nothing in the line reads as a request
+    /// (`grep this that`, `make the build`), so the safety gate overrode it to Shell. See
+    /// `util::known_command_head`.
+    KnownCommandHeadNotARequest,
 }
 
 /// The detected input type along with the decision source that produced it.
