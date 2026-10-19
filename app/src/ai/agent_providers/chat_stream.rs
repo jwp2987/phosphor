@@ -3348,6 +3348,32 @@ const BYOP_STREAM_IDLE_TIMEOUT_ENV: &str = "PHOSPHOR_BYOP_STREAM_IDLE_TIMEOUT_SE
 /// model may legitimately think for a long time before its first token.
 const DEFAULT_BYOP_STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Env override for the window before the first real content event, in seconds (#853).
+const BYOP_STREAM_FIRST_EVENT_TIMEOUT_ENV: &str = "PHOSPHOR_BYOP_STREAM_FIRST_EVENT_TIMEOUT_SECS";
+
+/// Default longest wait for the first real content event. Much larger than the idle timeout:
+/// it covers connect plus prompt prefill, and genai only emits `Start` once response headers
+/// arrive, which local servers (Ollama, llama.cpp) may withhold until the first token.
+const DEFAULT_BYOP_STREAM_FIRST_EVENT_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(600);
+
+fn byop_stream_first_event_timeout() -> std::time::Duration {
+    parse_first_event_timeout_secs(
+        std::env::var(BYOP_STREAM_FIRST_EVENT_TIMEOUT_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// Pure parse of the first-event-timeout override: a positive integer number of seconds,
+/// otherwise the default.
+fn parse_first_event_timeout_secs(raw: Option<&str>) -> std::time::Duration {
+    raw.and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(DEFAULT_BYOP_STREAM_FIRST_EVENT_TIMEOUT)
+}
+
 fn byop_stream_idle_timeout() -> std::time::Duration {
     parse_idle_timeout_secs(std::env::var(BYOP_STREAM_IDLE_TIMEOUT_ENV).ok().as_deref())
 }
@@ -6541,6 +6567,7 @@ pub async fn generate_byop_output(
         let mut received_real_event = false;
 
         let stream_idle_timeout = byop_stream_idle_timeout();
+        let stream_first_event_timeout = byop_stream_first_event_timeout();
         loop {
             // #853: bound the wait for each chunk. A provider that goes silent after the
             // first token (or never sends one) would otherwise leave the turn "thinking"
@@ -6548,20 +6575,32 @@ pub async fn generate_byop_output(
             // conversation, and the error below goes through the normal recovery path.
             let next_item = {
                 let next = sdk_stream.next();
-                let idle = warpui::r#async::Timer::after(stream_idle_timeout);
+                // Until real content arrives the wait also covers connect and prefill, so
+                // it gets the larger first-event window (`Start` does not count: see above).
+                let (active_timeout, active_env) = if received_real_event {
+                    (stream_idle_timeout, BYOP_STREAM_IDLE_TIMEOUT_ENV)
+                } else {
+                    (
+                        stream_first_event_timeout,
+                        BYOP_STREAM_FIRST_EVENT_TIMEOUT_ENV,
+                    )
+                };
+                let idle = warpui::r#async::Timer::after(active_timeout);
                 futures::pin_mut!(next, idle);
                 match futures::future::select(next, idle).await {
                     futures::future::Either::Left((item, _)) => item,
                     futures::future::Either::Right(_) => {
                         log::error!(
-                            "[byop] stream idle for {stream_idle_timeout:?}; giving up \
+                            "[byop] stream idle for {active_timeout:?}; giving up \
                              (chunks={chunk_count} tool_chunks={tool_chunk_count})"
                         );
                         yield Err(Arc::new(AIApiError::Other(anyhow::anyhow!(
                             "The AI provider stopped sending data for {} seconds, so this \
-                             response was cut off. Anything already received is kept; send \
-                             your message again to retry.",
-                            stream_idle_timeout.as_secs()
+                             response was cut off. Automatic retries were made. Anything \
+                             already received is kept; send your message again to retry, or \
+                             raise the limit with {}.",
+                            active_timeout.as_secs(),
+                            active_env
                         ))));
                         return;
                     }
@@ -9161,6 +9200,21 @@ mod byop_stream_error_retry_tests {
         assert_eq!(
             parse_idle_timeout_secs(Some(" 30 ")),
             std::time::Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn first_event_timeout_override_parsing() {
+        let default = DEFAULT_BYOP_STREAM_FIRST_EVENT_TIMEOUT;
+        assert!(default > DEFAULT_BYOP_STREAM_IDLE_TIMEOUT);
+        assert_eq!(parse_first_event_timeout_secs(None), default);
+        assert_eq!(parse_first_event_timeout_secs(Some("")), default);
+        assert_eq!(parse_first_event_timeout_secs(Some("0")), default);
+        assert_eq!(parse_first_event_timeout_secs(Some("-3")), default);
+        assert_eq!(parse_first_event_timeout_secs(Some("abc")), default);
+        assert_eq!(
+            parse_first_event_timeout_secs(Some(" 900 ")),
+            std::time::Duration::from_secs(900)
         );
     }
 

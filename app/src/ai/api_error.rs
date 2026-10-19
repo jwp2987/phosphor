@@ -24,9 +24,10 @@ pub enum DeserializationError {
     Transport(reqwest::Error),
 }
 
-/// Longest provider-requested `Retry-After` wait we will honour. Kept well under the agent
-/// driver's `AUTO_RESUME_TIMEOUT` (120s) so a long hint cannot make the driver give up on a
-/// recovery that is still legitimately pending.
+/// Longest provider-requested `Retry-After` wait we will honour for a single wait. The bound is
+/// per wait, not per recovery: the agent driver re-arms its deadline on every transient error,
+/// so a series of capped waits is not cut short by `AUTO_RESUME_TIMEOUT` (120s) as long as each
+/// one stays well under it.
 pub(crate) const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 /// Parses a `Retry-After` header value (RFC 9110 §10.2.3): either delta-seconds or an
@@ -40,6 +41,9 @@ pub(crate) fn parse_retry_after(
     let value = value.trim();
     let delay = if let Ok(secs) = value.parse::<u64>() {
         Duration::from_secs(secs)
+    } else if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
+        // All digits but too large for u64: a huge delay, not a malformed one. Clamp it.
+        MAX_RETRY_AFTER
     } else if value.starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '+') {
         // Numeric-looking but not delta-seconds (negative, fractional, junk).
         return None;
@@ -283,7 +287,11 @@ mod tests {
     #[test]
     fn retry_after_over_cap_is_clamped() {
         assert_eq!(parse_retry_after("3600", now()), Some(MAX_RETRY_AFTER));
-        assert_eq!(parse_retry_after("99999999999999999999", now()), None);
+        // Overflows u64 but is still a (huge) delay-seconds value: clamp, do not drop.
+        assert_eq!(
+            parse_retry_after("99999999999999999999", now()),
+            Some(MAX_RETRY_AFTER)
+        );
         assert_eq!(
             parse_retry_after("Thu, 22 Oct 2015 07:28:00 GMT", now()),
             Some(MAX_RETRY_AFTER)
