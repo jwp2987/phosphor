@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::{compute_find_matches, find::query_find_matches};
+use super::{compute_find_matches, query_find_matches};
 use crate::ai::agent::{AIAgentInput, UserQueryMode};
 use crate::terminal::find::FindOptions;
 
