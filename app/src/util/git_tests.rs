@@ -872,6 +872,25 @@ mod child_env {
 }
 
 #[test]
+fn command_may_change_cwd_detects_directory_changes() {
+    use super::command_may_change_cwd as f;
+    for yes in [
+        "cd ~/repo",
+        "cd /tmp && ls",
+        "ls; cd src",
+        "(cd sub && make)",
+        "pushd /x",
+        "popd",
+        "git status\ncd ..",
+    ] {
+        assert!(f(yes), "{yes}");
+    }
+    for no in ["ls", "echo cdrom", "git status", "make cd-target", "abcd /x"] {
+        assert!(!f(no), "{no}");
+    }
+}
+
+#[test]
 fn command_may_change_head_detects_head_moving_git_commands() {
     use super::command_may_change_head as f;
     for yes in [

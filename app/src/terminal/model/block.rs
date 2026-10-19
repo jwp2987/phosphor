@@ -2351,6 +2351,12 @@ impl Block {
         self.header_grid.command_to_string()
     }
 
+    /// Shows `command` as this block's command in place of the text the shell echoed. See
+    /// `HeaderGrid::replace_command_text` (#904).
+    pub(super) fn replace_command_text(&mut self, command: &str) {
+        self.header_grid.replace_command_text(command);
+    }
+
     /// Returns the top-level command executed in this block.
     /// Aliases are also resolved.
     ///
@@ -3084,6 +3090,13 @@ impl Block {
         self.all_grids_iter()
             .map(|grid| grid.grid_storage().total_rows())
             .sum()
+    }
+
+    /// Every line this block retains: the live grid rows plus the scrollback history that lives
+    /// in flat storage. A finished block's output is almost entirely flat-storage history, so
+    /// `grid_storage_lines` alone undercounts it to roughly the visible rows (#915).
+    pub fn retained_lines(&self) -> usize {
+        self.grid_storage_lines() + self.flat_storage_lines()
     }
 
     pub fn grid_storage_bytes(&self) -> usize {

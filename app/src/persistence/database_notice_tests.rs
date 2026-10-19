@@ -227,44 +227,76 @@ fn sqlite_error_log_is_limited_per_code() {
 }
 
 #[test]
-fn deleted_or_replaced_file_is_detected_and_a_healthy_one_is_not_flagged() {
+fn deleted_replaced_and_damaged_files_are_detected_but_a_bare_inode_change_is_not() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("warp.sqlite");
-    std::fs::write(&db, b"x").unwrap();
+    let mut page = b"SQLite format 3\0".to_vec();
+    page.extend_from_slice(&[0; 4080]);
+    std::fs::write(&db, &page).unwrap();
     let opened = file_identity(&db).expect("regular file has an identity");
-    assert_eq!(check_file_unchanged(&db, opened), None);
+    assert_eq!(check_database_file(&db, opened), None);
 
-    // Rewriting or truncating in place keeps the inode: not a replacement.
+    // Truncated in place: same inode, so damage rather than replacement.
     std::fs::write(&db, b"").unwrap();
-    assert_eq!(check_file_unchanged(&db, opened), None);
+    assert_eq!(
+        check_database_file(&db, opened),
+        Some(DatabaseProblem::Corrupt)
+    );
 
     // Deleted.
     std::fs::remove_file(&db).unwrap();
     assert_eq!(
-        check_file_unchanged(&db, opened),
+        check_database_file(&db, opened),
         Some(DatabaseProblem::FileReplaced)
     );
 
     // Replaced by a directory.
     std::fs::create_dir(&db).unwrap();
     assert_eq!(
-        check_file_unchanged(&db, opened),
+        check_database_file(&db, opened),
         Some(DatabaseProblem::FileReplaced)
     );
     std::fs::remove_dir(&db).unwrap();
 
-    // A different file at the path (a healthy database put back) is a
-    // replacement too: it is reported, never written to.
     #[cfg(unix)]
     {
+        // A different healthy file at the path (what an unstable-inode
+        // filesystem looks like too) is not reported on the inode alone.
         let keep = dir.path().join("keep");
-        std::fs::write(&keep, b"x").unwrap();
-        std::fs::write(&db, b"y").unwrap();
+        std::fs::write(&keep, &page).unwrap();
+        std::fs::write(&db, &page).unwrap();
         let first = file_identity(&db).unwrap();
         std::fs::rename(&keep, &db).unwrap();
+        assert_eq!(check_database_file(&db, first), None);
+
+        // A different file that is not a database is a replacement.
+        std::fs::write(&keep, b"junk").unwrap();
+        std::fs::rename(&keep, &db).unwrap();
         assert_eq!(
-            check_file_unchanged(&db, first),
+            check_database_file(&db, first),
             Some(DatabaseProblem::FileReplaced)
         );
     }
 }
+
+#[test]
+fn reset_rearms_the_damage_notice() {
+    let _ = take_database_problem_notice();
+    let db = Path::new("/nonexistent/dir/rearm.sqlite");
+    assert_eq!(
+        record_write_outcome(db, Some("file is not a database")),
+        WriteFailureLog::First
+    );
+    assert_eq!(
+        record_write_outcome(db, Some("file is not a database")),
+        WriteFailureLog::Repeat
+    );
+    reset_damage_reports();
+    assert_eq!(
+        record_write_outcome(db, Some("file is not a database")),
+        WriteFailureLog::First
+    );
+    assert_eq!(take_database_problem_notice().unwrap().problem, DatabaseProblem::Corrupt);
+    assert_eq!(take_database_problem_notice().unwrap().problem, DatabaseProblem::Corrupt);
+}
+

@@ -10,7 +10,7 @@ use warpui::{AppContext, SingletonEntity};
 use crate::{
     ai::{
         agent::{
-            conversation::AIConversationId, AIAgentAttachment, AIAgentContext,
+            conversation::AIConversationId, AIAgentAttachment, AIAgentContext, AIAgentInput,
             DocumentContentAttachmentSource, DriveObjectPayload,
         },
         block_context::BlockContext,
@@ -148,7 +148,7 @@ pub(super) fn action_result_context(
         vec![],
         app,
     );
-    if !results.iter().any(result_may_change_head) {
+    if !results.iter().any(result_may_change_head_or_cwd) {
         return context;
     }
     let Some(LocalOrRemotePath::Local(cwd)) =
@@ -162,14 +162,37 @@ pub(super) fn action_result_context(
     with_fresh_git_branch(&context, fresh)
 }
 
-fn result_may_change_head(result: &crate::ai::agent::AIAgentActionResult) -> bool {
+fn result_may_change_head_or_cwd(result: &crate::ai::agent::AIAgentActionResult) -> bool {
     use crate::ai::agent::AIAgentActionResultType;
     use crate::ai::agent::RequestCommandOutputResult as R;
     match &result.result {
         AIAgentActionResultType::RequestCommandOutput(
             R::Completed { command, .. } | R::LongRunningCommandSnapshot { command, .. },
-        ) => crate::util::git::command_may_change_head(command),
+        ) => {
+            crate::util::git::command_may_change_head(command)
+                || crate::util::git::command_may_change_cwd(command)
+        }
         _ => false,
+    }
+}
+
+/// Remembers the fresh context carried by the first of `inputs` that is an
+/// `ActionResult` with a non-empty one, as the context for `conversation_id`'s next
+/// request (see `chat_stream::remember_conversation_context`, #905). Call it before the
+/// results are removed from the request input.
+pub(crate) fn remember_action_result_context<'a>(
+    conversation_id: AIConversationId,
+    inputs: impl IntoIterator<Item = &'a AIAgentInput>,
+) {
+    let fresh = inputs.into_iter().find_map(|input| match input {
+        AIAgentInput::ActionResult { context, .. } if !context.is_empty() => Some(context),
+        _ => None,
+    });
+    if let Some(context) = fresh {
+        crate::ai::agent_providers::chat_stream::remember_conversation_context(
+            conversation_id,
+            context,
+        );
     }
 }
 

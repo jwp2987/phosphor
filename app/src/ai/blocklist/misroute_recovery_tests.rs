@@ -239,3 +239,18 @@ fn expiry_is_reported_only_while_an_offer_exists() {
         None
     );
 }
+
+#[test]
+fn multi_line_text_is_never_offered_to_the_agent_either() {
+    // #907: blocked in both directions on purpose; the exit code of a pasted script is its last
+    // line's, which says nothing about whether the whole paste was prose.
+    let now = Instant::now();
+    let mut memory = memory_with(
+        "gradle one\ngradle two",
+        SubmitRoute::Shell,
+        RouteReason::Autodetected,
+        now,
+    );
+    memory.note_command_finished("gradle one\ngradle two", ExitCode::from(127), now);
+    assert_eq!(memory.offer(now), None);
+}

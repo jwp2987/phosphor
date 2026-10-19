@@ -1554,7 +1554,8 @@ fn reconstruct_database(path: &Path) -> Result<SqliteConnection> {
 
 fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<WriterHandles> {
     let (tx, rx) = std::sync::mpsc::sync_channel(CHANNEL_SIZE);
-    let mut current_conn = conn;
+    // `None` while paused: the connection is closed before the file is removed.
+    let mut current_conn = Some(conn);
     let handle = thread::Builder::new()
         .name("SQLite Writer".into())
         .spawn(move || {
@@ -1562,8 +1563,9 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
             // Which file the connection was opened on; if it is deleted or
             // swapped, writes go to an unlinked inode and are lost (#911).
             let mut opened_identity = super::database_notice::file_identity(&database_path);
-            // Set once the file was found deleted or replaced: no more
-            // writes, and the connection is never closed (see below).
+            // Set once the file was found deleted, replaced or damaged: no more
+            // writes, and the connection was retired (see
+            // `retire_abandoned_connection`).
             let mut abandoned = false;
             let mut suppressed_errors: u32 = 0;
             loop {
@@ -1580,9 +1582,6 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                         log::warn!(
                             "SQLite event sender has closed; terminating SQLite writer thread."
                         );
-                        if abandoned {
-                            std::mem::forget(current_conn);
-                        }
                         return;
                     }
                 };
@@ -1592,9 +1591,11 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                         ModelEvent::ReconstructAndResume => {
                             match reconstruct_database(&database_path) {
                                 Ok(conn) => {
-                                    current_conn = conn;
+                                    current_conn = Some(conn);
                                     paused = false;
                                     abandoned = false;
+                                    // A new database can be damaged again later.
+                                    super::database_notice::reset_damage_reports();
                                     opened_identity =
                                         super::database_notice::file_identity(&database_path);
                                     log::info!("SQLite Writer is resumed");
@@ -1614,6 +1615,19 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                             paused = true;
                             log::info!("SQLite Writer is paused");
 
+                            // Close the connection while the file still exists, so
+                            // the close checkpoints into the real database and
+                            // removes its own `-wal`. Closing it afterwards would
+                            // unlink, by name, the `-wal` of a database created
+                            // since (#920). Nothing is leaked: while paused there
+                            // is no connection at all.
+                            if let Some(mut old) = current_conn.take() {
+                                if let Err(e) = old.batch_execute("PRAGMA wal_checkpoint(TRUNCATE);") {
+                                    log::warn!("Failed to checkpoint WAL before removal: {e:?}");
+                                }
+                                drop(old);
+                            }
+
                             if let Err(err) = std::fs::remove_file(&database_path) {
                                 report_error!(anyhow::Error::new(err)
                                     .context("Error removing SQLite database"));
@@ -1622,20 +1636,12 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                             }
                         }
                         ModelEvent::Terminate => {
-                            if abandoned {
-                                // The path may now hold a database the user put
-                                // back; closing our connection would checkpoint
-                                // and delete the `-wal` at that path. Leak it.
-                                std::mem::forget(current_conn);
-                                log::info!("Shutting down SQLite writer thread");
-                                return;
-                            }
                             // Proactively checkpoint the entire WAL back into the
                             // main database and clear it before exiting, to avoid
                             // sqlite3_open triggering a "WAL mode database file
                             // was recovered" recovery on the next startup.
-                            if let Err(e) =
-                                current_conn.batch_execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                            if let Some(conn) = current_conn.as_mut()
+                                && let Err(e) = conn.batch_execute("PRAGMA wal_checkpoint(TRUNCATE);")
                             {
                                 log::warn!("Failed to checkpoint WAL on shutdown: {e:?}");
                             }
@@ -1650,26 +1656,28 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                             if abandoned {
                                 continue;
                             }
-                            // #911: a deleted or swapped file is never repaired
-                            // here. Re-creating it could clobber a healthy
+                            // #911: a deleted, swapped or damaged file is never
+                            // repaired here. Re-creating it could clobber a healthy
                             // database the user is putting back, so the writer
                             // stops, says so once, and leaves the path alone.
-                            let damage = opened_identity
-                                .and_then(|identity| {
-                                    super::database_notice::check_file_unchanged(
-                                        &database_path,
-                                        identity,
-                                    )
-                                })
-                                .or_else(|| {
-                                    super::database_notice::check_file_is_database(&database_path)
-                                });
-                            if let Some(problem) = damage {
+                            let Some(conn) = current_conn.as_mut() else {
+                                continue;
+                            };
+                            if let Some(problem) = opened_identity.and_then(|identity| {
+                                super::database_notice::check_database_file(
+                                    &database_path,
+                                    identity,
+                                )
+                            }) {
                                 abandoned = true;
+                                let leaked = current_conn
+                                    .take()
+                                    .is_some_and(|conn| retire_abandoned_connection(conn, &database_path));
                                 log::warn!(
                                     "The SQLite database file was deleted, replaced or damaged while \
                                      running ({problem:?}); no further state will be saved \
-                                     this session"
+                                     this session{}",
+                                    if leaked { " (connection left open on purpose)" } else { "" }
                                 );
                                 super::database_notice::record_write_problem(
                                     &database_path,
@@ -1677,7 +1685,7 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                 );
                                 continue;
                             }
-                            match handle_model_event(event, &mut current_conn) {
+                            match handle_model_event(event, conn) {
                                 Ok(()) => {
                                     suppressed_errors = 0;
                                     super::database_notice::record_write_outcome(
@@ -1711,6 +1719,34 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
             }
         })?;
     Ok(WriterHandles { handle, sender: tx })
+}
+
+/// Retires the writer's connection once its database file turned out to be
+/// deleted, replaced or damaged. Returns whether the connection was leaked.
+///
+/// Closing a WAL connection checkpoints and then unlinks `<db>-wal` by name.
+/// If nothing exists at the database path or its sidecars, that is harmless, so
+/// the connection is closed and nothing leaks. If something does exist (a file
+/// swapped in, or our own damaged file) it may be a database with its own
+/// `-wal` that a close would delete, so the connection is deliberately leaked.
+/// Bound: at most one leaked connection per login session, and only when the
+/// database file is replaced by another file or damaged in place while running;
+/// the writer latches `abandoned`, so this runs once per latch.
+fn retire_abandoned_connection(conn: SqliteConnection, db_path: &Path) -> bool {
+    let sidecar = |suffix: &str| {
+        let mut name = db_path.as_os_str().to_owned();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    let occupied = [db_path.to_path_buf(), sidecar("-wal"), sidecar("-shm")]
+        .iter()
+        .any(|path| std::fs::symlink_metadata(path).is_ok());
+    if occupied {
+        std::mem::forget(conn);
+    } else {
+        drop(conn);
+    }
+    occupied
 }
 
 /// Handles a single [`ModelEvent`] by dispatching to an event-specific function.

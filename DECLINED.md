@@ -2411,6 +2411,32 @@ upstream's behavior is actually a defect rather than a preference.
   unverified in a real shell.
   <!-- markers: keep:wrap_command keep:needs_subshell keep:model_id_handles_command_snapshots keep:is_known_pager_name keep:FullscreenStallDetector -->
 
+- **Agent commands `exec` into an interactive shell are refused, an ignored Stop is escalated, and the
+  wrapped command stays out of shell history** (`#899`, `#900`, `#904`, 2026-10-19,
+  `.../execute/agent_shell_wrap.rs` `exec_into_shell`, `.../execute/shell_command.rs`,
+  `app/src/terminal/view.rs` `escalate_agent_command_that_ignored_interrupt`,
+  `app/src/ai/blocklist/agent_view/controller.rs`, `app/src/terminal/model/header_grid.rs`,
+  `bootstrap/{bash,zsh}_body.sh`). **Upstream:** types the command as is, so `exec bash`
+  replaces the user's hooked shell and the agent waits forever. **We do:** (1) a top-level
+  `exec <shell>` (`exec bash`, `exec -l zsh`, `exec "$SHELL"`, `exec env X=1 fish`) is not run:
+  the tool result is a failed completion saying why and suggesting `bash -c '...'`. The
+  subshell fallback for `exec` was the wrong tool: the subshell becomes a second interactive
+  shell holding the terminal, the command never ends and ^C is ignored at its prompt, so the
+  safe options were refuse or hang, and refusing keeps the user's shell, hooks and pane
+  intact. `exec ls`, `exec bash -c '...'`, `exec sh script.sh` and `exec env X=1 sh run.sh` end on their own and still run in the subshell; runtime-chosen targets (`exec "${SHELL:-sh}"`, `exec $(command -v zsh)`), `eval 'exec bash'`, `exec sudo -i` and `exec su` are refused. (2) Whatever
+  else ignores ^C (a nested `bash`, `trap '' INT`), the interrupt is escalated after 3s (sending NO second ^C, which terraform/docker compose/npm treat as 'abort now'; the grace only decides the agent has waited long enough, so a command cleaning up on the first ^C finishes, now in the user's hands): the
+  conversation is cancelled (ends the wait, marks the tool call cancelled), the command is
+  handed to the user and the agent view is left; a Stop-taken-over command no longer pins
+  the pane to the agent view (`can_exit_agent_view`). (3) The block, the tab title and the
+  model's attached context show the command the agent asked for (the echoed wrapper is
+  replaced in the command grid at preexec), and the wrapper is kept out of bash/zsh/fish
+  history by `HISTIGNORE`, `zshaddhistory` and a leading space. **Deliberate:** because the
+  filter keys on the wrapper, a *waited* agent command is not recorded in the shell's
+  history at all (it used to be, as the 900-character wrapper); recording the clean command
+  would need a history rewrite per shell. **Not done:** a user-defined fish `fish_should_add_to_history` that ignores the leading space still saves the fish wrapper; PowerShell history (PSReadLine) still
+  sees the wrapper; the pwsh form is unverified in a real shell.
+  <!-- markers: keep:exec_into_shell keep:escalate_agent_command_that_ignored_interrupt keep:replace_command_text keep:HISTORY_MARKER -->
+
 ## Not done: evicting closed panes' AI conversations from memory (#843)
 
 Closing a pane drops the AI history model's per-view maps (live and cleared ids, active

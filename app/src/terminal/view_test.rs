@@ -3103,6 +3103,69 @@ fn test_retained_line_eviction_shifts_view_state_in_one_step() {
     })
 }
 
+/// #915: the cap must work through the real path -- the setting value reaching the model via the
+/// view's settings subscription, then the view's own eviction entry point -- and must count the
+/// scrollback history that lives in flat storage, not just the live grid rows.
+#[test]
+fn test_max_retained_lines_setting_bounds_retained_history() {
+    // Release builds enable this flag; it moves a finished block's scrollback into flat storage.
+    let _flat = FeatureFlag::MaximizeFlatStorage.override_enabled(true);
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::ToastStack);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let output = (0..300)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        terminal.update(&mut app, |view, _| {
+            let mut model = view.model.lock();
+            for _ in 0..8 {
+                model.simulate_block("seq", output.as_str());
+            }
+            assert!(
+                model
+                    .block_list()
+                    .blocks()
+                    .iter()
+                    .any(|block| block.flat_storage_lines() > 0),
+                "finished output must have scrollback history in flat storage"
+            );
+        });
+
+        // Setting off (the default): nothing is evicted.
+        let before = terminal.read(&app, |view, _| {
+            view.model.lock().block_list().blocks().len()
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.maybe_evict_retained_blocks(ctx);
+        });
+        let after = terminal.read(&app, |view, _| {
+            view.model.lock().block_list().blocks().len()
+        });
+        assert_eq!(before, after, "setting off must not evict");
+
+        // Turn the cap on through the settings model, as settings.toml / the UI does.
+        TerminalSettings::handle(&app).update(&mut app, |settings, ctx| {
+            report_if_error!(settings.maximum_grid_size.set_value(100, ctx));
+            report_if_error!(settings.max_retained_lines.set_value(800, ctx));
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.maybe_evict_retained_blocks(ctx);
+            let model = view.model.lock();
+            let blocks = model.block_list().blocks();
+            let total: usize = blocks.iter().map(|b| b.retained_lines()).sum();
+            assert!(blocks.len() < before, "old blocks must have been evicted");
+            assert!(blocks.len() >= 2, "recent blocks are kept");
+            // Eviction stops as soon as the total fits, so dropping one more block would not
+            // have been needed: the total is within budget.
+            assert!(total <= 800, "retained lines {total} exceed the cap");
+            assert!(model.block_list().evicted_total() > 0);
+        });
+    })
+}
+
 #[test]
 fn test_stamped_layout_actions_resolve_across_eviction() {
     App::test((), |mut app| async move {
@@ -7731,6 +7794,67 @@ fn escape_stops_turn_and_interrupts_running_agent_command() {
                     .is_agent_driving_command()
             );
         });
+    })
+}
+
+/// #899 / #900: a command that ignores ^C (a nested interactive shell) must not leave Stop
+/// doing nothing. When the interrupted command is still running after the grace period, the
+/// stop is escalated: the conversation is cancelled and the command is handed to the user.
+#[test]
+fn ignored_interrupt_of_agent_command_escalates_to_a_stop() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, conversation_id) = setup_running_agent_command(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_action(&TerminalAction::CtrlC, ctx);
+            let block_id = view.model.lock().block_list().active_block().id().clone();
+
+            // A different block is none of the escalation's business.
+            view.escalate_agent_command_that_ignored_interrupt(
+                &crate::terminal::model::block::BlockId::new(),
+                ctx,
+            );
+            assert!(
+                view.model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_agent_driving_command()
+            );
+
+            // The command is still running when the grace period ends.
+            view.escalate_agent_command_that_ignored_interrupt(&block_id, ctx);
+        });
+
+        terminal.read(&app, |view, ctx| {
+            let conversation = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&conversation_id)
+                .expect("conversation should exist");
+            assert_eq!(conversation.status(), &ConversationStatus::Cancelled);
+            assert!(
+                !view
+                    .model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_agent_driving_command(),
+                "the command is the user's after the escalated stop"
+            );
+        });
+        assert_eq!(
+            pty_writes
+                .borrow()
+                .iter()
+                .filter(|write| **write == vec![warp_terminal::model::escape_sequences::C0::ETX])
+                .count(),
+            1,
+            "only the user's own ^C: the escalation must not send a second SIGINT, which \
+             programs cleaning up on the first treat as 'abort now'"
+        );
     })
 }
 

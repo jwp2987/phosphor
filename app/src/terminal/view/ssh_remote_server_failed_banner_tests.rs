@@ -150,3 +150,15 @@ fn feature_disabled_and_no_connected_client_produce_different_text() {
         "terminal-ssh-remote-server-legacy-no-client-detail"
     );
 }
+
+#[test]
+fn declining_the_install_shows_no_legacy_banner() {
+    // #916: "Continue without installing" yields NoConnectedClient and must
+    // not produce an error banner.
+    assert!(!legacy_fallback_shows_banner(
+        &LegacySshFallbackReason::NoConnectedClient
+    ));
+    assert!(legacy_fallback_shows_banner(
+        &LegacySshFallbackReason::FeatureDisabled
+    ));
+}

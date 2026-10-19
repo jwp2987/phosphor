@@ -238,23 +238,6 @@ pub fn file_identity(path: &Path) -> Option<FileIdentity> {
     }
 }
 
-/// Whether the file at `path` is still the one the writer opened. Returns the
-/// problem if it was deleted or swapped. An unreadable path (a permissions
-/// error, say) is not judged: that is not evidence the file moved.
-pub fn check_file_unchanged(path: &Path, opened: FileIdentity) -> Option<DatabaseProblem> {
-    match std::fs::metadata(path) {
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            Some(DatabaseProblem::FileReplaced)
-        }
-        Err(_) => None,
-        Ok(meta) if !meta.is_file() => Some(DatabaseProblem::FileReplaced),
-        Ok(_) => match file_identity(path) {
-            Some(now) if now != opened => Some(DatabaseProblem::FileReplaced),
-            _ => None,
-        },
-    }
-}
-
 /// Whether the file at `path` is no longer a SQLite database: empty, or
 /// without the 16-byte magic every SQLite file starts with. Truncating or
 /// overwriting the file under a running connection does not make SQLite fail
@@ -277,6 +260,35 @@ pub fn check_file_is_database(path: &Path) -> Option<DatabaseProblem> {
         }
     }
     (&head[..filled] != MAGIC).then_some(DatabaseProblem::Corrupt)
+}
+
+/// What is wrong with the database file at `path`, if anything, given the
+/// identity it had when the writer opened it.
+///
+/// A missing file, or one that is no longer a regular file, is a replacement.
+/// A file that is not a SQLite database (empty, or without the magic) is
+/// damage, or a replacement if its inode also changed. An inode change on its
+/// own is NOT enough: FUSE and network mounts hand out unstable inodes, and a
+/// replacement that is a healthy database cannot be told apart there.
+pub fn check_database_file(path: &Path, opened: FileIdentity) -> Option<DatabaseProblem> {
+    match std::fs::metadata(path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Some(DatabaseProblem::FileReplaced);
+        }
+        Err(_) => return None,
+        Ok(meta) if !meta.is_file() => return Some(DatabaseProblem::FileReplaced),
+        Ok(_) => {}
+    }
+    check_file_is_database(path).map(|damage| match file_identity(path) {
+        Some(now) if now != opened => DatabaseProblem::FileReplaced,
+        _ => damage,
+    })
+}
+
+/// Re-arms the damage notice after the database was reconstructed (a new file).
+pub fn reset_damage_reports() {
+    CORRUPTION_REPORTED.store(false, Ordering::Relaxed);
+    WRITES_FAILING.store(false, Ordering::Relaxed);
 }
 
 /// Decides whether a repeated SQLite error should be logged again. SQLite

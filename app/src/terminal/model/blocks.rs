@@ -3607,7 +3607,7 @@ impl BlockList {
     }
 
     pub fn evict_oldest_blocks_to_budget(&mut self, line_budget: usize) -> EvictedBlocks {
-        let mut total: usize = self.blocks.iter().map(|b| b.grid_storage_lines()).sum();
+        let mut total: usize = self.blocks.iter().map(|b| b.retained_lines()).sum();
         let last = self.blocks.len().saturating_sub(1);
         let mut evict_count = 0;
         for (i, block) in self.blocks.iter().enumerate() {
@@ -3620,7 +3620,7 @@ impl BlockList {
             {
                 break;
             }
-            total = total.saturating_sub(block.grid_storage_lines());
+            total = total.saturating_sub(block.retained_lines());
             evict_count += 1;
         }
         if evict_count == 0 {

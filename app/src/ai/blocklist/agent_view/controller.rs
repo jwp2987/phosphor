@@ -461,11 +461,20 @@ impl AgentViewController {
         let model = self.terminal_model.lock();
 
         let ambient_agent_model = self.ambient_agent_view_model.as_ref(ctx);
+        // A command the user took over with Stop is theirs, not the agent's: it must not pin the
+        // pane to the agent view, or a command that ignores ^C leaves the pane with neither an
+        // input nor a terminal (#899, #900).
         let is_fullscreen_with_long_running = self.agent_view_state.is_fullscreen()
             && model
                 .block_list()
                 .active_block()
-                .is_active_and_long_running();
+                .is_active_and_long_running()
+            && !model
+                .block_list()
+                .active_block()
+                .long_running_control_state()
+                .and_then(|state| state.user_take_over_reason())
+                .is_some_and(|reason| reason.is_stop());
 
         // Ambient agent sessions should not allow exiting agent view if it's not backed by a terminal session because there's nothing to escape to.
         if ambient_agent_model.is_ambient_agent() {

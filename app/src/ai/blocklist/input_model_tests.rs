@@ -946,6 +946,7 @@ fn settle_for_submit_with_head(
         model.settle_pending_detection_for_submit(
             &snapshot_without_parse(buffer_text),
             head_unknown_to_shell,
+            false,
             ctx,
         )
     })
@@ -1401,5 +1402,50 @@ fn pending_typeahead_with_unknown_first_word_stays_shell() {
         input_model.read(&app, |model, _| {
             assert_eq!(model.input_type(), InputType::Shell)
         });
+    });
+}
+
+/// #906: an inherited `AI` for a single line headed by a command the session knows settles to
+/// Shell at Enter unless it reads as a request; with no session data (`head_known_to_shell ==
+/// false`) the inherited `AI` stands.
+#[test]
+fn pending_known_command_line_settles_to_shell_at_submit() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, AI_UNLOCKED);
+        let enter = |app: &mut App, text: &str, known: bool| {
+            inherit_ai(app, &input_model);
+            input_model.update(app, |model, ctx| {
+                model.note_detection_requested(text.to_owned());
+                model.settle_pending_detection_for_submit(
+                    &snapshot_without_parse(text),
+                    false,
+                    known,
+                    ctx,
+                );
+            });
+            input_model.read(app, |model, _| model.input_type())
+        };
+        for command in [
+            "grep this that",
+            "make the build",
+            "which the thing",
+            "nohup grep this the file",
+            "ssh host grep the log",
+        ] {
+            assert_eq!(
+                enter(&mut app, command, true),
+                InputType::Shell,
+                "{command}"
+            );
+            assert_eq!(enter(&mut app, command, false), InputType::AI, "{command}");
+        }
+        for prose in [
+            "make sure the build passes",
+            "show me the logs",
+            "find the bug\nin main.rs",
+        ] {
+            assert_eq!(enter(&mut app, prose, true), InputType::AI, "{prose}");
+        }
     });
 }

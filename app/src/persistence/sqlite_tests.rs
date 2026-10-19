@@ -321,6 +321,126 @@ fn sqlite_writer_reuses_codebase_index_metadata_events() {
     assert!(restored.is_empty());
 }
 
+fn wait_for_nonempty_wal(wal: &std::path::Path) {
+    for _ in 0..100 {
+        if std::fs::metadata(wal).is_ok_and(|m| m.len() > 0) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// #920: after logout (pause and remove) and login (reconstruct), nothing may
+/// unlink the new database's `-wal`.
+#[test]
+fn reconstruct_after_pause_keeps_the_new_databases_wal() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let conn = setup_database(&database_path).expect("database should initialize");
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+
+    let metadata = test_workspace_metadata("/tmp/after-logout");
+    for event in [
+        ModelEvent::PauseAndRemoveDatabase,
+        ModelEvent::ReconstructAndResume,
+        ModelEvent::UpsertCodebaseIndexMetadata {
+            index_metadata: Box::new(metadata.clone()),
+        },
+    ] {
+        writer.sender.send(event).expect("event should send");
+    }
+    // A Terminate would checkpoint and remove the WAL we want to see.
+    let wal = tempdir.path().join("warp.sqlite-wal");
+    wait_for_nonempty_wal(&wal);
+    assert!(wal.exists(), "the new database's WAL must still exist");
+
+    let mut reader = setup_database(&database_path).expect("a fresh connection should open");
+    let mut restored = Vec::new();
+    for _ in 0..100 {
+        restored =
+            get_all_codebase_index_metadata(&mut reader).expect("row should be readable");
+        if !restored.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].path, metadata.path);
+    assert!(wal.exists(), "the WAL must still exist after the read");
+
+    writer.sender.send(ModelEvent::Terminate).expect("terminate");
+    writer.handle.join().expect("writer should terminate");
+}
+
+/// #920: pausing closes the connection and resuming opens one, so repeated
+/// logout/login cycles do not accumulate file descriptors.
+#[cfg(target_os = "linux")]
+#[test]
+fn pause_and_reconstruct_cycles_do_not_leak_file_descriptors() {
+    fn open_fds() -> usize {
+        std::fs::read_dir("/proc/self/fd").map_or(0, |d| d.count())
+    }
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let conn = setup_database(&database_path).expect("database should initialize");
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+    let cycle = |writer: &super::WriterHandles| {
+        writer.sender.send(ModelEvent::PauseAndRemoveDatabase).unwrap();
+        writer.sender.send(ModelEvent::ReconstructAndResume).unwrap();
+        // The writer is idle again once it answers a no-op-ish event; a write
+        // forces it through the preceding events.
+        writer
+            .sender
+            .send(ModelEvent::DeleteCodebaseIndexMetadata {
+                repo_path: PathBuf::from("/tmp/none"),
+            })
+            .unwrap();
+    };
+    for _ in 0..3 {
+        cycle(&writer);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let baseline = open_fds();
+    for _ in 0..20 {
+        cycle(&writer);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(3000));
+    let after = open_fds();
+    writer.sender.send(ModelEvent::Terminate).unwrap();
+    writer.handle.join().unwrap();
+    assert!(
+        after <= baseline + 2,
+        "fds grew from {baseline} to {after} across 20 cycles"
+    );
+}
+
+/// #911: a connection whose file is gone is closed (nothing to protect, no
+/// leak); one whose path now holds something else is left open on purpose.
+#[test]
+fn abandoned_connection_is_closed_when_the_path_is_empty_and_leaked_when_occupied() {
+    use super::retire_abandoned_connection;
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+
+    let conn = setup_database(&database_path).expect("database should initialize");
+    for suffix in ["", "-wal", "-shm"] {
+        let mut name = database_path.as_os_str().to_owned();
+        name.push(suffix);
+        let _ = std::fs::remove_file(name);
+    }
+    assert!(!retire_abandoned_connection(conn, &database_path), "closed");
+
+    let conn = setup_database(&database_path).expect("database should initialize");
+    std::fs::remove_file(&database_path).unwrap();
+    std::fs::write(&database_path, b"someone else's file").unwrap();
+    assert!(retire_abandoned_connection(conn, &database_path), "leaked");
+    assert_eq!(
+        std::fs::read(&database_path).unwrap(),
+        b"someone else's file",
+        "the file at the path is untouched"
+    );
+}
+
 /// Backs `EmbeddingEndpoints::preferred_model_favoring_existing`
 /// (`ai/agent_providers/embeddings.rs`): whether a model has ever been
 /// embedded against is answered per `embedding_space`

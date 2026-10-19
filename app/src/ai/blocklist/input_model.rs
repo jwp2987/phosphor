@@ -873,6 +873,7 @@ impl BlocklistAIInputModel {
         &mut self,
         input: &ParsedTokensSnapshot,
         head_unknown_to_shell: bool,
+        head_known_to_shell: bool,
         ctx: &mut ModelContext<Self>,
     ) -> bool {
         if !self.is_detection_pending_for(&input.buffer_text, ctx) {
@@ -894,6 +895,19 @@ impl BlocklistAIInputModel {
                 self.abort_in_progress_detection();
                 self.apply_autodetected_input_type(InputType::AI, ctx);
                 self.settle_detection(&input.buffer_text);
+            } else if self.input_config.input_type == InputType::AI
+                && head_known_to_shell
+                && !input.buffer_text.trim().contains('\n')
+                && !self.reads_as_request(&input.buffer_text)
+            {
+                // #906: an inherited (or landed) `AI` for a single line whose command the
+                // session knows and which does not read as a request (`grep this that`,
+                // `make the build`) is a misroute; the gate applies the same veto to a
+                // classifier verdict.
+                self.abort_in_progress_detection();
+                self.apply_autodetected_input_type(InputType::Shell, ctx);
+                self.settle_detection(&input.buffer_text);
+                return true;
             }
             return false;
         }

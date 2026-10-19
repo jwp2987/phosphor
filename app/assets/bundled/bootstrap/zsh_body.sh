@@ -730,6 +730,10 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
     # set the WARP_DISABLE_AUTO_TITLE flag.
     [[ "${WARP_DISABLE_AUTO_TITLE:-}" != true ]] || return
 
+    # Phosphor (#904): an agent command typed in its wrapper (agent_shell_wrap.rs
+    # HISTORY_MARKER) must not title the tab with the wrapper; keep the idle title.
+    [[ "${2:-}" != *__phosphor_ap_* ]] || return
+
     emulate -L zsh
     setopt extended_glob
 
@@ -1375,6 +1379,9 @@ esac
     # let the repair's status leak: under `setopt err_return` a non-zero one
     # would return from here early and skip the history decision below.
     _warp_repair_hooks $? || :
+    # Phosphor (#904): keep the agent-command wrapper (see agent_shell_wrap.rs
+    # HISTORY_MARKER) out of the history file too.
+    if [[ "$1" == *"__phosphor_ap_"* ]]; then return 1; fi
     _is_warp_generator_command "$1"
   }
 

@@ -18,7 +18,12 @@
 //!
 //! A command that, at its top level, would change or end the shell itself in a way a group
 //! cannot contain (`exit`, `exec`, `set -e`, `trap`, ...) keeps the subshell form; see
-//! [`needs_subshell`].
+//! [`needs_subshell`]. The exception is `exec <shell>`: in the subshell it would leave a second,
+//! unhooked interactive shell holding the terminal, so it is refused before any wrapping (see
+//! [`exec_into_shell`]).
+//!
+//! Every wrapped form carries [`HISTORY_MARKER`] (or, for fish, a leading space) so the shell's
+//! history filter keeps the wrapper out of the history file (#904).
 //!
 //! **Invariant (unchanged since e9cbc20b0): the closing token must be alone on its own
 //! line** whenever the command is multi-line, ends in a comment, or ends in `&` / `;`, or a
@@ -61,6 +66,13 @@ const OVERRIDES: &[(&str, &str)] = &[
 ];
 
 /// Names of the temporaries the bash/zsh group uses. Unlikely to collide with user code.
+/// Substring present in every bash/zsh wrapper form. The bootstrap scripts' history filters
+/// (`HISTIGNORE` in `bash_body.sh`, `_warp_zshaddhistory` in `zsh_body.sh`) match on it so the
+/// ~900-character wrapper never lands in the user's history file (#904). MATCHED PAIR with
+/// those two scripts. fish has no pattern filter; it skips lines with a leading space, which
+/// [`wrap_command`] adds.
+pub(crate) const HISTORY_MARKER: &str = "__phosphor_ap_";
+
 const MARKER_ACTIVE: &str = "__phosphor_ap_active";
 const MARKER_RC: &str = "__phosphor_ap_rc";
 
@@ -106,6 +118,14 @@ fn errexit_guard(shell_type: ShellType, action: &str) -> String {
 /// safely run in a group.
 fn posix_subshell_prelude() -> String {
     format!("unset PAGER GIT_PAGER MANPAGER; {}", posix_export())
+}
+
+/// A no-op simple command in front of the subshell. It carries [`HISTORY_MARKER`] (the group
+/// form has it in its variable names, a bare `( ... )` has none) and, for bash, it is a simple
+/// command of the user's own shell: bash's DEBUG trap, which reports `Preexec`, fires for
+/// simple commands but not for a `( ... )` list, so a bare subshell never got a `Preexec`.
+fn posix_subshell_lead() -> String {
+    format!(": {HISTORY_MARKER}subshell; ")
 }
 
 fn fish_prelude() -> String {
@@ -187,11 +207,12 @@ pub(super) fn wrap_command(shell_type: Option<ShellType>, command: &str) -> Stri
 
     match shell_type {
         ShellType::Zsh | ShellType::Bash if subshell => {
+            let lead = posix_subshell_lead();
             let prelude = posix_subshell_prelude();
             if own_line {
-                format!("({prelude}\n{command}\n)")
+                format!("{lead}({prelude}\n{command}\n)")
             } else {
-                format!("({prelude}; {command})")
+                format!("{lead}({prelude}; {command})")
             }
         }
         ShellType::Zsh | ShellType::Bash => {
@@ -219,10 +240,12 @@ pub(super) fn wrap_command(shell_type: Option<ShellType>, command: &str) -> Stri
         }
         ShellType::Fish => {
             let prelude = fish_prelude();
+            // The leading space keeps the line out of fish's history (#904); see
+            // `HISTORY_MARKER`.
             if own_line {
-                format!("begin; {prelude}\n{command}\nend")
+                format!(" begin; {prelude}\n{command}\nend")
             } else {
-                format!("begin; {prelude}; {command}; end")
+                format!(" begin; {prelude}; {command}; end")
             }
         }
         ShellType::PowerShell => {
@@ -264,6 +287,118 @@ pub(super) fn needs_subshell(shell_type: ShellType, command: &str) -> bool {
             _ => posix_command_needs_subshell(name, args),
         }
     })
+}
+
+/// Programs that, once `exec`ed with nothing to run, leave an interactive shell holding the
+/// terminal (#899, #900). `su` opens a login shell the same way.
+const SHELL_PROGRAMS: &[&str] = &[
+    "sh", "bash", "zsh", "fish", "dash", "ksh", "mksh", "ash", "csh", "tcsh", "pwsh", "nu",
+    "xonsh", "elvish", "su",
+];
+
+/// Words that run another program: `exec nice bash` is `exec bash`.
+const EXEC_PASS_THROUGH: &[&str] = &[
+    "env", "nice", "sudo", "doas", "nohup", "time", "command", "stdbuf",
+];
+
+/// Arguments after a shell that still leave it interactive.
+const INTERACTIVE_SHELL_ARGS: &[&str] = &["-l", "-i", "--login", "--interactive", "--", "-"];
+
+/// If `command` would, at its top level, `exec` into an interactive shell, returns that shell's
+/// name.
+///
+/// `exec bash` replaces the process the command runs in. Unwrapped it replaces the user's own
+/// hooked shell; in the subshell form it replaces the subshell, which becomes a second
+/// interactive shell holding the terminal with none of Phosphor's hooks: the command never
+/// finishes, so the agent's tool call never returns, and ^C is ignored at its prompt (#899,
+/// #900). There is no way to run that on the agent's behalf that ends, so it is refused up
+/// front with an explanation the model can act on.
+///
+/// Only an `exec` that leaves the shell interactive counts: `exec bash -c 'cmd'`, `exec sh
+/// script.sh` and `exec env X=1 sh run.sh` run something and end. A target that is not known
+/// until runtime (`exec "$SHELL"`, `exec $(command -v zsh)`, `` exec `which fish` ``) is
+/// treated as a shell, since the only reason to `exec` the login shell is to become it.
+pub(super) fn exec_into_shell(shell_type: Option<ShellType>, command: &str) -> Option<String> {
+    if shell_type == Some(ShellType::PowerShell) {
+        return None;
+    }
+    if exec_of_backtick_substitution(command) {
+        return Some("$SHELL".to_owned());
+    }
+    simple_commands(command).iter().find_map(|words| {
+        let (name, args) = command_name_and_args(words)?;
+        match name {
+            "exec" => exec_target_shell(args),
+            // `eval` runs its arguments in the current shell: `eval 'exec bash'`.
+            "eval" => {
+                let text = args.join(" ");
+                (!text.is_empty())
+                    .then(|| exec_into_shell(shell_type, &text))
+                    .flatten()
+            }
+            _ => None,
+        }
+    })
+}
+
+/// `` exec `which fish` ``: the scanner ends a command at a backtick, so the target is lost.
+fn exec_of_backtick_substitution(command: &str) -> bool {
+    let mut prev_exec = false;
+    for word in command.split_whitespace() {
+        if prev_exec && word.starts_with('`') {
+            return true;
+        }
+        prev_exec = word == "exec";
+    }
+    false
+}
+
+fn exec_target_shell(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().peekable();
+    while let Some(arg) = iter.next() {
+        if arg == "--" {
+            continue;
+        }
+        if arg == "-a" {
+            // `-a NAME` sets argv[0]; the program follows.
+            iter.next();
+            continue;
+        }
+        if arg.starts_with('-') && arg.len() > 1 {
+            continue;
+        }
+        if is_assignment(arg) {
+            continue;
+        }
+        let base = arg.rsplit('/').next().unwrap_or(arg);
+        let base = base.strip_suffix(".exe").unwrap_or(base);
+        let rest: Vec<&String> = iter.clone().collect();
+        if matches!(base, "sudo" | "doas")
+            && rest
+                .iter()
+                .any(|a| matches!(a.as_str(), "-i" | "-s" | "--login" | "--shell"))
+        {
+            return Some(base.to_owned());
+        }
+        if EXEC_PASS_THROUGH.contains(&base) {
+            continue;
+        }
+        let rest_is_interactive = rest
+            .iter()
+            .all(|a| INTERACTIVE_SHELL_ARGS.contains(&a.as_str()));
+        // `exec "$SHELL"`, `exec "${SHELL:-/bin/sh}"`, `$0`, or a `$(...)` substitution (the
+        // scanner leaves a lone `$` for it): a shell chosen at runtime.
+        let dynamic = arg == "$"
+            || arg.starts_with("$(")
+            || arg.starts_with("$SHELL")
+            || arg.starts_with("${SHELL")
+            || matches!(arg.as_str(), "$0" | "${0}");
+        if dynamic {
+            return rest_is_interactive.then(|| "$SHELL".to_owned());
+        }
+        return (SHELL_PROGRAMS.contains(&base) && rest_is_interactive).then(|| base.to_owned());
+    }
+    None
 }
 
 /// Words that may precede the real command name in a simple command.

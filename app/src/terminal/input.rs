@@ -12103,8 +12103,18 @@ impl Input {
                 .next()
                 .zip(self.active_session(ctx))
                 .is_some_and(|(word, session)| session.knows_command_word(word) == Some(false));
+        // #906: the mirror image, for the effective head (after `nohup`, `env`, `timeout 5`...).
+        let head_known_to_shell = prompt_session_is_the_target
+            && input_classifier::util::effective_head_word(&snapshot.buffer_text)
+                .zip(self.active_session(ctx))
+                .is_some_and(|(word, session)| session.knows_command_word(&word) == Some(true));
         self.ai_input_model.update(ctx, |model, ctx| {
-            model.settle_pending_detection_for_submit(&snapshot, head_unknown_to_shell, ctx);
+            model.settle_pending_detection_for_submit(
+                &snapshot,
+                head_unknown_to_shell,
+                head_known_to_shell,
+                ctx,
+            );
         });
     }
 
@@ -12588,22 +12598,27 @@ impl Input {
         });
     }
 
-    /// Re-submits `text` once with the input locked to `input_type`, as if the user had chosen
-    /// that route explicitly (so the re-submit is recorded as locked and never offered a recovery
-    /// of its own). The buffer must be empty. If nothing was submitted (the submit was refused),
-    /// the previous input config is restored exactly, including its lock flag.
-    fn resubmit_locked_to(
-        &mut self,
-        text: &str,
-        input_type: InputType,
-        ctx: &mut ViewContext<Self>,
-    ) {
+    /// The route reason to record for an agent submit: the recovery's own re-submit counts as
+    /// locked (the user chose it), so it is never offered a recovery of its own (#835).
+    fn ai_submit_route_reason(&self, ctx: &AppContext) -> RouteReason {
+        if self.submitting_misroute_recovery {
+            RouteReason::Locked
+        } else {
+            self.ai_input_model.as_ref(ctx).submit_route_reason()
+        }
+    }
+
+    /// Runs `text` once as a shell command with the input locked to Shell, as if the user had
+    /// chosen that route explicitly (so it is recorded as locked and never offered a recovery of
+    /// its own). The buffer must be empty. If nothing was submitted (the submit was refused), the
+    /// previous input config is restored exactly, including its lock flag.
+    fn resubmit_locked_to_shell(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
         let (previous_config, previous_lock_flag) =
             self.ai_input_model.as_ref(ctx).input_config_snapshot();
         self.ai_input_model.update(ctx, |model, ctx| {
             model.set_input_config(
                 InputConfig {
-                    input_type,
+                    input_type: InputType::Shell,
                     is_locked: true,
                 },
                 true,
@@ -12614,17 +12629,32 @@ impl Input {
             editor.set_buffer_text(text, ctx);
         });
         self.last_enter_submitted_shell_command = false;
-        self.last_enter_submitted_ai_query = false;
-        self.submitting_misroute_recovery = input_type.is_ai();
         self.input_enter(ctx);
-        self.submitting_misroute_recovery = false;
-        let submitted = match input_type {
-            InputType::Shell => self.last_enter_submitted_shell_command,
-            InputType::AI => self.last_enter_submitted_ai_query,
-        };
-        if !submitted {
+        if !self.last_enter_submitted_shell_command {
             self.ai_input_model.update(ctx, |model, ctx| {
                 model.restore_input_config(previous_config, previous_lock_flag, ctx);
+            });
+        }
+    }
+
+    /// Sends `text` to the agent once, auto-submitted.
+    ///
+    /// This goes straight to [`Self::submit_ai_query`] rather than locking the input to AI and
+    /// pressing Enter: outside an agent view the GUI's input-mode policy refuses to lock the
+    /// input to AI, so `input_enter` would see Shell and run the text in the shell again (#907).
+    /// Whatever the buffer holds when the submit is refused is cleared, since the buffer was
+    /// empty before.
+    fn send_text_to_agent(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
+        self.editor.update(ctx, |editor, ctx| {
+            editor.set_buffer_text(text, ctx);
+        });
+        self.last_enter_submitted_ai_query = false;
+        self.submitting_misroute_recovery = true;
+        self.submit_ai_query(None, ctx);
+        self.submitting_misroute_recovery = false;
+        if !self.last_enter_submitted_ai_query {
+            self.editor.update(ctx, |editor, ctx| {
+                editor.clear_buffer(ctx);
             });
         }
     }
@@ -12648,7 +12678,7 @@ impl Input {
         else {
             return;
         };
-        self.resubmit_locked_to(&text, InputType::AI, ctx);
+        self.send_text_to_agent(&text, ctx);
     }
 
     /// "Run as shell command instead" (#835): abandons the autodetected agent turn (cancelling it
@@ -12708,7 +12738,7 @@ impl Input {
                 controller.exit_agent_view_without_confirmation(ctx);
             });
         }
-        self.resubmit_locked_to(&text, InputType::Shell, ctx);
+        self.resubmit_locked_to_shell(&text, ctx);
     }
 
     /// Makes the next Enter in this input run as [`Self::input_enter_as_shell_command`].
@@ -13467,7 +13497,7 @@ impl Input {
             if prompt.is_empty() {
                 return;
             }
-            let route_reason = self.ai_input_model.as_ref(ctx).submit_route_reason();
+            let route_reason = self.ai_submit_route_reason(ctx);
             self.record_misroute_memory(&prompt, SubmitRoute::Ai, route_reason, ctx);
             let origin = if std::mem::take(&mut self.submitting_misroute_recovery) {
                 AgentViewEntryOrigin::MisrouteRecovery
@@ -13538,7 +13568,7 @@ impl Input {
             self.ai_input_model
                 .update(ctx, |model, ctx| model.clear_misroute_memory(ctx));
         } else {
-            let route_reason = self.ai_input_model.as_ref(ctx).submit_route_reason();
+            let route_reason = self.ai_submit_route_reason(ctx);
             self.record_misroute_memory(&ai_query, SubmitRoute::Ai, route_reason, ctx);
         }
 

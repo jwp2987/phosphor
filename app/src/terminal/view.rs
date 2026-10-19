@@ -152,7 +152,7 @@ use crate::terminal::view::ssh_remote_server_choice_view::{
 };
 use crate::terminal::view::ssh_remote_server_failed_banner::{
     SshRemoteServerFailedBanner, SshRemoteServerFailedBannerEvent, SshRemoteServerFailureKind,
-    describe_legacy_fallback_reason, describe_unsupported_reason,
+    describe_unsupported_reason, legacy_fallback_shows_banner,
 };
 use crate::terminal::view::telemetry::PromptSuggestionFallbackReason;
 use crate::workspaces::user_workspaces::UserWorkspacesEvent;
@@ -651,6 +651,11 @@ pub const WAKEUP_THROTTLE_PERIOD: Duration =
     Duration::from_micros(1000 * 1000 / MAX_WAKEUPS_PER_SECOND);
 
 pub const EXECUTE_PENDING_COMMAND_DELAY: Duration = Duration::from_millis(100);
+
+/// How long the agent's command gets to react to an interrupt (^C) before the stop is escalated:
+/// the conversation is cancelled, the command handed to the user and the agent view left
+/// (#899, #900). Long enough for an ordinary process to run its signal handlers and exit.
+const AGENT_INTERRUPT_GRACE: Duration = Duration::from_secs(3);
 
 pub const WARP_PROMPT_HEIGHT_LINES: f32 = 0.9;
 
@@ -2344,6 +2349,11 @@ enum StopInterruptScope {
     UserCtrlC,
     /// Closing the pane (#848): only a command the agent of this conversation is running.
     AgentCommandOnly,
+    /// An interrupt the agent's command already got and ignored (#899): hand the command over
+    /// and cancel the conversation like `AgentCommandOnly`, but write NO further ^C. A second
+    /// SIGINT is "abort now" to programs that clean up on the first (terraform, docker compose,
+    /// npm, rsync).
+    HandOverOnly,
 }
 
 type ConversationFinishedCallback =
@@ -7655,7 +7665,11 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         match event {
-            ShellCommandExecutorEvent::ExecuteCommand { command, action_id } => {
+            ShellCommandExecutorEvent::ExecuteCommand {
+                command,
+                action_id,
+                display_command,
+            } => {
                 let Some(session_id) = self.active_block_session_id() else {
                     return;
                 };
@@ -7752,6 +7766,11 @@ impl TerminalView {
                 }
                 let block_id = model.active_block_id().clone();
                 drop(model);
+                if let Some(display_command) = display_command {
+                    self.model
+                        .lock()
+                        .set_agent_display_command(action_id.clone(), display_command.clone());
+                }
 
                 ctx.emit(Event::ExecuteCommand(ExecuteCommandEvent {
                     command,
@@ -8551,6 +8570,75 @@ impl TerminalView {
         }
         ctx.emit(Event::DiscardPendingCommandWrites);
         self.user_write_ctrl_c_to_pty(ctx);
+
+        // A foreground process can ignore ^C (a nested interactive shell, `trap '' INT`), which
+        // used to leave the agent's command, its tool call and the agent view stuck for good:
+        // Stop did nothing, and the pane had neither an input nor a terminal (#899, #900). If
+        // the same command is still running after the grace period, stop means stop.
+        let block_id = self.model.lock().block_list().active_block().id().clone();
+        ctx.spawn(Timer::after(AGENT_INTERRUPT_GRACE), move |me, _, ctx| {
+            me.escalate_agent_command_that_ignored_interrupt(&block_id, ctx)
+        });
+    }
+
+    /// Runs [`AGENT_INTERRUPT_GRACE`] after an interrupt of the agent's command. If that command
+    /// is still running, the interrupt was ignored: hand the command to the user with a
+    /// non-resuming stop, cancel the conversation (which ends the agent's wait and marks its
+    /// tool call cancelled) and leave the agent view, so the pane is never left with a command
+    /// nobody can stop and no terminal to see it in (#899, #900).
+    fn escalate_agent_command_that_ignored_interrupt(
+        &mut self,
+        block_id: &BlockId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let (conversation_to_stop, action_id) = {
+            let model = self.model.lock();
+            let active_block = model.block_list().active_block();
+            if active_block.id() != block_id
+                || active_block.finished()
+                || !active_block.is_agent_requested_command()
+                || !(active_block.is_active_and_long_running()
+                    || active_block.is_agent_requested_command_in_flight())
+            {
+                return;
+            }
+            // Only a command the agent still holds: after a stop took it over, the
+            // conversation is already cancelled and only the view is left to restore.
+            let conversation_to_stop = active_block
+                .requested_command_action_id()
+                .is_some_and(|action_id| active_block.agent_holds_in_flight_command(action_id))
+                .then(|| active_block.ai_conversation_id())
+                .flatten();
+            (
+                conversation_to_stop,
+                active_block.requested_command_action_id().cloned(),
+            )
+        };
+        if let Some(conversation_id) = conversation_to_stop {
+            // No ^C: the interrupt was already delivered, and the grace period only decides
+            // that the agent has waited long enough. A command that is cleaning up on that
+            // first ^C (graceful shutdown) is left to finish, now in the user's hands.
+            self.stop_local_agent_conversation_with_interrupt_scope(
+                conversation_id,
+                StopInterruptScope::HandOverOnly,
+                ctx,
+            );
+        }
+        // The command is still running and is now the user's: show it, so the user can see
+        // what they are typing into (an agent's command block is hidden by default).
+        if let Some(action_id) = action_id {
+            self.model
+                .lock()
+                .block_list_mut()
+                .set_visibility_of_block_for_ai_action(&action_id, true);
+        }
+        if self.agent_view_controller.as_ref(ctx).is_active() {
+            self.agent_view_controller.update(ctx, |controller, ctx| {
+                controller.exit_agent_view_without_confirmation(ctx);
+            });
+        }
+        self.redetermine_global_focus(ctx);
+        ctx.notify();
     }
 
     /// Drops the agent command held behind the user's typeahead (`FeatureFlag::TypeaheadHandoff`)
@@ -8644,7 +8732,7 @@ impl TerminalView {
                 // and not the idle prompt, which carries no agent metadata. No execution-state
                 // check: an agent command written to the shell before preexec must be
                 // interrupted too.
-                StopInterruptScope::AgentCommandOnly => (
+                StopInterruptScope::AgentCommandOnly | StopInterruptScope::HandOverOnly => (
                     block_is_this_conversations
                         && active_block.is_agent_requested_command()
                         && active_block.is_agent_driving_command(),
@@ -8669,7 +8757,9 @@ impl TerminalView {
             );
         });
 
-        if let Some(is_agent_requested) = should_interrupt_active_command {
+        if let Some(is_agent_requested) = should_interrupt_active_command
+            && interrupt_scope != StopInterruptScope::HandOverOnly
+        {
             if is_agent_requested {
                 self.interrupt_agent_command(ctx);
             } else {
@@ -9317,6 +9407,10 @@ impl TerminalView {
     /// Receiving the warpui::Event::KeyDown event from a child element.
     /// Generally, this should be control characters rather than printable characters.
     fn keydown_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
+        // Ctrl-C / Ctrl-D still reach the ssh process so the user can abort.
+        if !matches!(characters, "\u{3}" | "\u{4}") && self.swallow_input_during_ssh_setup(ctx) {
+            return;
+        }
         if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
             self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
             self.highlighted_link.invalidate();
@@ -9334,6 +9428,39 @@ impl TerminalView {
             self.update_scroll_position_locking(ScrollPositionUpdate::AfterKeydownOnTerminal, ctx);
             self.redetermine_global_focus(ctx);
         }
+    }
+
+    /// True while the SSH remote-server setup owns the session: the
+    /// install/continue dialog is up, or the check/install/connect is in
+    /// flight. The remote shell is not bootstrapped yet, and the bootstrap
+    /// script is injected into it as soon as setup resolves, so any byte the
+    /// user types now lands in the middle of that script. A stray Enter also
+    /// completes a block, which advances the bootstrap stage machine early
+    /// (the `next_stage` error storm and the pane stuck at "Starting
+    /// shell...", #917). Keystrokes are therefore dropped rather than
+    /// queued -- replaying a queued Enter into a half-bootstrapped shell is
+    /// exactly the corruption being avoided -- and focus is handed back to
+    /// the dialog so the next key drives it.
+    fn swallow_input_during_ssh_setup(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        let dialog_up = self.active_ssh_remote_server_choice_block().is_some();
+        let setup_in_flight = FeatureFlag::SshRemoteServer.is_enabled()
+            && self
+                .model
+                .lock()
+                .pending_session_id()
+                .is_some_and(|sid| {
+                    self.sessions
+                        .as_ref(ctx)
+                        .remote_server_setup_state(sid)
+                        .is_some_and(|state| state.is_in_progress())
+                });
+        if !(dialog_up || setup_in_flight) {
+            return false;
+        }
+        if dialog_up {
+            self.redetermine_global_focus(ctx);
+        }
+        true
     }
 
     fn should_write_typed_chars_to_pty(&self, ctx: &mut ViewContext<Self>) -> bool {
@@ -9366,6 +9493,9 @@ impl TerminalView {
     /// We can assume `characters` consists of all printable characters, and therefore,
     /// can go into the input box.
     fn typed_characters_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
+        if self.swallow_input_during_ssh_setup(ctx) {
+            return;
+        }
         self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
 
         if self.should_write_typed_chars_to_pty(ctx) {
@@ -9730,13 +9860,22 @@ impl TerminalView {
             // dismissible banner it shows below is shown at most once per
             // session by construction -- it cannot reappear after dismissal
             // because nothing emits this event for that session again.
+            //
+            // #916: `NoConnectedClient` is what the user's own "Continue
+            // without installing" (or `NeverInstall`) produces, and it also
+            // fires while a connect is still pending or after a failure that
+            // already has its own banner. None of those is an error, so it
+            // shows nothing (v0.1.12 parity); only the feature-disabled case
+            // keeps a neutral note, with no red `ERROR:` detail line.
             SessionsEvent::LegacySshFallback { session_id, reason } => {
-                self.show_ssh_remote_server_failed_banner(
-                    session_id,
-                    SshRemoteServerFailureKind::Legacy,
-                    &describe_legacy_fallback_reason(&reason),
-                    ctx,
-                );
+                if legacy_fallback_shows_banner(&reason) {
+                    self.show_ssh_remote_server_failed_banner(
+                        session_id,
+                        SshRemoteServerFailureKind::Legacy,
+                        "",
+                        ctx,
+                    );
+                }
             }
             _ => {}
         }
@@ -20769,6 +20908,12 @@ impl TerminalView {
         });
     }
 
+    /// Position ID of the notice banner drawn at the top of this terminal, used to keep the
+    /// find bar from being drawn underneath it.
+    fn banner_position_id(&self) -> String {
+        format!("terminal_notice_banner_{}", self.id())
+    }
+
     fn show_find_bar(&mut self, ctx: &mut ViewContext<Self>) {
         let model = self.model.lock();
         let inverted_blocklist = self.is_inverted_blocklist(ctx);
@@ -29341,7 +29486,18 @@ impl View for TerminalView {
         }
 
         if self.find_model.as_ref(app).is_find_bar_open() {
-            stack.add_child(ChildView::new(&self.find_bar).finish());
+            // The find bar is pinned to the top-right, exactly where the notice banners
+            // (e.g. the ctrl-a/ctrl-e hint) are drawn. Push it down by the height the
+            // banner occupied last frame so the two never overlap (#918).
+            let banner_height = app
+                .element_position_by_id_at_last_frame(self.window_id, self.banner_position_id())
+                .map(|rect| rect.height())
+                .unwrap_or(0.);
+            stack.add_child(
+                Container::new(ChildView::new(&self.find_bar).finish())
+                    .with_padding_top(banner_height)
+                    .finish(),
+            );
         }
 
         if let Some(active_filter_editor_block_index) = self.active_filter_editor_block_index {
@@ -29368,16 +29524,28 @@ impl View for TerminalView {
 
             // Only show one of these banners at a time, to avoid them visually
             // stacking on top of each other.
+            let banner_position_id = self.banner_position_id();
+            let banner_child = |banner: Box<dyn Element>| {
+                SavePosition::new(banner, &banner_position_id).finish()
+            };
             if self.is_slow_bootstrap_banner_open
                 && ContextFlag::ShowSlowShellStartupBanner.is_enabled()
             {
-                stack.add_child(ChildView::new(&self.slow_bootstrap_banner).finish());
+                stack.add_child(banner_child(
+                    ChildView::new(&self.slow_bootstrap_banner).finish(),
+                ));
             } else if self.control_master_error_banner_state.is_open {
-                stack.add_child(ChildView::new(&self.control_master_error_banner).finish());
+                stack.add_child(banner_child(
+                    ChildView::new(&self.control_master_error_banner).finish(),
+                ));
             } else if self.is_incompatible_configuration_banner_open {
-                stack.add_child(ChildView::new(&self.incompatible_configuration_banner).finish());
+                stack.add_child(banner_child(
+                    ChildView::new(&self.incompatible_configuration_banner).finish(),
+                ));
             } else if self.is_emacs_bindings_banner_open {
-                stack.add_child(ChildView::new(&self.emacs_bindings_banner).finish());
+                stack.add_child(banner_child(
+                    ChildView::new(&self.emacs_bindings_banner).finish(),
+                ));
             }
         }
 
