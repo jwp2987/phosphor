@@ -949,6 +949,8 @@ fn test_reads_as_command_headed_prose_requests() {
         "can you fix this",
         "why is the build slow",
         "docker vs podman?",
+        "why is the build slow?",
+        "can you fix this?",
     ] {
         assert!(reads_as_command_headed_prose(text), "{text:?}");
     }
@@ -966,6 +968,9 @@ fn test_reads_as_command_headed_prose_leaves_shell_alone() {
         "ls file?",
         "rm -rf tmp?",
         "ls a*?",
+        "cp a file?",
+        "mv x y dir?",
+        "ls foo bar?",
         "grep For file",
         "cat <<EOF\nto is and\nEOF",
         "git commit -m \"fix the bug\"",

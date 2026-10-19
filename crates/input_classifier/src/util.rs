@@ -1086,6 +1086,16 @@ const REQUEST_WORDS: [&str; 13] = [
 /// relaxed. `ls me` / `cd my` stay shell commands.
 const TWO_WORD_REQUEST_HEADS: [&str; 6] = ["help", "show", "tell", "give", "teach", "remind"];
 
+/// Heads that open a question (`why is the build slow?`); with a trailing `?` they read as a
+/// request to the agent.
+const QUESTION_HEADS: [&str; 16] = [
+    "why", "how", "what", "when", "where", "which", "who", "is", "are", "can", "could", "should",
+    "would", "does", "do", "did",
+];
+
+/// Words that mark a comparison question when the line ends in `?` (`docker vs podman?`).
+const COMPARISON_WORDS: [&str; 2] = ["vs", "versus"];
+
 fn is_request_word(word: &ShellWord) -> bool {
     !word.quoted && REQUEST_WORDS.contains(&word.text.as_str())
 }
@@ -1116,7 +1126,10 @@ fn is_flag_or_path_word(word: &ShellWord) -> bool {
 ///   errors`, `make sure the build passes`, `can you fix this`), or the two-word form `help me`
 ///   ([`TWO_WORD_REQUEST_HEADS`] plus `me`);
 /// - a trailing `?` on a line of three or more words, none a flag, whose last word is purely
-///   alphabetic once the `?` is removed (`docker vs podman?`; never a glob like `file?`).
+///   alphabetic once the `?` is removed, AND which either starts with a question head
+///   ([`QUESTION_HEADS`]) or contains an unquoted [`REQUEST_WORDS`] / [`COMPARISON_WORDS`] member
+///   (`docker vs podman?`, `why is the build slow?`). A bare trailing `?` is a glob character
+///   (`cp a file?`, `mv x y dir?`) and stays shell.
 ///
 /// The caller exempts one-off shell keyword heads (`echo`, `sudo`...), which routinely carry
 /// English arguments; [`reads_as_request_to_agent`] bundles that.
@@ -1165,7 +1178,13 @@ pub fn reads_as_command_headed_prose(buffer_text: &str) -> bool {
         && !last.quoted
         && let Some(stem) = last.text.strip_suffix('?')
     {
-        return !stem.is_empty()
+        let question_signal = QUESTION_HEADS.contains(&first.text.as_str())
+            || words.iter().any(|word| {
+                is_request_word(word)
+                    || (!word.quoted && COMPARISON_WORDS.contains(&word.text.as_str()))
+            });
+        return question_signal
+            && !stem.is_empty()
             && stem.chars().all(|c| c.is_alphabetic())
             && !stem.contains(['*', '?', '[', ']']);
     }
