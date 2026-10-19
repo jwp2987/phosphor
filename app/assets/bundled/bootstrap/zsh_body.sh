@@ -1351,6 +1351,13 @@ esac
       fi
   fi
 
+  # Phosphor (#926): zsh itself ignores errexit while it sources the startup files, so the
+  # files above ran exempt (`source f || :`). Leaving errexit ON at the prompt would let the
+  # first failing command that Phosphor runs for its own purposes (an in-band generator in a
+  # directory that is not a git repo, say) end the shell, and a typo ends it natively too. It is
+  # switched off here; every other option the files set is kept.
+  unsetopt errexit
+
   local rcfiles_end_time="$(LC_ALL="C"; echo $EPOCHREALTIME)"
 
   # If the user is running powerlevel10k and they selected "sparse" for the "Prompt Spacing"

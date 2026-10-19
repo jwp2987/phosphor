@@ -236,8 +236,8 @@ def scenario(title, zshrc, zshenv="", failing=True):
         ns = sh.names()
         check("Bootstrapped" in ns and "Precmd" in ns[ns.index("Bootstrapped"):],
               "the first prompt after Bootstrapped emits Precmd", sh)
-        # (With errexit the user's own failing commands end the shell, natively too, so those
-        # scenarios only run commands that succeed.)
+        # (Phosphor switches errexit off after the rc files: a typo must not end the shell, and
+        # neither may a command Phosphor runs for itself.)
         if failing:
             check_cycle(sh, "false", 1)
             check_cycle(sh, 'sh -c "exit 7"', 7)
@@ -420,11 +420,11 @@ def main():
         "a user precmd prepended to precmd_functions that dies (#912)",
         "precmd_a() { : ${NOPE:?boom}; }\nprecmd_functions=(precmd_a $precmd_functions)",
     )
-    scenario("setopt errexit; false (#926)", "setopt errexit\nfalse", failing=False)
+    scenario("setopt errexit; false (#926)", "setopt errexit\nfalse")
     scenario("setopt warn_create_global no_unset (#926)", "setopt warn_create_global no_unset")
     scenario("setopt ksh_arrays (#926)", "setopt ksh_arrays")
     scenario("setopt errexit err_return warn_create_global nounset ksh_arrays (#926)",
-             "setopt errexit err_return warn_create_global nounset ksh_arrays\nfalse", failing=False)
+             "setopt errexit err_return warn_create_global nounset ksh_arrays\nfalse")
     scenario("precmd_functions=() in .zshrc (#926)", "precmd_functions=()")
     scenario_clear_hook_arrays_at_prompt()
     scenario_err_exit()

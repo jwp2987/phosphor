@@ -2497,3 +2497,12 @@ The expand/collapse button of `DismissibleToast` used to toggle on Enter and Spa
 `EventHandler` in the window, not only the focused one, and elements here are not focusable, so a visible toast
 swallowed every space typed into every input. The handler was removed; the toggle is mouse-only. Reverse only
 together with a focusable toast button (keys routed to it only while it holds focus).
+
+## zsh: errexit is switched off after the user's rc files (#926) — IMPROVED
+
+Phosphor sources `.zshenv`/`.zprofile`/`.zshrc`/... as `source f || :`, which exempts them from
+errexit/err_return the way zsh itself exempts startup files, then runs `unsetopt errexit`. A user
+who sets `setopt errexit` in `.zshrc` therefore does NOT have errexit at the Phosphor prompt
+(everything else the files set is kept). Reason: errexit left on ends the shell on the first
+failing command, including commands Phosphor runs for itself (generators outside a git repo), and
+on any typo. Reverse only together with auditing every internal command path.
