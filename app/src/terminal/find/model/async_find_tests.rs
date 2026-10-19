@@ -18,6 +18,7 @@ use crate::terminal::find::model::block_list::run_find_on_block_list;
 use crate::terminal::find::model::{FindOptions, TerminalFindModel};
 use crate::terminal::find::{BlockListMatch, RichContentMatchId};
 use crate::terminal::model::TerminalModel;
+use crate::terminal::model::ansi::{Handler, PreexecValue};
 use crate::terminal::model::blocks::TotalIndex;
 use crate::terminal::model::grid::grid_handler::AbsolutePoint;
 use crate::terminal::model::index::Point;
@@ -1561,5 +1562,117 @@ fn test_background_block_insertion_drops_results_stored_for_the_shifted_index() 
             0,
             "the background block must not inherit the active block's old matches"
         );
+    });
+}
+
+/// Removing the background block before the active block (a command repaired out of
+/// background output on preexec) moves the active block down an index. What was stored
+/// under its old index belongs to no block any more, and must not survive to be shown
+/// under whatever later takes that index (#823).
+#[test]
+fn test_background_block_removal_drops_results_stored_for_the_vacated_index() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        let mut mock_terminal_model = TerminalModel::mock(None, None);
+        mock_terminal_model.simulate_block("cmd1", "foo\r\n");
+        let terminal_model = Arc::new(FairMutex::new(mock_terminal_model));
+        let original_index = terminal_model.lock().block_list().active_block_index();
+
+        let test_model = find_foo_in_running_block(&mut app, &terminal_model).await;
+
+        // Output at the prompt lands in a background block, moving the active block up.
+        terminal_model.lock().process_bytes("bar\r\n");
+        let shifted_index = terminal_model.lock().block_list().active_block_index();
+        assert_eq!(
+            shifted_index,
+            original_index + BlockIndex::from(1),
+            "precondition: a background block was inserted before the active block"
+        );
+        test_model.update(&mut app, |model, ctx| model.rerun_find_on_active_grid(ctx));
+        wait_until_scan_settles(&mut app, &test_model).await;
+
+        // Stand in for matches stored for the active block at its shifted index.
+        test_model.update(&mut app, |model, _ctx| {
+            model
+                .async_find_controller
+                .as_mut()
+                .unwrap()
+                .block_results_mut()
+                .terminal_matches
+                .insert((shifted_index, GridType::Output), vec![make_match(0)]);
+        });
+
+        // The command starts: preexec repairs it out of the background block, which is
+        // removed and moves the active block back down.
+        terminal_model.lock().preexec(PreexecValue {
+            command: "bar".to_owned(),
+            session_id: None,
+        });
+        assert_eq!(
+            terminal_model.lock().block_list().active_block_index(),
+            original_index,
+            "precondition: the background block was removed from before the active block"
+        );
+
+        test_model.update(&mut app, |model, ctx| model.rerun_find_on_active_grid(ctx));
+        wait_until_scan_settles(&mut app, &test_model).await;
+
+        assert_eq!(
+            stored_output_matches(&mut app, &test_model, shifted_index).map_or(0, |m| m.len()),
+            0,
+            "the vacated index must not keep the active block's old matches"
+        );
+    });
+}
+
+/// The `covered` backstop: a grid whose dirty range was handled incrementally must not have
+/// its generation recorded, because the dirty range is only the rows the cursor passed
+/// through, and the same chunk may have changed others without flagging them (#822). So the
+/// first wakeup after one that consumed a dirty range rescans the block whole, even though
+/// nothing changed since; recording the generation there would make it a no-op and leave
+/// such a change unhealed.
+#[test]
+fn test_wakeup_after_a_dirty_range_wakeup_rescans_the_active_block_once() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        let mut mock_terminal_model = TerminalModel::mock(None, None);
+        mock_terminal_model.simulate_block("cmd1", "foo\r\n");
+        mock_terminal_model.simulate_long_running_block("cmd2", "foo bar\r\nfoo\r\n");
+        let terminal_model = Arc::new(FairMutex::new(mock_terminal_model));
+
+        let test_model = find_foo_in_running_block(&mut app, &terminal_model).await;
+
+        // Move the cursor so the output grid has a dirty range, and let the wakeup consume
+        // it incrementally.
+        terminal_model.lock().process_bytes("x\r\n");
+        assert!(
+            terminal_model
+                .lock()
+                .block_list()
+                .active_block()
+                .grid_of_type(GridType::Output)
+                .unwrap()
+                .grid_handler()
+                .find_dirty_rows_range()
+                .is_some(),
+            "precondition: the chunk left a dirty range"
+        );
+        test_model.update(&mut app, |model, ctx| model.rerun_find_on_active_grid(ctx));
+        wait_until_scan_settles(&mut app, &test_model).await;
+
+        // Nothing has changed since, yet the dirty-range wakeup vouched for no generation,
+        // so this wakeup rescans the block whole.
+        test_model.update(&mut app, |model, ctx| model.rerun_find_on_active_grid(ctx));
+        assert!(
+            test_model.update(&mut app, |model, _ctx| model.is_scanning()),
+            "the wakeup after a dirty-range wakeup rescans the block whole"
+        );
+        wait_until_scan_settles(&mut app, &test_model).await;
+
+        // That full rescan did record the generation, so the next quiet wakeup is a no-op.
+        test_model.update(&mut app, |model, ctx| model.rerun_find_on_active_grid(ctx));
+        assert!(!test_model.update(&mut app, |model, _ctx| model.is_scanning()));
     });
 }
