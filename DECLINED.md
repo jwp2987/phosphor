@@ -1028,7 +1028,7 @@ upstream's behavior is actually a defect rather than a preference.
   insert mode. The ESC delay in insert mode is not new: `\ei` was already bound there (bash's
   plain `bind` lands in `vi-insert` under `set -o vi`; zsh's `main` is `viins`). Unconditional,
   unlike the typeahead hand-off it hardens
-  (`FeatureFlag::TypeaheadHandoff`, dark): the app still writes the same bytes, and the shell
+  (`FeatureFlag::TypeaheadHandoff`, default-on since 2026-10-18): the app still writes the same bytes, and the shell
   only behaves differently in the vi command keymap, where it previously did the wrong
   thing. <!-- markers: keep:input_reporting_sequence keep:kill_buffer_bytes -->
 
@@ -2279,3 +2279,11 @@ upstream's behavior is actually a defect rather than a preference.
   exact path and executes nothing; a `-dash` base fails inside git without running anything.
   The PowerShell spellings are unverified in a real shell.
   <!-- markers: keep:portable_shell_word keep:WORKTREE_PATH_VAR keep:test_hostile_repo_name_is_quoted_as_part_of_one_path_word keep:test_portable_shell_word_spellings keep:test_placeholder_near_shell_syntax_is_refused keep:try_render_tab_config -->
+
+- **The typeahead hand-off is default-on** (`#826`/`#827`/`#886`, 2026-10-18,
+  `app/src/lib.rs` `enabled_features`, `FeatureFlag::TypeaheadHandoff`). **Upstream:** keys typed
+  while a command finishes are dropped or fragmented (same code at `4111d08f9`). **We do:** the pty
+  owns input from submit until the shell's line is reported; opt out with
+  `ZAP_DISABLED_FEATURES=typeahead_handoff`. Two known gaps are accepted (agent / queued-prompt
+  commands arriving inside the report window; raw release of held bytes) -- see
+  `docs/typeahead-handoff-826-827.md`. Expected divergence, not drift.

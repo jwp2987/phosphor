@@ -299,28 +299,55 @@ fn ctrl_c_cancels_third_party_harness_has_a_default_enable_path() {
     );
 }
 
-/// `ZAP_UNSTABLE_FEATURES=all` must not opt anyone into the typeahead hand-off (#826/#827); it
-/// stays reachable by name.
+/// The typeahead hand-off (#826/#827) is default-on: it is not an unstable feature any more, so
+/// `ZAP_UNSTABLE_FEATURES` neither names nor needs it, and the named-only list is empty.
 #[test]
-fn typeahead_handoff_is_named_only_among_unstable_features() {
-    assert!(UNSTABLE_FEATURES_NAMED_ONLY.contains(&FeatureFlag::TypeaheadHandoff));
+fn typeahead_handoff_is_no_longer_an_unstable_feature() {
+    assert!(UNSTABLE_FEATURES_NAMED_ONLY.is_empty());
     assert!(
-        UNSTABLE_FEATURES
+        !UNSTABLE_FEATURES
             .iter()
-            .any(|(name, flag)| *name == "typeahead_handoff"
-                && *flag == FeatureFlag::TypeaheadHandoff)
+            .any(|(_, flag)| *flag == FeatureFlag::TypeaheadHandoff)
     );
 }
 
 #[test]
-fn unstable_features_all_excludes_the_typeahead_handoff() {
+fn unstable_features_all_still_enables_warp_control_cli() {
     for all in ["all", " * ", "ALL"] {
         let flags = unstable_features_from_env_value(all);
         assert!(!flags.contains(&FeatureFlag::TypeaheadHandoff), "{all:?}");
         assert!(flags.contains(&FeatureFlag::WarpControlCli), "{all:?}");
     }
-    let named = unstable_features_from_env_value("warp_control_cli, typeahead_handoff");
-    assert!(named.contains(&FeatureFlag::TypeaheadHandoff));
-    assert!(named.contains(&FeatureFlag::WarpControlCli));
     assert!(unstable_features_from_env_value("").is_empty());
+}
+
+#[test]
+fn disabled_features_env_value_names_the_typeahead_handoff() {
+    for named in [
+        "typeahead_handoff",
+        " TYPEAHEAD_HANDOFF ",
+        "foo, typeahead_handoff",
+        "typeahead_handoff warp_control_cli",
+    ] {
+        assert!(
+            disabled_features_from_env_value(named).contains(&FeatureFlag::TypeaheadHandoff),
+            "{named:?}"
+        );
+    }
+    // No wildcard and no unknown names: a typo never disables anything.
+    for other in ["", "all", "*", "typeahead", "warp_control_cli"] {
+        assert!(
+            disabled_features_from_env_value(other).is_empty(),
+            "{other:?}"
+        );
+    }
+}
+
+/// Default-on in `enabled_features()` unless the environment opts out. Reads process env, so it
+/// only checks the default when the opt-out variable is absent.
+#[test]
+fn typeahead_handoff_is_enabled_by_default() {
+    if std::env::var_os("ZAP_DISABLED_FEATURES").is_none() {
+        assert!(enabled_features().contains(&FeatureFlag::TypeaheadHandoff));
+    }
 }

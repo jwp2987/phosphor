@@ -783,9 +783,11 @@ pub enum FeatureFlag {
     /// no Enter-terminated line can still be queued. See
     /// `app/src/terminal/model/typeahead_handoff.rs`.
     ///
-    /// Deliberately dark: in no channel list, enabled only via
-    /// `ZAP_UNSTABLE_FEATURES=typeahead_handoff` until the torture repros pass with it on. With
-    /// it off, routing is exactly the pre-hand-off behavior, which is also the pin's.
+    /// Default ON since 2026-10-18, on every channel: `enabled_features()` in `app/src/lib.rs`
+    /// inserts it unconditionally (it is in no `*_FLAGS` list, which this fork's binaries do not
+    /// consume). Opt out at runtime with `ZAP_DISABLED_FEATURES=typeahead_handoff`. With it off,
+    /// routing is exactly the pre-hand-off behavior, which is also the pin's. Unit tests never
+    /// run `init_feature_flags`, so they see it off unless they `override_enabled` it.
     TypeaheadHandoff,
 }
 

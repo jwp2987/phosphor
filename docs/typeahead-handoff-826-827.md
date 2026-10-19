@@ -1,10 +1,11 @@
 # Typeahead hand-off: why keystrokes are lost and commands fragment (#826, #827)
 
 Status: design H (the design review's choice; it keeps the shell protocol and the
-destructive report) is implemented behind the dark flag
-`FeatureFlag::TypeaheadHandoff`, enabled with
-`ZAP_UNSTABLE_FEATURES=typeahead_handoff`. It is unverified: not compiled on the
-authoring machine and not yet run against the torture repros. See
+destructive report) is implemented behind
+`FeatureFlag::TypeaheadHandoff`, which is **default ON since 2026-10-18** (decided by the
+owner after the #886 bisect: 200/200 and 199/200 burst lines arrive with it on). Opt out with
+`ZAP_DISABLED_FEATURES=typeahead_handoff`. Hands-on verification with a build (`ta.sh`,
+`bburst.sh`) is still owed. See
 "Implementation (design H)" at the end. The analysis below describes the code with
 the flag off, which is unchanged. Line numbers are from `beee34583`.
 
@@ -232,7 +233,8 @@ lock). It engages only for commands submitted from the input editor
 (zsh, bash >= 4, fish, pwsh; not macOS's bash 3.2, which keeps the old routing
 because nothing could hand keys left in its line back to the editor). Agent,
 shared-session, in-band and queued-prompt-panel commands keep the old routing.
-`ZAP_UNSTABLE_FEATURES=all` does not enable it; it must be named.
+It is default-on (`enabled_features()` in `app/src/lib.rs`); `ZAP_DISABLED_FEATURES=typeahead_handoff`
+restores the old routing. It is no longer in `UNSTABLE_FEATURES`.
 
 | state | entered on | keys typed on the terminal | focus |
 |---|---|---|---|
@@ -331,10 +333,11 @@ the terminal within 1 s after the editor took input over, before focus followed,
 is applied to the editor rather than dropped (#826 N2). The window ends as soon
 as the editor gains focus or the terminal is clicked; Enter is not applied.
 
-Known gaps, not addressed:
+Known gaps, not addressed (accepted when the flag went default-on, 2026-10-18; both need a
+race inside the sub-second report window and degrade to the pre-hand-off behaviour for that
+one command, never to a hang or to input loss in the common path):
 - Agent and queued-prompts-panel commands are not held while a report is awaited (`AwaitingReport`/`Hold`): `holds_queued_writes` is only true for `PtyOwned{wrote_user_bytes}`, so such a command is written ahead of the user's deferred Enter, the user's submit is then coalesced, and released held lines can reach the agent command's stdin.
 - Releasing held bytes to the pty writes them raw and returns to `EditorOwned`: a trailing piece with no Enter (`ls⏎ec`) sits unreported in the shell's line, and text typed to continue a line after a menu-accepted Enter runs as a separate command; a `\n` inside a bracketed paste is treated as a shell line.
-  are deferred (recorded with that review);
 - keybindings gated on the `LongRunningCommand` context (e.g. shift-enter) are
   inactive while the pty owns input but the command is not yet long-running;
 - held keys skip `emit_non_editor_typed_event`, so synced panes and shared-session
