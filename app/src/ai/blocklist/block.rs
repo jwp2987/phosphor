@@ -3286,6 +3286,10 @@ impl AIBlock {
                         ctx,
                     );
                 });
+                // The card keeps focus after Return, and the terminal's focus reset refuses
+                // to take it from an AI block, so typing right after approving went nowhere
+                // (#901). Hand focus back to the input / running command.
+                ctx.emit(AIBlockEvent::RequestedCommandResolved);
                 ctx.notify();
             }
             RequestedCommandViewEvent::EnableAutoexecuteMode => {
@@ -3293,6 +3297,8 @@ impl AIBlock {
             }
             RequestedCommandViewEvent::Rejected => {
                 self.cancel_action(action_id, ctx);
+                // The rejected card is going away; without this nothing is focused (#901).
+                ctx.emit(AIBlockEvent::RequestedCommandResolved);
             }
             RequestedCommandViewEvent::InterruptRunningCommand => {
                 // Issue #850: hand the interrupt to the terminal, which owns the PTY. The tool
@@ -5674,6 +5680,10 @@ pub(super) fn attachment_names(inputs: &[AIAgentInput]) -> Vec<(AttachmentType, 
 
 #[derive(Clone, Debug)]
 pub enum AIBlockEvent {
+    /// The user approved or rejected a requested command card (#901). The card keeps focus
+    /// until it is replaced, so the terminal must take focus back from it, now and again
+    /// when the command's block settles, or what the user types next goes nowhere.
+    RequestedCommandResolved,
     /// Emitted when the AI block is "finished", meaning it will no longer receive any more output
     /// (either the output is complete or the request was cancelled) and it is no longer
     /// interactable (if any requested commands or requested actions were included, all requested

@@ -421,3 +421,35 @@ fn tag_in_without_alt_screen_keeps_the_confirmation_prompt() {
         "an alt-screen tag-in has no Accept button to answer; this is the deadlock case"
     );
 }
+
+/// #903: the countdown must keep ticking once a second for the whole wait, independent of any
+/// response stream (a resume waits after its stream is gone). Each tick nudges observers of the
+/// history model, which is what makes the status bar recompute "retrying in N s".
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn retry_wait_pulse_keeps_ticking_until_the_wait_ends() {
+    use crate::ai::blocklist::history_model::BlocklistAIHistoryModel;
+    use warpui::{App, Entity, ModelContext};
+
+    struct TickCounter(usize);
+    impl Entity for TickCounter {
+        type Event = ();
+    }
+
+    App::test((), |mut app| async move {
+        let history = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+        let counter = app.add_model(|ctx: &mut ModelContext<TickCounter>| {
+            ctx.observe(&history, |me, _, _| me.0 += 1);
+            TickCounter(0)
+        });
+        let id = AIConversationId::new();
+        set_retry_wait(id, RetryWaitKind::RateLimited, Duration::from_millis(2500));
+        history.update(&mut app, |_, ctx| super::start_retry_wait_pulse(id, ctx));
+        warpui::r#async::Timer::after(Duration::from_millis(2300)).await;
+        let ticks = counter.read(&app, |c, _| c.0);
+        assert!(ticks >= 3, "countdown pulsed only {ticks} times in 2.3s");
+        // A second start while the chain runs must not double it up.
+        history.update(&mut app, |_, ctx| super::start_retry_wait_pulse(id, ctx));
+        clear_retry_wait(id);
+    });
+}

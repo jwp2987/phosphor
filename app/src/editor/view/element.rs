@@ -222,6 +222,12 @@ pub struct EditorElement {
     voice_input_toggle_key_code: Option<KeyCode>,
 }
 
+/// Whether an editor takes typed characters: the live focus chain decides when it is known,
+/// the render-time snapshot only when it is not (#901).
+fn accepts_typed_characters(snapshot_focused: bool, live_focus: Option<bool>) -> bool {
+    live_focus.unwrap_or(snapshot_focused)
+}
+
 impl EditorElement {
     /// Creates a new editor element.
     #[allow(clippy::too_many_arguments)]
@@ -624,7 +630,14 @@ impl EditorElement {
     }
 
     fn typed_characters(&self, chars: &str, ctx: &mut EventContext) -> bool {
-        if self.view_snapshot.is_focused {
+        // The snapshot is from the last render; characters typed right after focus moved here
+        // (before the next frame) would otherwise be dropped (#901). When the live focus chain
+        // is known it decides alone, so a stale snapshot on the editor focus just left cannot
+        // make two editors accept the same characters.
+        if accepts_typed_characters(
+            self.view_snapshot.is_focused,
+            ctx.live_focus_of(self.view_snapshot.view_id),
+        ) {
             if self.vim_mode.is_some() {
                 ctx.dispatch_typed_action(EditorAction::VimUserInsert(UserInput::new(chars)));
             } else {
@@ -2441,3 +2454,24 @@ fn scale_horizontal_mouse_autoscroll_delta(delta: f32) -> f32 {
 #[cfg(test)]
 #[path = "element_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod typed_focus_tests {
+    use super::accepts_typed_characters;
+
+    /// Focus moves editor A -> editor B and characters arrive before the re-render: A's snapshot
+    /// still says focused, B's still says not. Only B may take them.
+    #[test]
+    fn only_the_live_focused_editor_takes_characters_before_the_rerender() {
+        let a = accepts_typed_characters(true, Some(false));
+        let b = accepts_typed_characters(false, Some(true));
+        assert!(!a, "the editor focus just left must not insert");
+        assert!(b, "the editor focus just moved to must insert");
+    }
+
+    #[test]
+    fn snapshot_decides_only_without_a_live_chain() {
+        assert!(accepts_typed_characters(true, None));
+        assert!(!accepts_typed_characters(false, None));
+    }
+}

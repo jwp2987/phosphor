@@ -910,6 +910,21 @@ impl PaintContext<'_> {
 }
 
 impl EventContext<'_> {
+    /// Whether `view_id` is the window's focused view, or an ancestor of it, *right now*;
+    /// `None` when no focus chain is known (nothing focused, or a test context).
+    ///
+    /// Elements capture their focus state when they are rendered, so an event dispatched before
+    /// the next frame sees the focus from before the latest `focus()` call. Anything that must
+    /// not drop keystrokes typed right after a focus change asks this instead, and trusts it
+    /// alone whenever it is `Some`.
+    pub fn live_focus_of(&self, view_id: EntityId) -> Option<bool> {
+        if self.focus_chain.is_empty() {
+            None
+        } else {
+            Some(self.focus_chain.contains(&view_id))
+        }
+    }
+
     /// The view currently being dispatched to, its `ui_name`, and whether it is
     /// the window's focused view or an ancestor of it. Diagnostics only.
     pub(crate) fn current_view_focus_info(

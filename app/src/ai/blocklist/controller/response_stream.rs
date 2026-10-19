@@ -132,6 +132,38 @@ pub(crate) fn retry_wait_message(kind: RetryWaitKind, secs: u64) -> String {
     }
 }
 
+/// Starts the once-a-second countdown pulse for `conversation_id` on the history model, unless
+/// one is already running (a retry and a resume that overlap share one chain).
+pub(crate) fn start_retry_wait_pulse(
+    conversation_id: AIConversationId,
+    ctx: &mut ModelContext<BlocklistAIHistoryModel>,
+) {
+    let started = PULSING_RETRY_WAITS
+        .lock()
+        .is_ok_and(|mut pulsing| pulsing.insert(conversation_id));
+    if started {
+        retry_wait_pulse_tick(conversation_id, ctx);
+    }
+}
+
+fn retry_wait_pulse_tick(
+    conversation_id: AIConversationId,
+    ctx: &mut ModelContext<BlocklistAIHistoryModel>,
+) {
+    // Wake the views observing the history model so they recompute the label.
+    ctx.notify();
+    if current_retry_wait(conversation_id).is_some() {
+        let _ = ctx.spawn(
+            async move {
+                warpui::r#async::Timer::after(Duration::from_secs(1)).await;
+            },
+            move |_, _, ctx| retry_wait_pulse_tick(conversation_id, ctx),
+        );
+    } else if let Ok(mut pulsing) = PULSING_RETRY_WAITS.lock() {
+        pulsing.remove(&conversation_id);
+    }
+}
+
 /// The wait before a recovery attempt: the exponential `backoff`, stretched to the
 /// provider's `Retry-After` when it asked for longer (#854). A hint shorter than the backoff
 /// never shortens it. `retry_after` arrives already clamped (`api_error::MAX_RETRY_AFTER`),
@@ -830,29 +862,15 @@ impl ResponseStream {
     /// Wakes the views observing the history model once a second for as long as
     /// `conversation_id` is waiting, so the countdown ticks. A views-only nudge: it emits no
     /// history event, so no other consumer of the model sees it.
+    ///
+    /// The chain is spawned on the history model, not on this stream: a recovery by resume
+    /// waits *after* the stream has finished and been dropped, and a future spawned on a
+    /// dropped model is cancelled. The first tick then showed the full wait, the chain died,
+    /// and its stale registry entry stopped any later chain from starting (#903).
     fn pulse_retry_wait(conversation_id: AIConversationId, ctx: &mut ModelContext<Self>) {
-        // One chain per conversation: a second caller while one is running just has its
-        // wait picked up by the running chain's next tick.
-        let started = PULSING_RETRY_WAITS
-            .lock()
-            .is_ok_and(|mut pulsing| pulsing.insert(conversation_id));
-        if started {
-            Self::pulse_retry_wait_tick(conversation_id, ctx);
-        }
-    }
-
-    fn pulse_retry_wait_tick(conversation_id: AIConversationId, ctx: &mut ModelContext<Self>) {
-        BlocklistAIHistoryModel::handle(ctx).update(ctx, |_, ctx| ctx.notify());
-        if current_retry_wait(conversation_id).is_some() {
-            let _ = ctx.spawn(
-                async move {
-                    warpui::r#async::Timer::after(Duration::from_secs(1)).await;
-                },
-                move |_, _, ctx| Self::pulse_retry_wait_tick(conversation_id, ctx),
-            );
-        } else if let Ok(mut pulsing) = PULSING_RETRY_WAITS.lock() {
-            pulsing.remove(&conversation_id);
-        }
+        BlocklistAIHistoryModel::handle(ctx).update(ctx, |_, ctx| {
+            start_retry_wait_pulse(conversation_id, ctx);
+        });
     }
 
     /// Forgets this stream's recovery wait (the wait ended, or the stream was cancelled).
