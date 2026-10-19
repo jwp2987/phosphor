@@ -10,8 +10,6 @@ use crate::terminal::available_shells::AvailableShells;
 use crate::terminal::local_tty::shell::ShellStarterSourceOrWslName;
 #[cfg(feature = "local_tty")]
 use command::r#async::Command;
-#[cfg(feature = "local_tty")]
-use warpui::r#async::FutureExt;
 use warpui::{Entity, ModelContext, SingletonEntity};
 
 #[derive(Debug)]
@@ -324,14 +322,16 @@ async fn capture_interactive_shell_env(
     // The shell sources the user's rc files, which can hang (a prompt, a stuck
     // network mount). Bound it and kill the shell when the future is dropped on
     // timeout so it doesn't leak (#830).
-    let output: std::process::Output = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .output()
-        .with_timeout(INTERACTIVE_SHELL_CAPTURE_TIMEOUT)
-        .await
+    let output: std::process::Output = warpui::r#async::FutureExt::with_timeout(
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .output(),
+        INTERACTIVE_SHELL_CAPTURE_TIMEOUT,
+    )
+    .await
         .map_err(|_| anyhow!("Interactive shell PATH capture timed out"))?
         .map_err(|e| anyhow!("Failed to spawn interactive shell: {}", e))?;
 
