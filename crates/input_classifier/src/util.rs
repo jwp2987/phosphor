@@ -1219,7 +1219,9 @@ pub fn reads_as_prose_with_unknown_head(buffer_text: &str) -> bool {
     let text = buffer_text.trim();
     if text.is_empty()
         || text.len() > MAX_PREFILTER_BYTES
-        || text.contains(['\n', '\r', '\\', '|', '&', ';', '<', '>', '(', ')', '`', '$'])
+        || text.contains([
+            '\n', '\r', '\\', '|', '&', ';', '<', '>', '(', ')', '`', '$',
+        ])
         || !has_shell_safe_quoting(text)
     {
         return false;
