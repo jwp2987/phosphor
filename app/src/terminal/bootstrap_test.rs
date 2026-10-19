@@ -320,3 +320,54 @@ fn test_bootstrap_scripts_repair_a_replaced_prompt_hook() {
         );
     }
 }
+
+/// zsh's lifecycle hooks must run with the user's `err_return`/`err_exit`/`nounset` neutralised
+/// (#836), and a Preexec whose precmd was abandoned by a failing user precmd function must still
+/// be finished from the zle-line-init repair (#844). Behaviour was checked by driving the script
+/// in a pty; this pins the lines that do it.
+#[test]
+fn test_zsh_hooks_survive_strict_options_and_failing_precmd() {
+    let zsh = bundled_script("bundled/bootstrap/zsh_body.sh");
+    let guard = "setopt localoptions noerrreturn noerrexit unset\n";
+    for hook in [
+        "warp_preexec () {\n",
+        "function warp_update_prompt_vars() {\n",
+        "function warp_set_title_idle_on_precmd {\n",
+        "function warp_set_title_active_on_preexec {\n",
+    ] {
+        let start = zsh
+            .find(hook)
+            .unwrap_or_else(|| panic!("zsh_body.sh lost `{hook}`"));
+        let head = &zsh[start..start + 600.min(zsh.len() - start)];
+        assert!(
+            head.contains(guard.trim_end()),
+            "`{hook}` must start with `{guard}` (#836)"
+        );
+    }
+    // warp_title keeps its own `nopromptsubst` in the same setopt.
+    let title = zsh
+        .find("function warp_title {\n")
+        .expect("zsh_body.sh lost `warp_title`");
+    assert!(
+        zsh[title..(title + 600).min(zsh.len())]
+            .contains("setopt localoptions nopromptsubst noerrreturn noerrexit unset"),
+        "warp_title must keep the strict-option guard (#836)"
+    );
+    // warp_precmd takes `$?` first, so its guard is not the first line; check it by
+    // position within the function instead.
+    let precmd = zsh
+        .find("warp_precmd () {\n")
+        .expect("zsh_body.sh lost `warp_precmd`");
+    let head = &zsh[precmd..precmd + 1500.min(zsh.len() - precmd)];
+    let status = head
+        .find("local exit_code=$?")
+        .expect("warp_precmd must capture `$?` first");
+    assert!(
+        head[status..].contains(guard.trim_end()),
+        "warp_precmd must apply `{guard}` right after capturing `$?` (#836)"
+    );
+    assert!(
+        zsh.contains("# Phosphor (#844)"),
+        "zsh_body.sh lost the #844 owed-precmd repair"
+    );
+}
