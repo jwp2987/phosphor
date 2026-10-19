@@ -797,10 +797,10 @@ fn parse_kitty_control_data(control_data: &[u8]) -> KittyControlData {
     parsed_control_data
 }
 
-pub fn parse_kitty_chunk(chunk: Vec<u8>) -> KittyChunk {
+pub fn parse_kitty_chunk(chunk: &[u8]) -> KittyChunk {
     let (control_data, payload) = match chunk.iter().position(|&byte| byte == b';') {
         Some(position) => (&chunk[..position], &chunk[position + 1..]),
-        None => (&chunk[..], &vec![][..]),
+        None => (chunk, &[][..]),
     };
 
     let control_data = parse_kitty_control_data(control_data);
@@ -826,7 +826,7 @@ fn read_file(decoded_payload: Vec<u8>, is_temp: bool) -> Result<Vec<u8>, Invalid
     let path = path.as_str();
 
     // Bounded: an unbounded `fs::read` of e.g. a huge file never returns.
-    let data = match read_at_most(fs::File::open(path), MAX_KITTY_IMAGE_BYTES) {
+    let data = match read_at_most(open_regular_file(path), MAX_KITTY_IMAGE_BYTES) {
         Ok(Some(data)) => data,
         Ok(None) => {
             return Err(KittyDecodeError::PayloadTooLarge {
@@ -865,20 +865,24 @@ fn validate_kitty_file_path(path: &str, is_temp: bool) -> Result<String, Invalid
 
     let canonical = fs::canonicalize(path)
         .map_err(|err| InvalidKittyPayload::FileError(FileError::FileReadError(err.to_string())))?;
-    let canonical = canonical
+    // Everything below tests the canonical path, never the raw one: a raw
+    // `/tmp/tty-graphics-protocol/../../etc/x` would otherwise pass.
+    let canonical_path = canonical;
+    let canonical = canonical_path
         .to_str()
         .ok_or_else(|| file_error("path is not valid UTF-8"))?
         .to_owned();
+    let canonical_path = canonical_path.as_path();
 
     // `/dev/shm` is a legitimate temp dir despite being under /dev.
     let forbidden = KITTY_FORBIDDEN_PATH_PREFIXES
         .iter()
-        .any(|prefix| Path::new(&canonical).starts_with(prefix));
-    if forbidden && !(is_temp && Path::new(&canonical).starts_with("/dev/shm")) {
+        .any(|prefix| canonical_path.starts_with(prefix));
+    if forbidden && !(is_temp && canonical_path.starts_with("/dev/shm")) {
         return Err(file_error("path is in a forbidden directory"));
     }
 
-    if is_temp && !(is_path_in_temp_dir(path) && path.contains("tty-graphics-protocol")) {
+    if is_temp && !is_kitty_temp_path(canonical_path) {
         return Err(file_error(
             "temporary file must be in a temp dir and named for the graphics protocol",
         ));
@@ -891,32 +895,66 @@ fn validate_kitty_file_path(path: &str, is_temp: bool) -> Result<String, Invalid
     }
 }
 
+/// Deletes a `t=t` file after it was read. `path` must be the canonical path
+/// returned by `validate_kitty_file_path`; it is re-checked here regardless.
 #[cfg(feature = "local_fs")]
 fn safe_delete_temp_file(path: &str) {
-    if is_path_in_temp_dir(path) && path.contains("tty-graphics-protocol") {
-        if let Err(err) = fs::remove_file(path) {
+    let Ok(canonical) = fs::canonicalize(path) else {
+        return;
+    };
+    if is_kitty_temp_path(&canonical) {
+        if let Err(err) = fs::remove_file(&canonical) {
             log::error!("Failed to delete kitty temporary file (path = {path}): {err}");
         }
     }
 }
 
+/// Opens `path` without following a final symlink or blocking on a FIFO, then
+/// checks via fstat on the handle that it is a regular file. This closes the
+/// window between validation and open (#824).
 #[cfg(feature = "local_fs")]
-fn is_path_in_temp_dir(path: &str) -> bool {
-    let temp_dirs = vec!["/tmp", "/var/tmp", "/dev/shm"];
+fn open_regular_file(path: &str) -> std::io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    Ok(file)
+}
 
-    for temp_dir in temp_dirs {
-        if path.starts_with(temp_dir) {
-            return true;
-        }
+/// True if `canonical` lies inside a temp root and some component of it
+/// carries the `tty-graphics-protocol` marker. `canonical` must already be
+/// canonicalised; roots are canonicalised too (`/tmp` is `/private/tmp` on
+/// macOS).
+#[cfg(feature = "local_fs")]
+fn is_kitty_temp_path(canonical: &Path) -> bool {
+    is_path_in_temp_dir(canonical)
+        && canonical.components().any(|component| {
+            component
+                .as_os_str()
+                .to_string_lossy()
+                .contains("tty-graphics-protocol")
+        })
+}
+
+#[cfg(feature = "local_fs")]
+fn is_path_in_temp_dir(canonical: &Path) -> bool {
+    let mut temp_dirs = vec!["/tmp".into(), "/var/tmp".into(), "/dev/shm".into()];
+    // An empty `$TMPDIR` would make `starts_with("")` match everything.
+    if let Some(temp_dir) = env::var_os("TMPDIR").filter(|dir| !dir.is_empty()) {
+        temp_dirs.push(std::path::PathBuf::from(temp_dir));
     }
 
-    if let Ok(temp_dir) = env::var("TMPDIR") {
-        if path.starts_with(&temp_dir) {
-            return true;
-        }
-    }
-
-    false
+    temp_dirs.into_iter().any(|dir: std::path::PathBuf| {
+        let dir = fs::canonicalize(&dir).unwrap_or(dir);
+        dir.has_root() && dir.components().count() > 1 && canonical.starts_with(&dir)
+    })
 }
 
 #[cfg(all(feature = "local_fs", unix))]
@@ -1200,5 +1238,58 @@ mod local_fs_path_tests {
             "t=t needs the tty-graphics-protocol marker"
         );
         fs::remove_file(&plain).unwrap();
+    }
+
+    fn marker_dir(name: &str) -> std::path::PathBuf {
+        let dir = Path::new("/tmp").join(format!("{name}-{}", std::process::id()));
+        fs::create_dir_all(dir.join("tty-graphics-protocol")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn rejects_dotdot_traversal_out_of_marker_dir() {
+        let dir = marker_dir("kitty-824-dotdot");
+        let outside = dir.join("outside");
+        fs::write(&outside, b"x").unwrap();
+        let sneaky = format!("{}/tty-graphics-protocol/../outside", dir.to_str().unwrap());
+        // Canonical path is `<dir>/outside`: in tmp but without the marker.
+        assert!(validate_kitty_file_path(&sneaky, true).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_marker_named_symlink_pointing_outside_tmp() {
+        let dir = marker_dir("kitty-824-symlink");
+        let link = dir.join("tty-graphics-protocol-link");
+        std::os::unix::fs::symlink("/etc/passwd", &link).unwrap();
+        assert!(validate_kitty_file_path(link.to_str().unwrap(), true).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn temp_dir_match_is_component_wise() {
+        assert!(!is_path_in_temp_dir(Path::new(
+            "/tmpfoo/tty-graphics-protocol-x"
+        )));
+        assert!(!is_kitty_temp_path(Path::new(
+            "/tmpfoo/tty-graphics-protocol-x"
+        )));
+        assert!(is_kitty_temp_path(Path::new(
+            "/tmp/tty-graphics-protocol-x"
+        )));
+    }
+
+    #[test]
+    fn empty_tmpdir_does_not_match_everything() {
+        // Single-threaded section: only this test touches TMPDIR.
+        let saved = env::var_os("TMPDIR");
+        unsafe { env::set_var("TMPDIR", "") };
+        let matched = is_path_in_temp_dir(Path::new("/etc/passwd"));
+        match saved {
+            Some(value) => unsafe { env::set_var("TMPDIR", value) },
+            None => unsafe { env::remove_var("TMPDIR") },
+        }
+        assert!(!matched);
     }
 }

@@ -15,6 +15,7 @@ use chrono::{DateTime, Local};
 use vec1::vec1;
 use warp_core::command::ExitCode;
 use warp_terminal::model::ansi::ClearMode;
+use crate::terminal::model::kitty::parse_kitty_chunk;
 use warpui::text::str_to_byte_vec;
 use warpui::text::SelectionType;
 
@@ -2493,4 +2494,36 @@ fn ssh_login_classifies_current_last_line_after_scan_cursor_has_advanced() {
         "the freshly-written last line must still drive classification after the scan cursor \
          has advanced"
     );
+}
+
+#[test]
+fn dropped_oversized_apc_abandons_pending_kitty_transmission() {
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.on_kitty_image_chunk_received(parse_kitty_chunk(b"a=T,i=7,m=1;AAAA"));
+    assert!(matches!(
+        terminal.is_receiving_kitty_image_data,
+        IsReceivingKittyActionData::Yes { .. }
+    ));
+
+    let mut reply = vec![];
+    terminal.discard_kitty_action_receiving(&mut reply);
+    assert!(matches!(
+        terminal.is_receiving_kitty_image_data,
+        IsReceivingKittyActionData::No
+    ));
+    assert!(
+        String::from_utf8_lossy(&reply).contains("i=7"),
+        "an error reply is sent for the known image id: {reply:?}"
+    );
+
+    // The next unrelated transmission starts fresh instead of being appended
+    // to the stale message.
+    terminal.on_kitty_image_chunk_received(parse_kitty_chunk(b"a=T,i=9,m=1;BBBB"));
+    match &terminal.is_receiving_kitty_image_data {
+        IsReceivingKittyActionData::Yes { pending, .. } => {
+            assert_eq!(pending.control_data.image_id, Some(9));
+            assert_eq!(pending.payload.len(), 1);
+        }
+        IsReceivingKittyActionData::No => panic!("expected a new pending transmission"),
+    }
 }

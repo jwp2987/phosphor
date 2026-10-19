@@ -412,6 +412,11 @@ pub trait Handler {
     /// Callback to handle the APC to finish receiving a kitty action.
     fn end_kitty_action_receiving<W: io::Write>(&mut self, _writer: &mut W) {}
 
+    /// Callback invoked when an APC sequence was dropped for exceeding the size
+    /// cap. Discards any in-progress kitty transmission, replying with an error
+    /// if its image id is known.
+    fn discard_kitty_action_receiving<W: io::Write>(&mut self, _writer: &mut W) {}
+
     /// Callback to handle the APC to receive a chunk of a kitty action.
     fn on_kitty_image_chunk_received(&mut self, _chunk: KittyChunk) {}
 

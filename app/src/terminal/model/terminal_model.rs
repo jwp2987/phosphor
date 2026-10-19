@@ -3990,6 +3990,24 @@ impl ansi::Handler for TerminalModel {
         };
     }
 
+    fn discard_kitty_action_receiving<W: std::io::Write>(&mut self, writer: &mut W) {
+        let IsReceivingKittyActionData::Yes { pending, .. } = std::mem::replace(
+            &mut self.is_receiving_kitty_image_data,
+            IsReceivingKittyActionData::No,
+        ) else {
+            return;
+        };
+        let err = KittyError::from(KittyDecodeError::PayloadTooLarge {
+            limit: MAX_KITTY_IMAGE_BYTES,
+        });
+        log::warn!("{err:?}");
+        if let Some(image_id) = pending.control_data.image_id {
+            if pending.control_data.verbosity.send_error() {
+                let _ = writer.write_all(&create_kitty_error_reply(image_id, err));
+            }
+        }
+    }
+
     fn on_kitty_image_chunk_received(&mut self, chunk: KittyChunk) {
         match &mut self.is_receiving_kitty_image_data {
             IsReceivingKittyActionData::Yes {

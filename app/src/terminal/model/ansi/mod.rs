@@ -1769,6 +1769,10 @@ where
         if std::mem::take(&mut self.state.apc_overflowed) {
             log::warn!("Dropping APC sequence larger than {MAX_KITTY_BASE64_BYTES} bytes");
             self.state.apc_data.clear();
+            // The dropped sequence may have been a chunk of an in-progress
+            // kitty transmission; abandon it so the next `G` APC doesn't get
+            // appended to a stale message.
+            self.handler.discard_kitty_action_receiving(&mut self.writer);
             return;
         }
         let first_byte = match self.state.apc_data.first() {
@@ -1784,7 +1788,7 @@ where
                 return;
             }
 
-            let parsed_chunk = parse_kitty_chunk(self.state.apc_data[1..].to_vec());
+            let parsed_chunk = parse_kitty_chunk(&self.state.apc_data[1..]);
 
             let further_chunks = parsed_chunk.control_data.further_chunks;
 

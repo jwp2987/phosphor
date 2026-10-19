@@ -12,7 +12,7 @@ fn kitty_action_from_chunks(input: &[u8]) -> Result<KittyAction, KittyError> {
     let mut control_data = None;
     let mut payload = vec![];
     for chunk in input.split(|&byte| byte == 0x1e) {
-        let parsed = parse_kitty_chunk(chunk.to_vec());
+        let parsed = parse_kitty_chunk(chunk);
         if control_data.is_none() {
             control_data = Some(parsed.control_data.clone());
         }
