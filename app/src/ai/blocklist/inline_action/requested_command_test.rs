@@ -8,7 +8,8 @@ use super::{
     StreamedTextChange, cancel_explanation_for_reason, denylisted_command_message,
     enter_accepts_requested_command_context, format_command_text,
     header_message_for_user_take_over_reason, mcp_blocked_title_text,
-    mcp_viewing_detail_title_text, streamed_text_change,
+    mcp_viewing_detail_title_text, should_expand_for_control_change, streamed_text_change,
+    user_collapsed_after_set_expanded,
 };
 use crate::ai::agent::{CancellationReason, RequestCommandOutputResult};
 use crate::ai::blocklist::action_model::AIActionStatus;
@@ -338,7 +339,7 @@ mod ctrl_c_reject_tests {
 
     use super::super::{
         REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT, RejectDisposition,
-        ctrl_c_rejects_requested_command_context, reject_disposition,
+        ctrl_c_rejects_requested_command_context, reject_disposition, shows_stop_button,
     };
     use super::*;
     use crate::ai::agent::task::TaskId;
@@ -385,6 +386,35 @@ mod ctrl_c_reject_tests {
             reject_disposition(true, Some(&finished_status())),
             RejectDisposition::Ignore
         );
+    }
+
+    /// Issue #871: the visible Stop button appears exactly while the approved command runs.
+    #[test]
+    fn stop_button_shows_only_while_the_command_runs() {
+        assert!(shows_stop_button(
+            true,
+            Some(&AIActionStatus::RunningAsync),
+            false
+        ));
+        assert!(!shows_stop_button(
+            true,
+            Some(&AIActionStatus::RunningAsync),
+            true
+        ));
+        for status in [
+            AIActionStatus::Blocked,
+            AIActionStatus::Queued,
+            AIActionStatus::Preprocessing,
+            finished_status(),
+        ] {
+            assert!(!shows_stop_button(true, Some(&status), false), "{status:?}");
+        }
+        assert!(!shows_stop_button(true, None, false));
+        assert!(!shows_stop_button(
+            false,
+            Some(&AIActionStatus::RunningAsync),
+            false
+        ));
     }
 
     /// An untracked card (restored, or orphaned) has no pending decision and shows no buttons,
@@ -467,4 +497,29 @@ fn streamed_text_change_appends_or_replaces_before_an_edit() {
         streamed_text_change("echo hi; ls", "echo hi", false),
         StreamedTextChange::Replace
     );
+}
+
+/// #852: a take-over expands the card, but never re-expands one the user collapsed unless the
+/// command is waiting on their input.
+#[test]
+fn control_change_expansion_respects_a_user_collapsed_card() {
+    assert!(should_expand_for_control_change(false, false));
+    assert!(should_expand_for_control_change(false, true));
+    assert!(!should_expand_for_control_change(true, false));
+    assert!(should_expand_for_control_change(true, true));
+}
+
+#[test]
+fn programmatic_expand_clears_user_collapsed_flag() {
+    // Expanding by any path (force_expand, auto-expand, SpawnedSubagent) clears the flag.
+    assert!(!user_collapsed_after_set_expanded(true, true));
+    assert!(!user_collapsed_after_set_expanded(false, true));
+    // Collapsing leaves it for ToggleExpanded to set.
+    assert!(user_collapsed_after_set_expanded(true, false));
+    assert!(!user_collapsed_after_set_expanded(false, false));
+    // A cleared flag lets the next take-over expand without the override.
+    assert!(should_expand_for_control_change(
+        user_collapsed_after_set_expanded(true, true),
+        false
+    ));
 }

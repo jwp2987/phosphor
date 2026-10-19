@@ -293,6 +293,20 @@ pub(crate) fn reject_disposition(
     }
 }
 
+/// Whether the card shows its visible Stop button (issue #871): only for a shell command whose
+/// approved action is still running and whose block has not already finished. The button routes
+/// through [`reject_or_interrupt`], so this must agree with
+/// [`RejectDisposition::InterruptRunningCommand`].
+pub(crate) fn shows_stop_button(
+    is_requested_command: bool,
+    status: Option<&AIActionStatus>,
+    block_finished: bool,
+) -> bool {
+    !block_finished
+        && reject_disposition(is_requested_command, status)
+            == RejectDisposition::InterruptRunningCommand
+}
+
 pub fn init(app: &mut AppContext) {
     use warpui::keymap::macros::*;
 
@@ -494,6 +508,9 @@ pub struct RequestedCommandView {
     show_full_command_button: CompactibleActionButton,
     read_to_end_button: CompactibleActionButton,
     explain_button: CompactibleActionButton,
+    /// Visible Stop control on the running-command card (issue #871). Routes through
+    /// [`Self::reject_or_interrupt`], which interrupts the command.
+    stop_button: CompactibleActionButton,
     /// The "Explain" result for this card, tied to the exact text it describes (issue #891).
     explanation: ExplanationState,
     /// The in-flight explanation request, aborted when the card is approved, rejected,
@@ -536,6 +553,9 @@ pub struct RequestedCommandView {
 
     // Header expansion state components
     is_header_expanded: bool,
+    /// Set when the user collapsed the header themselves; a take-over does not re-expand it
+    /// unless the command is waiting on their input (issue #852).
+    user_collapsed_header: bool,
     header_mouse_state: MouseStateHandle,
     is_editing: bool,
 
@@ -678,6 +698,16 @@ impl RequestedCommandView {
             ButtonSize::InlineActionHeader,
             RequestedCommandViewAction::ExplainCommand,
             Icon::HelpCircle,
+            Arc::new(NakedTheme),
+            ctx,
+        );
+
+        let stop_button = CompactibleActionButton::new(
+            crate::t!("ai-requested-command-stop"),
+            None,
+            ButtonSize::InlineActionHeader,
+            RequestedCommandViewAction::Reject,
+            Icon::StopFilled,
             Arc::new(NakedTheme),
             ctx,
         );
@@ -847,6 +877,7 @@ impl RequestedCommandView {
             show_full_command_button,
             read_to_end_button,
             explain_button,
+            stop_button,
             explanation: ExplanationState::Idle,
             explanation_request: None,
             full_view_opened: None,
@@ -863,6 +894,7 @@ impl RequestedCommandView {
             is_editing: false,
             autonomy_setting_speedbump,
             is_header_expanded: false,
+            user_collapsed_header: false,
             header_mouse_state: Default::default(),
             cancel_explanation: None,
             rejected_by_user: false,
@@ -1248,6 +1280,10 @@ impl RequestedCommandView {
     }
 
     fn set_is_header_expanded(&mut self, value: bool, ctx: &mut ViewContext<Self>) {
+        // Any expansion (programmatic or the user's own re-expand) ends a prior user collapse;
+        // only `ToggleExpanded` sets the flag, and it does so after collapsing.
+        self.user_collapsed_header =
+            user_collapsed_after_set_expanded(self.user_collapsed_header, value);
         if value == self.is_header_expanded {
             return;
         }
@@ -2068,9 +2104,19 @@ impl RequestedCommandView {
                 });
             }
             Some(AIActionStatus::RunningAsync) if self.action_type.is_requested_command() => {
-                config = config.with_interaction_mode(InteractionMode::ManuallyExpandable(
-                    self.get_expansion_config(requested_command_block, app),
-                ));
+                // Keep the expandable output, and add a visible Stop control beside the
+                // chevron (issue #871). Only while the command is actually still running.
+                let mut expansion_config = self.get_expansion_config(requested_command_block, app);
+                if shows_stop_button(
+                    true,
+                    action_status.as_ref(),
+                    requested_command_block.is_some_and(|block| block.finished()),
+                ) {
+                    expansion_config =
+                        expansion_config.with_trailing_button(Rc::new(self.stop_button.clone()));
+                }
+                config = config
+                    .with_interaction_mode(InteractionMode::ManuallyExpandable(expansion_config));
             }
             Some(AIActionStatus::Finished(result)) => {
                 // Determine if command should be expandable based on whether it actually executed.
@@ -2823,7 +2869,9 @@ impl TypedActionView for RequestedCommandView {
                 }
             }
             RequestedCommandViewAction::ToggleExpanded => {
-                self.set_is_header_expanded(!self.is_header_expanded, ctx)
+                let expand = !self.is_header_expanded;
+                self.set_is_header_expanded(expand, ctx);
+                self.user_collapsed_header = !expand;
             }
             RequestedCommandViewAction::OpenActiveAgentProfileEditor => {
                 ctx.emit(RequestedCommandViewEvent::OpenActiveAgentProfileEditor)
@@ -2866,11 +2914,43 @@ impl RequestedCommand {
         })
     }
 
+    /// Expands for a take-over. Leaves a card the user collapsed alone unless
+    /// `override_user_collapse` (the command is waiting on their input).
+    pub fn force_expand_for_control_change(
+        &self,
+        override_user_collapse: bool,
+        ctx: &mut impl UpdateView,
+    ) {
+        self.view.update(ctx, |command, ctx| {
+            if should_expand_for_control_change(
+                command.user_collapsed_header,
+                override_user_collapse,
+            ) {
+                command.set_is_header_expanded(true, ctx);
+            }
+        })
+    }
+
     pub fn force_collapse(&self, ctx: &mut impl UpdateView) {
         self.view.update(ctx, |command, ctx| {
             command.set_is_header_expanded(false, ctx);
         })
     }
+}
+
+/// The `user_collapsed_header` flag after the header is set to `expanded`: expanding by any path
+/// clears it, collapsing leaves it for the caller (`ToggleExpanded`) to set.
+pub fn user_collapsed_after_set_expanded(user_collapsed_header: bool, expanded: bool) -> bool {
+    user_collapsed_header && !expanded
+}
+
+/// Whether a take-over expands the card: always, unless the user collapsed it and the command
+/// is not waiting on their input.
+pub fn should_expand_for_control_change(
+    user_collapsed_header: bool,
+    override_user_collapse: bool,
+) -> bool {
+    !user_collapsed_header || override_user_collapse
 }
 
 /// Formats the command text as a one-line header title: the first line, plus an ellipsis when

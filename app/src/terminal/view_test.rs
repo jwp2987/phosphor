@@ -13997,3 +13997,14 @@ fn without_typeahead_handoff_a_key_on_the_terminal_at_the_prompt_is_dropped() {
         });
     })
 }
+
+/// Issue #852: a PTY hand-over to the user must pull focus off the command's AI card, or the
+/// answer (a password, `[y/N]`) is typed into the card and dropped. Ordinary focus
+/// reconciliation still leaves a focused AI block alone.
+#[test]
+fn user_takeover_overrides_ai_block_focus_guard() {
+    assert!(ai_block_focus_permits_terminal_reset(false, false));
+    assert!(!ai_block_focus_permits_terminal_reset(false, true));
+    assert!(ai_block_focus_permits_terminal_reset(true, true));
+    assert!(ai_block_focus_permits_terminal_reset(true, false));
+}

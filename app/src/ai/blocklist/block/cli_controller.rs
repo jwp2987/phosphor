@@ -104,6 +104,46 @@ impl<'de> Deserialize<'de> for UserTakeOverReason {
     }
 }
 
+/// Why a [`CLISubagentEvent::UpdatedControl`] was emitted. `agent_has_control: false` is also
+/// reported by routine action bookkeeping (`ActionBlockedOnUserConfirmation`, `ExecutingAction`,
+/// `FinishedAction`), so only a real take-over may move focus or expand a card (issue #852).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlChangeReason {
+    /// The user now owns the PTY (Manual/Stop take-over, a prompt hand-over, or an agent
+    /// transfer). `needs_input` is true when the command is waiting on the user's answer.
+    UserTakeover { needs_input: bool },
+    /// The user handed the PTY back to the agent.
+    HandOff,
+    /// Action bookkeeping or initial subagent state; no focus or expansion side effects.
+    Routine,
+}
+
+impl ControlChangeReason {
+    /// The change reason for a user take-over of the given kind: a prompt hand-over or an agent
+    /// transfer is waiting on the user's input; a Manual/Stop take-over is not.
+    pub fn for_user_takeover(reason: &UserTakeOverReason) -> Self {
+        Self::UserTakeover {
+            needs_input: reason.is_blocked_on_input() || reason.is_transfer_from_agent(),
+        }
+    }
+
+    /// Whether the terminal may take focus back from an AI block.
+    pub fn takes_terminal_focus(&self) -> bool {
+        matches!(self, Self::UserTakeover { .. })
+    }
+
+    /// Whether the command's card should be expanded.
+    pub fn expands_card(&self) -> bool {
+        matches!(self, Self::UserTakeover { .. })
+    }
+
+    /// Whether expansion overrides a card the user collapsed themselves: only when the command
+    /// is waiting on the user's input.
+    pub fn overrides_user_collapse(&self) -> bool {
+        matches!(self, Self::UserTakeover { needs_input: true })
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct ActiveCLISubagentState {
     task_id: Option<TaskId>,
@@ -271,6 +311,7 @@ impl CLISubagentController {
                     block_id: active_block.id().clone(),
                     requested_command_action_id: action_id,
                     agent_has_control: active_block.is_agent_in_control(),
+                    reason: ControlChangeReason::Routine,
                 });
             }
             BlocklistAIActionEvent::ExecutingAction(..) => {
@@ -283,6 +324,7 @@ impl CLISubagentController {
                     block_id: active_block.id().clone(),
                     requested_command_action_id: action_id,
                     agent_has_control: active_block.is_agent_in_control(),
+                    reason: ControlChangeReason::Routine,
                 });
             }
             BlocklistAIActionEvent::FinishedAction { action_id, .. } => {
@@ -423,6 +465,7 @@ impl CLISubagentController {
                     block_id: updated_control_block_id,
                     requested_command_action_id: action_id,
                     agent_has_control: updated_control_agent_has_control,
+                    reason: ControlChangeReason::Routine,
                 });
 
                 // Updates the last snapshot timestamp for the active block after the agent has read the block output.
@@ -662,6 +705,7 @@ impl CLISubagentController {
 
     pub fn switch_control_to_user(&self, reason: UserTakeOverReason, ctx: &mut ModelContext<Self>) {
         let should_cancel_conversation = reason.should_cancel_conversation();
+        let change_reason = ControlChangeReason::for_user_takeover(&reason);
         let mut terminal_model = self.terminal_model.lock();
 
         let active_block = terminal_model.block_list_mut().active_block_mut();
@@ -697,6 +741,7 @@ impl CLISubagentController {
             block_id: block_id.clone(),
             requested_command_action_id: action_id,
             agent_has_control,
+            reason: change_reason,
         });
 
         send_telemetry_from_ctx!(
@@ -770,6 +815,7 @@ impl CLISubagentController {
             block_id: block_id.clone(),
             requested_command_action_id: action_id,
             agent_has_control,
+            reason: ControlChangeReason::HandOff,
         });
 
         // Emit a special event if control was transferred from agent, so the executor can be notified.
@@ -872,6 +918,7 @@ impl CLISubagentController {
                     block_id: block_id.clone(),
                     requested_command_action_id: action_id.clone(),
                     agent_has_control,
+                    reason: ControlChangeReason::Routine,
                 });
                 self.active_subagents_by_block
                     .entry(block_id.clone())
@@ -948,6 +995,7 @@ pub enum CLISubagentEvent {
         block_id: BlockId,
         requested_command_action_id: Option<AIAgentActionId>,
         agent_has_control: bool,
+        reason: ControlChangeReason,
     },
     UpdatedLastSnapshot {
         block_id: BlockId,
