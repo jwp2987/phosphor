@@ -292,7 +292,7 @@ fn sqlite_writer_reuses_codebase_index_metadata_events() {
     assert!(restored.is_empty());
 }
 
-fn wait_for_nonempty_wal(wal: &Path) {
+fn wait_for_nonempty_wal(wal: &std::path::Path) {
     for _ in 0..100 {
         if std::fs::metadata(wal).is_ok_and(|m| m.len() > 0) {
             return;
