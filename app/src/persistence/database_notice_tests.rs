@@ -133,10 +133,11 @@ fn damage_messages_are_classified_as_corrupt() {
     }
 }
 
-/// Damage and a vanished file are reported once per failing stretch, and the
-/// log is only asked to repeat the first line (#911).
+/// Damage is reported once per session (it does not heal, and a damaged
+/// database fails some events while others succeed); a vanished file and a
+/// full disk are reported once per failing stretch (#911).
 #[test]
-fn damage_is_reported_once_per_stretch_and_rearms_on_success() {
+fn damage_is_reported_once_and_a_success_does_not_rearm_it() {
     let _ = take_database_problem_notice();
     let db = Path::new("/nonexistent/dir/stretch.sqlite");
     record_write_outcome(db, None);
@@ -150,14 +151,17 @@ fn damage_is_reported_once_per_stretch_and_rearms_on_success() {
     assert_eq!(notice.problem, DatabaseProblem::Corrupt);
     assert!(take_database_problem_notice().is_none(), "exactly one");
 
-    // A different damage message in the same stretch is still the same stretch.
+    // Other damage messages, and snapshots succeeding between block failures,
+    // are the same damage.
     assert_eq!(
-        record_write_outcome(db, Some("database disk image is malformed")),
+        record_write_outcome(db, Some("no such table: blocks")),
         WriteFailureLog::Repeat
     );
+    record_write_outcome(db, None);
+    assert_eq!(record_write_outcome(db, msg), WriteFailureLog::Repeat);
     assert!(take_database_problem_notice().is_none());
 
-    record_write_outcome(db, None);
+    // A vanished file is its own stretch, re-armed by a success.
     assert_eq!(
         record_write_problem(db, DatabaseProblem::FileReplaced),
         WriteFailureLog::First
@@ -174,6 +178,22 @@ fn damage_is_reported_once_per_stretch_and_rearms_on_success() {
         WriteFailureLog::Always
     );
     assert!(take_database_problem_notice().is_none());
+}
+
+#[test]
+fn a_truncated_or_overwritten_file_is_not_a_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("warp.sqlite");
+    assert_eq!(check_file_is_database(&db), None, "missing is not judged");
+    std::fs::write(&db, b"").unwrap();
+    assert_eq!(check_file_is_database(&db), Some(DatabaseProblem::Corrupt));
+    std::fs::write(&db, vec![0x5au8; 4096]).unwrap();
+    assert_eq!(check_file_is_database(&db), Some(DatabaseProblem::Corrupt));
+    let mut page = b"SQLite format 3\0".to_vec();
+    page.extend_from_slice(&[0; 4080]);
+    std::fs::write(&db, page).unwrap();
+    assert_eq!(check_file_is_database(&db), None);
+    assert_eq!(check_file_is_database(dir.path()), None, "a folder is not judged");
 }
 
 #[test]

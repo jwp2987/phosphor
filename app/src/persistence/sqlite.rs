@@ -1652,16 +1652,22 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                             // here. Re-creating it could clobber a healthy
                             // database the user is putting back, so the writer
                             // stops, says so once, and leaves the path alone.
-                            if let Some(identity) = opened_identity
-                                && let Some(problem) = super::database_notice::check_file_unchanged(
-                                    &database_path,
-                                    identity,
-                                )
-                            {
+                            let damage = opened_identity
+                                .and_then(|identity| {
+                                    super::database_notice::check_file_unchanged(
+                                        &database_path,
+                                        identity,
+                                    )
+                                })
+                                .or_else(|| {
+                                    super::database_notice::check_file_is_database(&database_path)
+                                });
+                            if let Some(problem) = damage {
                                 abandoned = true;
                                 log::warn!(
-                                    "The SQLite database file was deleted or replaced while \
-                                     running; no further state will be saved this session"
+                                    "The SQLite database file was deleted, replaced or damaged while \
+                                     running ({problem:?}); no further state will be saved \
+                                     this session"
                                 );
                                 super::database_notice::record_write_problem(
                                     &database_path,

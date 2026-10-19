@@ -50,6 +50,11 @@ static PROBLEM_NOTICE: Mutex<Vec<DatabaseProblemNotice>> = Mutex::new(Vec::new()
 /// a failing disk is reported once rather than on every event.
 static WRITES_FAILING: AtomicBool = AtomicBool::new(false);
 
+/// Set once a damaged database has been reported. Unlike a full disk, damage
+/// does not heal, and a damaged database fails some events (blocks) while
+/// others (snapshots) succeed, so a success must not re-arm the notice.
+static CORRUPTION_REPORTED: AtomicBool = AtomicBool::new(false);
+
 /// Whether the file at `db_path`, or the folder it lives in, rejects writes
 /// from this process.
 fn location_rejects_writes(db_path: &Path) -> bool {
@@ -184,7 +189,10 @@ pub fn record_write_problem(db_path: &Path, problem: DatabaseProblem) -> WriteFa
     if matches!(problem, DatabaseProblem::Other(_)) {
         return WriteFailureLog::Always;
     }
-    if WRITES_FAILING.swap(true, Ordering::Relaxed) {
+    if problem == DatabaseProblem::Corrupt && CORRUPTION_REPORTED.swap(true, Ordering::Relaxed) {
+        return WriteFailureLog::Repeat;
+    }
+    if WRITES_FAILING.swap(true, Ordering::Relaxed) && problem != DatabaseProblem::Corrupt {
         return WriteFailureLog::Repeat;
     }
     set_notice(DatabaseProblemNotice {
@@ -245,6 +253,30 @@ pub fn check_file_unchanged(path: &Path, opened: FileIdentity) -> Option<Databas
             _ => None,
         },
     }
+}
+
+/// Whether the file at `path` is no longer a SQLite database: empty, or
+/// without the 16-byte magic every SQLite file starts with. Truncating or
+/// overwriting the file under a running connection does not make SQLite fail
+/// at once (it keeps its open handle and cached pages), so the writer looks.
+/// A missing or unreadable file is not judged here.
+pub fn check_file_is_database(path: &Path) -> Option<DatabaseProblem> {
+    use std::io::Read;
+    const MAGIC: &[u8; 16] = b"SQLite format 3\0";
+    let mut file = std::fs::File::open(path).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut head = [0u8; 16];
+    let mut filled = 0;
+    while filled < head.len() {
+        match file.read(&mut head[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(_) => return None,
+        }
+    }
+    (&head[..filled] != MAGIC).then_some(DatabaseProblem::Corrupt)
 }
 
 /// Decides whether a repeated SQLite error should be logged again. SQLite
