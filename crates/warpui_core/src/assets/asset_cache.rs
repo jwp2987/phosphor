@@ -4,7 +4,7 @@ use async_channel::{self, Receiver, Sender};
 use bytes::Bytes;
 use derivative::Derivative;
 use futures::FutureExt as _;
-use futures::{future::BoxFuture, Future};
+use futures::{Future, future::BoxFuture};
 use std::any::{Any, TypeId};
 use std::pin::Pin;
 use std::time::SystemTime;
@@ -17,7 +17,7 @@ use std::{
 };
 
 use crate::image_cache::ImageCache;
-use crate::{r#async::executor, Entity, ModelContext, SingletonEntity};
+use crate::{Entity, ModelContext, SingletonEntity, r#async::executor};
 
 use super::AssetProvider;
 

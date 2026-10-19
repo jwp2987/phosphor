@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use core::fmt;
 use itertools::Itertools;
 use std::{
@@ -11,14 +11,14 @@ use std::{
 use strum_macros::EnumIter;
 
 use crate::{
+    Entity, SingletonEntity,
     assets::asset_cache::{Asset, AssetCache, AssetSource, AssetState, PreparedAsset},
     util::parse_u32,
-    Entity, SingletonEntity,
 };
 use image::{
+    AnimationDecoder, DynamicImage, Frame, ImageBuffer, ImageDecoder, ImageFormat,
     codecs::{gif::GifDecoder, webp::WebPDecoder},
     imageops::FilterType,
-    AnimationDecoder, DynamicImage, Frame, ImageBuffer, ImageDecoder, ImageFormat,
 };
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use pathfinder_geometry::vector::Vector2I;
@@ -540,7 +540,9 @@ impl DecodedImage {
                     // Each frame is canvas-sized; the running total bounds
                     // how many are kept.
                     let frames = collect_frames_bounded(decoder.into_frames())?;
-                    Ok(DecodedImage::Animated(Arc::new(AnimatedImage::from(frames))))
+                    Ok(DecodedImage::Animated(Arc::new(AnimatedImage::from(
+                        frames,
+                    ))))
                 } else {
                     let img = DynamicImage::from_decoder(decoder)?.into_rgba8();
                     Ok(DecodedImage::Static(Arc::new(StaticImage { img })))
@@ -553,7 +555,9 @@ impl DecodedImage {
                 check_decoded_size(width, height)?;
                 let decoder = GifDecoder::new(std::io::Cursor::new(data))?;
                 let frames = collect_frames_bounded(decoder.into_frames())?;
-                Ok(DecodedImage::Animated(Arc::new(AnimatedImage::from(frames))))
+                Ok(DecodedImage::Animated(Arc::new(AnimatedImage::from(
+                    frames,
+                ))))
             }
             _ => Ok(DecodedImage::Unrecognized),
         }
@@ -579,7 +583,9 @@ impl Asset for ImageType {
         // Header only, so this is cheap on the UI thread. Anything without a raster header
         // (SVG, custom `warp-img:`) is estimated at its source size.
         if data.first() != Some(&b'<') && !data.starts_with(b"warp-img:") {
-            if let Ok(reader) = image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format() {
+            if let Ok(reader) =
+                image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format()
+            {
                 if let Ok((w, h)) = reader.into_dimensions() {
                     return (w as usize).saturating_mul(h as usize).saturating_mul(4);
                 }

@@ -170,11 +170,11 @@ fn evicts_oldest_versioned_local_file_assets_over_limit() {
 
 mod async_raw {
     use super::*;
+    use crate::App;
     use crate::assets::asset_cache::Asset;
     use crate::assets::asset_cache::PreparedAsset;
-    use crate::image_cache::{DecodedImage, ImageCache, ImageType, MAX_RAW_IMAGE_SIDE};
     use crate::r#async::executor::{Background, Foreground};
-    use crate::App;
+    use crate::image_cache::{DecodedImage, ImageCache, ImageType, MAX_RAW_IMAGE_SIDE};
     use std::sync::Arc;
 
     fn png_bytes(width: u32, height: u32) -> Vec<u8> {
