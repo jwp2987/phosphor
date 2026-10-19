@@ -24,7 +24,7 @@ use image::{
     imageops::FilterType,
     AnimationDecoder, DynamicImage, Frame, ImageBuffer, ImageDecoder, ImageFormat,
 };
-use parking_lot::{RwLock, RwLockUpgradableReadGuard};
+use parking_lot::RwLock;
 use pathfinder_geometry::vector::Vector2I;
 use resvg::{
     tiny_skia::{self, IntSize},
