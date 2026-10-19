@@ -1253,10 +1253,12 @@ fn pending_prose_with_unknown_first_word_settles_to_ai_at_submit() {
             ));
             input_model.read(app, |model, _| model.input_type())
         };
+        // No request word, so the existing #834 rule does not apply to these: only the
+        // unknown-head rule can move them.
         for prose in [
-            "summarize the open issues for me",
-            "tell the team about the outage",
-            "frobnicate the widgets, then ship it",
+            "summarize open issues, then triage",
+            "tell Josh about outages",
+            "frobnicate widgets, ship quickly",
         ] {
             assert_eq!(enter(&mut app, prose, true), InputType::AI, "{prose}");
             // Head is an alias/function/builtin/PATH executable, or the session has no data:
