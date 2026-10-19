@@ -1246,8 +1246,15 @@ fn misroute_offer_follows_route_reason_and_edits() {
             model.dismiss_misroute_offer_on_edit(false, ctx);
             assert_eq!(model.misroute_offer(), None);
         });
+    });
+}
 
-        // A locked submit (explicit mode choice) never offers anything.
+/// #835: a locked submit (explicit mode choice) never offers anything.
+#[test]
+fn misroute_offer_never_shown_for_locked_routing() {
+    use warp_core::command::ExitCode;
+
+    App::test((), |mut app| async move {
         let (locked_model, _) = build_input_model(&mut app, StubPolicy::inert(SHELL_LOCKED));
         locked_model.update(&mut app, |model, ctx| {
             let reason = model.submit_route_reason();
