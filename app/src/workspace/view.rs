@@ -2796,11 +2796,12 @@ impl Workspace {
             if let crate::persistence::DatabaseProblem::PartialRestore { skipped_tabs } =
                 &notice.problem
             {
+                let skipped = *skipped_tabs;
                 toasts.push(
                     DismissibleToast::error(crate::t!(
                         "workspace-database-partial-restore-toast",
                         path = friendly(&notice.path),
-                        skipped = *skipped_tabs
+                        skipped = skipped
                     ))
                     .with_object_id("database_partial_restore".to_owned()),
                 );
