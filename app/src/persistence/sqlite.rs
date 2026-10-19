@@ -487,7 +487,8 @@ pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<Writer
     match init_result {
         Ok(mut conn) => {
             let user_uid = AuthStateProvider::as_ref(ctx).get().user_id();
-            let mut read_result = read_sqlite_data(&mut conn, user_uid);
+            let skipped_tabs = std::cell::Cell::new(0);
+            let mut read_result = read_sqlite_data_counting(&mut conn, user_uid, &skipped_tabs);
             // A database that opens and migrates but cannot be read (a dropped
             // table, damaged pages) would otherwise fail every write too (#860).
             if let Err(err) = &read_result {
@@ -504,7 +505,9 @@ pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<Writer
                             Ok(fresh) => {
                                 mark_database_fresh(&database_path);
                                 conn = fresh;
-                                read_result = read_sqlite_data(&mut conn, user_uid);
+                                skipped_tabs.set(0);
+                                read_result =
+                                    read_sqlite_data_counting(&mut conn, user_uid, &skipped_tabs);
                             }
                             Err(recovery_err) => {
                                 super::database_notice::record_startup_failure(
@@ -519,8 +522,19 @@ pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<Writer
                 }
             }
             let app_state = match read_result {
-                Ok(app_state) => Some(app_state),
+                Ok(app_state) => {
+                    if skipped_tabs.get() > 0 {
+                        super::database_notice::record_partial_restore(
+                            &database_path,
+                            skipped_tabs.get(),
+                        );
+                    }
+                    Some(app_state)
+                }
                 Err(err) => {
+                    // The database opened but its saved state cannot be read
+                    // (a dropped table, say): this session starts empty.
+                    super::database_notice::record_partial_restore(&database_path, 0);
                     send_telemetry_from_app_ctx!(
                         TelemetryEvent::DatabaseReadError(err.to_string()),
                         ctx
@@ -720,6 +734,21 @@ unsafe fn init_logging() { unsafe {
         let err_message = String::from_utf8_lossy(msg.to_bytes());
         // The local logging path shouldn't panic, but still guard against
         // unwinding across the FFI boundary.
+        // Damage makes every statement fail the same way; log each code once
+        // a minute instead of 10-30 times in a row (#911).
+        if matches!(
+            primary_error_code,
+            sqlite3::SQLITE_CORRUPT | sqlite3::SQLITE_NOTADB | sqlite3::SQLITE_READONLY
+        ) || (primary_error_code == sqlite3::SQLITE_ERROR
+            && err_message.contains("no such table"))
+        {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            if !super::database_notice::sqlite_error_should_log(primary_error_code, now) {
+                return;
+            }
+        }
         let _ = panic::catch_unwind(|| {
             // openWarp only writes local logs; the error code/description still retain diagnostic value.
             log::log!(
@@ -1531,6 +1560,14 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
         .name("SQLite Writer".into())
         .spawn(move || {
             let mut paused = false;
+            // Which file the connection was opened on; if it is deleted or
+            // swapped, writes go to an unlinked inode and are lost (#911).
+            let mut opened_identity = super::database_notice::file_identity(&database_path);
+            // Set once the file was found deleted, replaced or damaged: no more
+            // writes, and the connection was retired (see
+            // `retire_abandoned_connection`).
+            let mut abandoned = false;
+            let mut suppressed_errors: u32 = 0;
             loop {
                 let events = match rx.recv() {
                     Ok(event) => {
@@ -1545,7 +1582,7 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                         log::warn!(
                             "SQLite event sender has closed; terminating SQLite writer thread."
                         );
-                        break;
+                        return;
                     }
                 };
 
@@ -1556,6 +1593,11 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                 Ok(conn) => {
                                     current_conn = Some(conn);
                                     paused = false;
+                                    abandoned = false;
+                                    // A new database can be damaged again later.
+                                    super::database_notice::reset_damage_reports();
+                                    opened_identity =
+                                        super::database_notice::file_identity(&database_path);
                                     log::info!("SQLite Writer is resumed");
                                 }
                                 Err(err) => {
@@ -1611,22 +1653,64 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                 log::info!("Ignoring event as SQLite Writer is on pause");
                                 continue;
                             }
+                            if abandoned {
+                                continue;
+                            }
+                            // #911: a deleted, swapped or damaged file is never
+                            // repaired here. Re-creating it could clobber a healthy
+                            // database the user is putting back, so the writer
+                            // stops, says so once, and leaves the path alone.
                             let Some(conn) = current_conn.as_mut() else {
                                 continue;
                             };
+                            if let Some(problem) = opened_identity.and_then(|identity| {
+                                super::database_notice::check_database_file(
+                                    &database_path,
+                                    identity,
+                                )
+                            }) {
+                                abandoned = true;
+                                let leaked = current_conn
+                                    .take()
+                                    .is_some_and(|conn| retire_abandoned_connection(conn, &database_path));
+                                log::warn!(
+                                    "The SQLite database file was deleted, replaced or damaged while \
+                                     running ({problem:?}); no further state will be saved \
+                                     this session{}",
+                                    if leaked { " (connection left open on purpose)" } else { "" }
+                                );
+                                super::database_notice::record_write_problem(
+                                    &database_path,
+                                    problem,
+                                );
+                                continue;
+                            }
                             match handle_model_event(event, conn) {
                                 Ok(()) => {
+                                    suppressed_errors = 0;
                                     super::database_notice::record_write_outcome(
                                         &database_path,
                                         None,
                                     );
                                 }
                                 Err(err) => {
-                                    super::database_notice::record_write_outcome(
+                                    let log_mode = super::database_notice::record_write_outcome(
                                         &database_path,
                                         Some(&underlying_error_message(&err)),
                                     );
-                                    report_db_error("Model", err, &database_path);
+                                    // Once per failing stretch, then a count
+                                    // now and then, not a line per event.
+                                    if log_mode == super::database_notice::WriteFailureLog::Repeat {
+                                        suppressed_errors += 1;
+                                        if suppressed_errors.is_power_of_two() {
+                                            log::warn!(
+                                                "SQLite writes are still failing \
+                                                 ({suppressed_errors} repeats not logged)"
+                                            );
+                                        }
+                                    } else {
+                                        report_db_error("Model", err, &database_path);
+                                    }
                                 }
                             }
                         }
@@ -1635,6 +1719,34 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
             }
         })?;
     Ok(WriterHandles { handle, sender: tx })
+}
+
+/// Retires the writer's connection once its database file turned out to be
+/// deleted, replaced or damaged. Returns whether the connection was leaked.
+///
+/// Closing a WAL connection checkpoints and then unlinks `<db>-wal` by name.
+/// If nothing exists at the database path or its sidecars, that is harmless, so
+/// the connection is closed and nothing leaks. If something does exist (a file
+/// swapped in, or our own damaged file) it may be a database with its own
+/// `-wal` that a close would delete, so the connection is deliberately leaked.
+/// Bound: at most one leaked connection per login session, and only when the
+/// database file is replaced by another file or damaged in place while running;
+/// the writer latches `abandoned`, so this runs once per latch.
+fn retire_abandoned_connection(conn: SqliteConnection, db_path: &Path) -> bool {
+    let sidecar = |suffix: &str| {
+        let mut name = db_path.as_os_str().to_owned();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    let occupied = [db_path.to_path_buf(), sidecar("-wal"), sidecar("-shm")]
+        .iter()
+        .any(|path| std::fs::symlink_metadata(path).is_ok());
+    if occupied {
+        std::mem::forget(conn);
+    } else {
+        drop(conn);
+    }
+    occupied
 }
 
 /// Handles a single [`ModelEvent`] by dispatching to an event-specific function.
@@ -4073,6 +4185,16 @@ fn read_sqlite_data(
     conn: &mut SqliteConnection,
     current_user_id: Option<UserUid>,
 ) -> Result<PersistedData, Error> {
+    read_sqlite_data_counting(conn, current_user_id, &std::cell::Cell::new(0))
+}
+
+/// [`read_sqlite_data`], also counting in `skipped_tabs` the saved tabs that
+/// did not read back and were left out (#911).
+fn read_sqlite_data_counting(
+    conn: &mut SqliteConnection,
+    current_user_id: Option<UserUid>,
+    skipped_tabs: &std::cell::Cell<usize>,
+) -> Result<PersistedData, Error> {
     use schema::windows::dsl::*;
 
     let active_window_id = schema::app::dsl::app
@@ -4131,7 +4253,13 @@ fn read_sqlite_data(
             let saved_tabs: Vec<_> = tabs_for_window
                 .into_iter()
                 .filter_map(|tab| {
-                    let root = read_root_node(conn, tab.id).ok()?;
+                    let root = match read_root_node(conn, tab.id) {
+                        Ok(root) => root,
+                        Err(_) => {
+                            skipped_tabs.set(skipped_tabs.get() + 1);
+                            return None;
+                        }
+                    };
                     let group_id = tab
                         .tab_group_id
                         .and_then(|row_id| tab_group_id_by_row_id.get(&row_id).copied());
