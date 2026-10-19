@@ -163,6 +163,18 @@ impl ReplyLedger {
                     self.clear_line();
                     self.unconfirmed = true;
                 }
+                // Ctrl-P is what the bootstrap binds to kill-whole-line, and what every command
+                // is written with ahead of its text.
+                '\u{10}' => {
+                    self.clear_line();
+                    self.unconfirmed = true;
+                }
+                // Backspace at the end of the tracked text (fish commands end with space, backspace).
+                '\u{7f}' | '\u{8}' if !self.after_enter => {
+                    if !self.user_untracked {
+                        self.user_text.pop();
+                    }
+                }
                 c if c.is_control() => self.user_untracked = true,
                 _ if self.after_enter => self.user_untracked = true,
                 c if !self.user_untracked => {

@@ -79,7 +79,7 @@ fn an_xtversion_reply_residue_is_dropped() {
 #[test]
 fn control_keys_typed_by_the_user_disable_filtering() {
     assert_eq!(filtered(&["\x1b[24;1R"], &["\x1b[D"], "R"), "R");
-    assert_eq!(filtered(&["\x1b[24;1R"], &["a", "\x7f"], "R"), "R");
+    assert_eq!(filtered(&["\x1b[24;1R"], &["a", "\t"], "R"), "R");
 }
 
 #[test]
@@ -461,4 +461,33 @@ fn bracketed_paste_markers_around_typed_text_are_transparent() {
     let mut ledger = ledger_with(&["\x1b[24;1R"]);
     ledger.note_input(b"\x1b[200~abc\x1b[201~");
     assert_eq!(ledger.filter_report("Rabc".into()), "abc");
+}
+
+#[test]
+fn a_command_written_with_ctrl_p_in_bracketed_paste_leaves_a_tracked_line() {
+    // What `bytes_to_execute_command` writes for bash and zsh.
+    let mut ledger = ledger_with(&[]);
+    ledger.note_input(b"\x10\x1b[200~bash x.sh\x1b[201~\n");
+    ledger.on_command_start();
+    ledger.note_replies(b"\x1b[24;1R");
+    ledger.note_input(b"Rx");
+    assert_eq!(ledger.filter_report("RRx".into()), "Rx");
+    // Without bracketed paste, and fish's trailing space + backspace.
+    let mut ledger = ledger_with(&[]);
+    ledger.note_input(b"\x10bash x.sh \x7f\r");
+    ledger.on_command_start();
+    ledger.note_replies(b"\x1b[24;1R");
+    assert_eq!(ledger.filter_report("R".into()), "");
+}
+
+#[test]
+fn ctrl_p_empties_a_line_the_app_did_not_expect_but_must_be_confirmed() {
+    let mut ledger = ledger_with(&["\x1b[24;1R"]);
+    ledger.note_input(b"\x1b[D\x10");
+    assert_eq!(ledger.filter_report("R".into()), "R");
+}
+
+#[test]
+fn backspace_removes_tracked_text() {
+    assert_eq!(filtered(&["\x1b[24;1R"], &["abc", "\x7f"], "Rab"), "ab");
 }
