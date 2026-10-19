@@ -7,23 +7,26 @@
 //! - The result is that current session items appear at the bottom (closer to input)
 
 use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
-use crate::ai::blocklist::agent_view::AgentViewController;
 use crate::ai::blocklist::BlocklistAIHistoryModel;
+use crate::ai::blocklist::agent_view::AgentViewController;
 use crate::input_suggestions::{HistoryInputSuggestion, HistoryOrder};
 use crate::search::data_source::{Query, QueryFilter, QueryResult};
-use crate::search::mixer::DataSourceRunErrorWrapper;
-use crate::search::SyncDataSource;
-use crate::terminal::history::UpArrowHistoryConfig;
+use crate::search::mixer::{AsyncDataSource, BoxFuture, DataSourceRunErrorWrapper};
 use crate::terminal::history::{History, LinkedWorkflowData};
+use crate::terminal::history::{UpArrowHistoryConfig, UpArrowSnapshot};
 use crate::terminal::input::inline_history::search_item::InlineHistoryItem;
 use crate::terminal::input::inline_menu::{
     InlineMenuAction, InlineMenuClickBehavior, InlineMenuType,
 };
-use crate::terminal::model::session::active_session::ActiveSession;
 use crate::terminal::model::session::SessionId;
+use crate::terminal::model::session::active_session::ActiveSession;
 use chrono::{DateTime, Local};
+use futures::channel::oneshot;
 use fuzzy_match::FuzzyMatchResult;
 use ordered_float::OrderedFloat;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use warpui::r#async::executor::{Background, BackgroundTask};
 use warpui::{AppContext, Entity, EntityId, ModelHandle, SingletonEntity};
 
 /// The most history rows the menu materialises for display (#874). Suggestions are sorted
@@ -114,74 +117,6 @@ impl InlineHistoryMenuDataSource {
             active_session,
             agent_view_controller,
         }
-    }
-
-    fn build_agent_view_results(
-        &self,
-        query: &Query,
-        prefix_match_len: usize,
-        session_id: Option<SessionId>,
-        app: &AppContext,
-    ) -> Vec<QueryResult<AcceptHistoryItem>> {
-        let trimmed_query = query.text.trim();
-        let include_commands =
-            query.filters.is_empty() || query.filters.contains(&QueryFilter::Commands);
-        let include_prompts =
-            query.filters.is_empty() || query.filters.contains(&QueryFilter::PromptHistory);
-
-        let history = History::handle(app).as_ref(app);
-        let config = UpArrowHistoryConfig {
-            include_commands,
-            include_prompts,
-        };
-        let suggestions = history.up_arrow_suggestions_for_terminal_view(
-            self.terminal_view_id,
-            session_id,
-            config,
-            app,
-        );
-
-        let mut results: Vec<QueryResult<AcceptHistoryItem>> = Vec::new();
-        for suggestion in prefix_filtered_newest_tail(
-            suggestions,
-            trimmed_query,
-            MAX_MENU_HISTORY_ROWS,
-            |suggestion| suggestion.text(),
-        ) {
-            let (search_item, score) = match suggestion {
-                HistoryInputSuggestion::Command { entry } => {
-                    let command = entry.command.trim();
-                    if command.is_empty() {
-                        continue;
-                    }
-                    let timestamp = entry.start_ts.unwrap_or_else(Local::now);
-                    (
-                        InlineHistoryItem::command(
-                            command.to_string(),
-                            entry.linked_workflow_data(),
-                            timestamp,
-                        )
-                        .with_prefix_match_len(prefix_match_len),
-                        OrderedFloat(results.len() as f64),
-                    )
-                }
-                HistoryInputSuggestion::AIQuery { entry } => {
-                    let query_text = entry.query_text.trim();
-                    if query_text.is_empty() {
-                        continue;
-                    }
-                    (
-                        InlineHistoryItem::ai_prompt(query_text.to_string(), entry.start_time)
-                            .with_prefix_match_len(prefix_match_len),
-                        OrderedFloat(results.len() as f64),
-                    )
-                }
-            };
-
-            results.push(QueryResult::from(search_item.with_score(score)));
-        }
-
-        results
     }
 
     fn build_conversation_entries(&self, trimmed_query: &str, app: &AppContext) -> Vec<MenuEntry> {
@@ -283,43 +218,49 @@ fn interleave_conversations(base: Vec<MenuEntry>, conversations: Vec<MenuEntry>)
     merged
 }
 
-impl SyncDataSource for InlineHistoryMenuDataSource {
-    type Action = AcceptHistoryItem;
+/// Everything a history menu query needs, captured on the main thread so the expensive part
+/// (filter, sort, dedupe, row construction) can run on a background thread (#874).
+pub(crate) struct MenuQuerySnapshot {
+    is_agent_view: bool,
+    include_commands: bool,
+    up_arrow: UpArrowSnapshot,
+    trimmed_query: String,
+    session_id: Option<SessionId>,
+    /// Live conversations matching the query. Few, so built on the main thread.
+    conversations: Vec<MenuEntry>,
+}
 
-    fn run_query(
-        &self,
-        query: &Query,
-        app: &AppContext,
-    ) -> Result<Vec<QueryResult<Self::Action>>, DataSourceRunErrorWrapper> {
-        let trimmed_query = query.text.trim();
-        let prefix_match_len = trimmed_query.len();
+impl MenuQuerySnapshot {
+    /// Builds the menu rows. Pure: touches no app state, so it is safe off the main thread.
+    pub(crate) fn build_results(self) -> Vec<QueryResult<AcceptHistoryItem>> {
+        self.build_results_cancellable(&|| false)
+            .unwrap_or_default()
+    }
 
-        let session_id = self.active_session.as_ref(app).session(app).map(|s| s.id());
-        let is_agent_view = self.agent_view_controller.as_ref(app).is_active();
-
-        if is_agent_view {
-            return Ok(self.build_agent_view_results(query, prefix_match_len, session_id, app));
+    /// [`Self::build_results`], giving up (`None`) once `cancelled` turns true. Checked between
+    /// the filter, sort and dedupe phases, the O(N log N) part.
+    pub(crate) fn build_results_cancellable(
+        self,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<Vec<QueryResult<AcceptHistoryItem>>> {
+        let prefix_match_len = self.trimmed_query.len();
+        if self.is_agent_view {
+            return self.build_agent_view_results(prefix_match_len, cancelled);
         }
-
-        let include_commands =
-            query.filters.is_empty() || query.filters.contains(&QueryFilter::Commands);
-        let include_conversations =
-            query.filters.is_empty() || query.filters.contains(&QueryFilter::Conversations);
-
-        let history = History::handle(app).as_ref(app);
-        let all_live_session_ids = history.all_live_session_ids();
+        let Self {
+            include_commands,
+            up_arrow,
+            trimmed_query,
+            session_id,
+            conversations,
+            ..
+        } = self;
 
         let command_entries = if include_commands {
-            let suggestions = history.up_arrow_suggestions_with_command_prefix(
-                self.terminal_view_id,
-                session_id,
-                UpArrowHistoryConfig {
-                    include_commands: true,
-                    include_prompts: false,
-                },
-                (!trimmed_query.is_empty()).then_some(trimmed_query),
-                app,
-            );
+            let suggestions = up_arrow.suggestions_cancellable(
+                (!trimmed_query.is_empty()).then_some(trimmed_query.as_str()),
+                cancelled,
+            )?;
             newest_tail(suggestions, MAX_MENU_HISTORY_ROWS)
                 .filter_map(|suggestion| {
                     let HistoryInputSuggestion::Command { entry } = &suggestion else {
@@ -330,11 +271,12 @@ impl SyncDataSource for InlineHistoryMenuDataSource {
                     if command.is_empty() {
                         return None;
                     }
-                    if !trimmed_query.is_empty() && !command.starts_with(trimmed_query) {
+                    if !trimmed_query.is_empty() && !command.starts_with(trimmed_query.as_str()) {
                         return None;
                     }
 
-                    let order = suggestion.history_order(session_id, &all_live_session_ids);
+                    let order =
+                        suggestion.history_order(session_id, up_arrow.all_live_session_ids());
                     let sort_timestamp = entry.start_ts.unwrap_or_default();
                     let display_timestamp = entry.start_ts.unwrap_or_else(Local::now);
 
@@ -354,12 +296,7 @@ impl SyncDataSource for InlineHistoryMenuDataSource {
             Vec::new()
         };
 
-        let conversation_entries = if include_conversations {
-            self.build_conversation_entries(trimmed_query, app)
-        } else {
-            Vec::new()
-        };
-        let merged_entries = interleave_conversations(command_entries, conversation_entries);
+        let merged_entries = interleave_conversations(command_entries, conversations);
 
         let mut results: Vec<QueryResult<AcceptHistoryItem>> = Vec::new();
         for entry in merged_entries {
@@ -390,8 +327,176 @@ impl SyncDataSource for InlineHistoryMenuDataSource {
             results.push(QueryResult::from(search_item.with_score(score)));
         }
 
-        Ok(results)
+        Some(results)
     }
+
+    fn build_agent_view_results(
+        self,
+        prefix_match_len: usize,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<Vec<QueryResult<AcceptHistoryItem>>> {
+        let suggestions = self.up_arrow.suggestions_cancellable(None, cancelled)?;
+
+        let mut results: Vec<QueryResult<AcceptHistoryItem>> = Vec::new();
+        for suggestion in prefix_filtered_newest_tail(
+            suggestions,
+            &self.trimmed_query,
+            MAX_MENU_HISTORY_ROWS,
+            |suggestion| suggestion.text(),
+        ) {
+            let (search_item, score) = match suggestion {
+                HistoryInputSuggestion::Command { entry } => {
+                    let command = entry.command.trim();
+                    if command.is_empty() {
+                        continue;
+                    }
+                    let timestamp = entry.start_ts.unwrap_or_else(Local::now);
+                    (
+                        InlineHistoryItem::command(
+                            command.to_string(),
+                            entry.linked_workflow_data(),
+                            timestamp,
+                        )
+                        .with_prefix_match_len(prefix_match_len),
+                        OrderedFloat(results.len() as f64),
+                    )
+                }
+                HistoryInputSuggestion::AIQuery { entry } => {
+                    let query_text = entry.query_text.trim();
+                    if query_text.is_empty() {
+                        continue;
+                    }
+                    (
+                        InlineHistoryItem::ai_prompt(query_text.to_string(), entry.start_time)
+                            .with_prefix_match_len(prefix_match_len),
+                        OrderedFloat(results.len() as f64),
+                    )
+                }
+            };
+
+            results.push(QueryResult::from(search_item.with_score(score)));
+        }
+
+        Some(results)
+    }
+}
+
+impl InlineHistoryMenuDataSource {
+    /// The main-thread half of a query: reads app state and clones `Arc`s, nothing more.
+    fn snapshot(&self, query: &Query, app: &AppContext) -> MenuQuerySnapshot {
+        let trimmed_query = query.text.trim();
+        let session_id = self.active_session.as_ref(app).session(app).map(|s| s.id());
+        let is_agent_view = self.agent_view_controller.as_ref(app).is_active();
+        let history = History::handle(app).as_ref(app);
+
+        let (include_commands, include_prompts, conversations) = if is_agent_view {
+            (
+                query.filters.is_empty() || query.filters.contains(&QueryFilter::Commands),
+                query.filters.is_empty() || query.filters.contains(&QueryFilter::PromptHistory),
+                Vec::new(),
+            )
+        } else {
+            let include_conversations =
+                query.filters.is_empty() || query.filters.contains(&QueryFilter::Conversations);
+            (
+                query.filters.is_empty() || query.filters.contains(&QueryFilter::Commands),
+                false,
+                if include_conversations {
+                    self.build_conversation_entries(trimmed_query, app)
+                } else {
+                    Vec::new()
+                },
+            )
+        };
+
+        MenuQuerySnapshot {
+            is_agent_view,
+            include_commands,
+            up_arrow: UpArrowSnapshot::capture(
+                history,
+                self.terminal_view_id,
+                session_id,
+                UpArrowHistoryConfig {
+                    include_commands,
+                    include_prompts,
+                },
+                app,
+            ),
+            trimmed_query: trimmed_query.to_string(),
+            session_id,
+            conversations,
+        }
+    }
+}
+
+/// Histories up to this many entries are built inline on the calling thread, which costs a
+/// few milliseconds at most (about 1 ms per 5k entries in release), so a normal user keeps
+/// the old synchronous behaviour: the rows exist the moment the query returns.
+pub(crate) const INLINE_BUILD_MAX_ENTRIES: usize = 5_000;
+
+impl AsyncDataSource for InlineHistoryMenuDataSource {
+    type Action = AcceptHistoryItem;
+
+    fn run_query_inline(
+        &self,
+        query: &Query,
+        app: &AppContext,
+    ) -> Option<Result<Vec<QueryResult<Self::Action>>, DataSourceRunErrorWrapper>> {
+        let session_id = self.active_session.as_ref(app).session(app).map(|s| s.id());
+        let bound = session_id.map_or(0, |id| {
+            History::handle(app)
+                .as_ref(app)
+                .visible_commands_upper_bound(id)
+        });
+        (bound <= INLINE_BUILD_MAX_ENTRIES).then(|| Ok(self.snapshot(query, app).build_results()))
+    }
+
+    fn run_query(
+        &self,
+        query: &Query,
+        app: &AppContext,
+    ) -> BoxFuture<'static, Result<Vec<QueryResult<Self::Action>>, DataSourceRunErrorWrapper>> {
+        let snapshot = self.snapshot(query, app);
+        let background = app.background_executor().clone();
+        Box::pin(async move { Ok(build_results_in_background(&background, snapshot).await) })
+    }
+}
+
+/// When the awaiting future is dropped (a newer query superseded this one) this raises a flag
+/// the background build checks between its filter, sort and dedupe phases, and aborts the task
+/// if it has not started yet. A build already inside a sort runs that one phase to completion
+/// (a sort cannot be interrupted) and then stops; its result is discarded.
+struct CancelOnDrop {
+    cancelled: Arc<AtomicBool>,
+    task: BackgroundTask,
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+        self.task.abort();
+    }
+}
+
+/// Runs [`MenuQuerySnapshot::build_results_cancellable`] on the background executor and awaits
+/// the result, so the main thread only polls a oneshot.
+pub(crate) async fn build_results_in_background(
+    background: &Background,
+    snapshot: MenuQuerySnapshot,
+) -> Vec<QueryResult<AcceptHistoryItem>> {
+    let (tx, rx) = oneshot::channel();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let flag = cancelled.clone();
+    let task = background.spawn(async move {
+        if let Some(results) = snapshot.build_results_cancellable(&|| flag.load(Ordering::Relaxed))
+        {
+            let _ = tx.send(results);
+        }
+    });
+    let _guard = CancelOnDrop { cancelled, task };
+    // The sender is only dropped unsent if the task was cancelled or panicked; both mean there
+    // is nothing to show for this query.
+    rx.await.unwrap_or_default()
 }
 
 impl Entity for InlineHistoryMenuDataSource {

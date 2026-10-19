@@ -513,6 +513,20 @@ impl<A: InlineMenuAction, T: 'static + Send + Sync> InlineMenuView<A, T> {
         &self.model
     }
 
+    /// Drops the rows, selection and previewed item of the previous query. For menus whose new
+    /// list is built asynchronously: until it commits there is nothing valid to select, and the
+    /// view shows its loading state rather than another query's rows.
+    pub fn clear_results_for_pending_query(&mut self, ctx: &mut ViewContext<Self>) {
+        self.result_renderers.clear();
+        self.selected_idx = None;
+        self.hovered_idx = None;
+        self.details_pane_target = DetailsPaneTarget::default();
+        self.model.update(ctx, |model, ctx| {
+            model.clear_selected_item(ctx);
+        });
+        ctx.notify();
+    }
+
     pub fn accept_selected_item(&mut self, cmd_or_ctrl_enter: bool, ctx: &mut ViewContext<Self>) {
         let Some(selected_idx) = self.selected_idx else {
             return;

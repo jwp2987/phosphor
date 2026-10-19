@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use warp_core::features::FeatureFlag;
 use warpui::{AppContext, EntityId, SingletonEntity};
@@ -11,7 +12,7 @@ use crate::settings::AISettings;
 use crate::suggestions::ignored_suggestions_model::{IgnoredSuggestionsModel, SuggestionType};
 use crate::terminal::model::session::SessionId;
 
-use super::History;
+use super::{History, HistoryEntry};
 
 /// Controls which item types are included in up-arrow history results.
 ///
@@ -46,11 +47,28 @@ impl UpArrowHistoryConfig {
 }
 
 fn sort_and_dedupe_suggestions<'a>(
-    mut suggestions: Vec<HistoryInputSuggestion<'a>>,
+    suggestions: Vec<HistoryInputSuggestion<'a>>,
     session_id: Option<SessionId>,
     all_live_session_ids: &HashSet<SessionId>,
 ) -> Vec<HistoryInputSuggestion<'a>> {
+    sort_and_dedupe_suggestions_cancellable(suggestions, session_id, all_live_session_ids, &|| {
+        false
+    })
+    .unwrap_or_default()
+}
+
+/// [`sort_and_dedupe_suggestions`], but checks `cancelled` between the sort and the dedupe and
+/// returns `None` as soon as it is true, so a superseded background run stops early (#874).
+fn sort_and_dedupe_suggestions_cancellable<'a>(
+    mut suggestions: Vec<HistoryInputSuggestion<'a>>,
+    session_id: Option<SessionId>,
+    all_live_session_ids: &HashSet<SessionId>,
+    cancelled: &dyn Fn() -> bool,
+) -> Option<Vec<HistoryInputSuggestion<'a>>> {
     suggestions.sort_by(|a, b| a.cmp(b, session_id, all_live_session_ids));
+    if cancelled() {
+        return None;
+    }
 
     // Deduplicate commands and AI queries separately: keep the latest occurrence for each type.
     // A flag per index rather than a `HashSet<usize>`: with a very large history this runs on
@@ -74,7 +92,7 @@ fn sort_and_dedupe_suggestions<'a>(
 
     let mut keep = keep.into_iter();
     suggestions.retain(|_| keep.next().unwrap_or(true));
-    suggestions
+    Some(suggestions)
 }
 
 impl History {
@@ -181,6 +199,148 @@ impl History {
             };
 
         sort_and_dedupe_suggestions(suggestions, session_id, &all_live_session_ids)
+    }
+}
+
+/// An owned, `Send` capture of everything the up-arrow list needs, so the expensive part
+/// (prefix filter, ignored-suggestion filter, sort, dedupe) can run off the main thread
+/// (#874).
+///
+/// [`Self::capture`] is the only part that touches the app graph. It walks the visible
+/// history once, cloning an `Arc` per entry (no command text is copied), and the AI queries
+/// (already owned values). Everything else happens in [`Self::suggestions`], which borrows
+/// from the snapshot and applies exactly the filters, sort and dedupe of
+/// [`History::up_arrow_suggestions_with_command_prefix`].
+pub(crate) struct UpArrowSnapshot {
+    commands: Vec<Arc<HistoryEntry>>,
+    ai_queries: Vec<AIQueryHistory>,
+    ignored_commands: Option<HashSet<String>>,
+    ignored_ai_queries: Option<HashSet<String>>,
+    include_agent_commands: bool,
+    session_id: Option<SessionId>,
+    all_live_session_ids: HashSet<SessionId>,
+}
+
+impl UpArrowSnapshot {
+    pub(crate) fn capture(
+        history: &History,
+        terminal_view_id: EntityId,
+        session_id: Option<SessionId>,
+        config: UpArrowHistoryConfig,
+        app: &AppContext,
+    ) -> Self {
+        let ignored = app
+            .has_singleton_model::<IgnoredSuggestionsModel>()
+            .then(|| IgnoredSuggestionsModel::handle(app).as_ref(app));
+        let include_agent_commands = if app.has_singleton_model::<AISettings>() {
+            *AISettings::handle(app)
+                .as_ref(app)
+                .include_agent_commands_in_history
+        } else {
+            true
+        };
+        let should_include_prompts = config.include_prompts
+            && if app.has_singleton_model::<AISettings>() {
+                FeatureFlag::AgentMode.is_enabled()
+                    && AISettings::handle(app).as_ref(app).is_any_ai_enabled(app)
+            } else {
+                true
+            };
+
+        let commands = if config.include_commands {
+            session_id
+                .and_then(|session_id| history.visible_commands(session_id))
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let ai_queries = if should_include_prompts {
+            BlocklistAIHistoryModel::handle(app)
+                .as_ref(app)
+                .all_ai_queries(Some(terminal_view_id))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        Self {
+            commands,
+            ai_queries,
+            ignored_commands: ignored
+                .map(|i| i.get_ignored_suggestions_for_type(SuggestionType::ShellCommand)),
+            ignored_ai_queries: ignored
+                .map(|i| i.get_ignored_suggestions_for_type(SuggestionType::AIQuery)),
+            include_agent_commands,
+            session_id,
+            all_live_session_ids: history.all_live_session_ids(),
+        }
+    }
+
+    pub(crate) fn all_live_session_ids(&self) -> &HashSet<SessionId> {
+        &self.all_live_session_ids
+    }
+
+    /// Same result as [`History::up_arrow_suggestions_with_command_prefix`] over the state this
+    /// snapshot was captured from. Safe to call from any thread.
+    pub(crate) fn suggestions<'a>(
+        &'a self,
+        command_prefix: Option<&str>,
+    ) -> Vec<HistoryInputSuggestion<'a>> {
+        self.suggestions_cancellable(command_prefix, &|| false)
+            .unwrap_or_default()
+    }
+
+    /// [`Self::suggestions`], checking `cancelled` between the filter, sort and dedupe phases.
+    /// Returns `None` if cancelled.
+    pub(crate) fn suggestions_cancellable<'a>(
+        &'a self,
+        command_prefix: Option<&str>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<Vec<HistoryInputSuggestion<'a>>> {
+        let commands = self
+            .commands
+            .iter()
+            .map(|entry| &**entry)
+            .filter(|entry| {
+                command_prefix.is_none_or(|prefix| entry.command.trim().starts_with(prefix))
+            })
+            .filter(|entry| {
+                self.ignored_commands
+                    .as_ref()
+                    .is_none_or(|ignored| !ignored.contains(&entry.command))
+            })
+            .filter(|entry| self.include_agent_commands || !entry.is_agent_executed)
+            .map(|entry| HistoryInputSuggestion::Command { entry });
+        let ai_queries = self
+            .ai_queries
+            .iter()
+            .filter(|query| {
+                self.ignored_ai_queries
+                    .as_ref()
+                    .is_none_or(|ignored| !ignored.contains(&query.query_text))
+            })
+            .map(|entry| HistoryInputSuggestion::AIQuery {
+                entry: entry.clone(),
+            });
+        let suggestions: Vec<_> = commands.chain(ai_queries).collect();
+        if cancelled() {
+            return None;
+        }
+        sort_and_dedupe_suggestions_cancellable(
+            suggestions,
+            self.session_id,
+            &self.all_live_session_ids,
+            cancelled,
+        )
+    }
+
+    /// How many commands the snapshot holds (before any filter).
+    #[cfg(test)]
+    pub(crate) fn command_snapshot(&self) -> &[Arc<HistoryEntry>] {
+        &self.commands
     }
 }
 

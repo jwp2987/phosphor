@@ -1,10 +1,11 @@
 //! Inline history menu view for up-arrow history with conversations, commands and prompts.
 use std::collections::HashSet;
+use std::time::Duration;
 
 use pathfinder_color::ColorU;
 use warp_core::ui::appearance::Appearance;
-use warp_core::ui::theme::color::internal_colors;
 use warp_core::ui::theme::Fill;
+use warp_core::ui::theme::color::internal_colors;
 use warpui::elements::ChildView;
 use warpui::{AppContext, Element, Entity, EntityId, ModelHandle, View, ViewContext, ViewHandle};
 
@@ -12,7 +13,7 @@ use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::blocklist::agent_view::{AgentViewController, AgentViewControllerEvent};
 use crate::features::FeatureFlag;
 use crate::search::data_source::{Query, QueryFilter};
-use crate::search::mixer::{SearchMixer, SearchMixerEvent};
+use crate::search::mixer::{AddAsyncSourceOptions, SearchMixer, SearchMixerEvent};
 use crate::settings_view::SettingsSection;
 use crate::terminal::history::LinkedWorkflowData;
 use crate::terminal::input::buffer_model::InputBufferModel;
@@ -162,6 +163,41 @@ pub struct InlineHistoryMenuView {
     buffer_model: ModelHandle<InputBufferModel>,
     pending_tab_switch_selection: Option<HistoryItemIdentity>,
     caller_supplied_tabs: bool,
+    /// Keys pressed while the list for the latest query is still being built (#874). They are
+    /// replayed in order once it commits, never applied to the previous query's stale rows.
+    pending_keys: KeyGate,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PendingKey {
+    Up,
+    Down,
+    Accept,
+}
+
+/// Decides whether a selection key may act on the rows on screen right now, or must wait for
+/// the list of the latest query to commit (#874).
+#[derive(Default)]
+pub(crate) struct KeyGate {
+    queued: Vec<PendingKey>,
+}
+
+impl KeyGate {
+    /// `Some(key)` means apply it now; `None` means it was queued because the rows on screen
+    /// (if any) belong to an older query.
+    pub(crate) fn offer(&mut self, key: PendingKey, list_is_pending: bool) -> Option<PendingKey> {
+        if list_is_pending {
+            self.queued.push(key);
+            None
+        } else {
+            Some(key)
+        }
+    }
+
+    /// The keys queued while pending, in press order.
+    pub(crate) fn take_queued(&mut self) -> Vec<PendingKey> {
+        std::mem::take(&mut self.queued)
+    }
 }
 
 impl InlineHistoryMenuView {
@@ -241,13 +277,27 @@ impl InlineHistoryMenuView {
 
         let mixer = ctx.add_model(|ctx| {
             let mut mixer = SearchMixer::<AcceptHistoryItem>::new();
-            mixer.add_sync_source(
+            // The only source must finish before there is anything meaningful to show; the
+            // default 500 ms would commit an empty list and read as "No results" (#874).
+            mixer.set_initial_results_timeout(Duration::from_secs(120));
+            // Async (#874): the sort/dedupe over a very large history runs on a background
+            // thread; the mixer shows its loading state meanwhile, aborts a superseded run
+            // and discards results of an older query generation.
+            mixer.add_async_source(
                 data_source,
                 [
                     QueryFilter::Commands,
                     QueryFilter::Conversations,
                     QueryFilter::PromptHistory,
                 ],
+                AddAsyncSourceOptions {
+                    // Coalesces fast typing on a huge history; small histories are answered
+                    // inline by `run_query_inline` before the debounce applies.
+                    debounce_interval: Some(Duration::from_millis(30)),
+                    run_in_zero_state: true,
+                    run_when_unfiltered: true,
+                },
+                ctx,
             );
             mixer.run_query(
                 Query {
@@ -407,6 +457,10 @@ impl InlineHistoryMenuView {
             if !suggestions_mode_model.as_ref(ctx).is_inline_history_menu() {
                 return;
             }
+            // The list for the latest query has committed: replay what was typed meanwhile.
+            if !me.mixer.as_ref(ctx).is_loading() {
+                me.replay_pending_keys(ctx);
+            }
             // Only tab switches stash a pending selection to restore after the
             // query reruns. For all other result updates, keep the inline menu's
             // default selection behavior.
@@ -425,6 +479,7 @@ impl InlineHistoryMenuView {
             buffer_model,
             pending_tab_switch_selection: None,
             caller_supplied_tabs,
+            pending_keys: KeyGate::default(),
         }
     }
 
@@ -444,11 +499,41 @@ impl InlineHistoryMenuView {
         self.menu_view.as_ref(app).result_count()
     }
 
-    pub fn select_up(&self, ctx: &mut ViewContext<Self>) {
+    /// True while the list for the latest query is still being built. The rows then shown (if
+    /// any) belong to an older query, so selection keys are queued instead of applied.
+    pub fn is_pending(&self, app: &AppContext) -> bool {
+        self.mixer.as_ref(app).is_loading()
+    }
+
+    fn replay_pending_keys(&mut self, ctx: &mut ViewContext<Self>) {
+        for key in self.pending_keys.take_queued() {
+            match key {
+                PendingKey::Up => self.select_up_now(ctx),
+                PendingKey::Down => self.select_down_now(ctx),
+                PendingKey::Accept => self.accept_selected_item_now(ctx),
+            }
+        }
+    }
+
+    pub fn select_up(&mut self, ctx: &mut ViewContext<Self>) {
+        let pending = self.is_pending(ctx);
+        if self.pending_keys.offer(PendingKey::Up, pending).is_some() {
+            self.select_up_now(ctx);
+        }
+    }
+
+    fn select_up_now(&self, ctx: &mut ViewContext<Self>) {
         self.menu_view.update(ctx, |v, ctx| v.select_up(ctx));
     }
 
-    pub fn select_down(&self, ctx: &mut ViewContext<Self>) {
+    pub fn select_down(&mut self, ctx: &mut ViewContext<Self>) {
+        let pending = self.is_pending(ctx);
+        if self.pending_keys.offer(PendingKey::Down, pending).is_some() {
+            self.select_down_now(ctx);
+        }
+    }
+
+    fn select_down_now(&self, ctx: &mut ViewContext<Self>) {
         let should_close = self.menu_view.read(ctx, |v, _| {
             let result_count = v.result_count();
             let is_last_item_selected =
@@ -467,12 +552,24 @@ impl InlineHistoryMenuView {
         self.menu_view.update(ctx, |v, ctx| v.select_next_tab(ctx))
     }
 
-    pub fn accept_selected_item(&self, ctx: &mut ViewContext<Self>) {
+    pub fn accept_selected_item(&mut self, ctx: &mut ViewContext<Self>) {
+        let pending = self.is_pending(ctx);
+        if self
+            .pending_keys
+            .offer(PendingKey::Accept, pending)
+            .is_some()
+        {
+            self.accept_selected_item_now(ctx);
+        }
+    }
+
+    fn accept_selected_item_now(&self, ctx: &mut ViewContext<Self>) {
         self.menu_view
             .update(ctx, |v, ctx| v.accept_selected_item(false, ctx));
     }
 
     fn open_with_current_buffer(&mut self, ctx: &mut ViewContext<Self>) {
+        self.pending_keys.take_queued();
         let query_text = self.buffer_model.as_ref(ctx).current_value().to_owned();
         let filters = self.model.as_ref(ctx).active_tab_filters();
         self.mixer.update(ctx, |mixer, ctx| {
@@ -484,6 +581,17 @@ impl InlineHistoryMenuView {
                 ctx,
             );
         });
+        self.clear_stale_rows_if_pending(ctx);
+    }
+
+    /// If the new query's list is still being built, drop the previous query's rows and
+    /// selection so nothing stale can be selected, previewed or accepted, and the menu shows
+    /// its loading state (#874).
+    fn clear_stale_rows_if_pending(&self, ctx: &mut ViewContext<Self>) {
+        if self.is_pending(ctx) {
+            self.menu_view
+                .update(ctx, |v, ctx| v.clear_results_for_pending_query(ctx));
+        }
     }
 
     fn rerun_query(&self, ctx: &mut ViewContext<Self>) {
@@ -498,6 +606,7 @@ impl InlineHistoryMenuView {
                 ctx,
             );
         });
+        self.clear_stale_rows_if_pending(ctx);
     }
 
     fn current_query_text(&self, ctx: &ViewContext<Self>) -> String {

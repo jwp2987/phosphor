@@ -561,6 +561,14 @@ where
     ) -> BoxFuture<'static, Result<Vec<QueryResult<Self::Action>>, DataSourceRunErrorWrapper>> {
         self.as_ref(app).run_query(query, app)
     }
+
+    fn run_query_inline(
+        &self,
+        query: &Query,
+        app: &AppContext,
+    ) -> Option<Result<Vec<QueryResult<Self::Action>>, DataSourceRunErrorWrapper>> {
+        self.as_ref(app).run_query_inline(query, app)
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DataSourceSearchError {
