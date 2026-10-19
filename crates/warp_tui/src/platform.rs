@@ -59,11 +59,13 @@ pub(crate) fn reveal_path_in_file_manager(path: &Path) {
     let Some(mut command) = build_reveal_command(path) else {
         return;
     };
-    if let Err(error) = command.spawn() {
-        safe_warn!(
+    match command.spawn() {
+        // Reap the child so it doesn't linger as a zombie (#830).
+        Ok(child) => command::blocking::reap_in_background(child),
+        Err(error) => safe_warn!(
             safe: ("Failed to reveal generated log bundle in the file manager: {error}"),
             full: ("Failed to reveal generated log bundle {} in the file manager: {error}", path.display())
-        );
+        ),
     }
 }
 

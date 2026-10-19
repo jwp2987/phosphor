@@ -366,8 +366,9 @@ pub fn open_file_path_with_line_and_col(
         let with_editor = with_editor.or_else(|| get_app_for_file_from_mime(full_path));
         if let Some(editor) = with_editor {
             if let Some(mut command) = editor.command(full_path, line_column_number) {
-                if let Err(err) = command.spawn() {
-                    log::error!("Error launching {editor:?}: {err:#}");
+                match command.spawn() {
+                    Ok(child) => command::blocking::reap_in_background(child),
+                    Err(err) => log::error!("Error launching {editor:?}: {err:#}"),
                 }
                 return;
             }
@@ -395,7 +396,10 @@ pub fn open_in_default_editor_only(
         return false;
     };
     match command.spawn() {
-        Ok(_) => true,
+        Ok(child) => {
+            command::blocking::reap_in_background(child);
+            true
+        }
         Err(err) => {
             log::error!("Error launching {editor:?}: {err:#}");
             false

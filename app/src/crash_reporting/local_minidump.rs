@@ -378,6 +378,12 @@ impl Drop for MinidumpGuard {
         if let Err(err) = self.child.kill() {
             log::warn!("Unable to kill minidump child process: {err:#}");
         }
+        // Reap the killed child so it isn't left as a zombie (#830). Bounded so a
+        // child stuck in uninterruptible sleep can't hang shutdown.
+        let deadline = instant::Instant::now() + Duration::from_millis(500);
+        while matches!(self.child.try_wait(), Ok(None)) && instant::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }
 

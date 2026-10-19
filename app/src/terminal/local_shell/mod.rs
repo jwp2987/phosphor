@@ -174,14 +174,13 @@ impl LocalShellState {
                 ctx.spawn(
                     async move { capture_interactive_shell_env(shell_type, shell_path).await },
                     move |me, result, _ctx| {
-                        let path = result.ok();
+                        let (path, next_state) = state_after_capture(result);
 
                         // Notify all waiting receivers
                         if let LocalShellState::Loaded(local_shell) = me {
-                            if let InteractiveEnvState::Pending { waiters } = std::mem::replace(
-                                &mut local_shell.interactive_env_state,
-                                InteractiveEnvState::Ready(path.clone()),
-                            ) {
+                            if let InteractiveEnvState::Pending { waiters } =
+                                std::mem::replace(&mut local_shell.interactive_env_state, next_state)
+                            {
                                 for waiter in waiters {
                                     let _ = waiter.try_send(path.clone());
                                 }
@@ -236,6 +235,43 @@ pub async fn execute_command(
         Err(_) => Err(anyhow!("Error while parsing result")),
     }
 }
+
+/// Maps a capture result to the resulting path and the state to cache. A timeout is transient
+/// (a slow rc file may succeed next time), so it must not be cached as the final answer for
+/// the whole session (#830); other outcomes are cached.
+#[cfg(feature = "local_tty")]
+fn state_after_capture(result: Result<String>) -> (Option<String>, InteractiveEnvState) {
+    let timed_out = result
+        .as_ref()
+        .err()
+        .is_some_and(|e| e.is::<InteractiveCaptureTimedOut>());
+    let path = result.ok();
+    let state = if timed_out {
+        InteractiveEnvState::NotRequested
+    } else {
+        InteractiveEnvState::Ready(path.clone())
+    };
+    (path, state)
+}
+
+/// Marker error: the interactive shell PATH capture timed out (transient; retried later).
+#[cfg(feature = "local_tty")]
+#[derive(Debug)]
+struct InteractiveCaptureTimedOut;
+
+#[cfg(feature = "local_tty")]
+impl std::fmt::Display for InteractiveCaptureTimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Interactive shell PATH capture timed out")
+    }
+}
+
+#[cfg(feature = "local_tty")]
+impl std::error::Error for InteractiveCaptureTimedOut {}
+
+/// Upper bound on the interactive login shell PATH capture (#830).
+#[cfg(feature = "local_tty")]
+const INTERACTIVE_SHELL_CAPTURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(75);
 
 // PATH is emitted between these sentinels so startup stdout from rc files
 // (fastfetch, MOTD banners, etc.) can't be mistaken for PATH content.
@@ -314,13 +350,37 @@ async fn capture_interactive_shell_env(
     }
 
     // stdin(null) prevents any prompts from blocking
-    let output: std::process::Output = command
+    //
+    // The shell sources the user's rc files, which can hang (a prompt, a stuck
+    // network mount). Bound it, and on timeout kill the whole session (the shell
+    // is a session leader via setsid) so a hanging rc's grandchildren don't
+    // survive either (#830).
+    let child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .await
+        .kill_on_drop(true)
+        .spawn()
         .map_err(|e| anyhow!("Failed to spawn interactive shell: {}", e))?;
+    let pid = child.id();
+    let output: std::process::Output = match warpui::r#async::FutureExt::with_timeout(
+        child.output(),
+        INTERACTIVE_SHELL_CAPTURE_TIMEOUT,
+    )
+    .await
+    {
+        Ok(output) => output.map_err(|e| anyhow!("Failed to run interactive shell: {}", e))?,
+        Err(_) => {
+            #[cfg(unix)]
+            // SAFETY: plain signal to the process group we created with setsid.
+            unsafe {
+                libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+            }
+            #[cfg(not(unix))]
+            let _ = pid;
+            return Err(anyhow::Error::new(InteractiveCaptureTimedOut));
+        }
+    };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

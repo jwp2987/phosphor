@@ -335,9 +335,13 @@ impl platform::Delegate for AppDelegate {
     fn open_file_path(&self, path: &Path) {
         cfg_if::cfg_if! {
             if #[cfg(any(target_os = "linux", target_os = "freebsd"))] {
-                let _ = command::blocking::Command::new("xdg-open")
+                if let Ok(child) = command::blocking::Command::new("xdg-open")
                     .arg(path)
-                    .spawn();
+                    .spawn()
+                {
+                    // Reap the child so it doesn't linger as a zombie (#830).
+                    command::blocking::reap_in_background(child);
+                }
             } else if #[cfg(target_family = "wasm")] {
                 if let Some(window) = web_sys::window() {
                     if let Some(path) = path.to_str() {
