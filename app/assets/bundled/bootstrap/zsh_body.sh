@@ -368,7 +368,6 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
       setopt localoptions noerrreturn noerrexit unset
       # Phosphor (#855): an agent command run under errexit hands its status over in
       # __phosphor_ap_rc instead of re-raising it (which would exit the user's shell).
-      if [[ -n ${__phosphor_ap_rc:-} ]]; then exit_code=$__phosphor_ap_rc; unset __phosphor_ap_rc; fi
       # Phosphor (#855): see __phosphor_ap_restore_pagers.
       if [[ -n ${__phosphor_ap_active:-} ]]; then __phosphor_ap_restore_pagers; fi
       # Phosphor (#828): _warp_repair_hooks runs this outside the precmd hook,
@@ -376,6 +375,9 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
       if [[ -n ${1:-} ]]; then
         exit_code=$1
       fi
+      # Phosphor (#855): the marker is the agent command's real status and wins over
+      # $1, which on the errexit repair path is only the wrapper tail's $? (0).
+      if [[ -n ${__phosphor_ap_rc:-} ]]; then exit_code=$__phosphor_ap_rc; unset __phosphor_ap_rc; fi
       _WARP_PRECMD_PENDING=""
       # Compute the next block ID once so the CommandFinished hook and the following Precmd hook
       # report the same ID. The Precmd carries this completion metadata so the client can classify

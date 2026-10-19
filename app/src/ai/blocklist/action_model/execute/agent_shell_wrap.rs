@@ -135,13 +135,15 @@ fn pwsh_override() -> String {
 }
 
 /// Taken inside the `try`, straight after the command: the `finally` block's own statements
-/// would otherwise overwrite `$?` and `$LASTEXITCODE` before `Warp-Precmd` reads them.
-const PWSH_CAPTURE: &str = "$__phosphor_ap_ok = $?; $__phosphor_ap_ec = $LASTEXITCODE";
+/// would otherwise overwrite `$?` and `$LASTEXITCODE` before `Warp-Precmd` reads them. `$?` is
+/// taken first, and `$LASTEXITCODE` is read through `Test-Path` because under `Set-StrictMode` a
+/// bare read throws when no native command has run yet.
+const PWSH_CAPTURE: &str = "$__phosphor_ap_ok = $?; $__phosphor_ap_ec = if (Test-Path variable:global:LASTEXITCODE) { $global:LASTEXITCODE } else { 0 }";
 
 /// The last statements of the wrapper: put the captured status back. `$?` can only be made
 /// false by a failing command, so a silent failed lookup stands in for it. The two capture
 /// variables are removed by `Warp-Precmd`.
-const PWSH_RERAISE: &str = "$global:LASTEXITCODE = $__phosphor_ap_ec; if (-not $__phosphor_ap_ok) { Get-Item -LiteralPath 'Variable:\\__phosphor_ap_failed' -ErrorAction SilentlyContinue }";
+const PWSH_RERAISE: &str = "$global:LASTEXITCODE = if (Test-Path variable:__phosphor_ap_ec) { $__phosphor_ap_ec } else { 0 }; if (-not $__phosphor_ap_ok) { Get-Item -LiteralPath 'Variable:\\__phosphor_ap_failed' -ErrorAction SilentlyContinue }";
 
 /// `$env:` is process-wide, so the restore must be explicit; `finally` also runs on Ctrl-C.
 fn pwsh_restore() -> &'static str {

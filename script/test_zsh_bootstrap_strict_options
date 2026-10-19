@@ -237,6 +237,32 @@ def scenario_err_exit():
         sh.close()
 
 
+def scenario_errexit_repair_agent_rc():
+    """#855: errexit plus a prompt cycle that skipped warp_precmd forces the repair path
+    (#844/#828), which passes the wrapper tail's $? (0) as $1; the agent command's real
+    status (7) lives in __phosphor_ap_rc and must win."""
+    print("setopt err_exit + skipped precmd (repair path) + wrapped agent command exiting 7")
+    sh = Shell("setopt err_exit")
+    try:
+        check(sh.bootstrap(), "bootstraps", sh)
+        # The command empties precmd_functions, so its own precmd stage runs nothing and
+        # the Precmd is owed; the repair (zshaddhistory of the next line) emits it.
+        wrapped = (
+            'precmd_functions=(); { sh -c "exit 7"; } && __phosphor_ap_rc=0 || __phosphor_ap_rc=$?; '
+            'if case $- in *e*) true;; *) [[ -o errreturn ]];; esac; then :; '
+            'else eval "unset __phosphor_ap_rc; (exit $__phosphor_ap_rc)"; fi'
+        )
+        n = len(sh.hooks())
+        os.write(sh.fd, (wrapped + "\r").encode())
+        sh.pump(1.0)
+        got = sh.cycle("true")
+        codes = [v.get("exit_code") for name, v in sh.hooks()[n:] if name == "CommandFinished"]
+        check(codes[:1] == [7], f"the agent command's CommandFinished reports 7 (got {codes})", sh)
+        check(not sh.dead, "the shell did not exit", sh)
+    finally:
+        sh.close()
+
+
 def main():
     print(f"zsh: {ZSH}\nbody: {BODY}")
     scenario("setopt err_return", "setopt err_return")
@@ -248,6 +274,7 @@ def main():
         "_user_precmd() { : ${NOPE:?boom}; }\nprecmd_functions+=(_user_precmd)",
     )
     scenario_err_exit()
+    scenario_errexit_repair_agent_rc()
     if failures:
         print(f"\ntest_zsh_bootstrap_strict_options: {len(failures)} check(s) FAILED")
         return 1

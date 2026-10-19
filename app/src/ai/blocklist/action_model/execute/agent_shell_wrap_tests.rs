@@ -264,8 +264,12 @@ fn pwsh_captures_status_inside_try_and_restores_it_last() {
                 .starts_with('}')
         );
     }
-    assert!(PWSH_CAPTURE.contains("$?") && PWSH_CAPTURE.contains("$LASTEXITCODE"));
-    assert!(PWSH_RERAISE.contains("$global:LASTEXITCODE"));
+    // `$?` first, then `$LASTEXITCODE` only through `Test-Path`: a bare read throws under
+    // `Set-StrictMode` when no native command has run yet.
+    assert!(PWSH_CAPTURE.starts_with("$__phosphor_ap_ok = $?;"));
+    assert!(PWSH_CAPTURE.contains("Test-Path variable:global:LASTEXITCODE"));
+    assert!(!PWSH_CAPTURE.replace("$global:LASTEXITCODE", "").contains("$LASTEXITCODE"));
+    assert!(PWSH_RERAISE.contains("$global:LASTEXITCODE = if (Test-Path variable:__phosphor_ap_ec)"));
 }
 
 #[test]
