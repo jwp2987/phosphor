@@ -13740,6 +13740,12 @@ impl TerminalView {
             ModelEvent::Handler(AnsiHandlerEvent::Precmd)
                 if FeatureFlag::TypeaheadHandoff.is_enabled() =>
             {
+                // The block this prompt finished has been handled (the editor is reinitialized);
+                // only now may the editor take keys without them being erased (#934).
+                self.model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .on_precmd_viewed();
                 self.commit_typeahead_handoff_at_prompt(ctx);
             }
             ModelEvent::Handler(AnsiHandlerEvent::Preexec)

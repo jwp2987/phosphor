@@ -2730,6 +2730,7 @@ impl TerminalModel {
         self.block_list.apply_precmd_to_active(data);
         if FeatureFlag::TypeaheadHandoff.is_enabled() {
             self.typeahead_handoff.on_precmd();
+            self.typeahead_handoff.note_precmd_pending_view();
         }
 
         self.emit_handler_event(HandlerEvent::Precmd {

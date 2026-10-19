@@ -162,6 +162,12 @@ pub struct TypeaheadHandoff {
     /// A key applied within that window moved focus to the editor itself; the resulting focus
     /// event must not end the window.
     focus_moved_by_takeover_key: bool,
+    /// Prompts the model has seen whose precmd event the terminal view has not handled yet.
+    /// The view's handling of a prompt reinitializes the input editor (the finished block's
+    /// `BlockCompleted`), wiping what the editor holds. Giving the editor input before that has
+    /// run lets it take keys that the reinitialization then erases (#934), so no request is
+    /// written, and the editor does not take over, until this is zero.
+    precmds_pending_view: u32,
 }
 
 /// Identifies an agent's command held behind the user's typeahead.
@@ -301,6 +307,18 @@ impl TypeaheadHandoff {
         }
     }
 
+    /// A prompt was applied to the model; the view has yet to handle its precmd event (model
+    /// thread). See [`Self::precmds_pending_view`](TypeaheadHandoff).
+    pub fn note_precmd_pending_view(&mut self) {
+        self.precmds_pending_view = self.precmds_pending_view.saturating_add(1);
+    }
+
+    /// The view handled a precmd event, after reinitializing the editor for the finished block
+    /// (main thread).
+    pub fn on_precmd_viewed(&mut self) {
+        self.precmds_pending_view = self.precmds_pending_view.saturating_sub(1);
+    }
+
     /// The shell emitted a precmd hook (model thread).
     pub fn on_precmd(&mut self) {
         self.activity_generation = self.activity_generation.wrapping_add(1);
@@ -356,6 +374,14 @@ impl TypeaheadHandoff {
                 precmds_seen,
             } => {
                 let no_line_queued = precmds_seen >= enters_written;
+                if no_line_queued && self.precmds_pending_view > 0 {
+                    // The editor has yet to be reinitialized for the finished block, which
+                    // would erase whatever it took meanwhile. Keys keep going to the pty; the
+                    // view's handling of the prompt decides again (#934).
+                    return ActiveDecision::Wait {
+                        activity_generation: self.activity_generation,
+                    };
+                }
                 if !wrote_user_bytes {
                     if no_line_queued {
                         self.state = HandoffState::EditorOwned;

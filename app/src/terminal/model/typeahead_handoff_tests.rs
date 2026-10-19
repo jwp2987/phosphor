@@ -670,3 +670,59 @@ fn the_window_survives_focus_moved_by_a_key_it_applied() {
     handoff.on_editor_focused();
     assert!(!handoff.editor_took_over_within(window, start));
 }
+
+/// #934: the view's handling of a prompt reinitializes the editor. A request (which hands input
+/// to the editor) written before that would let the editor take keys that are then erased, so
+/// the decision waits for the view, and keys keep going to the pty meanwhile.
+#[test]
+fn no_request_while_the_view_has_yet_to_handle_the_prompt() {
+    let mut handoff = after_submit();
+    type_and_flush(&mut handoff, b"echo");
+    handoff.on_precmd();
+    handoff.note_precmd_pending_view();
+    assert!(matches!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Wait { .. }
+    ));
+    assert!(
+        handoff.routes_keys_to_pty(),
+        "the pty keeps the keys until the view has the prompt"
+    );
+    assert_eq!(
+        type_and_flush(&mut handoff, b"x"),
+        UserBytesRoute::WriteCounted
+    );
+    handoff.on_precmd_viewed();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+}
+
+#[test]
+fn the_editor_does_not_take_over_before_the_view_has_the_prompt() {
+    let mut handoff = after_submit();
+    handoff.on_precmd();
+    handoff.note_precmd_pending_view();
+    assert!(matches!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Wait { .. }
+    ));
+    assert!(handoff.routes_keys_to_pty());
+    handoff.on_precmd_viewed();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Committed
+    );
+}
+
+#[test]
+fn a_view_event_without_a_pending_prompt_is_harmless() {
+    let mut handoff = after_submit();
+    handoff.on_precmd_viewed();
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Committed
+    );
+}
