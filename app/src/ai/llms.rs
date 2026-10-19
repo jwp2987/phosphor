@@ -1412,6 +1412,45 @@ impl LLMPreferences {
         }
     }
 
+    /// Drops every per-view entry for `terminal_view_id`, from both
+    /// `base_llm_for_terminal_view` and `reasoning_effort_per_terminal`.
+    ///
+    /// Unlike `remove_llm_override` (a user-initiated "reset to profile
+    /// default" that only ever touches the LLM-override map), this is the
+    /// teardown counterpart: it runs when the view itself is gone -- a pane
+    /// closed, or a CLI subagent's sub-session view torn down -- and the
+    /// `EntityId` will never be looked up again. Dropping the reasoning-effort
+    /// entry too prevents both maps from growing for the lifetime of the
+    /// session (#801): nothing else ever removes them, since they're keyed by
+    /// view id with no size bound and no persistence to hydrate a cap from.
+    ///
+    /// Only triggers a snapshot save when something was actually removed, so
+    /// closing a pane that never had an override is a no-op, not a write.
+    pub fn forget_terminal_view(
+        &mut self,
+        terminal_view_id: EntityId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let had_base_override = self
+            .base_llm_for_terminal_view
+            .remove(&terminal_view_id)
+            .is_some();
+        let had_reasoning_override = self
+            .reasoning_effort_per_terminal
+            .remove(&terminal_view_id)
+            .is_some();
+
+        if had_base_override || had_reasoning_override {
+            self.trigger_snapshot_save(ctx);
+            if had_base_override {
+                ctx.emit(LLMPreferencesEvent::UpdatedActiveAgentModeLLM);
+            }
+            if had_reasoning_override {
+                ctx.emit(LLMPreferencesEvent::UpdatedReasoningEffort);
+            }
+        }
+    }
+
     /// Gets the current reasoning effort selection for a given terminal-view.
     /// Priority: per-terminal selection > last-used (api_type, model) > the variants table's default level > Auto.
     pub fn get_reasoning_effort(

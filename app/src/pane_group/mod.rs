@@ -13,7 +13,7 @@ use crate::ai::blocklist::suggested_rule_modal::SuggestedRuleAndId;
 use crate::ai::blocklist::{BlocklistAIHistoryModel, InputConfig};
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentModel, AIDocumentVersion};
 use crate::ai::execution_profiles::profiles::{AIExecutionProfilesModel, ClientProfileId};
-use crate::ai::llms::LLMId;
+use crate::ai::llms::{LLMId, LLMPreferences};
 use crate::ai::restored_conversations::RestoredAgentConversations;
 #[cfg(target_family = "wasm")]
 use crate::cloud_object::model::persistence::ObjectStoreModel;
@@ -4318,6 +4318,25 @@ impl PaneGroup {
         self.cleanup_closed_pane(pane_id, ctx);
     }
 
+    /// Drops `pane_id`'s terminal view's `LLMPreferences` per-view entries
+    /// (model override, reasoning-effort override) now that the pane is
+    /// being permanently discarded -- the `EntityId` is never looked up
+    /// again once the view is gone (#801). Mirrors the
+    /// `mark_conversations_historical_for_terminal_view` cleanup `discard_pane`
+    /// already does above, for the same reason.
+    ///
+    /// Must be called with `pane_id` still present in `pane_contents`, since
+    /// `terminal_view_from_pane_id` reads it; callers that detach/remove the
+    /// pane should call this first.
+    fn forget_llm_overrides_for_pane(&self, pane_id: PaneId, ctx: &mut ViewContext<Self>) {
+        if let Some(terminal_view) = self.terminal_view_from_pane_id(pane_id, ctx) {
+            let terminal_view_id = terminal_view.id();
+            LLMPreferences::handle(ctx).update(ctx, |prefs, ctx| {
+                prefs.forget_terminal_view(terminal_view_id, ctx);
+            });
+        }
+    }
+
     /// If this pane was the active session and or focused pane, focuses the previous session and pane.
     ///
     /// Called before removing a pane from a pane group (either because the pane is being closed or because it is being moved
@@ -4532,6 +4551,11 @@ impl PaneGroup {
                 return;
             }
 
+            // Permanent removal (UndoClosedPanes disabled, so there's no
+            // grace-period `cleanup_closed_pane` pass to catch this later):
+            // drop the terminal view's LLMPreferences overrides now, before
+            // pane_contents loses the view this pane_id resolves to (#801).
+            self.forget_llm_overrides_for_pane(pane_id, ctx);
             self.clean_up_pane(pane_id, ctx);
 
             // Zap: removed the share_block_modal cleanup (cloud share block)
@@ -5006,6 +5030,7 @@ impl PaneGroup {
     /// Clean up a close-hidden pane completely (used when grace period expires)
     /// Returns true if the pane was successfully cleaned up, false if it was already cleaned up
     pub fn cleanup_closed_pane(&mut self, pane_id: PaneId, ctx: &mut ViewContext<Self>) -> bool {
+        self.forget_llm_overrides_for_pane(pane_id, ctx);
         self.panes.remove_hidden_pane(pane_id);
 
         let Some(pane_data) = self.pane_contents.get(&pane_id) else {
@@ -6556,7 +6581,19 @@ impl PaneGroup {
 
     // When user clicked on the close tab button, we should wind down the existing panes
     // by deleting all the saved blocks in each pane from the database.
+    //
+    // This is the whole-tab/whole-window counterpart to `cleanup_closed_pane`'s
+    // single-pane case: `UndoCloseStack`'s `ClosedItem::discard` (grace-period
+    // expiry, capacity eviction, or the undo-close feature being turned off)
+    // is this group's only permanent-teardown path, and it is this function's
+    // only caller (`clean_up_pane_group` in `undo_close/stack.rs`) -- so, like
+    // `cleanup_closed_pane`, forgetting each terminal view's `LLMPreferences`
+    // overrides here (#801) can't double-run against a pane that gets
+    // individually closed later, since by this point the whole group is gone.
     pub fn clean_up_panes(&self, ctx: &mut ViewContext<Self>) {
+        for pane_id in self.terminal_pane_ids().collect::<Vec<_>>() {
+            self.forget_llm_overrides_for_pane(pane_id, ctx);
+        }
         for pane in self.pane_contents.values() {
             let pane = pane.as_pane();
             pane.detach(self, DetachType::Closed, ctx);

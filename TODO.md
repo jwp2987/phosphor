@@ -13249,14 +13249,37 @@ open findings that had no pre-existing row.
       was a read-only check (`grep`/`awk` on `Cargo.lock`), not a `cargo`
       invocation — no build was run to confirm this session.
 
-- [ ] **Windows graceful shutdown on console close / logoff is still incomplete
-      (#685 follow-up).** Headless `CTRL_CLOSE_EVENT`
-      (`crates/warpui/src/platform/headless/event_loop.rs`) and GUI
-      `WM_QUERYENDSESSION`/`WM_ENDSESSION`
-      (`crates/warpui/src/windowing/winit/app.rs`) both still skip
-      `app_will_terminate` entirely, so LSP/MCP shutdown, the terminal-server
-      teardown and the persistence flush all get skipped on a Windows console
-      close or logoff.
+- [x] **#773 (#685 follow-up) — Windows graceful shutdown on console close /
+      logoff / GUI session end.** This entry was stale: it said both the
+      headless and GUI paths "still skip `app_will_terminate` entirely", but
+      the headless one was already fixed before this was next read.
+      **Headless/TUI — FIXED (round 9).** `SetConsoleCtrlHandler` for
+      `CTRL_CLOSE_EVENT`/`CTRL_LOGOFF_EVENT`/`CTRL_SHUTDOWN_EVENT`
+      (`crates/warpui/src/platform/termination_signals.rs`'s `console` module
+      and `ctrl_event_shutdown_reason`), wired into
+      `crates/warpui/src/platform/headless/event_loop.rs`.
+      **GUI — FIXED. UNVERIFIED — needs a Windows run.** `WM_QUERYENDSESSION`/
+      `WM_ENDSESSION` were a `TODO(#773)` in
+      `crates/warpui/src/windowing/winit/app.rs`; now handled per-window by
+      `crates/warpui/src/windowing/winit/windows/session_end.rs`
+      (`SetWindowSubclass`/`DefSubclassProc`, installed right after each
+      window opens). The subclass only calls `ShutdownBlockReasonCreate` and
+      posts the existing `CustomEvent::TerminateFromSignal` — deliberately not
+      running `app_will_terminate` synchronously inside the subclass callback,
+      to avoid touching `EventLoop`/`AppContext` state from a message that can
+      itself arrive nested (live resize/move); see that file's module doc for
+      the alternatives considered and why they were rejected without a Windows
+      build to test their re-entrancy risk against. An earlier, unmerged
+      attempt at the GUI side (`fix/r7-windows-shutdown`, commits `565e6403e`/
+      `f176fa806`/`57fd9f163`) took the riskier "raw pointer into `EventLoop`,
+      run the shutdown synchronously, guard re-entrancy with a depth counter"
+      shape and was never merged; this round's fix avoids that whole class of
+      risk instead of hardening it further. Needs a real Windows machine to
+      verify: that `WM_QUERYENDSESSION`/`WM_ENDSESSION` actually reach this
+      callback ahead of winit's own window procedure, that a multi-window
+      session end posts exactly one terminate request, and that
+      `ShutdownBlockReasonCreate`'s "preventing shutdown" UI behaves as
+      documented. CI's Windows `cargo check` only proves this type-checks.
 
 - [x] **#707 — MCP stdio servers are not spawned in their own process group**, so on
       exit only the direct child is killed by handle (`be564eeaf`); a grandchild

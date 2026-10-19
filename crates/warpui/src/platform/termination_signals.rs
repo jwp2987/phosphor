@@ -173,6 +173,83 @@ pub(crate) fn ctrl_event_shutdown_reason(ctrl_type: u32) -> Option<i32> {
     }
 }
 
+/// What a Windows GUI window's `WM_QUERYENDSESSION` / `WM_ENDSESSION` subclass
+/// callback should do for one such message (jwp2987/phosphor#773, the GUI
+/// follow-up to the console path above, which has no equivalent window to
+/// subclass -- a console app has no HWND).
+///
+/// A winit app can own several top-level windows, and Windows sends
+/// `WM_ENDSESSION` to *every one of them* for a single real shutdown attempt --
+/// so `already_shutting_down` must be a process-wide latch the caller threads
+/// through each window's callback, not per-window state, or a two-window app
+/// would post two terminate requests for the one event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionEndAction {
+    /// `WM_QUERYENDSESSION`: tell Windows this process may need a moment to
+    /// clean up (`ShutdownBlockReasonCreate`) and allow the session to end --
+    /// this fork never vetoes a shutdown/logoff/close-all-programs from here.
+    BlockAndAllow,
+    /// The first `WM_ENDSESSION` with `wParam` true that any window has seen
+    /// since the latch was last clear: start the graceful shutdown, carrying
+    /// which of the two reasons [`ctrl_event_shutdown_reason`]'s synthetic
+    /// signal space `WM_ENDSESSION`'s `lParam` can distinguish.
+    BeginGracefulShutdown { reason_signal: i32 },
+    /// A later `WM_ENDSESSION` true while that shutdown is already in flight --
+    /// another window's copy of the same one real event, not a second attempt.
+    AlreadyShuttingDown,
+    /// `WM_ENDSESSION` with `wParam` false: a *different* application vetoed
+    /// the session end, so this one was cancelled. The caller should release
+    /// its shutdown block and clear the latch, so a later, successful attempt
+    /// still starts a shutdown instead of being mistaken for a continuation of
+    /// the cancelled one.
+    Cancelled,
+}
+
+/// The pure decision behind [`SessionEndAction`]: given which message arrived
+/// (`is_query_end_session` for `WM_QUERYENDSESSION`, else `WM_ENDSESSION`),
+/// `WM_ENDSESSION`'s own `wParam`/`lParam` (`session_ending`, `is_logoff`), and
+/// whether a shutdown this message could be part of has already been started
+/// (`already_shutting_down`), decide what to do. Free of the `windows` crate --
+/// like [`ctrl_event_shutdown_reason`] -- so it builds and is unit-tested on
+/// every platform, not only Windows; its only non-test caller is
+/// `windowing::winit::windows::session_end`'s subclass procedure.
+///
+/// `is_logoff` maps to [`ctrl_event_shutdown_reason`]'s `CTRL_LOGOFF_EVENT` (5),
+/// otherwise to its `CTRL_SHUTDOWN_EVENT` (6) -- `WM_ENDSESSION`'s `lParam` has
+/// no flag that distinguishes an actual shutdown/restart from the user picking
+/// "Close all programs and shut down" in the Shutdown Event Tracker, so both
+/// collapse to the one reason code already used for every non-logoff console
+/// close/shutdown event. Reusing the same numbers means the GUI's
+/// `WM_ENDSESSION` path and the headless/console `CTRL_*` path exit with the
+/// same conventional status for the same real-world event.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn session_end_action(
+    is_query_end_session: bool,
+    session_ending: bool,
+    is_logoff: bool,
+    already_shutting_down: bool,
+) -> SessionEndAction {
+    const CTRL_LOGOFF_EVENT: i32 = 5;
+    const CTRL_SHUTDOWN_EVENT: i32 = 6;
+
+    if is_query_end_session {
+        return SessionEndAction::BlockAndAllow;
+    }
+    if !session_ending {
+        return SessionEndAction::Cancelled;
+    }
+    if already_shutting_down {
+        return SessionEndAction::AlreadyShuttingDown;
+    }
+    SessionEndAction::BeginGracefulShutdown {
+        reason_signal: if is_logoff {
+            CTRL_LOGOFF_EVENT
+        } else {
+            CTRL_SHUTDOWN_EVENT
+        },
+    }
+}
+
 /// Handles one delivered termination signal. Runs on the signal-handling
 /// thread, never in signal context.
 pub(crate) fn handle_signal(
@@ -326,6 +403,128 @@ pub(crate) fn exit_after_signal_shutdown_for(initiating_signal: Option<i32>) {
                 libc::raise(signal);
             }
             hard_exit(exit_code_for_signal(signal));
+        }
+    }
+}
+
+/// Tracks which in-flight termination request, if any, is attributed to a
+/// specific signal, so two quit paths racing to the same completion point
+/// cannot clobber each other's attribution.
+///
+/// macOS is the motivating case: `AppDelegate::terminate_app` (a key binding,
+/// menu item, or dialog) and the termination-signal handler both ultimately
+/// call `app.terminate(None)`, and Cocoa's `applicationShouldTerminate:` runs
+/// a two-phase dance (cancel -> hide -> a deferred re-invocation of
+/// `terminate:`) before either one's request actually completes at
+/// `applicationWillTerminate:`. Without this, whichever call's closure runs
+/// last before completion wins the attribution, regardless of which request
+/// is the one that is actually completing -- which is exactly how a
+/// signal-initiated quit racing an ordinary one could previously exit status
+/// 0 (the ordinary request's `None` overwrote the signal's `Some(sig)`), or an
+/// ordinary Cmd+Q could re-raise a signal that had nothing to do with it (it
+/// picked up a stale `Some(sig)` left by an earlier, unrelated signal
+/// request) (jwp2987/phosphor#791).
+///
+/// Every accepted request gets a generation. [`TerminationAttribution::request`]
+/// is first-writer-wins: if a termination sequence is already in flight, a
+/// later call does not change its attribution, it only reports which request
+/// (its own, or whichever got there first) actually owns the in-flight
+/// generation. Only the request holding that generation may end it --
+/// [`TerminationAttribution::complete`] consumes the attribution when that
+/// request is the one that actually finishes, [`TerminationAttribution::cancel`]
+/// clears it when that request is abandoned instead (e.g. the user declined
+/// the "Quit Phosphor?" confirmation), so a later, unrelated quit attempt is
+/// not told a shutdown is still in flight and silently denied its own
+/// attribution.
+///
+/// Platform-neutral on purpose, so it is covered by tests that build and run
+/// on every platform, including Linux; the mac glue that calls it
+/// (`platform::mac::delegate`) stays `cfg(target_os = "macos")`.
+#[derive(Debug)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) struct TerminationAttribution {
+    state: parking_lot::Mutex<AttributionState>,
+}
+
+// Deliberately no `Default` impl: a default-constructed `next_generation` of
+// 0 would collide with the sentinel 0 the mac glue's `CURRENT_GENERATION`
+// static uses for "no request has run yet" -- `TerminationAttribution::new`
+// always starts it at 1 instead.
+#[derive(Debug)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct AttributionState {
+    /// The generation to hand out to the next request that does not find one
+    /// already in flight. Monotonically increasing; never reused, so a
+    /// `complete`/`cancel` call carrying a stale generation can never match a
+    /// later, unrelated request that happens to reuse a number.
+    next_generation: u64,
+    /// The request currently in flight, if a termination sequence has been
+    /// requested and not yet completed or cancelled.
+    in_flight: Option<InFlightRequest>,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct InFlightRequest {
+    generation: u64,
+    signal: Option<i32>,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+impl TerminationAttribution {
+    pub(crate) const fn new() -> Self {
+        Self {
+            state: parking_lot::Mutex::new(AttributionState {
+                next_generation: 1,
+                in_flight: None,
+            }),
+        }
+    }
+
+    /// Requests a termination attributed to `signal` (`None` for an ordinary
+    /// key/menu/dialog quit, `Some(signal)` for the termination-signal
+    /// handler's own request). Returns the generation of whichever request
+    /// now owns the in-flight attribution: a fresh one if none was in flight,
+    /// or the existing one, unchanged, if one already was -- first-writer-wins,
+    /// so a later request can never overwrite an earlier one that is still
+    /// being decided, regardless of whether either side is `None` or `Some`.
+    pub(crate) fn request(&self, signal: Option<i32>) -> u64 {
+        let mut state = self.state.lock();
+        if let Some(in_flight) = &state.in_flight {
+            return in_flight.generation;
+        }
+        let generation = state.next_generation;
+        state.next_generation += 1;
+        state.in_flight = Some(InFlightRequest { generation, signal });
+        generation
+    }
+
+    /// Consumes the attribution for the request that is actually completing,
+    /// identified by `generation`. Returns its signal (or `None` if it was not
+    /// signal-initiated) and clears the in-flight state, if `generation` is
+    /// the one currently owning it. Returns `None` without changing anything
+    /// if it is not -- superseded by first-writer-wins, already completed, or
+    /// never began -- so that caller must not attribute anything to this
+    /// completion.
+    pub(crate) fn complete(&self, generation: u64) -> Option<i32> {
+        let mut state = self.state.lock();
+        match &state.in_flight {
+            Some(in_flight) if in_flight.generation == generation => {
+                let signal = in_flight.signal;
+                state.in_flight = None;
+                signal
+            }
+            _ => None,
+        }
+    }
+
+    /// Cancels the in-flight request if `generation` is the one that owns it
+    /// (e.g. the user declined to quit), clearing its attribution so the next
+    /// request starts fresh. A no-op if `generation` does not own it.
+    pub(crate) fn cancel(&self, generation: u64) {
+        let mut state = self.state.lock();
+        if matches!(&state.in_flight, Some(f) if f.generation == generation) {
+            state.in_flight = None;
         }
     }
 }

@@ -653,6 +653,17 @@ impl EventLoop {
                         // actual size, notify the framework that the window
                         // size may have (almost certainly) changed.
                         self.callbacks.for_window(window).window_resized(window);
+
+                        // Handle WM_QUERYENDSESSION/WM_ENDSESSION (logoff,
+                        // shutdown) on this window's HWND, since the pinned
+                        // winit fork has no support for them to opt into
+                        // (jwp2987/phosphor#773). Every window gets its own
+                        // subclass: Windows sends WM_ENDSESSION to each
+                        // top-level window this process owns.
+                        #[cfg(windows)]
+                        if let Some(winit_window) = window.winit_window() {
+                            super::windows::session_end::install(&winit_window, self.proxy.clone());
+                        }
                     }
                     Err(err) => {
                         log::error!("Failed to open window: {err:#}");

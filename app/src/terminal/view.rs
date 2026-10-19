@@ -3296,6 +3296,13 @@ impl TerminalView {
                     was_ambient_agent,
                     ..
                 } => {
+                    // #802: the user was just in this conversation's FullScreen transcript, so
+                    // backfill it before deciding below whether to leave behind a re-openable
+                    // entry card -- otherwise a CLI-subagent conversation reached without going
+                    // through either restore path (e.g. already live in memory) could get an
+                    // entry card pointing at a transcript with nothing in it.
+                    me.ensure_cli_subagent_transcript_blocks(*conversation_id, ctx);
+
                     // Prompt suggestions should not follow the user back to terminal view.
                     me.clear_prompt_suggestions(ctx);
                     // The transcript navigation cursor is agent-view-scoped; drop it so its
@@ -6786,7 +6793,23 @@ impl TerminalView {
                     initial_requested_command_action_id.clone(),
                     ctx,
                 );
+                // Capture the sub-session's own view id before the handle is
+                // dropped from the map below -- it's a distinct EntityId from
+                // the parent pane's terminal view (see `CLISubagentView::
+                // terminal_view_id`), and is the key `LLMPreferences` used for
+                // this sub-session's model/reasoning overrides (#797, #801).
+                // Only this sub-session's entry is forgotten; the parent
+                // pane's own override is untouched.
+                let finished_subagent_view_id = self
+                    .cli_subagent_views
+                    .get(block_id)
+                    .map(|view| view.as_ref(ctx).terminal_view_id());
                 self.cli_subagent_views.remove(block_id);
+                if let Some(subagent_view_id) = finished_subagent_view_id {
+                    LLMPreferences::handle(ctx).update(ctx, |prefs, ctx| {
+                        prefs.forget_terminal_view(subagent_view_id, ctx);
+                    });
+                }
 
                 // The command ended — drop any LRC-scoped auto-queue override so the conversation
                 // reverts to its pre-command queue state, then deliver the prompts queued for this
@@ -24826,6 +24849,20 @@ impl TerminalView {
 
         let enforce_minimum_contrast = *FontSettings::as_ref(app).enforce_minimum_contrast;
 
+        // #803: `BlockListElement::dispatch_event` needs to know, for a CLI subagent
+        // bubble it didn't lay out this frame, whether that bubble owns an in-progress
+        // resize drag -- if so the drag's continuation/end events must still reach it
+        // so the resize doesn't get stuck, even though the bubble's own stale hit-box
+        // must otherwise be ignored. `CLISubagentView` holds the `Resizable` state
+        // handles directly, so this is readable here without depending on whatever
+        // got laid out this frame.
+        let cli_subagent_active_drag_block_ids: HashSet<BlockId> = self
+            .cli_subagent_views
+            .iter()
+            .filter(|&(_, view)| view.as_ref(app).is_resize_dragging())
+            .map(|(id, _)| id.clone())
+            .collect();
+
         let mut element = BlockListElement::new(
             self.model.clone(),
             self.find_model.clone(),
@@ -24926,6 +24963,7 @@ impl TerminalView {
                     })
                     .map(|(id, view)| (id.clone(), ChildView::new(view).finish())),
             ),
+            cli_subagent_active_drag_block_ids,
             selection_range,
             block_banner,
             self.inline_banners_state.shared_session_banner_state,

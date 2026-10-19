@@ -319,6 +319,74 @@ mod ctrl_event_shutdown_reason {
     }
 }
 
+// jwp2987/phosphor#773: `session_end_action` is the pure decision behind the
+// `WM_QUERYENDSESSION`/`WM_ENDSESSION` window subclass, so -- like
+// `ctrl_event_shutdown_reason` above -- it builds and runs on every platform,
+// not only Windows.
+mod session_end_action {
+    use super::{SessionEndAction, session_end_action};
+
+    const QUERY_END_SESSION: bool = true;
+    const END_SESSION: bool = false;
+
+    #[test]
+    fn query_end_session_always_blocks_and_allows() {
+        // Never veto a shutdown/logoff, and this is independent of whether a
+        // shutdown is already underway or what a later `WM_ENDSESSION` will say.
+        assert_eq!(
+            session_end_action(QUERY_END_SESSION, false, false, false),
+            SessionEndAction::BlockAndAllow
+        );
+        assert_eq!(
+            session_end_action(QUERY_END_SESSION, true, true, true),
+            SessionEndAction::BlockAndAllow
+        );
+    }
+
+    #[test]
+    fn first_endsession_true_begins_a_graceful_shutdown() {
+        assert_eq!(
+            session_end_action(END_SESSION, true, false, false),
+            SessionEndAction::BeginGracefulShutdown { reason_signal: 6 },
+        );
+    }
+
+    #[test]
+    fn logoff_maps_to_the_console_paths_logoff_reason() {
+        assert_eq!(
+            session_end_action(END_SESSION, true, true, false),
+            SessionEndAction::BeginGracefulShutdown { reason_signal: 5 },
+        );
+    }
+
+    #[test]
+    fn a_second_windows_endsession_true_is_ignored_once_already_shutting_down() {
+        // Windows sends `WM_ENDSESSION` to every top-level window for the one
+        // real shutdown attempt; only the first should start anything.
+        assert_eq!(
+            session_end_action(END_SESSION, true, false, true),
+            SessionEndAction::AlreadyShuttingDown
+        );
+        assert_eq!(
+            session_end_action(END_SESSION, true, true, true),
+            SessionEndAction::AlreadyShuttingDown
+        );
+    }
+
+    #[test]
+    fn endsession_false_is_a_cancellation_regardless_of_the_latch() {
+        // Some other application vetoed the session end.
+        assert_eq!(
+            session_end_action(END_SESSION, false, false, false),
+            SessionEndAction::Cancelled
+        );
+        assert_eq!(
+            session_end_action(END_SESSION, false, false, true),
+            SessionEndAction::Cancelled
+        );
+    }
+}
+
 #[test]
 fn a_repeated_console_close_event_escalates_like_sigterm() {
     // CTRL_CLOSE_EVENT (2) is not SIGHUP, so a repeat after the escalation
@@ -378,5 +446,104 @@ mod approve_termination {
         assert!(approve_termination(TerminationMode::Cancellable, || {
             ApproveTerminateResult::Terminate
         }));
+    }
+}
+
+mod termination_attribution {
+    use crate::platform::termination_signals::TerminationAttribution;
+
+    #[test]
+    fn an_ordinary_request_completes_with_no_signal() {
+        let attribution = TerminationAttribution::new();
+        let generation = attribution.request(None);
+        assert_eq!(attribution.complete(generation), None);
+    }
+
+    #[test]
+    fn a_signal_initiated_request_completes_with_its_signal() {
+        let attribution = TerminationAttribution::new();
+        let generation = attribution.request(Some(15));
+        assert_eq!(attribution.complete(generation), Some(15));
+    }
+
+    #[test]
+    fn an_ordinary_request_racing_in_after_a_signal_one_does_not_clear_it() {
+        // The signal's request gets there first and is in flight; the
+        // ordinary request (e.g. an unrelated Cmd+Q) racing in afterward must
+        // not be able to overwrite its attribution with `None` -- that was
+        // exactly the "ordinary quit overwrote Some(sig) with None and
+        // completed first" bug (jwp2987/phosphor#791).
+        let attribution = TerminationAttribution::new();
+        let signal_generation = attribution.request(Some(15));
+        let racing_generation = attribution.request(None);
+
+        // First-writer-wins: the racing request does not get its own
+        // generation, it is told which request actually owns the in-flight
+        // attribution.
+        assert_eq!(racing_generation, signal_generation);
+        assert_eq!(attribution.complete(signal_generation), Some(15));
+    }
+
+    #[test]
+    fn a_signal_request_racing_in_after_an_ordinary_one_does_not_steal_it() {
+        // Symmetric case: an ordinary quit (e.g. the Quit menu item) is
+        // already in flight when a real signal arrives. The signal's request
+        // must not be able to attach its signal to the completion that is
+        // actually the ordinary request's -- that was the "Cmd+Q can consume
+        // a stale Some" bug (jwp2987/phosphor#791).
+        let attribution = TerminationAttribution::new();
+        let ordinary_generation = attribution.request(None);
+        let racing_generation = attribution.request(Some(15));
+
+        assert_eq!(racing_generation, ordinary_generation);
+        assert_eq!(attribution.complete(ordinary_generation), None);
+    }
+
+    #[test]
+    fn completing_a_stale_generation_reports_nothing_and_does_not_disturb_the_owner() {
+        let attribution = TerminationAttribution::new();
+        let owning_generation = attribution.request(Some(15));
+        let stale_generation = owning_generation.wrapping_sub(1);
+
+        assert_eq!(attribution.complete(stale_generation), None);
+        // The real owner's attribution is untouched by the stale completion.
+        assert_eq!(attribution.complete(owning_generation), Some(15));
+    }
+
+    #[test]
+    fn cancelling_clears_the_attribution_for_a_fresh_request() {
+        // The user declined the "Quit Phosphor?" confirmation: no completion
+        // ever happens for this generation, so it must be cancelled rather
+        // than left in flight forever, or every future quit attempt would be
+        // told a shutdown is already in progress and lose its own
+        // attribution to first-writer-wins.
+        let attribution = TerminationAttribution::new();
+        let declined_generation = attribution.request(Some(15));
+        attribution.cancel(declined_generation);
+
+        let next_generation = attribution.request(None);
+        assert_ne!(next_generation, declined_generation);
+        assert_eq!(attribution.complete(next_generation), None);
+    }
+
+    #[test]
+    fn cancelling_a_non_owning_generation_is_a_no_op() {
+        let attribution = TerminationAttribution::new();
+        let generation = attribution.request(Some(15));
+        attribution.cancel(generation.wrapping_sub(1));
+
+        // Still in flight, still attributed to the real owner.
+        assert_eq!(attribution.complete(generation), Some(15));
+    }
+
+    #[test]
+    fn completing_clears_the_state_for_the_next_independent_request() {
+        let attribution = TerminationAttribution::new();
+        let first = attribution.request(Some(15));
+        assert_eq!(attribution.complete(first), Some(15));
+
+        let second = attribution.request(None);
+        assert_ne!(second, first);
+        assert_eq!(attribution.complete(second), None);
     }
 }

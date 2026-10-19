@@ -9,6 +9,7 @@ use crate::{
     keymap::Keystroke, notification, AppContext, ClosedWindowData, SingletonEntity, WindowId,
 };
 
+use super::TerminationMode;
 use super::menu::MenuItemPropertyChanges;
 
 pub type AppInitCallbackFn =
@@ -149,6 +150,24 @@ impl AppCallbackDispatcher {
         } else {
             ApproveTerminateResult::Terminate
         }
+    }
+
+    /// Routes a platform's own "ordinary quit" entry point -- a menu item,
+    /// dock menu, or anything else that is not the termination-signal handler
+    /// -- through the same [`AppContext::terminate_app`] chokepoint every
+    /// other quit action uses, instead of ending the native app directly.
+    ///
+    /// mac's Quit menu item used to bind straight to Cocoa's `terminate:`
+    /// selector, bypassing this chokepoint entirely, which meant that specific
+    /// quit never participated in the per-request signal attribution a
+    /// termination-signal-initiated quit races against (jwp2987/phosphor#791).
+    /// `TerminationMode::Cancellable` matches what that bypassed path already
+    /// did: Cocoa's own confirmation ("Quit Phosphor?") still runs, this just
+    /// makes sure it is reached through `platform_delegate.terminate_app`
+    /// rather than around it.
+    pub fn terminate_app_requested(&mut self) {
+        self.ui_app
+            .update(|ctx| ctx.terminate_app(TerminationMode::Cancellable, None));
     }
 
     pub fn should_close_window(&mut self, window_id: WindowId) -> ApproveTerminateResult {

@@ -214,9 +214,16 @@ fn resolve_standard_action(action: StandardAction) -> StandardMenuItemProperties
             none,
             ns_string!(""),
         ),
+        // `warpTerminateFromMenu:` (implemented on `WarpApplication`, objc/app.m)
+        // routes through the Rust termination chokepoint instead of Cocoa's own
+        // `terminate:`, which this item used to bind directly -- bypassing the
+        // per-request signal attribution a termination signal's quit races
+        // against (jwp2987/phosphor#791). Resolved the same way `terminate:`
+        // was: nil target, so AppKit's responder-chain search for the selector
+        // falls through to `NSApp` (here, `WarpApplication`) itself.
         StandardAction::Quit => make(
             ns_string!("Quit Phosphor"),
-            sel!(terminate:),
+            sel!(warpTerminateFromMenu:),
             cmd,
             ns_string!("q"),
         ),

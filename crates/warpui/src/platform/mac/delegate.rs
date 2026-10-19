@@ -1,7 +1,7 @@
 use std::ffi::c_void;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 use cocoa::base::{BOOL, NO, YES, id, nil};
@@ -21,6 +21,8 @@ use warpui_core::platform::{
     SendNotificationErrorCallback, TerminationMode,
 };
 use warpui_core::{ApplicationBundleInfo, WindowId, platform};
+
+use crate::platform::termination_signals::TerminationAttribution;
 
 use super::app::create_native_platform_modal;
 use super::keycode::{Keycode, modifier_code};
@@ -476,30 +478,43 @@ impl platform::DispatchDelegate for DispatchDelegate {
     }
 }
 
-/// The signal (if any) attributed to the [`terminate_app_on_main_queue`] call
-/// currently driving (or about to drive) Cocoa's termination sequence. Set right
-/// before the `app.terminate(None)` call it is attributed to, by the SAME
-/// `exec_async` closure that makes that call -- which runs on the main dispatch
-/// queue, serialized with respect to every other closure `terminate_app_on_main_queue`
-/// enqueues there, so only the closure that actually reaches `app.terminate(None)`
-/// (Cocoa does not re-enter an in-progress termination) can be the one whose
-/// attribution [`take_terminating_signal`] later reads from
-/// `warp_app_will_terminate`. Deliberately request-scoped rather than the
-/// process-wide [`crate::platform::termination_signals`] latch: a key binding,
-/// menu item, or dialog quit reaches the exact same `warp_app_will_terminate`
-/// and must not re-raise a signal that merely happened to arrive around the same
-/// time (jwp2987/phosphor#726, jwp2987/phosphor#791).
-static TERMINATING_SIGNAL: AtomicI32 = AtomicI32::new(0);
+/// The platform-neutral request/complete/cancel state machine
+/// (jwp2987/phosphor#791) that decides which, if any, in-flight termination
+/// request's signal `warp_app_will_terminate` should attribute a re-raise to.
+/// See [`crate::platform::termination_signals::TerminationAttribution`] for
+/// why a plain last-write-wins latch (the previous `TERMINATING_SIGNAL:
+/// AtomicI32`) is wrong: a key binding/menu/dialog quit and the
+/// termination-signal handler can both be mid-flight at once, racing to the
+/// same `app.terminate(None)` -> `applicationShouldTerminate:` ->
+/// `applicationWillTerminate:` completion point, and only the request that
+/// got there first may own the attribution.
+static TERMINATION_ATTRIBUTION: TerminationAttribution = TerminationAttribution::new();
 
-/// Takes (reads and clears) the signal attribution [`terminate_app_on_main_queue`]
-/// set for the termination request currently finishing, or `None` if it was not
-/// itself signal-initiated. Called once, by `warp_app_will_terminate`, right
-/// after `app_will_terminate` runs.
-pub(super) fn take_terminating_signal() -> Option<i32> {
-    match TERMINATING_SIGNAL.swap(0, Ordering::AcqRel) {
-        0 => None,
-        signal => Some(signal),
-    }
+/// The generation [`TERMINATION_ATTRIBUTION`] most recently handed back to a
+/// `terminate_app_on_main_queue` call, i.e. the one actually in flight.
+/// First-writer-wins makes writing this idempotent while a request is in
+/// flight: every call during that window gets the same generation back from
+/// `request`, so this static always names the request that will actually be
+/// completed or cancelled, never a racing one that lost first-writer-wins.
+static CURRENT_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Consumes the attribution for the termination request that is actually
+/// completing. Called once, by `warp_app_will_terminate` (Cocoa's
+/// `applicationWillTerminate:`, the single completion point every quit path
+/// reaches), right after `app_will_terminate` runs. Returns the signal that
+/// request is attributed to, or `None` if it was not itself signal-initiated
+/// (jwp2987/phosphor#726, jwp2987/phosphor#791).
+pub(super) fn complete_terminating_request() -> Option<i32> {
+    TERMINATION_ATTRIBUTION.complete(CURRENT_GENERATION.load(Ordering::Acquire))
+}
+
+/// Cancels the in-flight request's attribution. Called when Cocoa's
+/// `applicationShouldTerminate:` decides NOT to proceed (the "Quit Phosphor?"
+/// confirmation was declined), so a later, unrelated quit attempt does not
+/// find a stale generation still "in flight" and lose its own attribution to
+/// first-writer-wins.
+pub(super) fn cancel_terminating_request() {
+    TERMINATION_ATTRIBUTION.cancel(CURRENT_GENERATION.load(Ordering::Acquire));
 }
 
 /// Runs `[NSApp terminate]` asynchronously on the main dispatch queue. Safe to
@@ -508,12 +523,15 @@ pub(super) fn take_terminating_signal() -> Option<i32> {
 /// called from the main thread.
 ///
 /// `signal` is `Some` only when this specific call is itself answering a
-/// termination signal (the signal handler installed in `app::App::run`); an
-/// ordinary key binding / menu / dialog quit (`AppDelegate::terminate_app`)
-/// always passes `None`. It is recorded in [`TERMINATING_SIGNAL`] immediately
-/// before the `app.terminate(None)` call it is attributed to, so
-/// `warp_app_will_terminate` re-raises a signal only for a request that was
-/// actually that signal's (jwp2987/phosphor#726, jwp2987/phosphor#791).
+/// termination signal (the signal handler installed in `app::App::run`); every
+/// other caller -- `AppDelegate::terminate_app` (a key binding or dialog) and
+/// the Quit menu item's `warp_app_quit_menu_item_triggered` (see
+/// `super::app`) -- always passes `None`. [`TerminationAttribution::request`]
+/// records it (first-writer-wins if another request is already in flight)
+/// immediately before the `app.terminate(None)` call that request is
+/// attributed to, so `warp_app_will_terminate` re-raises a signal only for
+/// whichever request actually owns the completion, never merely the last one
+/// to write (jwp2987/phosphor#726, jwp2987/phosphor#791).
 pub(super) fn terminate_app_on_main_queue(termination_mode: TerminationMode, signal: Option<i32>) {
     dispatch::Queue::main().exec_async(move || {
         // SAFETY: the closure runs on the main dispatch queue.
@@ -530,7 +548,8 @@ pub(super) fn terminate_app_on_main_queue(termination_mode: TerminationMode, sig
             }
             TerminationMode::Cancellable => {}
         }
-        TERMINATING_SIGNAL.store(signal.unwrap_or(0), Ordering::Release);
+        let generation = TERMINATION_ATTRIBUTION.request(signal);
+        CURRENT_GENERATION.store(generation, Ordering::Release);
         app.terminate(None);
     });
 }

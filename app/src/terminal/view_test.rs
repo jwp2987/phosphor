@@ -14,7 +14,7 @@ use crate::ai::agent::{
     AIAgentActionId, AIAgentExchange, AIAgentExchangeId, AIAgentInput, AIAgentOutput,
     AIAgentOutputStatus, UserQueryMode,
 };
-use crate::ai::llms::LLMId;
+use crate::ai::llms::{LLMId, LLMPreferences};
 #[cfg(windows)]
 use crate::ai::blocklist::block::cli::CLISubagentViewEvent;
 use crate::ai::blocklist::block::cli_controller::{
@@ -764,6 +764,92 @@ fn finished_cli_subagent_keeps_read_only_card_when_metadata_matches() {
     });
 }
 
+/// #801: `LLMPreferences::base_llm_for_terminal_view` is keyed by the CLI
+/// subagent's OWN view id (`CLISubagentView::terminal_view_id`, set to
+/// `ctx.view_id()` at construction -- see #797), not the parent pane's. The
+/// `FinishedSubagent` handler removed the view from `cli_subagent_views` but
+/// never touched this map, so the entry outlived the view for the rest of
+/// the session. The fix captures the sub-session's `terminal_view_id` before
+/// the map entry is dropped and forgets it via `LLMPreferences::
+/// forget_terminal_view`.
+#[test]
+fn finished_cli_subagent_forgets_its_own_llm_override() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        // FinishedSubagent triggers sidecar persistence, which needs GlobalResourceHandlesProvider.
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
+
+        let block_id = BlockId::from("cli-block-llmprefs".to_string());
+        let task_id = TaskId::new("cli-task-llmprefs".to_string());
+        let conversation_id = AIConversationId::new();
+        let conversation = build_restored_conversation_with_cli_subagent_snapshot_for_test(
+            conversation_id,
+            block_id.clone(),
+            task_id.clone(),
+            b"cli subagent output",
+        );
+        let serialized_blocks = serialized_blocks_for_restored_cli_subagent_for_test(&conversation);
+
+        let terminal = add_window_with_terminal(&mut app, Some(&serialized_blocks));
+        terminal.update(&mut app, |view, ctx| {
+            view.restore_conversation_after_view_creation(
+                RestoredAIConversation::new(conversation),
+                true,
+                RestoreConversationEntryBehavior::EnterRestoredConversation,
+                ctx,
+            );
+        });
+
+        // The restored CLI subagent view has its own terminal_view_id, distinct
+        // from the parent pane's -- capture it the same way `FinishedSubagent`
+        // must, before anything tears the view down.
+        let subagent_view_id = terminal.read(&app, |view, ctx| {
+            view.cli_subagent_views
+                .get(&block_id)
+                .expect("restored CLI subagent view should exist")
+                .as_ref(ctx)
+                .terminal_view_id()
+        });
+
+        LLMPreferences::handle(&app).update(&mut app, |prefs, ctx| {
+            prefs.update_preferred_agent_mode_llm(
+                &LLMId::from("claude-opus"),
+                subagent_view_id,
+                ctx,
+            );
+        });
+        LLMPreferences::handle(&app).read(&app, |prefs, _| {
+            assert!(
+                prefs.get_base_llm_override(subagent_view_id).is_some(),
+                "sanity check: the override was recorded under the subagent's own view id"
+            );
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_cli_subagent_controller_event(
+                view.cli_subagent_controller.clone(),
+                &CLISubagentEvent::FinishedSubagent {
+                    block_id: block_id.clone(),
+                    task_id: task_id.clone(),
+                    conversation_id: Some(conversation_id),
+                    initial_requested_command_action_id: None,
+                },
+                ctx,
+            );
+        });
+
+        LLMPreferences::handle(&app).read(&app, |prefs, _| {
+            assert!(
+                prefs.get_base_llm_override(subagent_view_id).is_none(),
+                "FinishedSubagent must forget the sub-session's own LLM override"
+            );
+        });
+    });
+}
+
 #[test]
 fn finished_cli_subagent_inserts_ai_block_for_fullscreen_transcript() {
     // #799: tagging the agent into a running command, then opening the FullScreen
@@ -830,6 +916,234 @@ fn finished_cli_subagent_inserts_ai_block_for_fullscreen_transcript() {
                 "FinishedSubagent should insert an AI block for the FullScreen \
                  transcript to render, not just the summary card and bare block"
             );
+        });
+    });
+}
+
+#[test]
+fn restoring_cli_subagent_conversation_backfills_fullscreen_transcript_on_entry() {
+    // #802: a CLI-subagent task that finished in a *previous* app session never runs the live
+    // `CLISubagentEvent::FinishedSubagent` handler this session, so #799's fix alone left
+    // startup restore and re-entry with nothing backing the FullScreen transcript --
+    // `exchanges_for_blocklist` deliberately excludes the subagent's own exchanges, so none of
+    // them became a tagged `RichContentItem` on restore. `ensure_cli_subagent_transcript_blocks`
+    // is now called from `restore_conversation_after_view_creation` and from
+    // `try_enter_agent_view`, so entering the agent view after restore should find exactly one
+    // `AIBlock` per subagent exchange, tagged with the conversation id.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
+
+        let block_id = BlockId::from("cli-block-restore-backfill".to_string());
+        let task_id = TaskId::new("cli-task-restore-backfill".to_string());
+        let conversation_id = AIConversationId::new();
+        let conversation = build_restored_conversation_with_cli_subagent_snapshot_for_test(
+            conversation_id,
+            block_id.clone(),
+            task_id.clone(),
+            b"cli subagent restore output",
+        );
+        let expected_exchange_ids: Vec<AIAgentExchangeId> = conversation
+            .get_task(&task_id)
+            .expect("fixture conversation should have the subagent task")
+            .exchanges()
+            .map(|exchange| exchange.id)
+            .collect();
+        assert!(
+            !expected_exchange_ids.is_empty(),
+            "fixture subagent task should have at least one exchange to back-fill"
+        );
+        let serialized_blocks = serialized_blocks_for_restored_cli_subagent_for_test(&conversation);
+
+        let terminal = add_window_with_terminal(&mut app, Some(&serialized_blocks));
+        terminal.update(&mut app, |view, ctx| {
+            view.restore_conversation_after_view_creation(
+                RestoredAIConversation::new(conversation),
+                true,
+                RestoreConversationEntryBehavior::EnterRestoredConversation,
+                ctx,
+            );
+            view.enter_agent_view_for_conversation(
+                None,
+                AgentViewEntryOrigin::AgentViewBlock,
+                conversation_id,
+                ctx,
+            );
+        });
+
+        terminal.read(&app, |view, _| {
+            for exchange_id in &expected_exchange_ids {
+                let matching_ai_blocks = view
+                    .rich_content_views
+                    .iter()
+                    .filter(|rich_content| {
+                        rich_content.ai_block_metadata().is_some_and(|metadata| {
+                            metadata.conversation_id == conversation_id
+                                && metadata.exchange_id == *exchange_id
+                        })
+                    })
+                    .count();
+                assert_eq!(
+                    matching_ai_blocks, 1,
+                    "exchange {exchange_id} should have exactly one AIBlock in the \
+                     FullScreen transcript after restore + entering the agent view"
+                );
+            }
+        });
+    });
+}
+
+#[test]
+fn ensure_cli_subagent_transcript_blocks_is_idempotent() {
+    // #802: `ensure_cli_subagent_transcript_blocks` is called from several independent entry
+    // points into the FullScreen transcript (restore, `try_enter_agent_view`, exiting the agent
+    // view). Calling it again for a conversation whose transcript is already backfilled must do
+    // nothing, since `create_and_insert_ai_block` has no dedupe of its own.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
+
+        let block_id = BlockId::from("cli-block-ensure-idempotent".to_string());
+        let task_id = TaskId::new("cli-task-ensure-idempotent".to_string());
+        let conversation_id = AIConversationId::new();
+        let conversation = build_restored_conversation_with_cli_subagent_snapshot_for_test(
+            conversation_id,
+            block_id.clone(),
+            task_id,
+            b"cli subagent idempotent output",
+        );
+        let serialized_blocks = serialized_blocks_for_restored_cli_subagent_for_test(&conversation);
+
+        let terminal = add_window_with_terminal(&mut app, Some(&serialized_blocks));
+        terminal.update(&mut app, |view, ctx| {
+            view.restore_conversation_after_view_creation(
+                RestoredAIConversation::new(conversation),
+                true,
+                RestoreConversationEntryBehavior::EnterRestoredConversation,
+                ctx,
+            );
+        });
+
+        let ai_block_count_after_restore = terminal.read(&app, |view, _| {
+            view.rich_content_views
+                .iter()
+                .filter(|rich_content| {
+                    rich_content
+                        .ai_block_metadata()
+                        .is_some_and(|metadata| metadata.conversation_id == conversation_id)
+                })
+                .count()
+        });
+        assert!(
+            ai_block_count_after_restore > 0,
+            "restore should have already backfilled the subagent's AIBlock(s)"
+        );
+
+        // Call it twice more; each should hit the per-exchange dedupe (the only guard) and insert nothing.
+        terminal.update(&mut app, |view, ctx| {
+            view.ensure_cli_subagent_transcript_blocks(conversation_id, ctx);
+            view.ensure_cli_subagent_transcript_blocks(conversation_id, ctx);
+        });
+
+        terminal.read(&app, |view, _| {
+            let ai_block_count_after_repeat_calls = view
+                .rich_content_views
+                .iter()
+                .filter(|rich_content| {
+                    rich_content
+                        .ai_block_metadata()
+                        .is_some_and(|metadata| metadata.conversation_id == conversation_id)
+                })
+                .count();
+            assert_eq!(
+                ai_block_count_after_repeat_calls, ai_block_count_after_restore,
+                "calling ensure_cli_subagent_transcript_blocks again must not duplicate AIBlocks"
+            );
+        });
+    });
+}
+
+#[test]
+fn finished_subagent_after_restore_does_not_duplicate_backfilled_ai_blocks() {
+    // #802 regression check: restore now backfills the subagent's AIBlocks itself, so the
+    // live `CLISubagentEvent::FinishedSubagent` handler (#799's original fix, unchanged here)
+    // runs afterward against a transcript that already has them. It must still end up with
+    // exactly one AIBlock per exchange -- proving
+    // `insert_ai_blocks_for_cli_subagent_conversation`'s per-exchange dedupe guards the
+    // interaction between the two call sites.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
+
+        let block_id = BlockId::from("cli-block-live-once".to_string());
+        let task_id = TaskId::new("cli-task-live-once".to_string());
+        let conversation_id = AIConversationId::new();
+        let conversation = build_restored_conversation_with_cli_subagent_snapshot_for_test(
+            conversation_id,
+            block_id.clone(),
+            task_id.clone(),
+            b"cli subagent live output",
+        );
+        let expected_exchange_ids: Vec<AIAgentExchangeId> = conversation
+            .get_task(&task_id)
+            .expect("fixture conversation should have the subagent task")
+            .exchanges()
+            .map(|exchange| exchange.id)
+            .collect();
+        let serialized_blocks = serialized_blocks_for_restored_cli_subagent_for_test(&conversation);
+
+        let terminal = add_window_with_terminal(&mut app, Some(&serialized_blocks));
+        terminal.update(&mut app, |view, ctx| {
+            view.restore_conversation_after_view_creation(
+                RestoredAIConversation::new(conversation),
+                true,
+                RestoreConversationEntryBehavior::EnterRestoredConversation,
+                ctx,
+            );
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_cli_subagent_controller_event(
+                view.cli_subagent_controller.clone(),
+                &CLISubagentEvent::FinishedSubagent {
+                    block_id: block_id.clone(),
+                    task_id: task_id.clone(),
+                    conversation_id: Some(conversation_id),
+                    initial_requested_command_action_id: None,
+                },
+                ctx,
+            );
+        });
+
+        terminal.read(&app, |view, _| {
+            for exchange_id in &expected_exchange_ids {
+                let matching_ai_blocks = view
+                    .rich_content_views
+                    .iter()
+                    .filter(|rich_content| {
+                        rich_content.ai_block_metadata().is_some_and(|metadata| {
+                            metadata.conversation_id == conversation_id
+                                && metadata.exchange_id == *exchange_id
+                        })
+                    })
+                    .count();
+                assert_eq!(
+                    matching_ai_blocks, 1,
+                    "FinishedSubagent must not duplicate an AIBlock restore already backfilled"
+                );
+            }
         });
     });
 }

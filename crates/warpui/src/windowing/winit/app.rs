@@ -36,15 +36,19 @@ pub enum CustomEvent {
     RunTask(ManuallyDrop<async_task::Runnable>),
     /// Exit the event loop, terminating the application.
     Terminate(TerminationMode),
-    /// Exit the event loop because a termination signal (`SIGTERM`/`SIGHUP`) was
-    /// received, carrying which one. Handled like `Terminate(ForceTerminate)`, but
-    /// kept distinct so `LoopExiting` can tell a signal-initiated quit apart from one
-    /// a key binding, menu, or dialog also requested around the same moment: only a
-    /// quit that reaches `LoopExiting` because of *this* event may re-raise the
-    /// signal afterward (jwp2987/phosphor#726). Never posted by anything other than
-    /// the termination-signal handler thread installed in `App::run`, which only
-    /// exists on Unix (`#[cfg(unix)]`): not constructed on Windows or wasm.
-    #[cfg_attr(not(unix), allow(dead_code))]
+    /// Exit the event loop because a termination signal (`SIGTERM`/`SIGHUP` on
+    /// Unix) or a Windows session-end message (`WM_ENDSESSION`, mapped to the
+    /// same synthetic signal space `termination_signals::ctrl_event_shutdown_reason`
+    /// uses, jwp2987/phosphor#773) was received, carrying which one. Handled
+    /// like `Terminate(ForceTerminate)`, but kept distinct so `LoopExiting` can
+    /// tell a signal-initiated quit apart from one a key binding, menu, or
+    /// dialog also requested around the same moment: only a quit that reaches
+    /// `LoopExiting` because of *this* event may re-raise the signal afterward
+    /// (jwp2987/phosphor#726). Posted by the termination-signal handler thread
+    /// installed in `App::run` (`#[cfg(unix)]` only) or, on Windows, by a
+    /// window's `WM_ENDSESSION` subclass (`windowing::winit::windows::session_end`,
+    /// `#[cfg(windows)]`); not constructed on wasm.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     TerminateFromSignal(i32),
     /// Close the specified window.
     CloseWindow {
@@ -238,36 +242,25 @@ impl App {
                 log::warn!("Failed to set up termination signal handling: {err}");
             }
         }
-        // TODO(#773, Windows follow-up to #685): `WM_QUERYENDSESSION` /
-        // `WM_ENDSESSION` (logoff, shutdown) still end the process without
-        // `app_will_terminate`. The headless/TUI side of #773 is fixed (see
-        // `termination_signals::console`: `SetConsoleCtrlHandler` for
-        // `CTRL_CLOSE_EVENT` / `CTRL_LOGOFF_EVENT` / `CTRL_SHUTDOWN_EVENT`), but
-        // this GUI path is not, deliberately -- the pinned winit fork
-        // (`https://github.com/jwp2987/winit.git`, rev
+        // Windows follow-up to #685 (jwp2987/phosphor#773): `WM_QUERYENDSESSION` /
+        // `WM_ENDSESSION` (logoff, shutdown) are handled per-window, not here --
+        // see `windowing::winit::windows::session_end`, installed on each
+        // window's HWND right after `Window::open_window` succeeds (this
+        // crate's `CustomEvent::OpenWindow` handler). The headless/TUI side of
+        // #773 is the sibling fix in `termination_signals::console`
+        // (`SetConsoleCtrlHandler`); this is the GUI one, needed because the
+        // pinned winit fork (`https://github.com/jwp2987/winit.git`, rev
         // `05e8c04da47960d8a627b73cf729d38aac91f80d`) has no `WM_ENDSESSION`
-        // support to opt into (checked: no `ENDSESSION` in its source at all),
-        // so unlike `CTRL_CLOSE_EVENT` this cannot reuse an existing seam.
+        // support to opt into, unlike `SetConsoleCtrlHandler`'s existing seam.
         //
-        // The viable mechanism is `SetWindowSubclass`/`DefSubclassProc`
-        // (`windows::Win32::UI::Shell`, already enabled for this crate) on the
-        // HWND winit's `WindowExtWindows::window_handle_any_thread` exposes:
-        // unlike `SetConsoleCtrlHandler`, which runs on its own OS thread,
-        // `WM_ENDSESSION` is *sent* synchronously on the same thread that pumps
-        // winit's event loop, nested inside that thread's own
-        // `GetMessage`/`DispatchMessage` call -- so the real work (hide windows,
-        // `app_will_terminate`, exit) has to run right there in the subclass
-        // callback, bounded by its own deadline watchdog, rather than merely
-        // posting a `CustomEvent` and returning: the OS may not grant this
-        // process another loop iteration before killing it. That callback would
-        // need `&mut EventLoop` (`self.callbacks`, `self.ui_app`) to actually run
-        // `app_will_terminate`, and nothing today threads a reference to it out
-        // to where `SetWindowSubclass` could reach -- doing so blind, without a
-        // Windows build to exercise a nested-message-pump case (e.g. a live
-        // resize/move loop) where `WM_ENDSESSION` could arrive while this
-        // thread's winit state is already borrowed elsewhere, is exactly the
-        // kind of change issue #773's own "Scope note" says needs a real
-        // Windows build/test before being trusted. Left for whoever has one.
+        // `session_end`'s module doc records the three shapes considered for
+        // running `app_will_terminate` from inside a message that can itself
+        // arrive nested (e.g. during a live resize/move's own modal message
+        // loop) and why the chosen one -- `ShutdownBlockReasonCreate` plus
+        // posting the same `CustomEvent::TerminateFromSignal` the Unix signal
+        // path already posts, rather than running the shutdown or pumping
+        // messages inside the subclass callback itself -- was picked without a
+        // Windows build to exercise the alternatives' re-entrancy risk against.
 
         let ui_app = Self::construct_ui_app(assets, is_integration_test, &event_loop);
         let inner_event_loop = super::EventLoop::new(

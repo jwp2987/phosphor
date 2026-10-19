@@ -99,7 +99,13 @@ impl ResizableState {
         }
     }
 
-    fn is_resizing(&self) -> bool {
+    /// Whether a drag on this handle's dragbar is currently in progress.
+    ///
+    /// Public so a container holding a `ResizableStateHandle` directly (e.g.
+    /// `CLISubagentView`, see #803) can tell whether an owned drag is still active
+    /// without going through `Resizable` itself -- useful when the element that owns
+    /// the handle may not be laid out this frame.
+    pub fn is_resizing(&self) -> bool {
         matches!(self.mode, ResizableMode::Dragging { .. })
     }
 
