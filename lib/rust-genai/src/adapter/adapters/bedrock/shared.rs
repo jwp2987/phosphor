@@ -1,3 +1,7 @@
+// MODIFIED by the Phosphor fork relative to upstream genai.
+// Notice required by Apache-2.0 section 4(b); see lib/rust-genai/CHANGES-PHOSPHOR.md
+// for what changed here and why. Original: https://github.com/jeremychone/rust-genai
+
 //! Shared helpers used by both the SigV4 and API-key Bedrock adapters.
 
 use crate::adapter::{AdapterKind, ServiceType};
@@ -93,11 +97,17 @@ fn async_stream_once(
 			.map_err(|e| Box::new(e) as crate::error::BoxError)?;
 		let status = resp.status();
 		if !status.is_success() {
+			let retry_after = resp
+				.headers()
+				.get(reqwest::header::RETRY_AFTER)
+				.and_then(|v| v.to_str().ok())
+				.map(str::to_string);
 			let body = resp.text().await.unwrap_or_default();
 			let err = crate::Error::HttpError {
 				status,
 				canonical_reason: status.canonical_reason().unwrap_or("Unknown").to_string(),
 				body,
+				retry_after,
 			};
 			return Err(Box::new(err) as crate::error::BoxError);
 		}

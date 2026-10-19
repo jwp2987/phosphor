@@ -1,3 +1,7 @@
+// MODIFIED by the Phosphor fork relative to upstream genai.
+// Notice required by Apache-2.0 section 4(b); see lib/rust-genai/CHANGES-PHOSPHOR.md
+// for what changed here and why. Original: https://github.com/jeremychone/rust-genai
+
 use bytes::Bytes;
 use futures::stream::TryStreamExt;
 use futures::{Future, Stream};
@@ -89,6 +93,11 @@ impl Stream for WebStream {
 							this.response_future = None;
 							// For error responses, we need to read the body to get the error message
 							// Store a future that reads the body and returns an error
+							let retry_after = response
+								.headers()
+								.get(reqwest::header::RETRY_AFTER)
+								.and_then(|v| v.to_str().ok())
+								.map(str::to_string);
 							let error_future = async move {
 								let body = response
 									.text()
@@ -98,6 +107,7 @@ impl Stream for WebStream {
 									status,
 									canonical_reason: status.canonical_reason().unwrap_or("Unknown").to_string(),
 									body,
+									retry_after,
 								}))
 							};
 							this.response_future = Some(Box::pin(error_future));

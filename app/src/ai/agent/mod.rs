@@ -830,14 +830,14 @@ impl From<&AIApiError> for RenderableAIError {
             },
             // A status error read with its response body (often the provider's
             // own error text, e.g. "model 'x' not found").
-            AIApiError::ErrorStatus(status, body) if matches!(status.as_u16(), 401 | 403) => {
+            AIApiError::ErrorStatus(status, body, _) if matches!(status.as_u16(), 401 | 403) => {
                 format!(
                     "Your AI provider rejected the request as unauthorized (HTTP {}). Check that \
                      the provider's API key is set and correct.\n\n{body}",
                     status.as_u16()
                 )
             }
-            AIApiError::ErrorStatus(status, body) => {
+            AIApiError::ErrorStatus(status, body, _) => {
                 format!("Your AI provider returned HTTP {}.\n\n{body}", status.as_u16())
             }
             AIApiError::Deserialization(err) => {

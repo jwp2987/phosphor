@@ -3341,6 +3341,26 @@ fn diag_message_with_redacted_binaries(message: &ChatMessage) -> std::borrow::Co
 ///   that call site.
 const BYOP_DIAG_CONTENT_ENV: &str = "ZAP_BYOP_LOG_FULL_REQUEST";
 
+/// Env override for the BYOP stream idle timeout, in seconds (#853).
+const BYOP_STREAM_IDLE_TIMEOUT_ENV: &str = "PHOSPHOR_BYOP_STREAM_IDLE_TIMEOUT_SECS";
+
+/// Default longest silence tolerated between two stream events. Generous because a reasoning
+/// model may legitimately think for a long time before its first token.
+const DEFAULT_BYOP_STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+fn byop_stream_idle_timeout() -> std::time::Duration {
+    parse_idle_timeout_secs(std::env::var(BYOP_STREAM_IDLE_TIMEOUT_ENV).ok().as_deref())
+}
+
+/// Pure parse of the idle-timeout override: a positive integer number of seconds, otherwise
+/// the default.
+fn parse_idle_timeout_secs(raw: Option<&str>) -> std::time::Duration {
+    raw.and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(DEFAULT_BYOP_STREAM_IDLE_TIMEOUT)
+}
+
 /// Read once per process: an env var cannot meaningfully change mid-run, and this is consulted
 /// several times per message per turn.
 fn byop_diag_content_enabled() -> bool {
@@ -5460,6 +5480,12 @@ fn build_chat_options(
     opts
 }
 
+/// Parses the raw `Retry-After` value genai captured off a failed response (see
+/// `lib/rust-genai/CHANGES-PHOSPHOR.md`). `None` when absent, malformed, or not a positive wait.
+fn parse_retry_after_header(raw: Option<&str>) -> Option<std::time::Duration> {
+    crate::ai::api_error::parse_retry_after(raw?, chrono::Utc::now())
+}
+
 fn map_genai_error(err: genai::Error) -> OpenAiCompatibleError {
     use genai::Error as G;
     match err {
@@ -5485,7 +5511,9 @@ fn map_genai_error(err: genai::Error) -> OpenAiCompatibleError {
                 status,
                 canonical_reason,
                 body,
+                retry_after,
             }) => OpenAiCompatibleError::Status {
+                retry_after: parse_retry_after_header(retry_after.as_deref()),
                 status: status.as_u16(),
                 body: if canonical_reason.is_empty() {
                     body.clone()
@@ -5526,7 +5554,9 @@ fn map_genai_error(err: genai::Error) -> OpenAiCompatibleError {
             status,
             body,
             canonical_reason,
+            retry_after,
         } => OpenAiCompatibleError::Status {
+            retry_after: parse_retry_after_header(retry_after.as_deref()),
             status: status.as_u16(),
             body: if canonical_reason.is_empty() {
                 body
@@ -5575,9 +5605,14 @@ fn byop_stream_error_to_api_error(
 /// which drives `is_retryable()` -- depends on whether `mapped` carries an HTTP status.
 fn byop_error_to_api_error(mapped: &OpenAiCompatibleError, message: String) -> AIApiError {
     match mapped {
-        OpenAiCompatibleError::Status { status, .. } => AIApiError::ErrorStatus(
+        OpenAiCompatibleError::Status {
+            status,
+            retry_after,
+            ..
+        } => AIApiError::ErrorStatus(
             http::StatusCode::from_u16(*status).unwrap_or(http::StatusCode::INTERNAL_SERVER_ERROR),
             message,
+            *retry_after,
         ),
         _ => AIApiError::Other(anyhow::anyhow!(message)),
     }
@@ -5922,7 +5957,7 @@ pub async fn generate_byop_output(
         lrc_should_spawn_subagent,
         context_window,
         max_output_tokens,
-        cancellation_rx: _cancellation_rx,
+        cancellation_rx,
         attachment_caps,
         other_provider_hint,
     } = input;
@@ -6505,7 +6540,34 @@ pub async fn generate_byop_output(
         // provider at that point would be misleading.
         let mut received_real_event = false;
 
-        while let Some(item) = sdk_stream.next().await {
+        let stream_idle_timeout = byop_stream_idle_timeout();
+        loop {
+            // #853: bound the wait for each chunk. A provider that goes silent after the
+            // first token (or never sends one) would otherwise leave the turn "thinking"
+            // forever; ctrl-c was the only way out. What was streamed so far stays in the
+            // conversation, and the error below goes through the normal recovery path.
+            let next_item = {
+                let next = sdk_stream.next();
+                let idle = warpui::r#async::Timer::after(stream_idle_timeout);
+                futures::pin_mut!(next, idle);
+                match futures::future::select(next, idle).await {
+                    futures::future::Either::Left((item, _)) => item,
+                    futures::future::Either::Right(_) => {
+                        log::error!(
+                            "[byop] stream idle for {stream_idle_timeout:?}; giving up \
+                             (chunks={chunk_count} tool_chunks={tool_chunk_count})"
+                        );
+                        yield Err(Arc::new(AIApiError::Other(anyhow::anyhow!(
+                            "The AI provider stopped sending data for {} seconds, so this \
+                             response was cut off. Anything already received is kept; send \
+                             your message again to retry.",
+                            stream_idle_timeout.as_secs()
+                        ))));
+                        return;
+                    }
+                }
+            };
+            let Some(item) = next_item else { break };
             let event = match item {
                 Ok(ev) => {
                     if !matches!(ev, ChatStreamEvent::Start) {
@@ -7747,7 +7809,8 @@ pub async fn generate_byop_output(
         yield Ok(make_finished_done(usage_metadata, token_usage));
     };
 
-    Ok(Box::pin(stream))
+    // Dropping the stream on cancellation also drops the in-flight HTTP request.
+    Ok(Box::pin(stream.take_until(cancellation_rx)))
 }
 
 /// Sends a short, non-tool request with an independent BYOP config, having the model
@@ -9046,6 +9109,7 @@ mod byop_stream_error_retry_tests {
             status: http::StatusCode::UNAUTHORIZED,
             canonical_reason: "Unauthorized".to_string(),
             body: "invalid api key".to_string(),
+            retry_after: None,
         };
         let wrapped = genai::Error::WebStream {
             model_iden,
@@ -9055,12 +9119,61 @@ mod byop_stream_error_retry_tests {
 
         let mapped = map_genai_error(wrapped);
         match mapped {
-            OpenAiCompatibleError::Status { status, body } => {
+            OpenAiCompatibleError::Status { status, body, .. } => {
                 assert_eq!(status, 401);
                 assert!(body.contains("invalid api key"));
             }
             other => panic!("expected a Status carrying the wrapped HttpError, got: {other}"),
         }
+    }
+
+    // #854: a 429 carrying `Retry-After` must keep the delay all the way to the `AIApiError`
+    // the recovery layer sees, through WebStream -> Status -> ErrorStatus.
+    #[test]
+    fn a_429_retry_after_survives_the_error_chain() {
+        let model_iden = genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "gpt-test");
+        let inner = genai::Error::HttpError {
+            status: http::StatusCode::TOO_MANY_REQUESTS,
+            canonical_reason: "Too Many Requests".to_string(),
+            body: "slow down".to_string(),
+            retry_after: Some("7".to_string()),
+        };
+        let wrapped = genai::Error::WebStream {
+            model_iden,
+            cause: "stream error".to_string(),
+            error: Box::new(inner),
+        };
+        let api_err = byop_stream_error_to_api_error(map_genai_error(wrapped), None);
+        assert!(api_err.is_retryable());
+        assert_eq!(
+            api_err.retry_after(),
+            Some(std::time::Duration::from_secs(7))
+        );
+    }
+
+    #[test]
+    fn idle_timeout_override_parsing() {
+        let default = DEFAULT_BYOP_STREAM_IDLE_TIMEOUT;
+        assert_eq!(parse_idle_timeout_secs(None), default);
+        assert_eq!(parse_idle_timeout_secs(Some("")), default);
+        assert_eq!(parse_idle_timeout_secs(Some("0")), default);
+        assert_eq!(parse_idle_timeout_secs(Some("abc")), default);
+        assert_eq!(
+            parse_idle_timeout_secs(Some(" 30 ")),
+            std::time::Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn a_429_without_retry_after_has_no_delay() {
+        let inner = genai::Error::HttpError {
+            status: http::StatusCode::TOO_MANY_REQUESTS,
+            canonical_reason: "Too Many Requests".to_string(),
+            body: String::new(),
+            retry_after: Some("garbage".to_string()),
+        };
+        let api_err = byop_stream_error_to_api_error(map_genai_error(inner), None);
+        assert_eq!(api_err.retry_after(), None);
     }
 
     #[test]
@@ -9089,11 +9202,12 @@ mod byop_stream_error_retry_tests {
             OpenAiCompatibleError::Status {
                 status: 401,
                 body: "invalid api key".to_string(),
+                retry_after: None,
             },
             None,
         );
         assert!(
-            matches!(err, AIApiError::ErrorStatus(status, _) if status == http::StatusCode::UNAUTHORIZED)
+            matches!(err, AIApiError::ErrorStatus(status, _, _) if status == http::StatusCode::UNAUTHORIZED)
         );
         assert!(!err.is_retryable());
     }
@@ -9104,6 +9218,7 @@ mod byop_stream_error_retry_tests {
             OpenAiCompatibleError::Status {
                 status: 404,
                 body: "model 'gpt-nonexistent' not found".to_string(),
+                retry_after: None,
             },
             None,
         );
@@ -9118,6 +9233,7 @@ mod byop_stream_error_retry_tests {
             OpenAiCompatibleError::Status {
                 status: 429,
                 body: "rate limited".to_string(),
+                retry_after: None,
             },
             None,
         );
@@ -9130,6 +9246,7 @@ mod byop_stream_error_retry_tests {
             OpenAiCompatibleError::Status {
                 status: 408,
                 body: "request timeout".to_string(),
+                retry_after: None,
             },
             None,
         );
@@ -9142,6 +9259,7 @@ mod byop_stream_error_retry_tests {
             OpenAiCompatibleError::Status {
                 status: 500,
                 body: "internal server error".to_string(),
+                retry_after: None,
             },
             None,
         );
@@ -9167,6 +9285,7 @@ mod byop_stream_error_retry_tests {
         let mapped = OpenAiCompatibleError::Status {
             status: 401,
             body: "invalid api key".to_string(),
+            retry_after: None,
         };
         let message = describe_byop_open_stream_failure(&mapped, None);
         let err = byop_error_to_api_error(&mapped, message);
@@ -9232,6 +9351,7 @@ mod byop_stream_error_retry_tests {
             OpenAiCompatibleError::Status {
                 status: 401,
                 body: "invalid api key".to_string(),
+                retry_after: None,
             },
             Some(&hint()),
         );
@@ -13285,6 +13405,7 @@ mod byop_unreachable_provider_hint_tests {
         let status = OpenAiCompatibleError::Status {
             status: 401,
             body: "invalid api key".to_string(),
+            retry_after: None,
         };
         let other = OpenAiCompatibleError::Other("request construction failed".to_string());
         let decode = OpenAiCompatibleError::Decode("bad json".to_string());
