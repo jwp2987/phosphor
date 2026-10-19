@@ -152,6 +152,8 @@ pub mod focus_state;
 pub mod pane;
 pub mod tree;
 pub mod working_directories;
+#[cfg(feature = "local_fs")]
+pub(crate) mod repo_idle_evictor;
 
 use focus_state::PaneGroupFocusState;
 
@@ -4334,6 +4336,16 @@ impl PaneGroup {
             LLMPreferences::handle(ctx).update(ctx, |prefs, ctx| {
                 prefs.forget_terminal_view(terminal_view_id, ctx);
             });
+            // Same teardown point (#843): the AI history model's per-view maps (and,
+            // when reloadable from SQLite, the full conversations) and the per-view
+            // active execution profile.
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
+                history_model.forget_terminal_view(terminal_view_id, ctx);
+            });
+            crate::ai::execution_profiles::profiles::AIExecutionProfilesModel::handle(ctx)
+                .update(ctx, |profiles, _| {
+                    profiles.forget_terminal_view(terminal_view_id);
+                });
             // Same teardown point, same reason (#843): the shell session's `History`
             // bookkeeping is otherwise never released.
             let session_id = terminal_view

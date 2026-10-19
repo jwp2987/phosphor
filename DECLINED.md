@@ -2329,3 +2329,21 @@ upstream's behavior is actually a defect rather than a preference.
   variable that was set but not exported is exported again by the restore; the pwsh form is
   unverified in a real shell.
   <!-- markers: keep:wrap_command keep:needs_subshell keep:model_id_handles_command_snapshots keep:is_known_pager_name keep:FullscreenStallDetector -->
+
+## Not done: evicting closed panes' AI conversations from memory (#843)
+
+Closing a pane drops the AI history model's per-view maps (live and cleared ids, active
+conversation, creation time, ambient-session ids) and the per-view active execution profile,
+but the `AIConversation` objects stay in `BlocklistAIHistoryModel::conversations_by_id`. An
+eviction was built and reviewed over four rounds and then **dropped**: it was safe but almost
+never fired, because most real conversations carry state that exists only in memory, and the
+sweep, writer-ack and comparison machinery is a large data-loss surface for little recovered
+memory. **Do not re-add eviction without first persisting these fields** (none is written by
+`write_updated_conversation_state` or rebuilt on restore): `existing_suggestions`,
+`status_error_message`, `total_request_cost`, `total_token_usage_by_model`,
+`fallback_display_title`, the code-review flags (`has_opened_code_review`, `code_review`),
+and hidden exchanges. It would also need a writer acknowledgement (not a read-back that can
+point at an unlinked file after logout or a database reconstruct), a `conversation_data`
+comparison, a deferred eviction confirmed after SQLite holds the row, and exclusion of
+orchestration trees (children are looked up in memory). The attempted design is in commits
+`1a31330cf..ddf543690` on the dropped `fix/r13w2-memory-2` history.

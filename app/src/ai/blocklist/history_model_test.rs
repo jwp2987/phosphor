@@ -5418,3 +5418,39 @@ fn block_completion_does_not_finish_a_non_cli_subagent() {
         });
     });
 }
+
+/// #843: closing a view releases its per-view maps but keeps the conversation objects
+/// (they stay restorable and are never dropped from memory).
+#[test]
+fn test_forget_terminal_view_drops_per_view_maps_and_keeps_conversations() {
+    App::test((), |mut app| async move {
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let view = EntityId::new();
+        let id = history_model.update(&mut app, |model, ctx| {
+            let id = model.start_new_conversation(view, false, false, ctx);
+            model.terminal_view_created_at.insert(view, Local::now());
+            model.forget_terminal_view(view, ctx);
+            id
+        });
+        history_model.read(&app, |model, _| {
+            assert!(model.conversation(&id).is_some());
+            assert!(
+                !model
+                    .live_conversation_ids_for_terminal_view
+                    .contains_key(&view)
+            );
+            assert!(
+                !model
+                    .cleared_conversation_ids_for_terminal_view
+                    .contains_key(&view)
+            );
+            assert!(
+                !model
+                    .active_conversation_for_terminal_view
+                    .contains_key(&view)
+            );
+            assert!(!model.terminal_view_created_at.contains_key(&view));
+        });
+    });
+}

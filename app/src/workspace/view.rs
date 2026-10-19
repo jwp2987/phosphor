@@ -2927,6 +2927,16 @@ impl Workspace {
 
         let working_directories_model =
             ctx.add_model(|_| pane_group::WorkingDirectoriesModel::new());
+        // Lets the idle evictor see which repos this window's pane groups are inside (#869).
+        #[cfg(feature = "local_fs")]
+        if ctx.has_singleton_model::<pane_group::repo_idle_evictor::RepoIdleEvictor>() {
+            pane_group::repo_idle_evictor::RepoIdleEvictor::handle(ctx).update(
+                ctx,
+                |evictor, ctx| {
+                    evictor.watch(&working_directories_model, ctx);
+                },
+            );
+        }
 
         let left_panel_views = Self::compute_left_panel_views(ctx);
 

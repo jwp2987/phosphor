@@ -39,6 +39,25 @@ fn newest_tail<T>(items: Vec<T>, max: usize) -> impl Iterator<Item = T> {
     items.into_iter().skip(skip)
 }
 
+/// Applies the typed `prefix` first, then keeps the newest `max` survivors, so an old match is
+/// still reachable by typing its prefix (#874). An empty prefix keeps everything before the cap.
+fn prefix_filtered_newest_tail<T>(
+    items: Vec<T>,
+    prefix: &str,
+    max: usize,
+    text: impl Fn(&T) -> &str,
+) -> impl Iterator<Item = T> {
+    let filtered: Vec<T> = if prefix.is_empty() {
+        items
+    } else {
+        items
+            .into_iter()
+            .filter(|item| text(item).starts_with(prefix))
+            .collect()
+    };
+    newest_tail(filtered, max)
+}
+
 #[derive(Clone, Debug)]
 pub enum AcceptHistoryItem {
     Conversation {
@@ -123,11 +142,12 @@ impl InlineHistoryMenuDataSource {
         );
 
         let mut results: Vec<QueryResult<AcceptHistoryItem>> = Vec::new();
-        for suggestion in newest_tail(suggestions, MAX_MENU_HISTORY_ROWS) {
-            if !trimmed_query.is_empty() && !suggestion.text().starts_with(trimmed_query) {
-                continue;
-            }
-
+        for suggestion in prefix_filtered_newest_tail(
+            suggestions,
+            trimmed_query,
+            MAX_MENU_HISTORY_ROWS,
+            |suggestion| suggestion.text(),
+        ) {
             let (search_item, score) = match suggestion {
                 HistoryInputSuggestion::Command { entry } => {
                     let command = entry.command.trim();

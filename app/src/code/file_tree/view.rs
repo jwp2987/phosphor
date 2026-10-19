@@ -643,6 +643,30 @@ impl FileTreeView {
                 self.rebuild_flattened_items_for_root(repo_path);
                 ctx.notify();
             }
+            RepoMetadataEvent::RepositoryRemoved {
+                id: RepositoryIdentifier::Local(std_path),
+            } => {
+                // The model dropped this repo's tree (e.g. idle eviction, #869). Drop our
+                // cached copy of it so it is not retained here; `displayed_directories` is
+                // kept, so the root is refilled by the next `RepositoryUpdated` when the
+                // repo is indexed again.
+                let root_paths: Vec<StandardizedPath> = self
+                    .root_directories
+                    .iter()
+                    .filter_map(|(root_path, root_dir)| {
+                        (root_dir.remote_host_id.is_none()
+                            && **root_dir.entry.root_directory() == *std_path)
+                            .then_some(root_path.clone())
+                    })
+                    .collect();
+                if !root_paths.is_empty() {
+                    for root_path in &root_paths {
+                        self.root_directories.remove(root_path);
+                        self.rebuild_flattened_items_for_root(root_path);
+                    }
+                    ctx.notify();
+                }
+            }
             RepoMetadataEvent::FileTreeUpdated { .. }
             | RepoMetadataEvent::RepositoryRemoved { .. }
             | RepoMetadataEvent::UpdatingRepositoryFailed { .. }

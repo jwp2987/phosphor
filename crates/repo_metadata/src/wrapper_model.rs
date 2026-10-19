@@ -438,6 +438,12 @@ impl RepoMetadataModel {
         });
     }
 
+    /// Local repositories indexed only because a terminal entered them (#869); the only ones
+    /// the idle evictor may drop.
+    pub fn idle_evictable_local_repositories(&self, ctx: &AppContext) -> Vec<StandardizedPath> {
+        self.local.as_ref(ctx).idle_evictable_repositories()
+    }
+
     /// Removes a repository (local or remote) from tracking.
     pub fn remove_repository(
         &self,

@@ -2347,6 +2347,9 @@ fn initialize_app(
             ctx,
         )
     });
+    // Drops file trees of terminal-indexed repos no pane group has been in for a while (#869).
+    #[cfg(feature = "local_fs")]
+    ctx.add_singleton_model(crate::pane_group::repo_idle_evictor::RepoIdleEvictor::new);
     // Recently-used repository roots. Registered after `ProjectContextModel`
     // because `user_added_workspace` drives a project-rules scan through it, and
     // after `RepoMetadataModel` for the same reason.

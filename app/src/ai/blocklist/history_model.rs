@@ -2638,6 +2638,29 @@ impl BlocklistAIHistoryModel {
         }
     }
 
+    /// Releases the per-view maps this model holds for a terminal view that is being
+    /// permanently discarded (#843). Called from `PaneGroup`'s teardown hook.
+    ///
+    /// Conversation objects stay in `conversations_by_id`; only the per-view bookkeeping
+    /// is dropped, and conversations are marked historical so they stay restorable.
+    pub fn forget_terminal_view(
+        &mut self,
+        terminal_view_id: EntityId,
+        _ctx: &mut ModelContext<Self>,
+    ) {
+        // Make sure metadata exists for everything restorable.
+        self.mark_conversations_historical_for_terminal_view(terminal_view_id);
+        self.live_conversation_ids_for_terminal_view
+            .remove(&terminal_view_id);
+        self.cleared_conversation_ids_for_terminal_view
+            .remove(&terminal_view_id);
+        self.active_conversation_for_terminal_view
+            .remove(&terminal_view_id);
+        self.terminal_view_created_at.remove(&terminal_view_id);
+        self.ambient_agent_terminal_view_ids
+            .remove(&terminal_view_id);
+    }
+
     /// Inserts a conversation into memory by reconstructing exchanges from tasks.
     /// We use this when forking a conversation to ensure that the forked conversation
     /// is immediately available in memory before we try to restore it in a new tab.

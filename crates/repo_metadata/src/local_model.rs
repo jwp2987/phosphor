@@ -316,6 +316,12 @@ pub struct LocalRepoMetadataModel {
     /// registered/unregistered without duplicating or leaking OS watches.
     #[cfg(feature = "local_fs")]
     repo_watches: HashMap<StandardizedPath, RepoWatch>,
+    /// Repositories that were indexed *only* because `DetectedRepositories` saw a
+    /// terminal enter them (#869). These are the only ones eligible for idle eviction:
+    /// a repo that any other caller asked for through [`Self::index_directory`] (a
+    /// code-review view, a user-added workspace, ...) is dropped from this set and
+    /// stays resident, because we cannot see what holds it.
+    auto_indexed: std::collections::HashSet<StandardizedPath>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -417,6 +423,7 @@ impl LocalRepoMetadataModel {
             symlink_targets: HashMap::new(),
             #[cfg(feature = "local_fs")]
             repo_watches: HashMap::new(),
+            auto_indexed: std::collections::HashSet::new(),
         };
         cfg_if::cfg_if! {
             if #[cfg(feature = "local_fs")] {
@@ -432,10 +439,15 @@ impl LocalRepoMetadataModel {
                 ctx.subscribe_to_model(&DetectedRepositories::handle(ctx), |me, event, ctx| {
                     let DetectedRepositoriesEvent::DetectedGitRepo { repository, .. } = event;
                     let repo_path = repository.as_ref(ctx).root_dir().clone();
+                    let newly_tracked = !me.repositories.contains_key(&repo_path);
                     if let Err(e) = me.index_directory(repository.clone(), ctx) {
                         log::warn!(
                             "Failed to index directory {repo_path}: {e}"
                         );
+                    } else if newly_tracked {
+                        // Indexed purely because a terminal entered it: eligible for
+                        // idle eviction (#869).
+                        me.auto_indexed.insert(repo_path);
                     }
                 });
             }
@@ -514,6 +526,7 @@ impl LocalRepoMetadataModel {
         &mut self,
         repo_path: &StandardizedPath,
     ) -> Option<IndexedRepoState> {
+        self.auto_indexed.remove(repo_path);
         let previous = self.repositories.remove(repo_path);
         if let Some(previous) = &previous {
             previous.complete_if_pending();
@@ -2002,6 +2015,22 @@ impl LocalRepoMetadataModel {
         matches_gitignores(path, is_dir, gitignores, true)
     }
 
+    /// Indexed local repositories that only terminal navigation asked for (#869), i.e. the
+    /// ones safe to evict once no session is inside them. Lazy-loaded placeholders are never
+    /// included.
+    pub fn idle_evictable_repositories(&self) -> Vec<StandardizedPath> {
+        self.auto_indexed
+            .iter()
+            .filter(|path| {
+                matches!(
+                    self.repositories.get(*path),
+                    Some(IndexedRepoState::Indexed(_))
+                ) && !self.lazy_loaded_paths.contains_key(*path)
+            })
+            .cloned()
+            .collect()
+    }
+
     /// Indexes a repository from the given repository handle.
     pub fn index_directory(
         &mut self,
@@ -2009,6 +2038,9 @@ impl LocalRepoMetadataModel {
         ctx: &mut ModelContext<'_, Self>,
     ) -> Result<(), RepoMetadataError> {
         let std_path = repository.as_ref(ctx).root_dir().clone();
+        // Any caller of this entry point other than the `DetectedRepositories` handler
+        // (which re-marks the repo afterwards) takes the repo out of idle eviction.
+        self.auto_indexed.remove(&std_path);
         let local_path = std_path
             .to_local_path()
             .ok_or_else(|| RepoMetadataError::PathEncodingMismatch(std_path.clone()))?;
