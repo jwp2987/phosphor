@@ -617,37 +617,6 @@ fn test_moving_a_pane_does_not_stop_its_agent() {
     });
 }
 
-#[test]
-fn dbg_variant_a_one_conv_closed() {
-    App::test((), |mut app| async move {
-        let pane_group = mock_pane_group(&mut app);
-        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
-        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
-        pane_group.update(&mut app, |panes, ctx| {
-            let pane_id = get_newly_created_pane_id(panes, &[]);
-            let first = start_running_conversation_in_pane(panes, pane_id, ctx);
-            panes.clean_up_panes(ctx);
-            eprintln!("DBGA {:?}", conversation_status(first, ctx));
-        });
-    });
-}
-
-#[test]
-fn dbg_variant_b_two_conv_hidden() {
-    App::test((), |mut app| async move {
-        let pane_group = mock_pane_group(&mut app);
-        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
-        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
-        pane_group.update(&mut app, |panes, ctx| {
-            let pane_id = get_newly_created_pane_id(panes, &[]);
-            let first = start_running_conversation_in_pane(panes, pane_id, ctx);
-            let second = start_running_conversation_in_pane(panes, pane_id, ctx);
-            panes.detach_panes(ctx);
-            eprintln!("DBGB {:?} {:?}", conversation_status(first, ctx), conversation_status(second, ctx));
-        });
-    });
-}
-
 /// #848: a permanent close (`DetachType::Closed`) used to cancel only the view's *active*
 /// conversation, via `ClearedConversationsInTerminalView`. Every running conversation of the
 /// pane must stop.
@@ -665,9 +634,6 @@ fn test_permanent_close_stops_every_running_conversation_in_the_pane() {
 
             panes.clean_up_panes(ctx);
 
-            for conversation_id in [first, second] {
-                eprintln!("DBG {conversation_id:?} {:?}", conversation_status(conversation_id, ctx));
-            }
             for conversation_id in [first, second] {
                 assert_eq!(
                     conversation_status(conversation_id, ctx),

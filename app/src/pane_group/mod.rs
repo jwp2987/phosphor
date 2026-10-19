@@ -4577,9 +4577,11 @@ impl PaneGroup {
             // Permanent removal (UndoClosedPanes disabled, so there's no
             // grace-period `cleanup_closed_pane` pass to catch this later):
             // drop the terminal view's LLMPreferences overrides now, before
-            // pane_contents loses the view this pane_id resolves to (#801).
-            self.forget_llm_overrides_for_pane(pane_id, ctx);
+            // pane_contents loses the view this pane_id resolves to (#801). After the detach,
+            // not before: the detach stops the pane's running conversations (#848) by finding
+            // them through the history model's per-view maps, which the forget drops.
             self.clean_up_pane(pane_id, ctx);
+            self.forget_llm_overrides_for_pane(pane_id, ctx);
 
             // Zap: removed the share_block_modal cleanup (cloud share block)
             // Zap Wave 7-3: the pane-level modal tracking field cleanup in the
@@ -5053,15 +5055,18 @@ impl PaneGroup {
     /// Clean up a close-hidden pane completely (used when grace period expires)
     /// Returns true if the pane was successfully cleaned up, false if it was already cleaned up
     pub fn cleanup_closed_pane(&mut self, pane_id: PaneId, ctx: &mut ViewContext<Self>) -> bool {
-        self.forget_llm_overrides_for_pane(pane_id, ctx);
         self.panes.remove_hidden_pane(pane_id);
 
         let Some(pane_data) = self.pane_contents.get(&pane_id) else {
+            self.forget_llm_overrides_for_pane(pane_id, ctx);
             return false;
         };
 
         let pane = pane_data.as_pane();
         pane.detach(self, DetachType::Closed, ctx);
+        // After the detach: it stops the pane's running conversations (#848) through the history
+        // model's per-view maps, which the forget drops.
+        self.forget_llm_overrides_for_pane(pane_id, ctx);
 
         if !self.panes.remove(pane_id) {
             log::warn!("Attempted to cleanup pane {pane_id} but it was not found in the tree");
@@ -6614,12 +6619,15 @@ impl PaneGroup {
     // overrides here (#801) can't double-run against a pane that gets
     // individually closed later, since by this point the whole group is gone.
     pub fn clean_up_panes(&self, ctx: &mut ViewContext<Self>) {
-        for pane_id in self.terminal_pane_ids().collect::<Vec<_>>() {
-            self.forget_llm_overrides_for_pane(pane_id, ctx);
-        }
+        let terminal_pane_ids = self.terminal_pane_ids().collect::<Vec<_>>();
         for pane in self.pane_contents.values() {
             let pane = pane.as_pane();
             pane.detach(self, DetachType::Closed, ctx);
+        }
+        // After the detach: it stops each pane's running conversations (#848) through the history
+        // model's per-view maps, which the forget drops.
+        for pane_id in terminal_pane_ids {
+            self.forget_llm_overrides_for_pane(pane_id, ctx);
         }
     }
 
