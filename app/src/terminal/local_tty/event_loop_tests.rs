@@ -132,3 +132,30 @@ fn successful_setup_leaves_the_shell_running() {
     assert!(new_event_loop(pty).is_ok());
     assert!(!killed.load(Ordering::SeqCst));
 }
+
+/// #829: a reply to a terminal query that was produced while a command ran must
+/// not be written after that command finished; the shell would read it back as
+/// typed text (`62c`, `10;rgb:...`).
+#[test]
+fn stale_query_responses_are_dropped_once_the_command_finishes() {
+    let mut state = State::default();
+    state.queue_response(b"\x1b[?62;c".to_vec(), true);
+    state.queue_response(b"\x1b[1;1R".to_vec(), false);
+
+    state.drop_stale_responses(false);
+
+    state.ensure_next();
+    let writing = state.take_current().expect("prompt-time reply is kept");
+    assert_eq!(writing.remaining_bytes(), b"\x1b[1;1R");
+    assert!(!state.needs_write());
+}
+
+#[test]
+fn query_responses_are_kept_while_the_command_is_still_running() {
+    let mut state = State::default();
+    state.queue_response(b"\x1b[?62;c".to_vec(), true);
+
+    state.drop_stale_responses(true);
+
+    assert!(state.needs_write());
+}

@@ -63,6 +63,11 @@ struct Writing {
 /// would otherwise be mutated on the `EventLoop` goes here.
 pub struct State {
     write_list: VecDeque<Cow<'static, [u8]>>,
+    /// Replies to terminal queries (DA, OSC colors, ...), each tagged with whether the
+    /// active block was executing when it was queued. A reply that is still unwritten
+    /// after the command finished is dropped: the shell would otherwise read it back as
+    /// typed text (#829).
+    response_list: VecDeque<(Vec<u8>, bool)>,
     writing: Option<Writing>,
     parser: ansi::Processor,
 }
@@ -71,6 +76,7 @@ impl Default for State {
     fn default() -> State {
         State {
             write_list: VecDeque::new(),
+            response_list: VecDeque::new(),
             parser: ansi::Processor::new(),
             writing: None,
         }
@@ -87,7 +93,26 @@ impl State {
 
     #[inline]
     fn goto_next(&mut self) {
-        self.writing = self.write_list.pop_front().map(Writing::new);
+        self.writing = self.write_list.pop_front().map(Writing::new).or_else(|| {
+            self.response_list
+                .pop_front()
+                .map(|(bytes, _)| Writing::new(Cow::Owned(bytes)))
+        });
+    }
+
+    /// Queues a reply to a terminal query. `executing` is whether the active block was
+    /// executing a command when the query was parsed.
+    fn queue_response(&mut self, bytes: Vec<u8>, executing: bool) {
+        if !bytes.is_empty() {
+            self.response_list.push_back((bytes, executing));
+        }
+    }
+
+    /// Drops queued replies that were produced by a command that has since finished.
+    fn drop_stale_responses(&mut self, executing_now: bool) {
+        if !executing_now {
+            self.response_list.retain(|(_, executing)| !*executing);
+        }
     }
 
     #[inline]
@@ -97,7 +122,7 @@ impl State {
 
     #[inline]
     fn needs_write(&self) -> bool {
-        self.writing.is_some() || !self.write_list.is_empty()
+        self.writing.is_some() || !self.write_list.is_empty() || !self.response_list.is_empty()
     }
 
     #[inline]
@@ -291,11 +316,8 @@ where
                 &buf[..bytes_in_buffer],
                 &mut terminal_response_sequences,
             );
-            if !terminal_response_sequences.is_empty() {
-                state
-                    .write_list
-                    .push_back(Cow::Owned(terminal_response_sequences));
-            }
+            let executing = terminal.block_list().active_block().is_executing();
+            state.queue_response(terminal_response_sequences, executing);
 
             bytes_processed += bytes_in_buffer;
             bytes_in_buffer = 0;
@@ -413,16 +435,20 @@ where
                         // directly, so a blocked PTY write queues and retries instead
                         // of silently dropping them.
                         let mut terminal_response_sequences = Vec::new();
-                        state.parser.finish_sync_output(
-                            &mut *self.terminal.lock(),
-                            &mut terminal_response_sequences,
-                        );
-                        if !terminal_response_sequences.is_empty() {
-                            state
-                                .write_list
-                                .push_back(Cow::Owned(terminal_response_sequences));
-                        }
-                        continue;
+                        let executing = {
+                            let mut terminal = self.terminal.lock();
+                            state.parser.finish_sync_output(
+                                &mut *terminal,
+                                &mut terminal_response_sequences,
+                            );
+                            terminal.block_list().active_block().is_executing()
+                        };
+                        state.queue_response(terminal_response_sequences, executing);
+                        // The flush may have made buffered content visible; ask for a
+                        // redraw rather than waiting for the next pty read (#818).
+                        self.event_listener.send_wakeup_event();
+                        // Fall through (no events to iterate) so the write loop below
+                        // delivers any responses queued by the flush right away.
                     }
 
                     for event in events.iter() {
@@ -481,6 +507,15 @@ where
                     // wait on some readiness (pty readability, pty writability,
                     // or new data to write), go back to the start of the event
                     // loop.
+                    if !state.response_list.is_empty() {
+                        let executing_now = self
+                            .terminal
+                            .lock()
+                            .block_list()
+                            .active_block()
+                            .is_executing();
+                        state.drop_stale_responses(executing_now);
+                    }
                     while can_read || (state.needs_write() && can_write) {
                         if can_read {
                             match self.pty_read(&mut state, &mut buf, &mut can_read) {
