@@ -90,8 +90,8 @@ def rcfile_contents():
 
 
 class Shell:
-    def __init__(self, profile=None):
-        self.home = tempfile.mkdtemp(prefix="phosphor-825-")
+    def __init__(self, profile=None, home_prefix="phosphor-825-"):
+        self.home = tempfile.mkdtemp(prefix=home_prefix)
         if profile is not None:
             with open(os.path.join(self.home, ".bash_profile"), "w") as f:
                 f.write(profile + "\n")
@@ -139,6 +139,17 @@ class Shell:
             h = re.search(r'"hook":\s*"(\w+)"', payload)
             names.append(h.group(1) if h else "?")
         return names
+
+    def hook_json(self, name):
+        """The decoded JSON of the first hook called `name`, or None. Raises
+        ValueError when the payload is not valid JSON (the app would reject it)."""
+        import json
+        for m in HOOK_RE.finditer(self.buf):
+            payload = bytes.fromhex(m.group(1).decode()).decode(errors="replace")
+            h = re.search(r'"hook":\s*"(\w+)"', payload)
+            if h and h.group(1) == name:
+                return json.loads(payload)
+        return None
 
     def text(self):
         """Output with hook messages and other escape sequences removed."""
@@ -386,8 +397,29 @@ def scenario_options_untouched_without_set_u():
         sh.close()
 
 
+def scenario_hostile_home_in_hooks():
+    print("a $HOME containing backslash-t reaches the hooks as a backslash, not a tab")
+    # #879: home_dir was printed raw, so a valid-looking escape like \\t decoded as a tab.
+    sh = Shell(home_prefix="phosphor-879-\\tx\\")
+    try:
+        check(sh.wait_bootstrapped(), "bootstraps", sh)
+        try:
+            boot = sh.hook_json("Bootstrapped")
+            init = sh.hook_json("InitShell")
+        except ValueError as e:
+            boot, init = None, None
+            print(f"       invalid JSON: {e}")
+        check(boot is not None and init is not None, "InitShell and Bootstrapped are valid JSON", sh)
+        if boot is not None:
+            check(boot["value"]["home_dir"] == sh.home,
+                  f"home_dir round-trips exactly (got {boot['value']['home_dir']!r})", sh)
+    finally:
+        sh.close()
+
+
 def main():
     print(f"bash: {BASH}")
+    scenario_hostile_home_in_hooks()
     scenario_set_u_at_prompt()
     scenario_set_u_in_rcfile()
     scenario_set_e_at_prompt()
