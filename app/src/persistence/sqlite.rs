@@ -22,6 +22,7 @@ use diesel::{
     BelongingToDsl, BoolExpressionMethods, Connection, ExpressionMethods, GroupedBy,
     OptionalExtension, QueryDsl, RunQueryDsl, SelectableHelper,
 };
+use diesel::migration::MigrationSource;
 use diesel_migrations::MigrationHarness;
 use instant::Instant;
 use itertools::Itertools;
@@ -490,20 +491,25 @@ pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<Writer
             // A database that opens and migrates but cannot be read (a dropped
             // table, damaged pages) would otherwise fail every write too (#860).
             if let Err(err) = &read_result {
-                let message = format!("{err:#}").to_lowercase();
+                let message = diesel_database_error_message(err);
                 if error_means_unusable_database(&message) {
-                    drop(conn);
-                    match quarantine_unusable_database(&database_path)
-                        .map_err(anyhow::Error::from)
-                        .and_then(|_| setup_database(&database_path))
-                    {
-                        Ok(fresh) => {
-                            conn = fresh;
-                            read_result = read_sqlite_data(&mut conn, user_uid);
-                        }
-                        Err(recovery_err) => {
-                            report_db_error("recovery", recovery_err, &database_path);
-                            return (None, None);
+                    if let Some(reason) = quarantine_refusal(&database_path) {
+                        log::warn!("Not quarantining the SQLite database: {reason}");
+                    } else {
+                        drop(conn);
+                        match quarantine_unusable_database(&database_path)
+                            .map_err(anyhow::Error::from)
+                            .and_then(|_| setup_database(&database_path))
+                        {
+                            Ok(fresh) => {
+                                mark_database_fresh(&database_path);
+                                conn = fresh;
+                                read_result = read_sqlite_data(&mut conn, user_uid);
+                            }
+                            Err(recovery_err) => {
+                                report_db_error("recovery", recovery_err, &database_path);
+                                return (None, None);
+                            }
                         }
                     }
                 }
@@ -1080,48 +1086,203 @@ pub fn take_database_recovery_notice() -> Option<DatabaseRecoveryNotice> {
         .and_then(|mut notice| notice.take())
 }
 
-/// Whether `message` (the whole error chain, lowercased) says the database
-/// *content or file* is bad, as opposed to a transient condition such as a
-/// lock, a full disk or a schema newer than this build (all of which must
-/// leave the file alone).
+/// Whether `message` (the lowercased message of the *underlying* SQLite error,
+/// never the whole anyhow chain, which carries paths and arbitrary context)
+/// says the database content is definitely damaged.
+///
+/// Deliberately NOT matched: "no such table" / "no such column". The owner can
+/// run an older build against a database a newer build migrated, and a
+/// migration bug would look the same; neither means the history is lost, so
+/// neither may ever cause a quarantine.
 fn error_means_unusable_database(message: &str) -> bool {
-    const UNUSABLE: &[&str] = &[
-        "malformed",
-        "not a database",
-        "no such table",
-        "no such column",
-        "disk i/o error",
-        "unable to open database file",
-        "is a directory",
-        "corrupt",
-    ];
+    const UNUSABLE: &[&str] = &["malformed", "not a database"];
     UNUSABLE.iter().any(|needle| message.contains(needle))
 }
 
+/// Whether `message` is an error that can be transient (a flaky disk or a
+/// momentarily unopenable file) and therefore only counts as damage once the
+/// file itself is checked ([`transient_error_confirms_damage`]).
+fn error_may_be_transient_io(message: &str) -> bool {
+    const MAYBE: &[&str] = &["disk i/o error", "unable to open database file"];
+    MAYBE.iter().any(|needle| message.contains(needle))
+}
+
+/// The lowercased message of the innermost error of `err`.
+fn underlying_error_message(err: &anyhow::Error) -> String {
+    err.root_cause().to_string().to_lowercase()
+}
+
+/// The lowercased SQLite message carried by a diesel error, if any.
+fn diesel_database_error_message(err: &Error) -> String {
+    match err {
+        Error::DatabaseError(_, info) => info.message().to_lowercase(),
+        _ => String::new(),
+    }
+}
+
+/// Paths of databases that were created from scratch in this process. Those
+/// are never quarantined: a fresh file cannot hold history worth moving, and
+/// a second quarantine in a row only hides the real problem.
+static FRESH_DATABASES: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+fn mark_database_fresh(db_path: &Path) {
+    if let Ok(mut fresh) = FRESH_DATABASES.lock() {
+        if !fresh.iter().any(|p| p == db_path) {
+            fresh.push(db_path.to_path_buf());
+        }
+    }
+}
+
+fn database_is_fresh(db_path: &Path) -> bool {
+    FRESH_DATABASES
+        .lock()
+        .is_ok_and(|fresh| fresh.iter().any(|p| p == db_path))
+}
+
+/// Whether the database records migrations this build does not embed, i.e. it
+/// was migrated by a newer build. Such a file is healthy, just newer, so it
+/// must never be quarantined. Unreadable files report `false`.
+fn database_has_unknown_migrations(db_path: &Path) -> bool {
+    if !db_path.metadata().is_ok_and(|m| m.is_file()) {
+        return false;
+    }
+    let Some(url) = db_path.to_str() else {
+        return false;
+    };
+    let Ok(mut conn) = SqliteConnection::establish(url) else {
+        return false;
+    };
+    let Ok(applied) = conn.applied_migrations() else {
+        return false;
+    };
+    let Ok(known) = MigrationSource::<diesel::sqlite::Sqlite>::migrations(&persistence::MIGRATIONS)
+    else {
+        return false;
+    };
+    let known: HashSet<String> = known
+        .iter()
+        .map(|migration| migration.name().version().to_string())
+        .collect();
+    applied
+        .iter()
+        .any(|version| !known.contains(&version.to_string()))
+}
+
+const SQLITE_HEADER_MAGIC: &[u8; 16] = b"SQLite format 3\0";
+
+/// `Some(true)` for an empty file or one starting with the SQLite magic.
+fn has_valid_sqlite_header(db_path: &Path) -> Option<bool> {
+    use std::io::Read;
+    let file = std::fs::File::open(db_path).ok()?;
+    let mut head = Vec::with_capacity(16);
+    file.take(16).read_to_end(&mut head).ok()?;
+    Some(head.is_empty() || head.as_slice() == SQLITE_HEADER_MAGIC)
+}
+
+#[derive(diesel::QueryableByName)]
+struct QuickCheckRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    quick_check: String,
+}
+
+/// `Some(false)` only when `PRAGMA quick_check` positively reports damage.
+fn quick_check_passes(db_path: &Path) -> Option<bool> {
+    let mut conn = SqliteConnection::establish(db_path.to_str()?).ok()?;
+    match diesel::sql_query("PRAGMA quick_check").load::<QuickCheckRow>(&mut conn) {
+        Ok(rows) => Some(rows.iter().all(|row| row.quick_check == "ok")),
+        Err(err) => {
+            let message = err.to_string().to_lowercase();
+            error_means_unusable_database(&message).then_some(false)
+        }
+    }
+}
+
+/// For an error that may be transient: whether the file really is damaged,
+/// i.e. it is not a SQLite file at all or `quick_check` fails. A valid header
+/// with a passing (or inconclusive) check is left alone.
+fn transient_error_confirms_damage(db_path: &Path) -> bool {
+    match has_valid_sqlite_header(db_path) {
+        Some(false) => true,
+        Some(true) => quick_check_passes(db_path) == Some(false),
+        None => false,
+    }
+}
+
 /// Moves `db_path` and its `-wal`/`-shm` siblings to
-/// `<name>.corrupt-<stamp>[...]`, returning the new name of the main file.
-/// Nothing is deleted: the user can still inspect or recover it.
+/// `<name>.corrupt-<stamp>[-n][...]`, returning the new name of the main file.
+/// Nothing is deleted, and an existing quarantine copy is never overwritten:
+/// the stem gets a `-1`, `-2`, ... counter until no destination exists.
 fn quarantine_database_files(db_path: &Path, stamp: u64) -> std::io::Result<PathBuf> {
+    quarantine_database_files_with(db_path, stamp, &|from, to| std::fs::rename(from, to))
+}
+
+/// [`quarantine_database_files`] with an injectable rename (for tests).
+///
+/// Sidecars move first and the main file last, so a crash part-way can never
+/// leave a fresh database next to a stale WAL. If any rename fails, the ones
+/// already done are undone and the error is returned.
+fn quarantine_database_files_with(
+    db_path: &Path,
+    stamp: u64,
+    rename: &dyn Fn(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<PathBuf> {
     let suffixed = |suffix: &str| -> PathBuf {
         let mut name = db_path.as_os_str().to_owned();
         name.push(suffix);
         PathBuf::from(name)
     };
-    let corrupt = suffixed(&format!(".corrupt-{stamp}"));
-    std::fs::rename(db_path, &corrupt)?;
-    for sibling in ["-wal", "-shm"] {
-        let from = suffixed(sibling);
+    let tag_is_taken = |tag: &str| {
+        ["", "-wal", "-shm"].iter().any(|sidecar| {
+            suffixed(&format!("{tag}{sidecar}"))
+                .symlink_metadata()
+                .is_ok()
+        })
+    };
+    let mut tag = format!(".corrupt-{stamp}");
+    let mut counter = 0u32;
+    while tag_is_taken(&tag) {
+        counter += 1;
+        tag = format!(".corrupt-{stamp}-{counter}");
+    }
+
+    // The sidecars of a bad database are meaningless without it and would be
+    // replayed onto the fresh file, so they must move too.
+    let mut plan: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for sidecar in ["-wal", "-shm"] {
+        let from = suffixed(sidecar);
         if from.symlink_metadata().is_ok() {
-            // The sidecars of a bad database are meaningless without it and
-            // would be replayed onto the fresh file, so they must move too.
-            let _ = std::fs::rename(&from, suffixed(&format!(".corrupt-{stamp}{sibling}")));
+            plan.push((from, suffixed(&format!("{tag}{sidecar}"))));
         }
+    }
+    let corrupt = suffixed(&tag);
+    plan.push((db_path.to_path_buf(), corrupt.clone()));
+
+    let mut done: Vec<&(PathBuf, PathBuf)> = Vec::new();
+    for step in &plan {
+        if let Err(err) = rename(&step.0, &step.1) {
+            for (from, to) in done.iter().rev().map(|s| (&s.0, &s.1)) {
+                if let Err(undo_err) = std::fs::rename(to, from) {
+                    log::error!(
+                        "Could not undo moving {} to {}: {undo_err}",
+                        from.display(),
+                        to.display()
+                    );
+                }
+            }
+            return Err(err);
+        }
+        done.push(step);
     }
     Ok(corrupt)
 }
 
 /// Moves the unusable database aside and records a notice for the user.
+/// Refuses (with an error, touching nothing) for a database created in this
+/// process or one migrated by a newer build.
 fn quarantine_unusable_database(db_path: &Path) -> std::io::Result<PathBuf> {
+    if let Some(reason) = quarantine_refusal(db_path) {
+        return Err(std::io::Error::other(reason));
+    }
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -1132,6 +1293,24 @@ fn quarantine_unusable_database(db_path: &Path) -> std::io::Result<PathBuf> {
         db_path.display(),
         moved_to.display()
     );
+    if let (Some(parent), Some(name)) = (db_path.parent(), db_path.file_name()) {
+        let prefix = format!("{}.corrupt-", name.to_string_lossy());
+        let kept = std::fs::read_dir(parent)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|n| {
+                        n.starts_with(&prefix) && !n.ends_with("-wal") && !n.ends_with("-shm")
+                    })
+                    .count()
+            })
+            .unwrap_or_default();
+        log::info!(
+            "{kept} quarantined copies of the SQLite database are kept in {}",
+            parent.display()
+        );
+    }
     if let Ok(mut notice) = DATABASE_RECOVERY_NOTICE.lock() {
         *notice = Some(DatabaseRecoveryNotice {
             moved_to: moved_to.clone(),
@@ -1140,33 +1319,69 @@ fn quarantine_unusable_database(db_path: &Path) -> std::io::Result<PathBuf> {
     Ok(moved_to)
 }
 
+/// Why `db_path` must not be quarantined, if so.
+fn quarantine_refusal(db_path: &Path) -> Option<&'static str> {
+    if database_is_fresh(db_path) {
+        Some("refusing to quarantine a database created in this process")
+    } else if database_has_unknown_migrations(db_path) {
+        Some("refusing to quarantine a database migrated by a newer version")
+    } else {
+        None
+    }
+}
+
 /// Whether a failure on the database at `db_path` is one that moving the file
 /// aside and starting fresh can fix (#860).
 fn database_is_unusable(db_path: &Path, err: &anyhow::Error) -> bool {
-    let message = format!("{err:#}").to_lowercase();
     // A directory or a device (e.g. a symlink to /dev/full) where the file
     // should be can never become a database.
     let wrong_kind = std::fs::metadata(db_path).is_ok_and(|m| !m.is_file());
-    wrong_kind || error_means_unusable_database(&message)
+    if wrong_kind {
+        return true;
+    }
+    let message = underlying_error_message(err);
+    error_means_unusable_database(&message)
+        || (error_may_be_transient_io(&message) && transient_error_confirms_damage(db_path))
 }
 
-/// [`setup_database`], but a database that is corrupt, truncated, missing
-/// tables or not a regular file is moved aside to `warp.sqlite.corrupt-<ts>`
-/// and recreated, instead of silently disabling persistence on every launch
-/// (#860).
+/// [`setup_database`], but a database that is corrupt, truncated or not a
+/// regular file is moved aside to `warp.sqlite.corrupt-<ts>` and recreated,
+/// instead of silently disabling persistence on every launch (#860).
 fn setup_database_or_quarantine(db_path: &Path) -> Result<SqliteConnection> {
-    match setup_database(db_path) {
-        Ok(conn) => Ok(conn),
-        Err(err) if database_is_unusable(db_path, &err) => {
-            if let Err(move_err) = quarantine_unusable_database(db_path) {
-                return Err(err.context(format!(
-                    "also failed to move the unusable database aside: {move_err}"
-                )));
-            }
-            setup_database(db_path)
-        }
-        Err(err) => Err(err),
+    let existed = db_path.symlink_metadata().is_ok();
+    let result = setup_database_or_quarantine_inner(db_path);
+    if result.is_ok() && !existed {
+        mark_database_fresh(db_path);
     }
+    result
+}
+
+fn setup_database_or_quarantine_inner(db_path: &Path) -> Result<SqliteConnection> {
+    let mut err = match setup_database(db_path) {
+        Ok(conn) => return Ok(conn),
+        Err(err) => err,
+    };
+    if error_may_be_transient_io(&underlying_error_message(&err)) {
+        // Give a flaky disk or a racing process a moment before judging.
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        match setup_database(db_path) {
+            Ok(conn) => return Ok(conn),
+            Err(retry_err) => err = retry_err,
+        }
+    }
+    if !database_is_unusable(db_path, &err) {
+        return Err(err);
+    }
+    if let Err(move_err) = quarantine_unusable_database(db_path) {
+        return Err(err.context(format!(
+            "did not move the unusable database aside: {move_err}"
+        )));
+    }
+    let fresh = setup_database(db_path);
+    if fresh.is_ok() {
+        mark_database_fresh(db_path);
+    }
+    fresh
 }
 
 fn setup_database(database_path: &Path) -> Result<SqliteConnection> {
