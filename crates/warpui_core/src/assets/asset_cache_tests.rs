@@ -172,7 +172,7 @@ mod async_raw {
     use super::*;
     use crate::assets::asset_cache::Asset;
     use crate::assets::asset_cache::PreparedAsset;
-    use crate::image_cache::{DecodedImage, ImageCache, ImageType};
+    use crate::image_cache::{DecodedImage, ImageCache, ImageType, MAX_RAW_IMAGE_SIDE};
     use crate::r#async::executor::{Background, Foreground};
     use crate::App;
     use std::sync::Arc;
@@ -450,6 +450,91 @@ mod async_raw {
                 assert!(cache.decode_queue.borrow().is_empty());
             });
         });
+    }
+
+    #[test]
+    fn mixed_burst_of_small_and_large_images_all_load_and_none_is_evicted() {
+        App::test((), |mut app| async move {
+            let cache = app.add_model(|_| new_cache());
+            app.update(|ctx| {
+                cache.update(ctx, |cache, mctx| {
+                    for i in 0..50 {
+                        cache.insert_raw_asset_bytes_async::<ImageType>(
+                            format!("s{i}"),
+                            Arc::new(png_bytes(30, 20)),
+                            mctx,
+                        );
+                    }
+                    // Over the retained-side cap: decoded 4200x4200 is 70 MB each.
+                    for i in 0..3 {
+                        cache.insert_raw_asset_bytes_async::<ImageType>(
+                            format!("big{i}"),
+                            Arc::new(png_bytes(4200, 4200)),
+                            mctx,
+                        );
+                    }
+                });
+            });
+            settle(&mut app, &cache).await;
+            app.read(|ctx| {
+                let cache = cache.as_ref(ctx);
+                for id in (0..50).map(|i| format!("s{i}")) {
+                    assert!(
+                        matches!(
+                            state(cache, &id),
+                            crate::assets::asset_cache::AssetState::Loaded { .. }
+                        ),
+                        "{id} should be loaded"
+                    );
+                }
+                for i in 0..3 {
+                    match state(cache, &format!("big{i}")) {
+                        crate::assets::asset_cache::AssetState::Loaded { data } => {
+                            let size = data.image_size().expect("size");
+                            assert_eq!(size.x().max(size.y()) as u32, MAX_RAW_IMAGE_SIDE);
+                        }
+                        _ => panic!("big{i} should be loaded"),
+                    }
+                }
+                // Downscaled, the whole burst stays well under the raw-asset budget.
+                assert!(cache.get_total_raw_asset_size() < 200 * 1000 * 1000);
+            });
+        });
+    }
+
+    #[test]
+    fn decode_estimate_comes_from_the_header_and_big_images_are_bounded() {
+        let png = png_bytes(8000, 8000);
+        assert_eq!(ImageType::estimated_decode_bytes(&png), 8000 * 8000 * 4);
+        assert_eq!(ImageType::estimated_decode_bytes(b"<svg/>"), 6);
+        // Raw decode retains at most MAX_RAW_IMAGE_SIDE, keeping the aspect ratio.
+        let wide = png_bytes(5000, 1000);
+        let prepared = ImageType::decode_raw_in_background(&wide).expect("decode");
+        let image = prepared().expect("finish");
+        let size = image.image_size().expect("size");
+        assert_eq!((size.x() as u32, size.y() as u32), (4096, 819));
+        // The non-raw path keeps full resolution.
+        let full = ImageType::decode_in_background(&wide).expect("decode")().expect("finish");
+        assert_eq!(full.image_size().map(|s| s.x()), Some(5000));
+    }
+
+    #[test]
+    fn touching_a_loaded_raw_asset_refreshes_its_eviction_order() {
+        let cache = new_cache();
+        let handle = raw_handle("t");
+        cache.inner.borrow_mut().insert(
+            handle.clone(),
+            AssetStateInternal::Loaded {
+                data: Rc::new(ImageType::Unrecognized) as Rc<dyn Any>,
+                timestamp: 1,
+                size_in_bytes: 0,
+            },
+        );
+        let _ = state(&cache, "t");
+        match cache.inner.borrow().get(&handle) {
+            Some(AssetStateInternal::Loaded { timestamp, .. }) => assert!(*timestamp > 1),
+            _ => panic!("still loaded"),
+        }
     }
 
     #[test]
