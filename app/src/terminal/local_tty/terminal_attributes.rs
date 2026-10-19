@@ -41,6 +41,12 @@ impl TerminalAttributesPoller {
         self.poll_epoch += 1;
     }
 
+    /// The executable name of the pty's foreground process group leader, or `None` when it
+    /// cannot be determined (callers must treat that as "unknown", never as a match).
+    pub fn foreground_process_name(&self) -> Option<String> {
+        foreground_process_name(self.fd)
+    }
+
     fn poll_terminal_attributes(&mut self, poll_epoch: usize, ctx: &mut ModelContext<Self>) {
         if poll_epoch != self.poll_epoch {
             return;
@@ -66,4 +72,47 @@ impl TerminalAttributesPoller {
 /// Queries the terminal attributes via the `termios` API.
 fn fetch_termial_attributes(fd: RawFd) -> Result<Termios> {
     termios::tcgetattr(fd)
+}
+
+/// The executable name of the foreground process group leader of the pty whose master is
+/// `fd`: `tcgetpgrp` on the master, then `/proc/<pid>/comm` on Linux or `proc_pidpath` on
+/// macOS. `None` on any failure -- a pty with no foreground group, a process that exited
+/// between the two calls, an unsupported platform.
+pub fn foreground_process_name(fd: RawFd) -> Option<String> {
+    // SAFETY: `tcgetpgrp` only reads the terminal's foreground group id.
+    let pgid = unsafe { libc::tcgetpgrp(fd) };
+    if pgid <= 0 {
+        return None;
+    }
+    process_name(pgid)
+}
+
+#[cfg(target_os = "linux")]
+fn process_name(pid: libc::pid_t) -> Option<String> {
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    let comm = comm.trim_end_matches('\n');
+    (!comm.is_empty()).then(|| comm.to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn process_name(pid: libc::pid_t) -> Option<String> {
+    let mut buffer = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: `buffer` is writable for `buffer.len()` bytes, which is what is passed.
+    let written = unsafe {
+        libc::proc_pidpath(
+            pid,
+            buffer.as_mut_ptr().cast::<libc::c_void>(),
+            buffer.len() as u32,
+        )
+    };
+    if written <= 0 {
+        return None;
+    }
+    let path = std::str::from_utf8(&buffer[..written as usize]).ok()?;
+    path.rsplit('/').next().map(str::to_owned)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn process_name(_pid: libc::pid_t) -> Option<String> {
+    None
 }

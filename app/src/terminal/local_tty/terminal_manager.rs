@@ -71,7 +71,10 @@ use super::{event_loop::EventLoop, shell::ShellStarterSource};
 use {
     super::terminal_attributes::TerminalAttributesPoller,
     crate::terminal::local_tty::terminal_attributes::Event as TerminalAttributesPollerEvent,
-    crate::terminal::model::block::{PromptDetection, PromptDetector},
+    crate::terminal::model::block::{
+        FullscreenStall, FullscreenStallDetector, PromptDetection, PromptDetector,
+        is_known_pager_name,
+    },
     crate::terminal::model::terminal_model::BlockIndex,
     crate::terminal::model_events::ModelEvent as TerminalModelEvent,
     nix::sys::termios::LocalFlags,
@@ -994,6 +997,11 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
     let prompt_detector: Rc<RefCell<PromptDetector>> = Rc::default();
     let prompt_detector_for_termios = prompt_detector.clone();
 
+    // Notices a waited agent command stalled on a pager or other full-screen program; reset
+    // per block (#855).
+    let fullscreen_detector: Rc<RefCell<FullscreenStallDetector>> = Rc::default();
+    let fullscreen_detector_for_termios = fullscreen_detector.clone();
+
     // On block start, record the active block index and ask the surface whether
     // password-prompt polling is useful before starting the poller. On block
     // completion, stop polling and let the surface react to the completed block.
@@ -1014,6 +1022,7 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
                     })
                 });
                 prompt_detector.borrow_mut().reset();
+                fullscreen_detector.borrow_mut().reset();
                 if should_poll {
                     *block_index.borrow_mut() =
                         Some(model.lock().block_list().active_block_index());
@@ -1067,6 +1076,35 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
         // the surface is asked what is printed before the cursor instead.
         let is_echo_on = termios.local_flags.contains(LocalFlags::ECHO);
         let is_canonical = termios.local_flags.contains(LocalFlags::ICANON);
+
+        // A full-screen program (pager, editor, TUI) under an agent command that is waiting
+        // for it to finish: close a known pager, otherwise give the command to the user.
+        // Only the foreground process NAME decides whether a key is sent; an unknown or
+        // unidentifiable process never gets one.
+        let fingerprint = surface.read(ctx, |surface, ctx| {
+            surface.fullscreen_stall_fingerprint(!is_canonical, ctx)
+        });
+        let poller_for_name = poller_weak_handle_for_termios.upgrade(ctx);
+        let stall = fullscreen_detector_for_termios.borrow_mut().observe(
+            fingerprint,
+            std::time::Instant::now(),
+            || {
+                poller_for_name
+                    .as_ref()?
+                    .as_ref(ctx)
+                    .foreground_process_name()
+                    .map(|name| is_known_pager_name(&name))
+            },
+        );
+        match stall {
+            Some(FullscreenStall::ClosePager) => {
+                surface.update(ctx, |surface, ctx| surface.on_stalled_pager(ctx));
+            }
+            Some(FullscreenStall::HandToUser) => {
+                surface.update(ctx, |surface, ctx| surface.on_stalled_fullscreen_app(ctx));
+            }
+            None => {}
+        }
         let detection =
             prompt_detector_for_termios
                 .borrow_mut()
