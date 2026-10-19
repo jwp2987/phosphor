@@ -242,7 +242,18 @@ pub(super) fn wrap_command(shell_type: Option<ShellType>, command: &str) -> Stri
             let prelude = fish_prelude();
             // The leading space keeps the line out of fish's history (#904); see
             // `HISTORY_MARKER`.
-            if own_line {
+            if subshell {
+                // fish has no `( ... )` subshell, so a command that would end or replace the
+                // shell (`exit`, `return`, `exec <cmd>`) runs in a child fish instead; the
+                // pager overrides are exported, so the child inherits them, and `$status`
+                // after `end` is the child's exit code (#932). fish rejects a command
+                // substitution in command position, hence the variable.
+                let escaped = command.replace('\\', "\\\\").replace('\'', "\\'");
+                format!(
+                    " begin; {prelude}; set -l __phosphor_ap_fish (status fish-path); \
+                     $__phosphor_ap_fish -c '{escaped}'; end"
+                )
+            } else if own_line {
                 format!(" begin; {prelude}\n{command}\nend")
             } else {
                 format!(" begin; {prelude}; {command}; end")
@@ -276,7 +287,17 @@ pub(super) fn wrap_command(shell_type: Option<ShellType>, command: &str) -> Stri
 /// scope difference, so only `exit` matters there.
 pub(super) fn needs_subshell(shell_type: ShellType, command: &str) -> bool {
     if shell_type == ShellType::Fish {
-        return false;
+        return simple_commands(command).iter().any(|words| {
+            command_name_and_args(words).is_some_and(|(name, args)| match name {
+                "exit" | "exec" | "return" => true,
+                // `eval` runs its arguments in the current shell.
+                "eval" => {
+                    let text = args.join(" ");
+                    !text.is_empty() && needs_subshell(ShellType::Fish, &text)
+                }
+                _ => false,
+            })
+        });
     }
     simple_commands(command).iter().any(|words| {
         let Some((name, args)) = command_name_and_args(words) else {
@@ -419,6 +440,11 @@ fn is_prefix_word(word: &str) -> bool {
             | "command"
             | "nohup"
             | "noglob"
+            // fish's condition combinators: `false; and exit`.
+            | "and"
+            | "or"
+            | "not"
+            | "begin"
     )
 }
 
