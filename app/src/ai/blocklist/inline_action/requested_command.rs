@@ -224,7 +224,12 @@ lazy_static! {
 /// input can never reach this binding just because the card happens to be showing somewhere
 /// on screen.
 fn enter_accepts_requested_command_context() -> ContextPredicate {
-    id!(RequestedCommandView::ui_name()) & !id!(EDIT_MODE_OPEN_KEYMAP_CONTEXT)
+    // Also gated on a decision still being pending, like upstream's
+    // `REQUESTED_ACTION_BLOCKED_KEYMAP_CONTEXT`: Enter on a running or finished card must not
+    // dispatch Accept (it surfaced "ERROR NOT FOUND", #871).
+    id!(RequestedCommandView::ui_name())
+        & id!(REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT)
+        & !id!(EDIT_MODE_OPEN_KEYMAP_CONTEXT)
 }
 
 /// The context predicate gating the ctrl-c -> Reject keybinding: the card is on the responder
