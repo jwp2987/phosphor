@@ -2,11 +2,15 @@ use anyhow::{anyhow, Result};
 use core::fmt;
 use itertools::Itertools;
 use std::{
+    cell::{Cell, RefCell},
     collections::HashMap,
     error,
     hash::{DefaultHasher, Hash, Hasher},
     rc::Rc,
-    sync::{Arc, LazyLock},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, LazyLock, Mutex,
+    },
 };
 use strum_macros::EnumIter;
 
@@ -423,7 +427,7 @@ impl DecodedImage {
     /// Wraps the decoded image for the asset cache. Cheap; run on the foreground.
     pub fn into_image_type(self) -> ImageType {
         match self {
-            DecodedImage::Svg(svg) => ImageType::Svg { svg: Rc::new(svg) },
+            DecodedImage::Svg(svg) => ImageType::Svg { svg: Arc::new(svg) },
             DecodedImage::Static(image) => ImageType::StaticBitmap { image },
             DecodedImage::Animated(image) => ImageType::AnimatedBitmap { image },
             DecodedImage::Unrecognized => ImageType::Unrecognized,
@@ -637,7 +641,7 @@ impl FitType {
 
 #[derive(Clone)]
 pub enum ImageType {
-    Svg { svg: Rc<usvg::Tree> },
+    Svg { svg: Arc<usvg::Tree> },
     StaticBitmap { image: Arc<StaticImage> },
     AnimatedBitmap { image: Arc<AnimatedImage> },
     // TODO: other types
@@ -727,7 +731,7 @@ fn resize_animated_image(
     }
 }
 
-fn svg_image(svg: &Rc<usvg::Tree>, bounds: Vector2I, fit_type: FitType) -> Result<Image> {
+fn svg_image(svg: &Arc<usvg::Tree>, bounds: Vector2I, fit_type: FitType) -> Result<Image> {
     let svg_size = &svg.size();
 
     let svg_has_wider_ratio =
@@ -845,6 +849,39 @@ pub fn resize_dimensions(
 }
 
 impl ImageType {
+    /// Whether producing the image at `bounds` is expensive enough to be worth a background
+    /// thread (#880): a large bitmap that must be scaled, or a large SVG.
+    fn is_heavy_to_render(
+        &self,
+        _bounds: Vector2I,
+        needs_resize: bool,
+        behavior: AnimatedImageBehavior,
+    ) -> bool {
+        match self {
+            ImageType::Unrecognized => false,
+            ImageType::StaticBitmap { image } => {
+                needs_resize
+                    && u64::from(image.width()) * u64::from(image.height())
+                        >= ASYNC_RASTER_MIN_PIXELS
+            }
+            ImageType::AnimatedBitmap { image } => {
+                let frames = match behavior {
+                    AnimatedImageBehavior::FullAnimation => image.frames.len() as u64,
+                    AnimatedImageBehavior::FirstFramePreview => 1,
+                };
+                needs_resize
+                    && image.frames.first().is_some_and(|f| {
+                        u64::from(f.image.width()) * u64::from(f.image.height()) * frames
+                            >= ASYNC_RASTER_MIN_PIXELS
+                    })
+            }
+            ImageType::Svg { svg } => {
+                svg.size().width() as f64 * svg.size().height() as f64
+                    >= ASYNC_SVG_MIN_PIXELS as f64
+            }
+        }
+    }
+
     /// Converts the ImageType to the Image structure.
     /// Takes into account bounds, fit_type and whether to resize the image.
     /// If resize is set to true, the image is first resized to either cover or contain fit within
@@ -974,6 +1011,51 @@ struct RenderedImageCacheKey {
     animated_image_behavior: AnimatedImageBehavior,
 }
 
+/// How many rendered sizes of one asset are kept (#880). Zoom and resize cycles produce a new size
+/// each step; the least recently used beyond this are dropped.
+const MAX_RENDERED_SIZES_PER_ASSET: usize = 8;
+/// Background rasterisations running at once (#880).
+const MAX_INFLIGHT_RASTERS: usize = 2;
+/// Source images below this many pixels are scaled inline: the cost is under a couple of ms.
+const ASYNC_RASTER_MIN_PIXELS: u64 = 1_000_000;
+/// SVGs with an intrinsic area below this are rasterised inline (icons, small glyphs).
+const ASYNC_SVG_MIN_PIXELS: u64 = 250_000;
+/// Failed deferred rasterisations remembered so the render path does not retry every frame.
+const MAX_REMEMBERED_RASTER_FAILURES: usize = 256;
+
+type RenderedKey = (u64, RenderedImageCacheKey);
+
+/// A finished background rasterisation, handed to the foreground (#880).
+struct ReadyRaster {
+    key: RenderedKey,
+    generation: u64,
+    result: std::result::Result<Image, String>,
+}
+
+/// An older rendered size of the same asset, shown scaled while the wanted size is rasterised.
+pub struct StaleImage {
+    pub image: Rc<Image>,
+    /// The (pixel) bounds `image` was rendered for.
+    pub from_bounds: Vector2I,
+    /// The (pixel) bounds that are wanted now.
+    pub to_bounds: Vector2I,
+}
+
+/// The result of [`ImageCache::image_deferred`].
+pub enum DeferredImage {
+    /// The same answer [`ImageCache::image`] would give.
+    State(AssetState<Image>),
+    /// The wanted size is being rasterised off the UI thread. The caller should draw `stale` (if
+    /// any) and ask for a repaint shortly.
+    Pending { stale: Option<StaleImage> },
+}
+
+#[derive(Default)]
+struct DeferredOut {
+    pending: bool,
+    stale: Option<StaleImage>,
+}
+
 #[derive(Clone, Default)]
 pub struct ImageCache {
     /// Map of images of any ImageType already scaled to a certain size.
@@ -983,6 +1065,16 @@ pub struct ImageCache {
     /// (e.g. the asset cache's versioned-local-file eviction pass) while all
     /// clones share the same underlying map.
     images: Rc<RwLock<HashMap<u64, HashMap<RenderedImageCacheKey, Rc<Image>>>>>,
+    /// Use stamps for `images` entries, to drop the least recently used size (#880).
+    used: Rc<RefCell<HashMap<RenderedKey, u64>>>,
+    clock: Rc<Cell<u64>>,
+    /// Rasterisations running off the UI thread, with the generation they were started under. A
+    /// result whose generation no longer matches (the asset was evicted meanwhile) is dropped.
+    pending: Rc<RefCell<HashMap<RenderedKey, u64>>>,
+    failed: Rc<RefCell<HashMap<RenderedKey, String>>>,
+    next_generation: Rc<Cell<u64>>,
+    ready: Arc<Mutex<Vec<ReadyRaster>>>,
+    inflight: Arc<AtomicUsize>,
 }
 
 impl ImageCache {
@@ -998,6 +1090,10 @@ impl ImageCache {
         let cache_key = s.finish();
 
         cache.remove(&cache_key);
+        drop(cache);
+        self.used.borrow_mut().retain(|k, _| k.0 != cache_key);
+        self.pending.borrow_mut().retain(|k, _| k.0 != cache_key);
+        self.failed.borrow_mut().retain(|k, _| k.0 != cache_key);
     }
 
     /// Removes a single cached size entry for an asset.
@@ -1049,6 +1145,214 @@ impl ImageCache {
         cache_option: CacheOption,
         max_dimension: Option<u32>,
         asset_cache: &AssetCache,
+    ) -> AssetState<Image> {
+        self.image_inner(
+            asset_source,
+            bounds,
+            fit_type,
+            animated_image_behavior,
+            cache_option,
+            max_dimension,
+            asset_cache,
+            None,
+        )
+    }
+
+    /// Like [`Self::image`], but a large image that has to be rasterised or scaled to a size not
+    /// yet cached is rendered on a background thread instead of blocking the UI thread (#880).
+    /// Until it is ready the result is [`DeferredImage::Pending`], carrying the nearest size
+    /// already rendered, if any.
+    #[allow(clippy::too_many_arguments)]
+    pub fn image_deferred(
+        &self,
+        asset_source: AssetSource,
+        bounds: Vector2I,
+        fit_type: FitType,
+        animated_image_behavior: AnimatedImageBehavior,
+        cache_option: CacheOption,
+        max_dimension: Option<u32>,
+        asset_cache: &AssetCache,
+    ) -> DeferredImage {
+        self.drain_ready();
+        let mut out = DeferredOut::default();
+        let state = self.image_inner(
+            asset_source,
+            bounds,
+            fit_type,
+            animated_image_behavior,
+            cache_option,
+            max_dimension,
+            asset_cache,
+            Some(&mut out),
+        );
+        if out.pending {
+            DeferredImage::Pending { stale: out.stale }
+        } else {
+            DeferredImage::State(state)
+        }
+    }
+
+    /// Moves finished background rasterisations into the cache, dropping stale ones.
+    fn drain_ready(&self) {
+        let ready = {
+            let mut guard = self.ready.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.is_empty() {
+                return;
+            }
+            std::mem::take(&mut *guard)
+        };
+        for item in ready {
+            let current = self.pending.borrow().get(&item.key) == Some(&item.generation);
+            if !current {
+                continue;
+            }
+            self.pending.borrow_mut().remove(&item.key);
+            match item.result {
+                Ok(image) => self.insert_rendered(item.key.0, item.key.1, Rc::new(image)),
+                Err(message) => {
+                    log::warn!("Background image rasterisation failed: {message}");
+                    let mut failed = self.failed.borrow_mut();
+                    if failed.len() >= MAX_REMEMBERED_RASTER_FAILURES {
+                        failed.clear();
+                    }
+                    failed.insert(item.key, message);
+                }
+            }
+        }
+    }
+
+    /// Inserts a rendered size, dropping the least recently used sizes of the asset beyond
+    /// [`MAX_RENDERED_SIZES_PER_ASSET`].
+    fn insert_rendered(&self, cache_key: u64, key: RenderedImageCacheKey, image: Rc<Image>) {
+        let mut cache = self.images.write();
+        let inner = cache.entry(cache_key).or_default();
+        inner.insert(key, image);
+        let mut used = self.used.borrow_mut();
+        let stamp = self.clock.get() + 1;
+        self.clock.set(stamp);
+        used.insert((cache_key, key), stamp);
+        while inner.len() > MAX_RENDERED_SIZES_PER_ASSET {
+            let Some(oldest) = inner
+                .keys()
+                .filter(|k| **k != key)
+                .min_by_key(|k| used.get(&(cache_key, **k)).copied().unwrap_or(0))
+                .copied()
+            else {
+                break;
+            };
+            inner.remove(&oldest);
+            used.remove(&(cache_key, oldest));
+        }
+    }
+
+    fn touch(&self, cache_key: u64, key: RenderedImageCacheKey) {
+        let stamp = self.clock.get() + 1;
+        self.clock.set(stamp);
+        if let Some(slot) = self.used.borrow_mut().get_mut(&(cache_key, key)) {
+            *slot = stamp;
+        }
+    }
+
+    /// Decides what to do about a missing rendered size on the deferred path. Returns `None` when
+    /// the caller should rasterise inline after all.
+    #[allow(clippy::too_many_arguments)]
+    fn defer_raster(
+        &self,
+        cache_key: u64,
+        key: RenderedImageCacheKey,
+        data: &ImageType,
+        existing: Option<&HashMap<RenderedImageCacheKey, Rc<Image>>>,
+        needs_resize: bool,
+        out: &mut DeferredOut,
+    ) -> Option<Result<()>> {
+        if !data.is_heavy_to_render(key.bounds, needs_resize, key.animated_image_behavior) {
+            return None;
+        }
+        let rendered_key = (cache_key, key);
+        if let Some(message) = self.failed.borrow().get(&rendered_key) {
+            return Some(Err(anyhow!("{message}")));
+        }
+        out.pending = true;
+        out.stale = existing.and_then(|map| {
+            map.iter()
+                .filter(|(k, _)| k.fit_type == key.fit_type)
+                .min_by_key(|(k, _)| {
+                    let area = |b: Vector2I| i64::from(b.x()) * i64::from(b.y());
+                    (area(k.bounds) - area(key.bounds)).abs()
+                })
+                .map(|(k, image)| StaleImage {
+                    image: image.clone(),
+                    from_bounds: k.bounds,
+                    to_bounds: key.bounds,
+                })
+        });
+        if self.pending.borrow().contains_key(&rendered_key) {
+            return Some(Ok(()));
+        }
+        if self.inflight.load(Ordering::Acquire) >= MAX_INFLIGHT_RASTERS {
+            // Not started; the caller repaints shortly and asks again.
+            return Some(Ok(()));
+        }
+        let generation = self.next_generation.get() + 1;
+        self.next_generation.set(generation);
+        let data = data.clone();
+        let ready = self.ready.clone();
+        let inflight = self.inflight.clone();
+        inflight.fetch_add(1, Ordering::AcqRel);
+        let spawned = std::thread::Builder::new()
+            .name("image-raster".into())
+            .spawn({
+                let inflight = inflight.clone();
+                move || {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        data.to_image(
+                            key.bounds,
+                            key.fit_type,
+                            needs_resize,
+                            key.animated_image_behavior,
+                        )
+                    }));
+                    let result = match result {
+                        Ok(Ok(image)) => Ok(image),
+                        Ok(Err(err)) => Err(err.to_string()),
+                        Err(_) => Err("image rasterisation panicked".to_owned()),
+                    };
+                    ready
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(ReadyRaster {
+                            key: rendered_key,
+                            generation,
+                            result,
+                        });
+                    inflight.fetch_sub(1, Ordering::AcqRel);
+                }
+            });
+        match spawned {
+            Ok(_) => {
+                self.pending.borrow_mut().insert(rendered_key, generation);
+                Some(Ok(()))
+            }
+            Err(_) => {
+                inflight.fetch_sub(1, Ordering::AcqRel);
+                out.pending = false;
+                out.stale = None;
+                None
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn image_inner(
+        &self,
+        asset_source: AssetSource,
+        bounds: Vector2I,
+        fit_type: FitType,
+        animated_image_behavior: AnimatedImageBehavior,
+        cache_option: CacheOption,
+        max_dimension: Option<u32>,
+        asset_cache: &AssetCache,
+        mut deferred: Option<&mut DeferredOut>,
     ) -> AssetState<Image> {
         let mut s = DefaultHasher::new();
         asset_source.hash(&mut s);
@@ -1116,9 +1420,9 @@ impl ImageCache {
                     let cache = self.images.upgradable_read();
                     if let Some(inner_map) = cache.get(&cache_key) {
                         if let Some(image) = inner_map.get(&rendered_image_cache_key) {
-                            return AssetState::Loaded {
-                                data: image.clone(),
-                            };
+                            let image = image.clone();
+                            self.touch(cache_key, rendered_image_cache_key);
+                            return AssetState::Loaded { data: image };
                         }
                     }
                     Some(cache)
@@ -1128,6 +1432,21 @@ impl ImageCache {
 
                 // Otherwise, create the correctly-sized image struct and
                 // insert it into the cache (if necessary).
+                if let (Some(out), true) = (deferred.as_deref_mut(), should_cache_rendered_image) {
+                    let existing = cache.as_ref().and_then(|c| c.get(&cache_key));
+                    match self.defer_raster(
+                        cache_key,
+                        rendered_image_cache_key,
+                        data.as_ref(),
+                        existing,
+                        needs_resize,
+                        out,
+                    ) {
+                        Some(Ok(())) => return AssetState::Evicted,
+                        Some(Err(err)) => return AssetState::FailedToLoad(Rc::new(err)),
+                        None => {}
+                    }
+                }
                 let timing_start = image_timing_enabled().then(std::time::Instant::now);
                 let image =
                     match data.to_image(bounds, fit_type, needs_resize, animated_image_behavior) {
@@ -1145,11 +1464,8 @@ impl ImageCache {
                     );
                 }
                 if let Some(cache) = cache {
-                    let mut images_cache = RwLockUpgradableReadGuard::upgrade(cache);
-                    images_cache
-                        .entry(cache_key)
-                        .or_default()
-                        .insert(rendered_image_cache_key, image.clone());
+                    drop(cache);
+                    self.insert_rendered(cache_key, rendered_image_cache_key, image.clone());
                 }
 
                 AssetState::Loaded { data: image }
