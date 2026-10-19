@@ -20818,6 +20818,12 @@ impl TerminalView {
         });
     }
 
+    /// Position ID of the notice banner drawn at the top of this terminal, used to keep the
+    /// find bar from being drawn underneath it.
+    fn banner_position_id(&self) -> String {
+        format!("terminal_notice_banner_{}", self.id())
+    }
+
     fn show_find_bar(&mut self, ctx: &mut ViewContext<Self>) {
         let model = self.model.lock();
         let inverted_blocklist = self.is_inverted_blocklist(ctx);
@@ -29390,7 +29396,18 @@ impl View for TerminalView {
         }
 
         if self.find_model.as_ref(app).is_find_bar_open() {
-            stack.add_child(ChildView::new(&self.find_bar).finish());
+            // The find bar is pinned to the top-right, exactly where the notice banners
+            // (e.g. the ctrl-a/ctrl-e hint) are drawn. Push it down by the height the
+            // banner occupied last frame so the two never overlap (#918).
+            let banner_height = app
+                .element_position_by_id_at_last_frame(self.window_id, self.banner_position_id())
+                .map(|rect| rect.height())
+                .unwrap_or(0.);
+            stack.add_child(
+                Container::new(ChildView::new(&self.find_bar).finish())
+                    .with_padding_top(banner_height)
+                    .finish(),
+            );
         }
 
         if let Some(active_filter_editor_block_index) = self.active_filter_editor_block_index {
@@ -29417,16 +29434,28 @@ impl View for TerminalView {
 
             // Only show one of these banners at a time, to avoid them visually
             // stacking on top of each other.
+            let banner_position_id = self.banner_position_id();
+            let banner_child = |banner: Box<dyn Element>| {
+                SavePosition::new(banner, &banner_position_id).finish()
+            };
             if self.is_slow_bootstrap_banner_open
                 && ContextFlag::ShowSlowShellStartupBanner.is_enabled()
             {
-                stack.add_child(ChildView::new(&self.slow_bootstrap_banner).finish());
+                stack.add_child(banner_child(
+                    ChildView::new(&self.slow_bootstrap_banner).finish(),
+                ));
             } else if self.control_master_error_banner_state.is_open {
-                stack.add_child(ChildView::new(&self.control_master_error_banner).finish());
+                stack.add_child(banner_child(
+                    ChildView::new(&self.control_master_error_banner).finish(),
+                ));
             } else if self.is_incompatible_configuration_banner_open {
-                stack.add_child(ChildView::new(&self.incompatible_configuration_banner).finish());
+                stack.add_child(banner_child(
+                    ChildView::new(&self.incompatible_configuration_banner).finish(),
+                ));
             } else if self.is_emacs_bindings_banner_open {
-                stack.add_child(ChildView::new(&self.emacs_bindings_banner).finish());
+                stack.add_child(banner_child(
+                    ChildView::new(&self.emacs_bindings_banner).finish(),
+                ));
             }
         }
 
