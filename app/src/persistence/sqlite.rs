@@ -5085,6 +5085,17 @@ impl From<StartedCommandMetadata> for model::NewCommand {
     }
 }
 
+/// Most rows one insert will delete. A table far over [`COMMANDS_COUNT_LIMIT`] (older versions,
+/// a race) is caught up over several inserts rather than in one long write transaction on the
+/// writer thread; 50k rows is tens of milliseconds.
+const COMMANDS_TRIM_BATCH_LIMIT: i64 = 50_000;
+
+/// How many of the oldest rows to delete so that, after one more insert, the table holds at
+/// most [`COMMANDS_COUNT_LIMIT`] rows (bounded per pass by [`COMMANDS_TRIM_BATCH_LIMIT`]).
+fn commands_to_trim(command_count: i64) -> i64 {
+    (command_count - COMMANDS_COUNT_LIMIT + 1).clamp(0, COMMANDS_TRIM_BATCH_LIMIT)
+}
+
 fn insert_command(
     conn: &mut SqliteConnection,
     command_metadata: StartedCommandMetadata,
@@ -5093,10 +5104,20 @@ fn insert_command(
 
     conn.transaction::<(), Error, _>(|conn| {
         let command_count: i64 = commands.count().first(conn)?;
-        if command_count == COMMANDS_COUNT_LIMIT {
-            let oldest_command_id: i32 =
-                commands.select(id).order(id.asc()).limit(1).first(conn)?;
-            diesel::delete(commands.filter(id.eq(oldest_command_id))).execute(conn)?;
+        let to_delete = commands_to_trim(command_count);
+        if to_delete > 0 {
+            // Oldest-first by the integer primary key (the rowid): find the id of the last row
+            // to delete (an index walk over `to_delete` entries, not a sort), then delete
+            // everything up to it. `to_delete` leaves room for the row inserted below. Nothing
+            // references `commands.id` (no foreign key, no other table stores a command id),
+            // so every row is safe to delete.
+            let cutoff_id: i32 = commands
+                .select(id)
+                .order(id.asc())
+                .offset(to_delete - 1)
+                .limit(1)
+                .first(conn)?;
+            diesel::delete(commands.filter(id.le(cutoff_id))).execute(conn)?;
         }
 
         let new_command: NewCommand = command_metadata.into();
