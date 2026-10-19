@@ -51,6 +51,7 @@ mod tests {
                 symlink_targets: Default::default(),
                 #[cfg(feature = "local_fs")]
                 repo_watches: Default::default(),
+                auto_indexed: Default::default(),
             }
         }
     }
