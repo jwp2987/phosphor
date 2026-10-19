@@ -1466,17 +1466,32 @@ fn error_is_migration_race(message: &str) -> bool {
 /// to do. A race lost anyway (e.g. an older build without the lock) is retried
 /// as "already migrated, re-check" rather than reported as a failure.
 fn run_migrations_single_writer(conn: &mut SqliteConnection) -> Result<()> {
+    // Even reading the applied versions can report "locked" while another opener is still
+    // creating the file or switching it to WAL, so wait long and retry here too.
+    conn.batch_execute(&format!(
+        "PRAGMA busy_timeout = {MIGRATION_LOCK_TIMEOUT_MS};"
+    ))?;
     let pending = |conn: &mut SqliteConnection| {
-        conn.has_pending_migration(persistence::MIGRATIONS)
+        let mut result = Ok(false);
+        for attempt in 0..=WAL_LOCK_RETRIES {
+            result = conn.has_pending_migration(persistence::MIGRATIONS);
+            let locked = result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.to_string().to_lowercase().contains("database is locked"));
+            if !locked {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50 * (attempt as u64 + 1)));
+        }
+        result
             .map_err(|e| anyhow!(e))
             .context("Failed to check for pending migrations")
     };
     if !pending(conn)? {
+        conn.batch_execute("PRAGMA busy_timeout = 1000;")?;
         return Ok(());
     }
-    conn.batch_execute(&format!(
-        "PRAGMA busy_timeout = {MIGRATION_LOCK_TIMEOUT_MS};"
-    ))?;
     let mut result = Ok(());
     for attempt in 0..=MIGRATION_RACE_RETRIES {
         result = conn
