@@ -1046,7 +1046,7 @@ fn ensure_cli_subagent_transcript_blocks_is_idempotent() {
             "restore should have already backfilled the subagent's AIBlock(s)"
         );
 
-        // Call it twice more; each should see the transcript already tagged and no-op.
+        // Call it twice more; each should hit the per-exchange dedupe (the only guard) and insert nothing.
         terminal.update(&mut app, |view, ctx| {
             view.ensure_cli_subagent_transcript_blocks(conversation_id, ctx);
             view.ensure_cli_subagent_transcript_blocks(conversation_id, ctx);

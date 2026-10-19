@@ -674,20 +674,11 @@ impl TerminalView {
         block_id: &BlockId,
         ctx: &mut ViewContext<Self>,
     ) {
-        let Some(conversation) = BlocklistAIHistoryModel::as_ref(ctx)
-            .conversation(&conversation_id)
-            .cloned()
-        else {
-            return;
-        };
-        let Some(task) = conversation.get_task(task_id) else {
-            return;
-        };
-        // Defensive dedupe: `ensure_cli_subagent_transcript_blocks` already skips a
-        // conversation that has any tagged content at all, but that check is coarse
-        // (whole-conversation), so guard per-exchange here too against a second call for
-        // the same task -- e.g. a race between two of its callers -- ever inserting the
-        // same exchange's `AIBlock` twice.
+        // Per-exchange dedupe is the only guard against inserting an exchange's
+        // `AIBlock` twice: `ensure_cli_subagent_transcript_blocks` deliberately has no
+        // whole-conversation check (it would wrongly no-op mixed conversations), so a
+        // second call for the same task -- e.g. from restore and again from
+        // `try_enter_agent_view` -- relies on this.
         let already_inserted_exchange_ids: HashSet<AIAgentExchangeId> = self
             .rich_content_views
             .iter()
@@ -695,11 +686,19 @@ impl TerminalView {
             .filter(|metadata| metadata.conversation_id == conversation_id)
             .map(|metadata| metadata.exchange_id)
             .collect();
-        let exchanges: Vec<AIAgentExchange> = task
-            .exchanges()
-            .filter(|exchange| !already_inserted_exchange_ids.contains(&exchange.id))
-            .cloned()
-            .collect();
+        // Clone only the exchanges still to insert, not the whole conversation.
+        let Some(exchanges) = BlocklistAIHistoryModel::as_ref(ctx)
+            .conversation(&conversation_id)
+            .and_then(|conversation| conversation.get_task(task_id))
+            .map(|task| {
+                task.exchanges()
+                    .filter(|exchange| !already_inserted_exchange_ids.contains(&exchange.id))
+                    .cloned()
+                    .collect::<Vec<AIAgentExchange>>()
+            })
+        else {
+            return;
+        };
         if exchanges.is_empty() {
             return;
         }
@@ -763,18 +762,21 @@ impl TerminalView {
         conversation_id: AIConversationId,
         ctx: &mut ViewContext<Self>,
     ) {
-        let Some(conversation) = BlocklistAIHistoryModel::as_ref(ctx)
+        let Some(targets) = BlocklistAIHistoryModel::as_ref(ctx)
             .conversation(&conversation_id)
-            .cloned()
+            .map(|conversation| {
+                conversation
+                    .all_tasks()
+                    .filter(|task| task.is_cli_subagent())
+                    .filter_map(|task| Some((task.cli_subagent_block_id()?, task.id().clone())))
+                    .collect::<Vec<(BlockId, TaskId)>>()
+            })
         else {
             return;
         };
-
-        let targets: Vec<(BlockId, TaskId)> = conversation
-            .all_tasks()
-            .filter(|task| task.is_cli_subagent())
-            .filter_map(|task| Some((task.cli_subagent_block_id()?, task.id().clone())))
-            .collect();
+        if targets.is_empty() {
+            return;
+        }
 
         for (block_id, task_id) in targets {
             self.insert_ai_blocks_for_cli_subagent_conversation(
