@@ -22,7 +22,6 @@ pub mod vm_detection;
 #[cfg(windows)]
 pub mod windows;
 
-use itertools::Itertools;
 use std::cmp::Ordering;
 use std::fmt;
 use std::ops::Range;
@@ -46,9 +45,20 @@ pub fn merge_ranges(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
 }
 
 pub fn dedupe_from_last(lines: Vec<String>) -> Vec<String> {
-    let mut unique_elements = lines.into_iter().rev().unique().collect::<Vec<_>>();
-    unique_elements.reverse();
-    unique_elements
+    // `Itertools::unique` keeps a clone of every distinct element in its seen-set, doubling the
+    // memory of a very large history (#874). Track borrowed strs instead and filter in place.
+    let mut keep = vec![false; lines.len()];
+    {
+        let mut seen: std::collections::HashSet<&str> =
+            std::collections::HashSet::with_capacity(lines.len());
+        for (idx, line) in lines.iter().enumerate().rev() {
+            keep[idx] = seen.insert(line.as_str());
+        }
+    }
+    let mut keep = keep.into_iter();
+    let mut lines = lines;
+    lines.retain(|_| keep.next().unwrap_or(false));
+    lines
 }
 
 /// Encodes `command` as the base64 UTF-16LE payload PowerShell's `-EncodedCommand`

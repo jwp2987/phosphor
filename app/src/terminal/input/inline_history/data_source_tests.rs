@@ -95,3 +95,60 @@ fn interleave_conversations_only_inserts_into_current_session_segment() {
         vec!["d10", "d20", "conv50", "c100", "conv150", "c200"]
     );
 }
+
+fn command_entry(order: HistoryOrder, name: &str, secs: u32) -> MenuEntry {
+    let ts = Local.with_ymd_and_hms(2024, 1, 1, 0, 0, secs).unwrap();
+    MenuEntry {
+        order,
+        sort_timestamp: ts,
+        item: MenuItem::Command {
+            command: name.to_string(),
+            display_timestamp: ts,
+            linked_workflow_data: None,
+            prefix_match_len: 0,
+        },
+    }
+}
+
+fn names(entries: &[MenuEntry]) -> Vec<&str> {
+    entries
+        .iter()
+        .map(|e| match &e.item {
+            MenuItem::Command { command, .. } => command.as_str(),
+            MenuItem::Conversation { title, .. } => title.as_str(),
+        })
+        .collect()
+}
+
+#[test]
+fn interleave_conversations_edge_orderings() {
+    use HistoryOrder::{CurrentSession as Cur, DifferentSession as Diff};
+
+    // Conversations older than everything land first in the current segment, newer ones last,
+    // and a conversation with an equal timestamp goes before the base entry (strict `<`).
+    let base = vec![
+        command_entry(Diff, "d1", 1),
+        command_entry(Cur, "c10", 10),
+        command_entry(Cur, "c20", 20),
+    ];
+    let conversations = vec![
+        command_entry(Cur, "new", 30),
+        command_entry(Cur, "tie", 20),
+        command_entry(Cur, "old", 5),
+    ];
+    let merged = interleave_conversations(base, conversations);
+    assert_eq!(
+        names(&merged),
+        vec!["d1", "old", "c10", "tie", "c20", "new"]
+    );
+
+    // No current-session entries: every conversation is appended after the base.
+    let base = vec![command_entry(Diff, "d1", 1), command_entry(Diff, "d2", 2)];
+    let merged = interleave_conversations(base, vec![command_entry(Cur, "conv", 0)]);
+    assert_eq!(names(&merged), vec!["d1", "d2", "conv"]);
+
+    // No conversations: base is unchanged.
+    let base = vec![command_entry(Diff, "d1", 1), command_entry(Cur, "c2", 2)];
+    let merged = interleave_conversations(base, vec![]);
+    assert_eq!(names(&merged), vec!["d1", "c2"]);
+}

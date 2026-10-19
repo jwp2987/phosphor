@@ -4489,8 +4489,14 @@ fn read_sqlite_data(
         .map(|uid| uid.into());
 
     let commands = schema::commands::dsl::commands
-        // Ensure the commands come into memory sorted chronologically.
+        // Newest first (`id DESC`); `History::new` relies on this to keep the most recent
+        // metadata for each distinct command.
         .order(schema::commands::columns::id.desc())
+        // Inserts already trim the table to COMMANDS_COUNT_LIMIT, so this only bites a database
+        // above that threshold (e.g. 1M rows from before the trim existed) and is normally a
+        // no-op. In that case only the newest N rows are loaded, so the per-command `count` in
+        // `History::command_summaries` covers those rows rather than the whole table (#863).
+        .limit(COMMANDS_COUNT_LIMIT)
         .load_iter::<model::Command, DefaultLoadingMode>(conn)?
         .filter_map(|command| command.ok())
         .map(PersistedCommand::from)

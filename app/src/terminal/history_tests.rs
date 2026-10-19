@@ -1096,3 +1096,47 @@ fn is_appendable_vs_is_queryable() {
         });
     });
 }
+
+#[test]
+fn new_keeps_newest_metadata_and_counts_duplicates() {
+    // Persisted commands arrive newest-first (`ORDER BY id DESC`), so the first-seen entry for a
+    // command is the most recent run and must be the one kept.
+    let shell_host = ShellHost {
+        shell_type: ShellType::Bash,
+        user: String::from("local:user"),
+        hostname: String::from("local:host"),
+    };
+    let persisted = |command: &str, pwd: &str| PersistedCommand {
+        id: 0,
+        command: command.to_owned(),
+        exit_code: Some(ExitCode::from(0)),
+        start_ts: Some(Local::now()),
+        completed_ts: Some(Local::now()),
+        pwd: Some(pwd.to_owned()),
+        shell_host: Some(shell_host.clone()),
+        session_id: None,
+        git_branch: None,
+        workflow_id: None,
+        workflow_command: None,
+        is_agent_executed: false,
+    };
+    let history = History::new(vec![
+        persisted("ls", "/newest"),
+        persisted("date", "/only"),
+        persisted("ls", "/middle"),
+        persisted("ls", "/oldest"),
+    ]);
+
+    let mut summaries = history.command_summaries(String::from("local:host"));
+    summaries.sort_by(|a, b| a.1.command.cmp(&b.1.command));
+    assert_eq!(summaries.len(), 2);
+
+    let (date_count, date_entry) = summaries[0];
+    assert_eq!(date_entry.command, "date");
+    assert_eq!(date_count, 1);
+
+    let (ls_count, ls_entry) = summaries[1];
+    assert_eq!(ls_entry.command, "ls");
+    assert_eq!(ls_count, 3);
+    assert_eq!(ls_entry.pwd.as_deref(), Some("/newest"));
+}

@@ -372,3 +372,84 @@ fn combined_history_respects_agent_command_setting() {
         });
     });
 }
+
+#[test]
+fn command_prefix_filter_matches_post_filtering_the_full_result() {
+    App::test((), |mut app| async move {
+        let terminal_view_id = EntityId::new();
+        let session_id = SessionId::from(1);
+        app.add_singleton_model(|_| build_history_model(vec![]));
+        // Leading/trailing whitespace variants, duplicates, whitespace-only and prefix overlaps.
+        add_command_history(
+            &mut app,
+            session_id,
+            vec![
+                command_entry(session_id, "git status", 0, false, None),
+                command_entry(session_id, "  git status ", 1, false, None),
+                command_entry(session_id, "git commit", 2, false, None),
+                command_entry(session_id, " gitk", 3, false, None),
+                command_entry(session_id, "ls", 4, false, None),
+                command_entry(session_id, "ls ", 5, false, None),
+                command_entry(session_id, "   ", 6, false, None),
+                command_entry(session_id, "git status", 7, false, None),
+                command_entry(session_id, "cargo build", 8, false, None),
+                command_entry(session_id, "g", 9, false, None),
+            ],
+        )
+        .await;
+
+        let config = || UpArrowHistoryConfig {
+            include_commands: true,
+            include_prompts: false,
+        };
+        app.read(|ctx| {
+            let history = History::handle(ctx).as_ref(ctx);
+            let full: Vec<&str> = history
+                .up_arrow_suggestions_for_terminal_view(
+                    terminal_view_id,
+                    Some(session_id),
+                    config(),
+                    ctx,
+                )
+                .into_iter()
+                .map(|s| s.text())
+                .collect();
+
+            for prefix in [
+                "", "g", "git", "git ", "git s", "gitk", "ls", "l", "cargo", "z",
+            ] {
+                let expected: Vec<&str> = full
+                    .iter()
+                    .copied()
+                    .filter(|text| text.trim().starts_with(prefix))
+                    .collect();
+                let actual: Vec<&str> = history
+                    .up_arrow_suggestions_with_command_prefix(
+                        terminal_view_id,
+                        Some(session_id),
+                        config(),
+                        Some(prefix),
+                        ctx,
+                    )
+                    .into_iter()
+                    .map(|s| s.text())
+                    .collect();
+                assert_eq!(actual, expected, "prefix {prefix:?}");
+            }
+
+            // `None` is the unfiltered path.
+            let none: Vec<&str> = history
+                .up_arrow_suggestions_with_command_prefix(
+                    terminal_view_id,
+                    Some(session_id),
+                    config(),
+                    None,
+                    ctx,
+                )
+                .into_iter()
+                .map(|s| s.text())
+                .collect();
+            assert_eq!(none, full);
+        });
+    });
+}
