@@ -256,8 +256,10 @@ struct QueuedDecode {
     handle: AssetHandle,
     generation: u64,
     len: usize,
-    start: Box<dyn FnOnce(&mut AssetCache, &mut ModelContext<AssetCache>)>,
+    start: QueuedDecodeStart,
 }
+
+type QueuedDecodeStart = Box<dyn FnOnce(&mut AssetCache, &mut ModelContext<AssetCache>)>;
 
 /// The result of [`Asset::decode_in_background`]: a `Send` closure that finishes building the
 /// asset on the foreground thread.

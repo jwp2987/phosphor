@@ -2199,6 +2199,8 @@ fn migration_race_child_process() {
 /// #902 across processes: several processes migrating one empty database at
 /// once must all succeed.
 #[test]
+// Test-only: re-executes this test binary, which `crates/command` cannot do.
+#[allow(clippy::disallowed_types)]
 fn concurrent_processes_setup_of_a_fresh_database_all_succeed() {
     if std::env::var_os("PHOSPHOR_TEST_MIGRATION_RACE_DB").is_some() {
         return;

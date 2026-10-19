@@ -114,6 +114,7 @@ fn non_fallback_sources_never_claim_unsupported_shell() {
 /// fish's argv, `'\'` was an unterminated string, and no fish pane ever started; the older
 /// `script/test_fish_bootstrap` sources the asset directly so it could not see this).
 #[cfg(unix)]
+#[allow(clippy::disallowed_types)] // test-only: spawns a real fish directly
 fn assert_fish_init_shell_from_args(
     fish: &std::path::Path,
     args_for: impl FnOnce(&std::path::Path) -> Vec<OsString>,
