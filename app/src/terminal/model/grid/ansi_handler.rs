@@ -657,18 +657,26 @@ impl ansi::Handler for GridHandler {
 
     fn scroll_up(&mut self, lines: usize) -> ScrollDelta {
         self.content_generation.bump();
+        // A plain linefeed at the bottom of the screen scrolls the whole screen and is
+        // traced by the cursor; a scroll within a region is not (#822).
+        let region = &self.ansi_handler_state.scroll_region;
+        if region.start.0 != 0 || region.end.0 != self.visible_rows() {
+            self.find_unlocalized_change = true;
+        }
         let origin = self.ansi_handler_state.scroll_region.start;
         self.scroll_up_relative(origin, lines)
     }
 
     fn scroll_down(&mut self, lines: usize) -> ScrollDelta {
         self.content_generation.bump();
+        self.find_unlocalized_change = true;
         let origin = self.ansi_handler_state.scroll_region.start;
         self.scroll_down_relative(origin, lines)
     }
 
     fn insert_blank_lines(&mut self, lines: usize) -> ScrollDelta {
         self.content_generation.bump();
+        self.find_unlocalized_change = true;
         log::trace!("Inserting blank {lines} lines");
 
         let origin = self.grid.cursor().point.row;
@@ -681,6 +689,7 @@ impl ansi::Handler for GridHandler {
 
     fn delete_lines(&mut self, lines: usize) -> ScrollDelta {
         self.content_generation.bump();
+        self.find_unlocalized_change = true;
         let origin = self.grid.cursor().point.row;
         let lines = min(self.visible_rows() - origin.0, lines);
 
@@ -867,6 +876,7 @@ impl ansi::Handler for GridHandler {
 
     fn clear_screen(&mut self, mode: ansi::ClearMode) {
         self.content_generation.bump();
+        self.find_unlocalized_change = true;
         log::trace!("Clearing screen: {mode:?}");
         let bg = self.grid.cursor().template.bg;
 
@@ -1281,6 +1291,7 @@ impl ansi::Handler for GridHandler {
 
     fn decaln(&mut self) {
         self.content_generation.bump();
+        self.find_unlocalized_change = true;
         log::trace!("Decalnning");
 
         self.grid.region_mut(..).each(|cell| {

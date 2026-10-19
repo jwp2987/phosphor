@@ -3121,6 +3121,61 @@ fn test_content_generation_is_stable_without_mutation() {
     assert_eq!(grid.content_generation(), before);
 }
 
+/// #822: edits away from the cursor row cannot be described by the find dirty-row range, so
+/// they must make `take_find_dirty_rows_range` report `None` (rescan everything) once, and
+/// ordinary cursor-traced output (including plain linefeeds) must not.
+#[test]
+fn test_find_dirty_range_reports_unlocalised_edits() {
+    let assert_unlocalised = |name: &str, edit: &dyn Fn(&mut GridHandler)| {
+        let mut grid = content_generation_test_grid();
+        let _ = grid.take_find_dirty_rows_range();
+        edit(&mut grid);
+        grid.on_finish_byte_processing(&ansi::ProcessorInput::new(&[]));
+        assert!(grid.find_has_unlocalized_change(), "{name}: not flagged");
+        assert_eq!(
+            grid.take_find_dirty_rows_range(),
+            None,
+            "{name}: must request a full rescan"
+        );
+        assert!(
+            !grid.find_has_unlocalized_change(),
+            "{name}: flag is consumed"
+        );
+        assert_eq!(
+            grid.take_find_dirty_rows_range(),
+            None,
+            "{name}: and only once"
+        );
+    };
+    assert_unlocalised("clear above", &|g| g.clear_screen(ansi::ClearMode::Above));
+    assert_unlocalised("clear below", &|g| g.clear_screen(ansi::ClearMode::Below));
+    assert_unlocalised("insert lines", &|g| {
+        g.insert_blank_lines(1);
+    });
+    assert_unlocalised("delete lines", &|g| {
+        g.delete_lines(1);
+    });
+    assert_unlocalised("scroll down", &|g| {
+        g.scroll_down(1);
+    });
+    assert_unlocalised("scroll within a region", &|g| {
+        g.set_scrolling_region(1, Some(3));
+        g.scroll_up(1);
+    });
+
+    // Cursor-traced output still reports exactly the rows it touched.
+    let mut grid = content_generation_test_grid();
+    let _ = grid.take_find_dirty_rows_range();
+    grid.carriage_return();
+    grid.linefeed();
+    for c in "bar".chars() {
+        grid.input(c);
+    }
+    grid.on_finish_byte_processing(&ansi::ProcessorInput::new(&[]));
+    assert!(!grid.find_has_unlocalized_change());
+    assert!(grid.take_find_dirty_rows_range().is_some());
+}
+
 #[test]
 fn test_content_generation_is_unique_per_grid_instance() {
     let grid = content_generation_test_grid();

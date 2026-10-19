@@ -563,6 +563,12 @@ pub struct GridHandler {
     /// knowing exactly which rows have changed.
     find_dirty_rows_range: Option<RangeInclusive<usize>>,
 
+    /// Set by pty edits that change rows away from the cursor (erase above/below, insert and
+    /// delete lines, scroll-region scrolls, ...), which `find_dirty_rows_range` cannot
+    /// represent (#822). While set, [`Self::take_find_dirty_rows_range`] reports `None`, the
+    /// "unlocalisable change, rescan the whole grid" signal.
+    find_unlocalized_change: bool,
+
     /// See [`ContentGeneration`] for what bumps it.
     content_generation: ContentGenerationCounter,
 }
@@ -617,6 +623,7 @@ impl GridHandler {
             track_content_length: false,
             full_grid_clear_behavior: FullGridClearBehavior::Scroll,
             find_dirty_rows_range: None,
+            find_unlocalized_change: false,
             content_generation: ContentGenerationCounter::new(),
         }
     }
@@ -764,6 +771,7 @@ impl GridHandler {
             track_content_length: false,
             full_grid_clear_behavior: FullGridClearBehavior::Scroll,
             find_dirty_rows_range: None,
+            find_unlocalized_change: false,
             content_generation: ContentGenerationCounter::new(),
         };
 
@@ -1883,8 +1891,22 @@ impl GridHandler {
     ///
     /// This should be called when find has processed the dirty range and no longer
     /// needs to track those rows as dirty.
+    ///
+    /// Returns `None` if a pty edit changed rows the range does not cover (#822), so callers
+    /// rescan the whole grid; the accumulated range is discarded in that case.
     pub fn take_find_dirty_rows_range(&mut self) -> Option<RangeInclusive<usize>> {
-        self.find_dirty_rows_range.take()
+        let range = self.find_dirty_rows_range.take();
+        if std::mem::take(&mut self.find_unlocalized_change) {
+            None
+        } else {
+            range
+        }
+    }
+
+    /// Whether a pty edit has changed rows away from the cursor since find last consumed the
+    /// dirty range (#822).
+    pub fn find_has_unlocalized_change(&self) -> bool {
+        self.find_unlocalized_change
     }
 
     fn reset_dirty_cells_range_to_cursor_point(&mut self) {

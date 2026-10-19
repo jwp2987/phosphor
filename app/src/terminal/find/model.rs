@@ -593,7 +593,18 @@ impl TerminalFindModel {
             // job printing while the shell sits at its prompt -- dropped and
             // rescanned the active block, which shows as scanning and so cost
             // a RanFind and a find-bar frame each time.
-            let needs_full_rescan = match self.active_block_scan_state.take() {
+            let previous_scan_state = self.active_block_scan_state.take();
+            // A background block inserted before the active block moves it up
+            // by one index. Results are keyed by index, so the old index now
+            // holds the active block's matches under the background block's
+            // key (#823). Those indices need dropping and rescanning.
+            let shifted_from = previous_scan_state
+                .as_ref()
+                .filter(|previous| {
+                    previous.block_id == block_id && previous.block_index < active_block_index
+                })
+                .map(|previous| previous.block_index);
+            let needs_full_rescan = match previous_scan_state {
                 Some(previous)
                     if previous.block_index == active_block_index
                         && previous.block_id == block_id =>
@@ -629,6 +640,11 @@ impl TerminalFindModel {
             // block as scanned.
             self.active_block_scan_state = is_accepting_work.then_some(scan_state);
 
+            if let Some(first_stale) = shifted_from {
+                for index in first_stale.0..active_block_index.0 {
+                    self.invalidate_async_find_block(BlockIndex(index), None, ctx);
+                }
+            }
             if needs_full_rescan {
                 self.invalidate_async_find_block(active_block_index, None, ctx);
             } else if let Some(info) = output_dirty_info {
