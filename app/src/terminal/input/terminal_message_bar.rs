@@ -155,11 +155,30 @@ pub struct TerminalMessageArgs<'a> {
 
 impl<'a> TerminalMessageArgs<'a> {
     fn is_input_ai_detected(&self) -> bool {
-        !self.current_input.is_empty()
-            && self.input_model.is_ai_input_enabled()
-            && !self.input_model.is_input_type_locked()
+        is_ai_detected(
+            !self.current_input.is_empty(),
+            self.input_model.is_ai_input_enabled(),
+            self.input_model.is_input_type_locked(),
+            self.input_model.input_type().is_ai(),
+        )
     }
 }
+
+/// Whether the message bar should present the input as "autodetected as AI".
+/// The live input type must be AI: autodetection being *enabled* is not enough,
+/// because the detector may have settled on Shell (#894).
+fn is_ai_detected(
+    has_input: bool,
+    ai_input_enabled: bool,
+    input_type_locked: bool,
+    input_type_is_ai: bool,
+) -> bool {
+    has_input && ai_input_enabled && !input_type_locked && input_type_is_ai
+}
+
+#[cfg(test)]
+#[path = "terminal_message_bar_tests.rs"]
+mod tests;
 
 struct ErroredBlockMessageProducer;
 impl MessageProvider<TerminalMessageArgs<'_>> for ErroredBlockMessageProducer {
