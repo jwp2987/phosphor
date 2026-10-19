@@ -13,9 +13,9 @@ use warpui_core::App;
 use super::{
     BlockedActionPresentation, BlockedCommandGate, blocked_action_presentation,
     blocked_command_gate, blocked_command_is_hidden, can_allow_blocked_action,
-    cancel_blocked_action, display_pty_input, execute_blocked_action, format_next_check_remaining,
-    hidden_command_status_text, remaining_for_fixed_delay, resolve_latest_instruction,
-    show_full_blocked_command, terminal_use_status_text,
+    cancel_blocked_action, display_pty_input, estimated_review_rows, execute_blocked_action,
+    format_next_check_remaining, hidden_command_status_text, remaining_for_fixed_delay,
+    resolve_latest_instruction, show_full_blocked_command, terminal_use_status_text,
 };
 use crate::test_fixtures::add_test_action_model;
 
@@ -740,5 +740,43 @@ fn show_full_key_is_armed_only_for_a_gated_command() {
             conversation_id,
             &huge
         )));
+    });
+}
+
+/// #865: the review estimate wraps at a realistic 80 columns, not the editor's pessimistic 16.
+#[test]
+fn review_row_estimate_uses_a_realistic_wrap_width() {
+    assert_eq!(estimated_review_rows("echo hi"), 1);
+    assert_eq!(estimated_review_rows("a\n\nb"), 3);
+    assert_eq!(estimated_review_rows(&"x".repeat(80)), 1);
+    assert_eq!(estimated_review_rows(&"x".repeat(81)), 2);
+    assert_eq!(estimated_review_rows(&"x".repeat(200)), 3);
+}
+
+/// #865: a normal multi-line agent command (a heredoc well past the old ~380-char limit) can be
+/// allowed once it was viewed in full; only the show-full requirement stands between.
+#[test]
+fn ordinary_multiline_command_is_allowable_after_show_full() {
+    App::test((), |mut app| async move {
+        let action_model = add_test_action_model(&mut app);
+        register_tui_action_execution_test_singletons(&mut app);
+        let conversation_id = AIConversationId::new();
+        let body = (0..40)
+            .map(|i| format!("echo line-{i} {}", "x".repeat(90)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let command = format!("cat <<'EOF' > notes.txt\n{body}\nEOF");
+        assert!(command.chars().count() > 3000);
+        let action = command_action("heredoc", &command);
+        app.update(|ctx| {
+            action_model.update(ctx, |action_model, ctx| {
+                queue_tui_permission_action(action_model, action.clone(), conversation_id, ctx);
+            });
+        });
+        show_full(&mut app, &action_model, conversation_id, &action);
+        assert_eq!(
+            gate_of(&mut app, &action_model, conversation_id, &action),
+            BlockedCommandGate::Clear
+        );
     });
 }

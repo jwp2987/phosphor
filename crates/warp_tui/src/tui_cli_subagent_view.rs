@@ -25,7 +25,6 @@ use warpui_core::{
 };
 
 use crate::tui_builder::TuiUiBuilder;
-use crate::tui_shell_command_view::{COMMAND_REVIEW_MAX_ROWS, estimated_command_rows};
 
 pub(super) const TAKE_CONTROL_KEY_BINDING: &str = "ctrl-c";
 pub(super) const HAND_BACK_KEY_BINDING: &str = "ctrl-g";
@@ -116,6 +115,27 @@ fn blocked_command_text(action: &AIAgentAction) -> Option<&str> {
     }
 }
 
+/// Assumed soft-wrap width when estimating the rows a blocked command takes on this card. The
+/// shell-command editor's 16-column estimate is deliberately pessimistic for its own capped
+/// editor; this card is not height-bounded, so a typical terminal width is the honest estimate.
+const SUBAGENT_REVIEW_WRAP_COLS: usize = 80;
+/// Most rows of command this card will ask the user to approve after viewing it in full. Roomy
+/// enough for real agent commands (heredocs, multi-line scripts); beyond it Allow is refused.
+const SUBAGENT_REVIEW_MAX_ROWS: u32 = 120;
+
+/// Rows `command` takes on this card: every line, soft-wrapped at `SUBAGENT_REVIEW_WRAP_COLS`.
+fn estimated_review_rows(command: &str) -> u32 {
+    command
+        .split('\n')
+        .map(|line| {
+            line.chars()
+                .count()
+                .div_ceil(SUBAGENT_REVIEW_WRAP_COLS)
+                .max(1) as u32
+        })
+        .sum()
+}
+
 /// Why Allow is refused for a blocked command whose card hides part of it, and how to proceed.
 /// Counts are of the whole command so nothing about its size is hidden either (#865).
 fn hidden_command_status_text(command: &str) -> String {
@@ -136,7 +156,7 @@ pub(super) enum BlockedCommandGate {
     /// The card elides part of the command, or the command holds characters that are shown
     /// escaped. The user must use show-full for this exact text first.
     NeedsShowFull,
-    /// Even in full, the command needs more than `COMMAND_REVIEW_MAX_ROWS` rows. This card is
+    /// Even in full, the command needs more than `SUBAGENT_REVIEW_MAX_ROWS` rows. This card is
     /// not scrollable, so a row past the cap could be run unseen. Allow is refused for good
     /// (Reject stays) rather than gating on a scroll position that does not exist.
     TooLong { rows: u32 },
@@ -160,8 +180,8 @@ pub(super) fn blocked_command_gate(
     {
         return BlockedCommandGate::NeedsShowFull;
     }
-    let rows = estimated_command_rows(&review.text);
-    if rows > COMMAND_REVIEW_MAX_ROWS {
+    let rows = estimated_review_rows(&review.text);
+    if rows > SUBAGENT_REVIEW_MAX_ROWS {
         return BlockedCommandGate::TooLong { rows };
     }
     BlockedCommandGate::Clear
@@ -171,7 +191,7 @@ pub(super) fn blocked_command_gate(
 fn too_long_status_text(command: &str, rows: u32) -> String {
     format!(
         "Command is too long to approve here (about {rows} rows, {} lines, {} chars; the limit is \
-         {COMMAND_REVIEW_MAX_ROWS} rows) \u{b7} {REJECT_BLOCKED_ACTION_KEY_BINDING} to reject",
+         {SUBAGENT_REVIEW_MAX_ROWS} rows) \u{b7} {REJECT_BLOCKED_ACTION_KEY_BINDING} to reject",
         command.split('\n').count(),
         command.chars().count()
     )
