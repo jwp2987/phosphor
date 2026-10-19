@@ -152,6 +152,8 @@ pub mod focus_state;
 pub mod pane;
 pub mod tree;
 pub mod working_directories;
+#[cfg(feature = "local_fs")]
+pub(crate) mod repo_idle_evictor;
 
 use focus_state::PaneGroupFocusState;
 

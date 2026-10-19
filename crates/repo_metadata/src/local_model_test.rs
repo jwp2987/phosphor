@@ -2836,6 +2836,33 @@ Thumbs.db
     }
 
     #[test]
+    fn idle_evictable_repositories_excludes_unindexed_and_forgets_on_removal() {
+        let repo_path = StandardizedPath::try_new("/auto_indexed_repo").unwrap();
+
+        App::test((), |mut app| async move {
+            let model_handle = app.add_model(|_| LocalRepoMetadataModel::new_for_test());
+            model_handle.update(&mut app, |model, _| {
+                model
+                    .repositories
+                    .insert(repo_path.clone(), IndexedRepoState::pending());
+                model.auto_indexed.insert(repo_path.clone());
+            });
+            model_handle.read(&app, |model, _| {
+                // Still being indexed: nothing to evict yet.
+                assert!(model.idle_evictable_repositories().is_empty());
+            });
+            model_handle.update(&mut app, |model, ctx| {
+                model
+                    .remove_repository(&repo_path, ctx)
+                    .expect("repository should be removed");
+            });
+            model_handle.read(&app, |model, _| {
+                assert!(!model.auto_indexed.contains(&repo_path));
+            });
+        });
+    }
+
+    #[test]
     fn remove_repository_keeps_nested_repo_build_tasks() {
         let parent_repo_path = StandardizedPath::try_new("/parent_repo").unwrap();
         let nested_repo_path = StandardizedPath::try_new("/parent_repo/nested_repo").unwrap();
