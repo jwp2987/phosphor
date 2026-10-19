@@ -460,15 +460,51 @@ fn handle_warp_config_change(
         return;
     }
     let prefs = <settings::PublicPreferences as warpui::SingletonEntity>::as_ref(ctx);
-    if let Err(err) = prefs.reload_from_disk() {
-        log::warn!("Settings file reload failed: {err}");
-        WarpConfig::handle(ctx).update(ctx, |_, ctx| {
-            ctx.emit(WarpConfigUpdateEvent::SettingsErrors(
-                super::SettingsFileError::from_load_error(&err),
-            ));
-        });
-        return;
+    match prefs.reload_from_disk_deferred() {
+        Ok(user_preferences::ReloadOutcome::DeletionPending) => {
+            // The file looks deleted. An editor's delete + rename save leaves it missing for a
+            // moment, so confirm on a timer instead of sleeping here: this handler runs on the
+            // UI thread (#862).
+            WarpConfig::handle(ctx).update(ctx, |_, ctx| {
+                ctx.spawn(
+                    warpui::r#async::Timer::after(user_preferences::RESTORE_CONFIRM_DELAY),
+                    |_, _, ctx| {
+                        let prefs =
+                            <settings::PublicPreferences as warpui::SingletonEntity>::as_ref(ctx);
+                        // Restore only if the file is still missing; if it came back, the
+                        // watcher event for the new file does the reload.
+                        prefs.restore_if_still_deleted();
+                    },
+                );
+            });
+            return;
+        }
+        Ok(user_preferences::ReloadOutcome::Reloaded) => {}
+        Err(err) => {
+            report_settings_reload_failure(&err, ctx);
+            return;
+        }
     }
+    reload_settings_after_file_change(ctx);
+}
+
+#[cfg(feature = "local_fs")]
+fn report_settings_reload_failure(err: &user_preferences::Error, ctx: &mut AppContext) {
+    use crate::user_config::{WarpConfig, WarpConfigUpdateEvent};
+
+    log::warn!("Settings file reload failed: {err}");
+    WarpConfig::handle(ctx).update(ctx, |_, ctx| {
+        ctx.emit(WarpConfigUpdateEvent::SettingsErrors(
+            super::SettingsFileError::from_load_error(err),
+        ));
+    });
+}
+
+/// Pushes the freshly reloaded file into the setting models and refreshes the error banner.
+#[cfg(feature = "local_fs")]
+fn reload_settings_after_file_change(ctx: &mut AppContext) {
+    use crate::user_config::{WarpConfig, WarpConfigUpdateEvent};
+
     let failed_keys = settings::SettingsManager::handle(ctx)
         .update(ctx, |manager, ctx| manager.reload_all_public_settings(ctx));
     // Re-check for unrecognized keys: the user edited the file, which is
@@ -492,6 +528,7 @@ fn handle_warp_config_change(
         }
     });
 }
+
 /// Returns the platform-native preferences backend.
 ///
 /// Used directly for private settings, and also as the fallback for public

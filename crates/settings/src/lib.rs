@@ -120,6 +120,22 @@ impl PublicPreferences {
     pub fn reload_from_disk(&self) -> Result<(), warpui_extras::user_preferences::Error> {
         self.0.reload_from_disk()
     }
+
+    /// Like [`Self::reload_from_disk`] but never blocks to confirm a deletion; see
+    /// [`warpui_extras::user_preferences::ReloadOutcome`].
+    pub fn reload_from_disk_deferred(
+        &self,
+    ) -> Result<
+        warpui_extras::user_preferences::ReloadOutcome,
+        warpui_extras::user_preferences::Error,
+    > {
+        self.0.reload_from_disk_deferred()
+    }
+
+    /// Restores the settings file from memory if it is still missing. Returns whether it did.
+    pub fn restore_if_still_deleted(&self) -> bool {
+        self.0.restore_if_still_deleted()
+    }
 }
 
 impl warpui::Entity for PublicPreferences {

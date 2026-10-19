@@ -49,10 +49,6 @@ pub enum SaveFailureKind {
     DeletedAndRestored,
 }
 
-/// How long a missing settings file must stay missing before it is restored.
-/// Editors that save by delete + rename briefly leave no file.
-const RESTORE_CONFIRM_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
-
 /// Where save failures go. Failures that happen before the UI has taken the
 /// receiver (the store is built long before the workspace exists) are buffered
 /// and delivered on attach, instead of being lost.
@@ -254,22 +250,61 @@ impl TomlBackedUserPreferences {
     /// one changed key (#862). To reset settings, delete the file while the
     /// app is not running, or delete individual lines.
     pub fn reload_from_disk(&self) -> Result<(), Error> {
-        if self.should_restore_deleted_file() {
-            log::warn!(
-                "Settings file at {} was deleted; restoring it from the current settings",
-                self.file_path.display()
-            );
-            // A failure is logged and reported to the user by `flush`; the
-            // in-memory settings stay intact either way.
-            if self.flush().is_ok() {
-                report_save_failure(SaveFailure {
-                    path: self.file_path.clone(),
-                    message: String::new(),
-                    kind: SaveFailureKind::DeletedAndRestored,
-                });
+        if self.is_restore_candidate() {
+            // Editors that save by delete + rename leave the file missing for
+            // a moment; only restore if it is still missing after a short wait.
+            // This blocks the calling thread: UI-thread callers use
+            // `reload_from_disk_deferred` and re-check on a timer instead.
+            std::thread::sleep(super::RESTORE_CONFIRM_DELAY);
+            if self.file_is_missing() {
+                self.restore_deleted_file();
+                return Ok(());
             }
-            return Ok(());
         }
+        self.load_and_apply()
+    }
+
+    /// Like [`reload_from_disk`](Self::reload_from_disk) but never sleeps. If the
+    /// file looks deleted, nothing is changed and
+    /// [`ReloadOutcome::DeletionPending`] is returned: the caller re-checks after
+    /// [`RESTORE_CONFIRM_DELAY`] with
+    /// [`restore_if_still_deleted`](Self::restore_if_still_deleted).
+    pub fn reload_from_disk_deferred(&self) -> Result<super::ReloadOutcome, Error> {
+        if self.is_restore_candidate() {
+            return Ok(super::ReloadOutcome::DeletionPending);
+        }
+        self.load_and_apply()
+            .map(|()| super::ReloadOutcome::Reloaded)
+    }
+
+    /// Restores the settings file from the in-memory settings if it is still
+    /// missing. Returns whether it did. If the file reappeared (delete + rename
+    /// save), nothing happens: the watcher event for the new file reloads it.
+    pub fn restore_if_still_deleted(&self) -> bool {
+        if !self.is_restore_candidate() {
+            return false;
+        }
+        self.restore_deleted_file();
+        true
+    }
+
+    fn restore_deleted_file(&self) {
+        log::warn!(
+            "Settings file at {} was deleted; restoring it from the current settings",
+            self.file_path.display()
+        );
+        // A failure is logged and reported to the user by `flush`; the
+        // in-memory settings stay intact either way.
+        if self.flush().is_ok() {
+            report_save_failure(SaveFailure {
+                path: self.file_path.clone(),
+                message: String::new(),
+                kind: SaveFailureKind::DeletedAndRestored,
+            });
+        }
+    }
+
+    fn load_and_apply(&self) -> Result<(), Error> {
         match Self::load_document(self.file_path.as_path()) {
             Ok(doc) => {
                 *self.document.borrow_mut() = doc;
@@ -296,23 +331,19 @@ impl TomlBackedUserPreferences {
         }
     }
 
+    fn file_is_missing(&self) -> bool {
+        matches!(
+            std::fs::symlink_metadata(&self.file_path),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound
+        )
+    }
+
     /// Whether the settings file has vanished from under a store that holds
     /// settings worth writing back (see [`reload_from_disk`](Self::reload_from_disk)).
-    fn should_restore_deleted_file(&self) -> bool {
-        let missing = || {
-            matches!(
-                std::fs::symlink_metadata(&self.file_path),
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound
-            )
-        };
-        if self.write_inhibited.get() || self.document.borrow().as_table().is_empty() || !missing()
-        {
-            return false;
-        }
-        // Editors that save by delete + rename leave the file missing for a
-        // moment; only restore if it is still missing after a short wait.
-        std::thread::sleep(RESTORE_CONFIRM_DELAY);
-        missing()
+    fn is_restore_candidate(&self) -> bool {
+        !self.write_inhibited.get()
+            && !self.document.borrow().as_table().is_empty()
+            && self.file_is_missing()
     }
 
     /// Builds a compound key from a storage key and optional hierarchy.
@@ -748,6 +779,14 @@ impl super::UserPreferences for TomlBackedUserPreferences {
 
     fn reload_from_disk(&self) -> Result<(), super::Error> {
         self.reload_from_disk()
+    }
+
+    fn reload_from_disk_deferred(&self) -> Result<super::ReloadOutcome, super::Error> {
+        self.reload_from_disk_deferred()
+    }
+
+    fn restore_if_still_deleted(&self) -> bool {
+        self.restore_if_still_deleted()
     }
 
     fn write_value(&self, key: &str, val: String) -> Result<(), Error> {
