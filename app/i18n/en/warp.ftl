@@ -423,6 +423,7 @@ terminal-input-a11y-label = Command Input.
 terminal-input-a11y-helper = Input your shell command, press enter to execute. Press cmd-up to navigate to output of previously executed commands. Press cmd-l to re-focus command input.
 terminal-input-ai-command-search-hint = Type '#' for AI command suggestions
 terminal-input-run-commands-hint = Run commands
+terminal-input-run-commands-autodetect-hint = Run commands, or ask the agent a question
 terminal-input-agent-hint-deploy-react-vercel = Ask anything e.g. Deploy my React app to Vercel and set up environment variables
 terminal-input-agent-hint-debug-python-ci = Ask anything e.g. Help me debug why my Python tests are failing in CI
 terminal-input-agent-hint-setup-microservice = Ask anything e.g. Set up a new microservice with Docker and create the deployment pipeline

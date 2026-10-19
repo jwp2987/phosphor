@@ -354,6 +354,7 @@ terminal-input-a11y-label = コマンド入力。
 terminal-input-a11y-helper = シェルコマンドを入力し、Enter で実行。Cmd+↑ で過去に実行したコマンドの出力に移動。Cmd+L でコマンド入力に再フォーカス。
 terminal-input-ai-command-search-hint = '#' を入力して AI コマンド候補を表示
 terminal-input-run-commands-hint = コマンドを実行
+terminal-input-run-commands-autodetect-hint = コマンドを実行、またはエージェントに質問
 terminal-input-agent-hint-deploy-react-vercel = 何でも Phosphor で。例: React アプリを Vercel にデプロイし環境変数を設定
 terminal-input-agent-hint-debug-python-ci = 何でも Phosphor で。例: CI で Python テストが失敗する原因をデバッグ
 terminal-input-agent-hint-setup-microservice = 何でも Phosphor で。例: Docker で新しいマイクロサービスをセットアップしデプロイパイプラインを作成

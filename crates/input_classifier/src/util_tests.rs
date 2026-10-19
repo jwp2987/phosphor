@@ -949,6 +949,8 @@ fn test_reads_as_command_headed_prose_requests() {
         "can you fix this",
         "why is the build slow",
         "docker vs podman?",
+        "why is the build slow?",
+        "can you fix this?",
     ] {
         assert!(reads_as_command_headed_prose(text), "{text:?}");
     }
@@ -966,6 +968,9 @@ fn test_reads_as_command_headed_prose_leaves_shell_alone() {
         "ls file?",
         "rm -rf tmp?",
         "ls a*?",
+        "cp a file?",
+        "mv x y dir?",
+        "ls foo bar?",
         "grep For file",
         "cat <<EOF\nto is and\nEOF",
         "git commit -m \"fix the bug\"",
@@ -993,4 +998,29 @@ fn test_reads_as_request_to_agent_exempts_one_off_keyword_heads() {
     }
     assert!(reads_as_request_to_agent("help me"));
     assert!(reads_as_request_to_agent("FOO=1 watch the logs now"));
+}
+
+/// #833 F6 hard negatives: the Enter-time settle moves an inherited Shell to the agent only
+/// through [`reads_as_request_to_agent`], so real command lines that happen to contain request
+/// words must never satisfy it (a miss sends prose to the shell and prints `command not found`;
+/// a false hit sends a real command to the agent).
+#[test]
+fn test_reads_as_request_to_agent_hard_negatives_for_real_commands() {
+    for text in [
+        "grep -r this ./src",
+        "mv it ./backup",
+        "git log -n 5 --oneline",
+        "git commit -m \"make it work\"",
+        "curl -H 'X-Note: the thing' https://example.com",
+        "ls the",
+        "cd it",
+        "FOO=1 make -j8",
+        "ssh you@host",
+        "docker run -it ubuntu bash",
+        "npm test -- --grep \"how it works\"",
+        "tar xzf this.tgz && cd this",
+        "cat notes.txt | grep what",
+    ] {
+        assert!(!reads_as_request_to_agent(text), "{text:?}");
+    }
 }
