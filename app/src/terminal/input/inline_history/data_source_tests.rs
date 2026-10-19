@@ -2,7 +2,9 @@ use chrono::{Local, TimeZone as _};
 
 use crate::input_suggestions::HistoryOrder;
 
-use super::{interleave_conversations, newest_tail, MenuEntry, MenuItem};
+use super::{
+    MenuEntry, MenuItem, interleave_conversations, newest_tail, prefix_filtered_newest_tail,
+};
 
 #[test]
 fn interleave_conversations_only_inserts_into_current_session_segment() {
@@ -159,4 +161,20 @@ fn newest_tail_keeps_only_the_newest_in_order() {
     assert_eq!(newest_tail(items, 3).collect::<Vec<_>>(), vec![7, 8, 9]);
     assert_eq!(newest_tail(vec![1, 2], 5).collect::<Vec<_>>(), vec![1, 2]);
     assert_eq!(newest_tail(Vec::<u32>::new(), 0).count(), 0);
+}
+
+#[test]
+fn prefix_filter_runs_before_the_cap_so_old_matches_stay_reachable() {
+    // Oldest first: one old match, then 600 newer non-matching rows.
+    let mut items = vec!["cargo build --old".to_string()];
+    items.extend((0..600).map(|i| format!("ls {i}")));
+
+    let got: Vec<String> =
+        prefix_filtered_newest_tail(items.clone(), "cargo", 500, |s| s.as_str()).collect();
+    assert_eq!(got, vec!["cargo build --old".to_string()]);
+
+    // Empty prefix still caps to the newest 500.
+    let all: Vec<String> = prefix_filtered_newest_tail(items, "", 500, |s| s.as_str()).collect();
+    assert_eq!(all.len(), 500);
+    assert_eq!(all.last().unwrap(), "ls 599");
 }
