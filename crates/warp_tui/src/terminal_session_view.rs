@@ -137,7 +137,7 @@ use crate::transient_hint::TransientHint;
 use crate::tui_builder::TuiUiBuilder;
 use crate::tui_cli_subagent_view::{
     ALLOW_BLOCKED_ACTION_KEY_BINDING, HAND_BACK_KEY_BINDING, REJECT_BLOCKED_ACTION_KEY_BINDING,
-    TuiCLISubagentView,
+    SHOW_FULL_COMMAND_KEY_BINDING, TuiCLISubagentView,
 };
 use crate::tui_diff_storage::{FileRevertOutcome, revert_file_diffs};
 use crate::tui_revert_registry::TuiFileEditRevertRegistry;
@@ -224,6 +224,9 @@ const SESSION_CAN_ALLOW_BLOCKED_LRC_ACTION_FLAG: &str = "TuiSessionCanAllowBlock
 /// -- gates the reject keyboard path, the equivalent of clicking "[Reject]" in
 /// `TuiCLISubagentView`. Mirrors the GUI's `RejectBlockedAction { should_user_take_over: false }`.
 const SESSION_CAN_REJECT_BLOCKED_LRC_ACTION_FLAG: &str = "TuiSessionCanRejectBlockedLrcAction";
+/// Set while the blocked action is a command whose card hides part of it, gating the keyboard
+/// path that shows it in full (#865). Allow is refused until then.
+const SESSION_CAN_SHOW_FULL_BLOCKED_COMMAND_FLAG: &str = "TuiSessionCanShowFullBlockedCommand";
 /// Set while the active block is a user-controlled long-running command the
 /// agent is not yet tagged into, gating the keyboard path that hands the
 /// agent a manual prompt for it (mirrors the GUI's "Ask agent" affordance).
@@ -605,6 +608,9 @@ pub(crate) enum TuiTerminalSessionAction {
     /// "[Reject]" affordance in `TuiCLISubagentView`). Mirrors the GUI's
     /// `CLISubagentAction::RejectBlockedAction { should_user_take_over: false }`.
     RejectBlockedLrcAction,
+    /// Show the blocked command in full so it can be allowed (#865); the keyboard path for the
+    /// "[Show full command]" affordance in `TuiCLISubagentView`.
+    ShowFullBlockedLrcCommand,
     /// Toggle the completed-response summary for the selected conversation.
     ///
     /// Retained but currently unbound. Upstream Warp's TUI `/cost` dispatches this; here
@@ -851,6 +857,12 @@ pub(crate) fn init(app: &mut AppContext) {
             ALLOW_BLOCKED_ACTION_KEY_BINDING,
             TuiTerminalSessionAction::AllowBlockedLrcAction,
             id!(SESSION_CAN_ALLOW_BLOCKED_LRC_ACTION_FLAG),
+        )
+        .with_group(TUI_BINDING_GROUP),
+        FixedBinding::new(
+            SHOW_FULL_COMMAND_KEY_BINDING,
+            TuiTerminalSessionAction::ShowFullBlockedLrcCommand,
+            id!(SESSION_CAN_SHOW_FULL_BLOCKED_COMMAND_FLAG),
         )
         .with_group(TUI_BINDING_GROUP),
         FixedBinding::new(
@@ -1727,6 +1739,18 @@ impl TuiTerminalSessionView {
                 ctx,
             );
         });
+    }
+
+    /// Shows the blocked command in full -- the keyboard equivalent of clicking
+    /// "[Show full command]" in `TuiCLISubagentView`.
+    fn show_full_blocked_lrc_command(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(target) = self.active_agent_blocked_target(ctx) else {
+            return;
+        };
+        let Some(view) = self.cli_subagent_views.get(&target.block_id).cloned() else {
+            return;
+        };
+        view.update(ctx, |view, ctx| view.show_full_command(ctx));
     }
 
     fn send_terminal_use_prompt(&mut self, input: &str, ctx: &mut ViewContext<Self>) -> bool {
@@ -5278,9 +5302,25 @@ impl TuiView for TuiTerminalSessionView {
             // accepting it here would run it with no answer and hang the turn (the view's
             // `execute_blocked_action` refuses it too, so this keeps the key from being a silent
             // no-op). Reject stays available either way.
-            let can_allow = self
-                .blocked_action_for_target(&target, ctx)
-                .is_none_or(|blocked| blocked.action.can_be_accepted_without_its_own_ui());
+            let blocked_action = self.blocked_action_for_target(&target, ctx);
+            // A command whose card hides part of it cannot be allowed until it was shown in
+            // full (#865): offer show-full instead of an Allow that would be refused.
+            let hidden_command = blocked_action.as_ref().is_some_and(|blocked| {
+                crate::tui_cli_subagent_view::blocked_command_is_hidden(
+                    self.ai_action_model.as_ref(ctx),
+                    target.conversation_id,
+                    blocked,
+                )
+            });
+            let can_allow = !hidden_command
+                && blocked_action
+                    .as_ref()
+                    .is_none_or(|blocked| blocked.action.can_be_accepted_without_its_own_ui());
+            if hidden_command {
+                context
+                    .set
+                    .insert(SESSION_CAN_SHOW_FULL_BLOCKED_COMMAND_FLAG);
+            }
             if can_allow {
                 context
                     .set
@@ -5792,6 +5832,9 @@ impl TypedActionView for TuiTerminalSessionView {
             }
             TuiTerminalSessionAction::AllowBlockedLrcAction => self.allow_blocked_lrc_action(ctx),
             TuiTerminalSessionAction::RejectBlockedLrcAction => self.reject_blocked_lrc_action(ctx),
+            TuiTerminalSessionAction::ShowFullBlockedLrcCommand => {
+                self.show_full_blocked_lrc_command(ctx)
+            }
             TuiTerminalSessionAction::ToggleResponseSummaryVisibility => {
                 self.toggle_response_summary_visibility(ctx)
             }

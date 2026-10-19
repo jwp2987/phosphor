@@ -10,9 +10,10 @@ use warp::tui_export::{
 use warpui_core::App;
 
 use super::{
-    BlockedActionPresentation, blocked_action_presentation, can_allow_blocked_action,
-    cancel_blocked_action, display_pty_input, execute_blocked_action, format_next_check_remaining,
-    remaining_for_fixed_delay, resolve_latest_instruction, terminal_use_status_text,
+    BlockedActionPresentation, blocked_action_presentation, blocked_command_is_hidden,
+    can_allow_blocked_action, cancel_blocked_action, display_pty_input, execute_blocked_action,
+    format_next_check_remaining, hidden_command_status_text, remaining_for_fixed_delay,
+    resolve_latest_instruction, show_full_blocked_command, terminal_use_status_text,
 };
 use crate::test_fixtures::add_test_action_model;
 
@@ -419,4 +420,108 @@ fn pty_input_display_names_control_bytes_and_preserves_lines() {
         display_pty_input(b"first\r\nsecond\x03"),
         "first<Enter>\nsecond<0x03>"
     );
+}
+
+fn command_action(id: &str, command: &str) -> AIAgentAction {
+    AIAgentAction {
+        id: AIAgentActionId::from(id.to_owned()),
+        task_id: TaskId::new("terminal-use-task".to_owned()),
+        action: AIAgentActionType::RequestCommandOutput {
+            command: command.to_owned(),
+            is_read_only: Some(true),
+            is_risky: Some(false),
+            wait_until_completion: true,
+            uses_pager: Some(false),
+            rationale: None,
+            citations: Vec::new(),
+        },
+        requires_result: true,
+    }
+}
+
+/// #865: the refusal is explained, with the size of what is hidden and the key that shows it.
+#[test]
+fn hidden_command_status_says_why_and_offers_show_full() {
+    let status = hidden_command_status_text("echo a\necho b");
+    assert!(status.contains("too long to approve unseen"), "{status}");
+    assert!(status.contains("2 lines, 14 chars"), "{status}");
+    assert!(status.contains("ctrl-s to view it in full"), "{status}");
+    assert!(status.contains("ctrl-o to allow"), "{status}");
+    assert!(status.contains("ctrl-r to reject"), "{status}");
+}
+
+/// #865: Allow on a blocked command that the card would elide is refused (the #847 gate in the
+/// model) until the full command was shown; showing it lifts the gate for that exact text only,
+/// and the command then runs.
+#[test]
+fn allow_of_a_long_command_waits_for_show_full() {
+    App::test((), |mut app| async move {
+        let action_model = add_test_action_model(&mut app);
+        register_tui_action_execution_test_singletons(&mut app);
+        let conversation_id = AIConversationId::new();
+        let hidden = format!("echo {}; touch ~/hidden-payload.txt", "A".repeat(100_000));
+        let action = command_action("long", &hidden);
+
+        let executing_ids = app.update(|ctx| {
+            let executing_ids = record_executing_actions(&action_model, ctx);
+            action_model.update(ctx, |action_model, ctx| {
+                queue_tui_permission_action(action_model, action.clone(), conversation_id, ctx);
+                execute_blocked_action(action_model, conversation_id, &action, ctx);
+            });
+            executing_ids
+        });
+        assert!(executing_ids.borrow().is_empty(), "accept must be refused");
+        app.read(|ctx| {
+            let model = action_model.as_ref(ctx);
+            assert!(blocked_command_is_hidden(model, conversation_id, &action));
+            assert!(!model.is_full_command_shown(conversation_id, &action.id, &hidden));
+        });
+
+        app.update(|ctx| {
+            action_model.update(ctx, |action_model, ctx| {
+                assert!(show_full_blocked_command(
+                    action_model,
+                    conversation_id,
+                    &action
+                ));
+                execute_blocked_action(action_model, conversation_id, &action, ctx);
+            });
+        });
+        app.read(|ctx| {
+            let model = action_model.as_ref(ctx);
+            assert!(!blocked_command_is_hidden(model, conversation_id, &action));
+        });
+        assert_eq!(executing_ids.borrow().first(), Some(&action.id));
+    });
+}
+
+/// A short command is never gated, so no show-full step is asked of the user; and show-full on
+/// an action that is not a command marks nothing.
+#[test]
+fn short_command_and_non_command_need_no_show_full() {
+    App::test((), |mut app| async move {
+        let action_model = add_test_action_model(&mut app);
+        let conversation_id = AIConversationId::new();
+        let short = command_action("short", "echo hi");
+        let write = test_action("write");
+        app.update(|ctx| {
+            action_model.update(ctx, |action_model, _| {
+                assert!(!blocked_command_is_hidden(
+                    action_model,
+                    conversation_id,
+                    &short
+                ));
+                assert!(!blocked_command_is_hidden(
+                    action_model,
+                    conversation_id,
+                    &write
+                ));
+                assert!(!show_full_blocked_command(
+                    action_model,
+                    conversation_id,
+                    &write
+                ));
+            });
+        });
+    });
 }
