@@ -370,7 +370,10 @@ fn retry_wait_kind_follows_the_error() {
     );
     let bad_gateway = AIApiError::ErrorStatus(http::StatusCode::BAD_GATEWAY, String::new(), None);
     assert_eq!(RetryWaitKind::for_error(&rl), RetryWaitKind::RateLimited);
-    assert_eq!(RetryWaitKind::for_error(&hinted), RetryWaitKind::RateLimited);
+    assert_eq!(
+        RetryWaitKind::for_error(&hinted),
+        RetryWaitKind::RateLimited
+    );
     assert_eq!(
         RetryWaitKind::for_error(&bad_gateway),
         RetryWaitKind::Connection

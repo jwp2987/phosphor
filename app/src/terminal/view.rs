@@ -12293,7 +12293,8 @@ impl TerminalView {
                     // into it (killed while hung, or never warpified) has that script echoed
                     // into its output -- ~70 lines of bootstrap. Keep the command line and
                     // drop the unreadable dump. Only for the block the script went into.
-                    if self.warpify_state.block_id().as_ref() == Some(&block_completed_event.block_id)
+                    if self.warpify_state.block_id().as_ref()
+                        == Some(&block_completed_event.block_id)
                         && self.warpify_state.take_ssh_payload_written()
                     {
                         let show_ssh_block_debug = BlockVisibilitySettings::as_ref(ctx)

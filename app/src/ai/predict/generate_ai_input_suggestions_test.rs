@@ -141,11 +141,20 @@ fn test_get_block_content_summary_extreme_narrow_vs_wide() {
 #[test]
 fn bootstrap_and_payload_blocks_are_not_suggestion_context() {
     use crate::terminal::model::bootstrap::BootstrapStage;
-    assert!(is_user_context_block(BootstrapStage::PostBootstrapPrecmd, false));
+    assert!(is_user_context_block(
+        BootstrapStage::PostBootstrapPrecmd,
+        false
+    ));
     assert!(is_user_context_block(BootstrapStage::Bootstrapped, false));
     assert!(is_user_context_block(BootstrapStage::RestoreBlocks, false));
     assert!(!is_user_context_block(BootstrapStage::WarpInput, false));
-    assert!(!is_user_context_block(BootstrapStage::ScriptExecution, false));
+    assert!(!is_user_context_block(
+        BootstrapStage::ScriptExecution,
+        false
+    ));
     // An ssh block whose output was dropped for holding only the echoed script.
-    assert!(!is_user_context_block(BootstrapStage::PostBootstrapPrecmd, true));
+    assert!(!is_user_context_block(
+        BootstrapStage::PostBootstrapPrecmd,
+        true
+    ));
 }
