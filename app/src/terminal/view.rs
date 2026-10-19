@@ -18446,8 +18446,21 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         match menu_source {
-            BlockListMenuSource::BlockOverflowButton { block_index }
-            | BlockListMenuSource::RegularBlockRightClick { block_index, .. } => {
+            BlockListMenuSource::BlockOverflowButton { block_index } => {
+                // Evicted since layout: do not open a menu for a different block (#889).
+                let Some(block_index) = self.resolve_stamped_block_index(*block_index) else {
+                    return;
+                };
+                if !self.selected_blocks.is_selected(block_index) {
+                    if self.is_context_menu_open() {
+                        self.close_context_menu(ctx, true);
+                        return;
+                    }
+                    self.reset_selection_to_single_block(block_index, ctx);
+                }
+            }
+
+            BlockListMenuSource::RegularBlockRightClick { block_index, .. } => {
                 if !self.selected_blocks.is_selected(*block_index) {
                     // If the context menu is already open, we just want to close
                     // the context menu for the existing selections instead of changing
@@ -28127,6 +28140,10 @@ impl TypedActionView for TerminalView {
             }
             OpenBlockListContextMenu => self.open_block_list_context_menu_via_keybinding(ctx),
             AskAIAssistant { block_index } => {
+                // Evicted since layout: nothing to ask about (#889).
+                let Some(block_index) = self.resolve_stamped_block_index(*block_index) else {
+                    return;
+                };
                 if FeatureFlag::AgentMode.is_enabled() {
                     send_telemetry_from_ctx!(
                         TelemetryEvent::AgentModeClickedEntrypoint {
@@ -28136,7 +28153,7 @@ impl TypedActionView for TerminalView {
                     );
                 }
 
-                self.ask_ai(&AskAISource::Block(*block_index), ctx)
+                self.ask_ai(&AskAISource::Block(block_index), ctx)
             }
             TriggerSubshellBootstrap => {
                 let shell_type = self.pending_subshell_shell_type(ctx);
@@ -28984,8 +29001,26 @@ impl View for TerminalView {
 
         match &self.context_menu_state.map(|c| c.menu_type) {
             Some(ContextMenuType::BlockList { menu_source }) => match menu_source {
-                BlockListMenuSource::BlockOverflowButton { block_index }
-                | BlockListMenuSource::BlockKeybinding { block_index } => stack
+                BlockListMenuSource::BlockOverflowButton { block_index } => {
+                    // Evicted since layout: no anchor to position against (#889). `model` is the
+                    // lock already held by this render, so resolve against it directly.
+                    if let Some(block_index) =
+                        block_index.resolve(model.block_list().evicted_total())
+                    {
+                        stack.add_positioned_overlay_child(
+                            ChildView::new(&self.context_menu).finish(),
+                            OffsetPositioning::offset_from_save_position_element(
+                                format!("context_menu_button_{block_index}").as_str(),
+                                vec2f(OVERFLOW_BUTTON_OFFSET_X, 0.),
+                                PositionedElementOffsetBounds::WindowByPosition,
+                                PositionedElementAnchor::TopLeft,
+                                ChildAnchor::TopRight,
+                            ),
+                        )
+                    }
+                }
+
+                BlockListMenuSource::BlockKeybinding { block_index } => stack
                     .add_positioned_overlay_child(
                         ChildView::new(&self.context_menu).finish(),
                         OffsetPositioning::offset_from_save_position_element(

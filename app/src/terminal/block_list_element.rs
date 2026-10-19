@@ -21,7 +21,7 @@ use crate::terminal::model::blocks::{
 use crate::terminal::model::index::Point as IndexPoint;
 use crate::terminal::model::selection::{SelectAction, SelectionPoint};
 use crate::terminal::safe_mode_settings::get_secret_obfuscation_mode;
-use crate::terminal::view::TerminalAction;
+use crate::terminal::view::{StampedBlockIndex, TerminalAction};
 use crate::terminal::{grid_renderer, should_right_click_paste, SizeInfo};
 use crate::themes::theme::{Fill, WarpTheme};
 use crate::ui_components::{self, icons as UIIcon};
@@ -952,8 +952,9 @@ pub enum BlockHoverAction {
 /// possible to trigger more than one [`BlockListMenuSource`] using a single action.
 #[derive(Clone, Copy, Debug)]
 pub enum BlockListMenuSource {
+    /// Stamped at layout: eviction may re-index the block list before the menu opens (#889).
     BlockOverflowButton {
-        block_index: BlockIndex,
+        block_index: StampedBlockIndex,
     },
     BlockKeybinding {
         block_index: BlockIndex,
@@ -1193,6 +1194,10 @@ impl BlockListElement {
         app: &AppContext,
     ) -> Self {
         self.hovered_block_index = Some(block_index);
+        // Stamp the actions built below so they survive retained-line eviction re-indexing
+        // before they fire (#889). `model` is the locked model this layout reads.
+        let stamped_block_index =
+            StampedBlockIndex::new(block_index, model.block_list().evicted_total());
         let icon_color = self
             .warp_theme
             .sub_text_color(self.warp_theme.surface_2())
@@ -1217,7 +1222,9 @@ impl BlockListElement {
                     &self.ui_builder,
                     move |ctx, _, _| {
                         ctx.dispatch_typed_action(TerminalAction::BlockListContextMenu(
-                            BlockListMenuSource::BlockOverflowButton { block_index },
+                            BlockListMenuSource::BlockOverflowButton {
+                                block_index: stamped_block_index,
+                            },
                         ));
                     },
                 ),
@@ -1296,13 +1303,17 @@ impl BlockListElement {
                     )
                 } else {
                     (
-                        Some(TerminalAction::AskAIAssistant { block_index }),
+                        Some(TerminalAction::AskAIAssistant {
+                            block_index: stamped_block_index,
+                        }),
                         (*ATTACH_AS_AGENT_MODE_CONTEXT_TEXT).to_owned(),
                     )
                 }
             } else {
                 (
-                    Some(TerminalAction::AskAIAssistant { block_index }),
+                    Some(TerminalAction::AskAIAssistant {
+                        block_index: stamped_block_index,
+                    }),
                     ASK_AI_ASSISTANT_TEXT.to_owned(),
                 )
             };

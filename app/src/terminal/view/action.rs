@@ -316,8 +316,9 @@ pub enum TerminalAction {
     OpenWorkflowModalForAIWorkflow(Workflow),
     OpenWorkflowModalForBlock(BlockIndex),
     OpenWorkflowModalWithWorkflowObject(SyncId),
+    /// Stamped at layout: eviction may re-index the block list before this dispatches (#889).
     AskAIAssistant {
-        block_index: BlockIndex,
+        block_index: StampedBlockIndex,
     },
     /// Starts a subshell in the active session.
     TriggerSubshellBootstrap,

@@ -56,7 +56,9 @@ use crate::terminal::cli_agent_sessions::{
 };
 use crate::terminal::CLIAgent;
 
-use crate::terminal::block_list_element::{SnackbarPoint, SnackbarTranslationMode};
+use crate::terminal::block_list_element::{
+    BlockListMenuSource, SnackbarPoint, SnackbarTranslationMode,
+};
 use crate::terminal::block_list_viewport::{ClampingMode, ScrollLines};
 use crate::terminal::session_settings::AgentToolbarChipSelection;
 use crate::view_components::find::FindWithinBlockState;
@@ -3142,6 +3144,66 @@ fn test_stamped_layout_actions_resolve_across_eviction() {
             // An action for an evicted block is a no-op.
             view.handle_action(&TerminalAction::BookmarkBlock(stamped_oldest), ctx);
             assert!(view.bookmarked_blocks.is_empty());
+        });
+    })
+}
+
+/// #889: the Ask AI and block-overflow-menu actions are stamped at layout like the bookmark and
+/// filter actions. Dispatched after eviction they resolve to the shifted block, or do nothing
+/// when that block was evicted.
+#[test]
+fn test_stamped_ask_ai_and_overflow_menu_actions_resolve_across_eviction() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                for _ in 0..10 {
+                    model.simulate_block("ls", "foo");
+                }
+                model.update_max_grid_size(1);
+                model.update_max_retained_lines(1);
+            }
+            // Bookmarking protects block 5 from eviction, so it survives at a shifted index.
+            view.bookmark_block(&BlockIndex::from(5), ctx);
+            let total_at_layout = view.model.lock().block_list().evicted_total();
+            let stamped_kept = StampedBlockIndex::new(BlockIndex::from(5), total_at_layout);
+            let stamped_oldest = StampedBlockIndex::new(BlockIndex::zero(), total_at_layout);
+
+            let evicted = view.evict_retained_blocks(ctx);
+            assert!(evicted > 0 && evicted <= 5);
+            let shifted = BlockIndex::from(5 - evicted);
+
+            // The overflow menu for an evicted block does nothing: no selection, no menu.
+            view.handle_action(
+                &TerminalAction::BlockListContextMenu(BlockListMenuSource::BlockOverflowButton {
+                    block_index: stamped_oldest,
+                }),
+                ctx,
+            );
+            assert!(view.selected_blocks.tail().is_none());
+            assert!(!view.is_context_menu_open());
+
+            // Ask AI for an evicted block is a no-op too.
+            view.handle_action(
+                &TerminalAction::AskAIAssistant {
+                    block_index: stamped_oldest,
+                },
+                ctx,
+            );
+            assert!(view.selected_blocks.tail().is_none());
+
+            // The overflow menu for a surviving block targets its shifted index, not the stale one.
+            view.handle_action(
+                &TerminalAction::BlockListContextMenu(BlockListMenuSource::BlockOverflowButton {
+                    block_index: stamped_kept,
+                }),
+                ctx,
+            );
+            assert!(view.selected_blocks.is_selected(shifted));
+            assert!(!view.selected_blocks.is_selected(BlockIndex::from(5)));
         });
     })
 }
