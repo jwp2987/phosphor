@@ -200,6 +200,18 @@ REPLIES = [
 HEXLEAD = [b"\x1b]4;1;rgb:cc/00/00", b"\x1b]10;rgb:ffff/ffff/ffff"]
 
 
+def colour_cases():
+    """(label, reply) pairs: terminated replies of every width, and unterminated ones."""
+    out = []
+    for digits, comp in ((1, "f"), (2, "cc"), (3, "fff"), (4, "ffff")):
+        body = b"\x1b]11;rgb:" + "/".join([comp] * 3).encode()
+        out.append((f"{digits}-digit, BEL", body + b"\x07"))
+        out.append((f"{digits}-digit, ESC \\", body + b"\x1b\\"))
+    out.append(("2-digit, unterminated", b"\x1b]4;1;rgb:cc/00/00"))
+    out.append(("4-digit, unterminated", b"\x1b]10;rgb:ffff/ffff/ffff"))
+    return out
+
+
 def main():
     sh = Shell()
     try:
@@ -231,6 +243,11 @@ def main():
             sh.pump(0.5)
             got = sh.input_buffer([r, b"echo kept"])
             check(got == "echo kept", f"#829: hex-letter text after {r!r} is kept (got {got!r})", sh)
+        for label, reply in colour_cases():
+            os.write(sh.fd, b"\x03")
+            sh.pump(0.5)
+            got = sh.input_buffer([reply, b"echo x"])
+            check(got == "echo x", f"colour reply ({label}) is stripped, text kept (got {got!r})", sh)
         check(not [p for p in sh.raw_hooks() if not _valid(p)], "all hook payloads still valid JSON at the end", sh)
     finally:
         sh.close()

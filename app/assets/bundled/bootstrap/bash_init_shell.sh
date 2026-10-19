@@ -14,4 +14,4 @@ if [ "$WARP_IN_MSYS2" = true ]; then _msg="\e]9278;k;A;InitShell\a\e]9278;k;B;se
 WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@
 # We send the InitShell hook via OSCs when on Windows and via DCSs otherwise.
 if [ "$WARP_USING_WINDOWS_CON_PTY" = true ]; then if [ "$WARP_IN_MSYS2" = true ]; then printf "$_msg"; else printf '\e]9278;d;%s\x07' "$_msg"; fi; else printf '\e\x50\x24\x64%s\x9c' "$_msg"; fi
-unset _hostname _user _msg _ju _jh _i _o _c _h _x
+unset _hostname _user _msg _ju _jh _i _o _c _h

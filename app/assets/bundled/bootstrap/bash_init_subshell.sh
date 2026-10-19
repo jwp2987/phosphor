@@ -14,4 +14,4 @@ _msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSI
 if [[ "${OS:-}" == Windows_NT ]]; then WARP_IN_MSYS2=true; else WARP_IN_MSYS2=false; fi
 WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@
 if [ "$WARP_USING_WINDOWS_CON_PTY" = true ]; then printf '\e]9278;d;%s\x07' "$_msg"; else printf '\e\x50\x24\x64%s\x9c' "$_msg"; fi
-unset _hostname _user _msg _ju _jh _i _o _c _h _x
+unset _hostname _user _msg _ju _jh _i _o _c _h
