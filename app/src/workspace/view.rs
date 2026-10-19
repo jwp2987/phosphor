@@ -2733,11 +2733,26 @@ impl Workspace {
         toast_stack: ViewHandle<DismissibleToastStack<WorkspaceAction>>,
         ctx: &mut ViewContext<Self>,
     ) {
-        // With no window active yet (startup), the first workspace shows it.
-        let active_window = ctx.windows().active_window();
-        if active_window.is_none() || active_window == Some(ctx.window_id()) {
+        // Only the active window takes a notice (#930). With several windows
+        // restored at startup the first workspace used to take it while it was
+        // not the window the user ended up looking at, so nobody saw it. A
+        // window that is not active yet leaves it pending; it shows when it
+        // becomes active, or at the latest after a moment if it still is the
+        // active window (or none is) -- covering an activation that happened
+        // before this subscription existed.
+        if ctx.windows().active_window() == Some(ctx.window_id()) {
             Self::show_database_notices(&toast_stack, ctx);
         }
+        let toast_stack_for_timer = toast_stack.clone();
+        ctx.spawn(
+            Timer::after(std::time::Duration::from_millis(1500)),
+            move |_me, _, ctx| {
+                let active_window = ctx.windows().active_window();
+                if active_window.is_none() || active_window == Some(ctx.window_id()) {
+                    Self::show_database_notices(&toast_stack_for_timer, ctx);
+                }
+            },
+        );
         let toast_stack_for_wake = toast_stack.clone();
         ctx.subscribe_to_model(&WindowManager::handle(ctx), move |_me, _, event, ctx| {
             let StateEvent::ValueChanged { current, .. } = event;
@@ -7023,9 +7038,13 @@ impl Workspace {
                 // A value that cannot be quoted safely for the shell (#878): open nothing
                 // rather than a tab whose setup commands silently did not run.
                 log::warn!("Not opening tab config '{}': {e}", tab_config.name);
+                // Persistent (#930): the params modal can stay open over this, and a
+                // reason that times out in a few seconds is easy to miss. It is
+                // dismissed with its close button, and a newer refusal replaces it.
                 self.toast_stack.update(ctx, |toast_stack, ctx| {
-                    toast_stack.add_ephemeral_toast(
-                        DismissibleToast::error(format!("Can't open \"{}\": {e}", tab_config.name)),
+                    toast_stack.add_persistent_toast(
+                        DismissibleToast::error(format!("Can't open \"{}\": {e}", tab_config.name))
+                            .with_object_id("tab_config_refused".to_owned()),
                         ctx,
                     );
                 });
