@@ -817,6 +817,11 @@ impl AgentConversationsModel {
             .or_default()
             .insert(view_id);
         self.sync_conversations(ctx);
+        // The caller may be running inside an update of the active window's `Workspace`
+        // (tab activation/restore). That view is checked out, so `WeakViewHandle::upgrade`
+        // fails in `all_conversations` and its live conversations are listed as historical
+        // (#845). Re-sync once the current update has finished and the view is checked back in.
+        ctx.spawn(async {}, |me, _, ctx| me.sync_conversations(ctx));
     }
 
     /// Called when a view that consumes this model's data becomes hidden.

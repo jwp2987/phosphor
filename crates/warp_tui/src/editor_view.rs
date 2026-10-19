@@ -87,6 +87,12 @@ impl TuiEditorView {
         view
     }
 
+    /// Changes how many rows the multiline viewport shows.
+    pub(crate) fn set_viewport_rows(&mut self, viewport_rows: u32, ctx: &mut ViewContext<Self>) {
+        self.editor_behavior = self.editor_behavior.with_viewport_rows(viewport_rows);
+        ctx.notify();
+    }
+
     /// Returns the current editor text.
     pub(crate) fn text(&self, ctx: &AppContext) -> String {
         let model = self.model.as_ref(ctx);
