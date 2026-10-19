@@ -596,6 +596,14 @@ pub fn shared_ro_connection() -> Option<Arc<parking_lot::Mutex<SqliteConnection>
 }
 
 fn establish_connection(database_url: &str, read_only: bool) -> Result<SqliteConnection> {
+    establish_connection_with_deadline(database_url, read_only, LockDeadline::new())
+}
+
+fn establish_connection_with_deadline(
+    database_url: &str,
+    read_only: bool,
+    deadline: LockDeadline,
+) -> Result<SqliteConnection> {
     let full_database_url = if read_only {
         &format!("file:{database_url}?mode=ro")
     } else {
@@ -618,27 +626,24 @@ fn establish_connection(database_url: &str, read_only: bool) -> Result<SqliteCon
     //
     // Switching a fresh file to WAL takes the write lock, so it races with any other opener of
     // the same new database (the prewarm thread, a second instance) exactly as migrating does
-    // (#902). Wait long for that lock, and retry a "locked" that SQLite reports without
-    // consulting the busy handler, instead of failing the launch.
-    conn.batch_execute(&format!(
-        "PRAGMA busy_timeout = {MIGRATION_LOCK_TIMEOUT_MS};"
-    ))?;
-    let mut wal_result = Ok(());
-    for attempt in 0..=WAL_LOCK_RETRIES {
-        wal_result = conn.batch_execute(
-            r#"
+    // (#902). A read-write connection therefore waits and retries a "locked" that SQLite reports
+    // without consulting the busy handler, but only until the setup's shared deadline: this runs
+    // on the main thread at startup, which must never freeze on a lock someone else holds. A
+    // read-only connection never waits longer than the 1s above.
+    let wal_pragmas = r#"
         PRAGMA journal_mode=WAL;
         PRAGMA wal_autocheckpoint=500;
-    "#,
-        );
-        let locked = wal_result.as_ref().err().is_some_and(|err| {
-            diesel_database_error_message(err).contains("database is locked")
-        });
-        if !locked {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50 * (attempt as u64 + 1)));
-    }
+    "#;
+    let wal_result = if read_only {
+        conn.batch_execute(wal_pragmas)
+    } else {
+        retry_while_locked(
+            deadline,
+            &mut conn,
+            |conn| conn.batch_execute(wal_pragmas),
+            |err| diesel_database_error_message(err).contains("database is locked"),
+        )
+    };
     wal_result.context("Failed to enable WAL")?;
     conn.batch_execute("PRAGMA busy_timeout = 1000;")?;
 
@@ -1420,23 +1425,76 @@ fn setup_database(database_path: &Path) -> Result<SqliteConnection> {
     let db_url = database_path
         .to_str()
         .ok_or_else(|| anyhow!("Failed to convert db path to a string"))?;
-    let mut conn = establish_connection(db_url, false)?;
+    // One budget for the WAL switch, the pending check and the migration transaction together.
+    let deadline = LockDeadline::new();
+    let mut conn = establish_connection_with_deadline(db_url, false, deadline)?;
 
     safe_info!(
         safe: ("Connecting to SQLite database"),
         full: ("Connecting to SQLite database at {db_url}")
     );
-    run_migrations_single_writer(&mut conn)?;
+    run_migrations_single_writer(&mut conn, deadline)?;
     Ok(conn)
 }
 
-/// How long a migrator waits for another process that is migrating the same
-/// database. A cold migration takes a few hundred milliseconds; this only has
-/// to outlast a slow disk.
-const MIGRATION_LOCK_TIMEOUT_MS: u32 = 30_000;
+/// The total time one database setup may spend waiting for a lock another process or thread
+/// holds, shared by the WAL switch, the pending check and the migration transaction (#902).
+///
+/// Setup runs on the main thread at startup (joining the prewarm thread, or synchronously), so
+/// this is also the longest the UI can be held up by e.g. a second instance or a user's
+/// `sqlite3` holding `BEGIN EXCLUSIVE`; after it the caller shows the "won't be saved" notice.
+/// The real prewarm-vs-second-opener race resolves in milliseconds.
+const MIGRATION_LOCK_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// How many times enabling WAL is retried when SQLite reports the database locked.
-const WAL_LOCK_RETRIES: usize = 10;
+/// A point in time by which a setup must stop waiting for locks.
+#[derive(Clone, Copy, Debug)]
+struct LockDeadline(Instant);
+
+impl LockDeadline {
+    fn new() -> Self {
+        Self(Instant::now() + MIGRATION_LOCK_BUDGET)
+    }
+
+    fn remaining(self) -> std::time::Duration {
+        self.0.saturating_duration_since(Instant::now())
+    }
+
+    fn expired(self) -> bool {
+        self.remaining().is_zero()
+    }
+
+    /// Makes SQLite's own busy handler wait at most what is left of the budget.
+    fn apply_busy_timeout(self, conn: &mut SqliteConnection) -> std::result::Result<(), Error> {
+        let ms = self.remaining().as_millis().max(1);
+        conn.batch_execute(&format!("PRAGMA busy_timeout = {ms};"))
+    }
+}
+
+/// Runs `op`, retrying while `is_locked` says it failed on a lock, until `deadline`. Each
+/// attempt's busy timeout is the time left, so the total wait never exceeds the budget.
+fn retry_while_locked<T, E>(
+    deadline: LockDeadline,
+    conn: &mut SqliteConnection,
+    mut op: impl FnMut(&mut SqliteConnection) -> std::result::Result<T, E>,
+    is_locked: impl Fn(&E) -> bool,
+) -> std::result::Result<T, E> {
+    let mut attempt = 0u64;
+    loop {
+        // A failure to set the timeout leaves the previous one in force, which only shortens
+        // the wait.
+        let _ = deadline.apply_busy_timeout(conn);
+        let result = op(conn);
+        match &result {
+            Err(err) if is_locked(err) && !deadline.expired() => {
+                attempt += 1;
+                std::thread::sleep(
+                    std::time::Duration::from_millis(50 * attempt).min(deadline.remaining()),
+                );
+            }
+            _ => return result,
+        }
+    }
+}
 
 /// How many times a migrator re-checks after losing a race to another one.
 const MIGRATION_RACE_RETRIES: usize = 5;
@@ -1465,28 +1523,18 @@ fn error_is_migration_race(message: &str) -> bool {
 /// re-reads the applied versions, so a migrator that waited finds nothing left
 /// to do. A race lost anyway (e.g. an older build without the lock) is retried
 /// as "already migrated, re-check" rather than reported as a failure.
-fn run_migrations_single_writer(conn: &mut SqliteConnection) -> Result<()> {
+fn run_migrations_single_writer(conn: &mut SqliteConnection, deadline: LockDeadline) -> Result<()> {
     // Even reading the applied versions can report "locked" while another opener is still
-    // creating the file or switching it to WAL, so wait long and retry here too.
-    conn.batch_execute(&format!(
-        "PRAGMA busy_timeout = {MIGRATION_LOCK_TIMEOUT_MS};"
-    ))?;
+    // creating the file or switching it to WAL, so wait and retry here too, within the budget.
     let pending = |conn: &mut SqliteConnection| {
-        let mut result = Ok(false);
-        for attempt in 0..=WAL_LOCK_RETRIES {
-            result = conn.has_pending_migration(persistence::MIGRATIONS);
-            let locked = result
-                .as_ref()
-                .err()
-                .is_some_and(|e| e.to_string().to_lowercase().contains("database is locked"));
-            if !locked {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50 * (attempt as u64 + 1)));
-        }
-        result
-            .map_err(|e| anyhow!(e))
-            .context("Failed to check for pending migrations")
+        retry_while_locked(
+            deadline,
+            conn,
+            |conn| conn.has_pending_migration(persistence::MIGRATIONS),
+            |e| e.to_string().to_lowercase().contains("database is locked"),
+        )
+        .map_err(|e| anyhow!(e))
+        .context("Failed to check for pending migrations")
     };
     if !pending(conn)? {
         conn.batch_execute("PRAGMA busy_timeout = 1000;")?;
@@ -1494,6 +1542,7 @@ fn run_migrations_single_writer(conn: &mut SqliteConnection) -> Result<()> {
     }
     let mut result = Ok(());
     for attempt in 0..=MIGRATION_RACE_RETRIES {
+        let _ = deadline.apply_busy_timeout(conn);
         result = conn
             .immediate_transaction(|conn| {
                 conn.run_pending_migrations(persistence::MIGRATIONS)
@@ -1505,7 +1554,7 @@ fn run_migrations_single_writer(conn: &mut SqliteConnection) -> Result<()> {
             .as_ref()
             .err()
             .is_some_and(|err| error_is_migration_race(&underlying_error_message(err)));
-        if !raced {
+        if !raced || deadline.expired() {
             break;
         }
         log::info!("Another process migrated the database first; re-checking (attempt {attempt})");
