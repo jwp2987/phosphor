@@ -8302,6 +8302,32 @@ fn ghost_text_shows_queue_hint_during_agent_requested_lrc() {
     });
 }
 
+/// #835: with an empty buffer in Shell mode the placeholder must agree with the mode
+/// indicator, even when autodetection is on. "Ask anything..." is for AI mode only.
+#[test]
+fn shell_mode_placeholder_does_not_say_ask_anything() {
+    App::test((), |mut app| async move {
+        let _agent_view = FeatureFlag::AgentView.override_enabled(false);
+        initialize_app(&mut app);
+
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        let hint = input.update(&mut app, |input, ctx| {
+            input.set_input_mode_terminal(/* steal_focus */ false, ctx);
+            input.agent_mode_hint_text(ctx)
+        });
+        assert!(
+            hint.starts_with("Run commands"),
+            "Shell-mode placeholder must read as a shell hint, got {hint:?}"
+        );
+        assert!(
+            !hint.contains("Ask anything"),
+            "Shell-mode placeholder must not invite a question, got {hint:?}"
+        );
+    });
+}
+
 #[test]
 fn shell_submission_queues_as_command_row_when_gated_under_v2() {
     // A shell-mode submission while a queued command is already in flight is captured as a

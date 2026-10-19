@@ -398,6 +398,7 @@ terminal-input-a11y-label = 命令输入。
 terminal-input-a11y-helper = 输入 shell 命令，按 Enter 执行。按 cmd-up 导航到之前执行命令的输出。按 cmd-l 重新聚焦命令输入框。
 terminal-input-ai-command-search-hint = 输入 '#' 获取 AI 命令建议
 terminal-input-run-commands-hint = 运行命令
+terminal-input-run-commands-autodetect-hint = 运行命令，或输入问题将发送给智能体
 terminal-input-agent-hint-deploy-react-vercel = 让 Phosphor 处理任何任务，例如将 React 应用部署到 Vercel 并配置环境变量
 terminal-input-agent-hint-debug-python-ci = 让 Phosphor 处理任何任务，例如帮我调试 Python 测试在 CI 中失败的原因
 terminal-input-agent-hint-setup-microservice = 让 Phosphor 处理任何任务，例如用 Docker 搭建新的微服务并创建部署流水线

@@ -410,6 +410,11 @@ pub const AI_COMMAND_SEARCH_HINT_KEY: &str = "terminal-input-ai-command-search-h
 const AGENT_MODE_AI_DISABLED_AUTODETECTION_DISABLED_HINT_KEY: &str =
     "terminal-input-run-commands-hint";
 
+/// Shell-mode hint when autodetection is on. The placeholder must agree with the
+/// mode indicator (#835): in Shell mode it says "Run commands", never "Ask anything".
+const AGENT_MODE_SHELL_AUTODETECTION_ENABLED_HINT_KEY: &str =
+    "terminal-input-run-commands-autodetect-hint";
+
 // Rotating hint text options for new Agent Mode conversations
 const AGENT_MODE_HINT_KEYS: &[&str] = &[
     "terminal-input-agent-hint-deploy-react-vercel",
@@ -5318,10 +5323,7 @@ impl Input {
             input_model.should_run_input_autodetection(app),
         ) {
             (InputType::Shell, false) => AGENT_MODE_AI_DISABLED_AUTODETECTION_DISABLED_HINT_KEY,
-            (InputType::Shell, true) => {
-                // Ensure hint text is cached for new conversations
-                get_stable_agent_mode_hint_key(&mut self.cached_agent_mode_hint_key)
-            }
+            (InputType::Shell, true) => AGENT_MODE_SHELL_AUTODETECTION_ENABLED_HINT_KEY,
             (InputType::AI, _) => {
                 // Follow the `agent_indicator` pattern (see `app/src/tab.rs`):
                 //  * `None` (no conversation, empty, passive, or untitled) => new conversation => "Zap anything"
