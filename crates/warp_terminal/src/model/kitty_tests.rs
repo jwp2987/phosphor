@@ -112,7 +112,7 @@ fn dimension_cap_boundary() {
 
     // The byte cap is exactly an 8192x8192 RGBA square, and it stays under the
     // asset cache's 320 MB budget.
-    assert!(MAX_KITTY_IMAGE_BYTES < 320 * 1000 * 1000);
+    const { assert!(MAX_KITTY_IMAGE_BYTES < 320 * 1000 * 1000) };
     let side = 8192;
     let mut control_data = KittyControlData {
         width: side,

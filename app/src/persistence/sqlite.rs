@@ -1141,10 +1141,8 @@ fn diesel_database_error_message(err: &Error) -> String {
 static FRESH_DATABASES: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
 fn mark_database_fresh(db_path: &Path) {
-    if let Ok(mut fresh) = FRESH_DATABASES.lock() {
-        if !fresh.iter().any(|p| p == db_path) {
-            fresh.push(db_path.to_path_buf());
-        }
+    if let Ok(mut fresh) = FRESH_DATABASES.lock() && !fresh.iter().any(|p| p == db_path) {
+        fresh.push(db_path.to_path_buf());
     }
 }
 

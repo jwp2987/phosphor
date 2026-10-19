@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use instant::Instant;
+use std::time::Duration;
 
 use super::{IdleTracker, is_referenced};
 
@@ -62,9 +63,9 @@ fn referenced_repos_are_never_evicted_and_dropped_candidates_are_forgotten() {
 
     tracker.observe(t0, GRACE, &[a.clone(), b.clone()], |_| false);
     // `a` stops being a candidate (e.g. removed elsewhere); `b` stays referenced.
-    let due = tracker.observe(t0 + GRACE * 2, GRACE, &[b.clone()], |path| path == b);
+    let due = tracker.observe(t0 + GRACE * 2, GRACE, std::slice::from_ref(&b), |path| path == b);
     assert!(due.is_empty());
     // `a` returning later starts from scratch rather than inheriting its old idle time.
-    let due = tracker.observe(t0 + GRACE * 3, GRACE, &[a.clone()], |_| false);
+    let due = tracker.observe(t0 + GRACE * 3, GRACE, std::slice::from_ref(&a), |_| false);
     assert!(due.is_empty());
 }

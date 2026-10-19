@@ -4173,10 +4173,8 @@ impl TerminalView {
             }
             // Only views that inserted this image repaint (no terminal-model lock needed).
             AssetCacheEvent::RawAssetLoaded { id } => {
-                if let Ok(id) = id.parse::<u32>() {
-                    if me.pending_image_ids.remove(&id) {
-                        ctx.notify();
-                    }
+                if let Ok(id) = id.parse::<u32>() && me.pending_image_ids.remove(&id) {
+                    ctx.notify();
                 }
             }
         });
@@ -12240,12 +12238,12 @@ impl TerminalView {
             .shift_for_removed_height(evicted.removed_height, evicted.evicted_region_top);
 
         // Cancel and re-run an active search with shifted block filters.
-        if self.find_model.as_ref(ctx).is_find_bar_open() {
-            if let Some(mut options) = self.find_model.as_ref(ctx).active_find_options().cloned() {
-                options.shift_for_evicted_blocks(count);
-                self.find_model
-                    .update(ctx, |find_model, ctx| find_model.run_find(options, ctx));
-            }
+        if self.find_model.as_ref(ctx).is_find_bar_open()
+            && let Some(mut options) = self.find_model.as_ref(ctx).active_find_options().cloned()
+        {
+            options.shift_for_evicted_blocks(count);
+            self.find_model
+                .update(ctx, |find_model, ctx| find_model.run_find(options, ctx));
         }
 
         self.sync_eviction_protected_blocks_unchecked(ctx);
@@ -25848,13 +25846,13 @@ impl TerminalView {
             }
             CopyAIBlockResponse { ai_block_view_id } => {
                 for rich_content in self.rich_content_views.iter() {
-                    if let Some(ai_metadata) = rich_content.ai_block_metadata() {
-                        if ai_metadata.ai_block_handle.id() == *ai_block_view_id {
-                            ai_metadata.ai_block_handle.update(ctx, |block, ctx| {
-                                block.handle_action(&AIBlockAction::CopyResponse, ctx);
-                            });
-                            break;
-                        }
+                    if let Some(ai_metadata) = rich_content.ai_block_metadata()
+                        && ai_metadata.ai_block_handle.id() == *ai_block_view_id
+                    {
+                        ai_metadata.ai_block_handle.update(ctx, |block, ctx| {
+                            block.handle_action(&AIBlockAction::CopyResponse, ctx);
+                        });
+                        break;
                     }
                 }
             }

@@ -420,8 +420,8 @@ fn command_prefix_filter_matches_post_filtering_the_full_result() {
             ] {
                 let expected: Vec<String> = full
                     .iter()
-                    .cloned()
                     .filter(|text| text.trim().starts_with(prefix))
+                    .cloned()
                     .collect();
                 let actual: Vec<String> = history
                     .up_arrow_suggestions_with_command_prefix(

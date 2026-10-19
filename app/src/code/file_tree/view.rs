@@ -668,7 +668,6 @@ impl FileTreeView {
                 }
             }
             RepoMetadataEvent::FileTreeUpdated { .. }
-            | RepoMetadataEvent::RepositoryRemoved { .. }
             | RepoMetadataEvent::UpdatingRepositoryFailed { .. }
             | RepoMetadataEvent::IncrementalUpdateReady { .. }
             | RepoMetadataEvent::StandingQueryResultsUpdated { .. } => {}

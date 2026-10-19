@@ -916,8 +916,6 @@ fn test_deleted_settings_file_is_restored_from_memory_not_reset() {
 
 #[test]
 fn test_deleted_empty_settings_file_is_not_recreated() {
-    use super::super::UserPreferences;
-
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("settings.toml");
     let (prefs, _) = TomlBackedUserPreferences::new(file_path.clone());
@@ -1052,6 +1050,8 @@ fn test_deferred_reload_confirms_deletion_without_blocking() {
 
     // Delete + rename: the file is back by the time of the re-check, so nothing is restored.
     std::fs::remove_file(&file_path).unwrap();
+    // Native-only test of a wall-clock bound; warpui_extras does not depend on `instant`.
+    #[allow(clippy::disallowed_types)]
     let started = std::time::Instant::now();
     assert_eq!(
         prefs.reload_from_disk_deferred().unwrap(),

@@ -3897,10 +3897,8 @@ impl ansi::Handler for TerminalModel {
                 limit: MAX_KITTY_IMAGE_BYTES,
             });
             log::warn!("{err:?}");
-            if let Some(message_id) = message_id {
-                if verbosity.send_error() {
-                    let _ = writer.write_all(&create_kitty_error_reply(message_id, err));
-                }
+            if let Some(message_id) = message_id && verbosity.send_error() {
+                let _ = writer.write_all(&create_kitty_error_reply(message_id, err));
             }
             return;
         }
@@ -4024,10 +4022,10 @@ impl ansi::Handler for TerminalModel {
             limit: MAX_KITTY_IMAGE_BYTES,
         });
         log::warn!("{err:?}");
-        if let Some(image_id) = pending.control_data.image_id {
-            if pending.control_data.verbosity.send_error() {
-                let _ = writer.write_all(&create_kitty_error_reply(image_id, err));
-            }
+        if let Some(image_id) = pending.control_data.image_id
+            && pending.control_data.verbosity.send_error()
+        {
+            let _ = writer.write_all(&create_kitty_error_reply(image_id, err));
         }
     }
 

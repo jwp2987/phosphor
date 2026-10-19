@@ -1263,15 +1263,15 @@ impl AIBlock {
                     // its block instead of leaving the prompt hidden in a collapsed card
                     // (issue #852). Routine action events never expand, and a card the user
                     // collapsed stays collapsed unless the command is waiting on their input.
-                    if !*agent_has_control && reason.expands_card() {
-                        if let Some(requested_command) =
+                    if !*agent_has_control
+                        && reason.expands_card()
+                        && let Some(requested_command) =
                             me.requested_commands.get(requested_command_action_id)
-                        {
-                            requested_command.force_expand_for_control_change(
-                                reason.overrides_user_collapse(),
-                                ctx,
-                            );
-                        }
+                    {
+                        requested_command.force_expand_for_control_change(
+                            reason.overrides_user_collapse(),
+                            ctx,
+                        );
                     }
                     if let Some(requested_command_view) =
                         me.requested_commands.get(requested_command_action_id)

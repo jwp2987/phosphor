@@ -1087,7 +1087,7 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
         let poller_for_name = poller_weak_handle_for_termios.upgrade(ctx);
         let stall = fullscreen_detector_for_termios.borrow_mut().observe(
             fingerprint,
-            std::time::Instant::now(),
+            instant::Instant::now(),
             || {
                 poller_for_name
                     .as_ref()?

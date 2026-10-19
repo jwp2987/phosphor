@@ -990,7 +990,7 @@ pub fn screen_fingerprint(parts: impl std::hash::Hash) -> u64 {
 /// How long the same fingerprint has been observed.
 #[derive(Debug, Default)]
 pub struct StallTracker {
-    current: Option<(u64, std::time::Instant)>,
+    current: Option<(u64, instant::Instant)>,
 }
 
 impl StallTracker {
@@ -999,7 +999,7 @@ impl StallTracker {
     pub fn observe(
         &mut self,
         fingerprint: Option<u64>,
-        now: std::time::Instant,
+        now: instant::Instant,
     ) -> std::time::Duration {
         let Some(fingerprint) = fingerprint else {
             self.current = None;
@@ -1050,7 +1050,7 @@ impl FullscreenStallDetector {
     pub fn observe(
         &mut self,
         fingerprint: Option<u64>,
-        now: std::time::Instant,
+        now: instant::Instant,
         is_pager: impl FnOnce() -> Option<bool>,
     ) -> Option<FullscreenStall> {
         let stalled_for = self.tracker.observe(fingerprint, now);

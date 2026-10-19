@@ -58,6 +58,8 @@
 //! ```
 
 // Not interested in these lints
+// Vendored (#864): predates rustc's mismatched_lifetime_syntaxes lint; signatures left as upstream.
+#![allow(mismatched_lifetime_syntaxes)]
 #![allow(clippy::new_without_default)]
 // TODO: address occurrences and then deny
 //

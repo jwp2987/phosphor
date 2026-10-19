@@ -51,10 +51,10 @@ fn location_rejects_writes(db_path: &Path) -> bool {
         if db_path.metadata().is_ok_and(|m| m.permissions().readonly()) {
             return true;
         }
-        if let Err(err) = std::fs::OpenOptions::new().write(true).open(db_path) {
-            if rejected(err.kind()) {
-                return true;
-            }
+        if let Err(err) = std::fs::OpenOptions::new().write(true).open(db_path)
+            && rejected(err.kind())
+        {
+            return true;
         }
     }
     let Some(parent) = db_path.parent() else {
@@ -120,10 +120,8 @@ fn set_notice(notice: DatabaseProblemNotice) {
     if let Ok(mut slot) = PROBLEM_NOTICE.lock() {
         *slot = Some(notice);
     }
-    if let Ok(wake) = NOTICE_WAKE.lock() {
-        if let Some(tx) = wake.as_ref() {
-            let _ = tx.try_send(());
-        }
+    if let Ok(wake) = NOTICE_WAKE.lock() && let Some(tx) = wake.as_ref() {
+        let _ = tx.try_send(());
     }
 }
 
