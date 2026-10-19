@@ -534,7 +534,7 @@ impl super::TerminalView {
             new_cursor_shape = Some(Cursor::Arrow);
         }
 
-        let (hyperlink_at_point, url_at_point, new_fragment_boundary) = {
+        let Some((hyperlink_at_point, url_at_point, new_fragment_boundary)) = ({
             let model = self.model.lock();
             // OSC 8 wins over auto-detected URLs on the same cell, so check for
             // a hyperlink first and only run the urlocator scan when no OSC 8
@@ -545,11 +545,13 @@ impl super::TerminalView {
             } else {
                 None
             };
-            (
-                hyperlink_at_point,
-                url_at_point,
-                model.fragment_boundary_at_point(position),
-            )
+            // `None` if `position` refers to a block that no longer exists (e.g. evicted); there
+            // is nothing to hover then.
+            model
+                .fragment_boundary_at_point(position)
+                .map(|boundary| (hyperlink_at_point, url_at_point, boundary))
+        }) else {
+            return;
         };
 
         match (

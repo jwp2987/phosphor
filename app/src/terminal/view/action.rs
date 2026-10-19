@@ -53,6 +53,34 @@ use super::{
 
 pub use onboarding::OnboardingIntention;
 
+/// A `BlockIndex` captured while laying out the block list, paired with the block list's
+/// monotonic eviction count at that moment (#889). Retained-line eviction re-indexes the list, so
+/// an action built at layout and dispatched later must translate its index with
+/// [`Self::resolve`] instead of using it verbatim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StampedBlockIndex {
+    pub index: BlockIndex,
+    pub evicted_total: usize,
+}
+
+impl StampedBlockIndex {
+    pub fn new(index: BlockIndex, evicted_total: usize) -> Self {
+        Self {
+            index,
+            evicted_total,
+        }
+    }
+
+    /// The block's current index given the block list's current eviction count, or `None` if it
+    /// has been evicted since this was captured.
+    pub fn resolve(self, current_evicted_total: usize) -> Option<BlockIndex> {
+        crate::terminal::event::shift_block_index_after_eviction(
+            self.index,
+            current_evicted_total.saturating_sub(self.evicted_total),
+        )
+    }
+}
+
 /// Version of the agent onboarding flow (non-legacy).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentOnboardingVersion {
@@ -260,10 +288,10 @@ pub enum TerminalAction {
     ExpandBlockSelectionAbove,
     ExpandBlockSelectionBelow,
     NotificationsDiscoveryBanner(NotificationsDiscoveryBannerAction),
-    BookmarkBlock(BlockIndex),
+    BookmarkBlock(StampedBlockIndex),
     NotificationsErrorBanner(NotificationsErrorBannerAction),
     LegacySSHBanner(SSHBannerAction),
-    JumpToBookmark(BlockIndex),
+    JumpToBookmark(StampedBlockIndex),
     OpenGridLink(GridHighlightedLink),
     OpenRichContentLink(RichContentLink),
     ToggleGridSecret {
@@ -304,7 +332,7 @@ pub enum TerminalAction {
     InsertMostRecentCommandCorrection,
     AliasExpansionBanner(AliasExpansionBannerAction),
     OpenInWarpBanner(OpenInWarpBannerAction),
-    OpenBlockFilterEditor(BlockIndex),
+    OpenBlockFilterEditor(StampedBlockIndex),
     OnboardingFlow(OnboardingVersion),
     ImportSettings,
     StopSharingCurrentSession {

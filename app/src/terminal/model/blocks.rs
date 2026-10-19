@@ -310,6 +310,17 @@ pub struct BlockList {
     /// The max scroll limit for each block.
     max_grid_size_limit: usize,
 
+    /// Session-wide cap on retained output lines (`terminal.max_retained_lines`, #889).
+    /// `None` means unlimited, which is the default.
+    max_retained_lines: Option<usize>,
+
+    /// Eviction is never performed while true (shared sessions index blocks across peers).
+    block_eviction_suppressed: bool,
+
+    /// Blocks that must not be evicted (bookmarked, or attached as AI context). Kept in sync
+    /// by the view.
+    eviction_protected_block_ids: HashSet<BlockId>,
+
     /// The event proxy that proxies terminal events (such as wakeups) to the view.
     event_proxy: ChannelEventListener,
 
@@ -507,6 +518,18 @@ impl Gap {
     }
 }
 
+/// What [`BlockList::evict_oldest_blocks_over_line_budget`] removed (#889). The view uses this
+/// to shift every `BlockIndex`-keyed structure it owns.
+#[derive(Debug, Default, Clone)]
+pub struct EvictedBlocks {
+    pub count: usize,
+    pub block_ids: Vec<BlockId>,
+    pub removed_height: Lines,
+    /// Offset from the top of the block list at which the evicted region begins (non-zero when
+    /// rich content sits above the first block).
+    pub evicted_region_top: Lines,
+}
+
 /// A point in the block list coordinate space. Row 0, column 0 is the top left corner of all
 /// blocks.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd)]
@@ -524,16 +547,32 @@ impl BlockListPoint {
         }
     }
 
+    /// Test-only convenience. Production code must use [`Self::try_from_within_block_point`] and
+    /// skip the selection/highlight on `None`: falling back to row 0 for a stale index would
+    /// silently select or copy from the top of the list (#889).
+    #[cfg(test)]
     pub fn from_within_block_point(
         within_block_point: &WithinBlock<Point>,
         block_list: &BlockList,
     ) -> Self {
+        // A stale index (e.g. one captured before blocks were evicted) must not crash; fall back
+        // to the top of the list.
+        Self::try_from_within_block_point(within_block_point, block_list)
+            .unwrap_or_else(|| BlockListPoint::new(Lines::zero(), within_block_point.get().col))
+    }
+
+    /// Checked variant of [`Self::from_within_block_point`]: returns `None` if the point's block
+    /// index is out of range.
+    pub fn try_from_within_block_point(
+        within_block_point: &WithinBlock<Point>,
+        block_list: &BlockList,
+    ) -> Option<Self> {
+        let block = block_list.blocks.get(within_block_point.block_index.0)?;
         let mut block_heights_cursor = block_list
             .block_heights
             .cursor::<BlockIndex, BlockHeightSummary>();
         block_heights_cursor.seek(&within_block_point.block_index, SeekBias::Right);
 
-        let block = &block_list.blocks[within_block_point.block_index.0];
         let delta_to_top_of_block = match within_block_point.grid {
             GridType::Output => block.output_grid_offset(),
             GridType::Prompt => block.prompt_grid_offset(),
@@ -545,7 +584,7 @@ impl BlockListPoint {
             + delta_to_top_of_block
             + block_heights_cursor.start().height;
 
-        BlockListPoint::new(row, within_block_point.get().col)
+        Some(BlockListPoint::new(row, within_block_point.get().col))
     }
 }
 
@@ -729,6 +768,9 @@ impl BlockList {
             size: sizes.size,
             next_gap_height_in_lines: None,
             max_grid_size_limit: sizes.max_block_scroll_limit,
+            max_retained_lines: None,
+            block_eviction_suppressed: false,
+            eviction_protected_block_ids: HashSet::new(),
             event_proxy: event_proxy.clone(),
             selection: None,
             rich_content_selections: Vec::new(),
@@ -950,6 +992,19 @@ impl BlockList {
 
     pub fn update_max_grid_size(&mut self, new_size: usize) {
         self.max_grid_size_limit = new_size;
+    }
+
+    /// Sets `terminal.max_retained_lines`. `0` means unlimited.
+    pub fn update_max_retained_lines(&mut self, lines: usize) {
+        self.max_retained_lines = (lines > 0).then_some(lines);
+    }
+
+    pub fn set_block_eviction_suppressed(&mut self, suppressed: bool) {
+        self.block_eviction_suppressed = suppressed;
+    }
+
+    pub fn set_eviction_protected_block_ids(&mut self, ids: HashSet<BlockId>) {
+        self.eviction_protected_block_ids = ids;
     }
 
     pub fn active_block_index(&self) -> BlockIndex {
@@ -3008,11 +3063,12 @@ impl BlockList {
         );
     }
 
-    pub fn grid_at_location<T>(&self, location: &WithinBlock<T>) -> &BlockGrid {
-        let block = &self.blocks[location.block_index.0];
-        block
+    /// Returns the grid at `location`, or `None` if the block index is out of range (for example
+    /// a stale index captured before blocks were evicted) or the block has no such grid.
+    pub fn grid_at_location<T>(&self, location: &WithinBlock<T>) -> Option<&BlockGrid> {
+        self.blocks
+            .get(location.block_index.0)?
             .grid_of_type(location.grid)
-            .expect("Grid for location should exist")
     }
 
     /// Finds the next visible Command or Output grid in the blocklist above a given grid
@@ -3151,10 +3207,13 @@ impl BlockList {
         item: &WithinBlock<T>,
         respect_obfuscated_secrets: RespectObfuscatedSecrets,
     ) -> String {
+        let Some(block) = self.blocks.get(item.block_index.0) else {
+            return String::new();
+        };
         let block_grid = if item.is_in_command_content() {
-            self.blocks[item.block_index.0].prompt_and_command_grid()
+            block.prompt_and_command_grid()
         } else {
-            self.blocks[item.block_index.0].output_grid()
+            block.output_grid()
         };
 
         let (start, end) = item.inner.range().into_inner();
@@ -3171,20 +3230,21 @@ impl BlockList {
     pub fn fragment_boundary_at_point(
         &self,
         point: &WithinBlock<Point>,
-    ) -> WithinBlock<FragmentBoundary> {
+    ) -> Option<WithinBlock<FragmentBoundary>> {
+        let block = self.blocks.get(point.block_index.0)?;
         let block_grid = if point.is_in_command_content() {
-            self.blocks[point.block_index.0].prompt_and_command_grid()
+            block.prompt_and_command_grid()
         } else {
-            self.blocks[point.block_index.0].output_grid()
+            block.output_grid()
         };
 
-        WithinBlock {
+        Some(WithinBlock {
             inner: block_grid
                 .grid_handler
                 .fragment_boundary_at_point(&point.inner),
             block_index: point.block_index,
             grid: point.grid,
-        }
+        })
     }
 
     /// Return all possible file paths containing the grid point ordered from longest to shortest.
@@ -3192,21 +3252,28 @@ impl BlockList {
         &self,
         point: WithinBlock<Point>,
     ) -> impl Iterator<Item = WithinBlock<PossiblePath>> + use<> {
-        let block_grid = if point.is_in_command_content() {
-            self.blocks[point.block_index.0].prompt_and_command_grid()
-        } else {
-            self.blocks[point.block_index.0].output_grid()
+        // Empty for an out-of-range (stale) block index.
+        let paths: Vec<WithinBlock<PossiblePath>> = match self.blocks.get(point.block_index.0) {
+            Some(block) => {
+                let block_grid = if point.is_in_command_content() {
+                    block.prompt_and_command_grid()
+                } else {
+                    block.output_grid()
+                };
+                block_grid
+                    .grid_handler
+                    .possible_file_paths_at_point(point.inner)
+                    .into_iter()
+                    .map(|link| WithinBlock {
+                        inner: link,
+                        block_index: point.block_index,
+                        grid: point.grid,
+                    })
+                    .collect()
+            }
+            None => Vec::new(),
         };
-
-        block_grid
-            .grid_handler
-            .possible_file_paths_at_point(point.inner)
-            .into_iter()
-            .map(move |link| WithinBlock {
-                inner: link,
-                block_index: point.block_index,
-                grid: point.grid,
-            })
+        paths.into_iter()
     }
 
     pub fn url_at_point(&self, point: &WithinBlock<Point>) -> Option<WithinBlock<Link>> {
@@ -3503,6 +3570,92 @@ impl BlockList {
 
         self.active_block_mut().start();
         self.early_output.reset_user_input();
+        // NOTE: retained-line eviction deliberately does NOT happen here. This runs on the
+        // PTY/model thread, while the view's `BlockIndex`-keyed state lives on the main thread;
+        // evicting here would leave the view holding stale indices. The view runs eviction
+        // itself, in one step, when it handles `AfterBlockStarted` (#889).
+    }
+
+    /// Monotonic total of blocks evicted from this list by `terminal.max_retained_lines` (#889).
+    pub fn evicted_total(&self) -> usize {
+        self.event_proxy.evicted_blocks_total()
+    }
+
+    /// The effective retained-line budget, if any. Never lower than the per-block limit, so a
+    /// single block is not truncated by it.
+    fn retained_lines_budget(&self) -> Option<usize> {
+        if self.block_eviction_suppressed {
+            return None;
+        }
+        self.max_retained_lines
+            .map(|limit| limit.max(self.max_grid_size_limit))
+    }
+
+    /// Evicts the oldest finished blocks while total grid storage exceeds the configured
+    /// `terminal.max_retained_lines` (#889). No-op when the setting is off. Stops at the first
+    /// block that cannot be evicted (unfinished, active, or protected). Returns the number of
+    /// blocks removed.
+    ///
+    /// MUST only be called from the main/UI thread by the view, which shifts its own
+    /// `BlockIndex`-keyed state with the returned [`EvictedBlocks`] before releasing the model
+    /// lock's results to anything else. Never call this from the PTY/model thread.
+    pub fn evict_oldest_blocks_over_line_budget(&mut self) -> EvictedBlocks {
+        match self.retained_lines_budget() {
+            Some(budget) => self.evict_oldest_blocks_to_budget(budget),
+            None => EvictedBlocks::default(),
+        }
+    }
+
+    pub fn evict_oldest_blocks_to_budget(&mut self, line_budget: usize) -> EvictedBlocks {
+        let mut total: usize = self.blocks.iter().map(|b| b.grid_storage_lines()).sum();
+        let last = self.blocks.len().saturating_sub(1);
+        let mut evict_count = 0;
+        for (i, block) in self.blocks.iter().enumerate() {
+            if total <= line_budget {
+                break;
+            }
+            if i >= last
+                || !block.finished()
+                || self.eviction_protected_block_ids.contains(block.id())
+            {
+                break;
+            }
+            total = total.saturating_sub(block.grid_storage_lines());
+            evict_count += 1;
+        }
+        if evict_count == 0 {
+            return EvictedBlocks::default();
+        }
+
+        self.clear_selection();
+        self.clear_smart_select_override();
+        self.clear_scroll_position_before_filter();
+        let height_before = self.block_heights.summary().height;
+        // Height of anything laid out above the first block (e.g. rich content); the evicted
+        // region starts below it.
+        let evicted_region_top = {
+            let mut cursor = self
+                .block_heights
+                .cursor::<BlockIndex, BlockHeightSummary>();
+            cursor.seek(&BlockIndex::zero(), SeekBias::Right);
+            cursor.start().height
+        };
+        let mut block_ids = Vec::with_capacity(evict_count);
+        for _ in 0..evict_count {
+            if let Some(block) = self.remove_block_at_index(BlockIndex::zero()) {
+                block_ids.push(block.id().clone());
+            }
+        }
+        let removed_height = height_before - self.block_heights.summary().height;
+        // Bump the monotonic counter that stamps queued PTY-thread events (still holding the
+        // model lock the caller took), so the dispatcher can translate their stale indices.
+        self.event_proxy.record_blocks_evicted(evict_count);
+        EvictedBlocks {
+            count: evict_count,
+            block_ids,
+            removed_height,
+            evicted_region_top,
+        }
     }
 
     /// Prepares an active block whose command start was not observed.

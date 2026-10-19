@@ -156,6 +156,15 @@ define_settings_group!(TerminalSettings, settings: [
         toml_path: "terminal.maximum_grid_size",
         description: "The maximum number of rows in the terminal grid.",
     },
+    max_retained_lines: MaxRetainedLines {
+        type: usize,
+        default: 0,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        private: false,
+        toml_path: "terminal.max_retained_lines",
+        description: "The maximum total number of lines of output kept across all blocks in a tab. When exceeded, the oldest finished blocks are removed. Values below the per-block scrollback limit are raised to it. 0 (the default) keeps everything.",
+    },
     alt_screen_padding: AltScreenPadding {
         type: AltScreenPaddingMode,
         default: AltScreenPaddingMode::default(),

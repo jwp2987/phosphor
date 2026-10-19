@@ -1,6 +1,7 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::terminal::event::Event as TerminalEvent;
+use crate::terminal::event::{Event as TerminalEvent, EvictionStamp};
 use async_channel::Sender;
 
 /// A wrapper struct that emits events which originate from the PTY event loop.
@@ -14,6 +15,9 @@ pub struct ChannelEventListener {
     wakeups_tx: Sender<()>,
     terminal_events_tx: Sender<TerminalEvent>,
     pty_reads_tx: async_broadcast::Sender<Arc<Vec<u8>>>,
+    /// Monotonic count of blocks evicted by `terminal.max_retained_lines` (#889), shared by every
+    /// clone of this listener. See [`EvictionStamp`].
+    evicted_blocks_total: Arc<AtomicUsize>,
 }
 
 impl ChannelEventListener {
@@ -26,7 +30,24 @@ impl ChannelEventListener {
             wakeups_tx,
             terminal_events_tx,
             pty_reads_tx,
+            evicted_blocks_total: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// A stamp for an index-bearing event being created right now.
+    pub fn eviction_stamp(&self) -> EvictionStamp {
+        EvictionStamp::new(self.evicted_blocks_total.clone())
+    }
+
+    /// Total blocks evicted so far (#889).
+    pub fn evicted_blocks_total(&self) -> usize {
+        self.evicted_blocks_total.load(Ordering::Acquire)
+    }
+
+    /// Records that `count` blocks were just evicted from the block list (#889). Call while still
+    /// holding the model lock that performed the eviction.
+    pub fn record_blocks_evicted(&self, count: usize) {
+        self.evicted_blocks_total.fetch_add(count, Ordering::AcqRel);
     }
 
     #[cfg(any(test, feature = "integration_tests"))]

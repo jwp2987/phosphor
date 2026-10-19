@@ -867,6 +867,271 @@ pub fn test_first_non_hidden_block_by_index_in_range() {
     );
 }
 
+fn block_list_with_finished_blocks(n: usize) -> BlockList {
+    let mut block_list =
+        new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+    for i in 0..n {
+        insert_block(&mut block_list, &format!("command {i}\n"), "output\n");
+    }
+    block_list
+}
+
+fn assert_block_indices_consistent(block_list: &BlockList) {
+    for (i, block) in block_list.blocks().iter().enumerate() {
+        assert_eq!(block.index(), i.into());
+        assert_eq!(
+            block_list.block_with_id(block.id()).map(|b| b.index()),
+            Some(i.into())
+        );
+    }
+    assert_eq!(
+        block_list.active_block_index(),
+        (block_list.blocks().len() - 1).into()
+    );
+}
+
+#[test]
+fn test_eviction_is_a_no_op_when_setting_is_off() {
+    let mut block_list = block_list_with_finished_blocks(5);
+    let before = block_list.blocks().len();
+    // Default is unlimited.
+    assert_eq!(block_list.evict_oldest_blocks_over_line_budget().count, 0);
+    block_list.update_max_retained_lines(0);
+    assert_eq!(block_list.evict_oldest_blocks_over_line_budget().count, 0);
+    assert_eq!(block_list.blocks().len(), before);
+}
+
+#[test]
+fn test_eviction_budget_is_floored_at_the_per_block_limit() {
+    let mut block_list = block_list_with_finished_blocks(5);
+    let before = block_list.blocks().len();
+    // A tiny cap is raised to the per-block limit (1000 in tests), which these blocks fit in.
+    block_list.update_max_retained_lines(1);
+    assert_eq!(block_list.evict_oldest_blocks_over_line_budget().count, 0);
+    assert_eq!(block_list.blocks().len(), before);
+
+    // Lowering the per-block limit lowers the floor and eviction kicks in.
+    block_list.update_max_grid_size(1);
+    assert!(block_list.evict_oldest_blocks_over_line_budget().count > 0);
+    assert_block_indices_consistent(&block_list);
+}
+
+#[test]
+fn test_eviction_partial_budget_keeps_recent_blocks_and_stays_consistent() {
+    let mut block_list = block_list_with_finished_blocks(6);
+    let before = block_list.blocks().len();
+    let ids: Vec<_> = block_list.blocks().iter().map(|b| b.id().clone()).collect();
+    let height_before = block_list.block_heights().summary().height;
+    let total: usize = block_list
+        .blocks()
+        .iter()
+        .map(|b| b.grid_storage_lines())
+        .sum();
+    let first_two: usize = block_list
+        .blocks()
+        .iter()
+        .take(2)
+        .map(|b| b.grid_storage_lines())
+        .sum();
+
+    // Budget that is exceeded until exactly the first two blocks are gone.
+    let evicted = block_list
+        .evict_oldest_blocks_to_budget(total - first_two)
+        .count;
+    assert!((1..=2).contains(&evicted));
+    assert_eq!(block_list.blocks().len(), before - evicted);
+    for id in &ids[..evicted] {
+        assert!(block_list.block_with_id(id).is_none());
+    }
+    assert_eq!(block_list.blocks()[0].id(), &ids[evicted]);
+    assert!(block_list.block_heights().summary().height < height_before);
+    assert_block_indices_consistent(&block_list);
+}
+
+#[test]
+fn test_eviction_never_removes_the_active_block() {
+    let mut block_list = block_list_with_finished_blocks(4);
+    let active_id = block_list.active_block().id().clone();
+    let evicted = block_list.evict_oldest_blocks_to_budget(0).count;
+    assert!(evicted > 0);
+    assert_eq!(block_list.blocks().len(), 1);
+    assert_eq!(block_list.active_block().id(), &active_id);
+    assert_block_indices_consistent(&block_list);
+}
+
+#[test]
+fn test_eviction_stops_at_a_protected_block() {
+    let mut block_list = block_list_with_finished_blocks(6);
+    let ids: Vec<_> = block_list.blocks().iter().map(|b| b.id().clone()).collect();
+    let protected = ids[2].clone();
+    block_list.set_eviction_protected_block_ids([protected.clone()].into_iter().collect());
+
+    let evicted = block_list.evict_oldest_blocks_to_budget(0).count;
+    assert!(evicted <= 2, "must stop before the protected block");
+    assert!(block_list.block_with_id(&protected).is_some());
+    assert_block_indices_consistent(&block_list);
+}
+
+#[test]
+fn test_eviction_is_suppressed_for_shared_sessions() {
+    let mut block_list = block_list_with_finished_blocks(5);
+    block_list.update_max_grid_size(1);
+    block_list.update_max_retained_lines(1);
+    block_list.set_block_eviction_suppressed(true);
+    let before = block_list.blocks().len();
+    assert_eq!(block_list.evict_oldest_blocks_over_line_budget().count, 0);
+    assert_eq!(block_list.blocks().len(), before);
+}
+
+#[test]
+fn test_start_active_block_never_evicts() {
+    // Eviction must only be triggered by the view on the main thread, never from the model's
+    // `start_active_block` (which runs on the PTY thread).
+    let mut block_list = block_list_with_finished_blocks(3);
+    block_list.update_max_grid_size(1);
+    block_list.update_max_retained_lines(1);
+    let before = block_list.blocks().len();
+    let first_id = block_list.blocks()[0].id().clone();
+
+    block_list.start_active_block();
+
+    assert_eq!(block_list.blocks().len(), before);
+    assert_eq!(block_list.blocks()[0].id(), &first_id);
+    assert_block_indices_consistent(&block_list);
+}
+
+#[test]
+fn test_eviction_outcome_reports_count_height_and_ids() {
+    let mut block_list = block_list_with_finished_blocks(4);
+    let ids: Vec<_> = block_list.blocks().iter().map(|b| b.id().clone()).collect();
+    let height_before = block_list.block_heights().summary().height;
+    let evicted = block_list.evict_oldest_blocks_to_budget(0);
+    assert!(evicted.count > 0);
+    assert_eq!(evicted.block_ids, ids[..evicted.count].to_vec());
+    assert_eq!(
+        evicted.removed_height,
+        height_before - block_list.block_heights().summary().height
+    );
+}
+
+/// Events created on the PTY thread before an eviction carry pre-eviction `BlockIndex`es; the
+/// stamp lets the dispatcher translate them to the current indexing (or drop them if their block
+/// was evicted).
+#[test]
+fn test_queued_block_completed_events_are_translated_across_eviction() {
+    use crate::terminal::event::{Event as TerminalEvent, shift_block_index_after_eviction};
+
+    let (events_tx, events_rx) = async_channel::unbounded();
+    let listener = ChannelEventListener::builder_for_test()
+        .with_terminal_events_tx(events_tx)
+        .build();
+    let mut block_list = new_bootstrapped_block_list(None, None, listener);
+    for i in 0..6 {
+        insert_block(&mut block_list, &format!("command {i}\n"), "output\n");
+    }
+
+    // Everything the PTY thread queued before the main thread evicted anything.
+    let mut completed = Vec::new();
+    while let Ok(event) = events_rx.try_recv() {
+        if let TerminalEvent::BlockCompleted(event) = event {
+            completed.push(event);
+        }
+    }
+    assert!(!completed.is_empty());
+    assert_eq!(block_list.evicted_total(), 0);
+
+    block_list.update_max_grid_size(1);
+    block_list.update_max_retained_lines(1);
+    let evicted = block_list.evict_oldest_blocks_over_line_budget();
+    assert!(evicted.count > 0);
+    assert_eq!(block_list.evicted_total(), evicted.count);
+
+    for mut event in completed {
+        let shift = event.eviction_stamp.take_shift();
+        assert_eq!(shift, evicted.count);
+        match shift_block_index_after_eviction(event.block_index, shift) {
+            Some(index) => assert_eq!(
+                block_list.block_at(index).map(|block| block.id().clone()),
+                Some(event.block_id.clone()),
+                "translated index must point at the event's block"
+            ),
+            None => assert!(
+                block_list.block_with_id(&event.block_id).is_none(),
+                "an event is only dropped if its block was evicted"
+            ),
+        }
+        // Rebased: translating again is a no-op.
+        assert_eq!(event.eviction_stamp.take_shift(), 0);
+    }
+}
+
+#[test]
+fn test_checked_getters_tolerate_stale_block_index() {
+    let block_list = block_list_with_finished_blocks(2);
+    let stale = BlockIndex::from(block_list.blocks().len() + 5);
+    let point = WithinBlock::new(Point { row: 0, col: 0 }, stale, GridType::Output);
+
+    assert!(block_list.grid_at_location(&point).is_none());
+    assert!(BlockListPoint::try_from_within_block_point(&point, &block_list).is_none());
+    // The non-`try_` variant must not panic either.
+    let _ = BlockListPoint::from_within_block_point(&point, &block_list);
+    assert!(block_list.fragment_boundary_at_point(&point).is_none());
+    assert_eq!(block_list.possible_file_paths_at_point(point).count(), 0);
+    let range = WithinBlock::new(
+        crate::terminal::model::grid::grid_handler::Link {
+            range: Point { row: 0, col: 0 }..=Point { row: 0, col: 1 },
+            is_empty: false,
+        },
+        stale,
+        GridType::Output,
+    );
+    assert_eq!(
+        block_list.string_at_range(&range, RespectObfuscatedSecrets::No),
+        ""
+    );
+
+    // A valid index still resolves.
+    let valid = WithinBlock::new(
+        Point { row: 0, col: 0 },
+        BlockIndex::zero(),
+        GridType::Output,
+    );
+    assert!(block_list.grid_at_location(&valid).is_some());
+    assert!(BlockListPoint::try_from_within_block_point(&valid, &block_list).is_some());
+}
+
+#[test]
+fn test_selected_blocks_shift_for_evicted_blocks() {
+    use crate::terminal::model::terminal_model::SelectedBlocks;
+    let mut selected = SelectedBlocks::default();
+    selected.reset_to_single(BlockIndex::from(1));
+    selected.range_select(BlockIndex::from(5));
+    selected.shift_for_evicted_blocks(3);
+    assert_eq!(selected.ranges().len(), 1);
+    assert_eq!(selected.ranges()[0].end(), BlockIndex::from(2));
+
+    // A selection entirely within the evicted blocks is dropped.
+    let mut selected = SelectedBlocks::default();
+    selected.reset_to_single(BlockIndex::from(1));
+    selected.shift_for_evicted_blocks(3);
+    assert!(selected.is_empty());
+}
+
+#[test]
+fn test_find_options_shift_for_evicted_blocks() {
+    use crate::terminal::model::terminal_model::FindOptions;
+    let mut options = FindOptions::default().with_blocks_to_include_in_results(Some([
+        BlockIndex::from(1),
+        BlockIndex::from(4),
+        BlockIndex::from(6),
+    ]));
+    options.shift_for_evicted_blocks(3);
+    assert_eq!(
+        options.blocks_to_include_in_results,
+        Some(vec![BlockIndex::from(1), BlockIndex::from(3)])
+    );
+}
+
 #[test]
 fn test_matching_block_by_index() {
     let mut block_list =

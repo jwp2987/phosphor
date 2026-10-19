@@ -2,9 +2,10 @@ use crate::server::telemetry::ImageProtocol;
 use crate::terminal::model::session::Sessions;
 
 use crate::terminal::event::{
-    AfterBlockCompletedEvent, BlockCompletedEvent, BlockMetadataReceivedEvent,
+    AfterBlockCompletedEvent, BlockCompletedEvent, BlockMetadataReceivedEvent, BlockType,
     BlockWorkingDirectoryUpdatedEvent, Event, ExecutedExecutorCommandEvent, InitSshEvent,
     InitSubshellEvent, SourcedRcFileInSubshellEvent, TerminalMode,
+    shift_block_index_after_eviction,
 };
 
 use crate::terminal::ClipboardType;
@@ -263,10 +264,38 @@ impl ModelEventDispatcher {
             Event::MouseCursorDirty => ModelEvent::MouseCursorDirty,
             Event::Title(title) => ModelEvent::Title(title),
             Event::VisibleBootstrapBlock => ModelEvent::VisibleBootstrapBlock,
-            Event::BlockCompleted(block_completed_event) => {
+            Event::BlockCompleted(mut block_completed_event) => {
+                // The event was created on the PTY thread and may predate a retained-line
+                // eviction (#889) handled on the main thread since; translate its indices to the
+                // block list's current indexing, or drop it if its block was evicted.
+                let shift = block_completed_event.eviction_stamp.take_shift();
+                let Some(index) =
+                    shift_block_index_after_eviction(block_completed_event.block_index, shift)
+                else {
+                    return;
+                };
+                block_completed_event.block_index = index;
+                if let BlockType::User(user) = &mut block_completed_event.block_type {
+                    let user_shift = user.eviction_stamp.take_shift();
+                    let Some(user_index) = shift_block_index_after_eviction(user.index, user_shift)
+                    else {
+                        return;
+                    };
+                    user.index = user_index;
+                }
                 ModelEvent::BlockCompleted(block_completed_event)
             }
-            Event::AfterBlockCompleted(after_block_completed_event) => {
+            Event::AfterBlockCompleted(mut after_block_completed_event) => {
+                // Same translation as `BlockCompleted`. This event is a lifecycle signal many
+                // subscribers rely on, so a user block that was evicted meanwhile is downgraded to
+                // `BlockType::Restored` (no per-block payload) instead of being dropped.
+                if let BlockType::User(user) = &mut after_block_completed_event.block_type {
+                    let shift = user.eviction_stamp.take_shift();
+                    match shift_block_index_after_eviction(user.index, shift) {
+                        Some(index) => user.index = index,
+                        None => after_block_completed_event.block_type = BlockType::Restored,
+                    }
+                }
                 ModelEvent::AfterBlockCompleted(after_block_completed_event)
             }
             Event::AfterBlockStarted {
@@ -278,10 +307,28 @@ impl ModelEventDispatcher {
                 command,
                 is_for_in_band_command,
             },
-            Event::BlockMetadataReceived(block_metadata_received_event) => {
+            Event::BlockMetadataReceived(mut block_metadata_received_event) => {
+                let shift = block_metadata_received_event.eviction_stamp.take_shift();
+                let Some(index) = shift_block_index_after_eviction(
+                    block_metadata_received_event.block_index,
+                    shift,
+                ) else {
+                    return;
+                };
+                block_metadata_received_event.block_index = index;
                 ModelEvent::BlockMetadataReceived(block_metadata_received_event)
             }
-            Event::BlockWorkingDirectoryUpdated(block_working_directory_updated_event) => {
+            Event::BlockWorkingDirectoryUpdated(mut block_working_directory_updated_event) => {
+                let shift = block_working_directory_updated_event
+                    .eviction_stamp
+                    .take_shift();
+                let Some(index) = shift_block_index_after_eviction(
+                    block_working_directory_updated_event.block_index,
+                    shift,
+                ) else {
+                    return;
+                };
+                block_working_directory_updated_event.block_index = index;
                 ModelEvent::BlockWorkingDirectoryUpdated(block_working_directory_updated_event)
             }
             Event::BackgroundBlockStarted => ModelEvent::BackgroundBlockStarted,

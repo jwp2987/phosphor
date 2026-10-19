@@ -53,7 +53,7 @@ impl WithinBlock<Point> {
     /// This should be the inverse of [`WithinBlock<Point>::from_session_sharing_block_point`].
     pub fn to_session_sharing_block_point(self, block_list: &BlockList) -> Option<BlockPoint> {
         let block_id = block_list.block_at(self.block_index)?.id();
-        let grid = block_list.grid_at_location(&self).grid_handler();
+        let grid = block_list.grid_at_location(&self)?.grid_handler();
 
         let point = grid.maybe_translate_point_from_displayed_to_original(self.inner);
         let point = grid.grid_agnostic_point(point);

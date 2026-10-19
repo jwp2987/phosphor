@@ -161,7 +161,10 @@ pub use self::link_detection::GridHighlightedLink;
 pub use self::link_detection::{RichContentLink, RichContentLinkTooltipInfo};
 use crate::ai::llms::{LLMId, LLMModelHost, LLMPreferences};
 
-pub use action::{AgentOnboardingVersion, OnboardingIntention, OnboardingVersion, TerminalAction};
+pub use action::{
+    AgentOnboardingVersion, OnboardingIntention, OnboardingVersion, StampedBlockIndex,
+    TerminalAction,
+};
 use ai::api_keys::{ApiKeyManager, AwsCredentialsState};
 
 use crate::terminal::shared_session::protocol::{SessionEndedReason, SessionSourceType};
@@ -472,7 +475,7 @@ use crate::terminal::model::block::{AgentInteractionMetadata, BlockMetadata};
 use crate::terminal::model::block::{Block, BlockId};
 #[cfg(unix)]
 use crate::terminal::model::block::{InteractivePromptCandidate, interactive_prompt_candidate};
-use crate::terminal::model::blocks::{BlockFilter, BlockList};
+use crate::terminal::model::blocks::{BlockFilter, BlockList, EvictedBlocks};
 use crate::terminal::model::blocks::{
     AgentTranscriptNavigableItem, BlockHeight, BlockHeightItem, BlockHeightSummary, Gap,
 };
@@ -2630,6 +2633,9 @@ pub struct TerminalView {
     /// Set of block indexes that are bookmarked, including the mouse states for their indicators
     bookmarked_blocks: HashMap<BlockIndex, MouseStateHandle>,
 
+    /// Whether the one-time "older output was removed" notice has been shown for this tab (#889).
+    has_shown_eviction_notice: bool,
+
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
     file_link_scanning_join_handle: Option<JoinHandle<()>>,
 
@@ -3613,6 +3619,9 @@ impl TerminalView {
         };
 
         let find_model = ctx.add_model(|ctx| TerminalFindModel::new(model.clone(), ctx));
+        model.lock().update_max_retained_lines(
+            *TerminalSettings::as_ref(ctx).max_retained_lines.value(),
+        );
 
         ctx.subscribe_to_model(
             &TerminalSettings::handle(ctx),
@@ -3621,6 +3630,11 @@ impl TerminalView {
                     let mut model = me.model.lock();
                     model.update_max_grid_size(
                         *terminal_settings.as_ref(ctx).maximum_grid_size.value(),
+                    );
+                }
+                TerminalSettingsChangedEvent::MaxRetainedLines { .. } => {
+                    me.model.lock().update_max_retained_lines(
+                        *terminal_settings.as_ref(ctx).max_retained_lines.value(),
                     );
                 }
                 TerminalSettingsChangedEvent::Spacing { .. } => {
@@ -4265,6 +4279,7 @@ impl TerminalView {
             block_text_selection_start_position: None,
             inline_banners_state: Default::default(),
             bookmarked_blocks: Default::default(),
+            has_shown_eviction_notice: false,
             file_link_scanning_join_handle: None,
             #[cfg(all(
                 feature = "local_tty",
@@ -12132,6 +12147,135 @@ impl TerminalView {
         });
     }
 
+    /// Evicts the oldest finished blocks if `terminal.max_retained_lines` is set and exceeded,
+    /// then re-keys all view state (#889). No-op (and no model lock) when the setting is 0.
+    ///
+    /// This is the only caller of the model's eviction. It must stay on the main thread: the
+    /// model re-indexes immediately, so doing it on the PTY thread would leave the view's
+    /// index-keyed state (and action closures captured in the element tree) pointing at the wrong
+    /// blocks until the view caught up.
+    fn maybe_evict_retained_blocks(&mut self, ctx: &mut ViewContext<Self>) {
+        if *TerminalSettings::as_ref(ctx).max_retained_lines.value() == 0 {
+            return;
+        }
+        self.evict_retained_blocks(ctx);
+    }
+
+    /// Does the eviction and the view-side shift as one step. Returns the number of blocks
+    /// evicted.
+    fn evict_retained_blocks(&mut self, ctx: &mut ViewContext<Self>) -> usize {
+        self.sync_eviction_protected_blocks_unchecked(ctx);
+        let evicted = self
+            .model
+            .lock()
+            .block_list_mut()
+            .evict_oldest_blocks_over_line_budget();
+        let count = evicted.count;
+        self.handle_blocks_evicted(&evicted, ctx);
+        count
+    }
+
+    /// Re-keys every view-level `BlockIndex`-keyed structure after the `count` oldest blocks were
+    /// evicted from the block list to honor `terminal.max_retained_lines` (#889). The model has
+    /// already shifted its own indices (`block_id_to_block_index`, the heights tree, block
+    /// selection); this brings the view, find and viewport back in line.
+    fn handle_blocks_evicted(&mut self, evicted: &EvictedBlocks, ctx: &mut ViewContext<Self>) {
+        let count = evicted.count;
+        if count == 0 {
+            return;
+        }
+
+        shift_block_index_map(&mut self.bookmarked_blocks, count);
+        shift_block_index_map(&mut self.block_list_mouse_states.label_mouse_states, count);
+        shift_block_index_map(
+            &mut self.block_list_mouse_states.bookmark_mouse_states,
+            count,
+        );
+        shift_block_index_map(&mut self.block_list_mouse_states.filter_mouse_states, count);
+        self.active_filter_editor_block_index = self
+            .active_filter_editor_block_index
+            .and_then(|index| shift_block_index(index, count));
+        self.hovered_block_index = self
+            .hovered_block_index
+            .and_then(|index| shift_block_index(index, count));
+        self.mouse_down_block_index = self
+            .mouse_down_block_index
+            .and_then(|index| shift_block_index(index, count));
+        self.selected_blocks.shift_for_evicted_blocks(count);
+        self.agent_transcript_selection = match self.agent_transcript_selection {
+            Some(AgentTranscriptNavigableItem::ShellBlock(index)) => {
+                shift_block_index(index, count).map(AgentTranscriptNavigableItem::ShellBlock)
+            }
+            other => other,
+        };
+
+        // Hover state holds `WithinBlock` positions keyed by the old indices; drop it all. This
+        // also clears the model's smart-select override that mirrors the highlighted link.
+        {
+            let mut model = self.model.lock();
+            self.highlighted_link.take(&mut model);
+        }
+        self.last_hover_fragment_boundary = None;
+        self.hovered_secret = None;
+        ctx.reset_cursor();
+
+        // The context menu holds a block index in its source; just dismiss it.
+        self.close_context_menu(ctx, false);
+
+        // Top-anchored scroll positions are line offsets; compensate for the removed height
+        // unless the viewport sits above the evicted region.
+        self.scroll_position
+            .shift_for_removed_height(evicted.removed_height, evicted.evicted_region_top);
+
+        // Cancel and re-run an active search with shifted block filters.
+        if self.find_model.as_ref(ctx).is_find_bar_open() {
+            if let Some(mut options) = self.find_model.as_ref(ctx).active_find_options().cloned() {
+                options.shift_for_evicted_blocks(count);
+                self.find_model
+                    .update(ctx, |find_model, ctx| find_model.run_find(options, ctx));
+            }
+        }
+
+        self.sync_eviction_protected_blocks_unchecked(ctx);
+
+        if !self.has_shown_eviction_notice {
+            self.has_shown_eviction_notice = true;
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                let toast = DismissibleToast::new(
+                    crate::t!("terminal-older-output-removed-notice"),
+                    ToastFlavor::Default,
+                );
+                toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+            });
+        }
+        ctx.notify();
+    }
+
+    /// Tells the block list which blocks must never be evicted: bookmarked blocks and blocks
+    /// attached as AI context (#889). No-op while `terminal.max_retained_lines` is 0.
+    fn sync_eviction_protected_blocks(&self, ctx: &mut ViewContext<Self>) {
+        if *TerminalSettings::as_ref(ctx).max_retained_lines.value() == 0 {
+            return;
+        }
+        self.sync_eviction_protected_blocks_unchecked(ctx);
+    }
+
+    fn sync_eviction_protected_blocks_unchecked(&self, ctx: &mut ViewContext<Self>) {
+        let mut ids: HashSet<BlockId> = self
+            .ai_context_model
+            .as_ref(ctx)
+            .pending_context_block_ids()
+            .clone();
+        let mut model = self.model.lock();
+        for index in self.bookmarked_blocks.keys() {
+            if let Some(block) = model.block_list().block_at(*index) {
+                ids.insert(block.id().clone());
+            }
+        }
+        model.block_list_mut().set_eviction_protected_block_ids(ids);
+    }
+
     fn handle_terminal_event(&mut self, event: &ModelEvent, ctx: &mut ViewContext<Self>) {
         match event {
             ModelEvent::TerminalClear => {
@@ -12471,6 +12615,12 @@ impl TerminalView {
                 if *is_for_in_band_command {
                     return;
                 }
+
+                // Retained-line eviction (#889) runs here, on the main thread, and shifts the
+                // view's index-keyed state in the same step, so no event or render can observe
+                // the model re-indexed while the view still holds old indices.
+                self.maybe_evict_retained_blocks(ctx);
+
                 self.did_notify_long_running = false;
 
                 // Snapshot the prompt state as of when the command began executing.
@@ -19977,6 +20127,7 @@ impl TerminalView {
         self.block_list_mouse_states.bookmark_mouse_states.clear();
         self.block_list_mouse_states.filter_mouse_states.clear();
         self.bookmarked_blocks.clear();
+        self.sync_eviction_protected_blocks(ctx);
 
         // Clean up the active AI block if there is one. This MUST be done before
         // clearing the rich content views.
@@ -22244,6 +22395,14 @@ impl TerminalView {
         }
     }
 
+    /// Translates a block index captured at layout time into the block list's current indexing
+    /// (retained-line eviction may have re-indexed it since), or `None` if that block was evicted
+    /// (#889).
+    fn resolve_stamped_block_index(&self, stamped: StampedBlockIndex) -> Option<BlockIndex> {
+        let current = self.model.lock().block_list().evicted_total();
+        stamped.resolve(current)
+    }
+
     fn bookmark_block(&mut self, index: &BlockIndex, ctx: &mut ViewContext<Self>) {
         let enable_bookmark = match self.bookmarked_blocks.entry(*index) {
             Entry::Occupied(occupied) => {
@@ -22260,6 +22419,7 @@ impl TerminalView {
             TelemetryEvent::BookmarkBlockToggled { enable_bookmark },
             ctx
         );
+        self.sync_eviction_protected_blocks(ctx);
 
         ctx.notify();
     }
@@ -24253,8 +24413,10 @@ impl TerminalView {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_filter_element(
         block_index: BlockIndex,
+        evicted_total: usize,
         active_filter_editor_block_index: Option<BlockIndex>,
         filter_mouse_state: MouseStateHandle,
         has_active_filter: bool,
@@ -24298,7 +24460,9 @@ impl TerminalView {
                 appearance.theme(),
                 appearance.ui_builder(),
                 move |ctx, _, _| {
-                    ctx.dispatch_typed_action(TerminalAction::OpenBlockFilterEditor(block_index))
+                    ctx.dispatch_typed_action(TerminalAction::OpenBlockFilterEditor(
+                        StampedBlockIndex::new(block_index, evicted_total),
+                    ))
                 },
             ),
             filter_button_position_id(block_index).as_str(),
@@ -24308,6 +24472,7 @@ impl TerminalView {
 
     fn render_bookmark_element(
         index: BlockIndex,
+        evicted_total: usize,
         bookmark_mouse_state: MouseStateHandle,
         is_bookmarked: bool,
         tool_tip_below_button: bool,
@@ -24346,7 +24511,10 @@ impl TerminalView {
             theme,
             appearance.ui_builder(),
             move |ctx, _, _| {
-                ctx.dispatch_typed_action(TerminalAction::BookmarkBlock(index));
+                ctx.dispatch_typed_action(TerminalAction::BookmarkBlock(StampedBlockIndex::new(
+                    index,
+                    evicted_total,
+                )));
             },
         )
     }
@@ -24981,53 +25149,59 @@ impl TerminalView {
             &terminal_spacing,
             enforce_minimum_contrast,
             appearance,
-            Box::new(move |range, label_mouse_states, model, app| {
-                range
-                    .iter()
-                    .enumerate()
-                    .map(|(i, index)| {
-                        let mut label = Self::render_label_element(
-                            *index,
-                            model,
-                            label_mouse_states.get(index),
-                            sessions.as_ref(app),
-                            padding_x,
-                            i == 0,
-                            Appearance::as_ref(app),
-                        );
-                        // Special-case the last block so there is a reliable way to target it
-                        // regardless of the length of the list.
-                        if i == range.len() - 1 {
-                            label = SavePosition::new(label, "block_index:last").finish()
-                        }
-                        label
-                    })
-                    .collect()
-            }),
-            Box::new(move |range, hovered_index, mouse_states, app| {
-                range
-                    .iter()
-                    .enumerate()
-                    .map(|(i, block_index)| {
-                        let mouse_state = mouse_states.get(block_index)?.clone();
-                        let is_bookmarked = bookmarked_blocks.contains(block_index);
-
-                        if is_bookmarked || hovered_index == Some(*block_index) {
-                            Some(Self::render_bookmark_element(
-                                *block_index,
-                                mouse_state,
-                                is_bookmarked,
+            Box::new(
+                move |range, _evicted_total, label_mouse_states, model, app| {
+                    range
+                        .iter()
+                        .enumerate()
+                        .map(|(i, index)| {
+                            let mut label = Self::render_label_element(
+                                *index,
+                                model,
+                                label_mouse_states.get(index),
+                                sessions.as_ref(app),
+                                padding_x,
                                 i == 0,
                                 Appearance::as_ref(app),
-                            ))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            }),
+                            );
+                            // Special-case the last block so there is a reliable way to target it
+                            // regardless of the length of the list.
+                            if i == range.len() - 1 {
+                                label = SavePosition::new(label, "block_index:last").finish()
+                            }
+                            label
+                        })
+                        .collect()
+                },
+            ),
+            Box::new(
+                move |range, evicted_total, hovered_index, mouse_states, app| {
+                    range
+                        .iter()
+                        .enumerate()
+                        .map(|(i, block_index)| {
+                            let mouse_state = mouse_states.get(block_index)?.clone();
+                            let is_bookmarked = bookmarked_blocks.contains(block_index);
+
+                            if is_bookmarked || hovered_index == Some(*block_index) {
+                                Some(Self::render_bookmark_element(
+                                    *block_index,
+                                    evicted_total,
+                                    mouse_state,
+                                    is_bookmarked,
+                                    i == 0,
+                                    Appearance::as_ref(app),
+                                ))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                },
+            ),
             Box::new(
                 move |range,
+                      evicted_total,
                       hovered_index,
                       active_filter_editor_block_index,
                       filtered_blocks,
@@ -25048,6 +25222,7 @@ impl TerminalView {
                             {
                                 Some(Self::render_filter_element(
                                     *block_index,
+                                    evicted_total,
                                     active_filter_editor_block_index,
                                     mouse_state,
                                     has_active_filter,
@@ -25524,6 +25699,7 @@ impl TerminalView {
     ) -> (Vector2F, Box<dyn Element>) {
         let viewport = self.viewport_state(model.block_list(), input_mode, app);
         let start = viewport.top_of_block_in_lines(index);
+        let evicted_total = model.block_list().evicted_total();
 
         let top = bookmark_position.next_indicator_top(
             start,
@@ -25549,7 +25725,10 @@ impl TerminalView {
             .finish()
         })
         .on_click(move |ctx, _, _| {
-            ctx.dispatch_typed_action(TerminalAction::JumpToBookmark(index));
+            ctx.dispatch_typed_action(TerminalAction::JumpToBookmark(StampedBlockIndex::new(
+                index,
+                evicted_total,
+            )));
         })
         .finish();
 
@@ -27608,8 +27787,8 @@ impl TypedActionView for TerminalView {
                     WarpA11yRole::TextareaRole,
                 ))
             }
-            OpenBlockFilterEditor(block_index) => Custom(AccessibilityContent::new_without_help(
-                format!("Open block filter editor for block {block_index}"),
+            OpenBlockFilterEditor(stamped) => Custom(AccessibilityContent::new_without_help(
+                format!("Open block filter editor for block {}", stamped.index),
                 WarpA11yRole::TextRole,
             )),
             ShowInitializationBlock => Custom(AccessibilityContent::new_without_help(
@@ -28026,7 +28205,11 @@ impl TypedActionView for TerminalView {
             OpenInputContextMenu { position } => self.show_input_context_menu(*position, ctx),
             InputContextMenuItem(action) => self.handle_input_context_menu_action(action, ctx),
             SelectAllBlocks => self.select_all_blocks(ctx),
-            BookmarkBlock(index) => self.bookmark_block(index, ctx),
+            BookmarkBlock(stamped) => {
+                if let Some(index) = self.resolve_stamped_block_index(*stamped) {
+                    self.bookmark_block(&index, ctx);
+                }
+            }
             ExpandBlockSelectionAbove => {
                 match input_mode {
                     InputMode::PinnedToBottom | InputMode::Waterfall => {
@@ -28061,7 +28244,11 @@ impl TypedActionView for TerminalView {
                 self.notifications_discovery_banner_action(*action, ctx)
             }
             LegacySSHBanner(action) => self.ssh_banner_action(*action, ctx),
-            JumpToBookmark(index) => self.jump_to_bookmark(*index, ctx),
+            JumpToBookmark(stamped) => {
+                if let Some(index) = self.resolve_stamped_block_index(*stamped) {
+                    self.jump_to_bookmark(index, ctx);
+                }
+            }
             InsertCommandCorrection { correction } => {
                 self.insert_command_correction(correction, ctx);
             }
@@ -28181,8 +28368,10 @@ impl TypedActionView for TerminalView {
             InsertMostRecentCommandCorrection => self.insert_most_recent_command_correction(ctx),
             AliasExpansionBanner(action) => self.alias_expansion_banner_action(*action, ctx),
             OpenInWarpBanner(action) => self.handle_open_in_warp_banner_action(*action, ctx),
-            OpenBlockFilterEditor(block_index) => {
-                self.open_block_filter_editor(*block_index, OpenedFromClick::Yes, ctx)
+            OpenBlockFilterEditor(stamped) => {
+                if let Some(block_index) = self.resolve_stamped_block_index(*stamped) {
+                    self.open_block_filter_editor(block_index, OpenedFromClick::Yes, ctx)
+                }
             }
             VimModeBanner(action) => self.handle_vim_banner_action(*action, ctx),
             OnboardingFlow(version) => {
@@ -30109,6 +30298,21 @@ fn project_rules_path_for_dir(dir: &Path) -> PathBuf {
 /// before this issue.
 fn should_hide_input_for_blocked_ai_block(has_expanded_running_commands: bool) -> bool {
     has_expanded_running_commands
+}
+
+/// `index` shifted down after the `count` oldest blocks were evicted, or `None` if it referred to
+/// an evicted block (#889).
+fn shift_block_index(index: BlockIndex, count: usize) -> Option<BlockIndex> {
+    index.0.checked_sub(count).map(BlockIndex)
+}
+
+/// Re-keys a `BlockIndex`-keyed map after the `count` oldest blocks were evicted, dropping
+/// entries for evicted blocks (#889).
+fn shift_block_index_map<V>(map: &mut HashMap<BlockIndex, V>, count: usize) {
+    *map = std::mem::take(map)
+        .into_iter()
+        .filter_map(|(index, value)| Some((shift_block_index(index, count)?, value)))
+        .collect();
 }
 
 #[cfg(test)]

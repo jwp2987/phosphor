@@ -151,6 +151,19 @@ impl FindOptions {
     }
 }
 
+impl FindOptions {
+    /// Re-keys `blocks_to_include_in_results` after the `count` oldest blocks were evicted
+    /// (#889), dropping indices that no longer exist.
+    pub fn shift_for_evicted_blocks(&mut self, count: usize) {
+        if let Some(indices) = &mut self.blocks_to_include_in_results {
+            indices.retain(|index| index.0 >= count);
+            for index in indices.iter_mut() {
+                *index = BlockIndex(index.0 - count);
+            }
+        }
+    }
+}
+
 pub enum FindOption {
     ResetWithSameQuery,
     Query(String),
@@ -935,6 +948,16 @@ impl SelectedBlocks {
         }
     }
 
+    /// Re-keys the selection after the `count` oldest blocks were evicted (#889): ranges that
+    /// lay entirely within the evicted blocks are dropped, others shift down by `count`.
+    pub fn shift_for_evicted_blocks(&mut self, count: usize) {
+        self.ranges.retain(|range| range.end().0 >= count);
+        for range in &mut self.ranges {
+            range.pivot = BlockIndex(range.pivot.0.saturating_sub(count));
+            range.tail = BlockIndex(range.tail.0.saturating_sub(count));
+        }
+    }
+
     /// Remove all block selections.
     pub fn reset(&mut self) {
         self.ranges = vec![];
@@ -1544,6 +1567,10 @@ impl TerminalModel {
         self.block_list_mut().update_max_grid_size(new_size);
     }
 
+    pub fn update_max_retained_lines(&mut self, lines: usize) {
+        self.block_list_mut().update_max_retained_lines(lines);
+    }
+
     #[cfg(any(test, feature = "integration_tests"))]
     pub fn are_any_events_pending(&self) -> bool {
         self.event_proxy.are_any_events_pending()
@@ -2080,14 +2107,16 @@ impl TerminalModel {
     pub fn fragment_boundary_at_point(
         &self,
         point: &WithinModel<Point>,
-    ) -> WithinModel<FragmentBoundary> {
+    ) -> Option<WithinModel<FragmentBoundary>> {
         match point {
-            WithinModel::AltScreen(inner_point) => {
-                WithinModel::AltScreen(self.alt_screen.fragment_boundary_at_point(inner_point))
-            }
-            WithinModel::BlockList(inner_point) => {
-                WithinModel::BlockList(self.block_list.fragment_boundary_at_point(inner_point))
-            }
+            WithinModel::AltScreen(inner_point) => Some(WithinModel::AltScreen(
+                self.alt_screen.fragment_boundary_at_point(inner_point),
+            )),
+            // `None` for a stale (out-of-range) block index.
+            WithinModel::BlockList(inner_point) => self
+                .block_list
+                .fragment_boundary_at_point(inner_point)
+                .map(WithinModel::BlockList),
         }
     }
 
@@ -2167,6 +2196,9 @@ impl TerminalModel {
 
     pub fn set_shared_session_status(&mut self, shared_session_status: SharedSessionStatus) {
         self.shared_session_status = shared_session_status;
+        // Block indices are shared with peers, so never evict from a shared session (#889).
+        let suppress = self.shared_session_status.is_sharer_or_viewer();
+        self.block_list_mut().set_block_eviction_suppressed(suppress);
     }
 
     /// Returns whether this terminal is viewing a shared session.

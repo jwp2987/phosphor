@@ -662,6 +662,7 @@ impl From<&Block> for BlockType {
                     let id = block.id().clone();
                     BlockType::User(UserBlockCompleted::new(
                         index,
+                        block.event_proxy.eviction_stamp(),
                         lazy_block_field!(id, |block: &Block| Arc::new(SerializedBlock::from(
                             block
                         ))),
@@ -1659,6 +1660,7 @@ impl Block {
                 block_latency_data: self.block_latency_data(),
                 num_secrets_obfuscated: self.num_secrets_obfuscated(),
                 block_index: self.block_index,
+                eviction_stamp: self.event_proxy.eviction_stamp(),
                 block_id: self.id.clone(),
                 session_id: self.session_id,
                 restored_block_was_local: self.restored_block_was_local,
@@ -3289,6 +3291,7 @@ impl Block {
             .send_terminal_event(Event::BlockMetadataReceived(BlockMetadataReceivedEvent {
                 block_metadata: self.metadata(),
                 block_index: self.block_index,
+                eviction_stamp: self.event_proxy.eviction_stamp(),
                 is_after_in_band_command,
                 is_done_bootstrapping: matches!(
                     self.bootstrap_stage,
@@ -3631,6 +3634,7 @@ impl ansi::Handler for Block {
                 BlockWorkingDirectoryUpdatedEvent {
                     block_metadata: self.metadata(),
                     block_index: self.block_index,
+                    eviction_stamp: self.event_proxy.eviction_stamp(),
                     // Preserve the block's in-band status so listeners can keep
                     // applying the same in-band guard they apply to precmd-driven
                     // metadata updates (e.g. skipping repo-detection / chip

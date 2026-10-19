@@ -754,10 +754,12 @@ impl TerminalView {
             ) else {
                 return;
             };
-            let block_list_point = BlockListPoint::from_within_block_point(
+            let Some(block_list_point) = BlockListPoint::try_from_within_block_point(
                 &within_block_point,
                 self.model.lock().block_list(),
-            );
+            ) else {
+                return;
+            };
             self.update_scroll_position_locking(
                 ScrollPositionUpdate::ScrollToBlocklistRowIfNotVisible {
                     row: block_list_point.row.into_lines(),
