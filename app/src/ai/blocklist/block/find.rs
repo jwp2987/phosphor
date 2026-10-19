@@ -1,5 +1,6 @@
 use std::{collections::HashMap, ops::Range};
 
+use super::model::helper::AIBlockModelHelper as _;
 use super::{AIBlock, TextLocation};
 use crate::ai::agent::{AIAgentInput, AIAgentTextSection, MessageId};
 use crate::terminal::find::{FindOptions, FindableRichContentView, RichContentMatchId};
