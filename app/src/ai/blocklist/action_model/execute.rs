@@ -1,3 +1,4 @@
+pub(super) mod agent_shell_wrap;
 pub(super) mod ask_user_question;
 pub(super) mod call_mcp_tool;
 pub(super) mod create_documents;

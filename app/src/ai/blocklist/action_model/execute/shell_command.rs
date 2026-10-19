@@ -323,10 +323,14 @@ impl ShellCommandExecutor {
     /// overwritten by `cat`'s exit code (almost always 0), so the agent would see
     /// exit_code=0 even when `cargo check` failed, leading to wrong conclusions.
     ///
-    /// Instead this uses `PAGER=cat GIT_PAGER=cat MANPAGER=cat` executed in a
-    /// subshell/script block, which covers pager behavior for most CLIs (git, man,
-    /// bat, kubectl, psql, gh, ...) while letting the outer `$?` / `$LASTEXITCODE`
-    /// come from the command itself.
+    /// Instead this uses `PAGER=cat GIT_PAGER=cat MANPAGER=cat` (and the per-tool
+    /// variables in `agent_shell_wrap::PAGER_VARS`) set for the command only, which
+    /// covers pager behavior for most CLIs (git, man, bat, kubectl, psql, gh, ...)
+    /// while letting the outer `$?` / `$LASTEXITCODE` come from the command itself.
+    /// Since #855 the command runs in the user's REAL shell (a `{ ...; }` group that
+    /// saves and restores those variables), so `cd` / `export` / venv activation
+    /// persist; commands that end or reconfigure the shell keep a subshell, see
+    /// `agent_shell_wrap::needs_subshell`.
     ///
     /// **Two hardening measures** (given that `ActionResultDelay::UntilCompletion`
     /// has no short timeout, see #138):
@@ -895,21 +899,6 @@ impl ShellCommandExecutor {
     }
 }
 
-/// Pager-suppression prelude for bash/zsh. Exported inside a subshell; the subshell's
-/// exit code equals the last command's exit code, preserving the real `$?`. First
-/// unset the PAGER/GIT_PAGER/MANPAGER inherited from the parent shell, then export=cat.
-const POSIX_NO_PAGER_PRELUDE: &str = "unset PAGER GIT_PAGER MANPAGER; export PAGER=cat GIT_PAGER=cat MANPAGER=cat GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager GIT_CONFIG_VALUE_0=cat";
-
-/// fish: `set -lx` inside a begin/end block is a local export, and `$status` reflects
-/// the last command. Use `set -e` to clear inherited variables first, then `set -lx`
-/// to assign cat.
-const FISH_NO_PAGER_PRELUDE: &str = "set -e PAGER; set -e GIT_PAGER; set -e MANPAGER; set -lx PAGER cat; set -lx GIT_PAGER cat; set -lx MANPAGER cat; set -lx GIT_CONFIG_COUNT 1; set -lx GIT_CONFIG_KEY_0 core.pager; set -lx GIT_CONFIG_VALUE_0 cat";
-
-/// pwsh: the script block's local `$env:` doesn't pollute the outer session, and
-/// `$LASTEXITCODE` passes through. `Remove-Item Env:` clears inherited values, then
-/// assigns cat; `-ErrorAction SilentlyContinue` handles variables that don't exist.
-const PWSH_NO_PAGER_PRELUDE: &str = "Remove-Item Env:PAGER -ErrorAction SilentlyContinue; Remove-Item Env:GIT_PAGER -ErrorAction SilentlyContinue; Remove-Item Env:MANPAGER -ErrorAction SilentlyContinue; $env:PAGER='cat'; $env:GIT_PAGER='cat'; $env:MANPAGER='cat'; $env:GIT_CONFIG_COUNT='1'; $env:GIT_CONFIG_KEY_0='core.pager'; $env:GIT_CONFIG_VALUE_0='cat'";
-
 /// Wraps `command` in a "pager disabled" scope, see [`ShellCommandExecutor::turn_off_pager_for_command`].
 ///
 /// **Invariant: a multi-line command's closing token (`)` / `end` / `}`) must be
@@ -933,53 +922,7 @@ const PWSH_NO_PAGER_PRELUDE: &str = "Remove-Item Env:PAGER -ErrorAction Silently
 /// bash 3.2). Multi-line commands are already split on those shells regardless, so
 /// this function doesn't make that case any worse.
 fn wrap_command_without_pager(shell_type: Option<ShellType>, command: &str) -> String {
-    // An unknown shell can't be decorated safely, so pass the command through as-is —
-    // pager suppression is completely ineffective on this path, and we can only rely on
-    // the MAX_UNTIL_COMPLETION_DURATION fallback timeout to avoid hanging forever. Only
-    // the known-shell branches below need the trailing-whitespace trim, so it's scoped to
-    // them rather than applied up front (an unrecognized shell gets `command` back
-    // byte-exact, matching the old `turn_off_pager_for_command`'s guarantee for this path).
-    let Some(shell_type) = shell_type else {
-        return command.to_owned();
-    };
-    // Trailing newlines/whitespace on the command would leave a blank line before the
-    // closing token — harmless semantically, but it clutters the blocklist display.
-    let command = command.trim_end();
-    // A `#` anywhere in the command means its last line could plausibly end in a
-    // comment (a real shell tokenizer would need full quote-tracking to know for sure;
-    // this is deliberately conservative in the same direction as the heredoc check
-    // below -- false positives just mean the wrapped form is used when it wasn't
-    // strictly necessary, never a hang). If the closer were concatenated onto that
-    // same line, `#` would swallow it exactly like an unterminated heredoc does, so
-    // this also needs the "closer alone on its own line" wrapped form.
-    let needs_wrapped_form = command.contains('\n') || command.contains('#');
-
-    match shell_type {
-        ShellType::Zsh | ShellType::Bash => {
-            let prelude = POSIX_NO_PAGER_PRELUDE;
-            if needs_wrapped_form {
-                format!("({prelude}\n{command}\n)")
-            } else {
-                format!("({prelude}; {command})")
-            }
-        }
-        ShellType::Fish => {
-            let prelude = FISH_NO_PAGER_PRELUDE;
-            if needs_wrapped_form {
-                format!("begin; {prelude}\n{command}\nend")
-            } else {
-                format!("begin; {prelude}; {command}; end")
-            }
-        }
-        ShellType::PowerShell => {
-            let prelude = PWSH_NO_PAGER_PRELUDE;
-            if needs_wrapped_form {
-                format!("& {{ {prelude}\n{command}\n}}")
-            } else {
-                format!("& {{ {prelude}; {command} }}")
-            }
-        }
-    }
+    super::agent_shell_wrap::wrap_command(shell_type, command)
 }
 
 /// The waiting strategy used internally by `action_result_future`.

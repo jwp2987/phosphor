@@ -517,6 +517,17 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
       GIT_OPTIONAL_LOCKS=0 command git "$@"
     }
 
+    # Phosphor (#855): an agent command typed by the app saves the pager variables, overrides
+    # them for the command, and restores them itself. If it is interrupted (Ctrl-C) that restore
+    # never ran; __phosphor_ap_active is still set, so the next prompt puts everything back.
+    # Keep the loop identical to `posix_restore` in agent_shell_wrap.rs.
+    __phosphor_ap_restore_pagers () {
+      for __phosphor_ap_v in PAGER GIT_PAGER MANPAGER SYSTEMD_PAGER PSQL_PAGER AWS_PAGER GH_PAGER BAT_PAGER GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+        eval "if [ -n \"\${__phosphor_ap_s_$__phosphor_ap_v-}\" ]; then export $__phosphor_ap_v=\"\$__phosphor_ap_o_$__phosphor_ap_v\"; else unset $__phosphor_ap_v; fi; unset __phosphor_ap_s_$__phosphor_ap_v __phosphor_ap_o_$__phosphor_ap_v"
+      done
+      unset __phosphor_ap_v __phosphor_ap_active
+    }
+
     # Note that this is very performance sensitive code, so try not to
     # invoke any external commands in here.
     __warp_precmd_impl () {
@@ -525,6 +536,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         # executed within this block instead of the actual last
         # command that was run.
         local exit_code=$?
+        if [ -n "${__phosphor_ap_active-}" ]; then __phosphor_ap_restore_pagers; fi
         # Compute the next block ID once so the CommandFinished hook and the following Precmd hook
         # report the same ID. The Precmd carries this completion metadata so the client can classify
         # it and, if the CommandFinished was missed, recover the completion.
