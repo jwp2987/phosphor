@@ -624,7 +624,9 @@ impl EditorElement {
     }
 
     fn typed_characters(&self, chars: &str, ctx: &mut EventContext) -> bool {
-        if self.view_snapshot.is_focused {
+        // The snapshot is from the last render; characters typed right after focus moved here
+        // (before the next frame) would otherwise be dropped (#901).
+        if self.view_snapshot.is_focused || ctx.is_view_in_focus_chain(self.view_snapshot.view_id) {
             if self.vim_mode.is_some() {
                 ctx.dispatch_typed_action(EditorAction::VimUserInsert(UserInput::new(chars)));
             } else {

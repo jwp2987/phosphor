@@ -1158,6 +1158,10 @@ impl RequestedCommandView {
             }
         }
         self.cancel_explanation_request();
+        // Collapse now rather than when the command starts: an expanded header on a running
+        // command hides the agent input, and the keys typed right after approving would
+        // reach no one until the shell has started it (#901).
+        self.set_is_header_expanded(false, ctx);
         ctx.emit(RequestedCommandViewEvent::Accepted);
         true
     }
