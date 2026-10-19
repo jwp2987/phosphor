@@ -9,7 +9,7 @@ use crate::{
     ai::{
         agent::{
             api::ServerConversationToken,
-            conversation::{AIConversationId, ConversationStatus, TodoStatus},
+            conversation::{AIConversation, AIConversationId, ConversationStatus, TodoStatus},
             todos::AIAgentTodoList,
             AIAgentExchange, AIAgentExchangeId, AIAgentInput, AIAgentOutputStatus, AIAgentTodo,
             AIAgentTodoId, FinishedAIAgentOutput, RenderableAIError, Shared,
@@ -5726,9 +5726,13 @@ fn test_forget_terminal_view_only_evicts_terminal_statuses() {
             for id in non_terminal {
                 assert!(model.conversation(&id).is_some());
             }
-            for id in terminal {
-                assert!(model.conversation(&id).is_none());
-            }
+            // Only `Success` is something restore reproduces from an exchange-less root
+            // task; `Error`/`Cancelled` here have no exchange backing them, so restore would
+            // come back `Success` and the conversation is kept.
+            let [success, error, cancelled] = terminal;
+            assert!(model.conversation(&success).is_none());
+            assert!(model.conversation(&error).is_some());
+            assert!(model.conversation(&cancelled).is_some());
         });
     });
 }
@@ -5806,6 +5810,240 @@ fn test_evicted_queries_have_no_duplicates_after_evict_reopen_evict() {
             assert!(model.conversation(&id).is_none());
             assert_eq!(texts(model), vec!["only query"]);
             assert_eq!(model.evicted_queries.len(), 1);
+        });
+    });
+}
+
+/// The `conversation_data` JSON the writer would persist for `conversation` right now.
+fn persisted_conversation_data_string(conversation: &AIConversation) -> String {
+    match conversation.updated_conversation_state_event() {
+        crate::persistence::ModelEvent::UpdateMultiAgentConversation {
+            conversation_data, ..
+        } => serde_json::to_string(&conversation_data).unwrap(),
+        _ => panic!("expected an UpdateMultiAgentConversation event"),
+    }
+}
+
+/// #843: a change that touches only `conversation_data` (pin, event sequence, run id,
+/// usage) and whose write was lost must veto eviction: the row's tasks still match, but
+/// restore would rebuild a different conversation.
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_pending_eviction_keeps_conversation_with_lost_task_neutral_write() {
+    use super::conversation_loader::conversation_data_matches;
+    type Mutation = fn(&mut AIConversation);
+    let mutations: [(&str, Mutation); 4] = [
+        ("pin", |c| c.set_pinned(true)),
+        ("event sequence", |c| c.set_last_event_sequence(42)),
+        ("run id", |c| c.set_run_id(uuid::Uuid::new_v4().to_string())),
+        ("usage", |c| {
+            c.update_cost_and_usage_for_request(
+                None,
+                vec![],
+                Some(
+                    api::response_event::stream_finished::ConversationUsageMetadata {
+                        credits_spent: 3.0,
+                        ..Default::default()
+                    },
+                ),
+                false,
+            )
+            .unwrap();
+        }),
+    ];
+    App::test((), |mut app| async move {
+        initialize_history_model_test_app(&mut app);
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let view = EntityId::new();
+        history_model.update(&mut app, |model, ctx| {
+            // Control: the row holds exactly the in-memory data, so it is evicted.
+            let control =
+                start_closable_conversation(model, view, ConversationStatus::Success, ctx);
+            let control_row =
+                persisted_conversation_data_string(model.conversation(&control).unwrap());
+            model.forget_terminal_view_impl(view, true);
+            model.sweep_pending_evictions_with(Local::now(), 0, |_, c| {
+                c.id() == control && conversation_data_matches(c, &control_row)
+            });
+            assert!(model.conversation(&control).is_none(), "control evicted");
+
+            for (name, mutate) in mutations {
+                let view = EntityId::new();
+                let id = start_closable_conversation(model, view, ConversationStatus::Success, ctx);
+                // What SQLite holds: the state before the (lost) write.
+                let stale_row =
+                    persisted_conversation_data_string(model.conversation(&id).unwrap());
+                mutate(model.conversation_mut(&id).unwrap());
+                assert_ne!(
+                    persisted_conversation_data_string(model.conversation(&id).unwrap()),
+                    stale_row,
+                    "precondition: {name} changes conversation_data"
+                );
+                model.forget_terminal_view_impl(view, true);
+                for _ in 0..3 {
+                    model.sweep_pending_evictions_with(Local::now(), 0, |_, c| {
+                        conversation_data_matches(c, &stale_row)
+                    });
+                }
+                assert!(
+                    model.conversation(&id).is_some(),
+                    "{name}: lost write must block eviction"
+                );
+            }
+        });
+    });
+}
+
+/// A writer that paused, removed, reconstructed or failed to write blocks all eviction.
+#[test]
+fn test_degraded_persistence_blocks_eviction() {
+    App::test((), |mut app| async move {
+        initialize_history_model_test_app(&mut app);
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let view = EntityId::new();
+        history_model.update(&mut app, |model, ctx| {
+            let id = start_closable_conversation(model, view, ConversationStatus::Success, ctx);
+            model.forget_terminal_view_impl(view, true);
+            assert_eq!(model.pending_evictions.len(), 1);
+            model.mark_persistence_degraded();
+            model.sweep_pending_evictions_with(Local::now(), 0, |_, _| true);
+            assert!(model.conversation(&id).is_some());
+            // And a conversation closed after the degradation is never even recorded.
+            let view2 = EntityId::new();
+            let id2 = start_closable_conversation(model, view2, ConversationStatus::Success, ctx);
+            model.forget_terminal_view_impl(view2, true);
+            assert!(!model.pending_evictions.iter().any(|p| p.id == id2));
+            model.sweep_pending_evictions_with(Local::now(), 0, |_, _| true);
+            assert!(model.conversation(&id2).is_some());
+        });
+    });
+}
+
+/// Closing an already-pending conversation again restarts its age and attempts.
+#[test]
+fn test_reclose_resets_pending_eviction_clock() {
+    App::test((), |mut app| async move {
+        initialize_history_model_test_app(&mut app);
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let view = EntityId::new();
+        let view2 = EntityId::new();
+        history_model.update(&mut app, |model, ctx| {
+            let id = start_closable_conversation(model, view, ConversationStatus::Success, ctx);
+            model.forget_terminal_view_impl(view, true);
+            // Age the entry and burn attempts.
+            model.pending_evictions[0].recorded_at = Local::now() - chrono::Duration::hours(1);
+            model.pending_evictions[0].attempts = 3;
+            // Reopened in another view, then that view closes.
+            model
+                .live_conversation_ids_for_terminal_view
+                .entry(view2)
+                .or_default()
+                .push(id);
+            model.forget_terminal_view_impl(view2, true);
+            assert_eq!(model.pending_evictions.len(), 1, "no duplicate entry");
+            assert_eq!(model.pending_evictions[0].attempts, 0);
+            assert!(
+                (Local::now() - model.pending_evictions[0].recorded_at).num_seconds() < 60,
+                "clock restarted"
+            );
+            model.sweep_pending_evictions_with(Local::now(), 60, |_, _| true);
+            assert!(model.conversation(&id).is_some(), "too young again");
+        });
+    });
+}
+
+/// Only one sweep timer chain exists no matter how many panes close.
+#[test]
+fn test_only_one_sweep_chain_is_scheduled() {
+    App::test((), |mut app| async move {
+        initialize_history_model_test_app(&mut app);
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        history_model.update(&mut app, |model, ctx| {
+            assert!(!model.sweep_scheduled);
+            model.schedule_pending_eviction_sweep(ctx);
+            assert!(model.sweep_scheduled);
+            // Further requests are no-ops while a chain is outstanding.
+            model.schedule_pending_eviction_sweep(ctx);
+            model.schedule_pending_eviction_sweep(ctx);
+            assert!(model.sweep_scheduled);
+        });
+    });
+}
+
+/// Every in-memory-only field blocks eviction.
+#[test]
+fn test_in_memory_only_fields_block_eviction() {
+    type Mutation =
+        fn(&mut AIConversation, EntityId, &mut warpui::ModelContext<BlocklistAIHistoryModel>);
+    let mutations: [(&str, Mutation); 5] = [
+        ("suggestions", |c, _, _| {
+            c.set_existing_suggestions_for_test(Default::default())
+        }),
+        ("error message", |c, view, ctx| {
+            c.update_status_with_error_message(
+                ConversationStatus::Error,
+                Some("boom".to_owned()),
+                view,
+                ctx,
+            )
+        }),
+        ("request cost", |c, _, _| {
+            c.update_cost_and_usage_for_request(
+                Some(crate::ai::agent::RequestCost::new(1.0)),
+                vec![],
+                None,
+                true,
+            )
+            .unwrap();
+        }),
+        ("token usage", |c, _, _| {
+            c.update_cost_and_usage_for_request(
+                None,
+                vec![api::response_event::stream_finished::TokenUsage {
+                    model_id: "m".to_owned(),
+                    total_input: 1,
+                    output: 1,
+                    input_cache_read: 0,
+                    input_cache_write: 0,
+                    cost_in_cents: 0.0,
+                }],
+                None,
+                true,
+            )
+            .unwrap();
+        }),
+        // Restore would derive Success from an exchange-less root task.
+        ("status restore would not reproduce", |c, view, ctx| {
+            c.update_status(ConversationStatus::Cancelled, view, ctx)
+        }),
+    ];
+    App::test((), |mut app| async move {
+        initialize_history_model_test_app(&mut app);
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        history_model.update(&mut app, |model, ctx| {
+            for (name, mutate) in mutations {
+                let view = EntityId::new();
+                let id = start_closable_conversation(model, view, ConversationStatus::Success, ctx);
+                assert!(
+                    !model
+                        .conversation(&id)
+                        .unwrap()
+                        .has_unpersisted_local_state(),
+                    "precondition for {name}"
+                );
+                mutate(model.conversation_mut(&id).unwrap(), view, ctx);
+                model.forget_terminal_view_impl(view, true);
+                model.sweep_pending_evictions_with(Local::now(), 0, |_, _| true);
+                assert!(
+                    model.conversation(&id).is_some(),
+                    "{name} must block eviction"
+                );
+            }
         });
     });
 }

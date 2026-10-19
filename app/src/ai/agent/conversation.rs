@@ -1252,6 +1252,11 @@ impl AIConversation {
 
     /// Sets the pin state. Callers must follow up with
     /// `write_updated_conversation_state` to push the change to SQLite.
+    #[cfg(test)]
+    pub(crate) fn set_existing_suggestions_for_test(&mut self, suggestions: Suggestions) {
+        self.existing_suggestions = Some(suggestions);
+    }
+
     pub fn set_pinned(&mut self, pinned: bool) {
         self.pinned = pinned;
     }
@@ -1629,6 +1634,14 @@ impl AIConversation {
             || self.code_review.is_some()
             || !self.hidden_exchanges.is_empty()
             || !self.dismissed_suggestion_ids.is_empty()
+            // In-memory-only: none of these is written to or rebuilt from SQLite (#843).
+            || self.existing_suggestions.is_some()
+            || self.status_error_message.is_some()
+            || self.total_request_cost.value() != 0.0
+            || !self.total_token_usage_by_model.is_empty()
+            // Restore re-derives the status from the root task's last exchange; a status
+            // that restore would not reproduce is state SQLite cannot give back.
+            || self.status != Self::derive_status_from_root_task(&self.get_root_task())
     }
 
     /// Set a fallback title used when no task description or initial query exists.
@@ -3613,7 +3626,7 @@ impl AIConversation {
         }
     }
 
-    fn updated_conversation_state_event(&self) -> ModelEvent {
+    pub(crate) fn updated_conversation_state_event(&self) -> ModelEvent {
         self.updated_conversation_state_event_with_retention(PersistedTaskRetention::DeleteMissing)
     }
 
@@ -3760,9 +3773,16 @@ impl AIConversation {
                     "sqlite sender is unavailable".to_owned(),
                 )
             })?;
+        let conversation_id = self.id;
         sqlite_sender
             .try_send(self.updated_conversation_state_event())
-            .map_err(|e| UpdateConversationError::ByopPreflightPersistenceSend(format!("{e:?}")))
+            .map_err(|e| {
+                // The write is lost: never evict the only in-memory copy (#843).
+                ctx.spawn(async {}, move |history_model, _, _| {
+                    history_model.note_persist_failure(conversation_id);
+                });
+                UpdateConversationError::ByopPreflightPersistenceSend(format!("{e:?}"))
+            })
     }
 
     pub(crate) fn write_updated_conversation_state(

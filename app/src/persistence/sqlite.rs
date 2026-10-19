@@ -1466,6 +1466,7 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                 for event in events {
                     match event {
                         ModelEvent::ReconstructAndResume => {
+                            super::mark_writer_degraded();
                             match reconstruct_database(&database_path) {
                                 Ok(conn) => {
                                     current_conn = conn;
@@ -1478,6 +1479,7 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                             }
                         }
                         ModelEvent::PauseAndRemoveDatabase => {
+                            super::mark_writer_degraded();
                             paused = true;
                             log::info!("SQLite Writer is paused");
 
@@ -1502,11 +1504,19 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                             return;
                         }
                         event => {
+                            let is_agent_conversation_write =
+                                matches!(event, ModelEvent::UpdateMultiAgentConversation { .. });
                             if paused {
+                                if is_agent_conversation_write {
+                                    super::mark_writer_degraded();
+                                }
                                 log::info!("Ignoring event as SQLite Writer is on pause");
                                 continue;
                             }
                             if let Err(err) = handle_model_event(event, &mut current_conn) {
+                                if is_agent_conversation_write {
+                                    super::mark_writer_degraded();
+                                }
                                 report_db_error("Model", err, &database_path);
                             }
                         }

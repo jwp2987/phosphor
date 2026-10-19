@@ -314,6 +314,14 @@ pub struct BlocklistAIHistoryModel {
     /// evicted while present.
     persist_failed_conversations: HashSet<AIConversationId>,
 
+    /// True while a pending-eviction sweep timer chain is outstanding, so N closes start
+    /// one chain rather than N (each of which would burn `attempts` on every tick).
+    sweep_scheduled: bool,
+
+    /// Latched on by [`Self::mark_persistence_degraded`] (in addition to the process-wide
+    /// writer flag in `crate::persistence`). While either is set nothing is evicted.
+    persistence_degraded: bool,
+
     #[cfg(feature = "local_fs")]
     db_connection: Option<Arc<Mutex<SqliteConnection>>>,
 }
@@ -2724,7 +2732,11 @@ impl BlocklistAIHistoryModel {
         }
     }
 
-    fn schedule_pending_eviction_sweep(&self, ctx: &mut ModelContext<Self>) {
+    fn schedule_pending_eviction_sweep(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.sweep_scheduled {
+            return;
+        }
+        self.sweep_scheduled = true;
         ctx.spawn(
             async {
                 warpui::r#async::Timer::after(std::time::Duration::from_secs(
@@ -2733,6 +2745,7 @@ impl BlocklistAIHistoryModel {
                 .await;
             },
             |model, _, ctx| {
+                model.sweep_scheduled = false;
                 model.sweep_pending_evictions(ctx);
                 if !model.pending_evictions.is_empty() {
                     model.schedule_pending_eviction_sweep(ctx);
@@ -2747,12 +2760,26 @@ impl BlocklistAIHistoryModel {
         self.pending_evictions.retain(|p| p.id != conversation_id);
     }
 
+    /// Latches eviction off for the rest of the session: the persistence layer can no
+    /// longer be trusted to hold what was written.
+    #[cfg(test)]
+    pub(crate) fn mark_persistence_degraded(&mut self) {
+        self.persistence_degraded = true;
+    }
+
+    fn is_persistence_degraded(&self) -> bool {
+        self.persistence_degraded || crate::persistence::writer_degraded()
+    }
+
     /// Whether `id` may be dropped from memory right now, judged purely from in-memory
     /// state. (Whether SQLite holds it is checked separately, at sweep time.)
     fn can_evict_now(&self, id: AIConversationId) -> bool {
         let Some(conversation) = self.conversations_by_id.get(&id) else {
             return false;
         };
+        if self.is_persistence_degraded() {
+            return false;
+        }
         let active_elsewhere = self
             .active_conversation_for_terminal_view
             .values()
@@ -2858,7 +2885,7 @@ impl BlocklistAIHistoryModel {
         let mut seen = HashSet::new();
         candidates.retain(|id| seen.insert(*id));
         for id in candidates {
-            if !self.can_evict_now(id) || self.pending_evictions.iter().any(|p| p.id == id) {
+            if !self.can_evict_now(id) {
                 continue;
             }
             let Some(conversation) = self.conversations_by_id.get(&id) else {
@@ -2887,6 +2914,8 @@ impl BlocklistAIHistoryModel {
                     self.evicted_queries.pop_front();
                 }
             }
+            // A re-close of an already-pending conversation restarts its clock.
+            self.pending_evictions.retain(|p| p.id != id);
             self.pending_evictions.push(PendingEviction {
                 id,
                 recorded_at: Local::now(),

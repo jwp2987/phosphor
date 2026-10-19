@@ -83,6 +83,23 @@ pub use sqlite::{
     save_codebase_index_node_summaries, save_codebase_index_nodes,
 };
 
+/// Set (never cleared) when the SQLite writer can no longer be trusted to hold what the app
+/// believes it wrote: it paused and removed the database (logout), reconstructed it, or
+/// failed to upsert an agent conversation. The read-only reader connection may still point
+/// at the old unlinked file after a remove, and events are silently dropped while paused, so
+/// a read-back that "matches" proves nothing. Gates AI-conversation eviction (#843).
+static WRITER_DEGRADED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+pub(crate) fn mark_writer_degraded() {
+    WRITER_DEGRADED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Whether [`mark_writer_degraded`] has been called this session.
+pub(crate) fn writer_degraded() -> bool {
+    WRITER_DEGRADED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Initializes the persistence "subsystem".
 ///
 /// Returns the previously-persisted data, if any, and handles for
