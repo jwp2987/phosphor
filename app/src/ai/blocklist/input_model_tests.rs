@@ -1020,6 +1020,61 @@ fn settled_or_locked_type_is_not_overridden_at_submit() {
     });
 }
 
+/// #833 F6, agent-ward: prose pasted or typed fast right after a shell command inherits `Shell`;
+/// Enter must move it to the agent when it reads as a request, and leave real commands alone.
+#[test]
+fn pending_prose_inheriting_shell_settles_to_ai_at_submit() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, SHELL_UNLOCKED);
+        for prose in [
+            "help me",
+            "watch the logs for errors",
+            "docker vs podman?",
+            "why is the build slow",
+            "can you fix this",
+        ] {
+            input_model.update(&mut app, |model, ctx| {
+                model.apply_autodetected_input_type(InputType::Shell, ctx);
+                model.note_detection_requested(prose.to_owned());
+            });
+            // Only the Shell-ward settle reports `true`.
+            assert!(!settle_for_submit(&mut app, &input_model, prose), "{prose}");
+            input_model.read(&app, |model, ctx| {
+                assert_eq!(model.input_type(), InputType::AI, "{prose}");
+                assert!(!model.is_detection_pending_for(prose, ctx), "{prose}");
+            });
+        }
+        for kept in [
+            "ls -la",
+            "echo this and that",
+            "cargo build",
+            "ls -la | grep to",
+            "grep -r for src",
+            "kubectl get pods -n the",
+            "cd my",
+            "ls me",
+            "cd x && if test -f y; then echo z; fi",
+            "ls file?",
+            "rm -rf tmp?",
+            "echo is it ok?",
+            "sudo apt install it",
+            "grep For file",
+            "cat <<EOF\nto is and\nEOF",
+            "git commit -m \"fix the bug\"",
+        ] {
+            input_model.update(&mut app, |model, ctx| {
+                model.apply_autodetected_input_type(InputType::Shell, ctx);
+                model.note_detection_requested(kept.to_owned());
+            });
+            settle_for_submit(&mut app, &input_model, kept);
+            input_model.read(&app, |model, _| {
+                assert_eq!(model.input_type(), InputType::Shell, "{kept}");
+            });
+        }
+    });
+}
+
 /// Questions a person might type while a command runs, which reach the editor as typeahead. The
 /// provenance must not decide any of them: they go through the normal pipeline.
 const TYPEAHEAD_PROSE: &[&str] = &[

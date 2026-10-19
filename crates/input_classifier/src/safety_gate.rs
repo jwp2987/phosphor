@@ -16,7 +16,9 @@ use warp_completer::ParsedTokensSnapshot;
 use crate::{
     ClassificationResult, Context, InputClassificationResult, InputClassifier,
     InputClassifierDecisionSource, InputType,
-    util::{first_token_forces_ai_override, is_unambiguous_shell_command},
+    util::{
+        first_token_forces_ai_override, is_unambiguous_shell_command, reads_as_request_to_agent,
+    },
 };
 
 /// Wraps any [`InputClassifier`] and enforces a hard safety invariant on its `detect_input_type`
@@ -61,6 +63,17 @@ impl<C: InputClassifier> InputClassifier for SafetyGatedClassifier<C> {
             return InputClassificationResult::new(
                 InputType::AI,
                 InputClassifierDecisionSource::NoFirstTokenCommandEvidence,
+            );
+        }
+        // #834: the head is a real command, so the check above cannot fire, but the words after
+        // it read as a request (`help me`, `watch the logs for errors`). Pipelines, lists, heredocs
+        // and one-off keyword heads (`echo`, `sudo`) are exempt inside the predicate.
+        if matches!(result.input_type, InputType::Shell)
+            && reads_as_request_to_agent(&input.buffer_text)
+        {
+            return InputClassificationResult::new(
+                InputType::AI,
+                InputClassifierDecisionSource::ProseAfterCommandHead,
             );
         }
         result

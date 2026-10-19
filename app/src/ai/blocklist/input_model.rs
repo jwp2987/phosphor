@@ -720,6 +720,19 @@ impl BlocklistAIInputModel {
         explicit.buffer_text.as_deref() == Some(buffer_text)
     }
 
+    /// Whether the input is the agent's own steer/follow-up box: AI is the live type and the
+    /// selected conversation is still streaming (#851). Autodetection must not flip this input
+    /// to Shell: a shell-looking line typed to steer the agent would run in the shell and
+    /// silently cancel the running answer. Choosing Shell explicitly still works.
+    fn is_steering_running_agent(&self, app: &AppContext) -> bool {
+        self.input_config.is_ai()
+            && self
+                .ai_context_model
+                .as_ref(app)
+                .selected_conversation_status_for_hint(app)
+                .is_some_and(|status| status.is_in_progress())
+    }
+
     /// Records that the view has requested input-type detection for `buffer_text` (an edit the
     /// user made, or a re-detection the view triggered). The view classifies a parse only while
     /// its text is still requested ([`Self::is_detection_requested_for`]) (#833).
@@ -753,7 +766,10 @@ impl BlocklistAIInputModel {
     /// [`Self::settle_pending_detection_for_submit`] (#886, the shell-ward half of #833's F6); it
     /// is the model's answer to "is this buffer's mode a real verdict?".
     pub fn is_detection_pending_for(&self, buffer_text: &str, app: &AppContext) -> bool {
-        if buffer_text.trim().is_empty() || !self.should_run_input_autodetection(app) {
+        if buffer_text.trim().is_empty()
+            || !self.should_run_input_autodetection(app)
+            || self.is_steering_running_agent(app)
+        {
             return false;
         }
         let is_covered_by_explicit_set =
@@ -838,12 +854,13 @@ impl BlocklistAIInputModel {
     /// Shell; #833 rightly dropped prefix verdicts (a shell-looking prefix of prose is not a
     /// verdict for the prose), which left nothing to correct the inherited type.
     ///
-    /// Only Shell is decided here, and only by rules that are already precision-first for the
-    /// whole text: the user's denylist, [`input_classifier::util::is_unambiguous_shell_command`]
-    /// (whose prose vetoes are the #831 holes), or prose-free shell typeahead
-    /// ([`Self::is_shell_typeahead`]). Anything else keeps
-    /// the live type, as before. A locked or explicitly chosen type is never pending, so it is
-    /// never overridden. Returns `true` if the input type was settled to Shell.
+    /// Shell is decided only by rules that are already precision-first for the whole text: the
+    /// user's denylist, [`input_classifier::util::is_unambiguous_shell_command`] (whose prose
+    /// vetoes are the #831 holes), or prose-free shell typeahead ([`Self::is_shell_typeahead`]).
+    /// The one AI decision is agent-ward: an *inherited Shell* moves to AI when the text reads as
+    /// a request ([`Self::reads_as_request`], #834), never for typeahead, a one-off keyword head
+    /// or shell structure. Anything else keeps the live type, as before. A locked or explicitly
+    /// chosen type is never pending, so it is never overridden. Returns `true` if the input type was settled to Shell.
     pub fn settle_pending_detection_for_submit(
         &mut self,
         input: &ParsedTokensSnapshot,
@@ -856,6 +873,15 @@ impl BlocklistAIInputModel {
             || self.is_first_word_denylisted(&input.buffer_text, ctx)
             || input_classifier::util::is_unambiguous_shell_command(input);
         if !is_shell {
+            // The agent-ward half of F6: prose pasted or typed fast right after a shell command
+            // inherits `Shell` and Enter would run it. Only text that reads as a request in
+            // English moves the inherited type (`help me`, `watch the logs for errors`), and
+            // never typeahead, a one-off shell keyword head (`echo a and b`) or an inherited AI.
+            if self.input_config.is_shell() && self.reads_as_request(&input.buffer_text) {
+                self.abort_in_progress_detection();
+                self.apply_autodetected_input_type(InputType::AI, ctx);
+                self.settle_detection(&input.buffer_text);
+            }
             return false;
         }
         // The in-flight verdict is for this text and is superseded; a parse of it that lands
@@ -864,6 +890,16 @@ impl BlocklistAIInputModel {
         self.apply_autodetected_input_type(InputType::Shell, ctx);
         self.settle_detection(&input.buffer_text);
         true
+    }
+
+    /// Whether `buffer_text` is safe to move from an inherited `Shell` to the agent at Enter
+    /// without waiting for a verdict: it has no typeahead provenance, does not start with a
+    /// one-off shell keyword, and reads as a request
+    /// ([`input_classifier::util::reads_as_request_to_agent`], #833 F6 / #834).
+    fn reads_as_request(&mut self, buffer_text: &str) -> bool {
+        self.drop_typeahead_prefix_unless_leading(buffer_text);
+        self.typeahead_prefix.is_none()
+            && input_classifier::util::reads_as_request_to_agent(buffer_text)
     }
 
     /// Whether the first word of `buffer_text` is in the user's autodetection denylist.
@@ -973,6 +1009,12 @@ impl BlocklistAIInputModel {
 
         // If the input mode is locked, there's no point in running autodetection.
         if !self.should_run_input_autodetection(ctx) {
+            self.settle_detection(&input.buffer_text);
+            return;
+        }
+
+        // #851: the agent is streaming and the input is its steer box; keep it AI.
+        if self.is_steering_running_agent(ctx) {
             self.settle_detection(&input.buffer_text);
             return;
         }

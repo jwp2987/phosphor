@@ -50,6 +50,11 @@ pub enum InputClassifierDecisionSource {
     /// command-shaped first word with no English prose after it), so it was forced to Shell
     /// before any classifier ran. See `util::is_unambiguous_shell_command`.
     UnambiguousShellSyntax,
+    /// Fork-original, not in the pin (#834): a classifier scored the input as Shell and its first
+    /// word is a real command, but a bare English function word follows it (`help me`, `watch the
+    /// logs`) or it ends in `?`, so the safety gate overrode it to AI. See
+    /// `util::reads_as_command_headed_prose`.
+    ProseAfterCommandHead,
 }
 
 /// The detected input type along with the decision source that produced it.

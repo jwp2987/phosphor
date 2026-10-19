@@ -426,3 +426,80 @@ fn test_gate_forces_shell_for_unambiguous_commands_regardless_of_inner_classifie
         }
     });
 }
+
+/// #834: prose that starts with an installed command is overridden to AI even though the first
+/// word has command evidence, while real command lines (pipelines, lists, heredocs, quoted
+/// arguments, one-off keyword heads, globs) stay Shell.
+#[test]
+fn test_gate_overrides_command_headed_prose_to_ai() {
+    futures::executor::block_on(async move {
+        let gated = SafetyGatedClassifier::new(AlwaysShellClassifier);
+        for buffer in [
+            "help me",
+            "help me with this",
+            "docker vs podman?",
+            "why is the build slow",
+            "can you fix this",
+            "watch the logs for errors",
+            "make sure the build passes",
+        ] {
+            let input = snapshot_without_descriptions(buffer);
+            let result = gated.detect_input_type(input, &context(true)).await;
+            assert_eq!(
+                result.input_type,
+                InputType::AI,
+                "{buffer:?} should go to AI"
+            );
+        }
+        for buffer in [
+            "git status",
+            "cargo build --release",
+            "git commit -m \"feat: add the thing\"",
+            "git commit -m \"fix the bug\"",
+            "echo \"to be or not to be\"",
+            "for i in 1 2 3; do echo $i; done",
+            "if true; then echo y; fi",
+            "cat a b > c.txt",
+            "ls -la | grep to",
+            "grep -r for src",
+            "kubectl get pods -n the",
+            "cd my",
+            "ls me",
+            "cd x && if test -f y; then echo z; fi",
+            "ls file?",
+            "rm -rf tmp?",
+            "echo is it ok?",
+            "sudo apt install it",
+            "grep For file",
+            "cat <<EOF\nto is and\nEOF",
+        ] {
+            let input = snapshot_without_descriptions(buffer);
+            let result = gated.detect_input_type(input, &context(false)).await;
+            assert_eq!(
+                result.input_type,
+                InputType::Shell,
+                "{buffer:?} should stay Shell"
+            );
+        }
+    });
+}
+
+/// #834: the same shell lines stay Shell after the inner classifier says Shell with commands fully
+/// loaded (the override path that previously only the prose list exercised).
+#[test]
+fn test_gate_keeps_pipelines_and_keyword_heads_shell_when_commands_loaded() {
+    futures::executor::block_on(async move {
+        let gated = SafetyGatedClassifier::new(AlwaysShellClassifier);
+        for buffer in [
+            "ls -la | grep to",
+            "cd x && if test -f y; then echo z; fi",
+            "echo is it ok?",
+            "sudo apt install it",
+            "cat <<EOF\nto is and\nEOF",
+        ] {
+            let input = snapshot_without_descriptions(buffer);
+            let result = gated.detect_input_type(input, &context(true)).await;
+            assert_eq!(result.input_type, InputType::Shell, "{buffer:?}");
+        }
+    });
+}
