@@ -2,7 +2,7 @@ use chrono::{Local, TimeZone as _};
 
 use crate::input_suggestions::HistoryOrder;
 
-use super::{interleave_conversations, MenuEntry, MenuItem};
+use super::{interleave_conversations, newest_tail, MenuEntry, MenuItem};
 
 #[test]
 fn interleave_conversations_only_inserts_into_current_session_segment() {
@@ -151,4 +151,12 @@ fn interleave_conversations_edge_orderings() {
     let base = vec![command_entry(Diff, "d1", 1), command_entry(Cur, "c2", 2)];
     let merged = interleave_conversations(base, vec![]);
     assert_eq!(names(&merged), vec!["d1", "c2"]);
+}
+
+#[test]
+fn newest_tail_keeps_only_the_newest_in_order() {
+    let items: Vec<u32> = (0..10).collect();
+    assert_eq!(newest_tail(items, 3).collect::<Vec<_>>(), vec![7, 8, 9]);
+    assert_eq!(newest_tail(vec![1, 2], 5).collect::<Vec<_>>(), vec![1, 2]);
+    assert_eq!(newest_tail(Vec::<u32>::new(), 0).count(), 0);
 }

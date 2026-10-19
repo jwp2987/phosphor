@@ -607,8 +607,10 @@ impl History {
                     },
                 );
                 let host_clone = host.clone();
+                // Dedupe on the background thread together with the read: with a very large
+                // history file the O(N) hash pass is noticeable on the main thread (#874).
                 ctx.spawn(
-                    read_history_file_future,
+                    async move { dedupe_from_last(read_history_file_future.await) },
                     move |me, history_file_commands, ctx| {
                         // `session_commands_to_append` are commands executed by the user while the
                         // history file was being loaded.
@@ -681,7 +683,9 @@ impl History {
         host: ShellHost,
         ctx: &mut ModelContext<Self>,
     ) {
-        let deduped_history_file_commands = dedupe_from_last(history_file_commands);
+        // Already deduplicated (keeping the last occurrence) by the background task in
+        // `init_session_with`.
+        let deduped_history_file_commands = history_file_commands;
 
         let mut start_index = deduped_history_file_commands.len();
         self.history_file_commands.insert(
