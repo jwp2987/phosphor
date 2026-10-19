@@ -299,6 +299,61 @@ fn format_for_copy_preserves_visual_markdown_sections() {
     );
 }
 
+#[test]
+fn format_response_for_copy_keeps_only_the_models_text() {
+    let text_message = |id: &str, sections: Vec<AIAgentTextSection>| AIAgentOutputMessage {
+        id: MessageId::new(id.to_string()),
+        message: AIAgentOutputMessageType::Text(AIAgentText { sections }),
+        citations: Vec::new(),
+    };
+    let output = AIAgentOutput {
+        messages: vec![
+            text_message(
+                "m1",
+                vec![AIAgentTextSection::PlainText {
+                    text: "First".to_string().into(),
+                }],
+            ),
+            AIAgentOutputMessage {
+                id: MessageId::new("m2".to_string()),
+                message: AIAgentOutputMessageType::DebugOutput {
+                    text: "chrome".to_string(),
+                },
+                citations: Vec::new(),
+            },
+            AIAgentOutputMessage {
+                id: MessageId::new("m3".to_string()),
+                message: AIAgentOutputMessageType::CommentsAddressed {
+                    comments: Default::default(),
+                },
+                citations: Vec::new(),
+            },
+            text_message(
+                "m4",
+                vec![
+                    AIAgentTextSection::PlainText {
+                        text: "Second".to_string().into(),
+                    },
+                    AIAgentTextSection::MermaidDiagram {
+                        diagram: AgentOutputMermaidDiagram {
+                            source: "graph TD".to_string(),
+                            markdown_source: "```mermaid\ngraph TD\n```".to_string(),
+                        },
+                    },
+                ],
+            ),
+        ],
+        ..Default::default()
+    };
+
+    assert_eq!(
+        output.format_response_for_copy(),
+        "First\n\nSecond\n```mermaid\ngraph TD\n```"
+    );
+    // The general copy includes the non-response messages.
+    assert!(output.format_for_copy(None).contains("[DEBUG] chrome"));
+}
+
 // Regression tests for the "Copy output as Markdown" silent-empty-clipboard bug: an exchange
 // that ended in `Error` (or was `Cancelled` before any output streamed) used to make
 // `format_output_for_copy` return `""` via `AIAgentOutputStatus::output() == None`, which is

@@ -5295,6 +5295,55 @@ impl AIBlock {
         }
     }
 
+    /// The model's answer text (no prompt, tool calls or UI chrome) for every exchange from the
+    /// preceding user query to the next one, i.e. the same scope as
+    /// [`Self::get_output_text_since_preceding_user_query`] (#890).
+    pub fn get_response_text_since_preceding_user_query(&self, app: &AppContext) -> String {
+        let history = BlocklistAIHistoryModel::as_ref(app);
+        let own_response = || match self.model.status(app).output_to_render() {
+            Some(output) => output.get().format_response_for_copy(),
+            None => String::new(),
+        };
+        let Some(exchange_id) = self.model.exchange_id(app) else {
+            return own_response();
+        };
+        let Some(conversation) = history
+            .conversation_id_for_exchange(exchange_id, self.terminal_view_id)
+            .and_then(|conversation_id| history.conversation(&conversation_id))
+        else {
+            return own_response();
+        };
+        let exchanges: Vec<_> = conversation.root_task_exchanges().collect();
+        let Some(current_idx) = exchanges
+            .iter()
+            .position(|exchange| exchange.id == exchange_id)
+        else {
+            return own_response();
+        };
+        let start_idx = (0..=current_idx)
+            .rev()
+            .find(|i| exchanges[*i].has_user_query())
+            .unwrap_or(current_idx);
+        let end_idx = exchanges
+            .iter()
+            .enumerate()
+            .skip(start_idx + 1)
+            .find(|(_, exchange)| exchange.has_user_query())
+            .map_or(exchanges.len(), |(i, _)| i);
+        let response = exchanges
+            .iter()
+            .take(end_idx)
+            .skip(start_idx)
+            .map(|exchange| exchange.format_response_for_copy())
+            .filter(|text| !text.is_empty())
+            .join("\n\n");
+        if response.is_empty() {
+            own_response()
+        } else {
+            response
+        }
+    }
+
     /// Writes `text` to the clipboard, unless it's empty (after trimming), in which case it shows
     /// a toast instead of clobbering the clipboard.
     /// Without this, an AI block copy action (`CopyQuery`, `CopyOutput`, `Copy`,
@@ -5843,6 +5892,9 @@ pub enum AIBlockAction {
     /// Copy all AI output from the previous user query to the next user query.
     /// Note that this contains more than just this block, since from the user perspective everything after the user query appears like one block.
     CopyOutput,
+    /// Copy only the model's answer text from the previous user query to the next one: no prompt,
+    /// tool calls, command blocks or other UI chrome (#890).
+    CopyResponse,
     /// Copy complete conversation history
     CopyConversation,
     /// Copy the ai block's command
@@ -6244,6 +6296,10 @@ impl TypedActionView for AIBlock {
                 // Copy all AI output from preceding user query until the next user query
                 let output_text = self.get_output_text_since_preceding_user_query(ctx);
                 self.write_copied_text_or_toast_if_empty(output_text, ctx);
+            }
+            AIBlockAction::CopyResponse => {
+                let response_text = self.get_response_text_since_preceding_user_query(ctx);
+                self.write_copied_text_or_toast_if_empty(response_text, ctx);
             }
             AIBlockAction::Copy => {
                 // Copy the preceding user query and all AI output until the next user query

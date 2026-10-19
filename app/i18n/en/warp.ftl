@@ -2582,6 +2582,7 @@ menu-input-show-hint-text = Show input hint text
 # --- AI block overflow menu (terminal/view.rs) ---
 menu-ai-block-copy = Copy
 menu-ai-block-copy-prompt = Copy prompt
+menu-ai-block-copy-response = Copy response
 menu-ai-block-copy-output-as-markdown = Copy output as Markdown
 menu-ai-block-copy-url = Copy URL
 menu-ai-block-copy-path = Copy path

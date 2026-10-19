@@ -1409,6 +1409,10 @@ pub enum ContextMenuAction {
     CopyAIBlockOutput {
         ai_block_view_id: EntityId,
     },
+    /// Copy only the model's answer text (no prompt, tool calls or UI chrome)
+    CopyAIBlockResponse {
+        ai_block_view_id: EntityId,
+    },
     /// Copy both AI block prompt and output text
     CopyAIBlock {
         ai_block_view_id: EntityId,
@@ -1501,6 +1505,7 @@ impl fmt::Debug for ContextMenuAction {
             StopSharing => f.write_str("StopSharing"),
             CopyAIBlockQuery { .. } => f.write_str("CopyAIBlockPrompt"),
             CopyAIBlockOutput { .. } => f.write_str("CopyAIBlockOutput"),
+            CopyAIBlockResponse { .. } => f.write_str("CopyAIBlockResponse"),
             CopyAIBlock { .. } => f.write_str("CopyAIBlockBoth"),
             CopyAIBlockConversation { .. } => f.write_str("CopyAIBlockConversation"),
             CopyAgentCommand { .. } => f.write_str("CopyAgentCommand"),
@@ -2229,6 +2234,12 @@ pub struct TerminalViewRenderContext {
     /// Context for struct containing information about blocks and AI blocks used to render
     /// AI-specific decoration in the blocklist element.
     pub ai_render_context: Rc<RefCell<BlocklistAIRenderContext>>,
+
+    /// Set by the block list while a mouse press that a rich content block (e.g. an agent
+    /// answer) handled is still held, so drags past the block list's edge keep reaching it and
+    /// auto-scroll the selection (#890). Shared with the view, which outlives each frame's
+    /// element.
+    pub rich_content_drag_selecting: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Default)]
@@ -2473,6 +2484,9 @@ pub struct TerminalView {
 
     /// Whether there is an active text selection.
     is_selecting: bool,
+
+    /// See [`TerminalViewRenderContext::rich_content_drag_selecting`].
+    rich_content_drag_selecting: std::sync::Arc<std::sync::atomic::AtomicBool>,
 
     context_menu: ViewHandle<Menu<TerminalAction>>,
 
@@ -4194,6 +4208,7 @@ impl TerminalView {
             alt_screen_scroll_top: Lines::zero(),
             horizontal_clipped_scroll_state: Default::default(),
             is_selecting: false,
+            rich_content_drag_selecting: Default::default(),
             context_menu_state: None,
             context_menu,
             hovered_secret: None,
@@ -18434,6 +18449,11 @@ impl TerminalView {
                     ContextMenuAction::CopyAIBlockQuery { ai_block_view_id },
                 ))
                 .into_item(),
+            MenuItemFields::new(crate::t!("menu-ai-block-copy-response"))
+                .with_on_select_action(TerminalAction::ContextMenu(
+                    ContextMenuAction::CopyAIBlockResponse { ai_block_view_id },
+                ))
+                .into_item(),
             MenuItemFields::new(crate::t!("menu-ai-block-copy-output-as-markdown"))
                 .with_on_select_action(TerminalAction::ContextMenu(
                     ContextMenuAction::CopyAIBlockOutput { ai_block_view_id },
@@ -24145,6 +24165,7 @@ impl TerminalView {
                 .expect("terminal should upgrade")
                 .is_focused(app),
             is_terminal_selecting: self.is_selecting(),
+            rich_content_drag_selecting: self.rich_content_drag_selecting.clone(),
             is_context_menu_open: self.is_context_menu_open(),
             is_waterfall_gap_mode: self.is_waterfall_gap_mode(model, app),
             pane_state,
@@ -25542,6 +25563,18 @@ impl TerminalView {
                         if ai_metadata.ai_block_handle.id() == *ai_block_view_id {
                             ai_metadata.ai_block_handle.update(ctx, |block, ctx| {
                                 block.handle_action(&AIBlockAction::CopyOutput, ctx);
+                            });
+                            break;
+                        }
+                    }
+                }
+            }
+            CopyAIBlockResponse { ai_block_view_id } => {
+                for rich_content in self.rich_content_views.iter() {
+                    if let Some(ai_metadata) = rich_content.ai_block_metadata() {
+                        if ai_metadata.ai_block_handle.id() == *ai_block_view_id {
+                            ai_metadata.ai_block_handle.update(ctx, |block, ctx| {
+                                block.handle_action(&AIBlockAction::CopyResponse, ctx);
                             });
                             break;
                         }
