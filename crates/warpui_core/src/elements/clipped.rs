@@ -2,8 +2,9 @@ use pathfinder_geometry::vector::Vector2F;
 
 use super::Point;
 use crate::{
-    event::DispatchedEvent, AfterLayoutContext, AppContext, ClipBounds, Element, EventContext,
-    LayoutContext, PaintContext, SizeConstraint,
+    AfterLayoutContext, AppContext, ClipBounds, Element, EventContext, LayoutContext, PaintContext,
+    SizeConstraint,
+    event::{DispatchedEvent, Event},
 };
 use std::any::Any;
 
@@ -12,6 +13,7 @@ pub struct Clipped {
     origin: Option<Point>,
     size: Option<Vector2F>,
     child: Box<dyn Element>,
+    deliver_typed_characters_when_unpainted: bool,
 }
 
 impl Clipped {
@@ -20,7 +22,17 @@ impl Clipped {
             origin: None,
             size: None,
             child,
+            deliver_typed_characters_when_unpainted: false,
         }
+    }
+
+    /// Delivers `TypedCharacters` to the child even in a frame where the child was not painted
+    /// (it was clipped away entirely). Characters are not aimed at a screen position: the
+    /// child decides by focus alone, so dropping them because the focused view is out of view
+    /// loses what the user typed (#887). Pointer and key events still need a painted child.
+    pub fn with_typed_characters_when_unpainted(mut self) -> Self {
+        self.deliver_typed_characters_when_unpainted = true;
+        self
     }
 
     pub fn sized(child: Box<dyn Element>, size: Vector2F) -> Self {
@@ -28,6 +40,7 @@ impl Clipped {
             origin: None,
             size: Some(size),
             child,
+            deliver_typed_characters_when_unpainted: false,
         }
     }
 }
@@ -73,7 +86,12 @@ impl Element for Clipped {
         app: &AppContext,
     ) -> bool {
         // Only dispatch the event to the child if it has been painted.
-        self.child.origin().is_some() && self.child.dispatch_event(event, ctx, app)
+        if self.child.origin().is_none() {
+            return self.deliver_typed_characters_when_unpainted
+                && matches!(event.raw_event(), Event::TypedCharacters { .. })
+                && self.child.dispatch_event(event, ctx, app);
+        }
+        self.child.dispatch_event(event, ctx, app)
     }
 
     fn size(&self) -> Option<Vector2F> {

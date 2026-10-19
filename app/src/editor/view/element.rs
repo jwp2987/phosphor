@@ -2092,6 +2092,12 @@ impl Element for EditorElement {
         app: &AppContext,
     ) -> bool {
         let Some(z_index) = self.z_index() else {
+            // Not painted in the last frame (a narrow or short pane can clip the input away
+            // entirely). Typed characters are decided by focus, not position: take them rather
+            // than dropping them (#887). Nothing else is handled while unpainted.
+            if let Event::TypedCharacters { chars } = event.raw_event() {
+                return self.typed_characters(chars, ctx);
+            }
             return false;
         };
 

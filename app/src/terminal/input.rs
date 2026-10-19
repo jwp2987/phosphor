@@ -14574,7 +14574,11 @@ impl Input {
         }
 
         let input_box = Container::new(
-            ConstrainedBox::new(Clipped::new(ChildView::new(&self.editor).finish()).finish())
+            ConstrainedBox::new(
+                Clipped::new(ChildView::new(&self.editor).finish())
+                    .with_typed_characters_when_unpainted()
+                    .finish(),
+            )
                 .with_max_height(editor_height_rounded_down.as_f32())
                 .finish(),
         )
