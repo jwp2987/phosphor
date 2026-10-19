@@ -116,7 +116,7 @@ fn spawn_message_receiver_thread(socket_fd: RawFd, terminated_children: Arc<Mute
 /// intermediary.
 pub(super) struct TerminalServer {
     /// The terminal server child process.
-    server: std::process::Child,
+    server: Arc<Mutex<std::process::Child>>,
 
     /// A client for communicating with the terminal server process.
     client: Arc<TerminalServerClient>,
@@ -199,6 +199,9 @@ impl TerminalServer {
                 terminated_children,
             ));
 
+            let server = Arc::new(Mutex::new(server));
+            spawn_server_reaper_thread(Arc::downgrade(&server));
+
             Ok(Self { server, client })
         }
     }
@@ -212,9 +215,34 @@ impl TerminalServer {
 impl Drop for TerminalServer {
     fn drop(&mut self) {
         // Kill the server child process and wait for it to terminate.
-        let _ = self.server.kill();
-        let _ = self.server.wait();
+        let mut server = self.server.lock();
+        let _ = server.kill();
+        let _ = server.wait();
     }
+}
+
+/// How often the reaper checks whether the terminal server has exited.
+const SERVER_REAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Reaps the terminal server child if it dies on its own (e.g. it is killed
+/// externally), so it does not linger as a zombie for the rest of the app's
+/// lifetime. Exits once the server has been reaped or the owning
+/// [`TerminalServer`] has been dropped (#830).
+fn spawn_server_reaper_thread(server: std::sync::Weak<Mutex<std::process::Child>>) {
+    let _ = std::thread::Builder::new()
+        .name("Terminal server reaper".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(SERVER_REAP_INTERVAL);
+                let Some(server) = server.upgrade() else {
+                    return;
+                };
+                // `try_wait` reaps the child when it has exited.
+                if !matches!(server.lock().try_wait(), Ok(None)) {
+                    return;
+                }
+            }
+        });
 }
 
 /// A handle for a pty that is owned by a terminal server forked from the

@@ -132,3 +132,89 @@ fn successful_setup_leaves_the_shell_running() {
     assert!(new_event_loop(pty).is_ok());
     assert!(!killed.load(Ordering::SeqCst));
 }
+
+fn block(id: &str) -> BlockId {
+    BlockId::from(id.to_owned())
+}
+
+fn drain(state: &mut State) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    loop {
+        state.ensure_next();
+        match state.take_current() {
+            Some(writing) => out.push(writing.remaining_bytes().to_vec()),
+            None => return out,
+        }
+    }
+}
+
+/// #829: a query reply and the command's end in the same read. The reply was tagged
+/// with the block executing before the parse; the block has since changed, so drop it.
+#[test]
+fn reply_in_the_same_parse_as_the_command_end_is_dropped() {
+    let mut state = State::default();
+    state.queue_response(b"\x1b[?62;c".to_vec(), Some(block("cmd")));
+
+    // After the parse the active block is the next (not executing) one.
+    state.drop_stale_responses(&block("next"), false);
+
+    assert!(!state.needs_write());
+}
+
+/// A reply produced at the prompt (not executing) is always kept.
+#[test]
+fn reply_produced_at_the_prompt_is_kept() {
+    let mut state = State::default();
+    state.queue_response(b"\x1b[1;1R".to_vec(), None);
+
+    state.drop_stale_responses(&block("next"), false);
+
+    assert_eq!(drain(&mut state), vec![b"\x1b[1;1R".to_vec()]);
+}
+
+/// A reply produced while a command ran and which is still running is kept.
+#[test]
+fn reply_is_kept_while_the_same_command_is_still_running() {
+    let mut state = State::default();
+    state.queue_response(b"\x1b[?62;c".to_vec(), Some(block("cmd")));
+
+    state.drop_stale_responses(&block("cmd"), true);
+
+    assert_eq!(drain(&mut state), vec![b"\x1b[?62;c".to_vec()]);
+}
+
+/// Same block id but no longer executing (finished) also drops the reply.
+#[test]
+fn reply_is_dropped_when_its_block_stopped_executing() {
+    let mut state = State::default();
+    state.queue_response(b"\x1b[?62;c".to_vec(), Some(block("cmd")));
+
+    state.drop_stale_responses(&block("cmd"), false);
+
+    assert!(!state.needs_write());
+}
+
+/// Input queued after a reply goes out after it; input is never dropped.
+#[test]
+fn input_queued_after_a_reply_is_written_after_it() {
+    let mut state = State::default();
+    state.queue_response(b"\x1b[?62;c".to_vec(), Some(block("cmd")));
+    state.queue_input(Cow::Borrowed(b"ls\n"));
+
+    assert_eq!(
+        drain(&mut state),
+        vec![b"\x1b[?62;c".to_vec(), b"ls\n".to_vec()]
+    );
+}
+
+#[test]
+fn input_survives_stale_reply_dropping_in_order() {
+    let mut state = State::default();
+    state.queue_input(Cow::Borrowed(b"a"));
+    state.queue_response(b"R".to_vec(), Some(block("cmd")));
+    state.queue_input(Cow::Borrowed(b"b"));
+
+    state.drop_stale_responses(&block("next"), false);
+
+    assert_eq!(drain(&mut state), vec![b"a".to_vec(), b"b".to_vec()]);
+}
