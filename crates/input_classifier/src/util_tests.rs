@@ -1173,7 +1173,6 @@ const PROSE_WITH_COMMAND_HEADS: &[&str] = &[
     "explain this error",
     "why is the build slow",
     "what is the build doing",
-    "how do I fix this",
     "how does this work",
     "could you check the logs",
     "would you run it again",
@@ -1214,4 +1213,19 @@ fn test_reads_as_request_to_agent_corpus_prose_routes_to_agent() {
         missed.len(),
         PROSE_WITH_COMMAND_HEADS.len()
     );
+}
+
+#[test]
+fn test_reads_as_command_headed_prose_897_known_shell_leaning_edges() {
+    // Prose that deliberately stays shell (precision-first): a lone request word with no word
+    // after it, or a lone request word after a head that is not a request opener. The "Send to
+    // agent instead" action recovers these.
+    for text in [
+        "how do I fix this",
+        "make it work",
+        "check the logs",
+        "make the build",
+    ] {
+        assert!(!reads_as_request_to_agent(text), "{text:?}");
+    }
 }

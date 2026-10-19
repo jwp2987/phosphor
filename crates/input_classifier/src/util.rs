@@ -1096,6 +1096,93 @@ const QUESTION_HEADS: [&str; 16] = [
 /// Words that mark a comparison question when the line ends in `?` (`docker vs podman?`).
 const COMPARISON_WORDS: [&str; 2] = ["vs", "versus"];
 
+/// Heads whose arguments are free text (a search pattern, a commit message, a spoken or displayed
+/// string, a remote command, a task title), so request words among them are data, not a request
+/// (#897): `grep -rn this src`, `git commit -m the fix`, `say how are you`, `todo add fix it`.
+/// [`reads_as_command_headed_prose`] never fires on these heads, whatever follows. Matched on the
+/// head's basename.
+const FREE_TEXT_ARG_HEADS: &[&str] = &[
+    "grep",
+    "egrep",
+    "fgrep",
+    "rg",
+    "ag",
+    "ack",
+    "pt",
+    "ugrep",
+    "git",
+    "hg",
+    "svn",
+    "man",
+    "apropos",
+    "whatis",
+    "info",
+    "say",
+    "espeak",
+    "espeak-ng",
+    "spd-say",
+    "notify-send",
+    "figlet",
+    "toilet",
+    "cowsay",
+    "cowthink",
+    "locate",
+    "sed",
+    "awk",
+    "gawk",
+    "jq",
+    "yq",
+    "ssh",
+    "todo",
+    "todo.sh",
+    "task",
+    "whereis",
+];
+
+/// Heads that open a request on their own: one request word after them is enough
+/// (`watch the logs`, `help me`, `explain this error`). Any other installed head needs a second
+/// distinct request word or an opener pair ([`REQUEST_OPENER_PAIRS`]), because a single request
+/// word is routine in arguments (`make it`, `make this target`).
+const REQUEST_OPENER_HEADS: &[&str] = [
+    "help",
+    "show",
+    "tell",
+    "give",
+    "teach",
+    "remind",
+    "explain",
+    "describe",
+    "watch",
+    "please",
+    "why",
+    "how",
+    "what",
+    "can",
+    "could",
+    "would",
+    "should",
+    "summarize",
+    "walk",
+    "look",
+];
+
+/// Two-word openers (`make sure the build passes`, `find out why`) after which one request word
+/// is enough.
+const REQUEST_OPENER_PAIRS: &[(&str, &str)] = [
+    ("make", "sure"),
+    ("find", "out"),
+    ("figure", "out"),
+    ("check", "that"),
+    ("look", "at"),
+    ("look", "into"),
+];
+
+/// True when a word looks like an option, a path, a pattern or a `key=value` argument: shell
+/// data rather than English.
+fn is_option_or_pattern_word(word: &ShellWord) -> bool {
+    word.text.starts_with('-') || word.text.contains(['/', '='])
+}
+
 fn is_request_word(word: &ShellWord) -> bool {
     !word.quoted && REQUEST_WORDS.contains(&word.text.as_str())
 }
@@ -1122,9 +1209,12 @@ fn is_flag_or_path_word(word: &ShellWord) -> bool {
 /// ([`COMPOUND_COMMAND_HEADS`]). Otherwise it fires on either of:
 ///
 /// - a [`REQUEST_WORDS`] member (unquoted, lowercase) after the head with at least two words
-///   after the head and a following word that is not a flag or path (`watch the logs for
-///   errors`, `make sure the build passes`, `can you fix this`), or the two-word form `help me`
-///   ([`TWO_WORD_REQUEST_HEADS`] plus `me`);
+///   after the head and a following word that is not a flag or path, AND either an opener head
+///   ([`REQUEST_OPENER_HEADS`]: `watch the logs for errors`, `can you fix this`), an opener pair
+///   ([`REQUEST_OPENER_PAIRS`]: `make sure the build passes`) or two distinct request words
+///   (`tell me how to deploy`); or the two-word form `help me` ([`TWO_WORD_REQUEST_HEADS`] plus
+///   `me`). Never when any word after the head is an option, a path/pattern or `key=value`, and
+///   never for a [`FREE_TEXT_ARG_HEADS`] head (#897: `grep -rn this src`, `git commit -m the fix`);
 /// - a trailing `?` on a line of three or more words, none a flag, whose last word is purely
 ///   alphabetic once the `?` is removed, AND which either starts with a question head
 ///   ([`QUESTION_HEADS`]) or contains an unquoted [`REQUEST_WORDS`] / [`COMPARISON_WORDS`] member
@@ -1165,12 +1255,28 @@ pub fn reads_as_command_headed_prose(buffer_text: &str) -> bool {
     {
         return true;
     }
+    let head_basename = first.text.rsplit('/').next().unwrap_or(&first.text);
+    if FREE_TEXT_ARG_HEADS.contains(&head_basename) {
+        return false;
+    }
     if remaining.len() >= 2
+        && !remaining.iter().any(is_option_or_pattern_word)
         && remaining
             .windows(2)
             .any(|pair| is_request_word(&pair[0]) && !is_flag_or_path_word(&pair[1]))
     {
-        return true;
+        let distinct_request_words: HashSet<&str> = remaining
+            .iter()
+            .filter(|word| is_request_word(word))
+            .map(|word| word.text.as_str())
+            .collect();
+        let opener = REQUEST_OPENER_HEADS.contains(&first.text.as_str())
+            || REQUEST_OPENER_PAIRS
+                .iter()
+                .any(|(head, next)| first.text == *head && remaining[0].text == *next);
+        if opener || distinct_request_words.len() >= 2 {
+            return true;
+        }
     }
     if words.len() >= 3
         && !words.iter().any(|word| word.text.starts_with('-'))
