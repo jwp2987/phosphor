@@ -162,3 +162,192 @@ fn evicts_oldest_versioned_local_file_assets_over_limit() {
         Some(AssetStateInternal::Loaded { .. })
     ));
 }
+
+// --- Off-thread raw asset decoding (#880) -----------------------------------------------------
+
+mod async_raw {
+    use super::*;
+    use crate::image_cache::{DecodedImage, ImageCache, ImageType};
+    use crate::r#async::executor::{Background, Foreground};
+    use crate::{App, AssetCacheEvent};
+
+    fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(width, height)
+            .write_to(&mut out, image::ImageFormat::Png)
+            .expect("encode png");
+        out.into_inner()
+    }
+
+    fn new_cache() -> AssetCache {
+        AssetCache::new(
+            Box::new(()),
+            ImageCache::new(),
+            Foreground::test().into(),
+            Background::default().into(),
+        )
+    }
+
+    fn raw_handle(id: &str) -> AssetHandle {
+        AssetHandle {
+            source: AssetSource::Raw { id: id.to_owned() },
+            asset_type: TypeId::of::<ImageType>(),
+        }
+    }
+
+    fn state(cache: &AssetCache, id: &str) -> crate::assets::asset_cache::AssetState<ImageType> {
+        cache.load_asset::<ImageType>(AssetSource::Raw { id: id.to_owned() })
+    }
+
+    #[test]
+    fn pending_then_ready() {
+        App::test((), |mut app| async move {
+            let cache = app.add_model(|_| new_cache());
+            app.update(|ctx| {
+                cache.update(ctx, |cache, mctx| {
+                    cache.insert_raw_asset_bytes_async::<ImageType>(
+                        "1".into(),
+                        png_bytes(3, 2),
+                        mctx,
+                    );
+                    // Nothing is decoded synchronously: the asset reads as loading.
+                    assert!(cache.is_raw_asset_pending::<ImageType>("1"));
+                    assert!(matches!(
+                        state(cache, "1"),
+                        crate::assets::asset_cache::AssetState::Loading { .. }
+                    ));
+                });
+            });
+            app.finish_pending_tasks().await;
+            app.read(|ctx| {
+                let cache = cache.as_ref(ctx);
+                assert!(!cache.is_raw_asset_pending::<ImageType>("1"));
+                match state(cache, "1") {
+                    crate::assets::asset_cache::AssetState::Loaded { data } => {
+                        assert_eq!(data.image_size().map(|s| (s.x(), s.y())), Some((3, 2)));
+                    }
+                    _ => panic!("expected the decoded image"),
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn failure_is_recorded_and_not_pending() {
+        App::test((), |mut app| async move {
+            let cache = app.add_model(|_| new_cache());
+            app.update(|ctx| {
+                cache.update(ctx, |cache, mctx| {
+                    // Starts like a PNG but is truncated garbage.
+                    let mut bytes = png_bytes(4, 4);
+                    bytes.truncate(40);
+                    cache.insert_raw_asset_bytes_async::<ImageType>("bad".into(), bytes, mctx);
+                });
+            });
+            app.finish_pending_tasks().await;
+            app.read(|ctx| {
+                let cache = cache.as_ref(ctx);
+                assert!(!cache.is_raw_asset_pending::<ImageType>("bad"));
+                assert!(matches!(
+                    state(cache, "bad"),
+                    crate::assets::asset_cache::AssetState::FailedToLoad(_)
+                ));
+            });
+        });
+    }
+
+    #[test]
+    fn size_cap_is_still_enforced_off_thread() {
+        // An SVG that would rasterise to ~40 GB is refused by the decode, wherever it runs.
+        let svg = br#"<svg width="100000" height="100000" xmlns="http://www.w3.org/2000/svg"/>"#;
+        assert!(DecodedImage::decode(svg).is_err());
+        assert!(ImageType::decode_in_background(svg).is_err());
+        // And an in-limit image still decodes.
+        assert!(ImageType::decode_in_background(&png_bytes(2, 2)).is_ok());
+    }
+
+    #[test]
+    fn stale_result_is_dropped_when_reinserted() {
+        App::test((), |mut app| async move {
+            let cache = app.add_model(|_| new_cache());
+            app.update(|ctx| {
+                cache.update(ctx, |cache, mctx| {
+                    let handle = raw_handle("7");
+                    let first = cache.begin_pending_raw(&handle);
+                    let second = cache.begin_pending_raw(&handle);
+                    assert_ne!(first, second);
+
+                    let stale = ImageType::decode_in_background(&png_bytes(1, 1));
+                    assert!(!cache.finish_pending_raw::<ImageType>(
+                        handle.clone(),
+                        first,
+                        stale,
+                        mctx
+                    ));
+                    // Still waiting on the current request.
+                    assert!(cache.is_raw_asset_pending::<ImageType>("7"));
+
+                    let current = ImageType::decode_in_background(&png_bytes(5, 5));
+                    assert!(cache.finish_pending_raw::<ImageType>(handle, second, current, mctx));
+                    match state(cache, "7") {
+                        crate::assets::asset_cache::AssetState::Loaded { data } => {
+                            assert_eq!(data.image_size().map(|s| s.x()), Some(5));
+                        }
+                        _ => panic!("expected the second image"),
+                    }
+                });
+            });
+        });
+    }
+
+    #[test]
+    fn result_is_dropped_when_removed_while_pending() {
+        App::test((), |mut app| async move {
+            let cache = app.add_model(|_| new_cache());
+            app.update(|ctx| {
+                cache.update(ctx, |cache, mctx| {
+                    let handle = raw_handle("9");
+                    let generation = cache.begin_pending_raw(&handle);
+                    assert!(cache.remove_raw_asset::<ImageType>("9"));
+                    assert!(!cache.is_raw_asset_pending::<ImageType>("9"));
+
+                    let late = ImageType::decode_in_background(&png_bytes(2, 2));
+                    assert!(!cache.finish_pending_raw::<ImageType>(
+                        handle, generation, late, mctx
+                    ));
+                    // The late result did not resurrect the asset.
+                    assert!(!matches!(
+                        state(cache, "9"),
+                        crate::assets::asset_cache::AssetState::Loaded { .. }
+                    ));
+                });
+            });
+        });
+    }
+
+    #[test]
+    fn removing_through_the_public_api_while_a_real_decode_runs_drops_it() {
+        App::test((), |mut app| async move {
+            let cache = app.add_model(|_| new_cache());
+            app.update(|ctx| {
+                cache.update(ctx, |cache, mctx| {
+                    cache.insert_raw_asset_bytes_async::<ImageType>(
+                        "11".into(),
+                        png_bytes(2, 2),
+                        mctx,
+                    );
+                    cache.remove_raw_asset::<ImageType>("11");
+                });
+            });
+            app.finish_pending_tasks().await;
+            app.read(|ctx| {
+                let cache = cache.as_ref(ctx);
+                assert!(!matches!(
+                    state(cache, "11"),
+                    crate::assets::asset_cache::AssetState::Loaded { .. }
+                ));
+            });
+        });
+        let _ = AssetCacheEvent::RawAssetLoaded { id: String::new() };
+    }
+}

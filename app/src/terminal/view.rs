@@ -4161,13 +4161,14 @@ impl TerminalView {
             .entry(BlockIndex::zero())
             .or_default();
 
-        ctx.subscribe_to_model(&AssetCache::handle(ctx), |me, _, event, _| match event {
+        ctx.subscribe_to_model(&AssetCache::handle(ctx), |me, _, event, ctx| match event {
             AssetCacheEvent::ImagesEvicted { image_ids } => {
                 let mut terminal_model = me.model.lock();
                 for &image_id in image_ids {
                     terminal_model.remove_image_id_to_metadata_entry(image_id);
                 }
             }
+            AssetCacheEvent::RawAssetLoaded { .. } => ctx.notify(),
         });
 
         ctx.subscribe_to_model(&AISettings::handle(ctx), |me, _, ai_settings_event, ctx| {
@@ -13526,9 +13527,10 @@ impl TerminalView {
                 image_protocol,
             } => {
                 AssetCache::handle(ctx).update(ctx, |asset_cache, ctx| {
-                    asset_cache.insert_raw_asset_bytes::<ImageType>(
+                    // Decode off the UI thread: these bytes come from the pty (#880).
+                    asset_cache.insert_raw_asset_bytes_async::<ImageType>(
                         image_id.to_string(),
-                        &image_data[..],
+                        image_data.clone(),
                         ctx,
                     );
                 });
