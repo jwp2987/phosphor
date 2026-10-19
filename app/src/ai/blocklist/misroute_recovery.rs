@@ -146,6 +146,11 @@ impl MisrouteMemory {
         if last.reason != RouteReason::Autodetected {
             return None;
         }
+        // A multi-line paste is never one click from running as a script, and its exit code is
+        // the last line's, so neither direction is offered for it.
+        if last.text.contains('\n') {
+            return None;
+        }
         match last.route {
             SubmitRoute::Shell => {
                 let finished_at = last.finished_at?;
@@ -155,9 +160,7 @@ impl MisrouteMemory {
                         text: last.text.clone(),
                     })
             }
-            // A multi-line paste must not be one click from running as a script.
-            SubmitRoute::Ai => (!last.text.contains('\n')
-                && now.saturating_duration_since(last.recorded_at) < OFFER_WINDOW)
+            SubmitRoute::Ai => (now.saturating_duration_since(last.recorded_at) < OFFER_WINDOW)
                 .then(|| MisrouteOffer::RunAsShell {
                     text: last.text.clone(),
                 }),

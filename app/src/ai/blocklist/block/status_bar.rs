@@ -11,6 +11,8 @@ use super::{
     },
 };
 use crate::{ai::agent_tips::AITipModel, terminal::input::buffer_model::InputBufferUpdateEvent};
+use crate::terminal::input::message_bar::common::render_terminal_message;
+use crate::terminal::input::message_bar::misroute::misroute_recovery_message;
 use crate::uri::link_policy::openable_app_content_url;
 use crate::{
     ai::blocklist::agent_view::{
@@ -93,6 +95,8 @@ struct StateHandles {
     /// Tracks hover/press state for the inline `Check now` affordance rendered next to
     /// `Last seen by agent ...` while the agent is polling a long-running command.
     force_refresh_button: MouseStateHandle,
+    /// The misroute recovery item shown while the agent turn runs (#835).
+    misroute_recovery: MouseStateHandle,
 }
 
 pub struct BlocklistAIStatusBar {
@@ -238,6 +242,8 @@ impl BlocklistAIStatusBar {
                 ctx.notify();
             }
         });
+        // The misroute recovery offer (#835) changes without an input-config event.
+        ctx.observe(&input_model, |_, _, ctx| ctx.notify());
         ctx.subscribe_to_model(&input_model, |_, _, event, ctx| {
             if let BlocklistAIInputEvent::InputTypeChanged { .. } = event {
                 ctx.notify();
@@ -822,7 +828,15 @@ impl BlocklistAIStatusBar {
             .as_deref()
             .unwrap_or(LOAD_OUTPUT_MESSAGE)
             .to_owned();
-        let secondary_element = if fallback_warping_text.is_some() {
+        // While the autodetected agent turn runs this indicator replaces the agent message bar,
+        // so the "Run as shell command instead" offer (#835) rides in its secondary line.
+        let misroute_offer = self.input_model.as_ref(app).misroute_offer();
+        let secondary_element = if let Some(offer) = misroute_offer {
+            Some(render_terminal_message(
+                misroute_recovery_message(&offer, self.state_handles.misroute_recovery.clone()),
+                app,
+            ))
+        } else if fallback_warping_text.is_some() {
             Some(render_fallback_explanation(model.as_ref(), app))
         } else {
             self.render_tip(app)
