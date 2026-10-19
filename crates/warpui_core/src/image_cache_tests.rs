@@ -880,3 +880,12 @@ fn svg_size_is_estimated_from_rasterized_dimensions() {
     assert!(matches!(image, ImageType::Svg { .. }));
     assert_eq!(image.size_in_bytes(), 20 * 10 * 4);
 }
+
+#[test]
+fn test_oversized_svg_is_rejected_at_parse_time() {
+    // 10_000 x 10_000 x 4 = 400 MB, over MAX_DECODED_IMAGE_BYTES.
+    let huge = br##"<svg width="10000" height="10000" xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>"##;
+    assert!(ImageType::try_from_bytes(huge).is_err());
+    let small = br##"<svg width="20" height="10" xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>"##;
+    assert!(ImageType::try_from_bytes(small).is_ok());
+}

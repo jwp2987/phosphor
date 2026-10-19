@@ -345,6 +345,48 @@ mod file_read {
         assert_eq!(run_with_timeout(Duration::from_secs(5), || 7), Some(7));
     }
 
+    /// #824: the in-flight cap refuses past its limit and frees slots on release.
+    #[test]
+    fn slot_cap_refuses_past_the_limit() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let counter = AtomicUsize::new(0);
+        for _ in 0..3 {
+            assert!(try_acquire_slot(&counter, 3));
+        }
+        assert!(!try_acquire_slot(&counter, 3));
+        counter.fetch_sub(1, Ordering::AcqRel);
+        assert!(try_acquire_slot(&counter, 3));
+        assert_eq!(counter.load(Ordering::Acquire), 3);
+    }
+
+    /// #824: a helper that finishes releases its slot.
+    #[test]
+    fn finished_helper_releases_its_slot() {
+        let before = IN_FLIGHT_FILE_READS.load(std::sync::atomic::Ordering::Acquire);
+        assert_eq!(run_with_timeout(Duration::from_secs(5), || 1), Some(1));
+        // The guard drops right after the send; give the thread a moment.
+        for _ in 0..100 {
+            if IN_FLIGHT_FILE_READS.load(std::sync::atomic::Ordering::Acquire) <= before {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("in-flight slot was never released");
+    }
+
+    /// #824: an abandoned `t=t` read must leave the temp file alone.
+    #[test]
+    fn abandoned_temp_read_does_not_delete_the_file() {
+        use std::sync::atomic::AtomicBool;
+        let dir = std::env::temp_dir();
+        let path = dir.join("kitty-abandon-test-tty-graphics-protocol.png");
+        std::fs::write(&path, b"x").unwrap();
+        let abandoned = AtomicBool::new(true);
+        let _ = read_file_blocking(path.to_str().unwrap().as_bytes().to_vec(), true, &abandoned);
+        assert!(path.exists());
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// A regular file named by `t=f` is still read (now on a helper thread).
     #[test]
     fn simple_file_is_read_off_thread() {

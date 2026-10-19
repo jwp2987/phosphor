@@ -416,7 +416,14 @@ impl Asset for ImageType {
                 fontdb: SVG_FONT_DB.clone(),
                 ..Default::default()
             };
-            let svg = Rc::new(usvg::Tree::from_data(data, &options)?);
+            let svg = usvg::Tree::from_data(data, &options)?;
+            let bytes = svg_rasterized_byte_estimate(svg.size().width(), svg.size().height());
+            if bytes as u64 > MAX_DECODED_IMAGE_BYTES {
+                return Err(anyhow!(
+                    "SVG would rasterise to {bytes} bytes, over the {MAX_DECODED_IMAGE_BYTES} limit"
+                ));
+            }
+            let svg = Rc::new(svg);
             return Ok(ImageType::Svg { svg });
         }
 
