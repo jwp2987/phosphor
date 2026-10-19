@@ -233,6 +233,77 @@ fn test_app_build_scene_skips_layout_only_for_paint_only_redraw() {
     })
 }
 
+/// #841/#842: a frame that finds the window zero-sized (unmapped/minimized)
+/// still runs `Presenter::invalidate`, which swaps the notified views' elements for
+/// fresh, never-laid-out ones, and consumes the invalidation. The next frame must
+/// therefore run a full layout even when its only pending reason is a paint-only
+/// timer; otherwise it paints (and later dispatches events to) unlaid elements.
+#[test]
+fn test_zero_size_frame_owes_a_full_layout() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, view) =
+            app.add_window(WindowStyle::NotStealFocus, |_| CountingRootView::default());
+        let root_view_id = app.root_view_id(window_id).unwrap();
+        let counts = view.update(app, |view, _ctx| view.counts.clone());
+
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        let layout_calls_baseline = counts.layout_calls.get();
+
+        // Window unmapped: a view is notified, but the frame bails out at zero size.
+        crate::platform::test::set_forced_window_size(Some(Vector2F::zero()));
+        app.update(|ctx| {
+            ctx.simulate_view_updated(window_id, root_view_id);
+            ctx.simulate_render_frame(window_id);
+        });
+        crate::platform::test::set_forced_window_size(None);
+        assert_eq!(counts.layout_calls.get(), layout_calls_baseline);
+
+        // Window mapped again; the only pending reason for a frame is a paint-only one.
+        app.update(|ctx| {
+            ctx.simulate_paint_only_redraw(window_id);
+            ctx.simulate_render_frame(window_id);
+        });
+        assert_eq!(
+            counts.layout_calls.get(),
+            layout_calls_baseline + 1,
+            "the first frame after a zero-size frame must re-run layout"
+        );
+    })
+}
+
+/// #842: a window whose focused view is alive but not in the element tree (a
+/// dismissed context menu) cannot take keyboard input. When the window becomes
+/// active again, focus must fall back to the root view; a focused view that is
+/// mounted must be left alone.
+#[test]
+fn test_refocus_root_when_focused_view_is_unmounted() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, _root) =
+            app.add_window(WindowStyle::NotStealFocus, |_| CountingRootView::default());
+        let root_view_id = app.root_view_id(window_id).unwrap();
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+
+        // Focused root: nothing to recover.
+        app.update(|ctx| ctx.refocus_root_if_focus_unreachable(window_id));
+        assert_eq!(app.focused_view_id(window_id), Some(root_view_id));
+
+        // A live view that no parent mounts takes focus.
+        let orphan = app.add_view(window_id, |_| CountingChildView::default());
+        orphan.update(app, |_, ctx| ctx.focus_self());
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        assert_eq!(app.focused_view_id(window_id), Some(orphan.id()));
+
+        app.update(|ctx| ctx.refocus_root_if_focus_unreachable(window_id));
+        assert_eq!(
+            app.focused_view_id(window_id),
+            Some(root_view_id),
+            "focus on an unmounted view must fall back to the root view"
+        );
+    })
+}
+
 /// How long [`PaintOnlyBlinker`] waits between paint-only repaint requests.
 /// Short, so the tests below don't have to wait long for it to fire for real.
 const PAINT_ONLY_DELAY: Duration = Duration::from_millis(20);

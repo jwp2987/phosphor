@@ -419,8 +419,12 @@ impl Presenter {
         !unmounted.is_empty()
     }
 
-    /// Test-only: whether the last layout pass visited `view_id`. See issue #805.
-    #[cfg(test)]
+    /// Whether any layout pass has run yet. See issue #805.
+    pub(crate) fn has_mounted_views(&self) -> bool {
+        !self.mounted_views.is_empty()
+    }
+
+    /// Whether the last layout pass visited `view_id`. See issue #805.
     pub(crate) fn is_view_mounted(&self, view_id: EntityId) -> bool {
         self.mounted_views.contains(&view_id)
     }

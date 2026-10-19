@@ -82,6 +82,20 @@ pub struct Window {
     callbacks: WindowCallbacks,
 }
 
+thread_local! {
+    /// Test-only override for the size every test window reports (e.g. zero, to
+    /// model an unmapped or minimized window). `None` means the default size.
+    static FORCED_WINDOW_SIZE: std::cell::Cell<Option<Vector2F>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Makes every test window on this thread report `size` (or the default size
+/// for `None`). Tests must restore `None` when done.
+#[cfg(test)]
+pub(crate) fn set_forced_window_size(size: Option<Vector2F>) {
+    FORCED_WINDOW_SIZE.with(|cell| cell.set(size));
+}
+
 impl AppDelegate {
     pub fn new() -> Result<Self> {
         Ok(Self {
@@ -490,7 +504,9 @@ impl platform::Window for Window {
 
 impl platform::WindowContext for Window {
     fn size(&self) -> Vector2F {
-        vec2f(1024.0, 768.0)
+        FORCED_WINDOW_SIZE
+            .with(|size| size.get())
+            .unwrap_or_else(|| vec2f(1024.0, 768.0))
     }
 
     fn origin(&self) -> Vector2F {

@@ -3238,6 +3238,16 @@ impl AppContext {
                     log::debug!(
                         "Received window_id={window_id:?} with window size {size:?}. Skipping render"
                     );
+                    // `invalidate` above already replaced the updated views'
+                    // elements with fresh ones that have never been laid out or
+                    // painted, and the invalidation that said so is consumed. Owe
+                    // the window a full layout on its next frame: otherwise a
+                    // paint-only frame (`skip_layout`) would paint those elements
+                    // unlaid, and they would drop every event (#841/#842).
+                    self.window_invalidations
+                        .entry(window_id)
+                        .or_default()
+                        .redraw_requested = true;
                     break;
                 }
 
@@ -4687,6 +4697,39 @@ impl AppContext {
             .or_default()
             .updated
             .insert(view_id);
+    }
+
+    /// Defensive recovery run when a window becomes the active window again
+    /// (#842). If the window's focused view no longer exists, or is not in the
+    /// element tree (for example a dismissed context menu that is still alive
+    /// but no longer rendered), no key event can reach it and the window looks
+    /// dead to the keyboard. Move focus back to the window's root view so the
+    /// normal focus logic can take over. Before the first layout nothing is
+    /// mounted yet, so nothing is judged unreachable.
+    pub(crate) fn refocus_root_if_focus_unreachable(&mut self, window_id: WindowId) {
+        let Some(focused) = self.focused_view_id(window_id) else {
+            return;
+        };
+        let Some(root) = self.root_view_id(window_id) else {
+            return;
+        };
+        if focused == root {
+            return;
+        }
+        let exists = self.view_name(window_id, focused).is_some();
+        let unmounted = self.presenter(window_id).is_some_and(|presenter| {
+            presenter.try_borrow().is_ok_and(|presenter| {
+                presenter.has_mounted_views() && !presenter.is_view_mounted(focused)
+            })
+        });
+        if exists && !unmounted {
+            return;
+        }
+        log::warn!(
+            "window {window_id:?} became active with unreachable focused view {focused:?} \
+             (exists: {exists}); refocusing the root view"
+        );
+        self.focus(window_id, root);
     }
 
     fn focus(&mut self, window_id: WindowId, focused_id: EntityId) {
