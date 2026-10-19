@@ -619,6 +619,44 @@ pub(crate) fn command_approval_preview(command: &str, mode: PreviewMode) -> Comm
     preview
 }
 
+/// What the terminal UI draws to review a command (#865): the full escaped preview, whether any
+/// character had to be escaped, and an escaped echo of the command's end.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TuiCommandReview {
+    /// The full preview text, with the renderer-only line-break hints removed.
+    pub text: String,
+    /// Whether a control, invisible, bidi or look-alike character was shown as `<U+XXXX>`.
+    pub has_escapes: bool,
+    /// "Ends with: ..." for the last [`ENDS_WITH_CHARS`] chars of `text`.
+    pub ends_with: String,
+}
+
+/// Builds the [`TuiCommandReview`] of `command`. Always uses the full preview, so the text is
+/// what a user who asked to see everything would see.
+pub fn tui_command_review(command: &str) -> TuiCommandReview {
+    let preview = command_approval_preview(command, PreviewMode::Full);
+    let chars: Vec<char> = preview.text.chars().collect();
+    let has_escapes = preview.marker_char_indices.iter().any(|&i| {
+        chars.get(i) == Some(&'<')
+            && chars.get(i + 1) == Some(&'U')
+            && chars.get(i + 2) == Some(&'+')
+    });
+    let text: String = chars.iter().filter(|c| **c != ZERO_WIDTH_BREAK).collect();
+    let trimmed = text.trim_end();
+    let count = trimmed.chars().count();
+    let tail_start = trimmed
+        .char_indices()
+        .nth(count.saturating_sub(ENDS_WITH_CHARS))
+        .map_or(0, |(i, _)| i);
+    let ellipsis = if tail_start > 0 { "\u{2026}" } else { "" };
+    let tail = trimmed[tail_start..].replace('\n', " \u{21b5} ");
+    TuiCommandReview {
+        has_escapes,
+        ends_with: format!("Ends with: {ellipsis}{tail}"),
+        text,
+    }
+}
+
 /// Whether a user's accept must be refused for `command`. True when the collapsed preview hides
 /// part of it and the user has not yet chosen to see the full command. This is the check the
 /// action model applies to every user-initiated accept of a `RequestCommandOutput`.

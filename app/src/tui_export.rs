@@ -95,6 +95,9 @@ pub use crate::ai::blocklist::history_model::{
 pub use crate::ai::blocklist::inline_action::code_diff_view::{
     DiffSessionType, FileDiff, convert_file_edits_to_file_diffs,
 };
+pub use crate::ai::blocklist::inline_action::command_approval_preview::{
+    TuiCommandReview, tui_command_review,
+};
 pub use crate::ai::blocklist::input_mode_policy::{
     InputModePolicy, InputModePolicyHandle, PolicyConfigUpdate,
 };

@@ -11,7 +11,7 @@ use warp::tui_export::{
     AIBlockModelHelper, AIBlockModelImpl, AIConversationId, BlockId, BlocklistAIActionModel,
     BlocklistAIHistoryEvent, BlocklistAIHistoryModel, CLISubagentController, CLISubagentTarget,
     CancellationReason, LongRunningCommandControlState, ShellCommandDelay, ShellCommandExecutor,
-    TaskId, TerminalModel, UserTakeOverReason,
+    TaskId, TerminalModel, UserTakeOverReason, tui_command_review,
 };
 use warpui::SingletonEntity;
 use warpui_core::r#async::Timer;
@@ -25,6 +25,7 @@ use warpui_core::{
 };
 
 use crate::tui_builder::TuiUiBuilder;
+use crate::tui_shell_command_view::{COMMAND_REVIEW_MAX_ROWS, estimated_command_rows};
 
 pub(super) const TAKE_CONTROL_KEY_BINDING: &str = "ctrl-c";
 pub(super) const HAND_BACK_KEY_BINDING: &str = "ctrl-g";
@@ -40,6 +41,10 @@ pub(super) const ALLOW_BLOCKED_ACTION_KEY_BINDING: &str = "ctrl-o";
 /// reject); it was free as of this writing (see `TAKE_CONTROL_KEY_BINDING`
 /// and friends above for what's already taken).
 pub(super) const REJECT_BLOCKED_ACTION_KEY_BINDING: &str = "ctrl-r";
+/// Shows a blocked command in full when the card would otherwise elide part of it (#865). Accept
+/// is refused until this has been used on the exact command text (the #847 gate in the action
+/// model). `ctrl-s` was free: `ctrl-f`/`ctrl-e` and friends belong to the composer's editor.
+pub(super) const SHOW_FULL_COMMAND_KEY_BINDING: &str = "ctrl-s";
 
 /// `can_allow_blocked_action` is whether the blocked action (if any) may be approved by a
 /// plain accept -- see [`can_allow_blocked_action`]. When it may not, the hint does not offer
@@ -101,6 +106,110 @@ fn terminal_use_status_text(
         },
     };
     format!("{status} · {key_binding} {action}")
+}
+
+/// The command a blocked action wants to run, if it is a requested command.
+fn blocked_command_text(action: &AIAgentAction) -> Option<&str> {
+    match &action.action {
+        AIAgentActionType::RequestCommandOutput { command, .. } => Some(command),
+        _ => None,
+    }
+}
+
+/// Why Allow is refused for a blocked command whose card hides part of it, and how to proceed.
+/// Counts are of the whole command so nothing about its size is hidden either (#865).
+fn hidden_command_status_text(command: &str) -> String {
+    let lines = command.split('\n').count();
+    let chars = command.chars().count();
+    format!(
+        "Command is too long to approve unseen ({lines} lines, {chars} chars) \u{b7} \
+         {SHOW_FULL_COMMAND_KEY_BINDING} to view it in full, then {ALLOW_BLOCKED_ACTION_KEY_BINDING} \
+         to allow \u{b7} {REJECT_BLOCKED_ACTION_KEY_BINDING} to reject"
+    )
+}
+
+/// Whether a user's Allow of a blocked action may proceed (#865).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum BlockedCommandGate {
+    /// Nothing stands between the user and Allow.
+    Clear,
+    /// The card elides part of the command, or the command holds characters that are shown
+    /// escaped. The user must use show-full for this exact text first.
+    NeedsShowFull,
+    /// Even in full, the command needs more than `COMMAND_REVIEW_MAX_ROWS` rows. This card is
+    /// not scrollable, so a row past the cap could be run unseen. Allow is refused for good
+    /// (Reject stays) rather than gating on a scroll position that does not exist.
+    TooLong { rows: u32 },
+}
+
+/// The gate on Allow for `blocked_action`. Non-command actions are never gated here.
+pub(super) fn blocked_command_gate(
+    action_model: &BlocklistAIActionModel,
+    conversation_id: AIConversationId,
+    blocked_action: &AIAgentAction,
+) -> BlockedCommandGate {
+    let Some(command) = blocked_command_text(blocked_action) else {
+        return BlockedCommandGate::Clear;
+    };
+    if blocked_command_is_hidden(action_model, conversation_id, blocked_action) {
+        return BlockedCommandGate::NeedsShowFull;
+    }
+    let review = tui_command_review(command);
+    if review.has_escapes
+        && !action_model.is_full_command_shown(conversation_id, &blocked_action.id, command)
+    {
+        return BlockedCommandGate::NeedsShowFull;
+    }
+    let rows = estimated_command_rows(&review.text);
+    if rows > COMMAND_REVIEW_MAX_ROWS {
+        return BlockedCommandGate::TooLong { rows };
+    }
+    BlockedCommandGate::Clear
+}
+
+/// Why Allow is refused for a command too long to be reviewed on this card.
+fn too_long_status_text(command: &str, rows: u32) -> String {
+    format!(
+        "Command is too long to approve here (about {rows} rows, {} lines, {} chars; the limit is \
+         {COMMAND_REVIEW_MAX_ROWS} rows) \u{b7} {REJECT_BLOCKED_ACTION_KEY_BINDING} to reject",
+        command.split('\n').count(),
+        command.chars().count()
+    )
+}
+
+/// Why Allow waits for show-full on a short command that holds characters shown escaped.
+fn escaped_command_status_text() -> String {
+    format!(
+        "Command has control or invisible characters (shown as <U+XXXX>) \u{b7} \
+         {SHOW_FULL_COMMAND_KEY_BINDING} to confirm you read it, then {ALLOW_BLOCKED_ACTION_KEY_BINDING} \
+         to allow \u{b7} {REJECT_BLOCKED_ACTION_KEY_BINDING} to reject"
+    )
+}
+
+/// Whether Allow on `blocked_action` is currently refused because part of its command is
+/// hidden and the user has not yet viewed that exact text in full (the #847 gate).
+pub(super) fn blocked_command_is_hidden(
+    action_model: &BlocklistAIActionModel,
+    conversation_id: AIConversationId,
+    blocked_action: &AIAgentAction,
+) -> bool {
+    action_model.user_accept_blocked_by_hidden_command(conversation_id, blocked_action)
+}
+
+/// Records that the user is being shown exactly `blocked_action`'s command in full. Returns
+/// whether it was a requested command. The view renders the whole command whenever the model
+/// holds this mark for the current text (see `render_content`), so the mark and the display
+/// cannot disagree: a changed command no longer matches, is gated again, and is elided again.
+pub(super) fn show_full_blocked_command(
+    action_model: &mut BlocklistAIActionModel,
+    conversation_id: AIConversationId,
+    blocked_action: &AIAgentAction,
+) -> bool {
+    let Some(command) = blocked_command_text(blocked_action) else {
+        return false;
+    };
+    action_model.mark_full_command_shown(conversation_id, &blocked_action.id, command);
+    true
 }
 
 fn resolve_latest_instruction(
@@ -243,6 +352,11 @@ pub(super) fn execute_blocked_action(
     if !blocked_action.action.can_be_accepted_without_its_own_ui() {
         return;
     }
+    if blocked_command_gate(action_model, conversation_id, blocked_action)
+        != BlockedCommandGate::Clear
+    {
+        return;
+    }
     action_model.execute_action(&blocked_action.id, conversation_id, ctx);
 }
 
@@ -272,6 +386,7 @@ pub(super) enum TuiCLISubagentViewEvent {
 pub(super) enum TuiCLISubagentViewAction {
     Allow,
     Reject,
+    ShowFullCommand,
 }
 
 /// Compact terminal-use state rendered alongside one command block.
@@ -286,6 +401,7 @@ pub(super) struct TuiCLISubagentView {
     last_measured_width: Cell<Option<u16>>,
     allow_mouse_state: MouseStateHandle,
     reject_mouse_state: MouseStateHandle,
+    show_full_mouse_state: MouseStateHandle,
 }
 
 impl TuiCLISubagentView {
@@ -359,6 +475,7 @@ impl TuiCLISubagentView {
             last_measured_width: Cell::new(None),
             allow_mouse_state: MouseStateHandle::default(),
             reject_mouse_state: MouseStateHandle::default(),
+            show_full_mouse_state: MouseStateHandle::default(),
         };
         view.start_countdown_refresh(ctx);
         view
@@ -495,9 +612,36 @@ impl TuiCLISubagentView {
             .is_agent_blocked()
             .then(|| self.blocked_action(app))
             .flatten();
-        let can_allow =
-            can_allow_blocked_action(blocked_action.as_ref().map(|action| &action.action));
-        let status = self.status_text(target, can_allow, app);
+        let action_model = self.action_model.as_ref(app);
+        let hidden_command = blocked_action
+            .as_ref()
+            .filter(|action| blocked_command_is_hidden(action_model, self.conversation_id, action));
+        let gate = blocked_action
+            .as_ref()
+            .map_or(BlockedCommandGate::Clear, |action| {
+                blocked_command_gate(action_model, self.conversation_id, action)
+            });
+        // Allow is not offered while it would be refused; the status says why and which key
+        // proceeds (#865).
+        let can_allow = gate == BlockedCommandGate::Clear
+            && can_allow_blocked_action(blocked_action.as_ref().map(|action| &action.action));
+        let command = blocked_action.as_ref().and_then(blocked_command_text);
+        let status = match (gate, command) {
+            (BlockedCommandGate::NeedsShowFull, Some(command)) if hidden_command.is_some() => {
+                hidden_command_status_text(command)
+            }
+            (BlockedCommandGate::NeedsShowFull, Some(_)) => escaped_command_status_text(),
+            (BlockedCommandGate::TooLong { rows }, Some(command)) => {
+                too_long_status_text(command, rows)
+            }
+            _ => self.status_text(target, can_allow, app),
+        };
+        let show_full_offered = gate == BlockedCommandGate::NeedsShowFull;
+        // The command's end, escaped, next to the Allow prompt: a long or padded command cannot
+        // push its end out of sight unnoticed (the GUI card's "Ends with" note).
+        let ends_with = command
+            .filter(|_| hidden_command.is_none())
+            .map(|command| tui_command_review(command).ends_with);
         let countdown = self
             .next_check_remaining(target, app)
             .map(format_next_check_remaining)
@@ -518,7 +662,16 @@ impl TuiCLISubagentView {
         }
         if target.control_state.is_agent_blocked() {
             if let Some(action) = blocked_action {
-                let presentation = blocked_action_presentation(&action.action);
+                let mut presentation = blocked_action_presentation(&action.action);
+                if presentation.detail.is_none() && hidden_command.is_none() {
+                    // A requested command that the card does not elide is shown whole, in its
+                    // escaped form so control, invisible and bidi characters are visible and
+                    // what is read is what runs (#847). One that is elided stays out of view
+                    // until the user asks for it, so the card never shows a clipped command
+                    // (#865).
+                    presentation.detail =
+                        blocked_command_text(&action).map(|c| tui_command_review(c).text);
+                }
                 content.add_child(
                     TuiText::new(presentation.summary)
                         .with_style(builder.primary_text_style())
@@ -536,6 +689,14 @@ impl TuiCLISubagentView {
                     );
                 }
             }
+            if let Some(ends_with) = ends_with {
+                content.add_child(
+                    TuiText::new(ends_with)
+                        .with_style(builder.muted_text_style())
+                        .truncate()
+                        .finish(),
+                );
+            }
             // [Allow] only when it would do something: see `can_allow_blocked_action`.
             let mut actions = TuiFlex::row().with_spacing(1);
             if can_allow {
@@ -544,6 +705,21 @@ impl TuiCLISubagentView {
                         "Allow",
                         &self.allow_mouse_state,
                         TuiCLISubagentViewAction::Allow,
+                        app,
+                    ))
+                    .finish(),
+                );
+            }
+            if show_full_offered {
+                actions.add_child(
+                    TuiContainer::new(Self::render_action(
+                        if hidden_command.is_some() {
+                            "Show full command"
+                        } else {
+                            "Confirm command"
+                        },
+                        &self.show_full_mouse_state,
+                        TuiCLISubagentViewAction::ShowFullCommand,
                         app,
                     ))
                     .finish(),
@@ -561,6 +737,21 @@ impl TuiCLISubagentView {
             content.add_child(actions.finish());
         }
         content.finish()
+    }
+
+    /// Shows the blocked command in full and records that, so Allow is accepted for exactly this
+    /// text. Called by the [Show full command] click and by the `ctrl-s` session binding.
+    pub(super) fn show_full_command(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(blocked_action) = self.blocked_action(ctx) else {
+            return;
+        };
+        let conversation_id = self.conversation_id;
+        let shown = self.action_model.update(ctx, |action_model, _| {
+            show_full_blocked_command(action_model, conversation_id, &blocked_action)
+        });
+        if shown {
+            self.invalidate_layout(ctx);
+        }
     }
 
     fn invalidate_layout(&self, ctx: &mut ViewContext<Self>) {
@@ -634,6 +825,7 @@ impl TypedActionView for TuiCLISubagentView {
                     execute_blocked_action(action_model, conversation_id, &blocked_action, ctx);
                 });
             }
+            TuiCLISubagentViewAction::ShowFullCommand => self.show_full_command(ctx),
             TuiCLISubagentViewAction::Reject => {
                 let Some(blocked_action) = self.blocked_action(ctx) else {
                     return;
