@@ -322,3 +322,49 @@ fn f100_rejects_non_png_payloads() {
     let result = kitty_action_from_chunks(control.as_bytes());
     assert!(result.is_err(), "{result:?}");
 }
+
+#[cfg(feature = "local_fs")]
+mod file_read {
+    use super::*;
+    use std::time::Duration;
+
+    /// #824: a stalled read must not hold the caller past the deadline.
+    #[test]
+    fn run_with_timeout_gives_up_on_a_stalled_worker() {
+        let started = std::time::Instant::now();
+        let result = run_with_timeout(Duration::from_millis(20), || {
+            std::thread::sleep(Duration::from_secs(5));
+            1
+        });
+        assert!(result.is_none());
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn run_with_timeout_returns_the_result_of_fast_work() {
+        assert_eq!(run_with_timeout(Duration::from_secs(5), || 7), Some(7));
+    }
+
+    /// A regular file named by `t=f` is still read (now on a helper thread).
+    #[test]
+    fn simple_file_is_read_off_thread() {
+        let dir = env::temp_dir().join(format!("kitty-read-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("image.bin");
+        fs::write(&path, b"pixels").unwrap();
+
+        let data = read_file(path.to_str().unwrap().as_bytes().to_vec(), false);
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(data.unwrap(), b"pixels");
+    }
+
+    /// A nonexistent file is an error reply, not a hang or a panic.
+    #[test]
+    fn missing_file_is_an_error() {
+        let result = read_file(b"/nonexistent/kitty-read-test".to_vec(), false);
+        assert!(matches!(
+            result,
+            Err(InvalidKittyPayload::FileError(FileError::FileReadError(_)))
+        ));
+    }
+}

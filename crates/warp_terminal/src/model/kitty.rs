@@ -813,8 +813,58 @@ pub fn parse_kitty_chunk(chunk: &[u8]) -> KittyChunk {
     }
 }
 
+/// The longest the pty/model thread waits for a `t=f` / `t=t` file to be
+/// validated and read (#824). The read is size-capped and cannot block on a
+/// FIFO, but a file on a hung network mount still can.
+#[cfg(feature = "local_fs")]
+const KITTY_FILE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Runs `work` on a helper thread and waits at most `timeout` for its result.
+/// On timeout the helper is detached (it finishes, or stays stuck, on its own
+/// without holding up the caller) and `None` is returned.
+#[cfg(feature = "local_fs")]
+fn run_with_timeout<T: Send + 'static>(
+    timeout: std::time::Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("kitty-file-read".to_owned())
+        .spawn(move || {
+            let _ = sender.send(work());
+        })
+        .ok()?;
+    receiver.recv_timeout(timeout).ok()
+}
+
+/// Reads the file a `t=f` / `t=t` transmission names, off the pty/model thread
+/// and with a deadline, so a stalled filesystem cannot freeze the terminal (#824).
 #[cfg(feature = "local_fs")]
 fn read_file(decoded_payload: Vec<u8>, is_temp: bool) -> Result<Vec<u8>, InvalidKittyPayload> {
+    read_file_with_timeout(decoded_payload, is_temp, KITTY_FILE_READ_TIMEOUT)
+}
+
+#[cfg(feature = "local_fs")]
+fn read_file_with_timeout(
+    decoded_payload: Vec<u8>,
+    is_temp: bool,
+    timeout: std::time::Duration,
+) -> Result<Vec<u8>, InvalidKittyPayload> {
+    run_with_timeout(timeout, move || {
+        read_file_blocking(decoded_payload, is_temp)
+    })
+    .unwrap_or_else(|| {
+        Err(InvalidKittyPayload::FileError(FileError::FileReadError(
+            "timed out reading the file".to_owned(),
+        )))
+    })
+}
+
+#[cfg(feature = "local_fs")]
+fn read_file_blocking(
+    decoded_payload: Vec<u8>,
+    is_temp: bool,
+) -> Result<Vec<u8>, InvalidKittyPayload> {
     let path = match str::from_utf8(&decoded_payload[..]) {
         Ok(path) => path,
         Err(err) => return Err(KittyDecodeError::InvalidUtf8(err.to_string()).into()),

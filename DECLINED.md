@@ -955,7 +955,9 @@ upstream's behavior is actually a defect rather than a preference.
   leave the app's `local_fs` feature off. If enabled, their reads are capped at `MAX_KITTY_IMAGE_BYTES`, must
   resolve (symlinks followed) to a regular file outside `/proc`, `/sys` and `/dev` (so a FIFO
   never blocks), and `t=t` needs a temp-dir path containing `tty-graphics-protocol` (#824);
-  still read on the pty thread. Raw APC bytes and chunked transmissions are capped at
+  the path check and read run on a helper thread with a 2 s deadline (`KITTY_FILE_READ_TIMEOUT`), so
+  a stalled filesystem cannot freeze the pty thread; base64/zlib decoding is still on it (bounded by
+  the size caps) and the placement is still applied synchronously. Raw APC bytes and chunked transmissions are capped at
   `MAX_KITTY_BASE64_BYTES` (the base64 size of `MAX_KITTY_IMAGE_BYTES`) before completion; past it the
   transmission is dropped with an error reply (#877). Kitty `f=100` accepts only PNG, and
   pty-supplied image sizes (kitty and iTerm) are read from the header only; GIF/WebP/PNG/JPEG
