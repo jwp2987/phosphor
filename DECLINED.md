@@ -2375,3 +2375,19 @@ orchestration trees (children are looked up in memory). The attempted design is 
   `ZAP_DISABLED_FEATURES=typeahead_handoff`. Two known gaps are accepted (agent / queued-prompt
   commands arriving inside the report window; raw release of held bytes: a fragment may be dropped or execute separately) -- see
   `docs/typeahead-handoff-826-827.md`. Expected divergence, not drift.
+
+- **Kitty `t=f` / `t=t` file reads stay a bounded wait, not a fully asynchronous delivery**
+  (`#824`, 2026-10-18, `crates/warp_terminal/src/model/kitty.rs` `read_file`). **Upstream:**
+  `fs::read` of the named path directly on the pty thread (same code at `4111d08f9`), behind
+  the non-default `local_fs` feature. **We do:** validate the canonical path (regular file, not
+  `/proc` `/sys` `/dev`, `t=t` only for marked temp paths), read at most `MAX_KITTY_IMAGE_BYTES`
+  on a capped pool of helper threads (`MAX_IN_FLIGHT_FILE_READS`), and wait at most
+  `KITTY_FILE_READ_TIMEOUT` (2 s) for it, so a FIFO, hung mount or `/dev/zero` cannot freeze or
+  exhaust the terminal. `t=t` files are deleted by the helper only if the caller is still waiting.
+  **Declined:** returning immediately and delivering the image later. The placement's size and the
+  cursor advance (`newline()` x height, `move_cursor_forward`) are computed from the image
+  dimensions at the moment the sequence is parsed, and raw `f=24/32` file payloads need the
+  pixels to build the `warp-img:` header, so deferring the read means deferring all subsequent
+  output ordering (a parser-wide change) for a code path that is compiled out of default builds.
+  The *decode* half is asynchronous (`#880`: `AssetCache::insert_raw_asset_bytes_async`).
+  Reverse only alongside a decision to make the pty parser able to suspend on a pending image.
