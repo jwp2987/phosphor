@@ -2107,14 +2107,16 @@ impl TerminalModel {
     pub fn fragment_boundary_at_point(
         &self,
         point: &WithinModel<Point>,
-    ) -> WithinModel<FragmentBoundary> {
+    ) -> Option<WithinModel<FragmentBoundary>> {
         match point {
-            WithinModel::AltScreen(inner_point) => {
-                WithinModel::AltScreen(self.alt_screen.fragment_boundary_at_point(inner_point))
-            }
-            WithinModel::BlockList(inner_point) => {
-                WithinModel::BlockList(self.block_list.fragment_boundary_at_point(inner_point))
-            }
+            WithinModel::AltScreen(inner_point) => Some(WithinModel::AltScreen(
+                self.alt_screen.fragment_boundary_at_point(inner_point),
+            )),
+            // `None` for a stale (out-of-range) block index.
+            WithinModel::BlockList(inner_point) => self
+                .block_list
+                .fragment_boundary_at_point(inner_point)
+                .map(WithinModel::BlockList),
         }
     }
 

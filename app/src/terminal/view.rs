@@ -472,7 +472,7 @@ use crate::terminal::model::block::{AgentInteractionMetadata, BlockMetadata};
 use crate::terminal::model::block::{Block, BlockId};
 #[cfg(unix)]
 use crate::terminal::model::block::{InteractivePromptCandidate, interactive_prompt_candidate};
-use crate::terminal::model::blocks::{BlockFilter, BlockList};
+use crate::terminal::model::blocks::{BlockFilter, BlockList, EvictedBlocks};
 use crate::terminal::model::blocks::{
     AgentTranscriptNavigableItem, BlockHeight, BlockHeightItem, BlockHeightSummary, Gap,
 };
@@ -5948,7 +5948,6 @@ impl TerminalView {
                 requires_block_resync,
                 requires_text_resync,
             } => {
-                self.sync_eviction_protected_blocks(ctx);
                 let pending_context_block_ids =
                     context_model.as_ref(ctx).pending_context_block_ids();
                 let pending_context_selected_text = context_model
@@ -12086,48 +12085,85 @@ impl TerminalView {
         });
     }
 
+    /// Evicts the oldest finished blocks if `terminal.max_retained_lines` is set and exceeded,
+    /// then re-keys all view state (#889). No-op (and no model lock) when the setting is 0.
+    ///
+    /// This is the only caller of the model's eviction. It must stay on the main thread: the
+    /// model re-indexes immediately, so doing it on the PTY thread would leave the view's
+    /// index-keyed state (and action closures captured in the element tree) pointing at the wrong
+    /// blocks until the view caught up.
+    fn maybe_evict_retained_blocks(&mut self, ctx: &mut ViewContext<Self>) {
+        if *TerminalSettings::as_ref(ctx).max_retained_lines.value() == 0 {
+            return;
+        }
+        self.evict_retained_blocks(ctx);
+    }
+
+    /// Does the eviction and the view-side shift as one step. Returns the number of blocks
+    /// evicted.
+    fn evict_retained_blocks(&mut self, ctx: &mut ViewContext<Self>) -> usize {
+        self.sync_eviction_protected_blocks_unchecked(ctx);
+        let evicted = self
+            .model
+            .lock()
+            .block_list_mut()
+            .evict_oldest_blocks_over_line_budget();
+        let count = evicted.count;
+        self.handle_blocks_evicted(&evicted, ctx);
+        count
+    }
+
     /// Re-keys every view-level `BlockIndex`-keyed structure after the `count` oldest blocks were
     /// evicted from the block list to honor `terminal.max_retained_lines` (#889). The model has
     /// already shifted its own indices (`block_id_to_block_index`, the heights tree, block
     /// selection); this brings the view, find and viewport back in line.
-    fn handle_blocks_evicted(
-        &mut self,
-        count: usize,
-        removed_height: Lines,
-        ctx: &mut ViewContext<Self>,
-    ) {
+    fn handle_blocks_evicted(&mut self, evicted: &EvictedBlocks, ctx: &mut ViewContext<Self>) {
+        let count = evicted.count;
         if count == 0 {
             return;
         }
-        fn shift_map<V>(map: &mut HashMap<BlockIndex, V>, count: usize) {
-            *map = std::mem::take(map)
-                .into_iter()
-                .filter(|(index, _)| index.0 >= count)
-                .map(|(index, value)| (BlockIndex(index.0 - count), value))
-                .collect();
-        }
-        let shift = |index: BlockIndex| index.0.checked_sub(count).map(BlockIndex);
 
-        shift_map(&mut self.bookmarked_blocks, count);
-        shift_map(&mut self.block_list_mouse_states.label_mouse_states, count);
-        shift_map(&mut self.block_list_mouse_states.bookmark_mouse_states, count);
-        shift_map(&mut self.block_list_mouse_states.filter_mouse_states, count);
-        self.active_filter_editor_block_index =
-            self.active_filter_editor_block_index.and_then(shift);
-        self.hovered_block_index = self.hovered_block_index.and_then(shift);
-        self.mouse_down_block_index = self.mouse_down_block_index.and_then(shift);
+        shift_block_index_map(&mut self.bookmarked_blocks, count);
+        shift_block_index_map(&mut self.block_list_mouse_states.label_mouse_states, count);
+        shift_block_index_map(
+            &mut self.block_list_mouse_states.bookmark_mouse_states,
+            count,
+        );
+        shift_block_index_map(&mut self.block_list_mouse_states.filter_mouse_states, count);
+        self.active_filter_editor_block_index = self
+            .active_filter_editor_block_index
+            .and_then(|index| shift_block_index(index, count));
+        self.hovered_block_index = self
+            .hovered_block_index
+            .and_then(|index| shift_block_index(index, count));
+        self.mouse_down_block_index = self
+            .mouse_down_block_index
+            .and_then(|index| shift_block_index(index, count));
         self.selected_blocks.shift_for_evicted_blocks(count);
         self.agent_transcript_selection = match self.agent_transcript_selection {
             Some(AgentTranscriptNavigableItem::ShellBlock(index)) => {
-                shift(index).map(AgentTranscriptNavigableItem::ShellBlock)
+                shift_block_index(index, count).map(AgentTranscriptNavigableItem::ShellBlock)
             }
             other => other,
         };
+
+        // Hover state holds `WithinBlock` positions keyed by the old indices; drop it all. This
+        // also clears the model's smart-select override that mirrors the highlighted link.
+        {
+            let mut model = self.model.lock();
+            self.highlighted_link.take(&mut model);
+        }
+        self.last_hover_fragment_boundary = None;
+        self.hovered_secret = None;
+        ctx.reset_cursor();
+
         // The context menu holds a block index in its source; just dismiss it.
         self.close_context_menu(ctx, false);
 
-        // Top-anchored scroll positions are line offsets; compensate for the removed height.
-        self.scroll_position.shift_for_removed_height(removed_height);
+        // Top-anchored scroll positions are line offsets; compensate for the removed height
+        // unless the viewport sits above the evicted region.
+        self.scroll_position
+            .shift_for_removed_height(evicted.removed_height, evicted.evicted_region_top);
 
         // Cancel and re-run an active search with shifted block filters.
         if self.find_model.as_ref(ctx).is_find_bar_open() {
@@ -12138,7 +12174,7 @@ impl TerminalView {
             }
         }
 
-        self.sync_eviction_protected_blocks(ctx);
+        self.sync_eviction_protected_blocks_unchecked(ctx);
 
         if !self.has_shown_eviction_notice {
             self.has_shown_eviction_notice = true;
@@ -12155,8 +12191,15 @@ impl TerminalView {
     }
 
     /// Tells the block list which blocks must never be evicted: bookmarked blocks and blocks
-    /// attached as AI context (#889).
+    /// attached as AI context (#889). No-op while `terminal.max_retained_lines` is 0.
     fn sync_eviction_protected_blocks(&self, ctx: &mut ViewContext<Self>) {
+        if *TerminalSettings::as_ref(ctx).max_retained_lines.value() == 0 {
+            return;
+        }
+        self.sync_eviction_protected_blocks_unchecked(ctx);
+    }
+
+    fn sync_eviction_protected_blocks_unchecked(&self, ctx: &mut ViewContext<Self>) {
         let mut ids: HashSet<BlockId> = self
             .ai_context_model
             .as_ref(ctx)
@@ -12173,11 +12216,6 @@ impl TerminalView {
 
     fn handle_terminal_event(&mut self, event: &ModelEvent, ctx: &mut ViewContext<Self>) {
         match event {
-            ModelEvent::BlocksEvicted {
-                count,
-                removed_height,
-                ..
-            } => self.handle_blocks_evicted(*count, *removed_height, ctx),
             ModelEvent::TerminalClear => {
                 self.handle_terminal_wakeup((), ctx);
                 self.update_scroll_position_locking(ScrollPositionUpdate::AfterClear, ctx);
@@ -12488,6 +12526,12 @@ impl TerminalView {
                 if *is_for_in_band_command {
                     return;
                 }
+
+                // Retained-line eviction (#889) runs here, on the main thread, and shifts the
+                // view's index-keyed state in the same step, so no event or render can observe
+                // the model re-indexed while the view still holds old indices.
+                self.maybe_evict_retained_blocks(ctx);
+
                 self.did_notify_long_running = false;
 
                 // Snapshot the prompt state as of when the command began executing.
@@ -30027,6 +30071,21 @@ fn project_rules_path_for_dir(dir: &Path) -> PathBuf {
 /// before this issue.
 fn should_hide_input_for_blocked_ai_block(has_expanded_running_commands: bool) -> bool {
     has_expanded_running_commands
+}
+
+/// `index` shifted down after the `count` oldest blocks were evicted, or `None` if it referred to
+/// an evicted block (#889).
+fn shift_block_index(index: BlockIndex, count: usize) -> Option<BlockIndex> {
+    index.0.checked_sub(count).map(BlockIndex)
+}
+
+/// Re-keys a `BlockIndex`-keyed map after the `count` oldest blocks were evicted, dropping
+/// entries for evicted blocks (#889).
+fn shift_block_index_map<V>(map: &mut HashMap<BlockIndex, V>, count: usize) {
+    *map = std::mem::take(map)
+        .into_iter()
+        .filter_map(|(index, value)| Some((shift_block_index(index, count)?, value)))
+        .collect();
 }
 
 #[cfg(test)]

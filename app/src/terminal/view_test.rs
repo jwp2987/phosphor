@@ -3022,6 +3022,122 @@ fn test_bookmark_blocks_navigation() {
     })
 }
 
+#[test]
+fn test_retained_line_eviction_shifts_view_state_in_one_step() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let protected_id = {
+                let mut model = view.model.lock();
+                for _ in 0..10 {
+                    model.simulate_block("ls", "foo");
+                }
+                // Tiny budget (floored at the per-block limit, which we also lower) so that
+                // everything before the protected block is over budget.
+                model.update_max_grid_size(1);
+                model.update_max_retained_lines(1);
+                model.block_list().blocks()[5].id().clone()
+            };
+            let id_at = |view: &TerminalView, index: BlockIndex| {
+                view.model
+                    .lock()
+                    .block_list()
+                    .block_at(index)
+                    .map(|block| block.id().clone())
+            };
+            let hovered_id = id_at(view, BlockIndex::from(7));
+            let selected_id = id_at(view, BlockIndex::from(8));
+
+            // Simulating blocks above did not evict anything: the model never evicts on its own.
+            assert!(view.model.lock().block_list().blocks().len() >= 10);
+
+            view.bookmark_block(&BlockIndex::from(5), ctx);
+            view.hovered_block_index = Some(BlockIndex::from(7));
+            view.mouse_down_block_index = Some(BlockIndex::from(1));
+            view.selected_blocks.reset_to_single(BlockIndex::from(8));
+            view.hovered_secret = None;
+
+            let evicted = view.evict_retained_blocks(ctx);
+            assert!(
+                evicted > 0,
+                "blocks before the protected one are over budget"
+            );
+            assert!(evicted <= 5, "must stop at the bookmarked block");
+
+            // The bookmark followed its block.
+            let new_bookmark = BlockIndex::from(5 - evicted);
+            assert!(view.bookmarked_blocks.contains_key(&new_bookmark));
+            assert_eq!(view.bookmarked_blocks.len(), 1);
+            assert_eq!(id_at(view, new_bookmark), Some(protected_id));
+
+            // Hover followed its block; a mouse-down on an evicted block was dropped.
+            assert_eq!(
+                view.hovered_block_index
+                    .and_then(|index| id_at(view, index)),
+                hovered_id
+            );
+            assert_eq!(
+                view.mouse_down_block_index,
+                (1usize).checked_sub(evicted).map(BlockIndex::from)
+            );
+
+            // The selection followed its block.
+            assert_eq!(
+                view.selected_blocks
+                    .tail()
+                    .and_then(|index| id_at(view, index)),
+                selected_id
+            );
+
+            // Hover caches that hold old-index positions were invalidated.
+            assert!(view.last_hover_fragment_boundary.is_none());
+            assert!(!view.has_highlighted_link());
+            assert!(view.hovered_secret.is_none());
+        });
+    })
+}
+
+#[test]
+fn test_retained_line_eviction_is_gated_on_the_setting() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                for _ in 0..6 {
+                    model.simulate_block("ls", "foo");
+                }
+                model.update_max_grid_size(1);
+                model.update_max_retained_lines(1);
+            }
+            let before = view.model.lock().block_list().blocks().len();
+            // `terminal.max_retained_lines` is 0 (default) in the settings model, so the
+            // main-thread trigger must not evict even though the block list has a budget.
+            view.maybe_evict_retained_blocks(ctx);
+            assert_eq!(view.model.lock().block_list().blocks().len(), before);
+        });
+    })
+}
+
+#[test]
+fn test_shift_block_index_helpers() {
+    assert_eq!(
+        shift_block_index(BlockIndex::from(5), 3),
+        Some(BlockIndex::from(2))
+    );
+    assert_eq!(shift_block_index(BlockIndex::from(2), 3), None);
+    let mut map: HashMap<BlockIndex, &str> = HashMap::new();
+    map.insert(BlockIndex::from(1), "gone");
+    map.insert(BlockIndex::from(4), "kept");
+    shift_block_index_map(&mut map, 3);
+    assert_eq!(map.len(), 1);
+    assert_eq!(map.get(&BlockIndex::from(1)), Some(&"kept"));
+}
+
 fn run_navigation_test(input_mode: InputMode) {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);

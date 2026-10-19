@@ -63,13 +63,6 @@ pub enum Event {
         Arc<dyn Fn(&str) -> String + Sync + Send + 'static>,
     ),
     CursorBlinkingChange(bool),
-    /// Sent when the oldest finished blocks were evicted to honor `terminal.max_retained_lines`
-    /// (#889). All `BlockIndex`-keyed state outside the model must shift down by `count`.
-    BlocksEvicted {
-        count: usize,
-        block_ids: Vec<BlockId>,
-        removed_height: warpui::units::Lines,
-    },
     TerminalClear,
     Bell,
     Exit {
@@ -520,7 +513,6 @@ impl Debug for Event {
             Event::ClipboardStore(_, text) => write!(f, "ClipboardStore({text})"),
             Event::ClipboardLoad(_, _) => write!(f, "ClipboardLoad()"),
             Event::TerminalClear => write!(f, "TerminalClear"),
-            Event::BlocksEvicted { count, .. } => write!(f, "BlocksEvicted({count})"),
             Event::Bell => write!(f, "Bell"),
             Event::Exit { reason } => write!(f, "Exit({reason:?})"),
             Event::CursorBlinkingChange(blinking) => write!(f, "CursorBlinking({blinking})"),

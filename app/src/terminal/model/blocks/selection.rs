@@ -1336,7 +1336,7 @@ impl BlockList {
                     }
                     selection.update(*end_grid_point.get(), end.side);
 
-                    let grid = self.grid_at_location(&start_grid_point);
+                    let grid = self.grid_at_location(&start_grid_point)?;
                     let selection_range =
                         selection.to_range(&grid.grid_handler, semantic_selection)?;
 
@@ -1372,7 +1372,7 @@ impl BlockList {
                             }
                         }
 
-                        let grid = self.grid_at_location(&start_grid_point);
+                        let grid = self.grid_at_location(&start_grid_point)?;
 
                         selection.update(
                             Point::new(
@@ -1412,7 +1412,7 @@ impl BlockList {
                             }
                         }
 
-                        let grid = self.grid_at_location(&end_grid_point);
+                        let grid = self.grid_at_location(&end_grid_point)?;
                         let selection_range =
                             selection.to_range(&grid.grid_handler, semantic_selection)?;
                         end_grid_point.replace(selection_range.end);

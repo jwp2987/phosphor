@@ -50,12 +50,13 @@ impl ScrollState {
     }
 
     /// Compensates a top-anchored scroll position for `removed_height` lines having been removed
-    /// from the top of the block list (#889). Bottom-anchored and follow-bottom positions are
-    /// unaffected.
-    pub fn shift_for_removed_height(&mut self, removed_height: Lines) {
+    /// from the block list starting at `evicted_region_top` (#889). Bottom-anchored and
+    /// follow-bottom positions are unaffected, as are top-anchored positions that lie above the
+    /// evicted region (e.g. within rich content that precedes the first block).
+    pub fn shift_for_removed_height(&mut self, removed_height: Lines, evicted_region_top: Lines) {
         let shift = |scroll_lines: ScrollLines| match scroll_lines {
             ScrollLines::ScrollTop(top) => {
-                ScrollLines::ScrollTop((top - removed_height).max(Lines::zero()))
+                ScrollLines::ScrollTop(shifted_scroll_top(top, removed_height, evicted_region_top))
             }
             other => other,
         };
@@ -73,7 +74,11 @@ impl ScrollState {
             ScrollPosition::WaterfallGapFollowsBottomOfMostRecentBlock {
                 scroll_top_in_lines,
             } => ScrollPosition::WaterfallGapFollowsBottomOfMostRecentBlock {
-                scroll_top_in_lines: (scroll_top_in_lines - removed_height).max(Lines::zero()),
+                scroll_top_in_lines: shifted_scroll_top(
+                    scroll_top_in_lines,
+                    removed_height,
+                    evicted_region_top,
+                ),
             },
             other => other,
         };
@@ -2086,5 +2091,72 @@ impl Iterator for ViewportIter<'_> {
                 }
             }
         }
+    }
+}
+
+/// New top offset for a top-anchored scroll position after `removed_height` lines were removed
+/// starting at `evicted_region_top`. Anchors above the evicted region do not move; anchors inside
+/// or below it move up by the removed height, but never above the start of the region.
+fn shifted_scroll_top(top: Lines, removed_height: Lines, evicted_region_top: Lines) -> Lines {
+    if top < evicted_region_top {
+        top
+    } else {
+        (top - removed_height).max(evicted_region_top)
+    }
+}
+
+#[cfg(test)]
+mod eviction_shift_tests {
+    use super::*;
+
+    fn lines(n: f64) -> Lines {
+        Lines::new(n)
+    }
+
+    fn fixed_top(top: f64) -> ScrollState {
+        ScrollState::new(ScrollPosition::FixedAtPosition {
+            scroll_lines: ScrollLines::ScrollTop(lines(top)),
+        })
+    }
+
+    fn top_of(state: &ScrollState) -> Lines {
+        match state.position() {
+            ScrollPosition::FixedAtPosition {
+                scroll_lines: ScrollLines::ScrollTop(top),
+            } => top,
+            other => panic!("unexpected position {other:?}"),
+        }
+    }
+
+    #[test]
+    fn anchor_below_evicted_region_shifts_up() {
+        let mut state = fixed_top(50.0);
+        state.shift_for_removed_height(lines(20.0), lines(0.0));
+        assert_eq!(top_of(&state), lines(30.0));
+    }
+
+    #[test]
+    fn anchor_above_evicted_region_is_not_moved() {
+        // Rich content occupies the first 10 lines; the evicted blocks start below it.
+        let mut state = fixed_top(4.0);
+        state.shift_for_removed_height(lines(20.0), lines(10.0));
+        assert_eq!(top_of(&state), lines(4.0));
+    }
+
+    #[test]
+    fn anchor_inside_evicted_region_clamps_to_region_start() {
+        let mut state = fixed_top(15.0);
+        state.shift_for_removed_height(lines(20.0), lines(10.0));
+        assert_eq!(top_of(&state), lines(10.0));
+    }
+
+    #[test]
+    fn follow_bottom_is_unaffected() {
+        let mut state = ScrollState::new(ScrollPosition::FollowsBottomOfMostRecentBlock);
+        state.shift_for_removed_height(lines(20.0), lines(0.0));
+        assert_eq!(
+            state.position(),
+            ScrollPosition::FollowsBottomOfMostRecentBlock
+        );
     }
 }

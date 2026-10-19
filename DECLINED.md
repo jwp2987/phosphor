@@ -461,11 +461,15 @@ upstream's behavior is actually a defect rather than a preference.
   ~2.3 MiB per 200k-line burst, no plateau). **We do:** a user setting, edited in
   settings.toml or Features > "Maximum lines retained per tab", default `0` = unlimited
   (behaviour unchanged unless opted in). When total grid lines exceed it (never below
-  `maximum_grid_size`), `start_active_block` evicts the oldest finished blocks and emits
-  `BlocksEvicted`, on which the view shifts every `BlockIndex`-keyed structure, re-runs find
-  and shows a one-time notice. Never evicts the active block, an unfinished block, a
-  bookmarked block or one attached as AI context; disabled in shared sessions.
-  <!-- markers: keep:evict_oldest_blocks_over_line_budget keep:BlocksEvicted keep:max_retained_lines -->
+  `maximum_grid_size`), the VIEW evicts the oldest finished blocks on the main thread when it
+  handles `AfterBlockStarted` (never on the PTY thread, where the model's re-indexing would
+  race the view's index-keyed state) and, in the same step, shifts every `BlockIndex`-keyed
+  structure from the returned `EvictedBlocks`, invalidates link/secret hover caches, re-runs
+  find and shows a one-time notice. Never evicts the active block, an unfinished block, a
+  bookmarked block or one attached as AI context; disabled in shared sessions. Rich content
+  (e.g. AI blocks) anchored to an evicted command is **retained** as an orphan, so a
+  top-anchored scroll position above the evicted region is deliberately left untouched.
+  <!-- markers: keep:evict_oldest_blocks_over_line_budget keep:EvictedBlocks keep:max_retained_lines -->
 - **Reopening a closed item runs the restore with `UndoCloseStack` free**
   (`#840`, 2026-10-13, `app/src/undo_close/stack.rs`,
   `app/src/ai/conversation_navigation/mod.rs`, `crates/warpui_core/src/core/entity.rs`).
