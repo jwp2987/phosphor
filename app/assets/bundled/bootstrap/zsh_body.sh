@@ -279,6 +279,10 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
   # Note that this is very performance sensitive code, so try not to
   # invoke any external commands in here.
   warp_preexec () {
+      # Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
+      # expected-failure probe in this hook (no repo, an unset variable) into an
+      # early return, a killed shell or a lost Precmd.
+      setopt localoptions noerrreturn noerrexit unset
       # Phosphor (#828): a Preexec is out; the block it opens is finished only by
       # warp_precmd. _warp_repair_hooks reads this to tell whether a prompt cycle
       # skipped that precmd (and so owes one) or already ran it.
@@ -347,6 +351,10 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
       # previously run user command (as opposed to any of the commands executed
       # in this function below).
       local exit_code=$?
+      # Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
+      # expected-failure probe in this hook (no repo, an unset variable) into an
+      # early return, a killed shell or a lost Precmd.
+      setopt localoptions noerrreturn noerrexit unset
       # Phosphor (#828): _warp_repair_hooks runs this outside the precmd hook,
       # where $? is no longer the user's command; it passes that status here.
       if [[ -n ${1:-} ]]; then
@@ -664,7 +672,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
     # Disable oh-my-zsh default title otherwise.
     DISABLE_AUTO_TITLE="true"
 
-    setopt localoptions nopromptsubst
+    setopt localoptions nopromptsubst noerrreturn noerrexit unset
 
     # Don't set the title if inside emacs, unless using vterm
     [[ -n "${INSIDE_EMACS:-}" && "${INSIDE_EMACS:-}" != vterm ]] && return
@@ -678,6 +686,10 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
 
   # Runs before showing the prompt
   function warp_set_title_idle_on_precmd {
+# Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
+# expected-failure probe in this hook (no repo, an unset variable) into an
+# early return, a killed shell or a lost Precmd.
+setopt localoptions noerrreturn noerrexit unset
     # If the user wants to set the title using oh-my-zsh, they can
     # set the WARP_DISABLE_AUTO_TITLE flag.
     [[ "${WARP_DISABLE_AUTO_TITLE:-}" != true ]] || return
@@ -692,6 +704,10 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
 
   # Runs before executing the command
   function warp_set_title_active_on_preexec {
+# Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
+# expected-failure probe in this hook (no repo, an unset variable) into an
+# early return, a killed shell or a lost Precmd.
+setopt localoptions noerrreturn noerrexit unset
     # If the user wants to set the title using oh-my-zsh, they can
     # set the WARP_DISABLE_AUTO_TITLE flag.
     [[ "${WARP_DISABLE_AUTO_TITLE:-}" != true ]] || return
@@ -820,6 +836,10 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
   # and if not, wrap them with the appropriate markers so that we can direct the
   # prompt bytes to the appropriate grids.
   function warp_update_prompt_vars() {
+# Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
+# expected-failure probe in this hook (no repo, an unset variable) into an
+# early return, a killed shell or a lost Precmd.
+setopt localoptions noerrreturn noerrexit unset
     # 133;A and 133;B are standard prompt marker OSCs. We also follow the standard for the rprompt OSC below.
     # See https://learn.microsoft.com/en-us/windows/terminal/tutorials/shell-integration and
     # https://gitlab.freedesktop.org/terminal-wg/specifications/-/merge_requests/6/diffs for details.
@@ -1443,7 +1463,20 @@ esac
       (( ${precmd_functions[(Ie)$warp_fn]} )) || warp_missing_precmd+=($warp_fn)
     done
     (( ${preexec_functions[(Ie)warp_preexec]} )) || warp_missing_preexec+=(warp_preexec)
-    (( ${#warp_missing_precmd} + ${#warp_missing_preexec} )) || return 0
+    if (( ! (${#warp_missing_precmd} + ${#warp_missing_preexec}) )); then
+      # Phosphor (#844): every hook is registered, yet a Preexec is still
+      # waiting for its precmd -- a user precmd function hit a fatal error
+      # (`: ${X:?}`, nounset) and zsh abandoned the rest of the precmd stage,
+      # warp_precmd included. The Precmd is owed anyway; emit it with the
+      # best status available.
+      if [[ -n ${_WARP_PRECMD_PENDING:-} ]]; then
+        warp_set_title_idle_on_precmd
+        warp_precmd "${1:-0}"
+        warp_update_prompt_vars
+        _WARP_REPAIRED_PRECMD=1
+      fi
+      return 0
+    fi
 
     if (( ${#warp_missing_precmd} )) && (( ! ${precmd_functions[(Ie)warp_set_title_idle_on_precmd]} )); then
       warp_missing_precmd=(warp_set_title_idle_on_precmd $warp_missing_precmd)
