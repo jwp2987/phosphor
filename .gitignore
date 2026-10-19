@@ -6,7 +6,9 @@ app/frameworks/**/*.xcframework
 /app/target
 /lib/*
 !/lib/rust-genai/
+!/lib/cosmic-text/
 /lib/rust-genai/target/
+/lib/cosmic-text/target/
 /warp.xcworkspace
 .idea/
 .DS_Store
