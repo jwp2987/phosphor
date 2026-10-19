@@ -167,7 +167,7 @@ class Shell:
         self.pump(1.5)  # let the rc files and the first prompt settle
         os.write(
             self.fd,
-            (f"unsetopt ZLE; WARP_SESSION_ID=4242; WARP_USING_WINDOWS_CON_PTY=false; source {shlex.quote(self.body)}; echo boot$((20+22))done\r").encode(),
+            (f"unsetopt ZLE; WARP_SESSION_ID=4242; WARP_USING_WINDOWS_CON_PTY=false; source {shlex.quote(self.body)}; builtin echo boot$((20+22))done\r").encode(),
         )
         ok = self.pump(20, lambda: "boot42done" in self.text() and "Bootstrapped" in self.names())
         self.broken = not ok

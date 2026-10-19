@@ -7,33 +7,33 @@
 if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # Byte sequence used to signal the start of a DCS. ([0x1b, 0x50, 0x24] which
     # maps to <ESC>, P, $ in ASCII.)
-    DCS_START="$(printf '\eP$')"
+    DCS_START="$(builtin printf '\eP$')"
 
     # Appended to $DCS_START to signal that the following message is JSON-encoded.
     DCS_JSON_MARKER="d"
 
     # Byte used to signal the end of a DCS.
-    DCS_END="$(printf '\x9c')"
+    DCS_END="$(builtin printf '\x9c')"
 
-    OSC_START="$(printf '\e]9278;')"
+    OSC_START="$(builtin printf '\e]9278;')"
 
-    OSC_END="$(printf '\a')"
+    OSC_END="$(builtin printf '\a')"
 
     OSC_PARAM_SEPARATOR=";"
 
-    RESET_GRID_OSC="$(printf '\e]9279\a')"
+    RESET_GRID_OSC="$(builtin printf '\e]9279\a')"
 
     # OSC used to mark the start of in-band command output.
     #
     # Printable characters received this OSC and OSC_END_GENERATOR_OUTPUT are parsed and handled as
     # output for an in-band command.
-    OSC_START_GENERATOR_OUTPUT="$(printf '\e]9277;A\a')"
+    OSC_START_GENERATOR_OUTPUT="$(builtin printf '\e]9277;A\a')"
 
     # OSC used to mark the end of in-band command output.
     #
     # Printable characters received between OSC_START_GENERATOR_OUTPUT and this are parsed and
     # handled as output for an in-band command.
-    OSC_END_GENERATOR_OUTPUT="$(printf '\e]9277;B\a')"
+    OSC_END_GENERATOR_OUTPUT="$(builtin printf '\e]9277;B\a')"
 
     # Every hook below is written with __warp_emit, which goes to the controlling
     # terminal rather than to fd 1. Phosphor reads the pty, and the pty is the
@@ -45,9 +45,9 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # brought the prompt back (#806). Fall back to fd 1 only when there is no
     # controlling terminal to write to.
     if { : > /dev/tty; } 2>/dev/null; then
-        __warp_emit () { printf "$@" > /dev/tty; }
+        __warp_emit () { builtin printf "$@" > /dev/tty; }
     else
-        __warp_emit () { printf "$@"; }
+        __warp_emit () { builtin printf "$@"; }
     fi
 
     # Phosphor (#825): the hooks below run inside the user's interactive shell,
@@ -69,7 +69,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         case $- in *u*) __warp_relax_restore+='set -u;' ;; esac
         if [[ -o pipefail ]]; then __warp_relax_restore+='set -o pipefail;'; fi
         set +e +u +o pipefail
-        printf -v "$1" '%s' "$__warp_relax_restore"
+        builtin printf -v "$1" '%s' "$__warp_relax_restore"
     }
 
     __warp_set_status () { return "${1:-0}"; }
@@ -97,7 +97,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # Attempt to cd to the desired initial working directory, swallowing any
     # errors.  If this fails, the user will end up in their home directory.
     if [[ ! -z "${WARP_INITIAL_WORKING_DIR:-}" ]]; then
-        cd "$WARP_INITIAL_WORKING_DIR" >/dev/null 2>&1
+        builtin cd "$WARP_INITIAL_WORKING_DIR" >/dev/null 2>&1
         unset WARP_INITIAL_WORKING_DIR
     fi
 
@@ -227,7 +227,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # the in-band command.
     warp_send_generator_output_osc_pre_hex_encoded () {
         local payload=${1-}
-        local byte_count=$(LC_ALL="C"; printf "${#payload}")
+        local byte_count=$(LC_ALL="C"; builtin printf "${#payload}")
         __warp_emit "%b%i;%s%b" $OSC_START_GENERATOR_OUTPUT $byte_count $payload $OSC_END_GENERATOR_OUTPUT
         warp_maybe_send_reset_grid_osc
     }
@@ -253,10 +253,10 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
       # output immediately before it's stored anywhere. This hex encoding must be done inline --
       # bash doesn't like functions called with null bytes either.
       local generator_output="$( {
-        echo -n "$command_id;";
+        builtin echo -n "$command_id;";
       # Command substitution only captures stdout, so redirect stderr to stdout.
         eval "$command" 2>&1;
-        echo -n ";$?";
+        builtin echo -n ";$?";
       } | command -p od -An -v -tx1 | command -p tr -d ' \n')"
       warp_send_generator_output_osc_pre_hex_encoded "$generator_output"
     }
@@ -271,7 +271,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
       _warp_execute_command "$@" &
       # $! contains the PID of the most recently backgrounded command.
       local pid=$!
-      echo $pid >> "${_WARP_GENERATOR_PIDS_STARTED_TMP_FILE:-}"
+      builtin echo $pid >> "${_WARP_GENERATOR_PIDS_STARTED_TMP_FILE:-}"
       wait $pid 2> /dev/null
 
       # If the exit code of the backgrounded _warp_execute_command process is non-zero,
@@ -289,7 +289,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
       # The completed generator PIDs file may not exist if this generator was (by
       # error) left running/not cancelled properly in warp_preexec.
       if [[ -f ${_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE:-} ]]; then
-        echo $pid >> "$_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE"
+        builtin echo $pid >> "$_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE"
       fi
     }
 
@@ -385,12 +385,12 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           # small, so we avoid the overhead of spawning multiple processes and instead do the comparison
           # manually.
           completed_pids=()
-          while IFS= read -r pid; do
+          while IFS= builtin read -r pid; do
             completed_pids+=("$pid")
           done < $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE
 
           pids=()
-          while IFS= read -r pid; do
+          while IFS= builtin read -r pid; do
             found=0
             for completed_pid in ${completed_pids[@]+"${completed_pids[@]}"}; do
               if [[ "$pid" == "$completed_pid" ]]; then
@@ -485,7 +485,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
       # warp_set_title_active_on_preexec is a preexec_function, which accepts 1 argument 
       #(currently invoked command)
       local this_command_spec
-      read -r -a this_command_spec <<< "${1-}"
+      builtin read -r -a this_command_spec <<< "${1-}"
 
       # if running fg, figure out the command from its process id
       if [[ "${this_command_spec[0]:-}" == "fg" ]]; then 
@@ -598,10 +598,10 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
 
         # If the files for tracking generator PIDs exist, clear them.
         if [[ -n ${_WARP_GENERATOR_PIDS_STARTED_TMP_FILE:-} && -f $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE ]]; then
-          echo "" >| "$_WARP_GENERATOR_PIDS_STARTED_TMP_FILE"
+          builtin echo "" >| "$_WARP_GENERATOR_PIDS_STARTED_TMP_FILE"
         fi
         if [[ -n ${_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE:-} && -f $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE ]]; then
-          echo "" >| "$_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE"
+          builtin echo "" >| "$_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE"
         fi
 
         if [[ -z ${WARP_INPUT_REPORTING_SUPPORTED:-} ]]; then
@@ -635,11 +635,11 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             # Tricking the shell into rendering the prompt
             # Note that in more modern versions of bash we could use ${PS1@P} to achieve the same,
             # but MacOS comes by default with a much older version of bash, and we want to be compatible.
-            deref_ps1=$(echo -e "\n" | PS1="$WARP_PS1" BASH_SILENCE_DEPRECATION_WARNING=1 "$BASH" --norc -i 2>&1 | command -p head -2 | command -p tail -1)
+            deref_ps1=$(builtin echo -e "\n" | PS1="$WARP_PS1" BASH_SILENCE_DEPRECATION_WARNING=1 "$BASH" --norc -i 2>&1 | command -p head -2 | command -p tail -1)
           fi
 
           if [ "${WARP_IN_MSYS2:-}" = false ]; then
-            escaped_ps1=$(warp_escape_ps1 "$(echo "$deref_ps1")")
+            escaped_ps1=$(warp_escape_ps1 "$(builtin echo "$deref_ps1")")
           fi
         fi
 
@@ -682,7 +682,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         if [ "${WARP_IN_MSYS2:-}" = false ]; then
           if [ -n "${WSL_DISTRO_NAME:-}" ]; then
             # In WSL, avoid symlinks b/c on Windows `std::fs` is unable to resolve symlink inside WSL containers.
-            escaped_pwd=$(warp_escape_json "$(pwd -P)")
+            escaped_pwd=$(warp_escape_json "$(builtin pwd -P)")
           else
             escaped_pwd=$(warp_escape_json "$PWD")
           fi
@@ -838,8 +838,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # printf octal escapes so this file itself stays plain ASCII; NUL cannot occur in a bash string.
     WARP_ESCAPE_JSON_CTRL_SED=''
     for warp_ctrl_octal in 001 002 003 004 005 006 007 013 016 017 020 021 022 023 024 025 026 027 030 031 032 033 034 035 036 037 177; do
-      printf -v warp_ctrl_char "\\$warp_ctrl_octal"
-      printf -v warp_ctrl_hex '%04x' "$((8#$warp_ctrl_octal))"
+      builtin printf -v warp_ctrl_char "\\$warp_ctrl_octal"
+      builtin printf -v warp_ctrl_hex '%04x' "$((8#$warp_ctrl_octal))"
       WARP_ESCAPE_JSON_CTRL_SED="${WARP_ESCAPE_JSON_CTRL_SED} s/${warp_ctrl_char}/\\\\u${warp_ctrl_hex}/g;"
     done
     unset warp_ctrl_octal warp_ctrl_char warp_ctrl_hex
@@ -892,24 +892,24 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # Afterwards it's decoded in rust and parsed as usual.
     # Accepts one argument: DCS JSON string
     warp_hex_encode_string () {
-      printf '%s' "$1" | command -p od -An -v -tx1 | command -p tr -d ' \n'
+      builtin printf '%s' "$1" | command -p od -An -v -tx1 | command -p tr -d ' \n'
     }
 
     # Returns encoded InitShell hook
     # Accepts one argument: shell [bash, zsh, fish (future)]
     init_shell_hook () {
       init_shell="{\"hook\": \"InitShell\", \"value\": {\"shell\": \"$1\"}}"
-      echo $(warp_hex_encode_string "$init_shell")
+      builtin echo $(warp_hex_encode_string "$init_shell")
     }
 
     # Checks whether the current version of bash is at least as high as the expected ($1) one.
     # To match rest of our codebase, it returns "1" if the bash version is higher or equal, and 
     # 0 otherwise.
     warp_at_least_bash_version () {
-      if [[ $(printf '%s\n%s\n' "$BASH_VERSION" "$1" | command -p sort -rVC ; echo $?) -eq 0 ]]; then
-        echo "1"
+      if [[ $(builtin printf '%s\n%s\n' "$BASH_VERSION" "$1" | command -p sort -rVC ; builtin echo $?) -eq 0 ]]; then
+        builtin echo "1"
       else 
-        echo "0"
+        builtin echo "0"
       fi
     }
 
@@ -1132,7 +1132,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         # we insert this function into the input for the user to determine if they want to execute (we never run it on
         # their behalf without their permission).  To be transparent about what is being executed with sudo, we echo out the
         # command we're about to run.
-        echo "Executing: sudo cp \"$APT_SOURCESDIR$source_file_name.list.distUpgrade\" \"$APT_SOURCESDIR$source_file_name.list\""
+        builtin echo "Executing: sudo cp \"$APT_SOURCESDIR$source_file_name.list.distUpgrade\" \"$APT_SOURCESDIR$source_file_name.list\""
         sudo cp "$APT_SOURCESDIR$source_file_name.list.distUpgrade" "$APT_SOURCESDIR$source_file_name.list"
       fi
     }
@@ -1209,7 +1209,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             # Hex-encode the ZSH environment script we use to bootstrap remote zsh b/c it contains control characters
             # We decode on the SSH server using xxd if its available, otherwise fall back to a for-loop over each byte
             # and use printf to convert back to plaintext
-            local zsh_env_script=$(printf '%s' 'unsetopt ZLE RCS GLOBAL_RCS; WARP_SESSION_ID='$remote_session_id'; WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@; WARP_HONOR_PS1='$WARP_HONOR_PS1'; _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n); _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || echo $USER); _ju=${_user//\\/\\\\}; _ju=${_ju//\"/\\\"}; _jh=${_hostname//\\/\\\\}; _jh=${_jh//\"/\\\"}; for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do _c=${(#)_i}; _x=$(( [##16] _i )); _h="\\u00${(l:2::0:)_x}"; _ju=${_ju//$_c/$_h}; _jh=${_jh//$_c/$_h}; done; _msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"zsh\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d '"'"' \n'"'"'); printf '"'"'\e]9278;d;%s\x07'"'"' $_msg; unset _hostname _user _msg _ju _jh _i _c _h _x' | command -p od -An -v -tx1 | command -p tr -d ' \n')
+            local zsh_env_script=$(builtin printf '%s' 'unsetopt ZLE RCS GLOBAL_RCS; WARP_SESSION_ID='$remote_session_id'; WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@; WARP_HONOR_PS1='$WARP_HONOR_PS1'; _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n); _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || builtin echo $USER); _ju=${_user//\\/\\\\}; _ju=${_ju//\"/\\\"}; _jh=${_hostname//\\/\\\\}; _jh=${_jh//\"/\\\"}; for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do _c=${(#)_i}; _x=$(( [##16] _i )); _h="\\u00${(l:2::0:)_x}"; _ju=${_ju//$_c/$_h}; _jh=${_jh//$_c/$_h}; done; _msg=$(builtin printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"zsh\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d '"'"' \n'"'"'); builtin printf '"'"'\e]9278;d;%s\x07'"'"' $_msg; unset _hostname _user _msg _ju _jh _i _c _h _x' | command -p od -An -v -tx1 | command -p tr -d ' \n')
 
             # Optionally attach to an existing ControlMaster the user already
             # runs for this destination instead of creating our own. Resolve
@@ -1379,7 +1379,7 @@ esac
     if [[ -z $WARP_IS_SUBSHELL ]]; then
         # Make sure we force the locale used for number formatting to "C", to avoid
         # issues in locales that use a comma as the decimal separator.
-        rcfiles_start_time="$(LC_ALL="C"; echo $EPOCHREALTIME)"
+        rcfiles_start_time="$(LC_ALL="C"; builtin echo $EPOCHREALTIME)"
 
         # The rcfiles run under the options the shell started with, and whatever
         # they leave turned on is what the user gets back at the end (#825).
@@ -1466,7 +1466,7 @@ fi' RETURN
         unset -f trap __warp_rc_done
         __warp_relax_opts __warp_bootstrap_opts_restore
 
-        rcfiles_end_time="$(LC_ALL="C"; echo $EPOCHREALTIME)"
+        rcfiles_end_time="$(LC_ALL="C"; builtin echo $EPOCHREALTIME)"
     fi
 
     # Unset HISTFILESIZE and HISTSIZE if the user rcfiles didn't change them
@@ -1565,7 +1565,7 @@ fi' RETURN
     # `2>/dev/null` because `declare -p` on an unset variable writes to stderr, which here is
     # the PTY -- the old `-n` guard was suppressing that as a side effect.
     if [[ "$(declare -p PROMPT_COMMAND 2>/dev/null)" =~ "declare -a" ]]; then
-        PROMPT_COMMAND_FLATTENED=$(IFS=$'\n'; echo "${PROMPT_COMMAND[*]}")
+        PROMPT_COMMAND_FLATTENED=$(IFS=$'\n'; builtin echo "${PROMPT_COMMAND[*]}")
         unset PROMPT_COMMAND
         PROMPT_COMMAND=$PROMPT_COMMAND_FLATTENED
     fi
@@ -1591,7 +1591,7 @@ fi' RETURN
 
     # Read through shell options to determine if the user has enabled vi mode.
     vi_mode_enabled=0
-    IFS=':' read -ra SHELLOPT <<< "$SHELLOPTS"
+    IFS=':' builtin read -ra SHELLOPT <<< "$SHELLOPTS"
     for i in "${SHELLOPT[@]}"; do
         if [[ "$i" == "vi" ]]; then
             vi_mode_enabled=1
@@ -1667,7 +1667,7 @@ fi' RETURN
           shell_plugins+=("starship")
         fi
 
-        local shell_plugins_list="$(printf '%s\n' "${shell_plugins[@]}")"
+        local shell_plugins_list="$(builtin printf '%s\n' "${shell_plugins[@]}")"
 
         if [ "${WARP_IN_MSYS2:-}" = false ]; then
           local escaped_shell_plugins=$(warp_escape_json "$shell_plugins_list")
@@ -1675,7 +1675,7 @@ fi' RETURN
           local escaped_shell_options=$(warp_escape_json "$shell_options")
         fi
 
-        local _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || echo $USER)
+        local _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || builtin echo $USER)
         local _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n)
         if [ "${WARP_IN_MSYS2:-}" = true ]; then
           warp_send_hook_via_kv_pairs_start "Bootstrapped"

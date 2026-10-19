@@ -31,16 +31,16 @@ set -g DCS_JSON_MARKER 'd'
 # writes the bare byte.
 set -g DCS_END \x9c
 
-set -g OSC_START (printf '\e]9278;')
+set -g OSC_START (builtin printf '\e]9278;')
 
-set -g OSC_END (printf '\a')
+set -g OSC_END (builtin printf '\a')
 
 set -g OSC_PARAM_SEPARATOR ';'
 
-set -g RESET_GRID_OSC (printf '\e]9279\a')
+set -g RESET_GRID_OSC (builtin printf '\e]9279\a')
 
 if test -n "$WARP_INITIAL_WORKING_DIR"
-    cd "$WARP_INITIAL_WORKING_DIR" >/dev/null 2>&1
+    builtin cd "$WARP_INITIAL_WORKING_DIR" >/dev/null 2>&1
     set -e WARP_INITIAL_WORKING_DIR
 end
 
@@ -67,9 +67,9 @@ end
 # their output itself.)
 function __warp_emit
     if begin; true > /dev/tty; end 2>/dev/null
-        echo -n $argv > /dev/tty
+        builtin echo -n $argv > /dev/tty
     else
-        echo -n $argv
+        builtin echo -n $argv
     end
 end
 
@@ -83,7 +83,7 @@ end
 
 # warp_hex_encode_string hex-encodes the given string with `od`.
 function warp_hex_encode_string 
-  printf '%s' "$argv" | od -An -v -tx1 | command tr -d ' \n'
+  builtin printf '%s' "$argv" | od -An -v -tx1 | command tr -d ' \n'
 end
 
 # A list of PIDs for running in-band command(s). This is used to kill running
@@ -126,22 +126,22 @@ function  _warp_run_generator_command_internal
         set -l reset_grid_osc $RESET_GRID_OSC;
         function warp_maybe_send_reset_grid_osc
             if [ \"\$warp_using_windows_con_pty\" = true ]
-                printf \$reset_grid_osc
+                builtin printf \$reset_grid_osc
             end
         end
-        set -l OSC_START_GENERATOR_OUTPUT \$(printf '\e]9277;A\a')
-        set -l OSC_END_GENERATOR_OUTPUT \$(printf '\e]9277;B\a')
+        set -l OSC_START_GENERATOR_OUTPUT \$(builtin printf '\e]9277;A\a')
+        set -l OSC_END_GENERATOR_OUTPUT \$(builtin printf '\e]9277;B\a')
         set -l command_id $command_id;
         set -l command $command;
         set -l IFS;
         begin
-          echo -n \"\$command_id;\"
+          builtin echo -n \"\$command_id;\"
           eval \$command 2>&1
-          echo -n \";\$status\"
-        end | od -An -v -tx1 | command tr -d ' \n' | read -lz hex_encoded_message
+          builtin echo -n \";\$status\"
+        end | od -An -v -tx1 | command tr -d ' \n' | builtin read -lz hex_encoded_message
         set -l LC_ALL \"C\"
         set -l byte_count (string length \"\$hex_encoded_message\")
-        echo -n \"\$OSC_START_GENERATOR_OUTPUT\$byte_count;\$hex_encoded_message\$OSC_END_GENERATOR_OUTPUT\"
+        builtin echo -n \"\$OSC_START_GENERATOR_OUTPUT\$byte_count;\$hex_encoded_message\$OSC_END_GENERATOR_OUTPUT\"
         warp_maybe_send_reset_grid_osc" 2> /dev/null &
         
     set -l command_pid $last_pid
@@ -248,26 +248,26 @@ function warp_update_prompt_vars
 
   # If not honoring PS1, set both prompts to be empty
   if test "$WARP_HONOR_PS1" = "0"
-    function fish_prompt; echo -n ""; end
-    function fish_right_prompt; echo -n ""; end
+    function fish_prompt; builtin echo -n ""; end
+    function fish_right_prompt; builtin echo -n ""; end
   # If honoring PS1, add prefix/suffix to both prompts
   else
 
     function end_prompt        
-      echo -n (printf '\x1b')
+      builtin echo -n (builtin printf '\x1b')
       if test "$WARP_HONOR_PS1" != "1" && [ "$WARP_USING_WINDOWS_CON_PTY" = true ]
-        echo -n "]133;B$RESET_GRID_OSC"
+        builtin echo -n "]133;B$RESET_GRID_OSC"
       else
-        echo -n ']133;B'
+        builtin echo -n ']133;B'
       end
-      echo -n (printf '\x07')
+      builtin echo -n (builtin printf '\x07')
     end
 
     # Redefine fish_prompt to include prefix and suffix
     function fish_prompt
-      echo -n (printf '\x1b')
-      echo -n ']133;A'
-      echo -n (printf '\x07')
+      builtin echo -n (builtin printf '\x1b')
+      builtin echo -n ']133;A'
+      builtin echo -n (builtin printf '\x07')
       warp_original_fish_prompt
       end_prompt
     end
@@ -275,9 +275,9 @@ function warp_update_prompt_vars
     # Check if warp_original_fish_right_prompt was backed up before redefining fish_right_prompt
     if functions -q warp_original_fish_right_prompt
       function fish_right_prompt
-        echo -n (printf '\x1b')
-        echo -n ']133;P;k=r'
-        echo -n (printf '\x07')
+        builtin echo -n (builtin printf '\x1b')
+        builtin echo -n ']133;P;k=r'
+        builtin echo -n (builtin printf '\x07')
         warp_original_fish_right_prompt
         end_prompt
       end
@@ -378,7 +378,7 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
     set -l escaped_pwd
     if set -q WSL_DISTRO_NAME
         # In WSL, avoid symlinks b/c on Windows `std::fs` is unable to resolve symlink inside WSL containers.
-        set escaped_pwd (warp_escape_json (pwd -P))
+        set escaped_pwd (warp_escape_json (builtin pwd -P))
     else
         set escaped_pwd (warp_escape_json $PWD)
     end
@@ -407,7 +407,7 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
         # every prompt when the chip is not shown.
         if test "$WARP_PROMPT_NODE_VERSION_ENABLED" != "0"; and command -v node > /dev/null 2>&1
             # Check for package.json in current directory and parent directories
-            set current_dir (pwd)
+            set current_dir (builtin pwd)
             set found_package_json false
             set package_json_dir ""
             while test -n "$current_dir"
@@ -530,7 +530,7 @@ function warp_escape_prompt
     # the prompt as a hex string so that it can be interpreted on the Warp side
     # Note: before converting the prompt to a hex string, we remove any multi-line newlines and
     # replace them with a single space (to avoid prompts that span multiple empty lines)
-    echo "$argv" | command tr '\n\n' ' ' | command od -An -v -tx1 | command tr -d ' \n'
+    builtin echo "$argv" | command tr '\n\n' ' ' | command od -An -v -tx1 | command tr -d ' \n'
 end
 
 # sed commands that escape every C0 control character (and DEL) that has no short JSON escape as
@@ -540,7 +540,7 @@ end
 # so this file itself stays plain ASCII; NUL cannot occur in a fish string.
 set -g WARP_ESCAPE_JSON_CTRL_SED ''
 for warp_ctrl_hex in 01 02 03 04 05 06 07 0b 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f 7f
-    set WARP_ESCAPE_JSON_CTRL_SED "$WARP_ESCAPE_JSON_CTRL_SED s/"(printf "\\x$warp_ctrl_hex")"/\\\\u00$warp_ctrl_hex/g;"
+    set WARP_ESCAPE_JSON_CTRL_SED "$WARP_ESCAPE_JSON_CTRL_SED s/"(builtin printf "\\x$warp_ctrl_hex")"/\\\\u00$warp_ctrl_hex/g;"
 end
 set -e warp_ctrl_hex
 
@@ -692,7 +692,7 @@ if not test -e $APT_SOURCESDIR$source_file_name.list; and not test -e $APT_SOURC
       # we insert this function into the input for the user to determine if they want to execute (we never run it on
       # their behalf without their permission).  To be transparent about what is being executed with sudo, we echo out the
       # command we're about to run.
-      echo "Executing: sudo cp \"$APT_SOURCESDIR$source_file_name.list.distUpgrade\" \"$APT_SOURCESDIR$source_file_name.list\""
+      builtin echo "Executing: sudo cp \"$APT_SOURCESDIR$source_file_name.list.distUpgrade\" \"$APT_SOURCESDIR$source_file_name.list\""
       sudo cp "$APT_SOURCESDIR$source_file_name.list.distUpgrade" "$APT_SOURCESDIR$source_file_name.list"
   end
 end
@@ -755,7 +755,7 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         # Hex-encode the ZSH environment script we use to bootstrap remote zsh b/c it contains control characters
         # We decode on the SSH server using xxd if its available, otherwise fall back to a for-loop over each byte
         # and use printf to convert back to plaintext
-        set -l zsh_env_script (printf '%s' 'unsetopt ZLE RCS GLOBAL_RCS; WARP_SESSION_ID='$remote_session_id'; WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@; WARP_HONOR_PS1='$WARP_HONOR_PS1'; _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || uname -n); _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || echo $USER); _ju=${_user//\\\\/\\\\\\\\}; _ju=${_ju//\\"/\\\\\\"}; _jh=${_hostname//\\\\/\\\\\\\\}; _jh=${_jh//\\"/\\\\\\"}; for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do _c=${(#)_i}; _x=$(( [##16] _i )); _h="\\\\u00${(l:2::0:)_x}"; _ju=${_ju//$_c/$_h}; _jh=${_jh//$_c/$_h}; done; _msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"zsh\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d " \n"); printf '"'"'\x1b\x50\x24\x64%s\x9c'"'"' $_msg; unset _hostname _user _msg _ju _jh _i _c _h _x' | command od -An -v -tx1 | command tr -d ' \n')
+        set -l zsh_env_script (builtin printf '%s' 'unsetopt ZLE RCS GLOBAL_RCS; WARP_SESSION_ID='$remote_session_id'; WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@; WARP_HONOR_PS1='$WARP_HONOR_PS1'; _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || uname -n); _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || builtin echo $USER); _ju=${_user//\\\\/\\\\\\\\}; _ju=${_ju//\\"/\\\\\\"}; _jh=${_hostname//\\\\/\\\\\\\\}; _jh=${_jh//\\"/\\\\\\"}; for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do _c=${(#)_i}; _x=$(( [##16] _i )); _h="\\\\u00${(l:2::0:)_x}"; _ju=${_ju//$_c/$_h}; _jh=${_jh//$_c/$_h}; done; _msg=$(builtin printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"zsh\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d " \n"); builtin printf '"'"'\x1b\x50\x24\x64%s\x9c'"'"' $_msg; unset _hostname _user _msg _ju _jh _i _c _h _x' | command od -An -v -tx1 | command tr -d ' \n')
 
         # Optionally attach to an existing ControlMaster the user already
         # runs for this destination instead of creating our own. Resolve
