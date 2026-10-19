@@ -1119,7 +1119,7 @@ fn test_selected_blocks_shift_for_evicted_blocks() {
 
 #[test]
 fn test_find_options_shift_for_evicted_blocks() {
-    use crate::terminal::model::terminal_model::FindOptions;
+    use crate::terminal::find::model::FindOptions;
     let mut options = FindOptions::default().with_blocks_to_include_in_results(Some([
         BlockIndex::from(1),
         BlockIndex::from(4),

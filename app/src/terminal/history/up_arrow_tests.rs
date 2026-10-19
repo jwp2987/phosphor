@@ -404,7 +404,7 @@ fn command_prefix_filter_matches_post_filtering_the_full_result() {
         };
         app.read(|ctx| {
             let history = History::handle(ctx).as_ref(ctx);
-            let full: Vec<&str> = history
+            let full: Vec<String> = history
                 .up_arrow_suggestions_for_terminal_view(
                     terminal_view_id,
                     Some(session_id),
@@ -412,18 +412,18 @@ fn command_prefix_filter_matches_post_filtering_the_full_result() {
                     ctx,
                 )
                 .into_iter()
-                .map(|s| s.text())
+                .map(|s| s.text().to_string())
                 .collect();
 
             for prefix in [
                 "", "g", "git", "git ", "git s", "gitk", "ls", "l", "cargo", "z",
             ] {
-                let expected: Vec<&str> = full
+                let expected: Vec<String> = full
                     .iter()
-                    .copied()
+                    .cloned()
                     .filter(|text| text.trim().starts_with(prefix))
                     .collect();
-                let actual: Vec<&str> = history
+                let actual: Vec<String> = history
                     .up_arrow_suggestions_with_command_prefix(
                         terminal_view_id,
                         Some(session_id),
@@ -432,13 +432,13 @@ fn command_prefix_filter_matches_post_filtering_the_full_result() {
                         ctx,
                     )
                     .into_iter()
-                    .map(|s| s.text())
+                    .map(|s| s.text().to_string())
                     .collect();
                 assert_eq!(actual, expected, "prefix {prefix:?}");
             }
 
             // `None` is the unfiltered path.
-            let none: Vec<&str> = history
+            let none: Vec<String> = history
                 .up_arrow_suggestions_with_command_prefix(
                     terminal_view_id,
                     Some(session_id),
@@ -447,7 +447,7 @@ fn command_prefix_filter_matches_post_filtering_the_full_result() {
                     ctx,
                 )
                 .into_iter()
-                .map(|s| s.text())
+                .map(|s| s.text().to_string())
                 .collect();
             assert_eq!(none, full);
         });

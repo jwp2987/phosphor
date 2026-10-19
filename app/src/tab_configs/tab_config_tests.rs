@@ -1800,7 +1800,7 @@ fn test_container_run_allows_only_an_image_placeholder() {
     }
 }
 
-fn render_commands(commands: &[&str], value: &str) -> Result<Vec<String>, String> {
+fn try_render_commands(commands: &[&str], value: &str) -> Result<Vec<String>, String> {
     let config: TabConfig = toml::from_str(&build_test_tab_config_toml(
         "Definitions",
         commands.iter().map(|command| command.to_string()).collect(),
@@ -1844,7 +1844,7 @@ fn test_earlier_definitions_used_with_a_placeholder_are_refused() {
         &["abbr -a q {{x}}"],
     ] {
         assert!(
-            render_commands(commands, "touch pwned").is_err(),
+            try_render_commands(commands, "touch pwned").is_err(),
             "{commands:?} must be refused"
         );
     }
@@ -1871,7 +1871,7 @@ fn test_definitions_not_used_with_a_placeholder_still_render() {
         ),
     ] {
         assert_eq!(
-            render_commands(commands, "main"),
+            try_render_commands(commands, "main"),
             Ok(expected.into_iter().map(str::to_string).collect()),
             "{commands:?}"
         );

@@ -349,7 +349,7 @@ where
             let mut terminal_response_sequences = Vec::new();
             // Read the active block BEFORE parsing: replies are generated, and the
             // command may finish, synchronously inside `parse_bytes`.
-            let executing_block = executing_block_id(terminal.deref());
+            let executing_block = executing_block_id(&**terminal);
             state.parser.parse_bytes(
                 terminal.deref_mut(),
                 &buf[..bytes_in_buffer],

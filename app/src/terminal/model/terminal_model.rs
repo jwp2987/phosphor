@@ -151,19 +151,6 @@ impl FindOptions {
     }
 }
 
-impl FindOptions {
-    /// Re-keys `blocks_to_include_in_results` after the `count` oldest blocks were evicted
-    /// (#889), dropping indices that no longer exist.
-    pub fn shift_for_evicted_blocks(&mut self, count: usize) {
-        if let Some(indices) = &mut self.blocks_to_include_in_results {
-            indices.retain(|index| index.0 >= count);
-            for index in indices.iter_mut() {
-                *index = BlockIndex(index.0 - count);
-            }
-        }
-    }
-}
-
 pub enum FindOption {
     ResetWithSameQuery,
     Query(String),
