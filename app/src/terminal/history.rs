@@ -527,6 +527,17 @@ impl History {
             .collect()
     }
 
+    /// Drops the per-session bookkeeping (host mapping, start index, skip-index set) for a
+    /// session whose terminal view is permanently gone. Nothing else removed these entries, so
+    /// each opened-and-closed shell kept a skip-index set sized to the history for the rest of
+    /// the process (#843). The shared per-host command lists and every `HistoryEntry` are kept:
+    /// other sessions on the same host still read them.
+    pub fn forget_session(&mut self, session_id: SessionId) {
+        self.session_id_to_shell_host.remove(&session_id);
+        self.session_start_indices.remove(&session_id);
+        self.session_skip_indices.remove(&session_id);
+    }
+
     pub fn all_live_session_ids(&self) -> HashSet<SessionId> {
         self.session_id_to_shell_host.keys().cloned().collect()
     }
