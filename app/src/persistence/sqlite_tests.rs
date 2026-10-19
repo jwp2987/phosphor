@@ -326,9 +326,18 @@ fn reconstruct_after_pause_keeps_the_new_databases_wal() {
     assert!(wal.exists(), "the new database's WAL must still exist");
 
     let mut reader = setup_database(&database_path).expect("a fresh connection should open");
-    let restored = get_all_codebase_index_metadata(&mut reader).expect("row should be readable");
+    let mut restored = Vec::new();
+    for _ in 0..100 {
+        restored =
+            get_all_codebase_index_metadata(&mut reader).expect("row should be readable");
+        if !restored.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     assert_eq!(restored.len(), 1);
     assert_eq!(restored[0].path, metadata.path);
+    assert!(wal.exists(), "the WAL must still exist after the read");
 
     writer.sender.send(ModelEvent::Terminate).expect("terminate");
     writer.handle.join().expect("writer should terminate");
