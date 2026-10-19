@@ -1098,6 +1098,36 @@ fn is_appendable_vs_is_queryable() {
 }
 
 #[test]
+fn forget_session_drops_per_session_bookkeeping() {
+    // #843: nothing used to remove a closed session's entries from these maps.
+    App::test((), |mut app| async move {
+        let mut history_handle = app.add_model(|_| History::new(vec![]));
+        let session = Arc::new(Session::new(
+            SessionInfo::new_for_test().with_id(0),
+            Arc::new(TestCommandExecutor::default()),
+        ));
+        let session_id = session.id();
+        history_handle.update(&mut app, move |history, ctx| {
+            history.init_session_with(session, async { vec![] }, ctx);
+        });
+        History::initialized_sessions(&mut history_handle, &mut app, vec![session_id]).await;
+        history_handle.read(&app, |history, _| {
+            assert!(history.is_appendable(&session_id));
+            assert!(history.is_queryable(&session_id));
+            assert!(history.all_live_session_ids().contains(&session_id));
+        });
+
+        history_handle.update(&mut app, |history, _| history.forget_session(session_id));
+
+        history_handle.read(&app, |history, _| {
+            assert!(!history.is_appendable(&session_id));
+            assert!(!history.is_queryable(&session_id));
+            assert!(!history.all_live_session_ids().contains(&session_id));
+        });
+    });
+}
+
+#[test]
 fn new_keeps_newest_metadata_and_counts_duplicates() {
     // Persisted commands arrive newest-first (`ORDER BY id DESC`), so the first-seen entry for a
     // command is the most recent run and must be the one kept.

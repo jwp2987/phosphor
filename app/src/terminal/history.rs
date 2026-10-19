@@ -527,6 +527,17 @@ impl History {
             .collect()
     }
 
+    /// Drops the per-session bookkeeping (host mapping, start index, skip-index set) for a
+    /// session whose terminal view is permanently gone. Nothing else removed these entries, so
+    /// each opened-and-closed shell kept a skip-index set sized to the history for the rest of
+    /// the process (#843). The shared per-host command lists and every `HistoryEntry` are kept:
+    /// other sessions on the same host still read them.
+    pub fn forget_session(&mut self, session_id: SessionId) {
+        self.session_id_to_shell_host.remove(&session_id);
+        self.session_start_indices.remove(&session_id);
+        self.session_skip_indices.remove(&session_id);
+    }
+
     pub fn all_live_session_ids(&self) -> HashSet<SessionId> {
         self.session_id_to_shell_host.keys().cloned().collect()
     }
@@ -607,8 +618,10 @@ impl History {
                     },
                 );
                 let host_clone = host.clone();
+                // Dedupe on the background thread together with the read: with a very large
+                // history file the O(N) hash pass is noticeable on the main thread (#874).
                 ctx.spawn(
-                    read_history_file_future,
+                    async move { dedupe_from_last(read_history_file_future.await) },
                     move |me, history_file_commands, ctx| {
                         // `session_commands_to_append` are commands executed by the user while the
                         // history file was being loaded.
@@ -681,7 +694,9 @@ impl History {
         host: ShellHost,
         ctx: &mut ModelContext<Self>,
     ) {
-        let deduped_history_file_commands = dedupe_from_last(history_file_commands);
+        // Already deduplicated (keeping the last occurrence) by the background task in
+        // `init_session_with`.
+        let deduped_history_file_commands = history_file_commands;
 
         let mut start_index = deduped_history_file_commands.len();
         self.history_file_commands.insert(

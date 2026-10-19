@@ -26,6 +26,19 @@ use fuzzy_match::FuzzyMatchResult;
 use ordered_float::OrderedFloat;
 use warpui::{AppContext, Entity, EntityId, ModelHandle, SingletonEntity};
 
+/// The most history rows the menu materialises for display (#874). Suggestions are sorted
+/// oldest first, so the newest are at the tail; older rows are dropped *before* their text is
+/// copied into menu entries. A typed prefix is applied before this cap, so older matches stay
+/// reachable by typing more of the command.
+const MAX_MENU_HISTORY_ROWS: usize = 500;
+
+/// Keeps only the newest `max` of `items` (which are ordered oldest first), moving rather than
+/// cloning the survivors.
+fn newest_tail<T>(items: Vec<T>, max: usize) -> impl Iterator<Item = T> {
+    let skip = items.len().saturating_sub(max);
+    items.into_iter().skip(skip)
+}
+
 #[derive(Clone, Debug)]
 pub enum AcceptHistoryItem {
     Conversation {
@@ -110,7 +123,7 @@ impl InlineHistoryMenuDataSource {
         );
 
         let mut results: Vec<QueryResult<AcceptHistoryItem>> = Vec::new();
-        for suggestion in suggestions {
+        for suggestion in newest_tail(suggestions, MAX_MENU_HISTORY_ROWS) {
             if !trimmed_query.is_empty() && !suggestion.text().starts_with(trimmed_query) {
                 continue;
             }
@@ -277,18 +290,17 @@ impl SyncDataSource for InlineHistoryMenuDataSource {
         let all_live_session_ids = history.all_live_session_ids();
 
         let command_entries = if include_commands {
-            history
-                .up_arrow_suggestions_with_command_prefix(
-                    self.terminal_view_id,
-                    session_id,
-                    UpArrowHistoryConfig {
-                        include_commands: true,
-                        include_prompts: false,
-                    },
-                    (!trimmed_query.is_empty()).then_some(trimmed_query),
-                    app,
-                )
-                .into_iter()
+            let suggestions = history.up_arrow_suggestions_with_command_prefix(
+                self.terminal_view_id,
+                session_id,
+                UpArrowHistoryConfig {
+                    include_commands: true,
+                    include_prompts: false,
+                },
+                (!trimmed_query.is_empty()).then_some(trimmed_query),
+                app,
+            );
+            newest_tail(suggestions, MAX_MENU_HISTORY_ROWS)
                 .filter_map(|suggestion| {
                     let HistoryInputSuggestion::Command { entry } = &suggestion else {
                         return None;

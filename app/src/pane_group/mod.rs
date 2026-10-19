@@ -4334,6 +4334,17 @@ impl PaneGroup {
             LLMPreferences::handle(ctx).update(ctx, |prefs, ctx| {
                 prefs.forget_terminal_view(terminal_view_id, ctx);
             });
+            // Same teardown point, same reason (#843): the shell session's `History`
+            // bookkeeping is otherwise never released.
+            let session_id = terminal_view
+                .as_ref(ctx)
+                .active_session()
+                .as_ref(ctx)
+                .session_id(ctx);
+            if let Some(session_id) = session_id {
+                crate::terminal::history::History::handle(ctx)
+                    .update(ctx, |history, _| history.forget_session(session_id));
+            }
         }
     }
 
