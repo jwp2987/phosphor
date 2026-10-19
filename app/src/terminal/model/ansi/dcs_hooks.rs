@@ -701,13 +701,15 @@ pub(super) fn salvage_precmd_essentials(payload: &str) -> Option<DProtoHook> {
     use std::sync::LazyLock;
 
     static EXIT_CODE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#""exit_code"\s*:\s*(-?\d+)"#).expect("valid regex"));
+        LazyLock::new(|| Regex::new(r#""exit_code"\s*:\s*(-?\d+)\s*,"#).expect("valid regex"));
     static NEXT_BLOCK_ID: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r#""next_block_id"\s*:\s*"([\w.:-]+)""#).expect("valid regex"));
+    static HOOK_IS_PRECMD: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#""hook"\s*:\s*"Precmd""#).expect("valid regex"));
     static SESSION_ID: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#""session_id"\s*:\s*(\d+)"#).expect("valid regex"));
+        LazyLock::new(|| Regex::new(r#""session_id"\s*:\s*(\d+)\s*[,}]"#).expect("valid regex"));
 
-    if !payload.contains("\"Precmd\"") {
+    if !HOOK_IS_PRECMD.is_match(payload) {
         return None;
     }
     let capture = |regex: &Regex| Some(regex.captures(payload)?.get(1)?.as_str().to_owned());

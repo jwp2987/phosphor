@@ -1720,4 +1720,24 @@ fn parse_decoded_hook_salvages_a_precmd_from_its_essential_fields() {
     assert!(
         parse_decoded_hook(br#"{"hook": "Precmd", "value": {"exit_code": 3, "next_bl"#).is_err()
     );
+    // A `session_id` cut off mid-number must not be taken as a (wrong) shorter id.
+    assert!(
+        parse_decoded_hook(
+            br#"{"hook": "Precmd", "value": {"exit_code": 3, "next_block_id": "precmd-1-2", "session_id": 1673"#
+        )
+        .is_err()
+    );
+    // Likewise a truncated `exit_code`, and a `Precmd` that is not the hook but merely quoted.
+    assert!(
+        parse_decoded_hook(
+            br#"{"hook": "Precmd", "value": {"next_block_id": "precmd-1-2", "session_id": 7, "exit_code": 1"#
+        )
+        .is_err()
+    );
+    assert!(
+        parse_decoded_hook(
+            br#"{"hook": "Other", "note": "Precmd", "value": {"exit_code": 3, "next_block_id": "a", "session_id": 7, "x"#
+        )
+        .is_err()
+    );
 }
