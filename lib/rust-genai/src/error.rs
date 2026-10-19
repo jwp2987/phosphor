@@ -1,3 +1,7 @@
+// MODIFIED by the Phosphor fork relative to upstream genai.
+// Notice required by Apache-2.0 section 4(b); see lib/rust-genai/CHANGES-PHOSPHOR.md
+// for what changed here and why. Original: https://github.com/jeremychone/rust-genai
+
 use crate::adapter::AdapterKind;
 use crate::chat::ChatRole;
 use crate::{ModelIden, resolver, webc};
@@ -123,6 +127,8 @@ Cause:\n{cause}
 		status: StatusCode,
 		canonical_reason: String,
 		body: String,
+		/// Raw `Retry-After` response header value, if the server sent one (Phosphor addition).
+		retry_after: Option<String>,
 	},
 
 	// -- Modules

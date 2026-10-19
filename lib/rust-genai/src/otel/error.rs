@@ -1,3 +1,7 @@
+// MODIFIED by the Phosphor fork relative to upstream genai.
+// Notice required by Apache-2.0 section 4(b); see lib/rust-genai/CHANGES-PHOSPHOR.md
+// for what changed here and why. Original: https://github.com/jeremychone/rust-genai
+
 //! Derivation of the `error.type` attribute from a genai [`Error`].
 //!
 //! Per the GenAI spec, `error.type` SHOULD be the error code returned by the
@@ -97,6 +101,7 @@ mod tests {
 			status: StatusCode::TOO_MANY_REQUESTS,
 			canonical_reason: "Too Many Requests".to_string(),
 			body: String::new(),
+			retry_after: None,
 		};
 		assert_eq!(error_type(&error), "429");
 	}

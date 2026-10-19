@@ -65,6 +65,12 @@ upstreaming.
 | `chat/usage.rs` | Adds `pub extra: HashMap<String, Value>` to `Usage`, `#[serde(flatten)]`d, to generically capture provider-specific usage fields the typed struct doesn't model (example given: Ollama-compatible servers reporting `active_kv_tokens` etc.). Upstream added `#[derive(PartialEq, Eq)]` to `Usage` and its detail structs in 0.7 (for the new `otel` feature's span-attribute comparisons) — `HashMap<String, Value>` satisfies both derives fine (`serde_json::Value: Eq` since a fairly old serde_json release), confirmed by the crate's own test suite passing with the derives intact. |
 | `adapter/adapters/anthropic/adapter_shared.rs`, `adapter/adapters/cohere/adapter_impl.rs`, `adapter/adapters/cohere/embed.rs`, `adapter/adapters/gemini/adapter_impl.rs`, `adapter/adapters/gemini/embed.rs`, `adapter/adapters/openai/embed.rs`, `adapter/adapters/openai_resp/resp_types/resp_usage.rs`, `adapter/adapters/bedrock/streamer.rs`, `adapter/adapters/bedrock/converse.rs` | One-line `extra: Default::default()` at each exhaustive `Usage { .. }` construction site — mechanical fallout from the field above, not an independent change. The last two (Bedrock) are **new sites** that didn't exist at the prior pin: Bedrock was added upstream after `0.6.0-beta.18`, so this is the first time its two `Usage` constructors needed the field. Sites that already use `..Default::default()` (openai's own `into_usage`, all of `ollama/`, the `otel` module's test fixtures) needed no change — the spread already picks up the new field for free. |
 
+### HTTP `Retry-After` carried on `Error::HttpError` — Phosphor-specific (#854)
+
+| file | what changed |
+|---|---|
+| `error.rs`, `webc/web_stream.rs`, `adapter/adapters/bedrock/shared.rs`, `otel/error.rs` (test only) | `Error::HttpError` gains `retry_after: Option<String>`, the raw `Retry-After` response header, captured where a non-success status is turned into the error. Upstream drops all response headers, so the app could not honour a provider's 429 `Retry-After` and retried at its own 0.5/1/2 s schedule. The value is deliberately left unparsed (delta-seconds or HTTP-date); the app parses and clamps it. `Display` is unchanged. Adding a field is source-breaking for code that constructs or exhaustively destructures `HttpError` without `..`. |
+
 ### Now duplicated by upstream — dropped, took upstream's version
 
 | file | what changed at the prior pin | upstream status at `0.7.0-beta.18` |

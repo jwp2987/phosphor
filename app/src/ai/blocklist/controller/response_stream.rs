@@ -52,6 +52,14 @@ pub(crate) fn recovery_backoff_after_attempts(attempts_made: usize) -> Duration 
     Duration::from_millis(500u64 << attempts_made.saturating_sub(1).min(4))
 }
 
+/// The wait before a recovery attempt: the exponential `backoff`, stretched to the
+/// provider's `Retry-After` when it asked for longer (#854). A hint shorter than the backoff
+/// never shortens it. `retry_after` arrives already clamped (`api_error::MAX_RETRY_AFTER`),
+/// well inside the driver's `AUTO_RESUME_TIMEOUT`.
+pub(crate) fn recovery_wait(backoff: Duration, retry_after: Option<Duration>) -> Duration {
+    backoff.max(retry_after.unwrap_or(Duration::ZERO))
+}
+
 /// The recovery budget for one request and the retries and resumes that recover it,
 /// carried forward across each of those attempts.
 ///
@@ -734,12 +742,12 @@ impl ResponseStream {
                 wait.await;
             },
             move |me, _, ctx| {
-                me.retry(ctx);
+                me.retry(None, ctx);
             },
         );
     }
 
-    fn retry(&mut self, ctx: &mut ModelContext<Self>) {
+    fn retry(&mut self, retry_after: Option<Duration>, ctx: &mut ModelContext<Self>) {
         if self.cancelled {
             return;
         }
@@ -768,10 +776,25 @@ impl ResponseStream {
         // pure waste for deterministic failures (like exceeding a request limit),
         // and it also worsened queueing on a single-machine LLM. The schedule now lives in
         // `recovery_backoff_after_attempts` so the resume path can wait the same amount.
-        let backoff = recovery_backoff_after_attempts(self.recovery.attempts_used());
+        let backoff = recovery_wait(
+            recovery_backoff_after_attempts(self.recovery.attempts_used()),
+            retry_after,
+        );
         let _ = ctx.spawn(
             async move {
-                warpui::r#async::Timer::after(backoff).await;
+                // Race the wait against cancellation: a cancel during a long `Retry-After`
+                // wait must stop here and send no request. A dropped sender counts as a
+                // cancel too, same as `take_until` on the stream itself.
+                let mut cancellation_rx = cancellation_rx;
+                {
+                    let wait = warpui::r#async::Timer::after(backoff);
+                    futures::pin_mut!(wait);
+                    if let futures::future::Either::Left(_) =
+                        futures::future::select(&mut cancellation_rx, wait).await
+                    {
+                        return Ok(Box::pin(futures::stream::empty()) as api::ResponseStream);
+                    }
+                }
                 if let Some(byop) = byop_dispatch {
                     crate::ai::agent_providers::chat_stream::generate_byop_output(
                         crate::ai::agent_providers::chat_stream::ByopOutputInput {
@@ -941,12 +964,15 @@ impl ResponseStream {
                             "MultiAgent request failed; recovering: recovery={} attempt={}/{MAX_RECOVERY_ATTEMPTS} wait={:?} - Error: {e:?}",
                             action.log_label(),
                             self.recovery.attempts_used() + 1,
-                            recovery_backoff_after_attempts(self.recovery.attempts_used() + 1),
+                            recovery_wait(
+                                recovery_backoff_after_attempts(self.recovery.attempts_used() + 1),
+                                e.retry_after(),
+                            ),
                         );
                         // Only emit error telemetry here if we're retrying.
                         // Final errors that aren't being retried are emitted elsewhere.
                         self.emit_retryable_agent_mode_error_telemetry(format!("{e:?}"), ctx);
-                        self.retry(ctx);
+                        self.retry(e.retry_after(), ctx);
                         // Don't emit the error event, we're retrying
                         // TODO: emit a separate event if controller needs to know about failures that are being retried
                         return;
@@ -968,7 +994,10 @@ impl ResponseStream {
                         // budget and waits the same backoff a retry would have, so a
                         // chain of post-action failures is bounded by
                         // MAX_RECOVERY_ATTEMPTS sends in total.
-                        let backoff = recovery_backoff_after_attempts(self.recovery.attempts_used() + 1);
+                        let backoff = recovery_wait(
+                            recovery_backoff_after_attempts(self.recovery.attempts_used() + 1),
+                            e.retry_after(),
+                        );
                         log::warn!(
                             "MultiAgent request failed; recovering: recovery={} attempt={}/{MAX_RECOVERY_ATTEMPTS} wait=after_stream_finished+{backoff:?} - Error: {e:?}",
                             action.log_label(),

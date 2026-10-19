@@ -4,7 +4,7 @@ use std::time::Duration;
 use super::{
     FailReason, MAX_RECOVERY_ATTEMPTS, PendingResume, RecoveryAction, RecoveryBudget,
     ResponseStream, ResponseStreamId, lrc_tag_in_lacks_confirmation_ui, recovery_action,
-    recovery_backoff_after_attempts,
+    recovery_backoff_after_attempts, recovery_wait,
 };
 // `agent_sdk` (and so the driver's recovery deadline) is native-only here.
 #[cfg(not(target_family = "wasm"))]
@@ -307,6 +307,27 @@ fn the_recovery_backoff_fits_inside_the_driver_run_recovery_window() {
     for attempt in 1..=MAX_RECOVERY_ATTEMPTS {
         assert!(recovery_backoff_after_attempts(attempt) * 4 < AUTO_RESUME_TIMEOUT);
     }
+}
+
+/// #854: the provider's `Retry-After` stretches the wait but never shortens it, and the
+/// largest hint we accept still fits the driver's recovery window.
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn retry_after_stretches_but_never_shortens_the_recovery_wait() {
+    let backoff = Duration::from_secs(2);
+    assert_eq!(recovery_wait(backoff, None), backoff);
+    assert_eq!(
+        recovery_wait(backoff, Some(Duration::from_secs(1))),
+        backoff
+    );
+    assert_eq!(
+        recovery_wait(backoff, Some(Duration::from_secs(30))),
+        Duration::from_secs(30)
+    );
+    assert!(
+        recovery_wait(backoff, Some(crate::ai::api_error::MAX_RETRY_AFTER)) * 2
+            <= AUTO_RESUME_TIMEOUT
+    );
 }
 
 /// #617: the tag-in auto-accept path used to forge `is_user_initiated=true`, which

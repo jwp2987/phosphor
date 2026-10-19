@@ -39,7 +39,12 @@ pub enum OpenAiCompatibleError {
     Http(#[from] reqwest::Error),
 
     #[error("HTTP status {status}: {body}")]
-    Status { status: u16, body: String },
+    Status {
+        status: u16,
+        body: String,
+        /// The provider's parsed `Retry-After` delay (clamped), if it sent a usable one.
+        retry_after: Option<std::time::Duration>,
+    },
 
     #[error("Failed to parse response: {0}")]
     Decode(String),
@@ -142,6 +147,7 @@ pub async fn fetch_openai_compatible_models(
         return Err(OpenAiCompatibleError::Status {
             status: status.as_u16(),
             body,
+            retry_after: None,
         });
     }
 
@@ -198,6 +204,7 @@ pub async fn fetch_ollama_models(
         return Err(OpenAiCompatibleError::Status {
             status: status.as_u16(),
             body,
+            retry_after: None,
         });
     }
 
@@ -389,6 +396,7 @@ async fn fetch_ollama_model_context(
         return Err(OpenAiCompatibleError::Status {
             status: status.as_u16(),
             body,
+            retry_after: None,
         });
     }
 
