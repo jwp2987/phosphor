@@ -246,6 +246,8 @@ def main():
         for label, reply in colour_cases():
             os.write(sh.fd, b"\x03")
             sh.pump(1.0)
+            sh.input_buffer([])  # report-and-clear whatever is left, discarding it
+            sh.pump(0.5)
             got = sh.input_buffer([reply, b"echo x"])
             check(got == "echo x", f"colour reply ({label}) is stripped, text kept (got {got!r})", sh)
         check(not [p for p in sh.raw_hooks() if not _valid(p)], "all hook payloads still valid JSON at the end", sh)
