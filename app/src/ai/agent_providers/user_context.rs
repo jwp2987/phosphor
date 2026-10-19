@@ -206,6 +206,7 @@ pub fn collect_user_attachments(ctx: &[AIAgentContext]) -> UserAttachments {
 pub fn render_environment_context(ctx: &[AIAgentContext]) -> Option<String> {
     let mut cwd: Option<&str> = None;
     let mut git_branch: Option<&str> = None;
+    let mut git_head: Option<&str> = None;
     let mut has_git = false;
     let mut current_time: Option<String> = None;
 
@@ -216,10 +217,13 @@ pub fn render_environment_context(ctx: &[AIAgentContext]) -> Option<String> {
                     cwd = pwd.as_deref().filter(|p| !p.is_empty());
                 }
             }
-            AIAgentContext::Git { branch, .. } => {
+            AIAgentContext::Git { head, branch } => {
                 has_git = true;
                 if git_branch.is_none() {
                     git_branch = branch.as_deref().filter(|b| !b.is_empty());
+                }
+                if git_head.is_none() {
+                    git_head = Some(head.as_str()).filter(|h| !h.is_empty());
                 }
             }
             AIAgentContext::CurrentTime { current_time: t } => {
@@ -243,8 +247,20 @@ pub fn render_environment_context(ctx: &[AIAgentContext]) -> Option<String> {
     }
     if has_git {
         out.push_str("  Is directory a git repo: yes\n");
-        out.push_str("  Git branch: ");
-        out.push_str(git_branch.unwrap_or("(detached)"));
+        match (git_branch, git_head) {
+            (Some(branch), _) => {
+                out.push_str("  Git branch: ");
+                out.push_str(branch);
+            }
+            // No branch name: HEAD is detached. Show the commit so the model can
+            // still tell where it is, and say plainly that it is detached.
+            (None, Some(head)) => {
+                out.push_str("  Git branch: (detached HEAD at ");
+                out.push_str(head);
+                out.push(')');
+            }
+            (None, None) => out.push_str("  Git branch: (detached HEAD)"),
+        }
         out.push('\n');
     } else {
         out.push_str("  Is directory a git repo: no\n");

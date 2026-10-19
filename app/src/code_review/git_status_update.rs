@@ -352,8 +352,14 @@ impl LocalGitRepoStatusModel {
             let throttled_tx_clone = throttled_tx;
             ctx.spawn_stream_local(
                 repository_update_rx,
-                move |_me, update: RepositoryUpdate, _ctx| {
-                    if Self::should_refresh_metadata(&update) {
+                move |me, update: RepositoryUpdate, ctx| {
+                    if Self::is_head_change(&update) {
+                        // A HEAD / branch-ref change must not wait out the 5s
+                        // throttle: `git switch a; git switch b` in quick succession
+                        // would otherwise leave the live branch on `a` while the
+                        // shell already reports `b` (#892).
+                        me.refresh_metadata(ctx);
+                    } else if Self::should_refresh_metadata(&update) {
                         let _ = throttled_tx_clone.try_send(());
                     }
                 },
@@ -416,6 +422,12 @@ impl LocalGitRepoStatusModel {
             }
         }
         ctx.emit(GitRepoStatusEvent::MetadataChanged);
+    }
+
+    /// Whether the update moved HEAD or a local branch ref (`commit_updated`).
+    /// These bypass the metadata throttle so the branch never lags a switch.
+    fn is_head_change(update: &RepositoryUpdate) -> bool {
+        update.commit_updated
     }
 
     /// Decide whether a `RepositoryUpdate` warrants a metadata refresh.

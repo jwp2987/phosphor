@@ -1961,6 +1961,14 @@ fn build_chat_request(
 ) -> Result<ChatRequest, ConvertToAPITypeError> {
     // When input has a non-empty context: use it directly, and remember it as a fallback
     // for later no-input requests in this conversation.
+    // #892 (git branch staleness): `AIAgentInput::context()` is `Some` for every
+    // request-producing input (user queries, action/tool results, ResumeConversation,
+    // passive suggestions, ...) and the controller builds those via
+    // `input_context_for_request`, so they always carry a fresh branch and never reach
+    // the fallback. Only `SummarizeConversation`, `MessagesReceivedFromAgents` and
+    // `EventsFromAgents` (and an empty input list) have no context and use the
+    // remembered one; those are not branch-sensitive turns, and re-reading the live
+    // branch here would break the cache-stability this fallback exists for.
     // When input is empty (tool result / auto-resume): fall back to the last value
     // remembered for this conversation, to avoid the <env> section degrading to default
     // values and breaking the prompt cache.

@@ -332,3 +332,40 @@ fn environment_context_reflects_cwd_change() {
     assert!(at("/home/winters").contains("Working directory: /home/winters"));
     assert!(at("/etc").contains("Working directory: /etc"));
 }
+
+/// #892: the environment block is rebuilt from the per-request context, so a branch
+/// change between two requests shows up in the second one.
+#[test]
+fn environment_context_reflects_branch_change() {
+    let ctx_for = |branch: &str| {
+        vec![AIAgentContext::Git {
+            head: branch.into(),
+            branch: Some(branch.into()),
+        }]
+    };
+    let before = render_environment_context(&ctx_for("main")).expect("should render");
+    let after = render_environment_context(&ctx_for("feature/x")).expect("should render");
+    assert!(before.contains("Git branch: main"), "{before}");
+    assert!(after.contains("Git branch: feature/x"), "{after}");
+    assert!(!after.contains("Git branch: main"), "{after}");
+}
+
+/// #892: a detached HEAD keeps the commit visible and is labelled as detached.
+#[test]
+fn environment_context_marks_detached_head() {
+    let ctx = vec![AIAgentContext::Git {
+        head: "abc1234".into(),
+        branch: None,
+    }];
+    let out = render_environment_context(&ctx).expect("should render");
+    assert!(
+        out.contains("Git branch: (detached HEAD at abc1234)"),
+        "{out}"
+    );
+    let bare = vec![AIAgentContext::Git {
+        head: String::new(),
+        branch: None,
+    }];
+    let out = render_environment_context(&bare).expect("should render");
+    assert!(out.contains("Git branch: (detached HEAD)"), "{out}");
+}

@@ -124,6 +124,81 @@ pub(super) fn input_context_for_request(
     context.into()
 }
 
+/// Builds the context for an action result and, when a finished command could have
+/// moved HEAD (`git switch`, `checkout`, `worktree`, `rebase`, ...), replaces the
+/// git branch with one read synchronously from `.git/HEAD`.
+///
+/// The result context is built the instant the command finishes, before the async
+/// git-status refresh (or the next prompt) can report the new branch, so without
+/// this the agent would be told it is still on the branch it just left (#892).
+/// The read is two tiny file reads; it is skipped for remote/SSH sessions, whose
+/// cwd is not a path on this machine.
+pub(super) fn action_result_context(
+    results: &[crate::ai::agent::AIAgentActionResult],
+    context_model: &BlocklistAIContextModel,
+    active_session: &ActiveSession,
+    conversation_id: Option<AIConversationId>,
+    app: &AppContext,
+) -> Arc<[AIAgentContext]> {
+    let context = input_context_for_request(
+        false,
+        context_model,
+        active_session,
+        conversation_id,
+        vec![],
+        app,
+    );
+    if !results.iter().any(result_may_change_head) {
+        return context;
+    }
+    let Some(LocalOrRemotePath::Local(cwd)) =
+        active_session.current_working_directory_location(app)
+    else {
+        return context;
+    };
+    let Some(fresh) = crate::util::git::read_head_branch_sync(std::path::Path::new(&cwd)) else {
+        return context;
+    };
+    with_fresh_git_branch(&context, fresh)
+}
+
+fn result_may_change_head(result: &crate::ai::agent::AIAgentActionResult) -> bool {
+    use crate::ai::agent::AIAgentActionResultType;
+    use crate::ai::agent::RequestCommandOutputResult as R;
+    match &result.result {
+        AIAgentActionResultType::RequestCommandOutput(
+            R::Completed { command, .. } | R::LongRunningCommandSnapshot { command, .. },
+        ) => crate::util::git::command_may_change_head(command),
+        _ => false,
+    }
+}
+
+/// Returns `context` with its `Git` entry (added if absent) set to `fresh`, which is
+/// a branch name or, when `fresh` looks like a SHA, a detached HEAD.
+pub(super) fn with_fresh_git_branch(
+    context: &[AIAgentContext],
+    fresh: String,
+) -> Arc<[AIAgentContext]> {
+    let git = if crate::util::git::looks_like_commit_sha(&fresh) {
+        AIAgentContext::Git {
+            head: fresh,
+            branch: None,
+        }
+    } else {
+        AIAgentContext::Git {
+            head: fresh.clone(),
+            branch: Some(fresh),
+        }
+    };
+    let mut out: Vec<AIAgentContext> = context
+        .iter()
+        .filter(|c| !matches!(c, AIAgentContext::Git { .. }))
+        .cloned()
+        .collect();
+    out.push(git);
+    out.into()
+}
+
 /// Parses context reference strings like <block:123> from the user query and returns
 /// a map of reference strings to AIAgentAttachment objects.
 ///
@@ -405,3 +480,7 @@ fn generic_string_object_format_name(format: GenericStringObjectFormat) -> Strin
     }
     .to_string()
 }
+
+#[cfg(test)]
+#[path = "input_context_tests.rs"]
+mod tests;

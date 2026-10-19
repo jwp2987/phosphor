@@ -807,3 +807,181 @@ fn pending_context_has_no_project_rules_without_remote_host_or_pwd() {
         );
     });
 }
+
+#[cfg(feature = "local_fs")]
+fn status_metadata_for_branch(
+    branch: &str,
+) -> crate::code_review::git_status_update::GitStatusMetadata {
+    crate::code_review::git_status_update::GitStatusMetadata {
+        current_branch_name: branch.to_string(),
+        main_branch_name: "main".to_string(),
+        stats_against_head: crate::code_review::diff_state::DiffStats::default(),
+        branch_tracking_status: crate::context_chips::display_chip::GitBranchTrackingStatus::new(
+            branch.to_string(),
+            None,
+            0,
+            0,
+        ),
+    }
+}
+
+/// #892: the branch sent with a request must follow the repo, not the value the
+/// shell reported at its last prompt.
+#[cfg(feature = "local_fs")]
+#[test]
+fn live_branch_follows_branch_changes() {
+    App::test((), |mut app| async move {
+        let context_model = build_test_context_model(&mut app);
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let watcher_handle = app.add_singleton_model(DirectoryWatcher::new_for_testing);
+        let repository = watcher_handle.update(&mut app, |watcher, ctx| {
+            watcher
+                .add_directory(
+                    StandardizedPath::from_local_canonicalized(temp_dir.path()).unwrap(),
+                    ctx,
+                )
+                .unwrap()
+        });
+        let status = app.add_model(move |ctx| {
+            GitRepoStatusModel::new_local_for_test(
+                repository,
+                Some(status_metadata_for_branch("main")),
+                ctx,
+            )
+        });
+
+        context_model.read(&app, |model, ctx| {
+            assert_eq!(model.live_git_branch(ctx), None, "no model attached yet");
+        });
+
+        context_model.update(&mut app, |model, _| {
+            model.set_git_repo_status(Some(status.downgrade()));
+        });
+        context_model.read(&app, |model, ctx| {
+            assert_eq!(model.live_git_branch(ctx).as_deref(), Some("main"));
+        });
+
+        status.update(&mut app, |model, ctx| {
+            model.set_metadata_for_test(Some(status_metadata_for_branch("feature/x")), ctx);
+        });
+        context_model.read(&app, |model, ctx| {
+            assert_eq!(model.live_git_branch(ctx).as_deref(), Some("feature/x"));
+        });
+
+        context_model.update(&mut app, |model, _| model.set_git_repo_status(None));
+        context_model.read(&app, |model, ctx| {
+            assert_eq!(model.live_git_branch(ctx), None);
+        });
+    });
+}
+
+#[test]
+fn context_prefers_live_branch_over_stale_block_values() {
+    // The block still carries the pre-switch prompt metadata.
+    let ctx = BlocklistAIContextModel::git_context(
+        Some("feature/x".into()),
+        Some("main".into()),
+        Some("main".into()),
+    );
+    assert_eq!(
+        ctx,
+        Some(AIAgentContext::Git {
+            head: "feature/x".into(),
+            branch: Some("feature/x".into()),
+        })
+    );
+
+    // Same branch: the block's head is kept.
+    let ctx = BlocklistAIContextModel::git_context(
+        Some("main".into()),
+        Some("abc123".into()),
+        Some("main".into()),
+    );
+    assert_eq!(
+        ctx,
+        Some(AIAgentContext::Git {
+            head: "abc123".into(),
+            branch: Some("main".into()),
+        })
+    );
+}
+
+#[test]
+fn context_falls_back_to_block_values_without_live_branch() {
+    assert_eq!(
+        BlocklistAIContextModel::git_context(None, Some("abc".into()), Some("main".into())),
+        Some(AIAgentContext::Git {
+            head: "abc".into(),
+            branch: Some("main".into()),
+        })
+    );
+    assert_eq!(BlocklistAIContextModel::git_context(None, None, None), None);
+}
+
+/// #892 end to end through `pending_context`: with a live model attached, the Git
+/// entry follows it, and tracks a later switch. The active block carries no prompt
+/// metadata here, so this checks the live source is actually consulted.
+#[cfg(feature = "local_fs")]
+#[test]
+fn pending_context_git_follows_live_model() {
+    App::test((), |mut app| async move {
+        let context_model = build_test_context_model(&mut app);
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let watcher_handle = app.add_singleton_model(DirectoryWatcher::new_for_testing);
+        let repository = watcher_handle.update(&mut app, |watcher, ctx| {
+            watcher
+                .add_directory(
+                    StandardizedPath::from_local_canonicalized(temp_dir.path()).unwrap(),
+                    ctx,
+                )
+                .unwrap()
+        });
+        let status = app.add_model(move |ctx| {
+            GitRepoStatusModel::new_local_for_test(
+                repository,
+                Some(status_metadata_for_branch("b")),
+                ctx,
+            )
+        });
+        context_model.update(&mut app, |model, _| {
+            model.set_git_repo_status(Some(status.downgrade()));
+        });
+        let git_of = |app: &App| {
+            context_model.read(app, |model, ctx| {
+                model
+                    .pending_context(ctx, false, None)
+                    .into_iter()
+                    .find_map(|c| match c {
+                        AIAgentContext::Git { branch, .. } => branch,
+                        _ => None,
+                    })
+            })
+        };
+        assert_eq!(git_of(&app).as_deref(), Some("b"));
+        status.update(&mut app, |model, ctx| {
+            model.set_metadata_for_test(Some(status_metadata_for_branch("a")), ctx);
+        });
+        assert_eq!(git_of(&app).as_deref(), Some("a"));
+    });
+}
+
+/// #892: a detached live HEAD (short SHA) stays visible as `head` and is not
+/// presented as a branch name.
+#[test]
+fn context_marks_live_sha_as_detached() {
+    assert_eq!(
+        BlocklistAIContextModel::git_context(Some("0123abc".into()), None, None),
+        Some(AIAgentContext::Git {
+            head: "0123abc".into(),
+            branch: None,
+        })
+    );
+    // A branch name that is not SHA-shaped is unaffected.
+    assert_eq!(
+        BlocklistAIContextModel::git_context(Some("feature/x".into()), None, None),
+        Some(AIAgentContext::Git {
+            head: "feature/x".into(),
+            branch: Some("feature/x".into()),
+        })
+    );
+}

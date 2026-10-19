@@ -299,6 +299,95 @@ pub async fn detect_current_branch_display(repo_path: &Path) -> Result<String> {
     }
 }
 
+/// Whether `s` has the shape of an abbreviated or full commit SHA (7..=40 hex digits).
+/// `detect_current_branch_display` yields one of these in detached HEAD state.
+pub fn looks_like_commit_sha(s: &str) -> bool {
+    (7..=40).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Whether a shell command probably moves HEAD (switch/checkout/worktree/rebase/
+/// merge/pull/reset/stash/cherry-pick/bisect), so a branch read right after it must
+/// not trust a cached value. Handles `git -C dir ...`, `git -c k=v ...` and
+/// `&&`/`||`/`;`/`|`-joined commands. Deliberately over-approximate: a false
+/// positive costs one cheap file read.
+pub fn command_may_change_head(command: &str) -> bool {
+    const HEAD_CHANGING: &[&str] = &[
+        "switch",
+        "checkout",
+        "worktree",
+        "rebase",
+        "merge",
+        "pull",
+        "reset",
+        "stash",
+        "cherry-pick",
+        "bisect",
+    ];
+    let spaced = command.replace(['&', '|', ';', '\n', '(', ')'], " \u{0} ");
+    let mut tokens = spaced.split_whitespace().peekable();
+    while let Some(tok) = tokens.next() {
+        if tok != "git" {
+            continue;
+        }
+        // Skip global options to reach the subcommand.
+        while let Some(&next) = tokens.peek() {
+            if next == "-C" || next == "-c" || next == "--git-dir" || next == "--work-tree" {
+                tokens.next();
+                tokens.next();
+            } else if next.starts_with('-') {
+                tokens.next();
+            } else {
+                break;
+            }
+        }
+        if let Some(&sub) = tokens.peek() {
+            if HEAD_CHANGING.contains(&sub) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Reads the current branch for the repo containing `dir` straight from `.git/HEAD`,
+/// without spawning git. Walks up from `dir`; resolves a `.git` *file* (linked
+/// worktrees and submodules: `gitdir: <path>`). Returns the branch name, or the
+/// short (7 char) SHA when HEAD is detached. Local filesystems only: callers must
+/// not use this for remote/SSH sessions.
+pub fn read_head_branch_sync(dir: &Path) -> Option<String> {
+    for ancestor in dir.ancestors() {
+        let dot_git = ancestor.join(".git");
+        let git_dir = if dot_git.is_dir() {
+            dot_git
+        } else if dot_git.is_file() {
+            let content = std::fs::read_to_string(&dot_git).ok()?;
+            let target = content.trim().strip_prefix("gitdir:")?.trim();
+            let target = Path::new(target);
+            if target.is_absolute() {
+                target.to_path_buf()
+            } else {
+                ancestor.join(target)
+            }
+        } else {
+            continue;
+        };
+        let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+        return parse_head_file(&head);
+    }
+    None
+}
+
+/// Parses the contents of a `HEAD` file into a branch name or short SHA.
+fn parse_head_file(head: &str) -> Option<String> {
+    let head = head.trim();
+    if let Some(reference) = head.strip_prefix("ref:") {
+        let reference = reference.trim();
+        let name = reference.strip_prefix("refs/heads/").unwrap_or(reference);
+        return (!name.is_empty()).then(|| name.to_owned());
+    }
+    looks_like_commit_sha(head).then(|| head.chars().take(7).collect())
+}
+
 #[cfg(not(feature = "local_fs"))]
 pub async fn detect_current_branch_display(_repo_path: &Path) -> Result<String> {
     Err(anyhow!("Not supported without local_fs"))
