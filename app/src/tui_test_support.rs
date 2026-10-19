@@ -150,6 +150,40 @@ pub fn register_tui_action_execution_test_singletons(app: &mut warpui::App) {
             ctx,
         )
     });
+    // Executing a `RequestCommandOutput` reads the active model (`LLMPreferences`) and the agent
+    // provider settings to decide how the command is awaited, so a test that actually runs a
+    // command needs them. Each is guarded so this stays safe next to a fixture that already
+    // registered it.
+    if !app.read(|ctx| {
+        ctx.has_singleton_model::<warpui_extras::secure_storage::Model>()
+    }) {
+        app.update(|ctx| warpui_extras::secure_storage::register_noop("test", ctx));
+    }
+    if !app.read(|ctx| ctx.has_singleton_model::<SettingsManager>()) {
+        app.add_singleton_model(|_| SettingsManager::default());
+    }
+    if !app.read(|ctx| ctx.has_singleton_model::<crate::settings::AISettings>()) {
+        // Only the AI group: `register_all_settings` would also register `SemanticSelection`,
+        // which the action-model fixture already provides.
+        app.update(crate::settings::AISettings::register_and_subscribe_to_events);
+    }
+    if !app.read(|ctx| ctx.has_singleton_model::<ApiKeyManager>()) {
+        app.add_singleton_model(ApiKeyManager::new);
+    }
+    if !app.read(|ctx| ctx.has_singleton_model::<NetworkStatus>()) {
+        app.add_singleton_model(|_| NetworkStatus::new());
+    }
+    if !app.read(|ctx| ctx.has_singleton_model::<AuthManager>()) {
+        app.add_singleton_model(|_| AuthStateProvider::new_for_test());
+        app.add_singleton_model(AuthManager::new_for_test);
+    }
+    if !app.read(|ctx| ctx.has_singleton_model::<crate::ai::agent_providers::AgentProviderSecrets>())
+    {
+        app.add_singleton_model(crate::ai::agent_providers::AgentProviderSecrets::new);
+    }
+    if !app.read(|ctx| ctx.has_singleton_model::<LLMPreferences>()) {
+        app.add_singleton_model(LLMPreferences::new);
+    }
 }
 
 /// Registers the app models required to construct full TUI session views in tests.

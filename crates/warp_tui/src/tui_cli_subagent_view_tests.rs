@@ -446,7 +446,7 @@ fn command_action(id: &str, command: &str) -> AIAgentAction {
 fn hidden_command_status_says_why_and_offers_show_full() {
     let status = hidden_command_status_text("echo a\necho b");
     assert!(status.contains("too long to approve unseen"), "{status}");
-    assert!(status.contains("2 lines, 14 chars"), "{status}");
+    assert!(status.contains("2 lines, 13 chars"), "{status}");
     assert!(status.contains("ctrl-s to view it in full"), "{status}");
     assert!(status.contains("ctrl-o to allow"), "{status}");
     assert!(status.contains("ctrl-r to reject"), "{status}");

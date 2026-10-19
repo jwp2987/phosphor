@@ -8725,6 +8725,7 @@ impl TerminalView {
             .map(|conversation| conversation.id())
             .collect();
 
+        eprintln!("DBGS running={running_conversation_ids:?} all={:?}", BlocklistAIHistoryModel::as_ref(ctx).all_live_conversations_for_terminal_view(self.view_id).map(|c| (c.id(), c.status().clone(), c.is_empty())).collect::<Vec<_>>());
         for conversation_id in running_conversation_ids {
             // Before the stop: with the batch's earlier results gone, the actions it cancels
             // finish the batch as all-cancelled, and nothing stale rides along with the

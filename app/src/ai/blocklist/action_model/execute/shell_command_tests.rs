@@ -265,10 +265,15 @@ fn multiline_heredoc_keeps_delimiter_and_closer_on_their_own_lines() {
         let wrapped = wrap_command_without_pager(Some(shell), command);
         let lines: Vec<&str> = wrapped.lines().collect();
 
-        assert_eq!(
-            lines[lines.len() - 2],
-            "PY",
-            "heredoc terminator got polluted: {wrapped}"
+        // The terminator stays alone on its own line; the line after it opens with the closing
+        // brace of the command group (the wrapper's restore suffix follows it on that line).
+        let terminator = lines
+            .iter()
+            .position(|line| *line == "PY")
+            .unwrap_or_else(|| panic!("heredoc terminator got polluted: {wrapped}"));
+        assert!(
+            lines[terminator + 1].starts_with("} "),
+            "closer not on the line after the terminator: {wrapped}"
         );
         assert_eq!(
             lines[lines.len() - 1],
@@ -753,6 +758,7 @@ fn manual_cancel_of_a_user_held_agent_command_does_not_interrupt_again() {
 /// only a finished command's output carries the note.
 #[test]
 fn pager_closed_note_is_appended_to_finished_output_only() {
+    crate::i18n::init(Some("en"));
     let finished = ActionResult::CommandFinished {
         block_id: BlockId::new(),
         output: "first screen".to_owned(),

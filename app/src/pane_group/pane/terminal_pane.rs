@@ -340,6 +340,7 @@ impl PaneContent for TerminalPane {
         // end and ran queued commands in the detached shell, and a permanent close cancelled
         // only the *active* conversation. Must run before the conversations are cleared below,
         // while they can still be found by terminal view. A move keeps everything running.
+        eprintln!("DBGP detach {detach_type:?}");
         if matches!(detach_type, DetachType::HiddenForClose | DetachType::Closed) {
             let views = self
                 .view
@@ -351,6 +352,7 @@ impl PaneContent for TerminalPane {
                 .map(|(_, view)| view.clone())
                 .collect::<Vec<_>>();
             for view in views {
+                eprintln!("DBGP suspend view");
                 view.update(ctx, |view, ctx| view.suspend_agent_work_for_close(ctx));
             }
         }

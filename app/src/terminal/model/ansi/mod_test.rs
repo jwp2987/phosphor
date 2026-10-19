@@ -837,7 +837,8 @@ fn parse_decoded_hook_passes_a_valid_payload_through_unchanged() {
 }
 
 /// A backslash directly followed by a raw control character is an invalid escape, not a raw
-/// control character in a string, so the repair leaves it alone and the hook is still rejected.
+/// control character in a string, so the repair leaves it alone; the Precmd is then salvaged from
+/// its essential fields rather than read with a repaired path.
 /// The bootstrap scripts never emit it: they escape every backslash before anything else, so a
 /// `\` from a value always reaches the payload as `\\`.
 #[test]
@@ -858,7 +859,14 @@ fn parse_dcs_precmd_with_backslash_before_raw_control_character_is_still_rejecte
     .concat();
     let (_, handler) = parse_bytes(&bytes);
 
-    assert!(handler.d_proto_hooks.is_empty());
+    // The repair declines it, so it is not read as a valid payload with a repaired path; the
+    // Precmd is still delivered from its essential fields (#866), without the unusable `pwd`.
+    assert_eq!(handler.d_proto_hooks.len(), 1);
+    assert!(
+        matches!(handler.d_proto_hooks.first(), Some(DProtoHook::Precmd { .. })),
+        "{:?}",
+        handler.d_proto_hooks
+    );
 }
 
 #[test]

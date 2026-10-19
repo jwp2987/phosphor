@@ -3028,6 +3028,8 @@ fn test_bookmark_blocks_navigation() {
 fn test_retained_line_eviction_shifts_view_state_in_one_step() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        // The eviction notice toast needs the singleton the app registers at startup.
+        app.add_singleton_model(|_| crate::ToastStack);
 
         let terminal = add_window_with_terminal(&mut app, None);
         terminal.update(&mut app, |view, ctx| {
@@ -3105,6 +3107,8 @@ fn test_retained_line_eviction_shifts_view_state_in_one_step() {
 fn test_stamped_layout_actions_resolve_across_eviction() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        // The eviction notice toast needs the singleton the app registers at startup.
+        app.add_singleton_model(|_| crate::ToastStack);
 
         let terminal = add_window_with_terminal(&mut app, None);
         terminal.update(&mut app, |view, ctx| {
@@ -3155,6 +3159,8 @@ fn test_stamped_layout_actions_resolve_across_eviction() {
 fn test_stamped_ask_ai_and_overflow_menu_actions_resolve_across_eviction() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        // The eviction notice toast needs the singleton the app registers at startup.
+        app.add_singleton_model(|_| crate::ToastStack);
 
         let terminal = add_window_with_terminal(&mut app, None);
         terminal.update(&mut app, |view, ctx| {

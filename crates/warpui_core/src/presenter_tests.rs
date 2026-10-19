@@ -437,6 +437,8 @@ fn test_refocus_root_when_focused_view_was_dropped() {
         assert_eq!(app.focused_view_id(window_id), Some(doomed_id));
 
         drop(doomed);
+        // A dropped view is removed when the update that dropped it flushes its effects.
+        app.update(|_| {});
         app.update(|ctx| {
             assert!(ctx.view_name(window_id, doomed_id).is_none());
             ctx.refocus_root_if_focus_unreachable(window_id);

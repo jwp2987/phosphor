@@ -497,7 +497,9 @@ fn test_gate_keeps_pipelines_and_keyword_heads_shell_when_commands_loaded() {
             "sudo apt install it",
             "cat <<EOF\nto is and\nEOF",
         ] {
-            let input = snapshot_without_descriptions(buffer);
+            // With commands fully loaded a real head (`cd` is a builtin, and also an English
+            // word) always resolves to a description; without one it would be overridden.
+            let input = snapshot_with_first_token_described(buffer);
             let result = gated.detect_input_type(input, &context(true)).await;
             assert_eq!(result.input_type, InputType::Shell, "{buffer:?}");
         }

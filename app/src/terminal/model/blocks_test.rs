@@ -935,16 +935,20 @@ fn test_eviction_partial_budget_keeps_recent_blocks_and_stays_consistent() {
         .sum();
 
     // Budget that is exceeded until exactly the first two blocks are gone.
-    let evicted = block_list
-        .evict_oldest_blocks_to_budget(total - first_two)
-        .count;
+    let outcome = block_list.evict_oldest_blocks_to_budget(total - first_two);
+    let evicted = outcome.count;
     assert!((1..=2).contains(&evicted));
     assert_eq!(block_list.blocks().len(), before - evicted);
     for id in &ids[..evicted] {
         assert!(block_list.block_with_id(id).is_none());
     }
     assert_eq!(block_list.blocks()[0].id(), &ids[evicted]);
-    assert!(block_list.block_heights().summary().height < height_before);
+    // The oldest blocks here can be zero-height (bootstrap blocks), so the height need not
+    // shrink; it must shrink by exactly what the outcome reports.
+    assert_lines_approx_eq!(
+        block_list.block_heights().summary().height,
+        height_before - outcome.removed_height
+    );
     assert_block_indices_consistent(&block_list);
 }
 
