@@ -169,7 +169,7 @@ mod async_raw {
     use super::*;
     use crate::image_cache::{DecodedImage, ImageCache, ImageType};
     use crate::r#async::executor::{Background, Foreground};
-    use crate::{App, AssetCacheEvent};
+    use crate::App;
 
     fn png_bytes(width: u32, height: u32) -> Vec<u8> {
         let mut out = std::io::Cursor::new(Vec::new());
@@ -348,6 +348,5 @@ mod async_raw {
                 ));
             });
         });
-        let _ = AssetCacheEvent::RawAssetLoaded { id: String::new() };
     }
 }
