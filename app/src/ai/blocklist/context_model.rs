@@ -28,6 +28,8 @@ use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonE
 use warpui::WeakModelHandle;
 
 #[cfg(feature = "local_fs")]
+use crate::code_review::git_status_update::GitRepoStatusModel;
+#[cfg(feature = "local_fs")]
 use crate::code_review::github_repo_model::GitHubRepoModel;
 #[cfg(feature = "local_fs")]
 use crate::util::git::{PrInfo, RepositoryInfo};
@@ -481,6 +483,13 @@ pub struct BlocklistAIContextModel {
     /// subscription; supplies `AIAgentContext::{Repository, PullRequest}`.
     #[cfg(feature = "local_fs")]
     github_repo_model: Option<WeakModelHandle<GitHubRepoModel>>,
+
+    /// Live per-repo git status model (filesystem-watched), set by `TerminalView`.
+    /// Its branch is read on every request so a branch switch made anywhere (this
+    /// pane, another pane, or by the agent) is reflected, instead of the branch
+    /// the shell reported at the last prompt (#892).
+    #[cfg(feature = "local_fs")]
+    git_repo_status: Option<WeakModelHandle<GitRepoStatusModel>>,
 }
 
 pub fn block_context_from_terminal_model(
@@ -655,6 +664,8 @@ impl BlocklistAIContextModel {
             auto_attached_agent_view_user_block_ids: Vec::new(),
             #[cfg(feature = "local_fs")]
             github_repo_model: None,
+            #[cfg(feature = "local_fs")]
+            git_repo_status: None,
         }
     }
 
@@ -688,6 +699,8 @@ impl BlocklistAIContextModel {
             auto_attached_agent_view_user_block_ids: Vec::new(),
             #[cfg(feature = "local_fs")]
             github_repo_model: None,
+            #[cfg(feature = "local_fs")]
+            git_repo_status: None,
         }
     }
 
@@ -723,6 +736,8 @@ impl BlocklistAIContextModel {
             auto_attached_agent_view_user_block_ids: Vec::new(),
             #[cfg(feature = "local_fs")]
             github_repo_model: None,
+            #[cfg(feature = "local_fs")]
+            git_repo_status: None,
         }
     }
 
@@ -922,11 +937,12 @@ impl BlocklistAIContextModel {
                 active_block.git_branch_name().cloned(),
             )
         };
-        if head.is_some() || branch.is_some() {
-            context.push(AIAgentContext::Git {
-                head: head.unwrap_or_default(),
-                branch,
-            });
+        #[cfg(feature = "local_fs")]
+        let live_branch = self.live_git_branch(app);
+        #[cfg(not(feature = "local_fs"))]
+        let live_branch: Option<String> = None;
+        if let Some(git) = Self::git_context(live_branch, head, branch) {
+            context.push(git);
         }
 
         // Include repository identity and the current branch's pull request when
@@ -1645,6 +1661,54 @@ impl BlocklistAIContextModel {
     #[cfg(feature = "local_fs")]
     pub fn set_github_repo_model(&mut self, handle: Option<WeakModelHandle<GitHubRepoModel>>) {
         self.github_repo_model = handle;
+    }
+
+    /// Attaches (or detaches) the live git status model used for the per-request branch.
+    #[cfg(feature = "local_fs")]
+    pub fn set_git_repo_status(&mut self, handle: Option<WeakModelHandle<GitRepoStatusModel>>) {
+        self.git_repo_status = handle;
+    }
+
+    /// The repo's current branch as seen by the filesystem-watched git status model,
+    /// read fresh on every call (never cached here).
+    #[cfg(feature = "local_fs")]
+    fn live_git_branch(&self, app: &AppContext) -> Option<String> {
+        let handle = self.git_repo_status.as_ref()?.upgrade(app)?;
+        handle
+            .as_ref(app)
+            .metadata(app)
+            .map(|metadata| metadata.current_branch_name.clone())
+            .filter(|branch| !branch.trim().is_empty())
+    }
+
+    /// Chooses the git context for a request. The live branch wins over the
+    /// prompt-metadata values from the active block, which are only refreshed when
+    /// the shell emits a prompt and so go stale after a switch made elsewhere (#892).
+    fn git_context(
+        live_branch: Option<String>,
+        block_head: Option<String>,
+        block_branch: Option<String>,
+    ) -> Option<AIAgentContext> {
+        if let Some(live) = live_branch {
+            // Keep the block's head only when it describes the same branch; otherwise
+            // it is the stale pre-switch value.
+            let head = if block_branch.as_deref() == Some(live.as_str()) {
+                block_head.unwrap_or_else(|| live.clone())
+            } else {
+                live.clone()
+            };
+            return Some(AIAgentContext::Git {
+                head,
+                branch: Some(live),
+            });
+        }
+        if block_head.is_some() || block_branch.is_some() {
+            return Some(AIAgentContext::Git {
+                head: block_head.unwrap_or_default(),
+                branch: block_branch,
+            });
+        }
+        None
     }
 
     /// Builds an `AIAgentContext::Repository` from cached git remote metadata, if available.

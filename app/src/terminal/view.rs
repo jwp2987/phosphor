@@ -4656,6 +4656,9 @@ impl TerminalView {
                                     // (unsubscribes automatically), then
                                     // re-evaluate.
                                     me.git_repo_status = None;
+                                    me.ai_context_model.update(ctx, |context_model, _| {
+                                        context_model.set_git_repo_status(None);
+                                    });
                                     me.clear_github_repo_model(ctx);
                                     me.update_git_status_subscription(ctx);
                                 }
@@ -4835,6 +4838,9 @@ impl TerminalView {
     #[cfg(feature = "local_fs")]
     fn clear_git_repo_status_subscription(&mut self, ctx: &mut ViewContext<Self>) {
         self.git_repo_status = None;
+        self.ai_context_model.update(ctx, |context_model, _| {
+            context_model.set_git_repo_status(None);
+        });
         self.deferred_code_review_open = None;
 
         self.current_prompt.update(ctx, |prompt_type, ctx| {
@@ -5095,7 +5101,11 @@ impl TerminalView {
                                 me.handle_git_repo_status_event(ctx);
                             });
                             let weak_for_prompt = handle.downgrade();
+                            let weak_for_context = handle.downgrade();
                             self.git_repo_status = Some(handle);
+                            self.ai_context_model.update(ctx, |context_model, _| {
+                                context_model.set_git_repo_status(Some(weak_for_context));
+                            });
                             self.current_prompt.update(ctx, |prompt_type, ctx| {
                                 if let PromptType::Dynamic { prompt } = prompt_type {
                                     prompt.update(ctx, |current_prompt, ctx| {
@@ -13567,6 +13577,9 @@ impl TerminalView {
                                 if old_repo_path.as_ref() != Some(repo_path) {
                                     // Drop old handles (unsubscribes automatically).
                                     me.git_repo_status = None;
+                                    me.ai_context_model.update(ctx, |context_model, _| {
+                                        context_model.set_git_repo_status(None);
+                                    });
                                     me.clear_github_repo_model(ctx);
                                     me.update_git_status_subscription(ctx);
                                 }
