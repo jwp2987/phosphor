@@ -739,7 +739,9 @@ unsafe fn init_logging() { unsafe {
         if matches!(
             primary_error_code,
             sqlite3::SQLITE_CORRUPT | sqlite3::SQLITE_NOTADB | sqlite3::SQLITE_READONLY
-        ) {
+        ) || (primary_error_code == sqlite3::SQLITE_ERROR
+            && err_message.contains("no such table"))
+        {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs());
