@@ -104,7 +104,7 @@ impl LocalShellState {
         let clone = shell_path.clone();
 
         let command = match shell_type {
-            ShellType::Bash | ShellType::Zsh => "echo $PATH",
+            ShellType::Bash | ShellType::Zsh => "builtin echo $PATH",
             ShellType::Fish => "env | grep PATH",
             ShellType::PowerShell => "echo $Env:PATH",
         };
@@ -299,10 +299,10 @@ async fn capture_interactive_shell_env(
 ) -> Result<String> {
     let command_str = match shell_type {
         ShellType::Bash | ShellType::Zsh => {
-            format!("printf '{PATH_CAPTURE_START}%s{PATH_CAPTURE_END}' \"$PATH\"")
+            format!("builtin printf '{PATH_CAPTURE_START}%s{PATH_CAPTURE_END}' \"$PATH\"")
         }
         ShellType::Fish => {
-            format!("printf '{PATH_CAPTURE_START}%s{PATH_CAPTURE_END}' (string join : $PATH)")
+            format!("builtin printf '{PATH_CAPTURE_START}%s{PATH_CAPTURE_END}' (string join : $PATH)")
         }
         ShellType::PowerShell => {
             format!("Write-Output \"{PATH_CAPTURE_START}$($env:PATH){PATH_CAPTURE_END}\"")
