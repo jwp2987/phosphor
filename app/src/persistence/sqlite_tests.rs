@@ -2246,3 +2246,38 @@ fn migration_race_error_is_recognised_and_not_unusable() {
     assert!(!super::error_may_be_transient_io(message));
     assert!(!super::error_is_migration_race("malformed database schema"));
 }
+
+/// #902: setup runs on the main thread at startup, so a lock held by someone
+/// else (a second instance, a user's `sqlite3` with `BEGIN EXCLUSIVE`) must
+/// fail it within the shared budget instead of freezing the UI -- and must not
+/// make the database look unusable.
+#[test]
+fn setup_gives_up_within_the_budget_when_another_connection_holds_the_lock() {
+    use diesel::{connection::SimpleConnection, Connection, SqliteConnection};
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut holder = SqliteConnection::establish(database_path.to_str().unwrap()).expect("open");
+    holder
+        .batch_execute("PRAGMA journal_mode=DELETE; CREATE TABLE held (x); BEGIN EXCLUSIVE;")
+        .expect("take the exclusive lock");
+
+    let started = std::time::Instant::now();
+    let result = setup_database_or_quarantine(&database_path);
+    let elapsed = started.elapsed();
+
+    assert!(result.is_err(), "setup cannot succeed while the lock is held");
+    assert!(
+        elapsed < std::time::Duration::from_millis(3500),
+        "setup must give up within the budget, took {elapsed:?}"
+    );
+    let quarantined = std::fs::read_dir(tempdir.path())
+        .expect("read_dir")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_name().to_string_lossy().contains("corrupt"))
+        .count();
+    assert_eq!(quarantined, 0, "a held lock must never quarantine the database");
+
+    holder.batch_execute("ROLLBACK;").expect("release");
+    drop(holder);
+    setup_database_or_quarantine(&database_path).expect("setup works once the lock is gone");
+}

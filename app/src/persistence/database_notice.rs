@@ -151,9 +151,19 @@ fn set_notice(notice: DatabaseProblemNotice) {
     }
 }
 
+/// Whether startup could not open the database, so this session runs without
+/// persistence. Read-only openers check this to fail at once: each would
+/// otherwise wait out its own busy timeout on the main thread (#922).
+static STARTUP_FAILED: AtomicBool = AtomicBool::new(false);
+
+pub fn startup_failed() -> bool {
+    STARTUP_FAILED.load(Ordering::Relaxed)
+}
+
 /// Records that the database could not be opened, so this session runs
 /// without persistence. `message` is the lowercased root-cause message.
 pub fn record_startup_failure(db_path: &Path, message: &str) {
+    STARTUP_FAILED.store(true, Ordering::Relaxed);
     set_notice(DatabaseProblemNotice {
         path: db_path.to_path_buf(),
         problem: classify_database_problem(message, db_path),
