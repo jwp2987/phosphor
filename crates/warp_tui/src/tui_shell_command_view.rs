@@ -44,7 +44,7 @@ const COMMAND_AUTO_EXPAND_DELAY: Duration = Duration::from_secs(3);
 /// Rows the command editor shows before the user has been made to review a long command.
 const COMMAND_EDITOR_ROWS: u32 = 4;
 /// Most rows the editor grows to when a long command must be reviewed before it runs.
-const COMMAND_REVIEW_MAX_ROWS: u32 = 24;
+pub(super) const COMMAND_REVIEW_MAX_ROWS: u32 = 24;
 /// Assumed soft-wrap width when estimating how many rows a command needs. Deliberately narrow so
 /// the estimate errs towards gating: the card padding leaves roughly terminal width minus 8 for
 /// the editor, so a narrow terminal wraps far earlier than 40 columns.
@@ -164,7 +164,7 @@ pub(super) enum TuiShellCommandViewAction {
 }
 /// Rough number of editor rows `command` needs, counting every line and soft wraps at a narrow
 /// width. Over-estimates on purpose: the cost of a false positive is one extra Enter.
-fn estimated_command_rows(command: &str) -> u32 {
+pub(super) fn estimated_command_rows(command: &str) -> u32 {
     command
         .split('\n')
         .map(|line| {

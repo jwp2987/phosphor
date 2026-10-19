@@ -6,14 +6,16 @@ use warp::tui_export::{
     AIAgentAction, AIAgentActionId, AIAgentActionType, AIAgentPtyWriteMode, AIConversationId,
     BlockId, BlocklistAIActionEvent, CancellationReason, LongRunningCommandControlState, TaskId,
     UserTakeOverReason, queue_tui_permission_action, register_tui_action_execution_test_singletons,
+    tui_command_review,
 };
 use warpui_core::App;
 
 use super::{
-    BlockedActionPresentation, blocked_action_presentation, blocked_command_is_hidden,
-    can_allow_blocked_action, cancel_blocked_action, display_pty_input, execute_blocked_action,
-    format_next_check_remaining, hidden_command_status_text, remaining_for_fixed_delay,
-    resolve_latest_instruction, show_full_blocked_command, terminal_use_status_text,
+    BlockedActionPresentation, BlockedCommandGate, blocked_action_presentation,
+    blocked_command_gate, blocked_command_is_hidden, can_allow_blocked_action,
+    cancel_blocked_action, display_pty_input, execute_blocked_action, format_next_check_remaining,
+    hidden_command_status_text, remaining_for_fixed_delay, resolve_latest_instruction,
+    show_full_blocked_command, terminal_use_status_text,
 };
 use crate::test_fixtures::add_test_action_model;
 
@@ -459,7 +461,8 @@ fn allow_of_a_long_command_waits_for_show_full() {
         let action_model = add_test_action_model(&mut app);
         register_tui_action_execution_test_singletons(&mut app);
         let conversation_id = AIConversationId::new();
-        let hidden = format!("echo {}; touch ~/hidden-payload.txt", "A".repeat(100_000));
+        // A 200-char run is elided by the collapsed preview but fits the row cap in full.
+        let hidden = format!("echo {}; touch ~/hidden-payload.txt", "A".repeat(200));
         let action = command_action("long", &hidden);
 
         let executing_ids = app.update(|ctx| {
@@ -523,5 +526,219 @@ fn short_command_and_non_command_need_no_show_full() {
                 ));
             });
         });
+    });
+}
+
+fn gate_of(
+    app: &mut App,
+    action_model: &warpui_core::ModelHandle<warp::tui_export::BlocklistAIActionModel>,
+    conversation_id: AIConversationId,
+    action: &AIAgentAction,
+) -> BlockedCommandGate {
+    app.read(|ctx| blocked_command_gate(action_model.as_ref(ctx), conversation_id, action))
+}
+
+fn show_full(
+    app: &mut App,
+    action_model: &warpui_core::ModelHandle<warp::tui_export::BlocklistAIActionModel>,
+    conversation_id: AIConversationId,
+    action: &AIAgentAction,
+) {
+    app.update(|ctx| {
+        action_model.update(ctx, |action_model, _| {
+            assert!(show_full_blocked_command(
+                action_model,
+                conversation_id,
+                action
+            ));
+        });
+    });
+}
+
+/// #865/#847: ESC, CR and a bidi override render as `<U+XXXX>` markers, never raw, even in a
+/// short command; and such a command needs the show-full confirmation before Allow.
+#[test]
+fn short_command_with_control_chars_is_shown_escaped_and_gated() {
+    for (raw, marker) in [
+        ("echo \u{1b}[2Jhi", "<U+001B>"),
+        ("echo hi\rrm -rf x", "<U+000D>"),
+        ("echo \u{202e}txt.exe", "<U+202E>"),
+    ] {
+        let review = tui_command_review(raw);
+        assert!(review.has_escapes, "{raw:?}");
+        assert!(review.text.contains(marker), "{}", review.text);
+        assert!(
+            !review.text.contains(['\u{1b}', '\r', '\u{202e}']),
+            "raw control char leaked: {:?}",
+            review.text
+        );
+        assert!(review.ends_with.starts_with("Ends with: "));
+        assert!(review.ends_with.contains(marker) || raw.len() > 120);
+
+        App::test((), |mut app| async move {
+            let action_model = add_test_action_model(&mut app);
+            register_tui_action_execution_test_singletons(&mut app);
+            let conversation_id = AIConversationId::new();
+            let action = command_action("esc", raw);
+            let executing_ids = app.update(|ctx| {
+                let executing_ids = record_executing_actions(&action_model, ctx);
+                action_model.update(ctx, |action_model, ctx| {
+                    queue_tui_permission_action(action_model, action.clone(), conversation_id, ctx);
+                    execute_blocked_action(action_model, conversation_id, &action, ctx);
+                });
+                executing_ids
+            });
+            assert!(executing_ids.borrow().is_empty(), "accept must be refused");
+            assert_eq!(
+                gate_of(&mut app, &action_model, conversation_id, &action),
+                BlockedCommandGate::NeedsShowFull
+            );
+            show_full(&mut app, &action_model, conversation_id, &action);
+            assert_eq!(
+                gate_of(&mut app, &action_model, conversation_id, &action),
+                BlockedCommandGate::Clear
+            );
+            app.update(|ctx| {
+                action_model.update(ctx, |action_model, ctx| {
+                    execute_blocked_action(action_model, conversation_id, &action, ctx);
+                });
+            });
+            assert_eq!(executing_ids.borrow().first(), Some(&action.id));
+        });
+    }
+}
+
+/// A plain short command has no escapes and is never gated.
+#[test]
+fn plain_short_command_has_no_escapes_and_is_clear() {
+    let review = tui_command_review("echo hi");
+    assert!(!review.has_escapes);
+    assert_eq!(review.text, "echo hi");
+    assert_eq!(review.ends_with, "Ends with: echo hi");
+    App::test((), |mut app| async move {
+        let action_model = add_test_action_model(&mut app);
+        let conversation_id = AIConversationId::new();
+        let action = command_action("plain", "echo hi");
+        assert_eq!(
+            gate_of(&mut app, &action_model, conversation_id, &action),
+            BlockedCommandGate::Clear
+        );
+    });
+}
+
+/// #865: a command beyond the row cap cannot be allowed even after show-full; Allow is refused
+/// and the action is not executed.
+#[test]
+fn command_beyond_row_cap_can_never_be_allowed() {
+    App::test((), |mut app| async move {
+        let action_model = add_test_action_model(&mut app);
+        register_tui_action_execution_test_singletons(&mut app);
+        let conversation_id = AIConversationId::new();
+        let long = format!("echo {}; touch ~/hidden-payload.txt", "A".repeat(100_000));
+        let action = command_action("huge", &long);
+        let executing_ids = app.update(|ctx| {
+            let executing_ids = record_executing_actions(&action_model, ctx);
+            action_model.update(ctx, |action_model, ctx| {
+                queue_tui_permission_action(action_model, action.clone(), conversation_id, ctx);
+            });
+            executing_ids
+        });
+        assert_eq!(
+            gate_of(&mut app, &action_model, conversation_id, &action),
+            BlockedCommandGate::NeedsShowFull
+        );
+        show_full(&mut app, &action_model, conversation_id, &action);
+        assert!(matches!(
+            gate_of(&mut app, &action_model, conversation_id, &action),
+            BlockedCommandGate::TooLong { .. }
+        ));
+        app.update(|ctx| {
+            action_model.update(ctx, |action_model, ctx| {
+                execute_blocked_action(action_model, conversation_id, &action, ctx);
+            });
+        });
+        assert!(executing_ids.borrow().is_empty());
+    });
+}
+
+/// An edit after show-full is a different text, so it is gated again (hidden and escaped cases).
+#[test]
+fn edit_after_show_full_regates_the_command() {
+    App::test((), |mut app| async move {
+        let action_model = add_test_action_model(&mut app);
+        let conversation_id = AIConversationId::new();
+        for (before, after) in [
+            (
+                format!("echo {}", "A".repeat(200)),
+                format!("echo {}; id", "A".repeat(200)),
+            ),
+            ("echo \u{1b}[2J".to_owned(), "echo \u{1b}[3J".to_owned()),
+        ] {
+            let original = command_action("edit", &before);
+            let edited = command_action("edit", &after);
+            show_full(&mut app, &action_model, conversation_id, &original);
+            assert_eq!(
+                gate_of(&mut app, &action_model, conversation_id, &original),
+                BlockedCommandGate::Clear
+            );
+            assert_eq!(
+                gate_of(&mut app, &action_model, conversation_id, &edited),
+                BlockedCommandGate::NeedsShowFull
+            );
+        }
+    });
+}
+
+/// The ctrl-s keymap flag is armed exactly while the gate is `NeedsShowFull`: not for a plain
+/// command, not once shown, not for a too-long command (nothing would help), not for a
+/// non-command action.
+#[test]
+fn show_full_key_is_armed_only_for_a_gated_command() {
+    App::test((), |mut app| async move {
+        let action_model = add_test_action_model(&mut app);
+        let conversation_id = AIConversationId::new();
+        let armed = |gate: BlockedCommandGate| gate == BlockedCommandGate::NeedsShowFull;
+        let plain = command_action("p", "echo hi");
+        let write = test_action("w");
+        let esc = command_action("e", "echo \u{1b}");
+        let huge = command_action("h", &format!("echo {}", "A ".repeat(50_000)));
+        assert!(!armed(gate_of(
+            &mut app,
+            &action_model,
+            conversation_id,
+            &plain
+        )));
+        assert!(!armed(gate_of(
+            &mut app,
+            &action_model,
+            conversation_id,
+            &write
+        )));
+        assert!(armed(gate_of(
+            &mut app,
+            &action_model,
+            conversation_id,
+            &esc
+        )));
+        assert!(armed(gate_of(
+            &mut app,
+            &action_model,
+            conversation_id,
+            &huge
+        )));
+        show_full(&mut app, &action_model, conversation_id, &esc);
+        show_full(&mut app, &action_model, conversation_id, &huge);
+        assert!(!armed(gate_of(
+            &mut app,
+            &action_model,
+            conversation_id,
+            &esc
+        )));
+        assert!(!armed(gate_of(
+            &mut app,
+            &action_model,
+            conversation_id,
+            &huge
+        )));
     });
 }

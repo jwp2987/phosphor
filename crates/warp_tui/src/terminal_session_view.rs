@@ -5305,14 +5305,19 @@ impl TuiView for TuiTerminalSessionView {
             let blocked_action = self.blocked_action_for_target(&target, ctx);
             // A command whose card hides part of it cannot be allowed until it was shown in
             // full (#865): offer show-full instead of an Allow that would be refused.
-            let hidden_command = blocked_action.as_ref().is_some_and(|blocked| {
-                crate::tui_cli_subagent_view::blocked_command_is_hidden(
-                    self.ai_action_model.as_ref(ctx),
-                    target.conversation_id,
-                    blocked,
-                )
-            });
-            let can_allow = !hidden_command
+            let gate = blocked_action.as_ref().map_or(
+                crate::tui_cli_subagent_view::BlockedCommandGate::Clear,
+                |blocked| {
+                    crate::tui_cli_subagent_view::blocked_command_gate(
+                        self.ai_action_model.as_ref(ctx),
+                        target.conversation_id,
+                        blocked,
+                    )
+                },
+            );
+            let hidden_command =
+                gate == crate::tui_cli_subagent_view::BlockedCommandGate::NeedsShowFull;
+            let can_allow = gate == crate::tui_cli_subagent_view::BlockedCommandGate::Clear
                 && blocked_action
                     .as_ref()
                     .is_none_or(|blocked| blocked.action.can_be_accepted_without_its_own_ui());
