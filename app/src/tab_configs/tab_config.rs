@@ -993,7 +993,19 @@ fn split_segments(residual: &[char]) -> Vec<Vec<SegmentWord>> {
     let mut current: Vec<SegmentWord> = Vec::new();
     let mut word: Option<SegmentWord> = None;
     for (at, &c) in residual.iter().enumerate() {
-        if matches!(c, ';' | '&' | '|' | '(' | ')' | '\n') {
+        // `&` is part of a redirection in `2>&1`, `>&2`, `<&3`, `>&-` (after `>`/`<`) and in
+        // `&>`/`&>>` (before `>`): it does not end the segment.
+        let in_redirection = c == '&'
+            && (at > 0 && matches!(residual[at - 1], '>' | '<')
+                || residual.get(at + 1) == Some(&'>'));
+        if in_redirection {
+            word.get_or_insert_with(|| SegmentWord {
+                text: String::new(),
+                start: at,
+            })
+            .text
+            .push(c);
+        } else if matches!(c, ';' | '&' | '|' | '(' | ')' | '\n') {
             end_word(&mut word, &mut current, &mut segments);
             if !current.is_empty() {
                 segments.push(std::mem::take(&mut current));
@@ -1053,14 +1065,14 @@ fn split_segments(residual: &[char]) -> Vec<Vec<SegmentWord>> {
 /// definition (`name() {`, `function name`). Aliases and functions defined earlier in the same
 /// pane are caught by [`defined_then_used_with_placeholder`]; `hash -p` is not bypassed by
 /// the prefix.
-fn command_words_to_prefix(residual: &[char]) -> Result<Vec<CommandWord>, &'static str> {
-    /// Words that are shell syntax: never prefixed.
-    const SYNTAX_WORDS: [&str; 20] = [
-        "for", "foreach", "in", "done", "fi", "esac", "end", "[[", "((", "exit", "return", "break",
-        "continue", "try", "catch", "finally", "elseif", "until", "while", "!",
-    ];
-    /// Statements whose words are patterns, not commands: cannot be prefixed.
-    const PATTERN_STATEMENTS: [&str; 3] = ["case", "select", "switch"];
+fn command_words_to_prefix(
+    residual: &[char],
+    dialect: Option<ShellDialect>,
+) -> Result<Vec<CommandWord>, &'static str> {
+    // Without a dialect nothing is prefixed, and only the checks that always applied run.
+    let prefixing = dialect.is_some();
+    let syntax_words = syntax_words(dialect.unwrap_or(ShellDialect::Posix));
+    let pattern_statements = pattern_statements(dialect.unwrap_or(ShellDialect::Posix));
     let mut to_prefix = Vec::new();
     for segment in split_segments(residual) {
         let words: Vec<&str> = segment.iter().map(|word| word.text.as_str()).collect();
@@ -1069,7 +1081,7 @@ fn command_words_to_prefix(residual: &[char]) -> Result<Vec<CommandWord>, &'stat
         }
         let mut index = 0;
         while let Some(&word) = words.get(index) {
-            if word == "function" {
+            if word == "function" && prefixing {
                 return Err("a function definition");
             }
             if LEADING_KEYWORDS.contains(&word) || is_assignment(word) {
@@ -1087,33 +1099,38 @@ fn command_words_to_prefix(residual: &[char]) -> Result<Vec<CommandWord>, &'stat
                 return Err(problem);
             }
             let command = command_name(command_word);
-            if !settled {
-                if PATTERN_STATEMENTS.contains(&command_word) {
-                    return Err("a case, select or switch statement");
-                }
-                let after = segment[index].start + command_word.chars().count();
-                let opens_definition = residual[after.min(residual.len())..]
-                    .iter()
-                    .find(|c| !c.is_whitespace())
-                    .is_some_and(|&c| c == '(');
-                if opens_definition {
-                    return Err("a function definition");
-                }
-                match command.as_str() {
-                    // Already skips aliases and functions, or runs the program directly.
-                    "command" | "builtin" | "exec" | "-" => settled = true,
-                    // Run the next word as a command, with the shell's lookup.
-                    "time" | "noglob" | "nocorrect" => {}
-                    _ if SYNTAX_WORDS.contains(&command_word) => settled = true,
-                    // A path is never an alias or function.
-                    _ if command_word.contains('/') => settled = true,
-                    _ => {
-                        to_prefix.push(CommandWord {
-                            start: segment[index].start,
-                            len: command_word.chars().count(),
-                            word: command_word.to_string(),
-                        });
-                        settled = true;
+            if !settled && prefixing {
+                // Words are matched exactly: `Command` and `/usr/bin/time` are not the
+                // builtin and the keyword, and only a bare word can be an alias or function.
+                let length = command_word.chars().count();
+                if syntax_words.contains(&command_word) {
+                    settled = true;
+                } else if pattern_statements.contains(&command_word) {
+                    return Err("a case, select, switch or foreach statement");
+                } else {
+                    let after = segment[index].start + length;
+                    let opens_definition = residual[after.min(residual.len())..]
+                        .iter()
+                        .find(|c| !c.is_whitespace())
+                        .is_some_and(|&c| c == '(');
+                    if opens_definition {
+                        return Err("a function definition");
+                    }
+                    match command_word {
+                        // Already skips aliases and functions, or runs the program directly.
+                        "command" | "builtin" | "exec" | "-" => settled = true,
+                        // Run the next word as a command, with the shell's lookup.
+                        "time" | "noglob" | "nocorrect" => {}
+                        // A path is never an alias or function.
+                        _ if command_word.contains('/') => settled = true,
+                        _ => {
+                            to_prefix.push(CommandWord {
+                                start: segment[index].start,
+                                len: length,
+                                word: command_word.to_string(),
+                            });
+                            settled = true;
+                        }
                     }
                 }
             }
@@ -1168,72 +1185,153 @@ fn command_words_to_prefix(residual: &[char]) -> Result<Vec<CommandWord>, &'stat
     Ok(to_prefix)
 }
 
-/// fish builtins a user commonly writes: `command` finds only external programs in fish, so
-/// these are prefixed with `builtin` instead.
-const FISH_BUILTINS: [&str; 22] = [
-    "cd", "echo", "pwd", "set", "test", "[", "printf", "true", "false", "read", "string", "math",
-    "count", "contains", "status", "type", "jobs", "wait", "source", "emit", "random", "abbr",
+/// Words that are shell syntax in `dialect`, never prefixed. Only reserved words of that
+/// shell: in bash or zsh a function may be called `try` or `end`, and it must be bypassed.
+fn syntax_words(dialect: ShellDialect) -> &'static [&'static str] {
+    match dialect {
+        ShellDialect::Posix => &["for", "in", "done", "fi", "esac", "[[", "(("],
+        ShellDialect::Fish => &["for", "in", "end"],
+        ShellDialect::PowerShell => &[
+            "for", "foreach", "in", "while", "do", "until", "try", "catch", "finally", "elseif",
+            "begin", "process", "end", "return", "exit", "break", "continue", "throw",
+        ],
+    }
+}
+
+/// Statements in `dialect` whose words are patterns, not commands: they cannot be prefixed.
+fn pattern_statements(dialect: ShellDialect) -> &'static [&'static str] {
+    match dialect {
+        ShellDialect::Posix => &["case", "select", "foreach"],
+        ShellDialect::Fish => &["switch", "case"],
+        ShellDialect::PowerShell => &["switch"],
+    }
+}
+
+/// Builtins in both bash and zsh. zsh's `command` runs external programs only (`command cd`
+/// is "command not found", and on macOS runs `/usr/bin/cd`, which does nothing), so these are
+/// prefixed with `builtin`, which both shells and fish have.
+const POSIX_BUILTINS: &[&str] = &[
+    "cd", ".", "source", "export", "read", "set", "unset", "alias", "unalias", "typeset",
+    "declare", "local", "readonly", "umask", "ulimit", "jobs", "wait", "type", "pwd", "echo",
+    "printf", "test", "[", "true", "false", ":", "exit", "return", "break", "continue", "shift",
+    "trap", "eval", "pushd", "popd", "dirs", "fg", "bg", "kill", "let", "getopts",
 ];
+
+/// Builtins in fish: `command` finds only external programs there too, so these are prefixed
+/// with `builtin`.
+const FISH_BUILTINS: &[&str] = &[
+    "cd", ".", "source", "read", "set", "test", "[", "printf", "echo", "pwd", "true", "false",
+    "exit", "return", "break", "continue", "jobs", "wait", "type", "string", "math", "count",
+    "contains", "status", "emit", "random", "abbr", "umask", "ulimit", "kill",
+];
+
+/// Whether `word` is a builtin in bash, zsh and fish alike: `builtin word` is then right
+/// whatever non-PowerShell shell the pane turns out to run.
+fn is_builtin_everywhere(word: &str) -> bool {
+    POSIX_BUILTINS.contains(&word) && FISH_BUILTINS.contains(&word)
+}
 
 /// PowerShell's default aliases for cmdlets, which `Get-Command -CommandType Cmdlet` does not
-/// list: resolved to the cmdlet they stand for.
-const POWERSHELL_ALIASES: [(&str, &str); 24] = [
-    ("cd", "Set-Location"),
-    ("chdir", "Set-Location"),
-    ("sl", "Set-Location"),
-    ("ls", "Get-ChildItem"),
-    ("dir", "Get-ChildItem"),
-    ("gci", "Get-ChildItem"),
-    ("echo", "Write-Output"),
-    ("write", "Write-Output"),
-    ("cat", "Get-Content"),
-    ("type", "Get-Content"),
-    ("gc", "Get-Content"),
-    ("rm", "Remove-Item"),
-    ("del", "Remove-Item"),
-    ("erase", "Remove-Item"),
-    ("ri", "Remove-Item"),
-    ("rmdir", "Remove-Item"),
-    ("rd", "Remove-Item"),
-    ("cp", "Copy-Item"),
-    ("copy", "Copy-Item"),
-    ("mv", "Move-Item"),
-    ("move", "Move-Item"),
-    ("pwd", "Get-Location"),
-    ("gl", "Get-Location"),
-    ("clear", "Clear-Host"),
+/// list: resolved to the cmdlet they stand for. The `bool` marks aliases that exist on
+/// Windows only: on Linux and macOS PowerShell drops them in favour of the native programs
+/// (`ls`, `cat`, `rm`, ...).
+const POWERSHELL_ALIASES: &[(&str, &str, bool)] = &[
+    ("cd", "Set-Location", false),
+    ("chdir", "Set-Location", false),
+    ("sl", "Set-Location", false),
+    ("ls", "Get-ChildItem", true),
+    ("dir", "Get-ChildItem", false),
+    ("gci", "Get-ChildItem", false),
+    ("echo", "Write-Output", false),
+    ("write", "Write-Output", false),
+    ("cat", "Get-Content", true),
+    ("type", "Get-Content", false),
+    ("gc", "Get-Content", false),
+    ("rm", "Remove-Item", true),
+    ("del", "Remove-Item", false),
+    ("erase", "Remove-Item", false),
+    ("ri", "Remove-Item", false),
+    ("rmdir", "Remove-Item", true),
+    ("rd", "Remove-Item", false),
+    ("cp", "Copy-Item", true),
+    ("copy", "Copy-Item", false),
+    ("mv", "Move-Item", true),
+    ("move", "Move-Item", false),
+    ("pwd", "Get-Location", false),
+    ("gl", "Get-Location", false),
+    ("clear", "Clear-Host", true),
 ];
 
+/// The shell a command is rendered for.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RenderShell {
+    pub(crate) dialect: ShellDialect,
+    /// The pane names its shell. When it does not, `dialect` is a guess (see
+    /// [`default_shell_dialect`]).
+    pub(crate) known: bool,
+    /// Windows, which has the Windows-only PowerShell default aliases.
+    pub(crate) windows: bool,
+}
+
+impl RenderShell {
+    pub(crate) fn for_pane(shell: Option<&str>) -> Self {
+        Self {
+            dialect: shell.map_or_else(default_shell_dialect, dialect_for_shell_name),
+            known: shell.is_some(),
+            windows: cfg!(windows),
+        }
+    }
+}
+
 /// What to write in place of a command word so the shell skips any alias or function of that
-/// name (#884).
+/// name (#884), or why that cannot be written.
 ///
-/// - bash and zsh: `command word` (also runs builtins).
-/// - fish: `command word`, or `builtin word` for a builtin, because fish's `command` only
-///   finds external programs.
+/// - Builtins: `builtin word` (the bash and zsh builtins, or fish's own). zsh's `command` runs
+///   external programs only. When the pane does not name its shell, only words that are
+///   builtins in bash, zsh and fish alike are written (`cd`, `echo`, ...); any other builtin
+///   is refused, because the right prefix depends on the shell.
+/// - Everything else, bash/zsh/fish: `command word`.
 /// - PowerShell: `& (Microsoft.PowerShell.Core\Get-Command -CommandType
 ///   Cmdlet,Application,ExternalScript -TotalCount 1 word)`, which resolves only a cmdlet, an
 ///   executable or a script and invokes the result; aliases and functions are not among those
-///   command types. A default alias (`cd`, `ls`, ...) is resolved to its cmdlet first.
-fn command_prefix(dialect: ShellDialect, word: &str) -> String {
-    match dialect {
-        ShellDialect::Posix => format!("command {word}"),
-        ShellDialect::Fish => {
-            if FISH_BUILTINS.contains(&word) {
+///   command types. A default alias (`cd`, ...) is resolved to its cmdlet first.
+fn command_prefix(shell: RenderShell, word: &str) -> Result<String, &'static str> {
+    match shell.dialect {
+        ShellDialect::Posix | ShellDialect::Fish => {
+            let builtin = if !shell.known {
+                if is_builtin_everywhere(word) {
+                    true
+                } else if POSIX_BUILTINS.contains(&word) || FISH_BUILTINS.contains(&word) {
+                    return Err(
+                        "a shell builtin whose prefix depends on the pane's shell; set \
+                         `shell` on the pane",
+                    );
+                } else {
+                    false
+                }
+            } else if shell.dialect == ShellDialect::Fish {
+                FISH_BUILTINS.contains(&word)
+            } else {
+                POSIX_BUILTINS.contains(&word)
+            };
+            Ok(if builtin {
                 format!("builtin {word}")
             } else {
                 format!("command {word}")
-            }
+            })
         }
         ShellDialect::PowerShell => {
             let lower = word.to_ascii_lowercase();
             let target = POWERSHELL_ALIASES
                 .iter()
-                .find(|(alias, _)| *alias == lower)
-                .map_or(word, |(_, cmdlet)| *cmdlet);
-            format!(
+                .find(|(alias, _, windows_only)| {
+                    *alias == lower && (shell.windows || !windows_only)
+                })
+                .map_or(word, |(_, cmdlet, _)| *cmdlet);
+            Ok(format!(
                 "& (Microsoft.PowerShell.Core\\Get-Command -CommandType \
                  Cmdlet,Application,ExternalScript -TotalCount 1 {target})"
-            )
+            ))
         }
     }
 }
@@ -1657,7 +1755,7 @@ fn has_numeric_conversion(word: &str) -> bool {
 /// contain no `$(`, `${`, `$[`, `((`, `<<`, `(e:`, backtick, backslash, line break or
 /// word-initial `#`, no `$` or `[` directly before a placeholder or placeholder inside
 /// `[...]`, and every segment's command word must pass the structural check in
-/// [`reparsing_command`] (a plain word, not a shell, interpreter, evaluator or
+/// [`command_words_to_prefix`] (a plain word, not a shell, interpreter, evaluator or
 /// arithmetic/name builtin, no evaluating flags). Then the command word of every segment is
 /// prefixed (`command git ...`; see [`command_prefix`]) for `dialect`, so aliases and functions
 /// from the user's rc files cannot stand in for it (#884); `None` leaves commands unprefixed
@@ -1671,7 +1769,7 @@ fn has_numeric_conversion(word: &str) -> bool {
 pub(crate) fn render_command(
     template: &str,
     values: &HashMap<String, String>,
-    dialect: Option<ShellDialect>,
+    shell: Option<RenderShell>,
 ) -> Result<String, String> {
     use handlebars::parser::{ParsedArgumentResult, ParsedArgumentsIterator};
 
@@ -1749,8 +1847,8 @@ pub(crate) fn render_command(
         if let Some(what) = forbidden_syntax_around_placeholders(&stripped.marked) {
             return Err(what);
         }
-        for command_word in command_words_to_prefix(&stripped.words)? {
-            let Some(dialect) = dialect else {
+        for command_word in command_words_to_prefix(&stripped.words, shell.map(|s| s.dialect))? {
+            let Some(shell) = shell else {
                 continue;
             };
             let origin = |at: usize| residual_origin[stripped.words_origin[at]];
@@ -1765,7 +1863,7 @@ pub(crate) fn render_command(
             if !plain {
                 return Err("a quoted command name");
             }
-            insertions.push((first, last + 1, command_prefix(dialect, &command_word.word)));
+            insertions.push((first, last + 1, command_prefix(shell, &command_word.word)?));
         }
         Ok(())
     });
@@ -1916,10 +2014,7 @@ fn resolve_pane_node(
             .unwrap_or_default();
 
         let command_values = command_values_for_pane(context, directory.as_deref());
-        let dialect = node
-            .shell
-            .as_deref()
-            .map_or_else(default_shell_dialect, dialect_for_shell_name);
+        let shell = RenderShell::for_pane(node.shell.as_deref());
         let mut scanned: Vec<(String, bool)> = Vec::new();
         let commands: Vec<CommandTemplate> = node
             .commands
@@ -1929,7 +2024,7 @@ fn resolve_pane_node(
             .map(|cmd| {
                 upgrade_legacy_worktree_path(cmd, directory.as_deref())
                     .and_then(|cmd| {
-                        let exec = render_command(&cmd, &command_values, Some(dialect))?;
+                        let exec = render_command(&cmd, &command_values, Some(shell))?;
                         scanned.push((cmd.to_string(), exec != *cmd));
                         Ok(exec)
                     })

@@ -8,8 +8,9 @@
 # shell's aliases and functions skipped, so the value cannot reach an alias or function you
 # defined in your shell's startup file. Write the real command, not a shortcut: `git
 # checkout {{branch}}`, not `gco {{branch}}`. Set `shell = "pwsh"` (or "fish", "zsh", ...) on
-# a pane to be exact about which shell syntax is used; commands without a placeholder run as
-# written.
+# a pane to be exact about which shell syntax is used (without it, a command that uses a
+# shell-specific builtin such as `export` together with a placeholder is refused); commands
+# without a placeholder run as written.
 
 name = "My Tab Config"
 

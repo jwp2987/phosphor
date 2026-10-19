@@ -101,7 +101,7 @@ fn test_materialized_default_worktree_config_renders_full_worktree_path() {
         );
         assert_eq!(
             commands[1].exec,
-            format!("command cd {expected_worktree_path}")
+            format!("builtin cd {expected_worktree_path}")
         );
     } else {
         panic!("expected terminal pane template");
@@ -174,7 +174,7 @@ default = "terminal"
             materialized_commands(shipped, &repo_path),
             [
                 format!("command git worktree add -b my-feature -- {path_word}"),
-                format!("command cd {path_word}"),
+                format!("builtin cd {path_word}"),
             ],
             "shipped template, repo {name:?}"
         );
@@ -182,8 +182,9 @@ default = "terminal"
             materialized_commands(PRE_878_TEMPLATE, &repo_path),
             [
                 format!("command git worktree add -b my-feature {path_word}"),
-                format!("command cd {path_word}"),
-                format!("echo {repo_word} {repo_word}"),
+                format!("builtin cd {path_word}"),
+                // No placeholder is left after generation, so it is prefixed now (#884).
+                format!("builtin echo {repo_word} {repo_word}"),
             ],
             "pre-#878 template, repo {name:?}"
         );

@@ -284,7 +284,7 @@ fn render_worktree_substitutes_default_branch_name() {
                 .collect::<Vec<_>>(),
             [
                 format!("command git worktree add -b my-feature-branch -- {path_word}"),
-                format!("command cd {path_word}"),
+                format!("builtin cd {path_word}"),
             ]
         );
     } else {
