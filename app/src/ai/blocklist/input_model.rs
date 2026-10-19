@@ -23,6 +23,7 @@ use super::agent_view::{AgentViewController, AgentViewControllerEvent, AgentView
 use super::context_model::BlocklistAIContextModel;
 use super::conversation_selection::{ConversationSelection, ConversationSelectionEvent};
 use super::history_model::BlocklistAIHistoryModel;
+use super::misroute_recovery::{MisrouteMemory, MisrouteOffer, RouteReason, SubmitRoute};
 #[cfg(any(test, feature = "test-util"))]
 use super::conversation_selection::MockConversationSelection;
 use super::input_mode_policy::{InputModePolicy, InputModePolicyHandle, PolicyConfigUpdate};
@@ -192,6 +193,9 @@ pub struct BlocklistAIInputModel {
     /// if a persistent lock is in place and a buffer is submitted.
     was_lock_set_with_empty_buffer: bool,
 
+    /// The last submit and how it was routed, for the one-click misroute recovery (#835).
+    misroute: MisrouteMemory,
+
     /// `None` on the TUI surface, which has no agent-view controller and is always treated as
     /// agent-view-active and never fullscreen.
     agent_view_controller: Option<ModelHandle<AgentViewController>>,
@@ -251,6 +255,7 @@ impl BlocklistAIInputModel {
             detection_generation: 0,
             typeahead_prefix: None,
             was_lock_set_with_empty_buffer: false,
+            misroute: MisrouteMemory::default(),
             agent_view_controller: None,
             ai_context_model,
             terminal_view_id,
@@ -460,6 +465,7 @@ impl BlocklistAIInputModel {
             detection_generation: 0,
             typeahead_prefix: None,
             was_lock_set_with_empty_buffer: false,
+            misroute: MisrouteMemory::default(),
             autodetect_abort_handle: None,
             model,
         }
@@ -981,6 +987,76 @@ impl BlocklistAIInputModel {
 
     pub fn was_lock_set_with_empty_buffer(&self) -> bool {
         self.was_lock_set_with_empty_buffer
+    }
+
+    /// Why a submit made right now would go where it goes (#835): `Locked` when the input type is
+    /// locked (which includes explicit toggles that lock), `Explicit` inside the window of an
+    /// unlocked explicit write, otherwise `Autodetected`. Read this *before* the submit resets
+    /// the input config.
+    pub fn submit_route_reason(&self) -> RouteReason {
+        if self.input_config.is_locked {
+            RouteReason::Locked
+        } else if self
+            .explicit_input_type_set
+            .as_ref()
+            .is_some_and(ExplicitInputTypeSet::is_within_window)
+        {
+            RouteReason::Explicit
+        } else {
+            RouteReason::Autodetected
+        }
+    }
+
+    /// Remembers a submit for the misroute recovery (#835).
+    pub fn record_submit_route(
+        &mut self,
+        text: &str,
+        route: SubmitRoute,
+        reason: RouteReason,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.misroute
+            .record_submit(text, route, reason, Instant::now());
+        ctx.notify();
+    }
+
+    /// Forgets the remembered submit, e.g. for agent-view follow-ups, which are never offered
+    /// a recovery (#835).
+    pub fn clear_misroute_memory(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.misroute.clear() {
+            ctx.notify();
+        }
+    }
+
+    /// Reports a finished user command to the misroute memory (#835).
+    pub fn note_command_finished(
+        &mut self,
+        command: &str,
+        exit_code: warp_core::command::ExitCode,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if self.misroute.note_command_finished(command, exit_code) {
+            ctx.notify();
+        }
+    }
+
+    /// Reports an edit of the input buffer; typing anything new dismisses the offer (#835).
+    pub fn note_buffer_edited(&mut self, buffer_is_empty: bool, ctx: &mut ModelContext<Self>) {
+        if self.misroute.note_buffer_edited(buffer_is_empty) {
+            ctx.notify();
+        }
+    }
+
+    /// The misroute recovery currently on offer, if any (#835).
+    pub fn misroute_offer(&self) -> Option<MisrouteOffer> {
+        self.misroute.offer(Instant::now())
+    }
+
+    /// Consumes the misroute offer so it fires once (#835).
+    pub fn take_misroute_offer(&mut self, ctx: &mut ModelContext<Self>) -> Option<MisrouteOffer> {
+        let offer = self.misroute.take_offer(Instant::now());
+        ctx.notify();
+        offer
     }
 
     /// Aborts any in progress work for autodetection.

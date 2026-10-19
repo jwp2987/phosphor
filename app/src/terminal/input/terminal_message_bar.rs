@@ -3,14 +3,14 @@ use std::sync::Arc;
 use parking_lot::FairMutex;
 use pathfinder_color::ColorU;
 use warp_core::ui::theme::WarpTheme;
-use warpui::elements::{Container, Element};
+use warpui::elements::{Container, Element, MouseStateHandle};
 use warpui::keymap::Keystroke;
 use warpui::{AppContext, Entity, ModelHandle, SingletonEntity, View, ViewContext};
 
 use super::buffer_model::InputBufferModel;
 use super::message_bar::{
-    common::render_terminal_message, truncated_command_for_block, Message, MessageItem,
-    MessageProvider,
+    common::render_terminal_message, misroute::misroute_recovery_message,
+    truncated_command_for_block, Message, MessageItem, MessageProvider,
 };
 use crate::ai::blocklist::{
     BlocklistAIContextEvent, BlocklistAIContextModel, BlocklistAIInputModel,
@@ -37,6 +37,7 @@ pub struct TerminalInputMessageBar {
     context_model: ModelHandle<BlocklistAIContextModel>,
     suggestions_mode_model: ModelHandle<InputSuggestionsModeModel>,
     inline_history_model: ModelHandle<InlineMenuModel<AcceptHistoryItem, HistoryTab>>,
+    misroute_mouse_state: MouseStateHandle,
 }
 
 impl Entity for TerminalInputMessageBar {
@@ -56,6 +57,8 @@ impl TerminalInputMessageBar {
         ctx.subscribe_to_model(&ai_input_model, |_, _, _, ctx| {
             ctx.notify();
         });
+        // The misroute recovery offer (#835) changes without an input-config event.
+        ctx.observe(&ai_input_model, |_, _, ctx| ctx.notify());
         ctx.subscribe_to_model(&input_buffer_model, |_, _, _, ctx| {
             ctx.notify();
         });
@@ -81,6 +84,7 @@ impl TerminalInputMessageBar {
             context_model,
             suggestions_mode_model,
             inline_history_model,
+            misroute_mouse_state: MouseStateHandle::default(),
         }
     }
 }
@@ -117,10 +121,12 @@ impl View for TerminalInputMessageBar {
             context_model,
             input_model,
             app,
+            misroute_mouse_state: &self.misroute_mouse_state,
         };
 
-        let mut message = ErroredBlockMessageProducer
+        let mut message = MisrouteRecoveryMessageProducer
             .produce_message(args)
+            .or_else(|| ErroredBlockMessageProducer.produce_message(args))
             .or_else(|| AgentMessageProducer.produce_message(args))
             .or_else(|| PlanMessageProducer.produce_message(args))
             .or_else(|| ContinueConversationMessageProducer.produce_message(args))
@@ -151,6 +157,7 @@ pub struct TerminalMessageArgs<'a> {
     context_model: &'a BlocklistAIContextModel,
     input_model: &'a BlocklistAIInputModel,
     app: &'a AppContext,
+    misroute_mouse_state: &'a MouseStateHandle,
 }
 
 impl<'a> TerminalMessageArgs<'a> {
@@ -179,6 +186,22 @@ fn is_ai_detected(
 #[cfg(test)]
 #[path = "terminal_message_bar_tests.rs"]
 mod tests;
+
+/// Offers the one-click recovery when input autodetection sent the last submit to the wrong
+/// place (#835). Only with an empty buffer: typing anything new dismisses the offer.
+struct MisrouteRecoveryMessageProducer;
+impl MessageProvider<TerminalMessageArgs<'_>> for MisrouteRecoveryMessageProducer {
+    fn produce_message(&self, args: TerminalMessageArgs<'_>) -> Option<Message> {
+        if !args.current_input.is_empty() {
+            return None;
+        }
+        let offer = args.input_model.misroute_offer()?;
+        Some(misroute_recovery_message(
+            &offer,
+            args.misroute_mouse_state.clone(),
+        ))
+    }
+}
 
 struct ErroredBlockMessageProducer;
 impl MessageProvider<TerminalMessageArgs<'_>> for ErroredBlockMessageProducer {

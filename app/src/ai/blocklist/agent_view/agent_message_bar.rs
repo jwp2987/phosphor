@@ -32,6 +32,7 @@ use crate::ai::request_usage_model::{AIRequestUsageModel, AIRequestUsageModelEve
 use crate::search::slash_command_menu::static_commands::commands;
 use crate::settings::{InputSettings, InputSettingsChangedEvent};
 use crate::terminal::input::buffer_model::{InputBufferModel, InputBufferUpdateEvent};
+use crate::terminal::input::message_bar::misroute::misroute_recovery_message;
 use crate::terminal::input::message_bar::attached_context::{
     AttachedBlocksMessageProducer, AttachedContextArgs, AttachedTextSelectionMessageProducer,
 };
@@ -67,6 +68,8 @@ pub struct AgentMessageBarMouseStates {
     pub toggle_conversation_menu: MouseStateHandle,
     pub toggle_code_review: MouseStateHandle,
     pub clear_attached_context: MouseStateHandle,
+    /// Mouse state handle for the misroute recovery item (#835).
+    pub misroute_recovery: MouseStateHandle,
     /// Mouse state handle for the "Get Figma MCP" contextual button.
     pub figma_install_button: MouseStateHandle,
     /// Mouse state handle for the "Enable Figma MCP" contextual button.
@@ -122,6 +125,8 @@ impl AgentMessageBar {
                 ctx.notify();
             }
         });
+        // The misroute recovery offer (#835) changes without an input-config event.
+        ctx.observe(&input_model, |_, _, ctx| ctx.notify());
         ctx.subscribe_to_model(&input_model, |_, _, event, ctx| {
             if matches!(
                 event,
@@ -337,6 +342,7 @@ impl View for AgentMessageBar {
         // Ephemeral messages take highest priority.
         let Some(mut message) = ephemeral_message_model
             .produce_message(args)
+            .or_else(|| MisrouteRecoveryMessageProducer.produce_message(args))
             .or_else(|| BootstrappingMessageProducer.produce_message(args))
             .or_else(|| ForkSlashCommandMessageProducer.produce_message(args))
             .or_else(|| AttachedBlocksMessageProducer.produce_message(args))
@@ -944,5 +950,21 @@ fn figma_chip(
             disabled: true,
             horizontal_alignment: ChipHorizontalAlignment::Right,
         }
+    }
+}
+
+/// Offers "run as shell command instead" for an autodetected agent turn (#835). Only with an
+/// empty buffer: typing anything new dismisses the offer.
+struct MisrouteRecoveryMessageProducer;
+impl MessageProvider<AgentMessageArgs<'_>> for MisrouteRecoveryMessageProducer {
+    fn produce_message(&self, args: AgentMessageArgs<'_>) -> Option<Message> {
+        if !args.input_buffer_model.current_value().is_empty() {
+            return None;
+        }
+        let offer = args.input_model.misroute_offer()?;
+        Some(misroute_recovery_message(
+            &offer,
+            args.mouse_states.misroute_recovery.clone(),
+        ))
     }
 }
