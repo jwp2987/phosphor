@@ -226,7 +226,7 @@ def check_cycle(sh, cmd, want_exit):
         check(codes[:1] == [want_exit], f"`{cmd}` exit code is {want_exit} (got {codes})", sh)
 
 
-def scenario(title, zshrc, zshenv=""):
+def scenario(title, zshrc, zshenv="", failing=True):
     print(title)
     sh = Shell(zshrc, zshenv)
     try:
@@ -236,9 +236,21 @@ def scenario(title, zshrc, zshenv=""):
         ns = sh.names()
         check("Bootstrapped" in ns and "Precmd" in ns[ns.index("Bootstrapped"):],
               "the first prompt after Bootstrapped emits Precmd", sh)
-        check_cycle(sh, "false", 1)
-        check_cycle(sh, 'sh -c "exit 7"', 7)
+        # (With errexit the user's own failing commands end the shell, natively too, so those
+        # scenarios only run commands that succeed.)
+        if failing:
+            check_cycle(sh, "false", 1)
+            check_cycle(sh, 'sh -c "exit 7"', 7)
         check_cycle(sh, "true", 0)
+        check_cycle(sh, "echo hi", 0)
+        check(not sh.dead, "the shell is still alive", sh)
+        # The ESC-i input-report widget runs under the user's options too.
+        n = len([1 for h, _ in sh.hooks() if h == "InputBuffer"])
+        os.write(sh.fd, b"echo kept")
+        sh.pump(0.3)
+        os.write(sh.fd, b"\x1bi")
+        ok = sh.pump(5, lambda: len([1 for h, _ in sh.hooks() if h == "InputBuffer"]) > n)
+        check(ok, "ESC i reports the input buffer", sh)
         # Under nounset the bootstrap itself must not print "parameter not set"
         # for HISTFILE, EDITOR or WARP_USING_WINDOWS_CON_PTY (zsh reports it and
         # carries on, so the hooks still arrive; it is just noise on every start).
@@ -258,6 +270,19 @@ def scenario_hostile_home():
         boot = [v for n, v in sh.hooks() if n == "Bootstrapped"]
         check(bool(boot) and boot[0].get("home_dir") == sh.home,
               f"home_dir round-trips exactly (got {boot[0].get('home_dir') if boot else None!r})", sh)
+    finally:
+        sh.close()
+
+
+def scenario_clear_hook_arrays_at_prompt():
+    print("precmd_functions=() typed at the prompt (#926 / #828)")
+    sh = Shell("")
+    try:
+        check(sh.bootstrap(), "bootstraps", sh)
+        check_cycle(sh, "precmd_functions=()", 0)
+        check_cycle(sh, "echo hi", 0)
+        check_cycle(sh, "preexec_functions=(); precmd_functions=()", 0)
+        check_cycle(sh, "echo again", 0)
     finally:
         sh.close()
 
@@ -395,6 +420,13 @@ def main():
         "a user precmd prepended to precmd_functions that dies (#912)",
         "precmd_a() { : ${NOPE:?boom}; }\nprecmd_functions=(precmd_a $precmd_functions)",
     )
+    scenario("setopt errexit; false (#926)", "setopt errexit\nfalse", failing=False)
+    scenario("setopt warn_create_global no_unset (#926)", "setopt warn_create_global no_unset")
+    scenario("setopt ksh_arrays (#926)", "setopt ksh_arrays")
+    scenario("setopt errexit err_return warn_create_global nounset ksh_arrays (#926)",
+             "setopt errexit err_return warn_create_global nounset ksh_arrays\nfalse", failing=False)
+    scenario("precmd_functions=() in .zshrc (#926)", "precmd_functions=()")
+    scenario_clear_hook_arrays_at_prompt()
     scenario_err_exit()
     scenario_errexit_repair_agent_rc()
     scenario_hostile_home()

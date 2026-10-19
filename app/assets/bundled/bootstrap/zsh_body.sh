@@ -282,7 +282,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
       # Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
       # expected-failure probe in this hook (no repo, an unset variable) into an
       # early return, a killed shell or a lost Precmd.
-      setopt localoptions noerrreturn noerrexit unset
+      setopt localoptions noerrreturn noerrexit unset noksharrays nowarncreateglobal
       # Phosphor (#828): a Preexec is out; the block it opens is finished only by
       # warp_precmd. _warp_repair_hooks reads this to tell whether a prompt cycle
       # skipped that precmd (and so owes one) or already ran it.
@@ -365,7 +365,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
       # Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
       # expected-failure probe in this hook (no repo, an unset variable) into an
       # early return, a killed shell or a lost Precmd.
-      setopt localoptions noerrreturn noerrexit unset
+      setopt localoptions noerrreturn noerrexit unset noksharrays nowarncreateglobal
       # Phosphor (#855): an agent command run under errexit hands its status over in
       # __phosphor_ap_rc instead of re-raising it (which would exit the user's shell).
       # Phosphor (#855): see __phosphor_ap_restore_pagers.
@@ -690,7 +690,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
     # Disable oh-my-zsh default title otherwise.
     DISABLE_AUTO_TITLE="true"
 
-    setopt localoptions nopromptsubst noerrreturn noerrexit unset
+    setopt localoptions nopromptsubst noerrreturn noerrexit unset noksharrays nowarncreateglobal
 
     # Don't set the title if inside emacs, unless using vterm
     [[ -n "${INSIDE_EMACS:-}" && "${INSIDE_EMACS:-}" != vterm ]] && return
@@ -707,7 +707,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
     # Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
     # expected-failure probe in this hook (no repo, an unset variable) into an
     # early return, a killed shell or a lost Precmd.
-    setopt localoptions noerrreturn noerrexit unset
+    setopt localoptions noerrreturn noerrexit unset noksharrays nowarncreateglobal
     # If the user wants to set the title using oh-my-zsh, they can
     # set the WARP_DISABLE_AUTO_TITLE flag.
     [[ "${WARP_DISABLE_AUTO_TITLE:-}" != true ]] || return
@@ -725,7 +725,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
     # Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
     # expected-failure probe in this hook (no repo, an unset variable) into an
     # early return, a killed shell or a lost Precmd.
-    setopt localoptions noerrreturn noerrexit unset
+    setopt localoptions noerrreturn noerrexit unset noksharrays nowarncreateglobal
     # If the user wants to set the title using oh-my-zsh, they can
     # set the WARP_DISABLE_AUTO_TITLE flag.
     [[ "${WARP_DISABLE_AUTO_TITLE:-}" != true ]] || return
@@ -890,7 +890,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
     # Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
     # expected-failure probe in this hook (no repo, an unset variable) into an
     # early return, a killed shell or a lost Precmd.
-    setopt localoptions noerrreturn noerrexit unset
+    setopt localoptions noerrreturn noerrexit unset noksharrays nowarncreateglobal
     # 133;A and 133;B are standard prompt marker OSCs. We also follow the standard for the rprompt OSC below.
     # See https://learn.microsoft.com/en-us/windows/terminal/tutorials/shell-integration and
     # https://gitlab.freedesktop.org/terminal-wg/specifications/-/merge_requests/6/diffs for details.
@@ -1329,25 +1329,25 @@ esac
   # user's rcfile.
   if [[ -z $WARP_IS_SUBSHELL ]]; then
       if [[ -e "${ZDOTDIR:-$HOME}/.zshenv" ]]; then
-          source "${ZDOTDIR:-$HOME}/.zshenv";
+          source "${ZDOTDIR:-$HOME}/.zshenv" || :;
       fi
       if [[ -e /etc/zprofile ]]; then
-          source /etc/zprofile;
+          source /etc/zprofile || :;
       fi
       if [[ -e "${ZDOTDIR:-$HOME}/.zprofile" ]]; then
-          source "${ZDOTDIR:-$HOME}/.zprofile";
+          source "${ZDOTDIR:-$HOME}/.zprofile" || :;
       fi
       if [[ -e /etc/zshrc ]]; then
-          source /etc/zshrc;
+          source /etc/zshrc || :;
       fi
       if [[ -e "${ZDOTDIR:-$HOME}/.zshrc" ]]; then
-          source "${ZDOTDIR:-$HOME}/.zshrc";
+          source "${ZDOTDIR:-$HOME}/.zshrc" || :;
       fi
       if [[ -e /etc/zlogin ]]; then
-          source /etc/zlogin;
+          source /etc/zlogin || :;
       fi
       if [[ -e "${ZDOTDIR:-$HOME}/.zlogin" ]]; then
-          source "${ZDOTDIR:-$HOME}/.zlogin";
+          source "${ZDOTDIR:-$HOME}/.zlogin" || :;
       fi
   fi
 
@@ -1375,7 +1375,7 @@ esac
   _warp_zshaddhistory() {
     # Phosphor (#904): the deliberate non-zero returns below ("do not save") must
     # not trip a user's err_exit/err_return and kill or unwind the shell.
-    setopt localoptions noerrreturn noerrexit
+    setopt localoptions noerrreturn noerrexit noksharrays nowarncreateglobal
     # Phosphor (#828): last-resort repair, for when the zle-line-init repair
     # below did not run (a plugin or the user replaced that widget too). Each
     # zshaddhistory function sees the previous command's status in $?. Never
@@ -1511,7 +1511,7 @@ esac
   # _WARP_REPAIRED_PRECMD to 1 when it emitted the precmd the prompt cycle
   # skipped, and to "" otherwise.
   _warp_repair_hooks() {
-    setopt localoptions noerrreturn noerrexit
+    setopt localoptions noerrreturn noerrexit noksharrays nowarncreateglobal
     _WARP_REPAIRED_PRECMD=""
     [[ -n ${_WARP_HOOKS_INSTALLED:-} ]] || return 0
     local -a warp_missing_precmd warp_missing_preexec
@@ -1894,7 +1894,7 @@ esac
 
     local escaped_path="$(warp_escape_json "$PATH")"
 
-    local escaped_shell_plugins="$(warp_escape_json "`builtin print -l -- ${shell_plugins}`")"
+    local escaped_shell_plugins="$(warp_escape_json "`builtin print -l -- ${shell_plugins[@]}`")"
 
     # The list of options enabled for the current shell.
     local shell_options="$(warp_escape_json "`setopt`")"
