@@ -6565,7 +6565,13 @@ fn stopping_a_conversation_at_an_idle_prompt_writes_no_ctrl_c() {
                 BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
                     history.start_new_conversation(view.view_id, false, false, ctx)
                 });
-            assert!(view.model.lock().block_list().active_block().is_command_grid_active());
+            assert!(
+                view.model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_command_grid_active()
+            );
             view.stop_local_agent_conversation(conversation_id, ctx);
         });
 

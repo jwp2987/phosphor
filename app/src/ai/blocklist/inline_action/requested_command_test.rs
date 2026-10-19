@@ -282,7 +282,9 @@ mod enter_context_predicate_tests {
     fn matches_when_the_card_itself_is_on_the_responder_chain() {
         let mut context = Context::default();
         context.set.insert(RequestedCommandView::ui_name());
-        context.set.insert(REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT);
+        context
+            .set
+            .insert(REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT);
 
         assert!(enter_accepts_requested_command_context().eval(&context));
     }
@@ -315,7 +317,9 @@ mod enter_context_predicate_tests {
     fn does_not_match_while_edit_mode_is_open_even_with_the_card_focused() {
         let mut context = Context::default();
         context.set.insert(RequestedCommandView::ui_name());
-        context.set.insert(REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT);
+        context
+            .set
+            .insert(REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT);
         context.set.insert(EDIT_MODE_OPEN_KEYMAP_CONTEXT);
 
         assert!(!enter_accepts_requested_command_context().eval(&context));
