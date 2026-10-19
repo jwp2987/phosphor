@@ -41,7 +41,8 @@ use super::image_map::StoredImageMetadata;
 use super::index::Point;
 use super::kitty::{
     create_kitty_error_reply, create_kitty_ok_reply, DeletionType, KittyAction, KittyChunk,
-    KittyMessage, KittyResponse, PendingKittyMessage,
+    KittyDecodeError, KittyError, KittyMessage, KittyResponse, PendingKittyMessage,
+    MAX_KITTY_BASE64_BYTES, MAX_KITTY_IMAGE_BYTES,
 };
 use super::lifecycle::{
     BlockLifecycleCoordinator, CommandStartKind, IgnoreReason, LifecycleAction, LifecycleInput,
@@ -93,7 +94,6 @@ use warp_core::features::FeatureFlag;
 use warp_core::semantic_selection::SemanticSelection;
 pub use warp_terminal::model::BlockIndex;
 use warp_terminal::model::{KeyboardModes, KeyboardModesApplyBehavior};
-use warpui::assets::asset_cache::Asset;
 use warpui::image_cache::ImageType;
 use warpui::r#async::executor::Background;
 use warpui::AppContext;
@@ -353,7 +353,14 @@ enum IsReceivingITermImageData {
 /// Represents whether or not bytes read from the PTY should be considered Kitty action data.
 enum IsReceivingKittyActionData {
     /// We're currently expecting chunks of action data to come over the PTY to form the entire action.
-    Yes { pending: PendingKittyMessage },
+    Yes {
+        pending: PendingKittyMessage,
+        /// Base64 bytes accumulated so far across all chunks (#877).
+        received_bytes: usize,
+        /// The transmission exceeded `MAX_KITTY_BASE64_BYTES`; its data has been
+        /// dropped and later chunks are discarded until the final one.
+        overflowed: bool,
+    },
 
     /// PTY output should be handled normally.
     No,
@@ -3763,10 +3770,9 @@ impl ansi::Handler for TerminalModel {
                     return;
                 }
 
-                let Ok(image_type) = ImageType::try_from_bytes(&pending.data[..]) else {
-                    return;
-                };
-                let Some(image_size) = image_type.image_size() else {
+                // Header-only size read: a full decode here would run on the
+                // model thread and let a decompression bomb through (#880).
+                let Ok(image_size) = ImageType::dimensions_from_bytes(&pending.data[..]) else {
                     return;
                 };
 
@@ -3841,7 +3847,12 @@ impl ansi::Handler for TerminalModel {
             IsReceivingKittyActionData::No,
         );
 
-        let IsReceivingKittyActionData::Yes { mut pending } = is_receiving_kitty_image_data else {
+        let IsReceivingKittyActionData::Yes {
+            mut pending,
+            overflowed,
+            ..
+        } = is_receiving_kitty_image_data
+        else {
             log::warn!("Received 'end_kitty_action_receiving' while not expecting to read kitty image chunks.");
             return;
         };
@@ -3856,6 +3867,19 @@ impl ansi::Handler for TerminalModel {
             if self.next_kitty_image_id == 0 {
                 self.next_kitty_image_id += 1;
             }
+        }
+
+        if overflowed {
+            let err = KittyError::from(KittyDecodeError::PayloadTooLarge {
+                limit: MAX_KITTY_IMAGE_BYTES,
+            });
+            log::warn!("{err:?}");
+            if let Some(message_id) = message_id {
+                if verbosity.send_error() {
+                    let _ = writer.write_all(&create_kitty_error_reply(message_id, err));
+                }
+            }
+            return;
         }
 
         let message = match KittyMessage::try_from(pending) {
@@ -3966,17 +3990,57 @@ impl ansi::Handler for TerminalModel {
         };
     }
 
+    fn discard_kitty_action_receiving<W: std::io::Write>(&mut self, writer: &mut W) {
+        let IsReceivingKittyActionData::Yes { pending, .. } = std::mem::replace(
+            &mut self.is_receiving_kitty_image_data,
+            IsReceivingKittyActionData::No,
+        ) else {
+            return;
+        };
+        let err = KittyError::from(KittyDecodeError::PayloadTooLarge {
+            limit: MAX_KITTY_IMAGE_BYTES,
+        });
+        log::warn!("{err:?}");
+        if let Some(image_id) = pending.control_data.image_id {
+            if pending.control_data.verbosity.send_error() {
+                let _ = writer.write_all(&create_kitty_error_reply(image_id, err));
+            }
+        }
+    }
+
     fn on_kitty_image_chunk_received(&mut self, chunk: KittyChunk) {
         match &mut self.is_receiving_kitty_image_data {
-            IsReceivingKittyActionData::Yes { pending } => {
-                pending.payload.push(chunk.payload);
+            IsReceivingKittyActionData::Yes {
+                pending,
+                received_bytes,
+                overflowed,
+            } => {
+                if *overflowed {
+                    return;
+                }
+                *received_bytes = received_bytes.saturating_add(chunk.payload.len());
+                if *received_bytes > MAX_KITTY_BASE64_BYTES {
+                    // Stop buffering: free what we have and discard the rest.
+                    *overflowed = true;
+                    pending.payload = vec![];
+                } else {
+                    pending.payload.push(chunk.payload);
+                }
             }
             IsReceivingKittyActionData::No => {
+                let received_bytes = chunk.payload.len();
+                let overflowed = received_bytes > MAX_KITTY_BASE64_BYTES;
                 self.is_receiving_kitty_image_data = IsReceivingKittyActionData::Yes {
                     pending: PendingKittyMessage {
                         control_data: chunk.control_data,
-                        payload: vec![chunk.payload],
+                        payload: if overflowed {
+                            vec![]
+                        } else {
+                            vec![chunk.payload]
+                        },
                     },
+                    received_bytes,
+                    overflowed,
                 };
             }
         }

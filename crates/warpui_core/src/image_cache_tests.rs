@@ -798,3 +798,70 @@ fn custom_header_parse_rejects_overflowing_dimensions() {
     assert_eq!((header.width, header.height), (1, 1));
     assert_eq!(body, b"\x01\x02\x03");
 }
+
+/// A GIF header declaring a `width` x `height` logical screen and nothing else.
+fn gif_header(width: u16, height: u16) -> Vec<u8> {
+    let mut data = b"GIF89a".to_vec();
+    data.extend_from_slice(&width.to_le_bytes());
+    data.extend_from_slice(&height.to_le_bytes());
+    data.extend_from_slice(&[0, 0, 0]);
+    data
+}
+
+/// A WebP whose VP8X chunk declares a `width` x `height` canvas and nothing else.
+fn webp_vp8x_header(width: u32, height: u32) -> Vec<u8> {
+    let mut data = b"RIFF".to_vec();
+    data.extend_from_slice(&22u32.to_le_bytes());
+    data.extend_from_slice(b"WEBPVP8X");
+    data.extend_from_slice(&10u32.to_le_bytes());
+    data.extend_from_slice(&[0, 0, 0, 0]);
+    data.extend_from_slice(&(width - 1).to_le_bytes()[..3]);
+    data.extend_from_slice(&(height - 1).to_le_bytes()[..3]);
+    data
+}
+
+/// #880: a tiny GIF header claiming a 65535x65535 screen must be rejected
+/// before the decoder allocates a ~17 GB canvas.
+#[test]
+fn gif_decompression_bomb_header_is_rejected() {
+    let data = gif_header(u16::MAX, u16::MAX);
+    assert!(<ImageType as Asset>::try_from_bytes(&data).is_err());
+    assert!(ImageType::dimensions_from_bytes(&data).is_err());
+}
+
+/// #880: same for a WebP canvas past the dimension limit.
+#[test]
+fn webp_oversized_canvas_is_rejected() {
+    let data = webp_vp8x_header(MAX_DECODED_IMAGE_DIMENSION + 1, 1);
+    assert!(<ImageType as Asset>::try_from_bytes(&data).is_err());
+    assert!(ImageType::dimensions_from_bytes(&data).is_err());
+}
+
+/// #880: a frame inside the dimension limit is still bounded by total bytes.
+#[test]
+fn decoded_size_check_enforces_byte_budget() {
+    assert!(check_decoded_size(MAX_DECODED_IMAGE_DIMENSION, MAX_DECODED_IMAGE_DIMENSION).is_err());
+    assert!(check_decoded_size(MAX_DECODED_IMAGE_DIMENSION + 1, 1).is_err());
+    assert!(check_decoded_size(1, MAX_DECODED_IMAGE_DIMENSION + 1).is_err());
+    assert!(check_decoded_size(1024, 1024).is_ok());
+}
+
+/// #880: size from the header alone matches the decoded size for real images.
+#[test]
+fn header_dimensions_match_decoded_dimensions() {
+    let gif = include_bytes!("../../warpui/examples/assets/numbers-1000ms.gif");
+    let from_header = ImageType::dimensions_from_bytes(gif).unwrap();
+    let decoded = <ImageType as Asset>::try_from_bytes(gif)
+        .unwrap()
+        .image_size()
+        .unwrap();
+    assert_eq!(from_header, decoded);
+
+    let webp = include_bytes!("../test_data/animated.webp");
+    let from_header = ImageType::dimensions_from_bytes(webp).unwrap();
+    let decoded = <ImageType as Asset>::try_from_bytes(webp)
+        .unwrap()
+        .image_size()
+        .unwrap();
+    assert_eq!(from_header, decoded);
+}

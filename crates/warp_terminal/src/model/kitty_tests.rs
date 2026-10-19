@@ -12,7 +12,7 @@ fn kitty_action_from_chunks(input: &[u8]) -> Result<KittyAction, KittyError> {
     let mut control_data = None;
     let mut payload = vec![];
     for chunk in input.split(|&byte| byte == 0x1e) {
-        let parsed = parse_kitty_chunk(chunk.to_vec());
+        let parsed = parse_kitty_chunk(chunk);
         if control_data.is_none() {
             control_data = Some(parsed.control_data.clone());
         }
@@ -297,4 +297,16 @@ fn assembled_payload_is_bounded() {
         decode_base64_chunks(&chunks, 6),
         Err(KittyDecodeError::PayloadTooLarge { limit: 6 })
     ));
+}
+
+/// #880: f=100 is PNG only; a GIF (or any other decoder-reachable format) must
+/// be rejected rather than handed to a decoder.
+#[test]
+fn f100_rejects_non_png_payloads() {
+    let mut gif = b"GIF89a".to_vec();
+    gif.extend_from_slice(&[1, 0, 1, 0, 0, 0, 0]);
+    let payload = base64::engine::general_purpose::STANDARD.encode(&gif);
+    let control = format!("a=t,f=100;{payload}");
+    let result = kitty_action_from_chunks(control.as_bytes());
+    assert!(result.is_err(), "{result:?}");
 }

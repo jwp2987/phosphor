@@ -900,3 +900,58 @@ fn all_lines_bounded(frame: &TextFrame, frame_width: f32) -> bool {
         all_bounded && current_bounded
     })
 }
+
+#[test]
+fn test_longest_long_word_start_finds_only_long_words() {
+    assert_eq!(
+        TextLayoutSystem::longest_long_word_start("a few short words"),
+        None
+    );
+
+    let long = "x".repeat(LONG_WORD_BYTES + 1);
+    let text = format!("ab {long} cd");
+    assert_eq!(TextLayoutSystem::longest_long_word_start(&text), Some(3));
+
+    // A word that runs to the end of the text still counts.
+    let text = format!("ab {long}");
+    assert_eq!(TextLayoutSystem::longest_long_word_start(&text), Some(3));
+
+    // The longest of several long words wins.
+    let longer = "y".repeat(LONG_WORD_BYTES + 100);
+    let text = format!("{long} {longer}");
+    assert_eq!(
+        TextLayoutSystem::longest_long_word_start(&text),
+        Some(long.len() + 1)
+    );
+}
+
+/// #864: a single word past rustybuzz's 16,384 limit used to shape to zero glyphs
+/// and zero width on this stack.
+#[test]
+fn test_word_longer_than_shaping_limit_still_lays_out() -> Result<()> {
+    let (font_db, roboto) = init_fonts();
+
+    let text = "a".repeat(20_000);
+    let line_style = LineStyle {
+        font_size: FONT_SIZE,
+        line_height_ratio: DEFAULT_UI_LINE_HEIGHT_RATIO,
+        baseline_ratio: DEFAULT_TOP_BOTTOM_RATIO,
+        fixed_width_tab_size: None,
+    };
+    let line = font_db.text_layout_system().layout_line(
+        &text,
+        line_style,
+        &[(
+            0..text.chars().count(),
+            StyleAndFont::new(roboto, Properties::default(), TextStyle::new()),
+        )],
+        f32::MAX,
+        crate::text_layout::ClipConfig::default(),
+    );
+
+    assert!(
+        line.width > 0.0,
+        "a 20,000-char word laid out with zero width"
+    );
+    Ok(())
+}

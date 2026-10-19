@@ -31,7 +31,8 @@ use resvg::usvg::fontdb::Query;
 use vec1::Vec1;
 
 use cosmic_text::{
-    Align, Attrs, AttrsList, BidiParagraphs, LayoutGlyph, LayoutLine, ShapeLine, Shaping, Wrap,
+    Align, Attrs, AttrsList, AttrsOwned, BidiParagraphs, LayoutGlyph, LayoutLine, ShapeLine,
+    Shaping, Wrap,
 };
 use dashmap::{mapref::entry::Entry, DashMap};
 use fontdb::Source;
@@ -1141,6 +1142,29 @@ impl TextLayoutSystem {
         text[glyph_start..].chars().next()
     }
 
+    /// The byte offset where the longest whitespace-delimited word starts, if that word is long
+    /// enough (over [`LONG_WORD_BYTES`]) to risk cosmic-text's shaping limit (#864).
+    fn longest_long_word_start(text: &str) -> Option<usize> {
+        let mut best: Option<(usize, usize)> = None;
+        let mut word_start: Option<usize> = None;
+        for (index, c) in text
+            .char_indices()
+            .chain(std::iter::once((text.len(), ' ')))
+        {
+            if c.is_whitespace() {
+                if let Some(start) = word_start.take() {
+                    let len = index - start;
+                    if len > LONG_WORD_BYTES && best.is_none_or(|(_, best_len)| len > best_len) {
+                        best = Some((start, len));
+                    }
+                }
+            } else if word_start.is_none() {
+                word_start = Some(index);
+            }
+        }
+        best.map(|(start, _)| start)
+    }
+
     /// Produces an [`AttrsList`] to layout text given a list of `style_runs` and the `text` the
     /// runs correspond to.
     fn build_attrs_list(
@@ -1150,8 +1174,7 @@ impl TextLayoutSystem {
         text_styles_map: &mut TextStylesMap,
         str_index_map: &StrIndexMap,
     ) -> AttrsList {
-        let attrs = Attrs::new();
-        let mut attrs_list = AttrsList::new(attrs);
+        let mut spans: Vec<(Range<usize>, AttrsOwned)> = Vec::with_capacity(style_runs.len());
 
         for (range, style_and_font) in style_runs {
             let start_byte_index = str_index_map.byte_index(range.start).unwrap_or(text.len());
@@ -1180,9 +1203,9 @@ impl TextLayoutSystem {
 
             let style_index = text_styles_map.insert(style_and_font.style);
 
-            attrs_list.add_span(
+            spans.push((
                 start_byte_index..end_byte_index,
-                Attrs {
+                AttrsOwned::new(Attrs {
                     color_opt: None,
                     family: cosmic_text::Family::Name(family),
                     stretch: Default::default(),
@@ -1191,12 +1214,38 @@ impl TextLayoutSystem {
                     metadata: style_index,
                     cache_key_flags: cosmic_text::CacheKeyFlags::empty(),
                     metrics_opt: None,
-                },
-            );
+                }),
+            ));
+        }
+
+        // cosmic-text shapes an empty run at the start of every word whose first
+        // grapheme's attrs are not compatible with the list's defaults, and that
+        // leaves rustybuzz's per-buffer length limit at 16,384 for the word's real
+        // run, so a longer word shapes to nothing (#864). Make the defaults
+        // compatible with the span a very long word starts in. Other words are
+        // far below the limit and are unaffected by the empty run.
+        let mut defaults = Attrs::new();
+        if let Some(start) = Self::longest_long_word_start(text) {
+            if let Some((_, attrs)) = spans.iter().find(|(range, _)| range.contains(&start)) {
+                let compatible = attrs.as_attrs();
+                defaults.family = compatible.family;
+                defaults.stretch = compatible.stretch;
+                defaults.style = compatible.style;
+                defaults.weight = compatible.weight;
+            }
+        }
+
+        let mut attrs_list = AttrsList::new(defaults);
+        for (range, attrs) in &spans {
+            attrs_list.add_span(range.clone(), attrs.as_attrs());
         }
         attrs_list
     }
 }
+
+/// Words longer than this many bytes (a conservative proxy for cosmic-text's 16,384-glyph
+/// shaping limit) get special attrs-list defaults. See [`TextLayoutSystem::longest_long_word_start`].
+const LONG_WORD_BYTES: usize = 8 * 1024;
 
 #[cfg_attr(target_family = "wasm", expect(dead_code))]
 struct LoadedSystemFonts(Vec<(crate::fonts::FontInfo, FontFamily)>);

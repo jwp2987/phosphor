@@ -18,7 +18,7 @@ use crate::{
 use image::{
     codecs::{gif::GifDecoder, webp::WebPDecoder},
     imageops::FilterType,
-    AnimationDecoder, DynamicImage, Frame, ImageBuffer, ImageFormat,
+    AnimationDecoder, DynamicImage, Frame, ImageBuffer, ImageDecoder, ImageFormat,
 };
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use pathfinder_geometry::vector::Vector2I;
@@ -307,6 +307,97 @@ impl CustomImageHeader {
     }
 }
 
+/// The widest or tallest an untrusted raster image may be (#880).
+pub const MAX_DECODED_IMAGE_DIMENSION: u32 = 16_384;
+
+/// The most RGBA bytes decoding one untrusted image may produce, summed across
+/// animation frames. Kept under the asset cache's 320 MB budget so an accepted
+/// image is never decoded only to be evicted straight away (#880).
+pub const MAX_DECODED_IMAGE_BYTES: u64 = 256 * 1024 * 1024;
+
+fn decode_limits() -> image::Limits {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DECODED_IMAGE_DIMENSION);
+    limits.max_image_height = Some(MAX_DECODED_IMAGE_DIMENSION);
+    limits.max_alloc = Some(MAX_DECODED_IMAGE_BYTES);
+    limits
+}
+
+/// Fails unless a `width` x `height` RGBA frame is within the decode limits.
+fn check_decoded_size(width: u32, height: u32) -> Result<()> {
+    if width > MAX_DECODED_IMAGE_DIMENSION || height > MAX_DECODED_IMAGE_DIMENSION {
+        return Err(anyhow!(
+            "image dimensions {width}x{height} exceed the {MAX_DECODED_IMAGE_DIMENSION} limit"
+        ));
+    }
+    let bytes = u64::from(width) * u64::from(height) * 4;
+    if bytes > MAX_DECODED_IMAGE_BYTES {
+        return Err(anyhow!(
+            "decoded image would need {bytes} bytes, over the {MAX_DECODED_IMAGE_BYTES} limit"
+        ));
+    }
+    Ok(())
+}
+
+/// Reads the logical screen size from a GIF header without decoding anything.
+fn gif_header_dimensions(data: &[u8]) -> Result<(u32, u32)> {
+    let header = data
+        .get(6..10)
+        .ok_or_else(|| anyhow!("truncated GIF header"))?;
+    Ok((
+        u32::from(u16::from_le_bytes([header[0], header[1]])),
+        u32::from(u16::from_le_bytes([header[2], header[3]])),
+    ))
+}
+
+/// Collects animation frames, failing as soon as their combined RGBA size would
+/// pass the decode limit, so a many-frame bomb never gets fully materialised.
+fn collect_frames_bounded(frames: image::Frames<'_>) -> Result<Vec<Frame>> {
+    let mut total_bytes = 0u64;
+    let mut collected = vec![];
+    for frame in frames {
+        let frame = frame?;
+        let buffer = frame.buffer();
+        total_bytes += u64::from(buffer.width()) * u64::from(buffer.height()) * 4;
+        if total_bytes > MAX_DECODED_IMAGE_BYTES {
+            return Err(anyhow!(
+                "animated image exceeds the {MAX_DECODED_IMAGE_BYTES} byte decode limit"
+            ));
+        }
+        collected.push(frame);
+    }
+    Ok(collected)
+}
+
+impl ImageType {
+    /// The pixel size of a raster image, read from its header only: nothing is
+    /// decoded or allocated beyond the header, so it is safe on untrusted
+    /// bytes and cheap on the model thread. Falls back to a full parse for
+    /// formats without a raster header (SVG, `warp-img:`). Errors if the image
+    /// is larger than the decode limits.
+    pub fn dimensions_from_bytes(data: &[u8]) -> Result<Vector2I> {
+        if data.first() != Some(&b'<') && !data.starts_with(b"warp-img:") {
+            if let Ok(ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP | ImageFormat::Gif) =
+                image::guess_format(data)
+            {
+                let (width, height) = image::ImageReader::new(std::io::Cursor::new(data))
+                    .with_guessed_format()?
+                    .into_dimensions()?;
+                check_decoded_size(width, height)?;
+                return Ok(Vector2I::new(width as i32, height as i32));
+            }
+        }
+        <ImageType as Asset>::try_from_bytes(data)?
+            .image_size()
+            .ok_or_else(|| anyhow!("could not determine the image size"))
+    }
+
+    /// Whether `data` starts with the PNG signature.
+    pub fn is_png(data: &[u8]) -> bool {
+        matches!(image::guess_format(data), Ok(ImageFormat::Png))
+    }
+}
+
 impl Asset for ImageType {
     fn try_from_bytes(data: &[u8]) -> anyhow::Result<ImageType> {
         // SVGs are not handled by the guess_format helper function, so we have to manually check
@@ -358,31 +449,36 @@ impl Asset for ImageType {
 
         match image::guess_format(data) {
             Ok(ImageFormat::Jpeg) => {
-                let img = image::ImageReader::with_format(
+                let mut reader = image::ImageReader::with_format(
                     std::io::Cursor::new(data),
                     image::ImageFormat::Jpeg,
-                )
-                .decode()?
-                .into_rgba8();
+                );
+                reader.limits(decode_limits());
+                let img = reader.decode()?.into_rgba8();
                 Ok(ImageType::StaticBitmap {
                     image: Arc::new(StaticImage { img }),
                 })
             }
             Ok(ImageFormat::Png) => {
-                let img = image::ImageReader::with_format(
+                let mut reader = image::ImageReader::with_format(
                     std::io::Cursor::new(data),
                     image::ImageFormat::Png,
-                )
-                .decode()?
-                .into_rgba8();
+                );
+                reader.limits(decode_limits());
+                let img = reader.decode()?.into_rgba8();
                 Ok(ImageType::StaticBitmap {
                     image: Arc::new(StaticImage { img }),
                 })
             }
             Ok(ImageFormat::WebP) => {
-                let decoder = WebPDecoder::new(std::io::Cursor::new(data))?;
+                let mut decoder = WebPDecoder::new(std::io::Cursor::new(data))?;
+                let (width, height) = decoder.dimensions();
+                check_decoded_size(width, height)?;
+                decoder.set_limits(decode_limits())?;
                 if decoder.has_animation() {
-                    let frames = decoder.into_frames().collect_frames()?;
+                    // Each frame is canvas-sized; the running total bounds
+                    // how many are kept.
+                    let frames = collect_frames_bounded(decoder.into_frames())?;
                     Ok(ImageType::AnimatedBitmap {
                         image: Arc::new(AnimatedImage::from(frames)),
                     })
@@ -394,8 +490,12 @@ impl Asset for ImageType {
                 }
             }
             Ok(ImageFormat::Gif) => {
+                // `GifDecoder::new` allocates a canvas for the whole logical
+                // screen with no limits, so check the header first.
+                let (width, height) = gif_header_dimensions(data)?;
+                check_decoded_size(width, height)?;
                 let decoder = GifDecoder::new(std::io::Cursor::new(data))?;
-                let frames = decoder.into_frames().collect_frames()?;
+                let frames = collect_frames_bounded(decoder.into_frames())?;
                 Ok(ImageType::AnimatedBitmap {
                     image: Arc::new(AnimatedImage::from(frames)),
                 })

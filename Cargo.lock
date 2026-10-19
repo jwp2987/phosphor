@@ -15720,6 +15720,7 @@ dependencies = [
  "get-size",
  "itertools 0.14.0",
  "lazy_static",
+ "libc",
  "log",
  "pathfinder_color",
  "pathfinder_geometry",
