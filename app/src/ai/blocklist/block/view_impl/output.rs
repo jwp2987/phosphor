@@ -112,8 +112,10 @@ use warp_core::channel::ChannelState;
 
 use super::common::{
     format_elapsed_seconds, render_debug_footer, render_failed_output, render_informational_footer,
-    render_output_status_text, render_scrollable_collapsible_content, render_text_sections,
-    DebugFooterProps, FailedOutputProps, FindContext, OutputCapProps, TextSectionsProps,
+    render_output_status_text, render_scrollable_collapsible_content,
+    render_show_full_output_button, render_text_sections,
+    DebugFooterProps, FailedOutputProps, FindContext, OutputBudget, OutputCapProps,
+    TextSectionsProps, MAX_COLLAPSED_OUTPUT_BYTES, MAX_COLLAPSED_OUTPUT_LINES,
     STATUS_FOOTER_VERTICAL_PADDING, STATUS_ICON_SIZE_DELTA,
 };
 use super::imported_comments::render_imported_comments;
@@ -272,6 +274,9 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                 let mut table_section_index = 0;
                 let mut image_section_index = 0;
                 let mut action_index = 0;
+                // One allowance for the whole answer, spanning every Text message (#872).
+                let mut output_budget =
+                    OutputBudget::new(MAX_COLLAPSED_OUTPUT_LINES, MAX_COLLAPSED_OUTPUT_BYTES);
 
                 fn open_code_block_action(source: CodeSource) -> AIBlockAction {
                     AIBlockAction::OpenCodeInWarp { source }
@@ -343,10 +348,11 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                                     ),
                                     output_cap: Some(OutputCapProps {
                                         expanded: props.state_handles.output_expanded,
-                                        show_full_action: show_full_output_action,
-                                        button_handle: &props
+                                        has_selection: props
                                             .state_handles
-                                            .show_full_output_button_handle,
+                                            .selection_handle
+                                            .has_selection(),
+                                        budget: &mut output_budget,
                                     }),
                                 },
                                 app,
@@ -1077,6 +1083,21 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                     if let AIAgentOutputMessageType::Action(..) = output_message.message {
                         action_index += 1;
                     }
+                }
+
+                if output_budget.truncated && !props.state_handles.output_expanded {
+                    let theme = appearance.theme();
+                    output_items.add_child(
+                        render_show_full_output_button(
+                            &props.state_handles.show_full_output_button_handle,
+                            show_full_output_action,
+                            output_budget.hidden_lines,
+                            blended_colors::text_main(theme, theme.surface_1()),
+                            app,
+                        )
+                        .with_agent_output_item_spacing(app)
+                        .finish(),
+                    );
                 }
 
                 // Only render suggested rules and prompts if the response is complete.

@@ -4640,7 +4640,21 @@ impl Element for BlockListElement {
             e
         };
 
-        if matches!(event_at_z_index, Event::LeftMouseUp { .. }) {
+        // The flag only ever outlives a selection drag by accident, so reset it generously: on
+        // release, on any new press (re-set below if that press starts a selection), on a
+        // non-synthetic mouse move (only delivered while no button is held, so the release was
+        // missed), and whenever the pane is not focused (blur, tab switch, hidden view).
+        if matches!(
+            event_at_z_index,
+            Event::LeftMouseUp { .. } | Event::LeftMouseDown { .. }
+        ) || matches!(
+            event_at_z_index,
+            Event::MouseMoved {
+                is_synthetic: false,
+                ..
+            }
+        ) || !self.pane_state.is_focused()
+        {
             self.rich_content_drag_selecting
                 .store(false, Ordering::Relaxed);
         }
@@ -4755,13 +4769,29 @@ impl Element for BlockListElement {
                         handled |= rich_content_handled;
                         if rich_content_handled {
                             match event.raw_event() {
-                                Event::LeftMouseDown { .. } => self
-                                    .rich_content_drag_selecting
-                                    .store(true, Ordering::Relaxed),
+                                // Only a press that started a text selection arms the drag
+                                // handling; a handled press on a button, inner scrollbar,
+                                // editor or resizer must not (#890).
+                                Event::LeftMouseDown { .. } => {
+                                    let started_selection = match self
+                                        .rich_content_metadata
+                                        .get(&view_id)
+                                    {
+                                        Some(RichContentMetadata::AIBlock(metadata)) => metadata
+                                            .ai_block_handle
+                                            .as_ref(app)
+                                            .is_selecting_text(),
+                                        _ => false,
+                                    };
+                                    self.rich_content_drag_selecting
+                                        .store(started_selection, Ordering::Relaxed);
+                                }
                                 // A rich content block is drag-selecting: scroll the block list
                                 // when the pointer is past its top or bottom edge, faster the
                                 // further out it is, like the terminal grid does (#890).
-                                Event::LeftMouseDragged { position, .. } => {
+                                Event::LeftMouseDragged { position, .. }
+                                    if self.rich_content_drag_selecting.load(Ordering::Relaxed) =>
+                                {
                                     if let Some(bounds) = self.bounds {
                                         let delta = rich_content_selection_scroll_delta(
                                             position.y(),

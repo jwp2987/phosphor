@@ -10,7 +10,8 @@ use warpui::App;
 #[cfg(feature = "local_fs")]
 use super::{blocklist_image_asset_source, ResolvedBlocklistImageSources};
 use super::{
-    collect_visual_markdown_lightbox_collection, compute_visual_section_width,
+    collect_renderable_image_group, collect_visual_markdown_lightbox_collection,
+    compute_visual_section_width, image_group_step, line_count,
     display_query_without_context_references, focused_match_is_hidden,
     image_tooltip_handles_for_group, inline_image_source_label, is_supported_blocklist_image_source,
     lightbox_trigger_for_section, query_context_references, query_prefix_highlight_len,
@@ -562,4 +563,133 @@ fn truncate_formatted_text_keeps_the_leading_lines() {
     ]);
     assert_eq!(truncate_formatted_text(&text, 2).lines.len(), 2);
     assert_eq!(truncate_formatted_text(&text, 10).lines.len(), 3);
+}
+
+#[test]
+fn output_budget_charges_code_by_lines_and_cuts_at_the_line_limit() {
+    let mut budget = OutputBudget::new(2, 1000);
+    let code = "a\nb\nc\nd\n";
+    let end = budget.take_text_prefix(code);
+    assert_eq!(&code[..end], "a\nb\n");
+    assert!(budget.is_exhausted());
+    // Nothing is left for a following block.
+    assert_eq!(budget.take_text_prefix("e\n"), 0);
+}
+
+#[test]
+fn output_budget_cuts_one_giant_code_line_at_a_char_boundary() {
+    let mut budget = OutputBudget::new(10, 5);
+    let code = "ééééé\nnext";
+    let end = budget.take_text_prefix(code);
+    assert!(code.is_char_boundary(end));
+    assert!(end <= 5 && end > 0);
+    assert!(budget.is_exhausted());
+}
+
+#[test]
+fn output_budget_keeps_code_that_fits_whole() {
+    let mut budget = OutputBudget::new(10, 1000);
+    let code = "a\nb";
+    assert_eq!(budget.take_text_prefix(code), code.len());
+    assert!(!budget.is_exhausted());
+}
+
+#[test]
+fn output_budget_hides_a_table_that_does_not_fit_and_exhausts() {
+    let mut budget = OutputBudget::new(5, 1000);
+    assert!(budget.take_block(3, 10));
+    assert!(!budget.take_block(3, 10));
+    assert!(budget.is_exhausted());
+}
+
+#[test]
+fn output_budget_hidden_lines_only_count_what_was_noted() {
+    let mut budget = OutputBudget::new(1, 100);
+    assert!(!budget.truncated);
+    budget.note_hidden(4);
+    budget.note_hidden(2);
+    assert!(budget.truncated);
+    assert_eq!(budget.hidden_lines, 6);
+}
+
+#[test]
+fn line_count_counts_a_final_unterminated_line() {
+    assert_eq!(line_count("a\nb"), 2);
+    assert_eq!(line_count("a\nb\n"), 2);
+    assert_eq!(line_count("a"), 1);
+}
+
+fn test_image(source: &str, layout: AgentOutputImageLayout) -> AIAgentTextSection {
+    AIAgentTextSection::Image {
+        image: AgentOutputImage {
+            alt_text: String::new(),
+            source: source.to_string(),
+            title: None,
+            markdown_source: format!("![]({source})"),
+            layout,
+        },
+    }
+}
+
+/// The skipped tail of a capped answer must advance the image-handle counter exactly as
+/// rendering it would, or a later message indexes the wrong tooltip handles (#872).
+#[test]
+fn skipped_image_groups_advance_counters_like_the_render_path() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let _images = FeatureFlag::BlocklistMarkdownImages.override_enabled(true);
+            let sections = vec![
+                // Group of two inline images split by a blank line, then a block image, a
+                // text section, and a final inline image.
+                test_image("https://example.com/a.png", AgentOutputImageLayout::Inline),
+                AIAgentTextSection::PlainText {
+                    text: "\n".to_string().into(),
+                },
+                test_image("https://example.com/b.png", AgentOutputImageLayout::Inline),
+                test_image("https://example.com/c.png", AgentOutputImageLayout::Block),
+                AIAgentTextSection::PlainText {
+                    text: "tail".to_string().into(),
+                },
+                test_image("https://example.com/d.png", AgentOutputImageLayout::Inline),
+            ];
+            let indexed = text_sections_with_indices(&sections, 0).collect_vec();
+
+            // Walk the sections the way the skip path does.
+            let (mut offset, mut handles) = (0, 0);
+            let mut steps = vec![];
+            while offset < indexed.len() {
+                if let (_, AIAgentTextSection::Image { image }) = indexed[offset] {
+                    let step = image_group_step(
+                        &indexed,
+                        offset,
+                        image,
+                        None,
+                        #[cfg(feature = "local_fs")]
+                        None,
+                        ctx,
+                    );
+                    steps.push((step.handles, step.sections));
+                    handles += step.handles;
+                    offset += step.sections;
+                } else {
+                    offset += 1;
+                }
+            }
+            assert_eq!(steps, vec![(2, 3), (1, 1), (1, 1)]);
+            // A later message starts at handle 4, the same as after rendering every section.
+            assert_eq!(handles, 4);
+
+            let first = collect_renderable_image_group(
+                &indexed,
+                0,
+                AgentOutputImageLayout::Inline,
+                None,
+                #[cfg(feature = "local_fs")]
+                None,
+                ctx,
+            );
+            assert_eq!(first.images.len(), 2);
+            assert_eq!(first.consumed_sections, 3);
+        });
+    });
 }

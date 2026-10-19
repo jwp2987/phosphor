@@ -4035,6 +4035,13 @@ impl AIBlock {
         self.client_ids.conversation_id
     }
 
+    /// Whether a text-selection drag is in progress in this block (true from the mouse-down
+    /// that started it until the mouse is released). Buttons, inner scrollbars and editors do
+    /// not set it, so the block list uses it to tell a selection drag from any handled press.
+    pub fn is_selecting_text(&self) -> bool {
+        self.state_handles.selection_handle.is_selecting()
+    }
+
     /// This block's file diff cards (CodeDiffViews), newest first — the order
     /// a rewind must revert them in. The rewind dispatches the reverts itself
     /// (`RewindReverts`), because two edits to one file, in this block or

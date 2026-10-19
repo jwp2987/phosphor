@@ -29246,6 +29246,10 @@ impl View for TerminalView {
             self.open_grid_link_tool_tip.take();
 
             self.maybe_report_focus_out(ctx);
+            // A selection drag cannot continue once the terminal loses focus; don't leave the
+            // block list believing one is still in progress (#890).
+            self.rich_content_drag_selecting
+                .store(false, std::sync::atomic::Ordering::Relaxed);
             ctx.notify();
         }
     }
