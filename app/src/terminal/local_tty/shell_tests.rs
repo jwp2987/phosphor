@@ -114,21 +114,13 @@ fn non_fallback_sources_never_claim_unsupported_shell() {
 /// fish's argv, `'\'` was an unterminated string, and no fish pane ever started; the older
 /// `script/test_fish_bootstrap` sources the asset directly so it could not see this).
 #[cfg(unix)]
-#[test]
-fn fish_init_command_from_real_launch_args_emits_init_shell() {
+fn assert_fish_init_shell_from_args(
+    fish: &std::path::Path,
+    args_for: impl FnOnce(&std::path::Path) -> Vec<OsString>,
+) {
     use std::os::unix::fs::PermissionsExt;
     use std::process::{Command, Stdio};
 
-    let fish = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .map(|d| d.join("fish"))
-        .find(|p| p.is_file());
-    let Some(fish) = fish else {
-        if std::env::var_os("CI").is_some() {
-            panic!("fish must be installed in CI");
-        }
-        eprintln!("fish not installed; skipping");
-        return;
-    };
     let dir = tempfile::tempdir().unwrap();
     let hostile = "a\\b\"c\td\u{1}e\\\\";
     for (name, value) in [
@@ -144,17 +136,13 @@ fn fish_init_command_from_real_launch_args_emits_init_shell() {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    let args = arguments_for_session_spawning_command(
-        fish.to_str().unwrap(),
-        ShellType::Fish,
-        SessionId::from(4242u64),
-    );
+    let args = args_for(fish);
     let path = format!(
         "{}:{}",
         dir.path().display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let output = Command::new(&fish)
+    let output = Command::new(fish)
         .args(&args)
         .env("PATH", path)
         .env("HOME", dir.path())
@@ -190,4 +178,53 @@ fn fish_init_command_from_real_launch_args_emits_init_shell() {
     assert_eq!(json["value"]["shell"], "fish");
     assert_eq!(json["value"]["user"], format!("u{hostile}"));
     assert_eq!(json["value"]["hostname"], format!("h{hostile}"));
+}
+
+#[cfg(unix)]
+fn find_fish() -> Option<std::path::PathBuf> {
+    let fish = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|d| d.join("fish"))
+        .find(|p| p.is_file());
+    if fish.is_none() {
+        if std::env::var_os("CI").is_some() {
+            panic!("fish must be installed in CI");
+        }
+        eprintln!("fish not installed; skipping");
+    }
+    fish
+}
+
+#[cfg(unix)]
+#[test]
+fn fish_init_command_from_real_launch_args_emits_init_shell() {
+    let Some(fish) = find_fish() else { return };
+    assert_fish_init_shell_from_args(&fish, |fish| {
+        arguments_for_session_spawning_command(
+            fish.to_str().unwrap(),
+            ShellType::Fish,
+            SessionId::from(4242u64),
+        )
+    });
+}
+
+/// #909: a tab-config pane with `shell = "fish"` resolves to an `AvailableShell` and goes
+/// through `ShellStarter::init` -> `to_shell_starter_source` -> `ShellStarter::Direct`, not
+/// straight through `arguments_for_session_spawning_command`. Run the args that path really
+/// produces.
+#[cfg(unix)]
+#[test]
+fn fish_tab_config_pane_shell_starter_args_emit_init_shell() {
+    let Some(fish) = find_fish() else { return };
+    assert_fish_init_shell_from_args(&fish, |fish| {
+        let available =
+            crate::terminal::available_shells::AvailableShell::try_from(fish.to_str().unwrap())
+                .expect("fish resolves as a tab-config shell");
+        let source = ShellStarter::init(available).expect("fish has a starter");
+        let source = warpui::r#async::block_on(source.to_shell_starter_source())
+            .expect("fish starter source");
+        match ShellStarter::from(source) {
+            ShellStarter::Direct(starter) => starter.args().clone(),
+            _ => panic!("fish should start directly"),
+        }
+    });
 }
