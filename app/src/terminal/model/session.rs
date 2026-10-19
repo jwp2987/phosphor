@@ -960,6 +960,10 @@ pub struct Session {
     /// unset, so success alone can never be waited on -- doing that would hang forever
     /// on exactly the failure it is meant to detect.
     external_commands_load_finished: Arc<AtomicBool>,
+    /// Set once a command that may have changed the shell's command set (install, `source`,
+    /// `export PATH`, `alias`, `cd`...) has completed since the bootstrap snapshot and `$PATH`
+    /// scan, which are never refreshed (#833). See [`Self::knows_command_word`].
+    command_data_stale: AtomicBool,
     load_all_function_names_future: OnceCell<Shared<BoxFuture<'static, ()>>>,
     load_all_builtins_future: OnceCell<Shared<BoxFuture<'static, ()>>>,
     command_case_sensitivity: TopLevelCommandCaseSensitivity,
@@ -991,6 +995,7 @@ impl Session {
             command_executor: RwLock::new(command_executor),
             load_external_commands_future: Default::default(),
             external_commands_load_finished: Arc::new(AtomicBool::new(false)),
+            command_data_stale: AtomicBool::new(false),
             load_all_function_names_future: Default::default(),
             load_all_builtins_future: Default::default(),
             command_case_sensitivity,
@@ -1440,6 +1445,49 @@ impl Session {
             .chain(self.additional_builtin_names.get().into_iter().flatten())
             .chain(&self.info.keywords)
             .map(Deref::deref)
+    }
+
+    /// Whether this session's shell would recognise `word` as the head of a command: an alias,
+    /// function, builtin, keyword or abbreviation reported by this session's bootstrap, or an
+    /// executable on its `$PATH` (#833). `None` when the session cannot say -- the `$PATH` scan
+    /// has not succeeded yet, or the bootstrap carried no builtin list (every real shell has
+    /// some, so an empty set means the data never arrived). A caller must treat `None` as
+    /// "do not guess". The bootstrap lists and the `$PATH` scan are one-time snapshots: once a
+    /// command that could have changed them has run ([`Self::note_user_command`]) the answer is
+    /// `None` for the rest of the session, because a tool installed or a function defined since
+    /// would otherwise read as unknown. Each subshell and ssh session is its own `Session`, so this is always
+    /// the answer for the shell the user is typing into.
+    pub fn knows_command_word(&self, word: &str) -> Option<bool> {
+        if !self.has_loaded_external_commands()
+            || self.info.builtins.is_empty()
+            || self.command_data_stale.load(Ordering::Acquire)
+        {
+            return None;
+        }
+        let case_insensitive = matches!(
+            self.command_case_sensitivity,
+            TopLevelCommandCaseSensitivity::CaseInsensitive
+        );
+        Some(self.top_level_commands().any(|name| {
+            if case_insensitive {
+                name.eq_ignore_ascii_case(word)
+            } else {
+                name == word
+            }
+        }))
+    }
+
+    /// Records a command the user has run in this session. If it could have changed what the
+    /// shell recognises (a package install, `source`/`.`, `export`, `alias`, `eval`, `cd` into a
+    /// directory a hook such as direnv/nvm reacts to, an environment activation, a build that
+    /// installs), the snapshot behind [`Self::knows_command_word`] is stale from here on (#833).
+    /// Matching is by shell word anywhere in the command, so `sudo apt install x` and
+    /// `a && pip install y` both count. There is no re-scan: the simplest correct choice is to
+    /// stop answering, which keeps the line in the shell.
+    pub fn note_user_command(&self, command: &str) {
+        if command_may_change_known_commands(command) {
+            self.command_data_stale.store(true, Ordering::Release);
+        }
     }
 
     pub fn path(&self) -> &Option<String> {
@@ -1959,6 +2007,7 @@ pub mod testing {
                 command_executor: RwLock::new(Arc::new(TestCommandExecutor::default())),
                 load_external_commands_future: Default::default(),
                 external_commands_load_finished: Arc::new(AtomicBool::new(false)),
+            command_data_stale: AtomicBool::new(false),
                 command_case_sensitivity: TopLevelCommandCaseSensitivity::CaseSensitive,
                 session_type: Mutex::new(session_type),
                 additional_function_names: Default::default(),
@@ -1979,6 +2028,7 @@ pub mod testing {
                 command_executor: RwLock::new(Arc::new(TestCommandExecutor::default())),
                 load_external_commands_future: Default::default(),
                 external_commands_load_finished: Arc::new(AtomicBool::new(false)),
+            command_data_stale: AtomicBool::new(false),
                 command_case_sensitivity: TopLevelCommandCaseSensitivity::CaseSensitive,
                 session_type: Mutex::new(session_type),
                 additional_function_names: Default::default(),
@@ -2030,6 +2080,32 @@ pub mod testing {
             .map(|item| item.as_ref().into())
             .collect()
     }
+}
+
+/// Words whose appearance in a command line means the shell's set of known commands may have
+/// changed (#833).
+#[rustfmt::skip]
+const COMMAND_SET_CHANGING_WORDS: &[&str] = &[
+    "source", ".", "export", "alias", "unalias", "function", "eval", "hash", "rehash", "set",
+    "unset", "cd", "pushd", "popd", "z", "direnv", "nvm", "fnm", "asdf", "mise", "pyenv", "rbenv",
+    "rustup", "conda", "mamba", "activate", "deactivate", "pip", "pip3", "pipx", "uv", "poetry",
+    "npm", "npx", "yarn", "pnpm", "bun", "cargo", "go", "gem", "bundle", "brew", "apt", "apt-get",
+    "dpkg", "dnf", "yum", "rpm", "pacman", "zypper", "apk", "snap", "flatpak", "nix", "nix-env",
+    "nix-shell", "make", "install", "curl", "wget", "tar", "unzip", "ln", "cp", "mv", "chmod",
+    "docker", "podman", "sudo", "su", "bash", "zsh", "fish", "sh", "exec",
+];
+
+fn command_may_change_known_commands(command: &str) -> bool {
+    command.contains("PATH=")
+        || command
+            .split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '`'))
+            .map(|word| word.trim_matches(|c| c == '"' || c == '\''))
+            .any(|word| {
+                COMMAND_SET_CHANGING_WORDS.contains(&word)
+                    || word.rsplit('/').next().is_some_and(|base| {
+                        COMMAND_SET_CHANGING_WORDS.contains(&base) || base.starts_with("activate")
+                    })
+            })
 }
 
 #[cfg(test)]

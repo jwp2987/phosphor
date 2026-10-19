@@ -1024,3 +1024,255 @@ fn test_reads_as_request_to_agent_hard_negatives_for_real_commands() {
         assert!(!reads_as_request_to_agent(text), "{text:?}");
     }
 }
+
+/// #833: the prose test for a line whose first word the session's shell does not know.
+#[test]
+fn test_reads_as_prose_with_unknown_head_accepts_clear_prose() {
+    for text in [
+        "summarize the open issues and tell me what to fix",
+        "explain why the build is slow?",
+        "tell Josh what happened please",
+        "frobnicate everything for me please",
+    ] {
+        assert!(reads_as_prose_with_unknown_head(text), "{text:?}");
+    }
+}
+
+#[test]
+fn test_reads_as_prose_with_unknown_head_keeps_command_shapes_shell() {
+    for text in [
+        // Commands whose head the bootstrap snapshot can lack (tool installed since).
+        "newtool deploy the app to staging",
+        "poetry add requests numpy",
+        "mytool --force run migrations for prod",
+        "newtool deploy the app to Staging",
+        "newtool push the image for me",
+        "newtool run Migrations now",
+        // One signal only.
+        "tell Josh about outages",
+        "summarize open issues, then triage",
+        "frobnicate everything for me",
+        // Too short.
+        "frobnicate",
+        "frobnicate the",
+        // Paths, assignments, non-word heads.
+        "./run what to fix please",
+        "~/bin/run what to fix please",
+        "/usr/bin/run what to fix please",
+        "FOO=1 summarize what to fix please",
+        "foo-bar what to fix please",
+        "$HOME what to fix please",
+        "'summarize' what to fix please",
+        // Flags, `=`, `/`, `.`, `:`, `@`, digits after the head.
+        "summarize -v what to fix please",
+        "summarize what to fix please --force",
+        "summarize what to fix please x=1",
+        "summarize what to fix please a/b",
+        "summarize what to fix please a.txt",
+        "summarize what to fix please.",
+        "summarize what to fix please a:b",
+        "summarize what to fix please a@b",
+        "summarize what to fix please 3",
+        // Shell operators and expansions anywhere.
+        "summarize what to fix please | less",
+        "summarize what to fix please > out.txt",
+        "summarize what to fix please && echo it",
+        "summarize what to $(date) fix please",
+        "summarize what to fix please; ls",
+        "summarize (what) to fix please",
+        "summarize what\nto fix please",
+        // One-off keyword and compound heads.
+        "echo what to fix please",
+        "for what to fix please",
+    ] {
+        assert!(!reads_as_prose_with_unknown_head(text), "{text:?}");
+    }
+}
+
+/// #897: real commands whose free-text arguments contain REQUEST_WORDS. None may read as a request
+/// to the agent: a real command sent to the agent is the worse error.
+const REAL_COMMANDS_WITH_ENGLISH_ARGS: &[&str] = &[
+    "grep -rn this src",
+    "grep it file.txt",
+    "grep the file.txt",
+    "grep what notes.txt",
+    "grep why log.txt",
+    "grep you README",
+    "grep this that",
+    "rg that notes.txt",
+    "rg the src",
+    "rg how it works",
+    "ag this src",
+    "ag the lib",
+    "ack the TODO",
+    "ack it src",
+    "egrep this that file",
+    "fgrep the notes.txt",
+    "git grep this",
+    "git grep the src",
+    "git log --grep the release",
+    "git log --grep=the --oneline",
+    "git commit -m the fix",
+    "git commit -m fix it for you",
+    "git stash save this thing",
+    "git tag -a v1 -m the release",
+    "git notes add -m what is this",
+    "man what it",
+    "man the ls",
+    "apropos what is",
+    "apropos the file",
+    "say this is it",
+    "say how are you",
+    "espeak what the",
+    "notify-send the build finished",
+    "notify-send why it failed",
+    "figlet the end",
+    "cowsay what is this",
+    "find . -name the",
+    "find . -name this -print",
+    "sed -n /the/p file",
+    "sed s/the/that/ file",
+    "awk /the/ file",
+    "jq .the data.json",
+    "kubectl get pods -n the",
+    "kubectl logs the pod",
+    "docker run --name the nginx",
+    "docker run --name this-one image",
+    "ssh host grep the log",
+    "ssh host tail the file",
+    "todo add buy the milk",
+    "todo add fix it later",
+    "make it",
+    "make this",
+    "make the",
+    "make the build",
+    "make this target",
+    "make it work",
+    "locate this file",
+    "which the thing",
+    "FOO=1 grep the src",
+    "/usr/bin/grep the src",
+    // Refuter leaks: wrapper prefixes.
+    "nohup grep this the file",
+    "nice grep this the file",
+    "nice -n 5 grep this the file",
+    "env grep this the file",
+    "env FOO=1 grep this the file",
+    "timeout 5 grep this the file",
+    "timeout -s KILL 5s grep this the file",
+    "command grep this the file",
+    "doas grep this the file",
+    "xargs grep this the",
+    "xargs -n 1 grep this the",
+    "timeout 5 git checkout it the",
+    "env echo what is this",
+    "nohup echo what is this",
+    "xargs echo what is this",
+    "exec echo what is this",
+    "stdbuf -oL grep this the file",
+    // Inner commands.
+    "docker run ubuntu echo what is the date",
+    "docker exec box echo what is this",
+    "podman run alpine echo why is it",
+    "kubectl exec pod -- echo what is this",
+    "kubectl run x --image=y -- echo what is this",
+    "tmux send-keys what is this Enter",
+    "docker run -it ubuntu bash -c echo what is this",
+    // LLM CLIs.
+    "ollama run llama3 why is the sky blue",
+    "ollama run phi what should I cook",
+    "llm prompt why is it slow",
+    "sgpt why is it slow",
+    "aichat explain the error",
+    "tgpt what is this",
+    "chatgpt tell me how it works",
+    "mods what is this",
+    "ask why is it slow",
+    "aider fix the bug in it",
+    "fabric what is this",
+    "gpt why is it slow",
+    "q what is this",
+    // watch + ordinary command.
+    "watch grep this file",
+    "watch grep this the",
+    "watch cat the file",
+    "watch ls the dir",
+    "watch -n 1 ls the dir",
+    "watch echo what is this",
+];
+
+/// #897: prose whose head is a real command; it must still route to the agent.
+const PROSE_WITH_COMMAND_HEADS: &[&str] = &[
+    "make sure the build passes",
+    "make sure it works",
+    "can you fix this",
+    "can you look at the logs",
+    "show me the logs",
+    "show me",
+    "help me",
+    "help me with this",
+    "tell me how to deploy",
+    "give me the logs",
+    "watch the logs for errors",
+    "find out why it crashes",
+    "find out what the error is",
+    "explain why the test fails",
+    "explain this error",
+    "why is the build slow",
+    "what is the build doing",
+    "how does this work",
+    "could you check the logs",
+    "would you run it again",
+    "should we revert the commit",
+    "teach me how to use git",
+    "remind me what the plan was",
+    "look at the logs for me",
+    "why is the build slow?",
+    "docker vs podman?",
+    "describe the failing test",
+];
+
+#[test]
+fn test_reads_as_request_to_agent_corpus_real_commands_stay_shell() {
+    assert!(REAL_COMMANDS_WITH_ENGLISH_ARGS.len() >= 40);
+    let misrouted: Vec<_> = REAL_COMMANDS_WITH_ENGLISH_ARGS
+        .iter()
+        .filter(|text| reads_as_request_to_agent(text))
+        .collect();
+    assert!(
+        misrouted.is_empty(),
+        "{} of {} real commands misroute: {misrouted:#?}",
+        misrouted.len(),
+        REAL_COMMANDS_WITH_ENGLISH_ARGS.len()
+    );
+}
+
+#[test]
+fn test_reads_as_request_to_agent_corpus_prose_routes_to_agent() {
+    assert!(PROSE_WITH_COMMAND_HEADS.len() >= 20);
+    let missed: Vec<_> = PROSE_WITH_COMMAND_HEADS
+        .iter()
+        .filter(|text| !reads_as_request_to_agent(text))
+        .collect();
+    assert!(
+        missed.is_empty(),
+        "{} of {} prose lines stay shell: {missed:#?}",
+        missed.len(),
+        PROSE_WITH_COMMAND_HEADS.len()
+    );
+}
+
+#[test]
+fn test_reads_as_command_headed_prose_897_known_shell_leaning_edges() {
+    // Prose that deliberately stays shell (precision-first): a lone request word with no word
+    // after it, or a lone request word after a head that is not a request opener. The "Send to
+    // agent instead" action recovers these.
+    for text in [
+        "how do I fix this",
+        "make it work",
+        "check the logs",
+        "make the build",
+    ] {
+        assert!(!reads_as_request_to_agent(text), "{text:?}");
+    }
+}

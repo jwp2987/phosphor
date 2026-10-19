@@ -932,8 +932,22 @@ fn settle_for_submit(
     input_model: &ModelHandle<BlocklistAIInputModel>,
     buffer_text: &str,
 ) -> bool {
+    settle_for_submit_with_head(app, input_model, buffer_text, false)
+}
+
+/// As [`settle_for_submit`], with the active session's verdict on the first word (#833).
+fn settle_for_submit_with_head(
+    app: &mut App,
+    input_model: &ModelHandle<BlocklistAIInputModel>,
+    buffer_text: &str,
+    head_unknown_to_shell: bool,
+) -> bool {
     input_model.update(app, |model, ctx| {
-        model.settle_pending_detection_for_submit(&snapshot_without_parse(buffer_text), ctx)
+        model.settle_pending_detection_for_submit(
+            &snapshot_without_parse(buffer_text),
+            head_unknown_to_shell,
+            ctx,
+        )
     })
 }
 
@@ -1317,6 +1331,75 @@ fn misroute_multi_line_not_offered_and_config_snapshot_round_trips() {
             model.set_input_config(SHELL_LOCKED, true, ctx);
             model.restore_input_config(config, flag, ctx);
             assert_eq!(model.input_config_snapshot(), (config, flag));
+        });
+    });
+}
+
+/// #833: an inherited `Shell` with prose headed by a word the session's shell does not know
+/// moves to the agent at Enter; the same line with a known head, a command shape, or no
+/// session data (`head_unknown_to_shell == false`) stays Shell.
+#[test]
+fn pending_prose_with_unknown_first_word_settles_to_ai_at_submit() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, SHELL_UNLOCKED);
+        let enter = |app: &mut App, text: &str, unknown: bool| {
+            input_model.update(app, |model, ctx| {
+                model.apply_autodetected_input_type(InputType::Shell, ctx);
+                model.note_detection_requested(text.to_owned());
+            });
+            // Never a Shell-ward settle.
+            assert!(!settle_for_submit_with_head(
+                app,
+                &input_model,
+                text,
+                unknown
+            ));
+            input_model.read(app, |model, _| model.input_type())
+        };
+        // No #834 request word (`the`, `it`, ...), so only the unknown-head rule can move these (`my`, `when`, `which`, `can`, `where` are not request words).
+        for prose in [
+            "tell Josh when my build finished",
+            "frobnicate which tests can fail",
+            "explain where my config lives",
+        ] {
+            assert_eq!(enter(&mut app, prose, true), InputType::AI, "{prose}");
+            // Head is an alias/function/builtin/PATH executable, or the session has no data:
+            // the caller reports `false`, and the line keeps the inherited Shell.
+            assert_eq!(enter(&mut app, prose, false), InputType::Shell, "{prose}");
+        }
+        for kept in [
+            "frobnicate",
+            "frobnicate widgets,",
+            "./run when my build finished",
+            "~/bin/run when my build finished",
+            "FOO=1 summarize when my build finished",
+            "summarize when my build finished | less",
+            "summarize when my build finished && echo it",
+            "echo when my build finished",
+            "mytool --force run migrations for prod",
+            "tell Josh about outages",
+        ] {
+            assert_eq!(enter(&mut app, kept, true), InputType::Shell, "{kept}");
+        }
+    });
+}
+
+/// #833: typeahead provenance still wins over the unknown-head rule.
+#[test]
+fn pending_typeahead_with_unknown_first_word_stays_shell() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, SHELL_UNLOCKED);
+        let text = "tell Josh when my build finished";
+        input_model.update(&mut app, |model, ctx| {
+            model.apply_autodetected_input_type(InputType::Shell, ctx);
+            model.note_detection_requested(text.to_owned());
+            model.note_typeahead_inserted("tell Josh when".to_owned());
+        });
+        settle_for_submit_with_head(&mut app, &input_model, text, true);
+        input_model.read(&app, |model, _| {
+            assert_eq!(model.input_type(), InputType::Shell)
         });
     });
 }

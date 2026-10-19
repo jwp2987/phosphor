@@ -865,11 +865,14 @@ impl BlocklistAIInputModel {
     /// vetoes are the #831 holes), or prose-free shell typeahead ([`Self::is_shell_typeahead`]).
     /// The one AI decision is agent-ward: an *inherited Shell* moves to AI when the text reads as
     /// a request ([`Self::reads_as_request`], #834), never for typeahead, a one-off keyword head
-    /// or shell structure. Anything else keeps the live type, as before. A locked or explicitly
+    /// or shell structure; or, when `head_unknown_to_shell`, when the text is clearly prose
+    /// headed by a word the session's shell does not know (#833). Anything else keeps the live
+    /// type, as before. A locked or explicitly
     /// chosen type is never pending, so it is never overridden. Returns `true` if the input type was settled to Shell.
     pub fn settle_pending_detection_for_submit(
         &mut self,
         input: &ParsedTokensSnapshot,
+        head_unknown_to_shell: bool,
         ctx: &mut ModelContext<Self>,
     ) -> bool {
         if !self.is_detection_pending_for(&input.buffer_text, ctx) {
@@ -883,7 +886,11 @@ impl BlocklistAIInputModel {
             // inherits `Shell` and Enter would run it. Only text that reads as a request in
             // English moves the inherited type (`help me`, `watch the logs for errors`), and
             // never typeahead, a one-off shell keyword head (`echo a and b`) or an inherited AI.
-            if self.input_config.is_shell() && self.reads_as_request(&input.buffer_text) {
+            if self.input_config.is_shell()
+                && (self.reads_as_request(&input.buffer_text)
+                    || (head_unknown_to_shell
+                        && self.reads_as_prose_with_unknown_head(&input.buffer_text)))
+            {
                 self.abort_in_progress_detection();
                 self.apply_autodetected_input_type(InputType::AI, ctx);
                 self.settle_detection(&input.buffer_text);
@@ -906,6 +913,17 @@ impl BlocklistAIInputModel {
         self.drop_typeahead_prefix_unless_leading(buffer_text);
         self.typeahead_prefix.is_none()
             && input_classifier::util::reads_as_request_to_agent(buffer_text)
+    }
+
+    /// #833: `head_unknown_to_shell` is the caller's statement, from the active session's own
+    /// bootstrap data, that the line's first word is no alias, function, builtin, keyword or
+    /// `$PATH` executable there (`false` whenever the session cannot say). Same typeahead rule as
+    /// [`Self::reads_as_request`]; the prose test is
+    /// [`input_classifier::util::reads_as_prose_with_unknown_head`].
+    fn reads_as_prose_with_unknown_head(&mut self, buffer_text: &str) -> bool {
+        self.drop_typeahead_prefix_unless_leading(buffer_text);
+        self.typeahead_prefix.is_none()
+            && input_classifier::util::reads_as_prose_with_unknown_head(buffer_text)
     }
 
     /// Whether the first word of `buffer_text` is in the user's autodetection denylist.

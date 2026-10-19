@@ -12848,6 +12848,15 @@ impl TerminalView {
                     .active_block_session_id()
                     .and_then(|id| self.sessions.as_ref(ctx).get(id));
                 if let Some(active_session) = active_session {
+                    // #833: the session's command snapshot is not refreshed; remember when a
+                    // command that could have changed it has run.
+                    if let BlockType::User(user_block_completed) = &block_type {
+                        let command = user_block_completed.command.get_with(|compute| {
+                            let model = self.model.lock();
+                            compute(model.block_list())
+                        });
+                        active_session.note_user_command(&command);
+                    }
                     if !active_session.has_attempted_to_load_external_commands() {
                         ctx.background_executor()
                             .spawn(async move { active_session.load_external_commands().await })
