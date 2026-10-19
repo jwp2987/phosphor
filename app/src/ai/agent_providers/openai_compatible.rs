@@ -55,6 +55,11 @@ pub enum OpenAiCompatibleError {
     #[error("Request failed: {0}")]
     Other(String),
 
+    /// A successful (2xx) response whose body is an HTML page -- a proxy, captive portal or
+    /// wrong base URL answering instead of the API (#856). Carries the localized message.
+    #[error("{0}")]
+    HtmlResponse(String),
+
     /// **No longer constructed** as of 2026-08-13. The plaintext-key rule is now enforced
     /// by *stripping* the key and continuing (see `fetch_openai_compatible_models`), not by
     /// failing the fetch — the no-leak guarantee is identical, but the user gets their

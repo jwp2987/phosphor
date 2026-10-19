@@ -5520,6 +5520,19 @@ fn parse_retry_after_header(raw: Option<&str>) -> Option<std::time::Duration> {
     crate::ai::api_error::parse_retry_after(raw?, chrono::Utc::now())
 }
 
+/// Whether a response that was not JSON is an HTML page (by content type, or by how the
+/// body opens).
+fn is_html_response(content_type: &str, body: &str) -> bool {
+    let head = body.trim_start().chars().take(16).collect::<String>().to_ascii_lowercase();
+    content_type.to_ascii_lowercase().contains("html")
+        || head.starts_with("<!doctype html")
+        || head.starts_with("<html")
+}
+
+fn html_response_error() -> OpenAiCompatibleError {
+    OpenAiCompatibleError::HtmlResponse(crate::t!("agent-error-provider-returned-html"))
+}
+
 fn map_genai_error(err: genai::Error) -> OpenAiCompatibleError {
     use genai::Error as G;
     match err {
@@ -5541,6 +5554,8 @@ fn map_genai_error(err: genai::Error) -> OpenAiCompatibleError {
         // fast instead of retrying -- without it, every BYOP chat turn (all of which stream)
         // hits this every time, and `OpenAiCompatibleError::Status` is never produced at all.
         G::WebStream { ref error, .. } => match error.downcast_ref::<genai::Error>() {
+            // genai reports a 2xx HTML page as an `HttpError` with a success status (#856).
+            Some(G::HttpError { status, .. }) if status.is_success() => html_response_error(),
             Some(G::HttpError {
                 status,
                 canonical_reason,
@@ -5566,6 +5581,25 @@ fn map_genai_error(err: genai::Error) -> OpenAiCompatibleError {
             // instead of each having to remember to redact it again (#719 item 7 / #718).
             _ => OpenAiCompatibleError::Stream(redact_urls_in_error_text(&format!("{err}"))),
         },
+
+        // A non-streaming call answered with something that is not JSON: an HTML page from a
+        // proxy or wrong base URL (#856), or just not JSON.
+        G::WebAdapterCall {
+            webc_error:
+                genai::webc::Error::ResponseFailedNotJson {
+                    ref content_type,
+                    ref body,
+                },
+            ..
+        }
+        | G::WebModelCall {
+            webc_error:
+                genai::webc::Error::ResponseFailedNotJson {
+                    ref content_type,
+                    ref body,
+                },
+            ..
+        } if is_html_response(content_type, body) => html_response_error(),
 
         // Failures during the network/streaming-send stage that never got a reply: reqwest
         // connection, TLS, DNS, timeout, stream interruption, etc. Redacted for the same
@@ -5626,7 +5660,12 @@ fn byop_stream_error_to_api_error(
     mapped: OpenAiCompatibleError,
     other_provider_hint: Option<&UnreachableProviderHint>,
 ) -> AIApiError {
-    let base = format!("BYOP stream error: {mapped}");
+    // The HTML-page message is complete and actionable; a "BYOP stream error:" prefix would
+    // only bury it.
+    let base = match mapped {
+        OpenAiCompatibleError::HtmlResponse(message) => message.clone(),
+        _ => format!("BYOP stream error: {mapped}"),
+    };
     let message = append_unreachable_provider_hint(base, &mapped, other_provider_hint);
     byop_error_to_api_error(&mapped, message)
 }
@@ -9172,6 +9211,42 @@ mod byop_stream_error_retry_tests {
             }
             other => panic!("expected a Status carrying the wrapped HttpError, got: {other}"),
         }
+    }
+
+    // #856: genai reports a 2xx HTML page (proxy / captive portal / wrong base URL) as an
+    // `HttpError` with a success status; it must become the clear "web page" error, not a
+    // generic status or parse error.
+    #[test]
+    fn a_2xx_html_page_maps_to_the_web_page_error() {
+        let model_iden = genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "gpt-test");
+        let inner = genai::Error::HttpError {
+            status: http::StatusCode::OK,
+            canonical_reason: "OK".to_string(),
+            body: "<!DOCTYPE html><html>Sign in to the network</html>".to_string(),
+            retry_after: None,
+        };
+        let wrapped = genai::Error::WebStream {
+            model_iden,
+            cause: "stream error".to_string(),
+            error: Box::new(inner),
+        };
+        let mapped = map_genai_error(wrapped);
+        assert!(
+            matches!(mapped, OpenAiCompatibleError::HtmlResponse(_)),
+            "got: {mapped}"
+        );
+        let api = byop_stream_error_to_api_error(mapped, None);
+        let text = format!("{api}");
+        assert!(!text.contains("BYOP stream error"), "got: {text}");
+    }
+
+    #[test]
+    fn html_detection_for_non_json_responses() {
+        assert!(is_html_response("text/html; charset=utf-8", ""));
+        assert!(is_html_response("", "  <!DOCTYPE html><html>"));
+        assert!(is_html_response("", "<HTML>"));
+        assert!(!is_html_response("text/plain", "plain words"));
+        assert!(!is_html_response("application/json", "{\"a\":1}"));
     }
 
     // #854: a 429 carrying `Retry-After` must keep the delay all the way to the `AIApiError`
