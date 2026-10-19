@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""A user's `echo`, `printf`, `cd`, `read` or `pwd` function must never run inside Phosphor (#929).
+
+WHY THIS EXISTS
+---------------
+The bootstrap and its hooks call echo/printf/cd/read/pwd. If the user defines a function (or
+alias) of the same name, an unguarded call runs the user's code with Phosphor's arguments: the
+user sees every tab-config command line, or worse, the hijacked cd/read changes the behaviour
+of the integration. Every call must be `builtin ...` (or `command ...` for externals).
+
+WHAT IT DOES
+------------
+For each installed shell it defines hijacking functions for echo, printf, cd, read and pwd in
+the user's rc (fish: in a file sourced just before the bootstrap), each of which appends a
+marker to $HOME/HIJ_<name> and then forwards to the builtin. It then bootstraps and runs the
+hooks (commands, a failing command, ESC i input report, an in-band generator where the shell has
+one) and asserts that no marker file exists. The harness itself uses `builtin echo` so its own
+lines do not count.
+
+USAGE
+    script/test_hijack_bootstrap
+Exit 0 when every shell passes, 1 otherwise.
+"""
+
+import importlib.machinery
+import importlib.util
+import os
+import shutil
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+NAMES = ["echo", "printf", "cd", "read", "pwd"]
+
+
+def load(name):
+    saved = sys.argv
+    sys.argv = [name]
+    try:
+        loader = importlib.machinery.SourceFileLoader(name, os.path.join(HERE, name))
+        spec = importlib.util.spec_from_loader(name, loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+    finally:
+        sys.argv = saved
+    return mod
+
+
+failures = []
+
+
+def check(cond, what):
+    print(("  ok   " if cond else "  FAIL ") + what)
+    if not cond:
+        failures.append(what)
+
+
+def posix_defs():
+    out = []
+    for n in NAMES:
+        # (The distro's own systemd OSC-context hooks use these names too; they are not ours.)
+        out.append(
+            f'{n}() {{ case "${{FUNCNAME[*]-}}${{funcstack[*]-}}" in *systemd_osc*) ;; '
+            f'*) builtin printf x >> "$HOME/HIJ_{n}";; esac; builtin {n} "$@"; }}'
+        )
+    return "\n".join(out)
+
+
+def fish_defs():
+    out = []
+    for n in NAMES:
+        # (fish's own stock functions -- prompt_login, alias, ... -- call these names too; not ours.)
+        out.append(
+            f"function {n}; status stack-trace 2>&1 | string match -q '*embedded:functions*'; "
+            f"or builtin printf x >> $HOME/HIJ_{n}; builtin {n} $argv; end"
+        )
+    return "\n".join(out)
+
+
+def hijacked(home):
+    return sorted(n for n in NAMES if os.path.exists(os.path.join(home, f"HIJ_{n}")))
+
+
+def test_bash():
+    print("bash")
+    if not shutil.which("bash"):
+        print("  SKIP bash not installed")
+        return
+    m = load("test_bash_bootstrap_nounset")
+    sh = m.Shell(profile="[ -f ~/.bashrc ] && . ~/.bashrc", bashrc=posix_defs())
+    try:
+        check(sh.wait_bootstrapped(), "bootstraps")
+        check(sh.run("true"), "true finishes")
+        check(sh.run("false"), "false finishes")
+        check(sh.run("set -u"), "set -u finishes")
+        check(sh.generator(11, cmd="true"), "an in-band generator finishes")
+        os.write(sh.fd, b"typed")
+        sh.pump(0.3)
+        os.write(sh.fd, b"\x1bi")
+        check(sh.pump(5, lambda: len(sh.hook_jsons("InputBuffer")) >= 1), "ESC i reports the input buffer")
+        check(hijacked(sh.home) == [], f"no hijacking function ran (ran: {hijacked(sh.home)})")
+    finally:
+        sh.close()
+
+
+def test_zsh():
+    print("zsh")
+    if not shutil.which("zsh"):
+        print("  SKIP zsh not installed")
+        return
+    m = load("test_zsh_bootstrap_strict_options")
+    sh = m.Shell(posix_defs())
+    try:
+        check(sh.bootstrap(), "bootstraps")
+        for cmd in ("true", "false"):
+            got = sh.cycle(cmd)
+            check(bool(got) and got[-1][0] == "Precmd", f"{cmd} finishes")
+        n = len([1 for h, _ in sh.hooks() if h == "InputBuffer"])
+        os.write(sh.fd, b"typed")
+        sh.pump(0.3)
+        os.write(sh.fd, b"\x1bi")
+        check(sh.pump(5, lambda: len([1 for h, _ in sh.hooks() if h == "InputBuffer"]) > n),
+              "ESC i reports the input buffer")
+        check(hijacked(sh.home) == [], f"no hijacking function ran (ran: {hijacked(sh.home)})")
+    finally:
+        sh.close()
+
+
+def test_fish():
+    print("fish")
+    if not shutil.which("fish"):
+        print("  SKIP fish not installed")
+        return
+    m = load("test_fish_bootstrap")
+    orig = m.script_text
+    m.script_text = lambda: fish_defs() + "\n" + orig()
+    sh = m.Shell()
+    try:
+        check(sh.bootstrap(), "bootstraps")
+        for cmd in ("true", "false"):
+            got = sh.cycle(cmd)
+            check(bool(got) and got[-1][0] == "Precmd", f"{cmd} finishes")
+        check(sh.input_buffer([b"typed"]) is not None, "ESC i reports the input buffer")
+        check(hijacked(sh.home) == [], f"no hijacking function ran (ran: {hijacked(sh.home)})")
+    finally:
+        sh.close()
+
+
+def main():
+    test_bash()
+    test_zsh()
+    test_fish()
+    print("\ntest_hijack_bootstrap: " + ("ok" if not failures else f"{len(failures)} check(s) FAILED"))
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

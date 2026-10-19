@@ -96,7 +96,7 @@
        local var
        for var; do
          if ! ( unset "$var" 2> /dev/null ); then
-           echo "bash-preexec requires write access to ${var}" >&2
+           builtin echo "bash-preexec requires write access to ${var}" >&2
            return 1
          fi
        done
@@ -133,7 +133,7 @@
          local var=${1:?} text=${2:-}
          text="${text#"${text%%[![:space:]]*}"}"   # remove leading whitespace characters
          text="${text%"${text##*[![:space:]]}"}"   # remove trailing whitespace characters
-         printf -v "$var" '%s' "$text"
+         builtin printf -v "$var" '%s' "$text"
      }
 
 
@@ -146,7 +146,7 @@
          sanitized=${sanitized%;}
          sanitized=${sanitized#;}
          __bp_trim_whitespace sanitized "$sanitized"
-         printf -v "$var" '%s' "$sanitized"
+         builtin printf -v "$var" '%s' "$sanitized"
      }
 
      # This function is installed as part of the PROMPT_COMMAND;
@@ -239,7 +239,7 @@
      __bp_in_prompt_command() {
 
          local prompt_command_array IFS=$'\n;'
-         read -rd '' -a prompt_command_array <<< "${PROMPT_COMMAND[*]:-}"
+         builtin read -rd '' -a prompt_command_array <<< "${PROMPT_COMMAND[*]:-}"
 
          local trimmed_arg
          __bp_trim_whitespace trimmed_arg "${1:-}"
@@ -501,7 +501,7 @@
  # `read -d ''` returns 1 at end of input even though it read everything; in a
  # subshell bootstrap this runs in a shell whose rcfiles may have set `set -e`,
  # before bash_body.sh relaxes anything, so that status must not escape (#825).
- read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :
+ builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :
 #include bundled/bootstrap/bash_body.sh
 EOM
  # We need to restore the line editor before we evaluate the bootstrap logic

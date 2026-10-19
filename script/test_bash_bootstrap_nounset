@@ -201,13 +201,13 @@ class Shell:
             timeout,
         )
 
-    def generator(self, n, timeout=10):
+    def generator(self, n, timeout=10, cmd="echo gen{n}"):
         """Run an in-band generator the way the app does; wait for its output
         and the Precmd that ends it."""
         before = self.hooks().count("Precmd")
         outputs = self.buf.count(b"\x1b]9277;A")
         return self._wait(
-            f"warp_run_generator_command {n} 'echo gen{n}'",
+            f"warp_run_generator_command {n} '" + cmd.format(n=n) + "'",
             lambda: self.hooks().count("Precmd") > before
             and self.buf.count(b"\x1b]9277;A") > outputs,
             timeout,

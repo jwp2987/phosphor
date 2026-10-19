@@ -137,7 +137,7 @@ class Shell:
 
     def bootstrap(self):
         self.pump(2)
-        os.write(self.fd, (f"source {shlex.quote(self.script)}; echo boot$(math 20+22)done\r").encode())
+        os.write(self.fd, (f"source {shlex.quote(self.script)}; builtin echo boot(math 20+22)done\r").encode())
         ok = self.pump(30, lambda: "Bootstrapped" in self.names() and b"boot42done" in self.buf)
         self.broken = not ok
         self.pump(1.5)

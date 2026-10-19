@@ -16,47 +16,47 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
 
   # Byte sequence used to signal the start of a DCS. ([0x1b, 0x50, 0x24] which
   # maps to <ESC>, P, $ in ASCII.)
-  DCS_START="$(printf '\eP$')"
+  DCS_START="$(builtin printf '\eP$')"
 
   # Appended to $DCS_START to signal that the following message is JSON-encoded.
   DCS_JSON_MARKER="d"
 
   # Byte used to signal the end of a DCS.
-  DCS_END="$(printf '\x9c')"
+  DCS_END="$(builtin printf '\x9c')"
 
   # OSC used to mark the start of in-band command output.
   #
   # Printable characters received this OSC and OSC_END_GENERATOR_OUTPUT are parsed and handled as
   # output for an in-band command.
-  OSC_START_GENERATOR_OUTPUT="$(printf '\e]9277;A\a')"
+  OSC_START_GENERATOR_OUTPUT="$(builtin printf '\e]9277;A\a')"
 
   # OSC used to mark the end of in-band command output.
   #
   # Printable characters received between OSC_START_GENERATOR_OUTPUT and this are parsed and
   # handled as output for an in-band command.
-  OSC_END_GENERATOR_OUTPUT="$(printf '\e]9277;B\a')"
+  OSC_END_GENERATOR_OUTPUT="$(builtin printf '\e]9277;B\a')"
 
   # Hooks go to the controlling terminal, not fd 1, so that `exec >/dev/null`
   # or `exec > >(tee log)` in the interactive shell cannot swallow them and
   # leave the block running forever (#806). Fall back to fd 1 without a tty.
   if { : > /dev/tty; } 2>/dev/null; then
-      __warp_emit () { printf "$@" > /dev/tty; }
+      __warp_emit () { builtin printf "$@" > /dev/tty; }
   else
-      __warp_emit () { printf "$@"; }
+      __warp_emit () { builtin printf "$@"; }
   fi
 
-  OSC_START="$(printf '\e]9278;')"
+  OSC_START="$(builtin printf '\e]9278;')"
 
-  OSC_END="$(printf '\a')"
+  OSC_END="$(builtin printf '\a')"
 
   OSC_PARAM_SEPARATOR=";"
 
-  OSC_RESET_GRID="$(printf '\e]9279\a')"
+  OSC_RESET_GRID="$(builtin printf '\e]9279\a')"
 
   # Attempt to cd to the desired initial working directory, swallowing any
   # errors.  If this fails, the user will end up in their home directory.
   if [[ ! -z "$WARP_INITIAL_WORKING_DIR" ]]; then
-    cd "$WARP_INITIAL_WORKING_DIR" >/dev/null 2>&1
+    builtin cd "$WARP_INITIAL_WORKING_DIR" >/dev/null 2>&1
     unset WARP_INITIAL_WORKING_DIR
   fi
 
@@ -164,7 +164,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
   # the in-band command.
   warp_send_generator_output_osc() {
       local hex_encoded_message=$(warp_hex_encode_string "$1")
-      local byte_count=$(LC_ALL="C"; printf "${#hex_encoded_message}")
+      local byte_count=$(LC_ALL="C"; builtin printf "${#hex_encoded_message}")
       __warp_emit "%b%i;%s%b" $OSC_START_GENERATOR_OUTPUT $byte_count $hex_encoded_message $OSC_END_GENERATOR_OUTPUT
       warp_maybe_send_reset_grid_osc
   }
@@ -205,7 +205,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
     _warp_execute_command "$@" &
     # $! contains the PID of the most recently backgrounded command.
     local pid=$!
-    echo $pid >> $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE
+    builtin echo $pid >> $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE
     wait $pid 2> /dev/null
 
     # If the exit code of the backgrounded _warp_execute_command process is non-zero,
@@ -222,7 +222,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
     # The completed generator PIDs file may not exist if this generator was (by
     # error) left running/not cancelled properly in warp_preexec.
     if [[ -f $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE ]]; then
-      echo $pid >> $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE
+      builtin echo $pid >> $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE
     fi
   }
 
@@ -282,7 +282,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
       # Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
       # expected-failure probe in this hook (no repo, an unset variable) into an
       # early return, a killed shell or a lost Precmd.
-      setopt localoptions noerrreturn noerrexit unset
+      setopt localoptions noerrreturn noerrexit unset noksharrays nowarncreateglobal
       # Phosphor (#828): a Preexec is out; the block it opens is finished only by
       # warp_precmd. _warp_repair_hooks reads this to tell whether a prompt cycle
       # skipped that precmd (and so owes one) or already ran it.
@@ -365,7 +365,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
       # Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
       # expected-failure probe in this hook (no repo, an unset variable) into an
       # early return, a killed shell or a lost Precmd.
-      setopt localoptions noerrreturn noerrexit unset
+      setopt localoptions noerrreturn noerrexit unset noksharrays nowarncreateglobal
       # Phosphor (#855): an agent command run under errexit hands its status over in
       # __phosphor_ap_rc instead of re-raising it (which would exit the user's shell).
       # Phosphor (#855): see __phosphor_ap_restore_pagers.
@@ -414,10 +414,10 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
 
       # If the files for tracking generator PIDs exist, clear them.
       if [[ -n $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE && -f $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE ]]; then
-          echo "" > $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE
+          builtin echo "" > $_WARP_GENERATOR_PIDS_STARTED_TMP_FILE
         fi
         if [[ -n $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE && -f $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE ]]; then
-          echo "" > $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE
+          builtin echo "" > $_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE
         fi
 
       # Reset the custom kill-buffer binding as the user's zshrc (which is sourced after zshrc_warp)
@@ -478,7 +478,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
       local escaped_pwd
       if [ -n "${WSL_DISTRO_NAME:-}" ]; then
         # In WSL, avoid symlinks b/c on Windows `std::fs` is unable to resolve symlink inside WSL containers.
-        escaped_pwd=$(warp_escape_json "$(pwd -P)")
+        escaped_pwd=$(warp_escape_json "$(builtin pwd -P)")
       else
         escaped_pwd=$(warp_escape_json "$PWD")
       fi
@@ -672,7 +672,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
   # Afterwards it's decoded in rust and parsed as usual.
   # Accepts one argument: DCS JSON string
   warp_hex_encode_string () {
-    printf '%s' "$1" | command -p od -An -v -tx1 | command -p tr -d ' \n'
+    builtin printf '%s' "$1" | command -p od -An -v -tx1 | command -p tr -d ' \n'
   }
 
   # We set precmd and preexec hooks in order to set the title for the idle
@@ -690,7 +690,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
     # Disable oh-my-zsh default title otherwise.
     DISABLE_AUTO_TITLE="true"
 
-    setopt localoptions nopromptsubst noerrreturn noerrexit unset
+    setopt localoptions nopromptsubst noerrreturn noerrexit unset noksharrays nowarncreateglobal
 
     # Don't set the title if inside emacs, unless using vterm
     [[ -n "${INSIDE_EMACS:-}" && "${INSIDE_EMACS:-}" != vterm ]] && return
@@ -707,7 +707,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
     # Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
     # expected-failure probe in this hook (no repo, an unset variable) into an
     # early return, a killed shell or a lost Precmd.
-    setopt localoptions noerrreturn noerrexit unset
+    setopt localoptions noerrreturn noerrexit unset noksharrays nowarncreateglobal
     # If the user wants to set the title using oh-my-zsh, they can
     # set the WARP_DISABLE_AUTO_TITLE flag.
     [[ "${WARP_DISABLE_AUTO_TITLE:-}" != true ]] || return
@@ -725,7 +725,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
     # Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
     # expected-failure probe in this hook (no repo, an unset variable) into an
     # early return, a killed shell or a lost Precmd.
-    setopt localoptions noerrreturn noerrexit unset
+    setopt localoptions noerrreturn noerrexit unset noksharrays nowarncreateglobal
     # If the user wants to set the title using oh-my-zsh, they can
     # set the WARP_DISABLE_AUTO_TITLE flag.
     [[ "${WARP_DISABLE_AUTO_TITLE:-}" != true ]] || return
@@ -878,7 +878,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
         # we insert this function into the input for the user to determine if they want to execute (we never run it on
         # their behalf without their permission).  To be transparent about what is being executed with sudo, we echo out the
         # command we're about to run.
-        echo "Executing: sudo cp \"$APT_SOURCESDIR$source_file_name.list.distUpgrade\" \"$APT_SOURCESDIR$source_file_name.list\""
+        builtin echo "Executing: sudo cp \"$APT_SOURCESDIR$source_file_name.list.distUpgrade\" \"$APT_SOURCESDIR$source_file_name.list\""
         sudo cp "$APT_SOURCESDIR$source_file_name.list.distUpgrade" "$APT_SOURCESDIR$source_file_name.list"
       fi
   }
@@ -890,7 +890,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
     # Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
     # expected-failure probe in this hook (no repo, an unset variable) into an
     # early return, a killed shell or a lost Precmd.
-    setopt localoptions noerrreturn noerrexit unset
+    setopt localoptions noerrreturn noerrexit unset noksharrays nowarncreateglobal
     # 133;A and 133;B are standard prompt marker OSCs. We also follow the standard for the rprompt OSC below.
     # See https://learn.microsoft.com/en-us/windows/terminal/tutorials/shell-integration and
     # https://gitlab.freedesktop.org/terminal-wg/specifications/-/merge_requests/6/diffs for details.
@@ -1118,7 +1118,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
           # Hex-encode the ZSH environment script we use to bootstrap remote zsh b/c it contains control characters
           # We decode on the SSH server using xxd if its available, otherwise fall back to a for-loop over each byte
           # and use printf to convert back to plaintext
-          local zsh_env_script=$(printf '%s' 'unsetopt ZLE RCS GLOBAL_RCS; WARP_SESSION_ID='$remote_session_id'; WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@; _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n); _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || echo $USER); _ju=${_user//\\/\\\\}; _ju=${_ju//\"/\\\"}; _jh=${_hostname//\\/\\\\}; _jh=${_jh//\"/\\\"}; for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do _c=${(#)_i}; _x=$(( [##16] _i )); _h="\\u00${(l:2::0:)_x}"; _ju=${_ju//$_c/$_h}; _jh=${_jh//$_c/$_h}; done; _msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"zsh\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d '"'"' \n'"'"'); printf '"'"'\e]9278;d;%s\x07'"'"' $_msg; unset _hostname _user _msg _ju _jh _i _c _h _x' | command -p od -An -v -tx1 | command -p tr -d ' \n')
+          local zsh_env_script=$(builtin printf '%s' 'unsetopt ZLE RCS GLOBAL_RCS; WARP_SESSION_ID='$remote_session_id'; WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@; _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n); _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || builtin echo $USER); _ju=${_user//\\/\\\\}; _ju=${_ju//\"/\\\"}; _jh=${_hostname//\\/\\\\}; _jh=${_jh//\"/\\\"}; for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do _c=${(#)_i}; _x=$(( [##16] _i )); _h="\\u00${(l:2::0:)_x}"; _ju=${_ju//$_c/$_h}; _jh=${_jh//$_c/$_h}; done; _msg=$(builtin printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"zsh\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d '"'"' \n'"'"'); builtin printf '"'"'\e]9278;d;%s\x07'"'"' $_msg; unset _hostname _user _msg _ju _jh _i _c _h _x' | command -p od -An -v -tx1 | command -p tr -d ' \n')
 
           # Optionally attach to an existing ControlMaster the user already
           # runs for this destination instead of creating our own. Resolve
@@ -1312,7 +1312,7 @@ esac
 
   # Make sure we force the locale used for number formatting to "C", to avoid
   # issues in locales that use a comma as the decimal separator.
-  local rcfiles_start_time="$(LC_ALL="C"; echo $EPOCHREALTIME)"
+  local rcfiles_start_time="$(LC_ALL="C"; builtin echo $EPOCHREALTIME)"
 
   # This reflects the bootstrap sequence in a login shell. We want to
   # Do other shell startup first so we can ensure Warp goes last.
@@ -1329,29 +1329,36 @@ esac
   # user's rcfile.
   if [[ -z $WARP_IS_SUBSHELL ]]; then
       if [[ -e "${ZDOTDIR:-$HOME}/.zshenv" ]]; then
-          source "${ZDOTDIR:-$HOME}/.zshenv";
+          source "${ZDOTDIR:-$HOME}/.zshenv" || :;
       fi
       if [[ -e /etc/zprofile ]]; then
-          source /etc/zprofile;
+          source /etc/zprofile || :;
       fi
       if [[ -e "${ZDOTDIR:-$HOME}/.zprofile" ]]; then
-          source "${ZDOTDIR:-$HOME}/.zprofile";
+          source "${ZDOTDIR:-$HOME}/.zprofile" || :;
       fi
       if [[ -e /etc/zshrc ]]; then
-          source /etc/zshrc;
+          source /etc/zshrc || :;
       fi
       if [[ -e "${ZDOTDIR:-$HOME}/.zshrc" ]]; then
-          source "${ZDOTDIR:-$HOME}/.zshrc";
+          source "${ZDOTDIR:-$HOME}/.zshrc" || :;
       fi
       if [[ -e /etc/zlogin ]]; then
-          source /etc/zlogin;
+          source /etc/zlogin || :;
       fi
       if [[ -e "${ZDOTDIR:-$HOME}/.zlogin" ]]; then
-          source "${ZDOTDIR:-$HOME}/.zlogin";
+          source "${ZDOTDIR:-$HOME}/.zlogin" || :;
       fi
   fi
 
-  local rcfiles_end_time="$(LC_ALL="C"; echo $EPOCHREALTIME)"
+  # Phosphor (#926): zsh itself ignores errexit while it sources the startup files, so the
+  # files above ran exempt (`source f || :`). Leaving errexit ON at the prompt would let the
+  # first failing command that Phosphor runs for its own purposes (an in-band generator in a
+  # directory that is not a git repo, say) end the shell, and a typo ends it natively too. It is
+  # switched off here; every other option the files set is kept.
+  unsetopt errexit
+
+  local rcfiles_end_time="$(LC_ALL="C"; builtin echo $EPOCHREALTIME)"
 
   # If the user is running powerlevel10k and they selected "sparse" for the "Prompt Spacing"
   # option, this var will be true. It tells p10k to output an extra newline in its precmd function
@@ -1375,7 +1382,7 @@ esac
   _warp_zshaddhistory() {
     # Phosphor (#904): the deliberate non-zero returns below ("do not save") must
     # not trip a user's err_exit/err_return and kill or unwind the shell.
-    setopt localoptions noerrreturn noerrexit
+    setopt localoptions noerrreturn noerrexit noksharrays nowarncreateglobal
     # Phosphor (#828): last-resort repair, for when the zle-line-init repair
     # below did not run (a plugin or the user replaced that widget too). Each
     # zshaddhistory function sees the previous command's status in $?. Never
@@ -1511,7 +1518,7 @@ esac
   # _WARP_REPAIRED_PRECMD to 1 when it emitted the precmd the prompt cycle
   # skipped, and to "" otherwise.
   _warp_repair_hooks() {
-    setopt localoptions noerrreturn noerrexit
+    setopt localoptions noerrreturn noerrexit noksharrays nowarncreateglobal
     _WARP_REPAIRED_PRECMD=""
     [[ -n ${_WARP_HOOKS_INSTALLED:-} ]] || return 0
     local -a warp_missing_precmd warp_missing_preexec
@@ -1740,7 +1747,7 @@ esac
   # Marks the start of completions generation using a custom OSC.
   # Expects the `format` as the first positional argument.
   function warp_mark_start_of_completions () {
-    printf '\e]9280;A;%s\a' $1
+    builtin printf '\e]9280;A;%s\a' $1
   }
 
   function warp_mark_start_of_completions_for_list_choices () {
@@ -1753,7 +1760,7 @@ esac
 
   # Marks the end of completions generation using a custom OSC.
   function warp_mark_end_of_completions () {
-    printf '\e]9280;B\a'
+    builtin printf '\e]9280;B\a'
   }
 
   # The main logic for generating completions.
@@ -1819,7 +1826,7 @@ esac
     # as of this writing) so a legitimately slow-but-successful reply still
     # gets through; it only protects against a reply that never arrives.
     local TEMP
-    if ! IFS= read -t 20 -d $'\4' -s "$(echo -e "TEMP?\e]9280;P\a")" < /dev/tty; then
+    if ! IFS= builtin read -t 20 -d $'\4' -s "$(builtin echo -e "TEMP?\e]9280;P\a")" < /dev/tty; then
       # Timed out (or /dev/tty went away) before the app answered. Whatever
       # partial bytes landed in TEMP are not a completable buffer. The app
       # cannot be trusted to answer late either way: once it has abandoned
@@ -1841,10 +1848,10 @@ esac
     # occurs when we call `get-line`; we want to make sure it doesn't get
     # shown in a background block.  The "a" after the DCS start sequence
     # ensures we don't try to parse this as a JSON-encoded hook.
-    echo -n "${DCS_START}a"
+    builtin echo -n "${DCS_START}a"
     zle push-line
     zle get-line
-    echo -n "$DCS_END"
+    builtin echo -n "$DCS_END"
   }
   zle -N warp_read_completion_buffer
 
@@ -1887,14 +1894,14 @@ esac
     # The output of `alias` can include control characters that need to be escaped.
     local escaped_aliases="$(warp_escape_json "`alias`")"
     local escaped_abbrs=""
-    local env_var_names="$(warp_escape_json "`echo ${(k)parameters[(R)*export*]}`")"
+    local env_var_names="$(warp_escape_json "`builtin echo ${(k)parameters[(R)*export*]}`")"
     local function_names="$(warp_escape_json "`builtin print -l -- ${(ok)functions}`")"
     local escaped_builtins="$(warp_escape_json "`builtin print -l -- ${(ok)builtins}`")"
     local escaped_keywords="$(warp_escape_json "`builtin print -l -- ${(ok)reswords}`")"
 
     local escaped_path="$(warp_escape_json "$PATH")"
 
-    local escaped_shell_plugins="$(warp_escape_json "`builtin print -l -- ${shell_plugins}`")"
+    local escaped_shell_plugins="$(warp_escape_json "`builtin print -l -- ${shell_plugins[@]}`")"
 
     # The list of options enabled for the current shell.
     local shell_options="$(warp_escape_json "`setopt`")"
