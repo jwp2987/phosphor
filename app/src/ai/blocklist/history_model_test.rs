@@ -5429,35 +5429,41 @@ fn test_forget_terminal_view_evicts_only_reloadable_conversations() {
         let closing_view = EntityId::new();
         let other_view = EntityId::new();
 
-        let (with_meta, without_meta, shared) =
-            history_model.update(&mut app, |model, ctx| {
-                let with_meta = model.start_new_conversation(closing_view, false, false, ctx);
-                let without_meta = model.start_new_conversation(closing_view, false, false, ctx);
-                let shared = model.start_new_conversation(closing_view, false, false, ctx);
-                for id in [with_meta, shared] {
-                    let metadata = AIConversationMetadata::from(model.conversation(&id).unwrap());
-                    model.all_conversations_metadata.insert(id, metadata);
-                }
-                // `shared` is also live in another view.
-                model
-                    .live_conversation_ids_for_terminal_view
-                    .entry(other_view)
-                    .or_default()
-                    .push(shared);
-                model.terminal_view_created_at.insert(closing_view, Local::now());
-                (with_meta, without_meta, shared)
-            });
+        let (with_meta, without_meta, shared) = history_model.update(&mut app, |model, ctx| {
+            let with_meta = model.start_new_conversation(closing_view, false, false, ctx);
+            let without_meta = model.start_new_conversation(closing_view, false, false, ctx);
+            let shared = model.start_new_conversation(closing_view, false, false, ctx);
+            for id in [with_meta, shared] {
+                let metadata = AIConversationMetadata::from(model.conversation(&id).unwrap());
+                model.all_conversations_metadata.insert(id, metadata);
+            }
+            // `shared` is also live in another view.
+            model
+                .live_conversation_ids_for_terminal_view
+                .entry(other_view)
+                .or_default()
+                .push(shared);
+            model
+                .terminal_view_created_at
+                .insert(closing_view, Local::now());
+            (with_meta, without_meta, shared)
+        });
 
         history_model.update(&mut app, |model, _| {
             model.forget_terminal_view_impl(closing_view, true);
         });
 
         history_model.read(&app, |model, _| {
-            assert!(!model
-                .live_conversation_ids_for_terminal_view
-                .contains_key(&closing_view));
+            assert!(
+                !model
+                    .live_conversation_ids_for_terminal_view
+                    .contains_key(&closing_view)
+            );
             assert!(!model.terminal_view_created_at.contains_key(&closing_view));
-            assert!(model.conversation(&with_meta).is_none(), "reloadable: evicted");
+            assert!(
+                model.conversation(&with_meta).is_none(),
+                "reloadable: evicted"
+            );
             assert!(model.get_conversation_metadata(&with_meta).is_some());
             assert!(
                 model.conversation(&without_meta).is_some(),
@@ -5487,7 +5493,11 @@ fn test_forget_terminal_view_keeps_conversations_when_not_reloadable() {
         });
         history_model.read(&app, |model, _| {
             assert!(model.conversation(&id).is_some());
-            assert!(!model.live_conversation_ids_for_terminal_view.contains_key(&view));
+            assert!(
+                !model
+                    .live_conversation_ids_for_terminal_view
+                    .contains_key(&view)
+            );
         });
     });
 }
