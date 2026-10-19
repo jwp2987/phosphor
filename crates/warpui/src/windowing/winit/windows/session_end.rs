@@ -206,6 +206,17 @@ unsafe extern "system" fn session_end_subclass_proc(
         }
         SessionEndAction::BeginGracefulShutdown { reason_signal } => {
             SESSION_ENDING.store(true, Ordering::Release);
+            // Re-assert the shutdown block reason before posting the terminate
+            // event so it is held through WM_ENDSESSION. `ShutdownBlockReasonCreate`
+            // is idempotent for the same window. Whether this actually holds off
+            // the kill is UNVERIFIED on real Windows (jwp2987/phosphor#773).
+            // SAFETY: `hwnd` is a valid top-level window handle owned by this
+            // process, as required by `ShutdownBlockReasonCreate`.
+            if let Err(err) =
+                unsafe { ShutdownBlockReasonCreate(hwnd, &HSTRING::from("Saving your session…")) }
+            {
+                log::warn!("ShutdownBlockReasonCreate failed: {err} (jwp2987/phosphor#773)");
+            }
             if let Some(hooks) = HOOKS.get() {
                 hooks.arm_deadline(SHUTDOWN_DEADLINE, exit_code_for_signal(reason_signal));
                 if !hooks.request_terminate(reason_signal) {
