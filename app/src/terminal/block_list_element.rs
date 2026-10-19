@@ -289,6 +289,7 @@ fn cli_subagent_should_receive_pointer_event(
 
 pub type LabelBuilderFn = dyn Fn(
     Vec<BlockIndex>,
+    usize, /* block list eviction count at layout */
     &HashMap<BlockIndex, MouseStateHandle>,
     &TerminalModel,
     &AppContext,
@@ -298,6 +299,7 @@ pub type LabelBuilderFn = dyn Fn(
 /// passed in. Otherwise it will cause panicking in layout.
 pub type BookmarkBuilderFn = dyn Fn(
     Vec<BlockIndex>,
+    usize, /* block list eviction count at layout */
     Option<BlockIndex>,
     &HashMap<BlockIndex, MouseStateHandle>,
     &AppContext,
@@ -305,6 +307,7 @@ pub type BookmarkBuilderFn = dyn Fn(
 
 pub type FilterBuilderFn = dyn Fn(
     Vec<BlockIndex>,
+    usize,                        /* block list eviction count at layout */
     Option<BlockIndex>,           /* hovered_block_index */
     Option<BlockIndex>,           /* active_filter_editor_block_index */
     Option<&HashSet<BlockIndex>>, /* filtered_blocks */
@@ -2336,10 +2339,13 @@ impl BlockListElement {
                     continue;
                 }
 
-                let start_block_list_point =
-                    BlockListPoint::from_within_block_point(&start, block_list);
-                let end_block_list_point =
-                    BlockListPoint::from_within_block_point(&end, block_list);
+                // Skip the highlight if either end no longer resolves (stale block index).
+                let (Some(start_block_list_point), Some(end_block_list_point)) = (
+                    BlockListPoint::try_from_within_block_point(&start, block_list),
+                    BlockListPoint::try_from_within_block_point(&end, block_list),
+                ) else {
+                    continue;
+                };
                 let range = SelectionRange::new(start_block_list_point, end_block_list_point);
                 let participant_color = if is_self_reconnecting {
                     MUTED_PARTICIPANT_COLOR
@@ -2425,7 +2431,7 @@ impl BlockListElement {
             .block_at(end_block_index)
             .map(|b| b.start_point().to_within_block_point(end_block_index))?;
         let range = SelectionRange::new(
-            BlockListPoint::from_within_block_point(&block_start, block_list),
+            BlockListPoint::try_from_within_block_point(&block_start, block_list)?,
             end_block_list_point,
         );
         let selection_cursor_render_location = if is_reversed {
@@ -2481,8 +2487,8 @@ impl BlockListElement {
             })?;
 
             let range = SelectionRange::new(
-                BlockListPoint::from_within_block_point(&intermediate_start, block_list),
-                BlockListPoint::from_within_block_point(&intermediate_end, block_list),
+                BlockListPoint::try_from_within_block_point(&intermediate_start, block_list)?,
+                BlockListPoint::try_from_within_block_point(&intermediate_end, block_list)?,
             );
             self.render_selection(
                 &range,
@@ -2502,7 +2508,7 @@ impl BlockListElement {
             .map(|b| b.end_point().to_within_block_point(start_block_index))?;
         let range = SelectionRange::new(
             start_block_list_point,
-            BlockListPoint::from_within_block_point(&block_end, block_list),
+            BlockListPoint::try_from_within_block_point(&block_end, block_list)?,
         );
         let selection_cursor_render_location = if is_reversed {
             SelectionCursorRenderLocation::Start
@@ -3701,8 +3707,12 @@ impl Element for BlockListElement {
         self.visible_items = Some(Rc::new(visible_items));
         self.subshell_flags = subshell_flags;
         self.label_elements.clear();
+        // Read under the same model lock as the indices above, so actions built from these
+        // elements can be translated if eviction re-indexes the list before they fire (#889).
+        let evicted_total_at_layout = model.block_list().evicted_total();
         let elements = (self.label_elements_builder)(
             block_indices_with_label_elements.clone(),
+            evicted_total_at_layout,
             &self.mouse_states.label_mouse_states,
             &model,
             app,
@@ -3773,6 +3783,7 @@ impl Element for BlockListElement {
         self.bookmark_elements.clear();
         let elements = (self.bookmark_element_builder)(
             visible_block_indices.clone(),
+            evicted_total_at_layout,
             self.hovered_block_index,
             &self.mouse_states.bookmark_mouse_states,
             app,
@@ -3794,6 +3805,7 @@ impl Element for BlockListElement {
         self.filter_elements.clear();
         let elements = (self.filter_elements_builder)(
             visible_block_indices.clone(),
+            evicted_total_at_layout,
             self.hovered_block_index,
             self.active_filter_editor_block_index,
             self.filtered_blocks.as_ref(),

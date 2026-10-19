@@ -589,6 +589,7 @@ pub fn simulate_directory_for_completion<A, S>(
                     BlockMetadataReceivedEvent {
                         block_metadata: block_metadata.clone(),
                         block_index,
+                        eviction_stamp: Default::default(),
                         is_after_in_band_command: false,
                         is_done_bootstrapping: true,
                     },
@@ -7652,6 +7653,7 @@ fn queued_command_completion_preserves_draft() {
                     )),
                     num_secrets_obfuscated: 0,
                     block_index: BlockIndex::zero(),
+                    eviction_stamp: Default::default(),
                     block_id: BlockId::new(),
                     session_id: None,
                     restored_block_was_local: None,

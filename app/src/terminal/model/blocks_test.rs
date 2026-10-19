@@ -1014,6 +1014,57 @@ fn test_eviction_outcome_reports_count_height_and_ids() {
     );
 }
 
+/// Events created on the PTY thread before an eviction carry pre-eviction `BlockIndex`es; the
+/// stamp lets the dispatcher translate them to the current indexing (or drop them if their block
+/// was evicted).
+#[test]
+fn test_queued_block_completed_events_are_translated_across_eviction() {
+    use crate::terminal::event::{Event as TerminalEvent, shift_block_index_after_eviction};
+
+    let (events_tx, events_rx) = async_channel::unbounded();
+    let listener = ChannelEventListener::builder_for_test()
+        .with_terminal_events_tx(events_tx)
+        .build();
+    let mut block_list = new_bootstrapped_block_list(None, None, listener);
+    for i in 0..6 {
+        insert_block(&mut block_list, &format!("command {i}\n"), "output\n");
+    }
+
+    // Everything the PTY thread queued before the main thread evicted anything.
+    let mut completed = Vec::new();
+    while let Ok(event) = events_rx.try_recv() {
+        if let TerminalEvent::BlockCompleted(event) = event {
+            completed.push(event);
+        }
+    }
+    assert!(!completed.is_empty());
+    assert_eq!(block_list.evicted_total(), 0);
+
+    block_list.update_max_grid_size(1);
+    block_list.update_max_retained_lines(1);
+    let evicted = block_list.evict_oldest_blocks_over_line_budget();
+    assert!(evicted.count > 0);
+    assert_eq!(block_list.evicted_total(), evicted.count);
+
+    for mut event in completed {
+        let shift = event.eviction_stamp.take_shift();
+        assert_eq!(shift, evicted.count);
+        match shift_block_index_after_eviction(event.block_index, shift) {
+            Some(index) => assert_eq!(
+                block_list.block_at(index).map(|block| block.id().clone()),
+                Some(event.block_id.clone()),
+                "translated index must point at the event's block"
+            ),
+            None => assert!(
+                block_list.block_with_id(&event.block_id).is_none(),
+                "an event is only dropped if its block was evicted"
+            ),
+        }
+        // Rebased: translating again is a no-op.
+        assert_eq!(event.eviction_stamp.take_shift(), 0);
+    }
+}
+
 #[test]
 fn test_checked_getters_tolerate_stale_block_index() {
     let block_list = block_list_with_finished_blocks(2);

@@ -3100,6 +3100,53 @@ fn test_retained_line_eviction_shifts_view_state_in_one_step() {
 }
 
 #[test]
+fn test_stamped_layout_actions_resolve_across_eviction() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                for _ in 0..10 {
+                    model.simulate_block("ls", "foo");
+                }
+                model.update_max_grid_size(1);
+                model.update_max_retained_lines(1);
+            }
+            // Bookmark the block at index 5 (which also protects it from eviction), then capture
+            // layout-time stamped indices for it and for the oldest block, as the bookmark and
+            // filter buttons do.
+            view.bookmark_block(&BlockIndex::from(5), ctx);
+            let total_at_layout = view.model.lock().block_list().evicted_total();
+            let stamped_bookmarked = StampedBlockIndex::new(BlockIndex::from(5), total_at_layout);
+            let stamped_oldest = StampedBlockIndex::new(BlockIndex::zero(), total_at_layout);
+
+            let evicted = view.evict_retained_blocks(ctx);
+            assert!(evicted > 0 && evicted <= 5);
+
+            // Before the next layout, the stale stamps still resolve to the right block, and an
+            // evicted block resolves to nothing.
+            assert_eq!(
+                view.resolve_stamped_block_index(stamped_bookmarked),
+                Some(BlockIndex::from(5 - evicted))
+            );
+            assert_eq!(view.resolve_stamped_block_index(stamped_oldest), None);
+
+            // Dispatching the stale action toggles the bookmark off at its shifted index rather
+            // than adding a bookmark at the stale one.
+            assert_eq!(view.bookmarked_blocks.len(), 1);
+            view.handle_action(&TerminalAction::BookmarkBlock(stamped_bookmarked), ctx);
+            assert!(view.bookmarked_blocks.is_empty());
+
+            // An action for an evicted block is a no-op.
+            view.handle_action(&TerminalAction::BookmarkBlock(stamped_oldest), ctx);
+            assert!(view.bookmarked_blocks.is_empty());
+        });
+    })
+}
+
+#[test]
 fn test_retained_line_eviction_is_gated_on_the_setting() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);

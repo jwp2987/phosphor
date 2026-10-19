@@ -408,9 +408,18 @@ impl BlockList {
             // convert the WithinBlock values to BlockListPoint so they can be compared to the
             // point where the click occurred
             let override_start_absolute =
-                BlockListPoint::from_within_block_point(&override_start, self);
+                BlockListPoint::try_from_within_block_point(&override_start, self);
             let override_end_absolute =
-                BlockListPoint::from_within_block_point(&override_end, self);
+                BlockListPoint::try_from_within_block_point(&override_end, self);
+            // A stale override (block index out of range) is simply not applied.
+            let (override_start_absolute, override_end_absolute) =
+                match (override_start_absolute, override_end_absolute) {
+                    (Some(start), Some(end)) => (start, end),
+                    _ => {
+                        self.set_selection(selection);
+                        return;
+                    }
+                };
             // We only want to accept this override if it actually wraps around the cursor, so we
             // do this comparison to make sure the point of the cursor is between the ends of the
             // range of the potential override text. Since BlockListPoint rows are floats, the
@@ -543,7 +552,13 @@ impl BlockList {
             }
         };
 
-        let mut new_tail_blocklist = BlockListPoint::from_within_block_point(&new_tail, self);
+        let Some(mut new_tail_blocklist) =
+            BlockListPoint::try_from_within_block_point(&new_tail, self)
+        else {
+            // The tail's block index is stale; keep the selection as it was.
+            self.set_selection(selection);
+            return None;
+        };
         new_tail_blocklist.row += 0.5.into_lines(); // Endpoints are positioned in the row's vertical center.
         selection.tail.point = new_tail_blocklist;
         self.set_selection(selection);
@@ -625,7 +640,13 @@ impl BlockList {
             }
         };
 
-        let mut new_tail_blocklist = BlockListPoint::from_within_block_point(&new_tail, self);
+        let Some(mut new_tail_blocklist) =
+            BlockListPoint::try_from_within_block_point(&new_tail, self)
+        else {
+            // The tail's block index is stale; keep the selection as it was.
+            self.set_selection(selection);
+            return None;
+        };
         new_tail_blocklist.row += 0.5.into_lines(); // Endpoints are positioned in the row's vertical center.
         selection.tail.point = new_tail_blocklist;
         self.set_selection(selection);
@@ -703,7 +724,13 @@ impl BlockList {
             }
         };
 
-        let mut new_tail_blocklist = BlockListPoint::from_within_block_point(&new_tail, self);
+        let Some(mut new_tail_blocklist) =
+            BlockListPoint::try_from_within_block_point(&new_tail, self)
+        else {
+            // The tail's block index is stale; keep the selection as it was.
+            self.set_selection(selection);
+            return None;
+        };
         new_tail_blocklist.row += 0.5.into_lines(); // Endpoints are positioned in the row's vertical center.
         selection.tail.point = new_tail_blocklist;
 
@@ -750,7 +777,13 @@ impl BlockList {
             selection.tail.side = Side::Right;
         }
 
-        let mut new_tail_blocklist = BlockListPoint::from_within_block_point(&new_tail, self);
+        let Some(mut new_tail_blocklist) =
+            BlockListPoint::try_from_within_block_point(&new_tail, self)
+        else {
+            // The tail's block index is stale; keep the selection as it was.
+            self.set_selection(selection);
+            return None;
+        };
         new_tail_blocklist.row += 0.5.into_lines(); // Endpoints are positioned in the row's vertical center.
         selection.tail.point = new_tail_blocklist;
 
@@ -839,8 +872,12 @@ impl BlockList {
                 ),
                 None => return,
             };
-        let mut new_head_blocklist = BlockListPoint::from_within_block_point(&head, self);
-        let mut new_tail_blocklist = BlockListPoint::from_within_block_point(&tail, self);
+        let (Some(mut new_head_blocklist), Some(mut new_tail_blocklist)) = (
+            BlockListPoint::try_from_within_block_point(&head, self),
+            BlockListPoint::try_from_within_block_point(&tail, self),
+        ) else {
+            return;
+        };
 
         // Endpoints are positioned in the row's vertical center. (See function comment).
         new_head_blocklist.row += 0.5.into_lines();
@@ -1425,8 +1462,8 @@ impl BlockList {
         )?;
         match is_rect {
             IsRect::False => {
-                let start_absolute = BlockListPoint::from_within_block_point(&start, self);
-                let end_absolute = BlockListPoint::from_within_block_point(&end, self);
+                let start_absolute = BlockListPoint::try_from_within_block_point(&start, self)?;
+                let end_absolute = BlockListPoint::try_from_within_block_point(&end, self)?;
                 Some(ExpandedSelectionRange::regular(
                     ExpandedSelection::new(start_absolute, start),
                     ExpandedSelection::new(end_absolute, end),
@@ -1454,8 +1491,9 @@ impl BlockList {
                     let start_in_row = current;
 
                     let start_absolute =
-                        BlockListPoint::from_within_block_point(&start_in_row, self);
-                    let end_absolute = BlockListPoint::from_within_block_point(&end_in_row, self);
+                        BlockListPoint::try_from_within_block_point(&start_in_row, self)?;
+                    let end_absolute =
+                        BlockListPoint::try_from_within_block_point(&end_in_row, self)?;
 
                     selected_rows.push((
                         ExpandedSelection::new(start_absolute, start_in_row),

@@ -547,6 +547,10 @@ impl BlockListPoint {
         }
     }
 
+    /// Test-only convenience. Production code must use [`Self::try_from_within_block_point`] and
+    /// skip the selection/highlight on `None`: falling back to row 0 for a stale index would
+    /// silently select or copy from the top of the list (#889).
+    #[cfg(test)]
     pub fn from_within_block_point(
         within_block_point: &WithinBlock<Point>,
         block_list: &BlockList,
@@ -3572,6 +3576,11 @@ impl BlockList {
         // itself, in one step, when it handles `AfterBlockStarted` (#889).
     }
 
+    /// Monotonic total of blocks evicted from this list by `terminal.max_retained_lines` (#889).
+    pub fn evicted_total(&self) -> usize {
+        self.event_proxy.evicted_blocks_total()
+    }
+
     /// The effective retained-line budget, if any. Never lower than the per-block limit, so a
     /// single block is not truncated by it.
     fn retained_lines_budget(&self) -> Option<usize> {
@@ -3638,6 +3647,9 @@ impl BlockList {
             }
         }
         let removed_height = height_before - self.block_heights.summary().height;
+        // Bump the monotonic counter that stamps queued PTY-thread events (still holding the
+        // model lock the caller took), so the dispatcher can translate their stale indices.
+        self.event_proxy.record_blocks_evicted(evict_count);
         EvictedBlocks {
             count: evict_count,
             block_ids,

@@ -3,6 +3,7 @@ use std::fmt::{Debug, Formatter};
 use std::num::ParseIntError;
 use std::string::FromUtf8Error;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use instant::Instant;
@@ -211,6 +212,51 @@ pub struct BootstrappedEvent {
     pub rcfiles_duration_seconds: Option<f64>,
 }
 
+/// Remembers how many blocks had been evicted from the block list (#889) when an index-bearing
+/// PTY-thread event was created, so the main thread can translate the event's `BlockIndex` into
+/// the block list's current indexing.
+///
+/// Retained-line eviction re-indexes the block list on the main thread, but events created
+/// earlier on the PTY thread may still be queued and carry pre-eviction indices.
+/// `ModelEventDispatcher` calls [`Self::take_shift`] on every such event before fanning it out,
+/// so no subscriber ever sees a stale index.
+#[derive(Clone, Debug, Default)]
+pub struct EvictionStamp {
+    counter: Arc<AtomicUsize>,
+    evicted_at_creation: usize,
+}
+
+impl EvictionStamp {
+    /// Stamps "now" against the shared monotonic count of evicted blocks.
+    pub fn new(counter: Arc<AtomicUsize>) -> Self {
+        let evicted_at_creation = counter.load(Ordering::Acquire);
+        Self {
+            counter,
+            evicted_at_creation,
+        }
+    }
+
+    /// How many blocks were evicted since this stamp was created or last rebased.
+    pub fn evicted_since(&self) -> usize {
+        self.counter
+            .load(Ordering::Acquire)
+            .saturating_sub(self.evicted_at_creation)
+    }
+
+    /// Returns [`Self::evicted_since`] and rebases the stamp to "now", so adjusting an index by the
+    /// returned shift is idempotent.
+    pub fn take_shift(&mut self) -> usize {
+        let shift = self.evicted_since();
+        self.evicted_at_creation += shift;
+        shift
+    }
+}
+
+/// `index` shifted down by `shift` evicted blocks, or `None` if it referred to an evicted block.
+pub fn shift_block_index_after_eviction(index: BlockIndex, shift: usize) -> Option<BlockIndex> {
+    index.0.checked_sub(shift).map(BlockIndex)
+}
+
 #[derive(Clone)]
 pub struct BlockCompletedEvent {
     /// This will be None when we don't want to collect telemetry
@@ -222,6 +268,8 @@ pub struct BlockCompletedEvent {
     pub block_id: BlockId,
     pub session_id: Option<SessionId>,
     pub restored_block_was_local: Option<bool>,
+    /// Lets the dispatcher translate `block_index` after retained-line eviction (#889).
+    pub eviction_stamp: EvictionStamp,
 }
 
 #[derive(Clone)]
@@ -285,6 +333,8 @@ impl BlockType {
 pub struct BlockMetadataReceivedEvent {
     pub block_metadata: BlockMetadata,
     pub block_index: BlockIndex,
+    /// Lets the dispatcher translate `block_index` after retained-line eviction (#889).
+    pub eviction_stamp: EvictionStamp,
     /// Whether the previous block was an in-band command.
     pub is_after_in_band_command: bool,
     /// Whether the session has fully completed the bootstrapping process.
@@ -306,6 +356,8 @@ pub struct BlockMetadataReceivedEvent {
 pub struct BlockWorkingDirectoryUpdatedEvent {
     pub block_metadata: BlockMetadata,
     pub block_index: BlockIndex,
+    /// Lets the dispatcher translate `block_index` after retained-line eviction (#889).
+    pub eviction_stamp: EvictionStamp,
     /// Whether the block carrying this update is for an in-band command.
     pub is_for_in_band_command: bool,
     /// Whether the session has fully completed the bootstrapping process.
@@ -316,6 +368,9 @@ pub struct BlockWorkingDirectoryUpdatedEvent {
 /// Contents of a normal block that a user executed.
 pub struct UserBlockCompleted {
     pub index: BlockIndex,
+
+    /// Lets the dispatcher translate `index` after retained-line eviction (#889).
+    pub eviction_stamp: EvictionStamp,
 
     /// The block's serialized representation. Cheap to clone once computed, since it's wrapped
     /// in an `Arc`.
@@ -355,6 +410,7 @@ impl UserBlockCompleted {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         index: BlockIndex,
+        eviction_stamp: EvictionStamp,
         serialized_block: Lazy<Arc<SerializedBlock>, BlockList>,
         command: Lazy<String, BlockList>,
         command_with_obfuscated_secrets: Lazy<String, BlockList>,
@@ -367,6 +423,7 @@ impl UserBlockCompleted {
     ) -> Self {
         Self {
             index,
+            eviction_stamp,
             serialized_block,
             command,
             command_with_obfuscated_secrets,
@@ -396,6 +453,7 @@ impl UserBlockCompleted {
     ) -> Self {
         Self::new(
             index,
+            EvictionStamp::default(),
             Lazy::provided(serialized_block),
             Lazy::provided(command),
             Lazy::provided(command_with_obfuscated_secrets),

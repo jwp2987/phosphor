@@ -322,6 +322,7 @@ fn block_working_directory_updated_does_not_drain_finish_senders() {
                 BlockWorkingDirectoryUpdatedEvent {
                     block_metadata: BlockMetadata::new(None, Some("/tmp/new".to_string())),
                     block_index: BlockIndex::zero(),
+                    eviction_stamp: Default::default(),
                     is_for_in_band_command: false,
                     is_done_bootstrapping: true,
                 },
@@ -341,6 +342,7 @@ fn block_working_directory_updated_does_not_drain_finish_senders() {
                 BlockMetadataReceivedEvent {
                     block_metadata: BlockMetadata::new(None, Some("/tmp/precmd".to_string())),
                     block_index: BlockIndex::zero(),
+                    eviction_stamp: Default::default(),
                     is_after_in_band_command: false,
                     is_done_bootstrapping: true,
                 },
@@ -524,6 +526,7 @@ fn interrupted_requested_command_reports_exit_130_and_captured_output() {
                 BlockMetadataReceivedEvent {
                     block_metadata: BlockMetadata::new(None, Some("/tmp".to_string())),
                     block_index: BlockIndex::zero(),
+                    eviction_stamp: Default::default(),
                     is_after_in_band_command: false,
                     is_done_bootstrapping: true,
                 },
