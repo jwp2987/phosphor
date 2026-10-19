@@ -10,8 +10,8 @@ use warpui::App;
 #[cfg(feature = "local_fs")]
 use super::{blocklist_image_asset_source, ResolvedBlocklistImageSources};
 use super::{
-    collect_renderable_image_group, collect_visual_markdown_lightbox_collection,
-    compute_visual_section_width, image_group_step, line_count,
+    collect_visual_markdown_lightbox_collection, compute_visual_section_width, line_count,
+    step_for_group, IndexedImageSection, RenderableImageGroup,
     display_query_without_context_references, focused_match_is_hidden,
     image_tooltip_handles_for_group, inline_image_source_label, is_supported_blocklist_image_source,
     lightbox_trigger_for_section, query_context_references, query_prefix_highlight_len,
@@ -632,64 +632,79 @@ fn test_image(source: &str, layout: AgentOutputImageLayout) -> AIAgentTextSectio
 }
 
 /// The skipped tail of a capped answer must advance the image-handle counter exactly as
-/// rendering it would, or a later message indexes the wrong tooltip handles (#872).
+/// rendering it would, or a later message indexes the wrong tooltip handles (#872). Built from
+/// pre-collected groups so it needs no asset cache or feature flag.
 #[test]
 fn skipped_image_groups_advance_counters_like_the_render_path() {
-    App::test((), |mut app| async move {
-        app.update(|ctx| {
-            let _images = FeatureFlag::BlocklistMarkdownImages.override_enabled(true);
-            let sections = vec![
-                // Group of two inline images split by a blank line, then a block image, a
-                // text section, and a final inline image.
-                test_image("https://example.com/a.png", AgentOutputImageLayout::Inline),
-                AIAgentTextSection::PlainText {
-                    text: "\n".to_string().into(),
-                },
-                test_image("https://example.com/b.png", AgentOutputImageLayout::Inline),
-                test_image("https://example.com/c.png", AgentOutputImageLayout::Block),
-                AIAgentTextSection::PlainText {
-                    text: "tail".to_string().into(),
-                },
-                test_image("https://example.com/d.png", AgentOutputImageLayout::Inline),
-            ];
-            let indexed = text_sections_with_indices(&sections, 0).collect_vec();
+    let sections = vec![
+        // Group of two inline images split by a blank line (3 sections), then a block image,
+        // a text section, and a final inline image.
+        test_image("a.png", AgentOutputImageLayout::Inline),
+        AIAgentTextSection::PlainText {
+            text: "\n".to_string().into(),
+        },
+        test_image("b.png", AgentOutputImageLayout::Inline),
+        test_image("c.png", AgentOutputImageLayout::Block),
+        AIAgentTextSection::PlainText {
+            text: "tail".to_string().into(),
+        },
+        test_image("d.png", AgentOutputImageLayout::Inline),
+    ];
+    let indexed = text_sections_with_indices(&sections, 0).collect_vec();
+    let image_at = |i: usize| IndexedImageSection {
+        section_index: indexed[i].0,
+        image: match indexed[i].1 {
+            AIAgentTextSection::Image { image } => image,
+            _ => unreachable!(),
+        },
+    };
+    let groups = vec![
+        RenderableImageGroup {
+            images: vec![image_at(0), image_at(2)],
+            consumed_sections: 3,
+        },
+        RenderableImageGroup {
+            images: vec![image_at(3)],
+            consumed_sections: 1,
+        },
+        RenderableImageGroup {
+            images: vec![image_at(5)],
+            consumed_sections: 1,
+        },
+    ];
+    let steps = groups
+        .iter()
+        .map(|g| {
+            let step = step_for_group(g);
+            (step.handles, step.sections)
+        })
+        .collect_vec();
+    assert_eq!(steps, vec![(2, 3), (1, 1), (1, 1)]);
+    // A later message starts at handle 4, the same as after rendering every section.
+    assert_eq!(steps.iter().map(|s| s.0).sum::<usize>(), 4);
 
-            // Walk the sections the way the skip path does.
-            let (mut offset, mut handles) = (0, 0);
-            let mut steps = vec![];
-            while offset < indexed.len() {
-                if let (_, AIAgentTextSection::Image { image }) = indexed[offset] {
-                    let step = image_group_step(
-                        &indexed,
-                        offset,
-                        image,
-                        None,
-                        #[cfg(feature = "local_fs")]
-                        None,
-                        ctx,
-                    );
-                    steps.push((step.handles, step.sections));
-                    handles += step.handles;
-                    offset += step.sections;
-                } else {
-                    offset += 1;
-                }
-            }
-            assert_eq!(steps, vec![(2, 3), (1, 1), (1, 1)]);
-            // A later message starts at handle 4, the same as after rendering every section.
-            assert_eq!(handles, 4);
+    // An unrenderable image (empty group) still advances one section and one handle.
+    let empty = RenderableImageGroup {
+        images: vec![],
+        consumed_sections: 0,
+    };
+    let step = step_for_group(&empty);
+    assert_eq!((step.handles, step.sections), (1, 1));
+}
 
-            let first = collect_renderable_image_group(
-                &indexed,
-                0,
-                AgentOutputImageLayout::Inline,
-                None,
-                #[cfg(feature = "local_fs")]
-                None,
-                ctx,
-            );
-            assert_eq!(first.images.len(), 2);
-            assert_eq!(first.consumed_sections, 3);
-        });
-    });
+/// A table shown on one frame stays shown when a later streaming frame grows it past the
+/// budget, and still charges the budget so the rest of the answer is bounded.
+#[test]
+fn shown_table_survives_growing_past_the_budget() {
+    let shown = std::sync::atomic::AtomicBool::new(false);
+    let mut budget = OutputBudget::new(10, 1000);
+    assert!(budget.admit_table(&shown, 4, 100));
+    // Next frame: fresh budget, table has grown beyond it.
+    let mut budget = OutputBudget::new(10, 1000);
+    assert!(budget.admit_table(&shown, 50, 5000));
+    assert!(budget.is_exhausted());
+    // A never-shown table that is too big is still hidden.
+    let other = std::sync::atomic::AtomicBool::new(false);
+    let mut budget = OutputBudget::new(10, 1000);
+    assert!(!budget.admit_table(&other, 50, 5000));
 }

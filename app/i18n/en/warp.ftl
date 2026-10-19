@@ -297,6 +297,7 @@ ai-block-check-now-tooltip = Ask the agent to check this command now, skipping i
 ai-block-resume-conversation = Resume conversation
 ai-block-continue-conversation = Continue conversation
 ai-block-show-full-output = Show full output ({ $lines } more lines)
+ai-block-code-truncated-note = Truncated — show full output to run
 ai-block-fork-conversation = Fork conversation
 ai-block-show-credit-usage-details = Show credit usage details
 ai-block-follow-up-existing-conversation = Follow up with existing conversation

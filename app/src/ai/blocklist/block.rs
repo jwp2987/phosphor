@@ -359,6 +359,9 @@ impl ActionButtonTheme for RewindButtonTheme {
 pub(crate) struct TableSectionHandles {
     pub scroll_handle: ClippedScrollStateHandle,
     pub state_handle: TableStateHandle,
+    /// Whether the output cap has already let this table be shown; once shown it stays shown
+    /// while it streams larger.
+    pub shown: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Default)]
@@ -4036,10 +4039,16 @@ impl AIBlock {
     }
 
     /// Whether a text-selection drag is in progress in this block (true from the mouse-down
-    /// that started it until the mouse is released). Buttons, inner scrollbars and editors do
-    /// not set it, so the block list uses it to tell a selection drag from any handled press.
-    pub fn is_selecting_text(&self) -> bool {
+    /// that started it until the mouse is released), in the block's own selection area or in one
+    /// of its embedded code editors. Buttons and inner scrollbars do not set it, so the block
+    /// list uses it to tell a selection drag from any handled press. A drag started in a table
+    /// is covered by the block's selection area, which owns table selection.
+    pub fn is_selecting_text(&self, app: &AppContext) -> bool {
         self.state_handles.selection_handle.is_selecting()
+            || self
+                .code_editor_views
+                .iter()
+                .any(|editor| editor.view.as_ref(app).is_selecting())
     }
 
     /// This block's file diff cards (CodeDiffViews), newest first — the order

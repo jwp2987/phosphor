@@ -1259,6 +1259,28 @@ impl OutputBudget {
         }
     }
 
+    /// [`Self::take_block`] for a table that may still be streaming. A table that was already
+    /// shown on an earlier frame stays shown, with its cost charged (saturating) against the
+    /// budget, so a table growing past the budget does not vanish and take everything after
+    /// it along.
+    pub(super) fn admit_table(
+        &mut self,
+        shown: &std::sync::atomic::AtomicBool,
+        lines: usize,
+        bytes: usize,
+    ) -> bool {
+        if shown.load(std::sync::atomic::Ordering::Relaxed) {
+            self.lines_left = self.lines_left.saturating_sub(lines);
+            self.bytes_left = self.bytes_left.saturating_sub(bytes);
+            return true;
+        }
+        let fits = self.take_block(lines, bytes);
+        if fits {
+            shown.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        fits
+    }
+
     /// The byte length of the leading part of `text` that fits in the budget, consuming it.
     /// Returns `text.len()` when everything fits. A single line longer than the remaining bytes
     /// is cut mid-line (at a char boundary), so one giant line cannot defeat the cap. Stops
@@ -1581,9 +1603,15 @@ pub fn render_text_sections<V: View, A: Action>(
                 ));
             }
             AIAgentTextSection::Table { table } => {
+                let table_handles = props
+                    .table_section_handles
+                    .get(*props.starting_table_section_index)
+                    .cloned()
+                    .unwrap_or_default();
                 if let Some(budget) = cap_budget.as_deref_mut() {
                     let lines = line_count(&table.markdown_source);
-                    if !budget.take_block(lines, table.markdown_source.len()) {
+                    if !budget.admit_table(&table_handles.shown, lines, table.markdown_source.len())
+                    {
                         if focused_match_is_hidden(focused_match, section_index, 0) {
                             lift_output_cap(&mut cap_budget);
                         } else {
@@ -1595,11 +1623,6 @@ pub fn render_text_sections<V: View, A: Action>(
                         }
                     }
                 }
-                let table_handles = props
-                    .table_section_handles
-                    .get(*props.starting_table_section_index)
-                    .cloned()
-                    .unwrap_or_default();
                 *props.starting_table_section_index += 1;
                 column.add_child(render_table_section(
                     table,
@@ -1687,6 +1710,12 @@ fn image_group_step(
         resolved_blocklist_image_sources,
         app,
     );
+    step_for_group(&group)
+}
+
+/// The pure arithmetic of [`image_group_step`]: an unrenderable (empty) group still consumes one
+/// section and one handle, as the render path does.
+fn step_for_group(group: &RenderableImageGroup<'_>) -> ImageGroupStep {
     if group.images.is_empty() {
         ImageGroupStep {
             handles: 1,
@@ -3259,6 +3288,25 @@ pub fn render_code_output_section<A: Action>(
         })
         .finish()
     });
+
+    // A truncated snippet cannot be run or inserted and is not highlighted; say why.
+    let language_text: Option<Box<dyn Element>> = if props.full_code.is_some() {
+        let note = Text::new_inline(
+            crate::t!("ai-block-code-truncated-note"),
+            appearance.ui_font_family(),
+            appearance.monospace_font_size(),
+        )
+        .with_color(blended_colors::text_sub(theme, theme.surface_3()))
+        .finish();
+        Some(
+            Flex::row()
+                .with_spacing(8.)
+                .with_children(language_text.into_iter().chain(iter::once(note)))
+                .finish(),
+        )
+    } else {
+        language_text
+    };
 
     let allow_execution = props.language.is_none_or(|lang| lang.is_shell());
 

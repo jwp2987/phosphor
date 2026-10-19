@@ -4780,7 +4780,7 @@ impl Element for BlockListElement {
                                         Some(RichContentMetadata::AIBlock(metadata)) => metadata
                                             .ai_block_handle
                                             .as_ref(app)
-                                            .is_selecting_text(),
+                                            .is_selecting_text(app),
                                         _ => false,
                                     };
                                     self.rich_content_drag_selecting

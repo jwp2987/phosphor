@@ -208,11 +208,22 @@ impl WindowState {
         self.scroll_velocity = None;
     }
 
+    /// Clears the held-button state, but only if `button` is the one recorded as held.
+    fn release_mouse_button(&mut self, button: MouseButton) {
+        if self.current_mouse_button_pressed == Some(button) {
+            self.current_mouse_button_pressed = None;
+        }
+    }
+
     /// When a mouse button is pressed, save it to [`Self::current_mouse_button_pressed`] so that
     /// we can detect dragging. Also save it to [`Self::last_mouse_button_pressed`] for
     /// double/triple-click. Returns the calculated click_count.
     fn determine_click_count_and_update_button_state(&mut self, button: MouseButton) -> u32 {
-        self.current_mouse_button_pressed = Some(button);
+        // A left drag in progress must not be turned into plain mouse moves by pressing another
+        // button mid-drag, so a held Left button is not overwritten.
+        if self.current_mouse_button_pressed != Some(MouseButton::Left) {
+            self.current_mouse_button_pressed = Some(button);
+        }
         let now = Instant::now();
         // Increment the click_count if the button type is the same and the duration is faster than
         // MULTI_CLICK_INTERVAL.
@@ -1306,7 +1317,8 @@ impl EventLoop {
                     }
                 }
                 ElementState::Released => {
-                    window_state.current_mouse_button_pressed = None;
+                    // Releasing a different button must not end a drag of the held one.
+                    window_state.release_mouse_button(button);
                     match button {
                         MouseButton::Left => {
                             Some(ConvertedEvent::Event(crate::event::Event::LeftMouseUp {

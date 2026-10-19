@@ -87,3 +87,16 @@ fn test_empty_drag_drop_handling() {
         }
     }
 }
+
+/// Pressing or releasing another mouse button mid-drag must not end a left drag.
+#[test]
+fn left_drag_survives_other_button_press_and_release() {
+    let mut state = WindowState::new(crate::WindowId::new());
+    state.determine_click_count_and_update_button_state(MouseButton::Left);
+    state.determine_click_count_and_update_button_state(MouseButton::Right);
+    assert_eq!(state.current_mouse_button_pressed, Some(MouseButton::Left));
+    state.release_mouse_button(MouseButton::Right);
+    assert_eq!(state.current_mouse_button_pressed, Some(MouseButton::Left));
+    state.release_mouse_button(MouseButton::Left);
+    assert_eq!(state.current_mouse_button_pressed, None);
+}
