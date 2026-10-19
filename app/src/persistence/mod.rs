@@ -97,6 +97,18 @@ pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<Writer
     }
 }
 
+/// If startup found `warp.sqlite` unusable and moved it aside (#860), returns
+/// where it went -- once -- so the UI can tell the user.
+pub fn take_database_recovery_notice() -> Option<PathBuf> {
+    cfg_if::cfg_if! {
+        if #[cfg(feature = "local_fs")] {
+            sqlite::take_database_recovery_notice().map(|notice| notice.moved_to)
+        } else {
+            None
+        }
+    }
+}
+
 /// Prewarms the SQLite connection + runs migrations on a background thread.
 /// Should be called before `app_builder.run`, so SQLite initialization can
 /// run concurrently with winit / wgpu initialization, saving ~70-90ms on cold

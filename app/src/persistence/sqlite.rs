@@ -486,7 +486,29 @@ pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<Writer
     match init_result {
         Ok(mut conn) => {
             let user_uid = AuthStateProvider::as_ref(ctx).get().user_id();
-            let app_state = match read_sqlite_data(&mut conn, user_uid) {
+            let mut read_result = read_sqlite_data(&mut conn, user_uid);
+            // A database that opens and migrates but cannot be read (a dropped
+            // table, damaged pages) would otherwise fail every write too (#860).
+            if let Err(err) = &read_result {
+                let message = format!("{err:#}").to_lowercase();
+                if error_means_unusable_database(&message) {
+                    drop(conn);
+                    match quarantine_unusable_database(&database_path)
+                        .map_err(anyhow::Error::from)
+                        .and_then(|_| setup_database(&database_path))
+                    {
+                        Ok(fresh) => {
+                            conn = fresh;
+                            read_result = read_sqlite_data(&mut conn, user_uid);
+                        }
+                        Err(recovery_err) => {
+                            report_db_error("recovery", recovery_err, &database_path);
+                            return (None, None);
+                        }
+                    }
+                }
+            }
+            let app_state = match read_result {
                 Ok(app_state) => Some(app_state),
                 Err(err) => {
                     send_telemetry_from_app_ctx!(
@@ -756,7 +778,7 @@ pub(super) fn init_db() -> Result<SqliteConnection> {
         }
     }
 
-    setup_database(&database_file_path())
+    setup_database_or_quarantine(&db_path)
 }
 
 /// Builds the legacy App Group SQLite directories to search, newest id first.
@@ -1014,6 +1036,115 @@ fn write_legacy_migration_marker(marker: &Path, state: LegacyMigrationMarker) ->
 }
 
 /// Creates or connects to the database at `database_path` and runs any migrations.
+/// Set when an unusable `warp.sqlite` was moved aside (#860), so the
+/// workspace can tell the user once. Taken by [`take_database_recovery_notice`].
+static DATABASE_RECOVERY_NOTICE: Mutex<Option<DatabaseRecoveryNotice>> = Mutex::new(None);
+
+/// A database file that could not be used and where it was moved to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DatabaseRecoveryNotice {
+    /// Where the unusable file now lives (`warp.sqlite.corrupt-<unix-secs>`).
+    pub moved_to: PathBuf,
+}
+
+/// Returns (once) the notice left by a startup recovery from an unusable
+/// database, so the UI can surface it.
+pub fn take_database_recovery_notice() -> Option<DatabaseRecoveryNotice> {
+    DATABASE_RECOVERY_NOTICE
+        .lock()
+        .ok()
+        .and_then(|mut notice| notice.take())
+}
+
+/// Whether `message` (the whole error chain, lowercased) says the database
+/// *content or file* is bad, as opposed to a transient condition such as a
+/// lock, a full disk or a schema newer than this build (all of which must
+/// leave the file alone).
+fn error_means_unusable_database(message: &str) -> bool {
+    const UNUSABLE: &[&str] = &[
+        "malformed",
+        "not a database",
+        "no such table",
+        "no such column",
+        "disk i/o error",
+        "unable to open database file",
+        "is a directory",
+        "corrupt",
+    ];
+    UNUSABLE.iter().any(|needle| message.contains(needle))
+}
+
+/// Moves `db_path` and its `-wal`/`-shm` siblings to
+/// `<name>.corrupt-<stamp>[...]`, returning the new name of the main file.
+/// Nothing is deleted: the user can still inspect or recover it.
+fn quarantine_database_files(db_path: &Path, stamp: u64) -> std::io::Result<PathBuf> {
+    let suffixed = |suffix: &str| -> PathBuf {
+        let mut name = db_path.as_os_str().to_owned();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    let corrupt = suffixed(&format!(".corrupt-{stamp}"));
+    std::fs::rename(db_path, &corrupt)?;
+    for sibling in ["-wal", "-shm"] {
+        let from = suffixed(sibling);
+        if from.symlink_metadata().is_ok() {
+            // The sidecars of a bad database are meaningless without it and
+            // would be replayed onto the fresh file, so they must move too.
+            let _ = std::fs::rename(&from, suffixed(&format!(".corrupt-{stamp}{sibling}")));
+        }
+    }
+    Ok(corrupt)
+}
+
+/// Moves the unusable database aside and records a notice for the user.
+fn quarantine_unusable_database(db_path: &Path) -> std::io::Result<PathBuf> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    let moved_to = quarantine_database_files(db_path, stamp)?;
+    log::warn!(
+        "Moved unusable SQLite database {} to {}",
+        db_path.display(),
+        moved_to.display()
+    );
+    if let Ok(mut notice) = DATABASE_RECOVERY_NOTICE.lock() {
+        *notice = Some(DatabaseRecoveryNotice {
+            moved_to: moved_to.clone(),
+        });
+    }
+    Ok(moved_to)
+}
+
+/// Whether a failure on the database at `db_path` is one that moving the file
+/// aside and starting fresh can fix (#860).
+fn database_is_unusable(db_path: &Path, err: &anyhow::Error) -> bool {
+    let message = format!("{err:#}").to_lowercase();
+    // A directory or a device (e.g. a symlink to /dev/full) where the file
+    // should be can never become a database.
+    let wrong_kind = std::fs::metadata(db_path).is_ok_and(|m| !m.is_file());
+    wrong_kind || error_means_unusable_database(&message)
+}
+
+/// [`setup_database`], but a database that is corrupt, truncated, missing
+/// tables or not a regular file is moved aside to `warp.sqlite.corrupt-<ts>`
+/// and recreated, instead of silently disabling persistence on every launch
+/// (#860).
+fn setup_database_or_quarantine(db_path: &Path) -> Result<SqliteConnection> {
+    match setup_database(db_path) {
+        Ok(conn) => Ok(conn),
+        Err(err) if database_is_unusable(db_path, &err) => {
+            if let Err(move_err) = quarantine_unusable_database(db_path) {
+                return Err(err.context(format!(
+                    "also failed to move the unusable database aside: {move_err}"
+                )));
+            }
+            setup_database(db_path)
+        }
+        Err(err) => Err(err),
+    }
+}
+
 fn setup_database(database_path: &Path) -> Result<SqliteConnection> {
     let db_url = database_path
         .to_str()

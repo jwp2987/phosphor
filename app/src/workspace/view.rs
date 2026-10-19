@@ -2677,6 +2677,30 @@ impl Workspace {
         });
     }
 
+    /// Tells the user, once, that an unusable `warp.sqlite` was moved aside at
+    /// startup and a fresh one created (#860).
+    fn show_database_recovery_notice(
+        toast_stack: &ViewHandle<DismissibleToastStack<WorkspaceAction>>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(moved_to) = crate::persistence::take_database_recovery_notice() else {
+            return;
+        };
+        let path_string = moved_to.display().to_string();
+        let friendly_path = user_friendly_path(
+            &path_string,
+            dirs::home_dir().as_ref().and_then(|h| h.to_str()),
+        );
+        let toast = DismissibleToast::error(crate::t!(
+            "workspace-database-recovered-toast",
+            path = friendly_path.to_string()
+        ))
+        .with_object_id("database_recovered".to_owned());
+        toast_stack.update(ctx, |toast_stack, ctx| {
+            toast_stack.add_persistent_toast(toast, ctx);
+        });
+    }
+
     /// Subscribes to `WarpConfigUpdateEvent::SettingsErrors` and
     /// `SettingsErrorsCleared` to update the workspace settings-error banner
     /// and mirror the state into the settings pane for its nav-rail footer.
@@ -3107,6 +3131,7 @@ impl Workspace {
         Self::subscribe_to_workspace_toast_stack(toast_stack.clone(), ctx);
         Self::subscribe_to_tab_config_errors(toast_stack.clone(), ctx);
         Self::subscribe_to_keybindings_file_errors(toast_stack.clone(), ctx);
+        Self::show_database_recovery_notice(&toast_stack, ctx);
         Self::subscribe_to_settings_errors(ctx);
         let user_menu = ctx.add_typed_action_view(|_| {
             Menu::new()
