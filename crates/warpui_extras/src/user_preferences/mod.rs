@@ -1,5 +1,19 @@
 //! Storage for user preferences.
 
+/// How long a missing settings file must stay missing before it is restored.
+/// Editors that save by delete + rename briefly leave no file.
+pub const RESTORE_CONFIRM_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Result of a non-blocking [`UserPreferences::reload_from_disk_deferred`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReloadOutcome {
+    /// The backing store was reloaded.
+    Reloaded,
+    /// The file looks deleted and the store holds settings. Nothing was changed; re-check
+    /// after [`RESTORE_CONFIRM_DELAY`] with [`UserPreferences::restore_if_still_deleted`].
+    DeletionPending,
+}
+
 pub mod file_backed;
 pub mod in_memory;
 #[cfg(target_family = "wasm")]
@@ -91,6 +105,20 @@ pub trait UserPreferences {
     /// implementation should keep the previous state and return an error.
     fn reload_from_disk(&self) -> Result<(), Error> {
         Ok(())
+    }
+
+    /// Like [`reload_from_disk`](Self::reload_from_disk) but never blocks the
+    /// caller to confirm a deletion. Backends with nothing to confirm reload
+    /// immediately.
+    fn reload_from_disk_deferred(&self) -> Result<ReloadOutcome, Error> {
+        self.reload_from_disk().map(|()| ReloadOutcome::Reloaded)
+    }
+
+    /// Follow-up to [`ReloadOutcome::DeletionPending`], run after
+    /// [`RESTORE_CONFIRM_DELAY`]: restores the file from the in-memory
+    /// settings if it is still missing. Returns whether it did.
+    fn restore_if_still_deleted(&self) -> bool {
+        false
     }
 
     /// Marks a key as write-inhibited so that subsequent writes and removes

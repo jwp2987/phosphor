@@ -1038,3 +1038,48 @@ fn test_runtime_too_large_or_not_a_file_inhibits_writes_until_reload_succeeds() 
     assert!(matches!(prefs.reload_from_disk(), Err(Error::NotAFile(_))));
     assert!(prefs.write_inhibited.get());
 }
+
+/// #862: the non-blocking reload reports a vanished file as pending instead of sleeping, leaves
+/// the file alone, and restores it only if it is still missing at the follow-up check.
+#[test]
+fn test_deferred_reload_confirms_deletion_without_blocking() {
+    use super::super::ReloadOutcome;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("settings.toml");
+    std::fs::write(&file_path, "[font]\nfont_size = 17.0\n").unwrap();
+    let (prefs, _) = TomlBackedUserPreferences::new(file_path.clone());
+
+    // Delete + rename: the file is back by the time of the re-check, so nothing is restored.
+    std::fs::remove_file(&file_path).unwrap();
+    let started = std::time::Instant::now();
+    assert_eq!(
+        prefs.reload_from_disk_deferred().unwrap(),
+        ReloadOutcome::DeletionPending
+    );
+    assert!(started.elapsed() < super::super::RESTORE_CONFIRM_DELAY);
+    assert!(!file_path.exists(), "no restore before the re-check");
+    std::fs::write(&file_path, "[font]\nfont_size = 21.0\n").unwrap();
+    assert!(!prefs.restore_if_still_deleted());
+    assert!(
+        std::fs::read_to_string(&file_path)
+            .unwrap()
+            .contains("21.0")
+    );
+
+    // A real deletion is restored from memory at the re-check.
+    std::fs::remove_file(&file_path).unwrap();
+    assert_eq!(
+        prefs.reload_from_disk_deferred().unwrap(),
+        ReloadOutcome::DeletionPending
+    );
+    assert!(prefs.restore_if_still_deleted());
+    assert!(file_path.exists());
+
+    // A present file reloads normally.
+    std::fs::write(&file_path, "[font]\nfont_size = 30.0\n").unwrap();
+    assert_eq!(
+        prefs.reload_from_disk_deferred().unwrap(),
+        ReloadOutcome::Reloaded
+    );
+}
