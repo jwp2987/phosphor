@@ -799,6 +799,7 @@ fn init_internal(
         match setup {
             Ok(target) => log_file_target = Some(target),
             Err(err) => {
+                crate::record_log_fallback(state.log_directory.clone(), format!("{err:#}"));
                 log_file_failure = Some(format!(
                     "Cannot write logs to {}: {err:#}. Logging to the terminal instead; \
                      check that this directory exists and is writable.",

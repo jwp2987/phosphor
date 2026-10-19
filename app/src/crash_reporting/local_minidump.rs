@@ -204,6 +204,31 @@ fn send_crash_report(
     );
 }
 
+/// The directory for the minidump server's socket: the state directory if it
+/// exists (or can be created) and is writable, otherwise `fallback`. An
+/// unwritable or file-instead-of-directory state directory used to leave the
+/// server unable to bind, so crash reporting silently never started (#861).
+fn socket_dir(state_dir: PathBuf, fallback: PathBuf) -> PathBuf {
+    let usable = std::fs::create_dir_all(&state_dir).is_ok()
+        && state_dir
+            .metadata()
+            .is_ok_and(|m| m.is_dir() && !m.permissions().readonly());
+    if usable {
+        state_dir
+    } else {
+        log::warn!(
+            "State directory {} is not usable; placing the crash-report socket in {}",
+            state_dir.display(),
+            fallback.display()
+        );
+        fallback
+    }
+}
+
+#[cfg(test)]
+#[path = "local_minidump_tests.rs"]
+mod tests;
+
 impl MinidumpGuard {
     /// Set up minidump-backed crash reporting. This spawns a child process that writes local
     /// minidumps, and a crash handler which sends crashes to that child process.
@@ -213,7 +238,7 @@ impl MinidumpGuard {
             // On macOS, the maximum length of a socket path is fairly short, so use the temp directory.
             std::env::temp_dir().join(socket_name)
         } else {
-            warp_core::paths::state_dir().join(socket_name)
+            socket_dir(warp_core::paths::state_dir(), std::env::temp_dir()).join(socket_name)
         };
 
         let child =

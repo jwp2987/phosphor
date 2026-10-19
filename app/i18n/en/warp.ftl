@@ -3820,6 +3820,7 @@ quit-warning-dont-save = Don't Save
 quit-warning-show-running-processes = Show running processes
 quit-warning-save-changes-title = Save changes?
 workspace-database-recovered-toast = Phosphor's saved-state database could not be read, so it was moved to { $path } and a fresh one was created. Your windows, tabs and history from before may not be restored.
+workspace-log-fallback-toast = Phosphor couldn't create its log file in { $path }: { $reason }. Logs are going to the terminal instead. Check that the folder exists and is writable.
 workspace-database-unavailable-toast = Phosphor couldn't open its saved-state database at { $path }: { $reason } Your windows, tabs and history won't be saved or restored in this session. The database itself was left untouched.
 workspace-database-write-failing-toast = Phosphor can't save to its saved-state database at { $path }: { $reason } Recent changes won't be restored after a restart.
 workspace-database-reason-read-only = the file or its folder is read-only.

@@ -2729,7 +2729,8 @@ impl Workspace {
         });
     }
 
-    /// Tells the user about any pending database problem: an unusable
+    /// Tells the user about any pending storage problem: log-file setup that
+    /// fell back to the terminal (#861), an unusable
     /// `warp.sqlite` that was moved aside, or one that could not be opened or
     /// written because it is read-only or the disk is full.
     fn show_database_notices(
@@ -2752,6 +2753,16 @@ impl Workspace {
                     path = friendly(&moved_to)
                 ))
                 .with_object_id("database_recovered".to_owned()),
+            );
+        }
+        if let Some(notice) = warp_logging::take_log_fallback_notice() {
+            toasts.push(
+                DismissibleToast::error(crate::t!(
+                    "workspace-log-fallback-toast",
+                    path = friendly(&notice.directory),
+                    reason = notice.reason
+                ))
+                .with_object_id("log_fallback".to_owned()),
             );
         }
         if let Some(notice) = crate::persistence::take_database_problem_notice() {
