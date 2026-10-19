@@ -1267,13 +1267,13 @@ fn pending_prose_with_unknown_first_word_settles_to_ai_at_submit() {
         }
         for kept in [
             "frobnicate",
-            "frobnicate the",
-            "./run the tests now",
-            "~/bin/run the tests now",
-            "FOO=1 summarize the open issues",
-            "summarize the issues | less",
-            "summarize the issues && echo it",
-            "echo the open issues for me",
+            "frobnicate widgets,",
+            "./run widgets, ship quickly",
+            "~/bin/run widgets, ship quickly",
+            "FOO=1 summarize open issues, then triage",
+            "summarize open issues, then triage | less",
+            "summarize open issues, then triage && echo ok",
+            "echo open issues, then triage",
         ] {
             assert_eq!(enter(&mut app, kept, true), InputType::Shell, "{kept}");
         }
