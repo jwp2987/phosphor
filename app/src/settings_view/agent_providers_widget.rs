@@ -248,6 +248,8 @@ struct ModelRow {
     /// State for the two bool toggles inside the detail panel: reasoning / tool_call.
     reasoning_chip_state: MouseStateHandle,
     tool_call_chip_state: MouseStateHandle,
+    /// Tri-state chip: does this model get running-command snapshots (#855).
+    command_snapshots_chip_state: MouseStateHandle,
 }
 
 struct HeaderRow {
@@ -667,6 +669,7 @@ impl AgentProvidersWidget {
             audio_chip_state: MouseStateHandle::default(),
             reasoning_chip_state: MouseStateHandle::default(),
             tool_call_chip_state: MouseStateHandle::default(),
+            command_snapshots_chip_state: MouseStateHandle::default(),
         }
     }
 
@@ -1435,6 +1438,27 @@ impl AgentProvidersWidget {
                 },
                 crate::t!("settings-agent-providers-tool-call-chip-tooltip"),
             ))
+            .with_child({
+                // Tri-state like the modality chips: Auto = bare label (decided from the
+                // model id and endpoint), On = `● label`, Off = `○ label`.
+                let label = crate::t!("settings-agent-providers-command-snapshots-chip");
+                let chip_label = match model.handles_command_snapshots {
+                    None => label,
+                    Some(true) => format!("● {label}"),
+                    Some(false) => format!("○ {label}"),
+                };
+                Self::render_card_button_preserving_draft_with_tooltip(
+                    chip_label,
+                    row.command_snapshots_chip_state.clone(),
+                    draft_editors.clone(),
+                    AISettingsPageAction::CycleAgentProviderModelCommandSnapshots {
+                        provider_id: provider.id.clone(),
+                        model_index: index,
+                    },
+                    crate::t!("settings-agent-providers-command-snapshots-chip-tooltip"),
+                    appearance,
+                )
+            })
             .finish();
 
         // ---- Remove button (only appears when expanded, to avoid accidental deletion while

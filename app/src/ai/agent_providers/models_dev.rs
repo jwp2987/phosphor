@@ -398,6 +398,8 @@ pub fn into_agent_provider_model(model: &Model) -> crate::settings::AgentProvide
         image: Some(caps.vision),
         pdf: Some(caps.pdf),
         audio: Some(caps.audio),
+        // Deliberately left Auto: not something a catalog knows.
+        handles_command_snapshots: None,
         disabled: false,
         // Deliberately not auto-filled. models.dev's `api.json` *does* carry a per-model
         // `cost { input, output, cache_read, cache_write }` block (this module drops it at

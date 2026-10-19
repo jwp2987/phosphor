@@ -7,6 +7,7 @@ use super::*;
 use crate::ai::agent::AIAgentAction;
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::task::TaskId;
+use crate::settings::AgentProvider;
 use crate::terminal::event::BlockWorkingDirectoryUpdatedEvent;
 use crate::terminal::model::block::BlockMetadata;
 use crate::terminal::model::session::Sessions;
@@ -131,14 +132,87 @@ fn preserves_explicit_or_non_interactive_read_delays() {
 
 #[test]
 fn requested_command_wait_until_completion_does_not_use_snapshot_timeout() {
+    // A model that cannot drive snapshots is waited for, as before #855.
     assert_eq!(
-        action_result_delay_for_requested_command(true),
+        action_result_delay_for_requested_command(true, false),
         ActionResultDelay::UntilCompletion
     );
     assert_eq!(
-        action_result_delay_for_requested_command(false),
+        action_result_delay_for_requested_command(false, false),
         ActionResultDelay::Default
     );
+}
+
+/// The snapshot-mode decision (#855): only a waited command changes with the model.
+#[test]
+fn snapshot_capable_models_get_a_bounded_stall_aware_wait() {
+    assert_eq!(
+        action_result_delay_for_requested_command(true, true),
+        ActionResultDelay::OnCompletionOrStall {
+            timeout: ShellCommandExecutor::MAX_AGENT_DELAY_DURATION
+        }
+    );
+    assert_eq!(
+        ShellCommandExecutor::MAX_AGENT_DELAY_DURATION,
+        Duration::from_secs(120)
+    );
+    // An unwaited command is the same for every model.
+    assert_eq!(
+        action_result_delay_for_requested_command(false, true),
+        ActionResultDelay::Default
+    );
+}
+
+#[test]
+fn a_stalled_snapshot_is_marked_preempted() {
+    let delay = ActionResultDelay::OnCompletionOrStall {
+        timeout: Duration::from_secs(120),
+    };
+    assert!(compute_is_preempted(WakeReason::Stalled, delay));
+    assert!(compute_is_preempted(WakeReason::Timeout, delay));
+    assert!(compute_is_preempted(WakeReason::ForceRefresh, delay));
+    assert!(!compute_is_preempted(WakeReason::BlockFinished, delay));
+}
+
+#[test]
+fn snapshot_mode_follows_the_model_setting_then_the_default() {
+    let mut provider = AgentProvider::new_empty();
+    provider.id = "p1".to_owned();
+    provider.base_url = "https://api.example.com/v1".to_owned();
+    let mut big = crate::settings::AgentProviderModel::from_id("claude-sonnet-4-5".to_owned());
+    let small = crate::settings::AgentProviderModel::from_id("deepseek-v4-flash".to_owned());
+    provider.models = vec![big.clone(), small];
+    let providers = [provider.clone()];
+
+    assert!(handles_command_snapshots_for(
+        &providers,
+        "byop:p1:claude-sonnet-4-5"
+    ));
+    assert!(!handles_command_snapshots_for(
+        &providers,
+        "byop:p1:deepseek-v4-flash"
+    ));
+    // Not BYOP, unknown provider, unknown model: the fork's previous behaviour.
+    assert!(!handles_command_snapshots_for(&providers, "auto"));
+    assert!(!handles_command_snapshots_for(
+        &providers,
+        "byop:other:claude-sonnet-4-5"
+    ));
+    assert!(!handles_command_snapshots_for(&providers, "byop:p1:nope"));
+
+    // The explicit per-model setting wins in both directions.
+    big.handles_command_snapshots = Some(false);
+    provider.models[0] = big;
+    provider.models[1].handles_command_snapshots = Some(true);
+    let providers = [provider];
+    assert!(!handles_command_snapshots_for(
+        &providers,
+        "byop:p1:claude-sonnet-4-5"
+    ));
+    assert!(handles_command_snapshots_for(
+        &providers,
+        "byop:p1:deepseek-v4-flash"
+    ));
 }
 
 #[test]
