@@ -2283,3 +2283,116 @@ fn setup_gives_up_within_the_budget_when_another_connection_holds_the_lock() {
     drop(holder);
     setup_database_or_quarantine(&database_path).expect("setup works once the lock is gone");
 }
+
+// ---------------------------------------------------------------------------
+// #936: the commands-table trim must hold the cap even when the table is already over it.
+// Nothing references `commands.id` (no foreign key, no other table stores a command id), so
+// the trim has no referenced rows to protect.
+// ---------------------------------------------------------------------------
+
+fn commands_test_connection(rows: i64) -> diesel::sqlite::SqliteConnection {
+    use diesel::{Connection, SqliteConnection, connection::SimpleConnection};
+    use diesel_migrations::MigrationHarness as _;
+    let mut conn = SqliteConnection::establish(":memory:").expect("in-memory sqlite");
+    conn.run_pending_migrations(::persistence::MIGRATIONS)
+        .expect("migrations");
+    conn.batch_execute(&format!(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < {rows})
+         INSERT INTO commands (id, command) SELECT i, 'cmd' || i FROM n;"
+    ))
+    .expect("seed commands");
+    conn
+}
+
+fn started_command(command: &str) -> crate::persistence::StartedCommandMetadata {
+    crate::persistence::StartedCommandMetadata {
+        command: command.to_string(),
+        start_ts: None,
+        pwd: None,
+        shell: None,
+        username: None,
+        hostname: None,
+        session_id: None,
+        git_branch: None,
+        cloud_workflow_id: None,
+        workflow_command: None,
+        is_agent_executed: false,
+    }
+}
+
+fn command_stats(conn: &mut diesel::sqlite::SqliteConnection) -> (i64, i64, i64) {
+    use diesel::{
+        QueryDsl, RunQueryDsl,
+        dsl::{count_star, max, min},
+    };
+    use schema::commands::dsl::*;
+    let n: i64 = commands.select(count_star()).first(conn).unwrap();
+    let lo: Option<i32> = commands.select(min(id)).first(conn).unwrap();
+    let hi: Option<i32> = commands.select(max(id)).first(conn).unwrap();
+    (n, lo.unwrap() as i64, hi.unwrap() as i64)
+}
+
+#[test]
+fn insert_command_trims_an_oversized_table_to_the_cap_keeping_the_newest() {
+    use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl};
+    let mut conn = commands_test_connection(50_000);
+    super::insert_command(&mut conn, started_command("new")).expect("insert");
+
+    let (n, lo, hi) = command_stats(&mut conn);
+    assert_eq!(n, super::COMMANDS_COUNT_LIMIT);
+    assert_eq!(hi, 50_001, "the new row is kept");
+    assert_eq!(
+        lo,
+        50_001 - super::COMMANDS_COUNT_LIMIT + 1,
+        "the newest rows are kept"
+    );
+    let newest: String = schema::commands::dsl::commands
+        .select(schema::commands::dsl::command)
+        .filter(schema::commands::dsl::id.eq(50_001))
+        .first(&mut conn)
+        .unwrap();
+    assert_eq!(newest, "new");
+}
+
+#[test]
+fn insert_command_catches_up_a_huge_table_in_bounded_passes() {
+    let mut conn = commands_test_connection(120_000);
+    super::insert_command(&mut conn, started_command("a")).expect("insert");
+    let (n, _, _) = command_stats(&mut conn);
+    assert_eq!(
+        n,
+        120_001 - super::COMMANDS_TRIM_BATCH_LIMIT,
+        "one pass is bounded"
+    );
+    for _ in 0..3 {
+        super::insert_command(&mut conn, started_command("b")).expect("insert");
+    }
+    let (n, _, _) = command_stats(&mut conn);
+    assert_eq!(n, super::COMMANDS_COUNT_LIMIT);
+}
+
+#[test]
+fn insert_command_at_the_cap_evicts_exactly_the_oldest() {
+    let mut conn = commands_test_connection(super::COMMANDS_COUNT_LIMIT);
+    super::insert_command(&mut conn, started_command("new")).expect("insert");
+    let (n, lo, hi) = command_stats(&mut conn);
+    assert_eq!(
+        (n, lo, hi),
+        (
+            super::COMMANDS_COUNT_LIMIT,
+            2,
+            super::COMMANDS_COUNT_LIMIT + 1
+        )
+    );
+}
+
+#[test]
+fn insert_command_under_the_cap_does_not_trim() {
+    let mut conn = commands_test_connection(super::COMMANDS_COUNT_LIMIT - 1);
+    super::insert_command(&mut conn, started_command("new")).expect("insert");
+    let (n, lo, _) = command_stats(&mut conn);
+    assert_eq!((n, lo), (super::COMMANDS_COUNT_LIMIT, 1));
+    let mut small = commands_test_connection(5);
+    super::insert_command(&mut small, started_command("new")).expect("insert");
+    assert_eq!(command_stats(&mut small), (6, 1, 6));
+}
