@@ -550,6 +550,30 @@ pub fn establish_ro_connection(database_url: &str) -> Result<SqliteConnection> {
     establish_connection(database_url, true)
 }
 
+/// The read-only connection shared by every pane (#888).
+///
+/// Each pane used to open two of its own, so 300 tabs held 600 file handles
+/// on `warp.sqlite`, and they stayed at their peak after the tabs closed.
+/// Panes now hold an `Arc` to one connection; it is held weakly here, so it
+/// closes when the last pane that uses it goes away and a later pane opens
+/// a fresh one (which also picks up a recreated database file).
+static SHARED_RO_CONNECTION: Mutex<std::sync::Weak<parking_lot::Mutex<SqliteConnection>>> =
+    Mutex::new(std::sync::Weak::new());
+
+/// Returns the shared read-only connection to the database, opening it if no
+/// pane currently holds one. `None` if the database cannot be opened.
+pub fn shared_ro_connection() -> Option<Arc<parking_lot::Mutex<SqliteConnection>>> {
+    let mut slot = SHARED_RO_CONNECTION.lock().ok()?;
+    if let Some(existing) = slot.upgrade() {
+        return Some(existing);
+    }
+    let path = database_file_path();
+    let conn = establish_ro_connection(path.to_str()?).ok()?;
+    let shared = Arc::new(parking_lot::Mutex::new(conn));
+    *slot = Arc::downgrade(&shared);
+    Some(shared)
+}
+
 fn establish_connection(database_url: &str, read_only: bool) -> Result<SqliteConnection> {
     let full_database_url = if read_only {
         &format!("file:{database_url}?mode=ro")

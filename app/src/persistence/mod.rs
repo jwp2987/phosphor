@@ -64,6 +64,8 @@ use self::model::{AgentConversation, AgentConversationData, Project};
 pub use sqlite::database_file_path;
 #[cfg(any(feature = "local_fs", feature = "integration_tests"))]
 pub use sqlite::establish_ro_connection;
+#[cfg(any(feature = "local_fs", feature = "integration_tests"))]
+pub use sqlite::shared_ro_connection;
 /// Read paths for the codebase embedding index. New in this fork — at the pin
 /// this data was on the server, so nothing local read it.
 #[cfg(any(feature = "local_fs", feature = "integration_tests"))]
