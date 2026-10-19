@@ -858,3 +858,28 @@ fn test_failed_save_is_reported_then_recovers() {
             .contains("font_size")
     );
 }
+
+/// #862: a save failure that happens before the UI takes the receiver (the
+/// store is built long before the workspace) is delivered once it attaches.
+#[test]
+fn test_early_save_failure_is_reported_when_receiver_attaches() {
+    use super::super::UserPreferences;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("early-settings.toml");
+    let (prefs, _) = TomlBackedUserPreferences::new(file_path.clone());
+    std::fs::create_dir(&file_path).unwrap();
+    assert!(
+        prefs
+            .write_value_with_hierarchy("font_size", "14.0".to_string(), Some("font"), None)
+            .is_err()
+    );
+
+    let receiver = take_save_failure_receiver().expect("the receiver is available once");
+    let mut reported = Vec::new();
+    while let Ok(failure) = receiver.try_recv() {
+        reported.push(failure.path);
+    }
+    assert_eq!(reported.iter().filter(|p| **p == file_path).count(), 1);
+    assert!(take_save_failure_receiver().is_none());
+}

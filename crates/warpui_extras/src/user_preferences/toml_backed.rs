@@ -4,7 +4,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
 use sha2::{Digest, Sha256};
 use toml_edit::{value, Array, DocumentMut, InlineTable, Item, Table, Value};
@@ -32,17 +32,53 @@ pub struct SaveFailure {
     pub message: String,
 }
 
-static SAVE_FAILURE_SINK: OnceLock<async_channel::Sender<SaveFailure>> = OnceLock::new();
+/// Where save failures go. Failures that happen before the UI has taken the
+/// receiver (the store is built long before the workspace exists) are buffered
+/// and delivered on attach, instead of being lost.
+enum SaveFailureSink {
+    Pending(Vec<SaveFailure>),
+    Attached(async_channel::Sender<SaveFailure>),
+}
+
+/// Upper bound on failures buffered before a receiver exists.
+const MAX_PENDING_SAVE_FAILURES: usize = 16;
+
+static SAVE_FAILURE_SINK: Mutex<SaveFailureSink> = Mutex::new(SaveFailureSink::Pending(Vec::new()));
+
+fn report_save_failure(failure: SaveFailure) {
+    let Ok(mut sink) = SAVE_FAILURE_SINK.lock() else {
+        return;
+    };
+    match &mut *sink {
+        SaveFailureSink::Pending(pending) => {
+            if pending.len() < MAX_PENDING_SAVE_FAILURES {
+                pending.push(failure);
+            }
+        }
+        SaveFailureSink::Attached(tx) => {
+            let _ = tx.try_send(failure);
+        }
+    }
+}
 
 /// Returns the receiving end of the settings-save-failure channel, once.
 ///
 /// Every store reports a failed save here, on the transition from "saving
 /// works" to "saving fails" (not on each retry), so the UI can tell the user
 /// instead of the failure living only in the log. The store itself is
-/// single-threaded and has no way to reach the UI.
+/// single-threaded and has no way to reach the UI. Failures that happened
+/// before this call are already queued on the returned receiver.
 pub fn take_save_failure_receiver() -> Option<async_channel::Receiver<SaveFailure>> {
+    let mut sink = SAVE_FAILURE_SINK.lock().ok()?;
+    let SaveFailureSink::Pending(pending) = &mut *sink else {
+        return None;
+    };
     let (tx, rx) = async_channel::unbounded();
-    SAVE_FAILURE_SINK.set(tx).ok().map(|()| rx)
+    for failure in pending.drain(..) {
+        let _ = tx.try_send(failure);
+    }
+    *sink = SaveFailureSink::Attached(tx);
+    Some(rx)
 }
 
 /// An implementation of the [`UserPreferences`] trait using a TOML file for
@@ -271,10 +307,8 @@ impl TomlBackedUserPreferences {
                     "Failed to save settings file at {}: {err}",
                     self.file_path.display()
                 );
-                if !self.save_failing.replace(true)
-                    && let Some(sink) = SAVE_FAILURE_SINK.get()
-                {
-                    let _ = sink.try_send(SaveFailure {
+                if !self.save_failing.replace(true) {
+                    report_save_failure(SaveFailure {
                         path: self.file_path.clone(),
                         message: err.to_string(),
                     });
