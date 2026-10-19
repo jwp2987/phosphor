@@ -113,7 +113,7 @@ use warp_core::channel::ChannelState;
 use super::common::{
     format_elapsed_seconds, render_debug_footer, render_failed_output, render_informational_footer,
     render_output_status_text, render_scrollable_collapsible_content, render_text_sections,
-    DebugFooterProps, FailedOutputProps, FindContext, TextSectionsProps,
+    DebugFooterProps, FailedOutputProps, FindContext, OutputCapProps, TextSectionsProps,
     STATUS_FOOTER_VERTICAL_PADDING, STATUS_ICON_SIZE_DELTA,
 };
 use super::imported_comments::render_imported_comments;
@@ -281,6 +281,10 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                     AIBlockAction::CopyAIBlockCodeSnippet(snippet)
                 }
 
+                fn show_full_output_action() -> AIBlockAction {
+                    AIBlockAction::ShowFullOutput
+                }
+
                 for output_message in output.messages.iter() {
                     match &output_message.message {
                         // Skip rendering text and reasoning sections if this is a passive conversation.
@@ -337,6 +341,13 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                                     resolved_blocklist_image_sources: Some(
                                         props.resolved_blocklist_image_sources,
                                     ),
+                                    output_cap: Some(OutputCapProps {
+                                        expanded: props.state_handles.output_expanded,
+                                        show_full_action: show_full_output_action,
+                                        button_handle: &props
+                                            .state_handles
+                                            .show_full_output_button_handle,
+                                    }),
                                 },
                                 app,
                             );
@@ -3414,6 +3425,8 @@ fn render_collapsible_text_block_section(
             resolved_code_block_paths: Some(props.resolved_code_block_paths),
             #[cfg(feature = "local_fs")]
             resolved_blocklist_image_sources: Some(props.resolved_blocklist_image_sources),
+            // Reasoning scrolls in its own capped pane.
+            output_cap: None,
         },
         app,
     );

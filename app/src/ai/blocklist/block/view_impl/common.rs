@@ -6,6 +6,7 @@
 use std::borrow::Cow;
 #[cfg(feature = "local_fs")]
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::iter;
 use std::path::Path;
 #[cfg(feature = "local_fs")]
@@ -1169,6 +1170,99 @@ pub struct TextSectionsProps<'a, V, A: 'static> {
     pub resolved_code_block_paths: Option<&'a HashMap<PathBuf, Option<PathBuf>>>,
     #[cfg(feature = "local_fs")]
     pub resolved_blocklist_image_sources: Option<&'a ResolvedBlocklistImageSources>,
+    /// When `Some`, very long output is cut off at [`MAX_COLLAPSED_OUTPUT_LINES`] /
+    /// [`MAX_COLLAPSED_OUTPUT_BYTES`] with a "show full output" button (#872). `None` renders
+    /// everything.
+    pub output_cap: Option<OutputCapProps<'a, A>>,
+}
+
+/// Caller-owned state for the rendered-output cap of [`render_text_sections`] (#872).
+pub struct OutputCapProps<'a, A: 'static> {
+    /// Persistent, per-block: once the user clicks "show full output" it stays expanded.
+    pub expanded: bool,
+    /// Builds the host view's "expand" action.
+    pub show_full_action: fn() -> A,
+    /// Persistent handle for the "show full output" button.
+    pub button_handle: &'a MouseStateHandle,
+}
+
+/// Rendering lays out every line of an agent answer each frame, so a multi-megabyte answer
+/// stalls the UI. Beyond these limits the rest is hidden behind a "show full output" button.
+pub const MAX_COLLAPSED_OUTPUT_LINES: usize = 2_000;
+pub const MAX_COLLAPSED_OUTPUT_BYTES: usize = 256 * 1024;
+
+/// The remaining line/byte allowance of a capped answer, shared across its text sections.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct OutputBudget {
+    lines_left: usize,
+    bytes_left: usize,
+}
+
+impl OutputBudget {
+    pub(super) fn new(max_lines: usize, max_bytes: usize) -> Self {
+        Self {
+            lines_left: max_lines,
+            bytes_left: max_bytes,
+        }
+    }
+
+    pub(super) fn is_exhausted(&self) -> bool {
+        self.lines_left == 0 || self.bytes_left == 0
+    }
+
+    /// How many leading lines (with the given byte lengths) fit in the budget, consuming it.
+    /// At least one line is kept while any budget remains, so one enormous paragraph still
+    /// shows. Stops scanning as soon as the budget runs out, so it is O(kept), not O(total).
+    pub(super) fn take_lines(&mut self, line_lens: impl Iterator<Item = usize>) -> usize {
+        let mut kept = 0;
+        for len in line_lens {
+            if self.is_exhausted() {
+                break;
+            }
+            kept += 1;
+            self.lines_left -= 1;
+            self.bytes_left = self.bytes_left.saturating_sub(len);
+        }
+        kept
+    }
+}
+
+/// Whether the focused find match lies at or after the cut point `(section, line)`, in which
+/// case the cap must lift so the match is reachable (#872, cf. #819).
+pub(super) fn focused_match_is_hidden(
+    focused: Option<(usize, usize)>,
+    cut_section: usize,
+    cut_line: usize,
+) -> bool {
+    focused.is_some_and(|location| location >= (cut_section, cut_line))
+}
+
+fn focused_output_location(find_context: Option<FindContext<'_>>) -> Option<(usize, usize)> {
+    let find_context = find_context?;
+    let match_id = find_context.model.focused_rich_content_match_id()?;
+    match find_context
+        .state
+        .location_for_match(match_id)?
+        .text_location
+    {
+        TextLocation::Output {
+            section_index,
+            line_index,
+        } => Some((section_index, line_index)),
+        _ => None,
+    }
+}
+
+/// The first `keep` lines of `formatted_text` as a new shared value.
+fn truncate_formatted_text(formatted_text: &FormattedText, keep: usize) -> Arc<FormattedText> {
+    Arc::new(FormattedText::new(
+        formatted_text
+            .lines
+            .iter()
+            .take(keep)
+            .cloned()
+            .collect::<VecDeque<_>>(),
+    ))
 }
 
 pub fn render_text_sections<V: View, A: Action>(
@@ -1190,8 +1284,41 @@ pub fn render_text_sections<V: View, A: Action>(
         app,
     );
     let mut indexed_section_offset = 0;
+    // Output cap (#872). Never cut while the user is selecting; the focused find match lifts it.
+    let mut cap_active =
+        props.output_cap.as_ref().is_some_and(|cap| !cap.expanded) && !props.is_selecting_text;
+    let focused_match = if cap_active {
+        focused_output_location(props.find_context)
+    } else {
+        None
+    };
+    let mut budget = OutputBudget::new(MAX_COLLAPSED_OUTPUT_LINES, MAX_COLLAPSED_OUTPUT_BYTES);
+    let mut output_truncated = false;
+    let mut hidden_lines = 0usize;
     while indexed_section_offset < indexed_sections.len() {
         let (section_index, section) = indexed_sections[indexed_section_offset];
+        if cap_active && budget.is_exhausted() {
+            if focused_match_is_hidden(focused_match, section_index, 0) {
+                cap_active = false;
+            } else {
+                // Skip the section, but keep the per-kind handle counters aligned.
+                output_truncated = true;
+                match section {
+                    AIAgentTextSection::PlainText { text } => {
+                        hidden_lines += text
+                            .formatted_lines
+                            .as_ref()
+                            .map_or(0, |lines| lines.lines().len());
+                    }
+                    AIAgentTextSection::Code { .. } => *props.starting_code_section_index += 1,
+                    AIAgentTextSection::Table { .. } => *props.starting_table_section_index += 1,
+                    AIAgentTextSection::Image { .. } => *props.starting_image_section_index += 1,
+                    AIAgentTextSection::MermaidDiagram { .. } => {}
+                }
+                indexed_section_offset += 1;
+                continue;
+            }
+        }
         if let AIAgentTextSection::Image { image } = section {
             let image_group = collect_renderable_image_group(
                 &indexed_sections,
@@ -1253,10 +1380,29 @@ pub fn render_text_sections<V: View, A: Action>(
 
                 match &text.formatted_lines {
                     Some(formatted_text) => {
+                        let mut rendered_text = formatted_text.formatted_text_arc();
+                        if cap_active {
+                            let total = formatted_text.lines().len();
+                            let keep = budget.take_lines(
+                                formatted_text
+                                    .lines()
+                                    .iter()
+                                    .map(|line| line.raw_text().len()),
+                            );
+                            if keep < total {
+                                if focused_match_is_hidden(focused_match, section_index, keep) {
+                                    cap_active = false;
+                                } else {
+                                    output_truncated = true;
+                                    hidden_lines += total - keep;
+                                    rendered_text = truncate_formatted_text(&rendered_text, keep);
+                                }
+                            }
+                        }
                         column.add_child(render_rich_text_output_text_section(
                             RichTextSectionProps {
                                 is_restored: props.model.is_restored(),
-                                formatted_text: formatted_text.formatted_text_arc(),
+                                formatted_text: rendered_text,
                                 text_color: props.text_color,
                                 is_ai_input_enabled: props.is_ai_input_enabled,
                                 section_index,
@@ -1373,7 +1519,64 @@ pub fn render_text_sections<V: View, A: Action>(
         }
         indexed_section_offset += 1;
     }
+    if output_truncated && cap_active {
+        if let Some(cap) = props.output_cap.as_ref() {
+            column.add_child(render_show_full_output_button(
+                cap,
+                hidden_lines,
+                props.text_color,
+                app,
+            ));
+        }
+    }
     column.finish()
+}
+
+fn render_show_full_output_button<A: Action>(
+    cap: &OutputCapProps<'_, A>,
+    hidden_lines: usize,
+    text_color: ColorU,
+    app: &AppContext,
+) -> Box<dyn Element> {
+    let appearance = Appearance::as_ref(app);
+    let style = UiComponentStyles {
+        font_color: Some(text_color),
+        font_size: Some(appearance.monospace_font_size()),
+        font_family_id: Some(appearance.ui_font_family()),
+        padding: Some(Coords {
+            top: 4.,
+            bottom: 4.,
+            left: 8.,
+            right: 8.,
+        }),
+        border_radius: Some(CornerRadius::with_all(Radius::Pixels(4.))),
+        ..Default::default()
+    };
+    let hover_style = UiComponentStyles {
+        background: Some(blended_colors::neutral_4(appearance.theme()).into()),
+        ..style
+    };
+    let show_full_action = cap.show_full_action;
+    Flex::row()
+        .with_child(
+            appearance
+                .ui_builder()
+                .button(
+                    warpui::ui_components::button::ButtonVariant::Text,
+                    cap.button_handle.clone(),
+                )
+                .with_centered_text_label(crate::t!(
+                    "ai-block-show-full-output",
+                    lines = hidden_lines
+                ))
+                .with_style(style)
+                .with_hovered_styles(hover_style)
+                .with_clicked_styles(hover_style)
+                .build()
+                .on_click(move |ctx, _, _| ctx.dispatch_typed_action(show_full_action()))
+                .finish(),
+        )
+        .finish()
 }
 
 fn text_sections_with_indices(

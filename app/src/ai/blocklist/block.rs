@@ -372,6 +372,11 @@ pub(super) struct AIBlockStateHandles {
     /// reset every frame if we built the handle inline.
     image_section_tooltip_handles: Vec<MouseStateHandle>,
 
+    /// Whether the user chose "show full output" for this block's capped answer (#872).
+    /// Persistent so the choice survives re-renders.
+    output_expanded: bool,
+    show_full_output_button_handle: MouseStateHandle,
+
     /// Only applies to text selections made at the `AIBlock` level. Child views of the `AIBlock`
     /// are responsible for managing their own text selection states.
     selection_handle: SelectionHandle,
@@ -5758,6 +5763,9 @@ pub enum AIBlockAction {
 
     CopyAIBlockCodeSnippet(String),
 
+    /// Lift the rendered-output cap on this block's answer (#872).
+    ShowFullOutput,
+
     /// Continue the conversation using this response
     ContinueConversation,
 
@@ -5964,6 +5972,10 @@ impl TypedActionView for AIBlock {
             }
             AIBlockAction::CopyOnSelect(selection) => {
                 self.maybe_copy_on_select(selection.clone(), ctx);
+            }
+            AIBlockAction::ShowFullOutput => {
+                self.state_handles.output_expanded = true;
+                ctx.notify();
             }
             AIBlockAction::CopyAIBlockCodeSnippet(text) => {
                 ctx.clipboard()

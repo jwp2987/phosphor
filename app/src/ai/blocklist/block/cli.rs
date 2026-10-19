@@ -1799,6 +1799,7 @@ impl View for CLISubagentView {
                                     resolved_code_block_paths: None,
                                     #[cfg(feature = "local_fs")]
                                     resolved_blocklist_image_sources: None,
+                                    output_cap: None,
                                 },
                                 app,
                             ));

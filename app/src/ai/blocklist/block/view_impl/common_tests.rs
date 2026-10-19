@@ -11,11 +11,12 @@ use warpui::App;
 use super::{blocklist_image_asset_source, ResolvedBlocklistImageSources};
 use super::{
     collect_visual_markdown_lightbox_collection, compute_visual_section_width,
-    display_query_without_context_references, image_tooltip_handles_for_group,
-    inline_image_source_label, is_supported_blocklist_image_source, lightbox_trigger_for_section,
-    query_context_references, query_prefix_highlight_len, render_scrollable_collapsible_content,
-    should_render_query_and_header, should_show_agent_command_status, text_sections_with_indices,
-    warping_footer_height, CollapsibleElementState, CollapsibleExpansionState,
+    display_query_without_context_references, focused_match_is_hidden,
+    image_tooltip_handles_for_group, inline_image_source_label, is_supported_blocklist_image_source,
+    lightbox_trigger_for_section, query_context_references, query_prefix_highlight_len,
+    render_scrollable_collapsible_content, should_render_query_and_header,
+    should_show_agent_command_status, text_sections_with_indices, truncate_formatted_text,
+    warping_footer_height, CollapsibleElementState, CollapsibleExpansionState, OutputBudget,
     QueryContextReference, VisualMarkdownLightboxCollection,
 };
 use crate::{
@@ -508,4 +509,57 @@ fn is_supported_blocklist_image_source_covers_common_local_formats() {
     // Non-image extensions stay rejected.
     assert!(!is_supported_blocklist_image_source("doc.pdf"));
     assert!(!is_supported_blocklist_image_source("notes.md"));
+}
+
+#[test]
+fn output_budget_keeps_everything_under_the_cap() {
+    let mut budget = OutputBudget::new(10, 1000);
+    assert_eq!(budget.take_lines([5, 5, 5].into_iter()), 3);
+    assert!(!budget.is_exhausted());
+}
+
+#[test]
+fn output_budget_stops_at_the_line_limit_without_scanning_the_rest() {
+    let mut budget = OutputBudget::new(2, 1000);
+    let mut scanned = 0;
+    let kept = budget.take_lines((0..1_000_000).inspect(|_| scanned += 1).map(|_| 1));
+    assert_eq!(kept, 2);
+    // Only one extra element is pulled to notice the budget ran out (#872: O(kept)).
+    assert!(scanned <= 3, "scanned {scanned}");
+    assert!(budget.is_exhausted());
+}
+
+#[test]
+fn output_budget_keeps_one_oversized_line_then_stops() {
+    let mut budget = OutputBudget::new(10, 100);
+    assert_eq!(budget.take_lines([10_000, 1, 1].into_iter()), 1);
+    assert!(budget.is_exhausted());
+}
+
+#[test]
+fn output_budget_is_shared_across_sections() {
+    let mut budget = OutputBudget::new(3, 1000);
+    assert_eq!(budget.take_lines([1, 1].into_iter()), 2);
+    assert_eq!(budget.take_lines([1, 1].into_iter()), 1);
+    assert_eq!(budget.take_lines([1].into_iter()), 0);
+}
+
+#[test]
+fn focused_match_beyond_the_cut_lifts_the_cap() {
+    assert!(!focused_match_is_hidden(None, 0, 5));
+    assert!(!focused_match_is_hidden(Some((0, 4)), 0, 5));
+    assert!(focused_match_is_hidden(Some((0, 5)), 0, 5));
+    assert!(focused_match_is_hidden(Some((2, 0)), 0, 5));
+    assert!(!focused_match_is_hidden(Some((0, 99)), 1, 0));
+}
+
+#[test]
+fn truncate_formatted_text_keeps_the_leading_lines() {
+    let text = markdown_parser::FormattedText::new(vec![
+        markdown_parser::FormattedTextLine::LineBreak,
+        markdown_parser::FormattedTextLine::HorizontalRule,
+        markdown_parser::FormattedTextLine::LineBreak,
+    ]);
+    assert_eq!(truncate_formatted_text(&text, 2).lines.len(), 2);
+    assert_eq!(truncate_formatted_text(&text, 10).lines.len(), 3);
 }
