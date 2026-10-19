@@ -553,6 +553,9 @@ pub struct RequestedCommandView {
 
     // Header expansion state components
     is_header_expanded: bool,
+    /// Set when the user collapsed the header themselves; a take-over does not re-expand it
+    /// unless the command is waiting on their input (issue #852).
+    user_collapsed_header: bool,
     header_mouse_state: MouseStateHandle,
     is_editing: bool,
 
@@ -891,6 +894,7 @@ impl RequestedCommandView {
             is_editing: false,
             autonomy_setting_speedbump,
             is_header_expanded: false,
+            user_collapsed_header: false,
             header_mouse_state: Default::default(),
             cancel_explanation: None,
             rejected_by_user: false,
@@ -2861,7 +2865,9 @@ impl TypedActionView for RequestedCommandView {
                 }
             }
             RequestedCommandViewAction::ToggleExpanded => {
-                self.set_is_header_expanded(!self.is_header_expanded, ctx)
+                let expand = !self.is_header_expanded;
+                self.user_collapsed_header = !expand;
+                self.set_is_header_expanded(expand, ctx)
             }
             RequestedCommandViewAction::OpenActiveAgentProfileEditor => {
                 ctx.emit(RequestedCommandViewEvent::OpenActiveAgentProfileEditor)
@@ -2904,11 +2910,37 @@ impl RequestedCommand {
         })
     }
 
+    /// Expands for a take-over. Leaves a card the user collapsed alone unless
+    /// `override_user_collapse` (the command is waiting on their input).
+    pub fn force_expand_for_control_change(
+        &self,
+        override_user_collapse: bool,
+        ctx: &mut impl UpdateView,
+    ) {
+        self.view.update(ctx, |command, ctx| {
+            if should_expand_for_control_change(
+                command.user_collapsed_header,
+                override_user_collapse,
+            ) {
+                command.set_is_header_expanded(true, ctx);
+            }
+        })
+    }
+
     pub fn force_collapse(&self, ctx: &mut impl UpdateView) {
         self.view.update(ctx, |command, ctx| {
             command.set_is_header_expanded(false, ctx);
         })
     }
+}
+
+/// Whether a take-over expands the card: always, unless the user collapsed it and the command
+/// is not waiting on their input.
+pub fn should_expand_for_control_change(
+    user_collapsed_header: bool,
+    override_user_collapse: bool,
+) -> bool {
+    !user_collapsed_header || override_user_collapse
 }
 
 /// Formats the command text as a one-line header title: the first line, plus an ellipsis when

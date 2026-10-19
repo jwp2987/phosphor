@@ -8,7 +8,7 @@ use super::{
     StreamedTextChange, cancel_explanation_for_reason, denylisted_command_message,
     enter_accepts_requested_command_context, format_command_text,
     header_message_for_user_take_over_reason, mcp_blocked_title_text,
-    mcp_viewing_detail_title_text, streamed_text_change,
+    mcp_viewing_detail_title_text, should_expand_for_control_change, streamed_text_change,
 };
 use crate::ai::agent::{CancellationReason, RequestCommandOutputResult};
 use crate::ai::blocklist::action_model::AIActionStatus;
@@ -496,4 +496,14 @@ fn streamed_text_change_appends_or_replaces_before_an_edit() {
         streamed_text_change("echo hi; ls", "echo hi", false),
         StreamedTextChange::Replace
     );
+}
+
+/// #852: a take-over expands the card, but never re-expands one the user collapsed unless the
+/// command is waiting on their input.
+#[test]
+fn control_change_expansion_respects_a_user_collapsed_card() {
+    assert!(should_expand_for_control_change(false, false));
+    assert!(should_expand_for_control_change(false, true));
+    assert!(!should_expand_for_control_change(true, false));
+    assert!(should_expand_for_control_change(true, true));
 }

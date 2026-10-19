@@ -1,6 +1,6 @@
 use super::{
-    AIAgentActionId, AIConversationId, LongRunningCommandControlState, TaskId, TerminalModel,
-    UserTakeOverReason, needs_byop_monitor_upgrade,
+    AIAgentActionId, AIConversationId, ControlChangeReason, LongRunningCommandControlState, TaskId,
+    TerminalModel, UserTakeOverReason, needs_byop_monitor_upgrade,
 };
 
 // Blocks persisted before `should_auto_resume` stored `Stop` as a bare unit variant. These must
@@ -230,4 +230,49 @@ fn byop_monitor_upgrade_skips_a_user_command() {
     assert!(!needs_byop_monitor_upgrade(
         model.block_list().active_block()
     ));
+}
+
+// #852: only a real user take-over may steal focus from an AI block or expand a card. The routine
+// `UpdatedControl` emitters (`ActionBlockedOnUserConfirmation`, `ExecutingAction`,
+// `FinishedAction`) also report `agent_has_control: false` and must keep the old behavior.
+#[test]
+fn routine_and_handoff_control_changes_never_steal_focus_or_expand() {
+    for reason in [ControlChangeReason::Routine, ControlChangeReason::HandOff] {
+        assert!(!reason.takes_terminal_focus());
+        assert!(!reason.expands_card());
+        assert!(!reason.overrides_user_collapse());
+    }
+}
+
+#[test]
+fn user_takeover_steals_focus_and_expands() {
+    for reason in [
+        UserTakeOverReason::Manual,
+        UserTakeOverReason::Stop {
+            should_auto_resume: true,
+        },
+        UserTakeOverReason::BlockedOnInput,
+        UserTakeOverReason::TransferFromAgent {
+            reason: "needs password".to_owned(),
+        },
+    ] {
+        let change = ControlChangeReason::for_user_takeover(&reason);
+        assert!(change.takes_terminal_focus(), "{reason:?}");
+        assert!(change.expands_card(), "{reason:?}");
+    }
+}
+
+#[test]
+fn only_input_waiting_takeovers_override_a_user_collapsed_card() {
+    let overrides = |r: UserTakeOverReason| {
+        ControlChangeReason::for_user_takeover(&r).overrides_user_collapse()
+    };
+    assert!(overrides(UserTakeOverReason::BlockedOnInput));
+    assert!(overrides(UserTakeOverReason::TransferFromAgent {
+        reason: "x".to_owned()
+    }));
+    assert!(!overrides(UserTakeOverReason::Manual));
+    assert!(!overrides(UserTakeOverReason::Stop {
+        should_auto_resume: false
+    }));
 }

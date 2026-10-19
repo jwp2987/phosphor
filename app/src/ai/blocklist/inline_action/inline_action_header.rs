@@ -330,12 +330,18 @@ impl HeaderConfig {
                 let callback = Rc::clone(callback);
                 let mouse_state = expansion_config.toggle_mouse_state.clone();
 
-                Hoverable::new(mouse_state, |_| container)
+                // A trailing button (Stop) lives inside the clickable header: let it consume its
+                // own click so it does not also toggle expansion (issue #871).
+                let defer_to_children = expansion_config.trailing_button.is_some();
+                let mut hoverable = Hoverable::new(mouse_state, |_| container)
                     .on_click(move |ctx, _, _| {
                         callback(ctx);
                     })
-                    .with_cursor(Cursor::PointingHand)
-                    .finish()
+                    .with_cursor(Cursor::PointingHand);
+                if defer_to_children {
+                    hoverable = hoverable.with_defer_events_to_children();
+                }
+                hoverable.finish()
             } else {
                 container
             };

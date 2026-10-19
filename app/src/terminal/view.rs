@@ -6792,14 +6792,17 @@ impl TerminalView {
                 );
             }
             CLISubagentEvent::UpdatedControl {
-                agent_has_control, ..
+                agent_has_control,
+                reason,
+                ..
             } => {
-                if *agent_has_control {
-                    self.redetermine_terminal_focus(ctx);
-                } else {
+                if reason.takes_terminal_focus() && !*agent_has_control {
                     // The user now owns the PTY (take-over, Stop, or a prompt hand-over):
                     // keystrokes must reach it even if focus was left on the command's card.
+                    // Routine action bookkeeping keeps the guarded behavior (issue #852).
                     self.redetermine_terminal_focus_for_user_takeover(ctx);
+                } else {
+                    self.redetermine_terminal_focus(ctx);
                 }
                 self.emit_long_running_command_agent_interaction_state_changed(
                     *agent_has_control,
