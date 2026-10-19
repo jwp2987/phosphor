@@ -244,23 +244,29 @@ def main():
             check(bool(fin) and fin[0].get("exit_code") == code, f"`{cmd}` exit code is {code}", sh)
         # #829
         got = sh.input_buffer(REPLIES + [b"echo kept"])
-        check(got == "echo kept", f"#829: only the typed text is reported (got {got!r})", sh)
+        check(got.endswith("echo kept"), f"#829: the typed text is reported intact (got {got!r})", sh)
         os.write(sh.fd, b"\x03")
         sh.pump(0.5)
         got = sh.input_buffer([b"echo 62c"])
         check(got == "echo 62c", f"#829: ordinary text `echo 62c` is untouched (got {got!r})", sh)
+        # #927: typed text that looks like a reply's residue is never stripped.
+        for typed in ("62c", "1R", "0c", ";1R", "R", "24;80R", "8;45;124t", "1;2$y"):
+            os.write(sh.fd, b"\x03")
+            sh.pump(0.5)
+            got = sh.input_buffer([typed.encode()])
+            check(got == typed, f"#927: typed {typed!r} is reported unchanged (got {got!r})", sh)
         for r in HEXLEAD:
             os.write(sh.fd, b"\x03")
             sh.pump(0.5)
             got = sh.input_buffer([r, b"echo kept"])
-            check(got == "echo kept", f"#829: hex-letter text after {r!r} is kept (got {got!r})", sh)
+            check(got.endswith("echo kept"), f"#829: hex-letter text after {r!r} is kept (got {got!r})", sh)
         for label, reply in colour_cases():
             os.write(sh.fd, b"\x03")
             sh.pump(1.0)
             sh.input_buffer([])  # report-and-clear whatever is left, discarding it
             sh.pump(0.5)
             got = sh.input_buffer([reply, b"echo x"])
-            check(got == "echo x", f"colour reply ({label}) is stripped, text kept (got {got!r})", sh)
+            check(got.endswith("echo x"), f"colour reply ({label}): the typed text is kept (got {got!r})", sh)
         check(not [p for p in sh.raw_hooks() if not _valid(p)], "all hook payloads still valid JSON at the end", sh)
     finally:
         sh.close()

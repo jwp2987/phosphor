@@ -638,9 +638,10 @@ end
 # Binding to ESC-1 caused bootstrap failures with vi keybindings.
 # #829: a reply to a terminal query (DA, an OSC colour query, a cursor position report)
 # that nobody was reading can end up in the typeahead. Drop those before reporting it.
-# Complete replies are removed anywhere; the ESC-less residue of one (`62c`, `10;rgb:...`)
-# only from the start of the text. A reply ending in BEL or ESC \ may have 1-4 digit colour
-# components; an unterminated one or a residue is matched at a consistent width of 1-4 digits (a greedy 1-4 would eat
+# Complete replies are removed anywhere. The ESC-less residue of one (`62c`, `R`, `10;rgb:...`)
+# is not stripped: it cannot be told from typed text (#927); the app removes it with its reply
+# ledger (#921). A reply ending in BEL or ESC \ may have 1-4 digit colour
+# components; an unterminated one is matched at a consistent width of 1-4 digits (a greedy 1-4 would eat
 # the leading hex letters of text typed right after it, e.g. `echo`).
 function __warp_strip_terminal_replies
     # `string` splits piped input into lines, so the start-of-text anchor below has to
@@ -651,9 +652,8 @@ function __warp_strip_terminal_replies
         | string replace -r -a '\eP>\|[^\e]*\e\\\\' '' \
         | string replace -r -a '\e\][0-9;]*;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}(?:\a|\e\\\\)' '' \
         | string replace -r -a '\e\][0-9;]*;rgba?:(?:[0-9a-fA-F]{4}/[0-9a-fA-F]{4}/[0-9a-fA-F]{4}|[0-9a-fA-F]{3}/[0-9a-fA-F]{3}/[0-9a-fA-F]{3}|[0-9a-fA-F]{2}/[0-9a-fA-F]{2}/[0-9a-fA-F]{2}|[0-9a-fA-F]{1}/[0-9a-fA-F]{1}/[0-9a-fA-F]{1})' '' \
-        | string replace -r -a '[0-9]+(?:;[0-9]+)?;rgba?:(?:[0-9a-fA-F]{4}/[0-9a-fA-F]{4}/[0-9a-fA-F]{4}|[0-9a-fA-F]{3}/[0-9a-fA-F]{3}/[0-9a-fA-F]{3}|[0-9a-fA-F]{2}/[0-9a-fA-F]{2}/[0-9a-fA-F]{2}|[0-9a-fA-F]{1}/[0-9a-fA-F]{1}/[0-9a-fA-F]{1})' '' \
         | string collect)
-    string replace -r '\A(?:[0-9]+(?:;[0-9]+)*c|;?[0-9]+R|[0-9]*(?:;[0-9]*)+t|[0-9;]+\$y|>\|[A-Za-z][A-Za-z0-9_.-]*\([^)]*\))+' '' -- (string join \n -- $text | string collect)
+    string join \n -- $text | string collect
 end
 
 function warp_report_input

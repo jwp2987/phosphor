@@ -790,22 +790,16 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
     # which is removed from the start of the text only (replies queue up before
     # anything the user typed). Replies are plain ASCII so the loops stay cheap.
     # Colour components: a reply that ends in BEL or ESC \ may have 1-4 digit components; an
-    # unterminated one (or the ESC-less residue) is matched at a consistent width of 1-4 digits,
+    # unterminated one is matched at a consistent width of 1-4 digits,
     # never a greedy 1-4 per component, or text such as `echo` typed right after it would lose its leading
     # hex letters.
     function __warp_strip_terminal_replies {
         __warp_stripped=$1
         local esc=$'\e' bel=$'\a' m
-        local re_any='('"$esc"'\[[?>=]?[0-9;]*[cRt])|('"$esc"'\[\??[0-9;]*\$y)|('"$esc"'P>\|[^'"$esc"']*'"$esc"'\\)|('"$esc"'\][0-9;]*;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}('"$bel"'|'"$esc"'\\))|('"$esc"'\][0-9;]*;rgba?:([0-9a-fA-F]{4}/[0-9a-fA-F]{4}/[0-9a-fA-F]{4}|[0-9a-fA-F]{3}/[0-9a-fA-F]{3}/[0-9a-fA-F]{3}|[0-9a-fA-F]{2}/[0-9a-fA-F]{2}/[0-9a-fA-F]{2}|[0-9a-fA-F]{1}/[0-9a-fA-F]{1}/[0-9a-fA-F]{1}))|([0-9]+(;[0-9]+)?;rgba?:([0-9a-fA-F]{4}/[0-9a-fA-F]{4}/[0-9a-fA-F]{4}|[0-9a-fA-F]{3}/[0-9a-fA-F]{3}/[0-9a-fA-F]{3}|[0-9a-fA-F]{2}/[0-9a-fA-F]{2}/[0-9a-fA-F]{2}|[0-9a-fA-F]{1}/[0-9a-fA-F]{1}/[0-9a-fA-F]{1}))'
-        local re_lead='^(([0-9]+(;[0-9]+)*c)|(;?[0-9]+R)|([0-9]*(;[0-9]*)+t)|([0-9;]+\$y)|(>\|[A-Za-z][A-Za-z0-9_.-]*\([^)]*\)))'
+        local re_any='('"$esc"'\[[?>=]?[0-9;]*[cRt])|('"$esc"'\[\??[0-9;]*\$y)|('"$esc"'P>\|[^'"$esc"']*'"$esc"'\\)|('"$esc"'\][0-9;]*;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}('"$bel"'|'"$esc"'\\))|('"$esc"'\][0-9;]*;rgba?:([0-9a-fA-F]{4}/[0-9a-fA-F]{4}/[0-9a-fA-F]{4}|[0-9a-fA-F]{3}/[0-9a-fA-F]{3}/[0-9a-fA-F]{3}|[0-9a-fA-F]{2}/[0-9a-fA-F]{2}/[0-9a-fA-F]{2}|[0-9a-fA-F]{1}/[0-9a-fA-F]{1}/[0-9a-fA-F]{1}))'
         while [[ $__warp_stripped =~ $re_any ]]; do
             m=${MATCH}
             __warp_stripped=${__warp_stripped/"$m"/}
-        done
-        while [[ $__warp_stripped =~ $re_lead ]]; do
-            m=${MATCH}
-            __warp_stripped=${__warp_stripped#"$m"}
-            # A residue can be followed by more of the same, now at the start.
         done
     }
 

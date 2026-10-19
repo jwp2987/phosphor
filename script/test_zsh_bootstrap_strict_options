@@ -376,7 +376,7 @@ def scenario_terminal_replies_in_typeahead():
         check(ok, "the input buffer is reported", sh)
         if ok:
             got = [v for h, v in sh.hooks() if h == "InputBuffer"][-1]["buffer"]
-            check(got == "echo kept", f"only the typed text is reported (got {got!r})", sh)
+            check(got is not None and got.endswith("echo kept"), f"the typed text is reported intact (got {got!r})", sh)
         n = len([1 for h, _ in sh.hooks() if h == "InputBuffer"])
         sh.pump(0.3)
         os.write(sh.fd, b"echo 62c")
@@ -388,6 +388,17 @@ def scenario_terminal_replies_in_typeahead():
             check(got == "echo 62c", f"ordinary typed text is untouched (got {got!r})", sh)
         else:
             check(False, "the second input buffer is reported", sh)
+        # #927: typed text that looks like a reply's residue is never stripped; the app's
+        # reply ledger (which knows what it wrote) removes residue, the shell does not guess.
+        for typed in ("62c", "1R", "0c", ";1R", "R", "24;80R", "8;45;124t", "1;2$y", ">|x(1)"):
+            sh.pump(0.3)
+            n = len(sh.hook_jsons("InputBuffer"))
+            os.write(sh.fd, typed.encode())
+            sh.pump(0.3)
+            os.write(sh.fd, b"\x1bi")
+            ok = sh.pump(5, lambda: len(sh.hook_jsons("InputBuffer")) > n)
+            got = sh.hook_jsons("InputBuffer")[-1]["value"]["buffer"] if ok else None
+            check(got == typed, f"typed {typed!r} is reported unchanged (got {got!r})", sh)
         # Text that starts with hex letters right after a reply must survive, whatever the
         # reply's colour width or terminator (an over-greedy strip ate `ec` of `echo`).
         for label, reply in colour_cases():
@@ -400,7 +411,7 @@ def scenario_terminal_replies_in_typeahead():
             os.write(sh.fd, b"\x1bi")
             ok = sh.pump(5, lambda: len([1 for h, _ in sh.hooks() if h == "InputBuffer"]) > n)
             got = [v for h, v in sh.hooks() if h == "InputBuffer"][-1]["buffer"] if ok else None
-            check(got == "echo x", f"colour reply ({label}) is stripped, text kept (got {got!r})", sh)
+            check(got is not None and got.endswith("echo x"), f"colour reply ({label}): the typed text is kept (got {got!r})", sh)
     finally:
         sh.close()
 
