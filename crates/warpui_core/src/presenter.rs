@@ -46,6 +46,9 @@ pub struct Presenter {
     /// away. A paint-only frame (`build_scene_skip_layout_if`) leaves it
     /// untouched. See issue #805.
     mounted_views: EntityIdSet,
+    /// Whether the last frame ran a full layout and `mounted_views` reflects it.
+    /// Cleared when a zero-size frame consumes invalidations without laying out.
+    layout_current: bool,
 }
 
 pub struct LayoutContext<'a> {
@@ -341,6 +344,7 @@ impl Presenter {
             position_cache: PositionCache::default(),
             highlighted_view: None,
             mounted_views: EntityIdSet::default(),
+            layout_current: false,
         }
     }
 
@@ -429,6 +433,31 @@ impl Presenter {
         self.mounted_views.contains(&view_id)
     }
 
+    /// Whether the last frame ran a full layout, so `mounted_views` is a faithful
+    /// snapshot of the element tree (as of the last frame).
+    pub(crate) fn layout_is_current(&self) -> bool {
+        self.layout_current
+    }
+
+    /// Records that a frame was skipped before layout (zero-size window) after
+    /// its invalidations were consumed, so the mounted snapshot is stale.
+    pub(crate) fn mark_layout_stale(&mut self) {
+        self.layout_current = false;
+    }
+
+    /// Whether a focused `view_id` may still receive events: it is mounted, or
+    /// its parent is (a lazily laid-out container such as a list only visits the
+    /// rows in view, so an off-screen row has a mounted parent but is not itself
+    /// mounted). Before the first layout nothing is judged unreachable.
+    pub(crate) fn is_view_reachable(&self, view_id: EntityId) -> bool {
+        !self.has_mounted_views()
+            || self.mounted_views.contains(&view_id)
+            || self
+                .parents
+                .get(&view_id)
+                .is_some_and(|parent_id| self.mounted_views.contains(parent_id))
+    }
+
     pub fn build_scene(
         &mut self,
         window_size: Vector2F,
@@ -500,6 +529,7 @@ impl Presenter {
             // * Decouple after_layout from the presenter so it can take a AppContext
             // * Extend the AfterLayoutContext API to allow state updates, but not other effects
             self.after_layout(ctx);
+            self.layout_current = true;
         }
         let (scene, repaint_at, repaint_needs_layout, pending_assets) = self.paint(
             zoomed_scale_factor,

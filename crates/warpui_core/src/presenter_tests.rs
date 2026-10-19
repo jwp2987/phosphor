@@ -304,6 +304,107 @@ fn test_refocus_root_when_focused_view_is_unmounted() {
     })
 }
 
+/// #842: a focused view that is mounted, but not the root, keeps focus.
+#[test]
+fn test_refocus_root_keeps_mounted_non_root_focus() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, root) = app.add_window(WindowStyle::NotStealFocus, SwitchingRootView::new);
+        let child = root.update(app, |root, _| root.child.clone());
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        let presenter = app.presenter(window_id).unwrap();
+        assert!(presenter.borrow().is_view_mounted(child.id()));
+
+        child.update(app, |_, ctx| ctx.focus_self());
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        app.update(|ctx| ctx.refocus_root_if_focus_unreachable(window_id));
+        assert_eq!(app.focused_view_id(window_id), Some(child.id()));
+    })
+}
+
+/// #842: a view focused after the last layout (so the mounted snapshot is
+/// stale) must not be judged unmounted. The check is deferred and re-run
+/// after the next full layout, which then sees the truth.
+#[test]
+fn test_refocus_root_defers_while_invalidation_pending() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, _root) =
+            app.add_window(WindowStyle::NotStealFocus, |_| CountingRootView::default());
+        let root_view_id = app.root_view_id(window_id).unwrap();
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+
+        let orphan = app.add_view(window_id, |_| CountingChildView::default());
+        orphan.update(app, |_, ctx| ctx.focus_self());
+        app.update(|ctx| {
+            ctx.simulate_view_updated(window_id, orphan.id());
+            ctx.refocus_root_if_focus_unreachable(window_id);
+        });
+        assert_eq!(
+            app.focused_view_id(window_id),
+            Some(orphan.id()),
+            "a pending invalidation means the mounted snapshot is stale"
+        );
+
+        // Once the layout is current the deferred check judges it: this view
+        // is not mounted by anything, so focus falls back to the root.
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        assert_eq!(app.focused_view_id(window_id), Some(root_view_id));
+    })
+}
+
+/// #842: a focused view that a lazily laid-out container did not visit (an
+/// off-screen row) but whose parent is mounted keeps focus.
+#[test]
+fn test_refocus_root_keeps_focus_when_parent_is_mounted() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, root) = app.add_window(WindowStyle::NotStealFocus, SwitchingRootView::new);
+        let (child, tab, lay_out_child) = root.update(app, |root, _| {
+            (
+                root.child.clone(),
+                root.tab.clone(),
+                root.lay_out_child.clone(),
+            )
+        });
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        child.update(app, |_, ctx| ctx.focus_self());
+
+        lay_out_child.set(false);
+        tab.update(app, |_, ctx| ctx.notify());
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        let presenter = app.presenter(window_id).unwrap();
+        assert!(presenter.borrow().is_view_mounted(tab.id()));
+        assert!(!presenter.borrow().is_view_mounted(child.id()));
+
+        app.update(|ctx| ctx.refocus_root_if_focus_unreachable(window_id));
+        assert_eq!(app.focused_view_id(window_id), Some(child.id()));
+    })
+}
+
+/// #842: a focused view that no longer exists falls back to the root view.
+#[test]
+fn test_refocus_root_when_focused_view_was_dropped() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, _root) =
+            app.add_window(WindowStyle::NotStealFocus, |_| CountingRootView::default());
+        let root_view_id = app.root_view_id(window_id).unwrap();
+        let doomed = app.add_view(window_id, |_| CountingChildView::default());
+        doomed.update(app, |_, ctx| ctx.focus_self());
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        let doomed_id = doomed.id();
+        assert_eq!(app.focused_view_id(window_id), Some(doomed_id));
+
+        drop(doomed);
+        app.update(|ctx| {
+            assert!(ctx.view_name(window_id, doomed_id).is_none());
+            ctx.refocus_root_if_focus_unreachable(window_id);
+        });
+        assert_eq!(app.focused_view_id(window_id), Some(root_view_id));
+    })
+}
+
 /// How long [`PaintOnlyBlinker`] waits between paint-only repaint requests.
 /// Short, so the tests below don't have to wait long for it to fire for real.
 const PAINT_ONLY_DELAY: Duration = Duration::from_millis(20);
