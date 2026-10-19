@@ -465,11 +465,11 @@ mod async_raw {
                             mctx,
                         );
                     }
-                    // Over the retained-side cap: decoded 4200x4200 is 70 MB each.
+                    // Wider than the retained-side cap, so each is downscaled on decode.
                     for i in 0..3 {
                         cache.insert_raw_asset_bytes_async::<ImageType>(
                             format!("big{i}"),
-                            Arc::new(png_bytes(4200, 4200)),
+                            Arc::new(png_bytes(4200, 100)),
                             mctx,
                         );
                     }
@@ -504,8 +504,8 @@ mod async_raw {
 
     #[test]
     fn decode_estimate_comes_from_the_header_and_big_images_are_bounded() {
-        let png = png_bytes(8000, 8000);
-        assert_eq!(ImageType::estimated_decode_bytes(&png), 8000 * 8000 * 4);
+        let png = png_bytes(8000, 100);
+        assert_eq!(ImageType::estimated_decode_bytes(&png), 8000 * 100 * 4);
         assert_eq!(ImageType::estimated_decode_bytes(b"<svg/>"), 6);
         // Raw decode retains at most MAX_RAW_IMAGE_SIDE, keeping the aspect ratio.
         let wide = png_bytes(5000, 1000);
