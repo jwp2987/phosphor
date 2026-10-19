@@ -439,7 +439,11 @@ impl LocalRepoMetadataModel {
                 ctx.subscribe_to_model(&DetectedRepositories::handle(ctx), |me, event, ctx| {
                     let DetectedRepositoriesEvent::DetectedGitRepo { repository, .. } = event;
                     let repo_path = repository.as_ref(ctx).root_dir().clone();
-                    let newly_tracked = !me.repositories.contains_key(&repo_path);
+                    // A repeated detection of a repo that is still pending or indexed (the
+                    // event fires once per cwd change and per consumer) must not clear the
+                    // mark: `index_directory` removes it, so re-apply it here (#869).
+                    let newly_tracked = !me.repositories.contains_key(&repo_path)
+                        || me.auto_indexed.contains(&repo_path);
                     if let Err(e) = me.index_directory(repository.clone(), ctx) {
                         log::warn!(
                             "Failed to index directory {repo_path}: {e}"
