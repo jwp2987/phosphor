@@ -8,7 +8,13 @@ use futures::{future::BoxFuture, Future};
 use std::any::{Any, TypeId};
 use std::pin::Pin;
 use std::time::SystemTime;
-use std::{cell::{Cell, RefCell}, collections::HashMap, hash::Hash, rc::Rc, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    hash::Hash,
+    rc::Rc,
+    sync::Arc,
+};
 
 use crate::image_cache::ImageCache;
 use crate::{r#async::executor, Entity, ModelContext, SingletonEntity};
@@ -749,10 +755,14 @@ impl AssetCache {
 
 #[derive(Debug, Clone)]
 pub enum AssetCacheEvent {
-    ImagesEvicted { image_ids: Vec<u32> },
+    ImagesEvicted {
+        image_ids: Vec<u32>,
+    },
     /// An off-thread raw asset decode finished (successfully or not); views showing it should
     /// re-render.
-    RawAssetLoaded { id: String },
+    RawAssetLoaded {
+        id: String,
+    },
 }
 
 impl Entity for AssetCache {

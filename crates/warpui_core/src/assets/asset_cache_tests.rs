@@ -8,7 +8,10 @@ use super::{AssetCache, AssetHandle, AssetSource, AssetStateInternal, LocalFileC
 #[cfg(not(target_arch = "wasm32"))]
 fn unique_temp_path(name: &str) -> std::path::PathBuf {
     let mut path = std::env::temp_dir();
-    path.push(format!("warp_asset_cache_test_{}_{name}", std::process::id()));
+    path.push(format!(
+        "warp_asset_cache_test_{}_{name}",
+        std::process::id()
+    ));
     path
 }
 
@@ -313,9 +316,7 @@ mod async_raw {
                     assert!(!cache.is_raw_asset_pending::<ImageType>("9"));
 
                     let late = ImageType::decode_in_background(&png_bytes(2, 2));
-                    assert!(!cache.finish_pending_raw::<ImageType>(
-                        handle, generation, late, mctx
-                    ));
+                    assert!(!cache.finish_pending_raw::<ImageType>(handle, generation, late, mctx));
                     // The late result did not resurrect the asset.
                     assert!(!matches!(
                         state(cache, "9"),
