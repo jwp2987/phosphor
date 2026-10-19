@@ -11,7 +11,7 @@ use std::{
 use strum_macros::EnumIter;
 
 use crate::{
-    assets::asset_cache::{Asset, AssetCache, AssetSource, AssetState},
+    assets::asset_cache::{Asset, AssetCache, AssetSource, AssetState, PreparedAsset},
     util::parse_u32,
     Entity, SingletonEntity,
 };
@@ -407,8 +407,29 @@ impl ImageType {
     }
 }
 
-impl Asset for ImageType {
-    fn try_from_bytes(data: &[u8]) -> anyhow::Result<ImageType> {
+/// An image decoded off the UI thread. Unlike [`ImageType`] it is `Send` (the SVG tree is not yet
+/// behind an `Rc`), so a background task can hand it to the foreground (#880).
+pub enum DecodedImage {
+    Svg(usvg::Tree),
+    Static(Arc<StaticImage>),
+    Animated(Arc<AnimatedImage>),
+    Unrecognized,
+}
+
+impl DecodedImage {
+    /// Wraps the decoded image for the asset cache. Cheap; run on the foreground.
+    pub fn into_image_type(self) -> ImageType {
+        match self {
+            DecodedImage::Svg(svg) => ImageType::Svg { svg: Rc::new(svg) },
+            DecodedImage::Static(image) => ImageType::StaticBitmap { image },
+            DecodedImage::Animated(image) => ImageType::AnimatedBitmap { image },
+            DecodedImage::Unrecognized => ImageType::Unrecognized,
+        }
+    }
+
+    /// The CPU-heavy decode (PNG/JPEG/GIF/WebP decoding, SVG parsing). Safe to call from any
+    /// thread; enforces the decode limits.
+    pub fn decode(data: &[u8]) -> anyhow::Result<DecodedImage> {
         // SVGs are not handled by the guess_format helper function, so we have to manually check
         // if it's an SVG ourselves.
         if data.first() == Some(&b'<') {
@@ -423,8 +444,7 @@ impl Asset for ImageType {
                     "SVG would rasterise to {bytes} bytes, over the {MAX_DECODED_IMAGE_BYTES} limit"
                 ));
             }
-            let svg = Rc::new(svg);
-            return Ok(ImageType::Svg { svg });
+            return Ok(DecodedImage::Svg(svg));
         }
 
         if data.starts_with(b"warp-img:") {
@@ -458,9 +478,7 @@ impl Asset for ImageType {
                     "Could not convert custom warp image into approprate dynamic image."
                 ));
             };
-            return Ok(ImageType::StaticBitmap {
-                image: Arc::new(StaticImage { img }),
-            });
+            return Ok(DecodedImage::Static(Arc::new(StaticImage { img })));
         }
 
         match image::guess_format(data) {
@@ -471,9 +489,7 @@ impl Asset for ImageType {
                 );
                 reader.limits(decode_limits());
                 let img = reader.decode()?.into_rgba8();
-                Ok(ImageType::StaticBitmap {
-                    image: Arc::new(StaticImage { img }),
-                })
+                Ok(DecodedImage::Static(Arc::new(StaticImage { img })))
             }
             Ok(ImageFormat::Png) => {
                 let mut reader = image::ImageReader::with_format(
@@ -482,9 +498,7 @@ impl Asset for ImageType {
                 );
                 reader.limits(decode_limits());
                 let img = reader.decode()?.into_rgba8();
-                Ok(ImageType::StaticBitmap {
-                    image: Arc::new(StaticImage { img }),
-                })
+                Ok(DecodedImage::Static(Arc::new(StaticImage { img })))
             }
             Ok(ImageFormat::WebP) => {
                 let mut decoder = WebPDecoder::new(std::io::Cursor::new(data))?;
@@ -495,14 +509,10 @@ impl Asset for ImageType {
                     // Each frame is canvas-sized; the running total bounds
                     // how many are kept.
                     let frames = collect_frames_bounded(decoder.into_frames())?;
-                    Ok(ImageType::AnimatedBitmap {
-                        image: Arc::new(AnimatedImage::from(frames)),
-                    })
+                    Ok(DecodedImage::Animated(Arc::new(AnimatedImage::from(frames))))
                 } else {
                     let img = DynamicImage::from_decoder(decoder)?.into_rgba8();
-                    Ok(ImageType::StaticBitmap {
-                        image: Arc::new(StaticImage { img }),
-                    })
+                    Ok(DecodedImage::Static(Arc::new(StaticImage { img })))
                 }
             }
             Ok(ImageFormat::Gif) => {
@@ -512,12 +522,21 @@ impl Asset for ImageType {
                 check_decoded_size(width, height)?;
                 let decoder = GifDecoder::new(std::io::Cursor::new(data))?;
                 let frames = collect_frames_bounded(decoder.into_frames())?;
-                Ok(ImageType::AnimatedBitmap {
-                    image: Arc::new(AnimatedImage::from(frames)),
-                })
+                Ok(DecodedImage::Animated(Arc::new(AnimatedImage::from(frames))))
             }
-            _ => Ok(ImageType::Unrecognized),
+            _ => Ok(DecodedImage::Unrecognized),
         }
+    }
+}
+
+impl Asset for ImageType {
+    fn try_from_bytes(data: &[u8]) -> anyhow::Result<ImageType> {
+        DecodedImage::decode(data).map(DecodedImage::into_image_type)
+    }
+
+    fn decode_in_background(data: &[u8]) -> anyhow::Result<PreparedAsset<ImageType>> {
+        let decoded = DecodedImage::decode(data)?;
+        Ok(Box::new(move || Ok(decoded.into_image_type())))
     }
 
     fn size_in_bytes(&self) -> usize {

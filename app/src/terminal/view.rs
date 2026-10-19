@@ -2461,6 +2461,9 @@ struct LocalSessionCanonicalPwdCache {
 }
 
 pub struct TerminalView {
+    /// Image ids this view handed to the asset cache for off-thread decoding and has not yet
+    /// been told finished (#880).
+    pending_image_ids: std::collections::HashSet<u32>,
     pub model: Arc<FairMutex<TerminalModel>>,
     view_handle: WeakViewHandle<Self>,
 
@@ -4161,11 +4164,19 @@ impl TerminalView {
             .entry(BlockIndex::zero())
             .or_default();
 
-        ctx.subscribe_to_model(&AssetCache::handle(ctx), |me, _, event, _| match event {
+        ctx.subscribe_to_model(&AssetCache::handle(ctx), |me, _, event, ctx| match event {
             AssetCacheEvent::ImagesEvicted { image_ids } => {
                 let mut terminal_model = me.model.lock();
                 for &image_id in image_ids {
                     terminal_model.remove_image_id_to_metadata_entry(image_id);
+                }
+            }
+            // Only views that inserted this image repaint (no terminal-model lock needed).
+            AssetCacheEvent::RawAssetLoaded { id } => {
+                if let Ok(id) = id.parse::<u32>() {
+                    if me.pending_image_ids.remove(&id) {
+                        ctx.notify();
+                    }
                 }
             }
         });
@@ -4219,6 +4230,7 @@ impl TerminalView {
 
         let window_id = ctx.window_id();
         let mut terminal_view = Self {
+            pending_image_ids: Default::default(),
             model,
             input,
             inline_menu_positioner,
@@ -13526,12 +13538,14 @@ impl TerminalView {
                 image_protocol,
             } => {
                 AssetCache::handle(ctx).update(ctx, |asset_cache, ctx| {
-                    asset_cache.insert_raw_asset_bytes::<ImageType>(
+                    // Decode off the UI thread: these bytes come from the pty (#880).
+                    asset_cache.insert_raw_asset_bytes_async::<ImageType>(
                         image_id.to_string(),
-                        &image_data[..],
+                        image_data.clone(),
                         ctx,
                     );
                 });
+                self.pending_image_ids.insert(*image_id);
                 ctx.notify();
                 send_telemetry_from_ctx!(
                     TelemetryEvent::ImageReceived {

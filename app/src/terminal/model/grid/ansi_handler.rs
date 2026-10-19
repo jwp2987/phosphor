@@ -1494,7 +1494,7 @@ impl ansi::Handler for GridHandler {
             .event_proxy
             .send_terminal_event(Event::ImageReceived {
                 image_id,
-                image_data: image.data,
+                image_data: std::sync::Arc::new(image.data),
                 image_protocol: ImageProtocol::ITerm,
             });
 
@@ -1943,7 +1943,7 @@ impl GridHandler {
                     .event_proxy
                     .send_terminal_event(Event::ImageReceived {
                         image_id: action.image_id,
-                        image_data: action.image.data,
+                        image_data: std::sync::Arc::new(action.image.data),
                         image_protocol: ImageProtocol::Kitty,
                     });
             }
@@ -2004,7 +2004,7 @@ impl GridHandler {
                     .event_proxy
                     .send_terminal_event(Event::ImageReceived {
                         image_id: action.image_id,
-                        image_data: action.image.data,
+                        image_data: std::sync::Arc::new(action.image.data),
                         image_protocol: ImageProtocol::Kitty,
                     });
 

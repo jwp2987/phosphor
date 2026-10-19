@@ -8,7 +8,13 @@ use futures::{future::BoxFuture, Future};
 use std::any::{Any, TypeId};
 use std::pin::Pin;
 use std::time::SystemTime;
-use std::{cell::RefCell, collections::HashMap, hash::Hash, rc::Rc, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    hash::Hash,
+    rc::Rc,
+    sync::Arc,
+};
 
 use crate::image_cache::ImageCache;
 use crate::{r#async::executor, Entity, ModelContext, SingletonEntity};
@@ -230,12 +236,38 @@ pub struct AssetCache {
     image_cache: ImageCache,
     foreground_executor: Rc<executor::Foreground>,
     background_executor: Arc<executor::Background>,
+    /// Raw assets whose bytes are being decoded off-thread, with the generation of the request
+    /// that is allowed to publish the result. A result whose entry is gone or has a different
+    /// generation (the asset was removed or re-sent meanwhile) is dropped (#880).
+    pending_raw: Rc<RefCell<HashMap<AssetHandle, u64>>>,
+    next_generation: Cell<u64>,
+    /// Off-thread raw decodes currently running, and the input bytes they hold. Bounded so a
+    /// flood of images from a pty cannot pin unbounded memory (#880).
+    in_flight_decodes: Cell<usize>,
+    in_flight_decode_bytes: Cell<usize>,
 }
+
+/// The result of [`Asset::decode_in_background`]: a `Send` closure that finishes building the
+/// asset on the foreground thread.
+pub type PreparedAsset<T> = Box<dyn FnOnce() -> anyhow::Result<T> + Send>;
 
 pub trait Asset: Any {
     fn try_from_bytes(data: &[u8]) -> anyhow::Result<Self>
     where
         Self: Sized;
+
+    /// Does the expensive part of [`Asset::try_from_bytes`] on the calling thread, which the
+    /// asset cache arranges to be a background thread, and returns a closure that completes the
+    /// asset on the foreground thread. Assets that are not `Send` (e.g. hold an `Rc`) override
+    /// this so only a cheap wrap happens on the UI thread (#880). The default defers the whole
+    /// conversion to the foreground, which is the old behaviour.
+    fn decode_in_background(data: &[u8]) -> anyhow::Result<PreparedAsset<Self>>
+    where
+        Self: Sized,
+    {
+        let data = data.to_vec();
+        Ok(Box::new(move || Self::try_from_bytes(&data)))
+    }
 
     fn size_in_bytes(&self) -> usize;
 }
@@ -255,7 +287,20 @@ impl Asset for String {
     }
 }
 
+/// Runs [`Asset::decode_in_background`], turning a decoder panic into an error so the asset ends in
+/// a failed state instead of staying `Loading` forever.
+fn decode_catching_panics<T: Asset>(data: &[u8]) -> Result<PreparedAsset<T>> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        T::decode_in_background(data)
+    }))
+    .unwrap_or_else(|_| Err(anyhow!("the asset decoder panicked")))
+}
+
 impl AssetCache {
+    /// Most raw-image decodes allowed in flight at once.
+    pub const MAX_IN_FLIGHT_RAW_DECODES: usize = 16;
+    /// Most input bytes the in-flight raw decodes may hold between them.
+    pub const MAX_IN_FLIGHT_RAW_DECODE_BYTES: usize = 512 * 1024 * 1024;
     const MAX_RAW_ASSET_SIZE: usize = 320 * 1000 * 1000; // 320MB
     const MAX_VERSIONED_LOCAL_FILE_ASSET_SIZE: usize = 320 * 1000 * 1000; // 320MB
 
@@ -271,6 +316,10 @@ impl AssetCache {
             image_cache,
             foreground_executor,
             background_executor,
+            pending_raw: Rc::new(RefCell::new(HashMap::new())),
+            next_generation: Cell::new(0),
+            in_flight_decodes: Cell::new(0),
+            in_flight_decode_bytes: Cell::new(0),
         }
     }
 
@@ -534,18 +583,154 @@ impl AssetCache {
         })
     }
 
+    /// Like [`Self::insert_raw_asset_bytes`], but decodes on the background executor so a large or
+    /// hostile image (e.g. from the pty) cannot stall the UI thread (#880). Until the decode
+    /// finishes the asset reads as `Loading`; the caller's views are woken through
+    /// [`AssetCacheEvent::RawAssetLoaded`] and the handle's `when_loaded` future. The result is
+    /// dropped if the asset is removed ([`Self::remove_raw_asset`]) or re-inserted meanwhile.
+    pub fn insert_raw_asset_bytes_async<T: Asset>(
+        &mut self,
+        id: String,
+        bytes: Arc<Vec<u8>>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let handle = AssetHandle {
+            source: AssetSource::Raw { id },
+            asset_type: TypeId::of::<T>(),
+        };
+        let len = bytes.len();
+        // Past the cap, fail rather than queue more memory (and never decode synchronously).
+        if self.in_flight_decodes.get() >= Self::MAX_IN_FLIGHT_RAW_DECODES
+            || self.in_flight_decode_bytes.get().saturating_add(len)
+                > Self::MAX_IN_FLIGHT_RAW_DECODE_BYTES
+        {
+            log::warn!(
+                "Too many raw image decodes in flight; refusing {:?}",
+                handle.source
+            );
+            self.pending_raw.borrow_mut().remove(&handle);
+            self.inner.borrow_mut().insert(
+                handle.clone(),
+                AssetStateInternal::Error(Rc::new(anyhow!("too many image decodes in flight"))),
+            );
+            self.image_cache.evict_image(&handle.source);
+            if let AssetSource::Raw { id } = handle.source {
+                ctx.emit(AssetCacheEvent::RawAssetLoaded { id });
+            }
+            return;
+        }
+        self.in_flight_decodes.set(self.in_flight_decodes.get() + 1);
+        self.in_flight_decode_bytes
+            .set(self.in_flight_decode_bytes.get() + len);
+        let generation = self.begin_pending_raw(&handle);
+        ctx.spawn(
+            async move { decode_catching_panics::<T>(&bytes) },
+            move |me, result, ctx| {
+                me.in_flight_decodes
+                    .set(me.in_flight_decodes.get().saturating_sub(1));
+                me.in_flight_decode_bytes
+                    .set(me.in_flight_decode_bytes.get().saturating_sub(len));
+                me.finish_pending_raw::<T>(handle, generation, result, ctx);
+            },
+        );
+    }
+
+    /// Marks `handle` as loading under a fresh generation. An existing loaded value is kept until
+    /// the new one is published, so re-sending an id does not flicker blank.
+    fn begin_pending_raw(&self, handle: &AssetHandle) -> u64 {
+        let generation = self.next_generation.get() + 1;
+        self.next_generation.set(generation);
+        self.pending_raw
+            .borrow_mut()
+            .insert(handle.clone(), generation);
+        let mut inner = self.inner.borrow_mut();
+        if !matches!(
+            inner.get(handle),
+            Some(AssetStateInternal::Loaded { .. } | AssetStateInternal::Loading { .. })
+        ) {
+            inner.insert(handle.clone(), AssetStateInternal::loading());
+        }
+        generation
+    }
+
+    /// Publishes a finished background decode. Returns false (and changes nothing) if the request
+    /// is no longer the current one for `handle`.
+    fn finish_pending_raw<T: Asset>(
+        &mut self,
+        handle: AssetHandle,
+        generation: u64,
+        result: Result<PreparedAsset<T>>,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        {
+            let mut pending = self.pending_raw.borrow_mut();
+            if pending.get(&handle) != Some(&generation) {
+                return false;
+            }
+            pending.remove(&handle);
+        }
+        let state = match result.and_then(|finish| finish()) {
+            Ok(asset) => AssetStateInternal::Loaded {
+                size_in_bytes: asset.size_in_bytes(),
+                data: Rc::new(asset) as Rc<dyn Any>,
+                timestamp: instant::now() as u64,
+            },
+            Err(err) => {
+                log::warn!("Raw asset conversion failed ({:?}): {err:#}", handle.source);
+                AssetStateInternal::Error(Rc::new(err))
+            }
+        };
+        self.inner.borrow_mut().insert(handle.clone(), state);
+        self.image_cache.evict_image(&handle.source);
+        let image_ids = self.evict_raw_assets_if_needed(ctx);
+        if !image_ids.is_empty() {
+            ctx.emit(AssetCacheEvent::ImagesEvicted { image_ids });
+        }
+        if let AssetSource::Raw { id } = handle.source {
+            ctx.emit(AssetCacheEvent::RawAssetLoaded { id });
+        }
+        true
+    }
+
+    /// Forgets a raw asset: cancels a pending decode (its result will be dropped) and removes any
+    /// stored state. Returns whether anything was removed.
+    pub fn remove_raw_asset<T: Asset>(&self, id: &str) -> bool {
+        let handle = AssetHandle {
+            source: AssetSource::Raw { id: id.to_owned() },
+            asset_type: TypeId::of::<T>(),
+        };
+        let was_pending = self.pending_raw.borrow_mut().remove(&handle).is_some();
+        let had_state = self.inner.borrow_mut().remove(&handle).is_some();
+        self.image_cache.evict_image(&handle.source);
+        was_pending || had_state
+    }
+
+    /// Whether a background decode for this raw asset is still in flight.
+    pub fn is_raw_asset_pending<T: Asset>(&self, id: &str) -> bool {
+        let handle = AssetHandle {
+            source: AssetSource::Raw { id: id.to_owned() },
+            asset_type: TypeId::of::<T>(),
+        };
+        self.pending_raw.borrow().contains_key(&handle)
+    }
+
     // Helper method to spawn the futures that perform an asset load and place the results into the asset cache.
     fn load_asynchronously<T: Asset>(
         &self,
         asset_source: AssetSource,
         future: Pin<Box<dyn FetchAsset>>,
     ) {
-        let (tx, rx) = futures::channel::oneshot::channel();
+        let (tx, rx) = futures::channel::oneshot::channel::<Result<Result<PreparedAsset<T>>>>();
 
         // Spawn the work on the background executor.
         self.background_executor
             .spawn(async move {
-                let result = future.await;
+                // Fetch, then do the expensive decode here, off the UI thread (#880). The outer
+                // error is a fetch failure, the inner one a conversion failure.
+                let result: Result<Result<PreparedAsset<T>>> = match future.await {
+                    Ok(bytes) => Ok(decode_catching_panics::<T>(&bytes)),
+                    Err(err) => Err(err),
+                };
                 // When the fetch finished, send the results to the future running on the foreground executor.
                 if tx.send(result).is_err() {
                     log::error!("Error sending background task result to main thread");
@@ -579,7 +764,7 @@ impl AssetCache {
                     asset_type: TypeId::of::<T>(),
                 };
                 match result {
-                    Ok(bytes) => match T::try_from_bytes(&bytes) {
+                    Ok(prepared) => match prepared.and_then(|finish| finish()) {
                         Ok(asset) => {
                             log::debug!("Asset fetch succeeded: {asset_source:?}");
 
@@ -621,7 +806,14 @@ impl AssetCache {
 
 #[derive(Debug, Clone)]
 pub enum AssetCacheEvent {
-    ImagesEvicted { image_ids: Vec<u32> },
+    ImagesEvicted {
+        image_ids: Vec<u32>,
+    },
+    /// An off-thread raw asset decode finished (successfully or not); views showing it should
+    /// re-render.
+    RawAssetLoaded {
+        id: String,
+    },
 }
 
 impl Entity for AssetCache {

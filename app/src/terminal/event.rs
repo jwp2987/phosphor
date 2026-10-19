@@ -145,7 +145,7 @@ pub enum Event {
     SendCompletionsPrompt,
     ImageReceived {
         image_id: u32,
-        image_data: Vec<u8>,
+        image_data: std::sync::Arc<Vec<u8>>,
         image_protocol: ImageProtocol,
     },
     BootstrapPrecmdDone,
