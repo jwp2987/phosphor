@@ -1373,6 +1373,9 @@ esac
   # See https://zsh.sourceforge.io/Doc/Release/Functions.html for more context
   # on the zshaddhistory hook.
   _warp_zshaddhistory() {
+    # Phosphor (#904): the deliberate non-zero returns below ("do not save") must
+    # not trip a user's err_exit/err_return and kill or unwind the shell.
+    setopt localoptions noerrreturn noerrexit
     # Phosphor (#828): last-resort repair, for when the zle-line-init repair
     # below did not run (a plugin or the user replaced that widget too). Each
     # zshaddhistory function sees the previous command's status in $?. Never
