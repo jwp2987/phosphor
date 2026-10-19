@@ -247,6 +247,8 @@ pub(crate) const DETACH_AGENT_FROM_RUNNING_COMMAND_BINDING_NAME: &str =
 pub(crate) enum TuiTerminalSessionEvent {
     ExecuteCommand(Box<ExecuteCommandEvent>),
     InterruptPty,
+    /// Drop a command parked in the pty write queue so it cannot run after an interrupt.
+    DiscardPendingCommandWrites,
     WriteAgentInput {
         bytes: Cow<'static, [u8]>,
         mode: AIAgentPtyWriteMode,
@@ -260,6 +262,7 @@ impl PtyIntentEvent for TuiTerminalSessionEvent {
         match self {
             Self::ExecuteCommand(event) => Some(PtyIntent::ExecuteCommand((**event).clone())),
             Self::InterruptPty => Some(PtyIntent::Interrupt),
+            Self::DiscardPendingCommandWrites => Some(PtyIntent::DiscardPendingCommandWrites),
             Self::WriteAgentInput { bytes, mode } => Some(PtyIntent::WriteAgentInput {
                 bytes: bytes.clone(),
                 mode: *mode,
@@ -5187,8 +5190,23 @@ impl TuiTerminalSessionView {
                     mode: *mode,
                 });
             }
-            ShellCommandExecutorEvent::CancelExecution { .. } => {
-                ctx.emit(TuiTerminalSessionEvent::InterruptPty);
+            ShellCommandExecutorEvent::CancelExecution { action_id } => {
+                // Re-check, as the GUI does (#850/#875): only interrupt while the agent still
+                // holds this action's in-flight command, and mark it a non-resuming Stop so
+                // exactly one ^C is sent.
+                let holds_command = {
+                    let mut model = model.lock();
+                    let active_block = model.block_list_mut().active_block_mut();
+                    let holds = active_block.agent_holds_in_flight_command(action_id);
+                    if holds {
+                        active_block.set_user_control_with_stop_reason();
+                    }
+                    holds
+                };
+                if holds_command {
+                    ctx.emit(TuiTerminalSessionEvent::DiscardPendingCommandWrites);
+                    ctx.emit(TuiTerminalSessionEvent::InterruptPty);
+                }
             }
             ShellCommandExecutorEvent::TransferControlToUser {
                 action_id: _,

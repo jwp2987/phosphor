@@ -3335,6 +3335,15 @@ fn interrupt_event_projects_to_high_level_pty_intent() {
 }
 
 #[test]
+fn discard_pending_command_writes_event_projects_to_pty_intent() {
+    let event = TuiTerminalSessionEvent::DiscardPendingCommandWrites;
+    assert!(matches!(
+        event.pty_intent(),
+        Some(PtyIntent::DiscardPendingCommandWrites)
+    ));
+}
+
+#[test]
 fn user_input_event_projects_to_raw_user_bytes() {
     let event = TuiTerminalSessionEvent::WriteUserInput(b"hello\r".to_vec().into());
     let Some(PtyIntent::WriteBytes(bytes)) = event.pty_intent() else {
