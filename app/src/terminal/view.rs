@@ -8561,9 +8561,12 @@ impl TerminalView {
                     block_is_this_conversations
                         || visible_conversation_id == Some(conversation_id)
                         || history_active_conversation_id == Some(conversation_id),
+                    // Not `is_command_grid_active()` alone: that is true for an idle,
+                    // unstarted prompt block, and a ^C there is a spurious interrupt (#883).
+                    // An agent command written but not yet preexec'd still counts (#850).
                     active_block.is_executing()
-                        || active_block.is_command_grid_active()
-                        || active_block.is_active_and_long_running(),
+                        || active_block.is_active_and_long_running()
+                        || active_block.is_agent_requested_command_in_flight(),
                 ),
                 // Only a command this conversation's agent requested and is still driving. Not
                 // the user's own command -- including one the user tagged the agent into

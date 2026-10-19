@@ -6855,6 +6855,44 @@ fn ctrl_c_after_stop_takeover_cancels_conversation() {
     })
 }
 
+/// #883: stopping a conversation with ctrl-c / Escape while the shell sits at an idle prompt
+/// (a fresh, unstarted block in `BeforeExecution`) must not write a ^C to the shell.
+#[test]
+fn stopping_a_conversation_at_an_idle_prompt_writes_no_ctrl_c() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            let conversation_id =
+                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                    history.start_new_conversation(view.view_id, false, false, ctx)
+                });
+            assert!(
+                view.model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_command_grid_active()
+            );
+            view.stop_local_agent_conversation(conversation_id, ctx);
+        });
+
+        assert!(pty_writes.borrow().is_empty());
+    })
+}
+
 /// Shared setup for the issue #850 tests: an approved agent command (`sleep 100000`) running in
 /// the active block, still driven by the agent -- the state of a `wait_until_completion` command
 /// for its whole life: requested-command metadata, no long-running control state. Returns the

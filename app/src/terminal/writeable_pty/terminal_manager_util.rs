@@ -1,6 +1,8 @@
 use crate::persistence::ModelEvent;
 use crate::terminal::line_editor_status::LineEditorStatus;
 use crate::features::FeatureFlag;
+#[cfg(not(target_family = "wasm"))]
+use crate::terminal::model::escape_sequences;
 use crate::terminal::model::lifecycle::StartCommandOutcome;
 use crate::terminal::model::session::{ExecutorCommandEvent, Sessions};
 
@@ -60,12 +62,15 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
                     controller.write_end_of_transmission_char(ctx);
                 });
             }
-            // Zap's PtyController has no dedicated interrupt path; `TerminalView`
-            // never projects this intent, so this arm is unreachable in the GUI.
-            // It is kept for surface-vocabulary completeness (a future TUI surface
-            // that adds interrupt support would wire it here).
+            // Interrupt the foreground command with a ^C (ETX) written straight to the pty,
+            // as the GUI's `TerminalView::ctrl_c` does. The TUI surface projects this (#875);
+            // before, it was a no-op there, so ctrl-c and agent stop never reached the command.
             #[cfg(not(target_family = "wasm"))]
-            PtyIntent::Interrupt => {}
+            PtyIntent::Interrupt => {
+                controller.update(ctx, |controller, ctx| {
+                    controller.write_bytes(&[escape_sequences::C0::ETX][..], ctx);
+                });
+            }
             PtyIntent::ShutdownPty => {
                 controller.update(ctx, |controller, ctx| {
                     controller.shutdown_pty(ctx);
