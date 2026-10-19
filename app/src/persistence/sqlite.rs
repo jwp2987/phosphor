@@ -568,6 +568,11 @@ pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<Writer
 /// Returns a read-only connection to the sqlite database.
 /// We want only one write connection to exist and use event processing to write any data needed.
 pub fn establish_ro_connection(database_url: &str) -> Result<SqliteConnection> {
+    // Startup already gave up on this database (locked, unopenable): do not make every pane and
+    // model re-learn that by waiting out a busy timeout on the main thread (#922).
+    if super::database_notice::startup_failed() {
+        return Err(anyhow!("the database is unavailable for this session"));
+    }
     establish_connection(database_url, true)
 }
 
