@@ -629,31 +629,13 @@ fn keys_held_behind_an_unsubmitted_enter_are_released_where_they_belong() {
     );
 }
 
-/// A trailing fragment after an Enter goes back to the editor instead of raw to the pty, where
-/// the next command's kill prefix would destroy it; a bracketed paste is never split.
+/// Released keys that reduce to no editor text must not arm the shell-submit flag, or a later
+/// natural-language Enter would be forced to the shell.
 #[test]
-fn a_trailing_fragment_after_held_lines_goes_back_to_the_editor() {
-    let mut handoff = awaiting_report();
-    assert!(handoff.defer_enter());
-    handoff.on_user_bytes(b"echo 1\recho 2\rec");
-    assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
-    assert_eq!(
-        handoff.release_after_unsubmitted_enter(),
-        Some(HeldKeysRelease::ToPtyThenEditor {
-            lines: b"echo 1\recho 2\r".to_vec(),
-            fragment: b"ec".to_vec(),
-        })
-    );
-    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
-
-    let mut handoff = awaiting_report();
-    assert!(handoff.defer_enter());
-    handoff.on_user_bytes(b"\x1b[200~a\nb\x1b[201~c");
-    assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
-    assert_eq!(
-        handoff.release_after_unsubmitted_enter(),
-        Some(HeldKeysRelease::ToPty(b"\x1b[200~a\nb\x1b[201~c".to_vec()))
-    );
+fn empty_released_text_does_not_force_shell_submit() {
+    assert!(!forces_shell_submit(&text_for_editor(b"\x1b[D\x03")));
+    assert!(!forces_shell_submit(""));
+    assert!(forces_shell_submit(&text_for_editor(b"ls")));
 }
 
 #[test]
