@@ -1267,12 +1267,12 @@ fn pending_prose_with_unknown_first_word_settles_to_ai_at_submit() {
         for kept in [
             "frobnicate",
             "frobnicate widgets,",
-            "./run what to fix please",
-            "~/bin/run what to fix please",
-            "FOO=1 summarize what to fix please",
-            "summarize what to fix please | less",
-            "summarize what to fix please && echo it",
-            "echo what to fix please",
+            "./run when my build finished",
+            "~/bin/run when my build finished",
+            "FOO=1 summarize when my build finished",
+            "summarize when my build finished | less",
+            "summarize when my build finished && echo it",
+            "echo when my build finished",
             "mytool --force run migrations for prod",
             "tell Josh about outages",
         ] {
