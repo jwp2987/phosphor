@@ -1861,3 +1861,126 @@ fn transient_error_on_valid_database_is_not_damage() {
     std::fs::write(&garbage, b"definitely not sqlite, long enough header").expect("write");
     assert!(super::transient_error_confirms_damage(&garbage));
 }
+
+/// Bytes of every regular file under `dir`, to prove nothing was moved,
+/// rewritten or deleted.
+fn snapshot_files(dir: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    std::fs::read_dir(dir)
+        .expect("read_dir")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().is_file())
+        .map(|entry| {
+            (
+                entry.file_name().to_string_lossy().into_owned(),
+                std::fs::read(entry.path()).expect("read"),
+            )
+        })
+        .collect()
+}
+
+/// #860: a read-only database file is healthy. Whatever opening it does, it
+/// must never be quarantined or modified.
+#[cfg(unix)]
+#[test]
+fn read_only_database_file_is_never_quarantined() {
+    use std::os::unix::fs::PermissionsExt;
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    drop(setup_database(&database_path).expect("database should initialize"));
+    std::fs::set_permissions(&database_path, std::fs::Permissions::from_mode(0o444))
+        .expect("chmod");
+    let before = snapshot_files(tempdir.path());
+
+    let result = setup_database_or_quarantine(&database_path);
+    if let Err(err) = &result {
+        // The failure is reported to the user as a read-only problem.
+        let message = super::underlying_error_message(err);
+        let running_as_root = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&database_path)
+            .is_ok();
+        if !running_as_root {
+            assert_eq!(
+                super::super::database_notice::classify_database_problem(&message, &database_path),
+                super::super::database_notice::DatabaseProblem::ReadOnly,
+                "read-only database reported as: {message}"
+            );
+        }
+    }
+    drop(result);
+
+    assert!(corrupt_copies(tempdir.path()).is_empty());
+    assert!(database_path.is_file());
+    let after = snapshot_files(tempdir.path());
+    assert_eq!(
+        before.get("warp.sqlite"),
+        after.get("warp.sqlite"),
+        "the database file must be byte-for-byte unchanged"
+    );
+}
+
+/// #860: a healthy database in a read-only folder (SQLite cannot create its
+/// -wal/-shm files) is also never quarantined.
+#[cfg(unix)]
+#[test]
+fn database_in_read_only_folder_is_never_quarantined() {
+    use std::os::unix::fs::PermissionsExt;
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let folder = tempdir.path().join("state");
+    std::fs::create_dir(&folder).expect("mkdir");
+    let database_path = folder.join("warp.sqlite");
+    drop(setup_database(&database_path).expect("database should initialize"));
+    let before = snapshot_files(&folder);
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+
+    let result = setup_database_or_quarantine(&database_path);
+    drop(result);
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    assert!(corrupt_copies(&folder).is_empty());
+    assert_eq!(
+        before.get("warp.sqlite"),
+        snapshot_files(&folder).get("warp.sqlite")
+    );
+}
+
+/// #860: full-disk and read-only errors never mean the file is damaged.
+#[test]
+fn full_disk_and_read_only_errors_are_not_damage() {
+    for message in [
+        "database or disk is full",
+        "attempt to write a readonly database",
+        "unable to open database file",
+        "no space left on device",
+    ] {
+        assert!(!super::error_means_unusable_database(message), "{message}");
+    }
+}
+
+/// #860: a database cut off half way through is moved aside and replaced, or
+/// (if SQLite can still open it) fails with an error that the startup read
+/// treats as damage -- never a silent, permanent loss of persistence.
+#[test]
+fn half_truncated_database_is_recovered() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    drop(setup_database(&database_path).expect("database should initialize"));
+    let length = std::fs::metadata(&database_path).expect("metadata").len();
+    assert!(length > 8192, "the migrated schema spans many pages");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&database_path)
+        .expect("open")
+        .set_len(length / 2)
+        .expect("truncate");
+
+    let mut conn = setup_database_or_quarantine(&database_path)
+        .expect("a truncated database must not disable persistence");
+    match read_sqlite_data(&mut conn, None) {
+        Ok(_) => {}
+        Err(err) => assert!(
+            super::error_means_unusable_database(&super::diesel_database_error_message(&err)),
+            "a truncated database's read error must lead to quarantine, got: {err}"
+        ),
+    }
+}

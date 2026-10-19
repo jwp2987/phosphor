@@ -97,9 +97,9 @@ fn directory_and_oversized_settings_files_are_not_called_syntax_errors() {
     use warpui_extras::user_preferences::Error;
 
     // #895: a directory used to show "Couldn't parse due to invalid syntax".
-    let dir_error = SettingsFileError::from_load_error(&Error::NotAFile(
-        std::path::PathBuf::from("/home/u/.config/phosphor/settings.toml"),
-    ));
+    let dir_error = SettingsFileError::from_load_error(&Error::NotAFile(std::path::PathBuf::from(
+        "/home/u/.config/phosphor/settings.toml",
+    )));
     assert!(matches!(dir_error, SettingsFileError::FileUnusable(_)));
     let (heading, description) = dir_error.heading_and_description();
     assert_eq!(heading, "Your settings file can't be used.");

@@ -890,7 +890,11 @@ fn test_deleted_settings_file_is_restored_from_memory_not_reset() {
 
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("settings.toml");
-    std::fs::write(&file_path, "# mine\n[font]\nfont_size = 17.0\nfont_name = \"Hack\"\n").unwrap();
+    std::fs::write(
+        &file_path,
+        "# mine\n[font]\nfont_size = 17.0\nfont_name = \"Hack\"\n",
+    )
+    .unwrap();
     let (prefs, error) = TomlBackedUserPreferences::new(file_path.clone());
     assert!(error.is_none());
 
@@ -951,9 +955,11 @@ fn test_oversized_settings_file_is_refused_and_left_untouched() {
             .unwrap(),
         None
     );
-    assert!(prefs
-        .write_value_with_hierarchy("font_size", "12.0".to_string(), Some("font"), None)
-        .is_err());
+    assert!(
+        prefs
+            .write_value_with_hierarchy("font_size", "12.0".to_string(), Some("font"), None)
+            .is_err()
+    );
     assert_eq!(std::fs::read_to_string(&file_path).unwrap().len(), size);
 }
 

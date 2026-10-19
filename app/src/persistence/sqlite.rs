@@ -507,6 +507,10 @@ pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<Writer
                                 read_result = read_sqlite_data(&mut conn, user_uid);
                             }
                             Err(recovery_err) => {
+                                super::database_notice::record_startup_failure(
+                                    &database_path,
+                                    &underlying_error_message(&recovery_err),
+                                );
                                 report_db_error("recovery", recovery_err, &database_path);
                                 return (None, None);
                             }
@@ -533,6 +537,10 @@ pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<Writer
                         TelemetryEvent::DatabaseWriteError(err.to_string()),
                         ctx
                     );
+                    super::database_notice::record_startup_failure(
+                        &database_file_path(),
+                        &underlying_error_message(&err),
+                    );
                     report_db_error("starting writer", err, &database_file_path());
                     None
                 }
@@ -543,6 +551,13 @@ pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<Writer
             send_telemetry_from_app_ctx!(
                 TelemetryEvent::DatabaseStartUpError(err.to_string()),
                 ctx
+            );
+            // Read-only or full: the database is fine, so it is left where it
+            // is (never quarantined) and the user is told this session will
+            // not be saved.
+            super::database_notice::record_startup_failure(
+                &database_path,
+                &underlying_error_message(&err),
             );
             report_db_error("initialization", err, &database_path);
             (None, None)
@@ -1506,8 +1521,20 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                 log::info!("Ignoring event as SQLite Writer is on pause");
                                 continue;
                             }
-                            if let Err(err) = handle_model_event(event, &mut current_conn) {
-                                report_db_error("Model", err, &database_path);
+                            match handle_model_event(event, &mut current_conn) {
+                                Ok(()) => {
+                                    super::database_notice::record_write_outcome(
+                                        &database_path,
+                                        None,
+                                    );
+                                }
+                                Err(err) => {
+                                    super::database_notice::record_write_outcome(
+                                        &database_path,
+                                        Some(&underlying_error_message(&err)),
+                                    );
+                                    report_db_error("Model", err, &database_path);
+                                }
                             }
                         }
                     }

@@ -2705,27 +2705,94 @@ impl Workspace {
         });
     }
 
-    /// Tells the user, once, that an unusable `warp.sqlite` was moved aside at
-    /// startup and a fresh one created (#860).
-    fn show_database_recovery_notice(
+    /// Shows the database notices (#860) in this window now if it is the
+    /// active one, and again whenever this window becomes the active one.
+    ///
+    /// Each notice is shown once, in whichever window is active when it is
+    /// first able to be: taking it in the first workspace constructed lost it
+    /// when that window was not the one the user was looking at, and made a
+    /// notice raised after startup (a disk that fills up) unshowable.
+    fn subscribe_to_database_notices(
+        toast_stack: ViewHandle<DismissibleToastStack<WorkspaceAction>>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        // With no window active yet (startup), the first workspace shows it.
+        let active_window = ctx.windows().active_window();
+        if active_window.is_none() || active_window == Some(ctx.window_id()) {
+            Self::show_database_notices(&toast_stack, ctx);
+        }
+        ctx.subscribe_to_model(&WindowManager::handle(ctx), move |_me, _, event, ctx| {
+            let StateEvent::ValueChanged { current, .. } = event;
+            if current.active_window == Some(ctx.window_id()) {
+                Self::show_database_notices(&toast_stack, ctx);
+            }
+        });
+    }
+
+    /// Tells the user about any pending database problem: an unusable
+    /// `warp.sqlite` that was moved aside, or one that could not be opened or
+    /// written because it is read-only or the disk is full.
+    fn show_database_notices(
         toast_stack: &ViewHandle<DismissibleToastStack<WorkspaceAction>>,
         ctx: &mut ViewContext<Self>,
     ) {
-        let Some(moved_to) = crate::persistence::take_database_recovery_notice() else {
-            return;
+        let friendly = |path: &std::path::Path| {
+            let path_string = path.display().to_string();
+            user_friendly_path(
+                &path_string,
+                dirs::home_dir().as_ref().and_then(|h| h.to_str()),
+            )
+            .to_string()
         };
-        let path_string = moved_to.display().to_string();
-        let friendly_path = user_friendly_path(
-            &path_string,
-            dirs::home_dir().as_ref().and_then(|h| h.to_str()),
-        );
-        let toast = DismissibleToast::error(crate::t!(
-            "workspace-database-recovered-toast",
-            path = friendly_path.to_string()
-        ))
-        .with_object_id("database_recovered".to_owned());
+        let mut toasts = Vec::new();
+        if let Some(moved_to) = crate::persistence::take_database_recovery_notice() {
+            toasts.push(
+                DismissibleToast::error(crate::t!(
+                    "workspace-database-recovered-toast",
+                    path = friendly(&moved_to)
+                ))
+                .with_object_id("database_recovered".to_owned()),
+            );
+        }
+        if let Some(notice) = crate::persistence::take_database_problem_notice() {
+            let reason = match &notice.problem {
+                crate::persistence::DatabaseProblem::ReadOnly => {
+                    crate::t!("workspace-database-reason-read-only")
+                }
+                crate::persistence::DatabaseProblem::DiskFull => {
+                    crate::t!("workspace-database-reason-disk-full")
+                }
+                crate::persistence::DatabaseProblem::Other(detail) => {
+                    crate::t!("workspace-database-reason-other", detail = detail.clone())
+                }
+            };
+            let key = if notice.persistence_disabled {
+                "workspace-database-unavailable-toast"
+            } else {
+                "workspace-database-write-failing-toast"
+            };
+            let message = if notice.persistence_disabled {
+                crate::t!(
+                    "workspace-database-unavailable-toast",
+                    path = friendly(&notice.path),
+                    reason = reason
+                )
+            } else {
+                crate::t!(
+                    "workspace-database-write-failing-toast",
+                    path = friendly(&notice.path),
+                    reason = reason
+                )
+            };
+            toasts.push(DismissibleToast::error(message).with_object_id(key.to_owned()));
+        }
+        if toasts.is_empty() {
+            return;
+        }
         toast_stack.update(ctx, |toast_stack, ctx| {
-            toast_stack.add_persistent_toast(toast, ctx);
+            for toast in toasts {
+                toast_stack.add_persistent_toast(toast, ctx);
+            }
         });
     }
 
@@ -3159,7 +3226,7 @@ impl Workspace {
         Self::subscribe_to_workspace_toast_stack(toast_stack.clone(), ctx);
         Self::subscribe_to_tab_config_errors(toast_stack.clone(), ctx);
         Self::subscribe_to_keybindings_file_errors(toast_stack.clone(), ctx);
-        Self::show_database_recovery_notice(&toast_stack, ctx);
+        Self::subscribe_to_database_notices(toast_stack.clone(), ctx);
         Self::subscribe_to_settings_save_failures(toast_stack.clone(), ctx);
         Self::subscribe_to_settings_errors(ctx);
         let user_menu = ctx.add_typed_action_view(|_| {
