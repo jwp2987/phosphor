@@ -1280,6 +1280,10 @@ impl RequestedCommandView {
     }
 
     fn set_is_header_expanded(&mut self, value: bool, ctx: &mut ViewContext<Self>) {
+        // Any expansion (programmatic or the user's own re-expand) ends a prior user collapse;
+        // only `ToggleExpanded` sets the flag, and it does so after collapsing.
+        self.user_collapsed_header =
+            user_collapsed_after_set_expanded(self.user_collapsed_header, value);
         if value == self.is_header_expanded {
             return;
         }
@@ -2866,8 +2870,8 @@ impl TypedActionView for RequestedCommandView {
             }
             RequestedCommandViewAction::ToggleExpanded => {
                 let expand = !self.is_header_expanded;
+                self.set_is_header_expanded(expand, ctx);
                 self.user_collapsed_header = !expand;
-                self.set_is_header_expanded(expand, ctx)
             }
             RequestedCommandViewAction::OpenActiveAgentProfileEditor => {
                 ctx.emit(RequestedCommandViewEvent::OpenActiveAgentProfileEditor)
@@ -2932,6 +2936,12 @@ impl RequestedCommand {
             command.set_is_header_expanded(false, ctx);
         })
     }
+}
+
+/// The `user_collapsed_header` flag after the header is set to `expanded`: expanding by any path
+/// clears it, collapsing leaves it for the caller (`ToggleExpanded`) to set.
+pub fn user_collapsed_after_set_expanded(user_collapsed_header: bool, expanded: bool) -> bool {
+    user_collapsed_header && !expanded
 }
 
 /// Whether a take-over expands the card: always, unless the user collapsed it and the command

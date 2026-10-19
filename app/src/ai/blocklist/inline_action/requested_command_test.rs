@@ -9,6 +9,7 @@ use super::{
     enter_accepts_requested_command_context, format_command_text,
     header_message_for_user_take_over_reason, mcp_blocked_title_text,
     mcp_viewing_detail_title_text, should_expand_for_control_change, streamed_text_change,
+    user_collapsed_after_set_expanded,
 };
 use crate::ai::agent::{CancellationReason, RequestCommandOutputResult};
 use crate::ai::blocklist::action_model::AIActionStatus;
@@ -506,4 +507,19 @@ fn control_change_expansion_respects_a_user_collapsed_card() {
     assert!(should_expand_for_control_change(false, true));
     assert!(!should_expand_for_control_change(true, false));
     assert!(should_expand_for_control_change(true, true));
+}
+
+#[test]
+fn programmatic_expand_clears_user_collapsed_flag() {
+    // Expanding by any path (force_expand, auto-expand, SpawnedSubagent) clears the flag.
+    assert!(!user_collapsed_after_set_expanded(true, true));
+    assert!(!user_collapsed_after_set_expanded(false, true));
+    // Collapsing leaves it for ToggleExpanded to set.
+    assert!(user_collapsed_after_set_expanded(true, false));
+    assert!(!user_collapsed_after_set_expanded(false, false));
+    // A cleared flag lets the next take-over expand without the override.
+    assert!(should_expand_for_control_change(
+        user_collapsed_after_set_expanded(true, true),
+        false
+    ));
 }
