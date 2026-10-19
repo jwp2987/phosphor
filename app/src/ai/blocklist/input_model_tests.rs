@@ -461,8 +461,8 @@ fn build_input_model(
         None,  /* session_startup_path */
     )));
     let terminal_view_id = EntityId::new();
-    let conversation_selection =
-        app.add_model(|_| Box::new(MockConversationSelection) as Box<dyn ConversationSelection>);
+    let conversation_selection = app
+        .add_model(|_| Box::new(MockConversationSelection) as Box<dyn ConversationSelection>);
     let ai_context_model = app.add_model(|_| {
         BlocklistAIContextModel::mock_agent_view_less(
             terminal_model.clone(),
@@ -1029,9 +1029,10 @@ fn pending_prose_inheriting_shell_settles_to_ai_at_submit() {
         let input_model = build_autodetecting_input_model(&mut app, SHELL_UNLOCKED);
         for prose in [
             "help me",
-            "yes please",
             "watch the logs for errors",
             "docker vs podman?",
+            "why is the build slow",
+            "can you fix this",
         ] {
             input_model.update(&mut app, |model, ctx| {
                 model.apply_autodetected_input_type(InputType::Shell, ctx);
@@ -1044,7 +1045,24 @@ fn pending_prose_inheriting_shell_settles_to_ai_at_submit() {
                 assert!(!model.is_detection_pending_for(prose, ctx), "{prose}");
             });
         }
-        for kept in ["ls -la", "echo this and that", "cargo build"] {
+        for kept in [
+            "ls -la",
+            "echo this and that",
+            "cargo build",
+            "ls -la | grep to",
+            "grep -r for src",
+            "kubectl get pods -n the",
+            "cd my",
+            "ls me",
+            "cd x && if test -f y; then echo z; fi",
+            "ls file?",
+            "rm -rf tmp?",
+            "echo is it ok?",
+            "sudo apt install it",
+            "grep For file",
+            "cat <<EOF\nto is and\nEOF",
+            "git commit -m \"fix the bug\"",
+        ] {
             input_model.update(&mut app, |model, ctx| {
                 model.apply_autodetected_input_type(InputType::Shell, ctx);
                 model.note_detection_requested(kept.to_owned());

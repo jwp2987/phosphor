@@ -938,3 +938,59 @@ fn test_reads_as_prose_skips_buffers_over_the_size_cap() {
     assert!(reads_as_prose(sentence));
     assert!(!reads_as_prose(&long));
 }
+
+#[test]
+fn test_reads_as_command_headed_prose_requests() {
+    for text in [
+        "help me",
+        "help me with this",
+        "watch the logs for errors",
+        "make sure the build passes",
+        "can you fix this",
+        "why is the build slow",
+        "docker vs podman?",
+    ] {
+        assert!(reads_as_command_headed_prose(text), "{text:?}");
+    }
+}
+
+#[test]
+fn test_reads_as_command_headed_prose_leaves_shell_alone() {
+    for text in [
+        "ls -la | grep to",
+        "grep -r for src",
+        "kubectl get pods -n the",
+        "cd my",
+        "ls me",
+        "cd x && if test -f y; then echo z; fi",
+        "ls file?",
+        "rm -rf tmp?",
+        "ls a*?",
+        "grep For file",
+        "cat <<EOF\nto is and\nEOF",
+        "git commit -m \"fix the bug\"",
+        "echo $(the logs for it)",
+        "ls the \\\nlogs",
+        "ls the ./logs",
+        "ls the -la",
+        "npm install fails with EACCES",
+        "install docker and run it",
+        "do it",
+    ] {
+        assert!(!reads_as_command_headed_prose(text), "{text:?}");
+    }
+}
+
+#[test]
+fn test_reads_as_request_to_agent_exempts_one_off_keyword_heads() {
+    for text in [
+        "echo is it ok?",
+        "sudo apt install it",
+        "echo help me",
+        "FOO=1 echo the logs now",
+    ] {
+        assert!(!reads_as_request_to_agent(text), "{text:?}");
+    }
+    assert!(reads_as_request_to_agent("help me"));
+    assert!(reads_as_request_to_agent("FOO=1 watch the logs now"));
+}

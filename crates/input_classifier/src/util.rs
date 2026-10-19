@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use lazy_static::lazy_static;
 use natural_language_detection::{
-    check_if_token_has_shell_syntax, is_ordinary_english_word, is_word, WordDb,
+    WordDb, check_if_token_has_shell_syntax, is_ordinary_english_word, is_word,
 };
 use warp_completer::ParsedTokensSnapshot;
 
@@ -1072,21 +1072,62 @@ const COMPOUND_COMMAND_HEADS: [&str; 10] = [
     "for", "while", "until", "if", "case", "select", "function", "time", "do", "then",
 ];
 
+/// Narrow list of words that open or carry a request to an agent (#834). Deliberately NOT
+/// [`PROSE_FUNCTION_WORDS`]: that list is a veto ("a command line essentially never contains
+/// these"), whereas as a positive signal its prepositions and conjunctions (`to for of with and
+/// or if then is are be can so but my we i sure`) are ordinary arguments (`grep -r for src`,
+/// `ls -la | grep to`, `cd my`).
+const REQUEST_WORDS: [&str; 13] = [
+    "me", "please", "the", "it", "this", "that", "why", "how", "what", "should", "would", "could",
+    "you",
+];
+
+/// Heads of a two-word request (`help me`) where the usual "two words after the head" rule is
+/// relaxed. `ls me` / `cd my` stay shell commands.
+const TWO_WORD_REQUEST_HEADS: [&str; 6] = ["help", "show", "tell", "give", "teach", "remind"];
+
+fn is_request_word(word: &ShellWord) -> bool {
+    !word.quoted && REQUEST_WORDS.contains(&word.text.as_str())
+}
+
+/// A word a command takes as an argument rather than English: a flag (`-x`) or a path (`/`,
+/// `./`, `~`).
+fn is_flag_or_path_word(word: &ShellWord) -> bool {
+    word.text.starts_with('-')
+        || word.text.starts_with('/')
+        || word.text.starts_with("./")
+        || word.text.starts_with("../")
+        || word.text.starts_with('~')
+}
+
 /// Fork-original (#834): true iff the buffer has a command-looking head but reads as a request in
-/// English: a bare member of [`PROSE_FUNCTION_WORDS`] after the head (`help me`, `do
-/// it`, `watch the logs for errors`, `npm install fails with EACCES`, `rm -rf ~/proj and clone
-/// again`), or a trailing `?` after a letter (`docker vs podman?`). The safety gate uses it to
-/// turn a classifier's `Shell` verdict back into `AI` even though the first word is an installed
-/// command, which [`first_token_forces_ai_override`] cannot do.
+/// English, so the safety gate and the Enter-time settle can turn a `Shell` verdict back into
+/// `AI` even though the first word is an installed command (which
+/// [`first_token_forces_ai_override`] cannot do). Precision-first: a miss sends prose to the
+/// shell (`command not found`), a false hit sends a real command to the agent.
 ///
-/// Deliberately narrower than [`reads_as_prose`]: no colon shape (`git commit -m "feat: x"`), no
-/// article or sentence-punctuation rule, no `re-` rule, and compound-command heads
-/// ([`COMPOUND_COMMAND_HEADS`]) are exempt. Quoted words never count, so `echo "to be"` is
-/// unaffected. A buffer with a glued shell operator in its head word, or over
-/// [`MAX_PREFILTER_BYTES`], returns `false`.
+/// Returns `false` outright for anything with shell structure: any of `| & ; < > ( )`, a
+/// backtick, `$(`, a newline or a backslash (pipelines, lists, heredocs, substitutions,
+/// continuations are shell, whatever words they contain), and for compound-command heads
+/// ([`COMPOUND_COMMAND_HEADS`]). Otherwise it fires on either of:
+///
+/// - a [`REQUEST_WORDS`] member (unquoted, lowercase) after the head with at least two words
+///   after the head and a following word that is not a flag or path (`watch the logs for
+///   errors`, `make sure the build passes`, `can you fix this`), or the two-word form `help me`
+///   ([`TWO_WORD_REQUEST_HEADS`] plus `me`);
+/// - a trailing `?` on a line of three or more words, none a flag, whose last word is purely
+///   alphabetic once the `?` is removed (`docker vs podman?`; never a glob like `file?`).
+///
+/// The caller exempts one-off shell keyword heads (`echo`, `sudo`...), which routinely carry
+/// English arguments; [`reads_as_request_to_agent`] bundles that.
 pub fn reads_as_command_headed_prose(buffer_text: &str) -> bool {
     let text = buffer_text.trim();
-    if text.is_empty() || text.len() > MAX_PREFILTER_BYTES || !has_shell_safe_quoting(text) {
+    if text.is_empty()
+        || text.len() > MAX_PREFILTER_BYTES
+        || text.contains(['\n', '\r', '\\', '|', '&', ';', '<', '>', '(', ')', '`'])
+        || text.contains("$(")
+        || !has_shell_safe_quoting(text)
+    {
         return false;
     }
     let words = split_shell_words(text);
@@ -1097,21 +1138,50 @@ pub fn reads_as_command_headed_prose(buffer_text: &str) -> bool {
     let Some(first) = words.get(first_index) else {
         return false;
     };
-    if first.quoted
-        || first.text.contains(SHELL_WORD_TERMINATORS)
-        || COMPOUND_COMMAND_HEADS.contains(&first.text.as_str())
-    {
+    if first.quoted || COMPOUND_COMMAND_HEADS.contains(&first.text.as_str()) {
         return false;
     }
     let remaining = &words[first_index + 1..];
     if remaining.is_empty() {
         return false;
     }
-    if remaining.iter().any(is_function_word) {
+    if remaining.len() == 1
+        && remaining[0].text == "me"
+        && !remaining[0].quoted
+        && TWO_WORD_REQUEST_HEADS.contains(&first.text.as_str())
+    {
         return true;
     }
-    text.strip_suffix('?')
-        .is_some_and(|before| before.ends_with(|c: char| c.is_alphabetic()))
+    if remaining.len() >= 2
+        && remaining
+            .windows(2)
+            .any(|pair| is_request_word(&pair[0]) && !is_flag_or_path_word(&pair[1]))
+    {
+        return true;
+    }
+    if words.len() >= 3
+        && !words.iter().any(|word| word.text.starts_with('-'))
+        && let Some(last) = words.last()
+        && !last.quoted
+        && let Some(stem) = last.text.strip_suffix('?')
+    {
+        return !stem.is_empty()
+            && stem.chars().all(|c| c.is_alphabetic())
+            && !stem.contains(['*', '?', '[', ']']);
+    }
+    false
+}
+
+/// [`reads_as_command_headed_prose`] with the one-off shell keyword exemption applied: a buffer
+/// headed by `echo`, `sudo`... (after any `VAR=x` prefixes) carries English arguments as a matter
+/// of course and is never prose. The one predicate the safety gate and the Enter-time settle
+/// (#833 F6) share.
+pub fn reads_as_request_to_agent(buffer_text: &str) -> bool {
+    let head = buffer_text
+        .split_whitespace()
+        .find(|word| !word.contains('='))
+        .unwrap_or_default();
+    !is_one_off_shell_command_keyword(head) && reads_as_command_headed_prose(buffer_text)
 }
 
 /// Fork-original (#886): true iff `buffer_text` carries no prose evidence anywhere, the head word

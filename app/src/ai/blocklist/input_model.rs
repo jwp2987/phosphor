@@ -854,12 +854,13 @@ impl BlocklistAIInputModel {
     /// Shell; #833 rightly dropped prefix verdicts (a shell-looking prefix of prose is not a
     /// verdict for the prose), which left nothing to correct the inherited type.
     ///
-    /// Only Shell is decided here, and only by rules that are already precision-first for the
-    /// whole text: the user's denylist, [`input_classifier::util::is_unambiguous_shell_command`]
-    /// (whose prose vetoes are the #831 holes), or prose-free shell typeahead
-    /// ([`Self::is_shell_typeahead`]). Anything else keeps
-    /// the live type, as before. A locked or explicitly chosen type is never pending, so it is
-    /// never overridden. Returns `true` if the input type was settled to Shell.
+    /// Shell is decided only by rules that are already precision-first for the whole text: the
+    /// user's denylist, [`input_classifier::util::is_unambiguous_shell_command`] (whose prose
+    /// vetoes are the #831 holes), or prose-free shell typeahead ([`Self::is_shell_typeahead`]).
+    /// The one AI decision is agent-ward: an *inherited Shell* moves to AI when the text reads as
+    /// a request ([`Self::reads_as_request`], #834), never for typeahead, a one-off keyword head
+    /// or shell structure. Anything else keeps the live type, as before. A locked or explicitly
+    /// chosen type is never pending, so it is never overridden. Returns `true` if the input type was settled to Shell.
     pub fn settle_pending_detection_for_submit(
         &mut self,
         input: &ParsedTokensSnapshot,
@@ -874,7 +875,7 @@ impl BlocklistAIInputModel {
         if !is_shell {
             // The agent-ward half of F6: prose pasted or typed fast right after a shell command
             // inherits `Shell` and Enter would run it. Only text that reads as a request in
-            // English moves the inherited type (`help me`, `watch the logs`, `yes please`), and
+            // English moves the inherited type (`help me`, `watch the logs for errors`), and
             // never typeahead, a one-off shell keyword head (`echo a and b`) or an inherited AI.
             if self.input_config.is_shell() && self.reads_as_request(&input.buffer_text) {
                 self.abort_in_progress_detection();
@@ -894,16 +895,11 @@ impl BlocklistAIInputModel {
     /// Whether `buffer_text` is safe to move from an inherited `Shell` to the agent at Enter
     /// without waiting for a verdict: it has no typeahead provenance, does not start with a
     /// one-off shell keyword, and reads as a request
-    /// ([`input_classifier::util::reads_as_command_headed_prose`], #833 F6 / #834).
+    /// ([`input_classifier::util::reads_as_request_to_agent`], #833 F6 / #834).
     fn reads_as_request(&mut self, buffer_text: &str) -> bool {
         self.drop_typeahead_prefix_unless_leading(buffer_text);
-        let head = buffer_text
-            .split_whitespace()
-            .find(|word| !word.contains('='))
-            .unwrap_or_default();
         self.typeahead_prefix.is_none()
-            && !input_classifier::util::is_one_off_shell_command_keyword(head)
-            && input_classifier::util::reads_as_command_headed_prose(buffer_text)
+            && input_classifier::util::reads_as_request_to_agent(buffer_text)
     }
 
     /// Whether the first word of `buffer_text` is in the user's autodetection denylist.
