@@ -1784,17 +1784,6 @@ fn test_evaluated_variable_check_does_not_over_refuse() {
 #[test]
 fn test_container_run_allows_only_an_image_placeholder() {
     for (command, expected) in [
-<<<<<<< ours
-        ("docker run -it {{x}}", "docker run -it main"),
-        ("podman run --rm -it {{x}}", "podman run --rm -it main"),
-        (
-            "docker run -v /src:/src -e A=b {{x}}",
-            "docker run -v /src:/src -e A=b main",
-        ),
-        (
-            "docker run alpine && echo {{x}}",
-            "docker run alpine && echo main",
-=======
         ("docker run -it {{x}}", "command docker run -it main"),
         (
             "podman run --rm -it {{x}}",
@@ -1807,7 +1796,6 @@ fn test_container_run_allows_only_an_image_placeholder() {
         (
             "docker run alpine && echo {{x}}",
             "command docker run alpine && command echo main",
->>>>>>> theirs
         ),
         // The placeholder is the image; what follows is the container's own command.
         ("docker run {{x}} img", "command docker run main img"),
@@ -1821,11 +1809,8 @@ fn test_container_run_allows_only_an_image_placeholder() {
         );
     }
     for command in [
-<<<<<<< ours
         // An option value (`{{x}}` bare after `run` is the image, which is allowed).
         "docker run -e {{x}} img",
-=======
->>>>>>> theirs
         "docker run img {{x}}",
         "docker run -v {{x}}:/mnt img",
         "docker run --privileged{{x}} img",
