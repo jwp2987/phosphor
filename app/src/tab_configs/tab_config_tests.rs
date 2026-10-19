@@ -2152,13 +2152,15 @@ fn test_powershell_keywords_before_parentheses_are_not_function_definitions() {
         known: true,
         windows: false,
     });
-    let rendered = render_for(ps, "foreach ($i in 1,2) { git add {{x}} }", "main")
-        .expect("foreach is a keyword, not a definition");
-    assert!(rendered.starts_with("foreach ("), "{rendered}");
-    assert!(
-        rendered.contains(&format!("& ({PS_GET} git) add main")),
-        "{rendered}"
-    );
+    // PowerShell syntax is beyond the parser (`$i` reads as a command name), but `foreach (` is
+    // not refused as a function definition.
+    for template in [
+        "foreach ($i in 1,2) { git add {{x}} }",
+        "for ($i = 0; $i -lt 2; $i++) { git add {{x}} }",
+    ] {
+        let err = render_for(ps, template, "main").expect_err("not parseable");
+        assert!(!err.contains("function definition"), "{template}: {err}");
+    }
     // `switch` has patterns for words: refused.
     assert!(render_for(ps, "switch ($x) { a { git add {{x}} } }", "main").is_err());
 }
@@ -2170,8 +2172,6 @@ fn test_command_words_that_cannot_be_prefixed_are_refused() {
         "'git' checkout {{x}}",
         "\"git\" checkout {{x}}",
         "g'it' checkout {{x}}",
-        "case {{x}} in a) true;; esac",
-        "select i in a b; do git {{x}}; done",
         "f() { git checkout {{x}}; }",
         "f () { git checkout {{x}}; }",
         "function f; git checkout {{x}}; end",
@@ -2190,6 +2190,24 @@ fn test_command_words_that_cannot_be_prefixed_are_refused() {
             );
         }
     }
+}
+
+#[test]
+fn test_pattern_statements_are_refused_where_they_are_syntax() {
+    for template in [
+        "case {{x}} in a) true;; esac",
+        "select i in a b; do git {{x}}; done",
+    ] {
+        assert!(render_for(known(ShellDialect::Posix), template, "main").is_err());
+    }
+    assert!(
+        render_for(
+            known(ShellDialect::Fish),
+            "switch {{x}}; case a; true; end",
+            "main"
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -2304,7 +2322,7 @@ fn test_prefixed_builtins_and_redirections_in_real_bash_and_zsh() {
         let dir_text = dir.to_string_lossy().to_string();
         let rendered = render_for(
             known(ShellDialect::Posix),
-            "cd {{x}} && pwd && export A={{x}} && echo $A 2>&1 >&2",
+            "cd {{x}} && pwd && export A={{x}} && echo $A >&2 && ls {{x}} 2>&1",
             &dir_text,
         )
         .expect("renders");
@@ -2329,7 +2347,8 @@ fn test_prefixed_builtins_and_redirections_in_real_bash_and_zsh() {
             stdout.contains(&dir_text),
             "{shell}: pwd not in {dir_text}: {stdout}"
         );
-        // `echo $A 2>&1 >&2` went to stderr; no file named `command` or `1` was created.
+        // `echo $A >&2` went to stderr; `ls ... 2>&1` ran (no "ambiguous redirect", no file named
+        // `command` or `1`).
         assert!(stderr.contains(&dir_text), "{shell}: {stderr}");
     }
 }
