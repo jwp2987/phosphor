@@ -1757,3 +1757,45 @@ fn test_evaluated_variable_check_does_not_over_refuse() {
         );
     }
 }
+
+/// #884: `docker run -it {{image}}` is the dev-container use case and renders; a placeholder in
+/// an option or after the image (the container's command) is refused.
+#[test]
+fn test_container_run_allows_only_an_image_placeholder() {
+    for (command, expected) in [
+        ("docker run -it {{image}}", "docker run -it main"),
+        ("podman run --rm -it {{image}}", "podman run --rm -it main"),
+        (
+            "docker run -v /src:/src -e A=b {{image}}",
+            "docker run -v /src:/src -e A=b main",
+        ),
+        (
+            "docker run alpine && echo {{image}}",
+            "docker run alpine && echo main",
+        ),
+        ("echo PS1 {{x}}", "echo PS1 main"),
+        ("set -gx FOO {{x}}", "set -gx FOO main"),
+    ] {
+        assert_eq!(
+            render_single_command(command, "main"),
+            Ok(vec![expected.to_string()]),
+            "{command:?}"
+        );
+    }
+    for command in [
+        "docker run {{x}} img",
+        "docker run img {{x}}",
+        "docker run -v {{x}}:/mnt img",
+        "docker run --privileged{{x}} img",
+        "docker run --mystery {{x}} img",
+        "docker run -it img sh {{x}}",
+        "nerdctl run --entrypoint {{x}} img",
+        "kubectl run pod --image=img -- sh {{x}}",
+        "set -gx PS1 {{x}}",
+    ] {
+        assert!(
+            render_single_command(command, "main").is_err(),
+            "{command:?} must be refused"
+        );
+    }
+}
