@@ -10,7 +10,7 @@ use std::pin::Pin;
 use std::time::SystemTime;
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     hash::Hash,
     rc::Rc,
     sync::Arc,
@@ -245,6 +245,18 @@ pub struct AssetCache {
     /// flood of images from a pty cannot pin unbounded memory (#880).
     in_flight_decodes: Cell<usize>,
     in_flight_decode_bytes: Cell<usize>,
+    /// Decodes waiting for a free slot, oldest first (#910). Bounded by
+    /// `MAX_QUEUED_RAW_DECODE_BYTES` of source bytes.
+    decode_queue: RefCell<VecDeque<QueuedDecode>>,
+    queued_decode_bytes: Cell<usize>,
+}
+
+/// A raw-image decode that is waiting for an in-flight slot.
+struct QueuedDecode {
+    handle: AssetHandle,
+    generation: u64,
+    len: usize,
+    start: Box<dyn FnOnce(&mut AssetCache, &mut ModelContext<AssetCache>)>,
 }
 
 /// The result of [`Asset::decode_in_background`]: a `Send` closure that finishes building the
@@ -301,6 +313,8 @@ impl AssetCache {
     pub const MAX_IN_FLIGHT_RAW_DECODES: usize = 16;
     /// Most input bytes the in-flight raw decodes may hold between them.
     pub const MAX_IN_FLIGHT_RAW_DECODE_BYTES: usize = 512 * 1024 * 1024;
+    /// Most source bytes that may wait in the decode queue. Only beyond this is an image refused.
+    pub const MAX_QUEUED_RAW_DECODE_BYTES: usize = 1024 * 1024 * 1024;
     const MAX_RAW_ASSET_SIZE: usize = 320 * 1000 * 1000; // 320MB
     const MAX_VERSIONED_LOCAL_FILE_ASSET_SIZE: usize = 320 * 1000 * 1000; // 320MB
 
@@ -320,6 +334,8 @@ impl AssetCache {
             next_generation: Cell::new(0),
             in_flight_decodes: Cell::new(0),
             in_flight_decode_bytes: Cell::new(0),
+            decode_queue: RefCell::new(VecDeque::new()),
+            queued_decode_bytes: Cell::new(0),
         }
     }
 
@@ -599,30 +615,62 @@ impl AssetCache {
             asset_type: TypeId::of::<T>(),
         };
         let len = bytes.len();
-        // Past the cap, fail rather than queue more memory (and never decode synchronously).
-        if self.in_flight_decodes.get() >= Self::MAX_IN_FLIGHT_RAW_DECODES
-            || self.in_flight_decode_bytes.get().saturating_add(len)
-                > Self::MAX_IN_FLIGHT_RAW_DECODE_BYTES
+        let generation = self.begin_pending_raw(&handle);
+        if self.can_start_decode(len) && self.decode_queue.borrow().is_empty() {
+            self.start_decode::<T>(handle, generation, bytes, ctx);
+        } else if self.queued_decode_bytes.get().saturating_add(len)
+            <= Self::MAX_QUEUED_RAW_DECODE_BYTES
         {
+            // Past the in-flight cap: wait for a slot (FIFO) rather than fail (#910).
+            self.queued_decode_bytes
+                .set(self.queued_decode_bytes.get() + len);
+            self.decode_queue.borrow_mut().push_back(QueuedDecode {
+                handle: handle.clone(),
+                generation,
+                len,
+                start: Box::new(move |me, ctx| {
+                    me.start_decode::<T>(handle, generation, bytes, ctx);
+                }),
+            });
+        } else {
+            // The queue itself is full: refuse, and say so once.
             log::warn!(
-                "Too many raw image decodes in flight; refusing {:?}",
+                "Image decode queue is full; refusing {:?} ({len} bytes)",
                 handle.source
             );
             self.pending_raw.borrow_mut().remove(&handle);
             self.inner.borrow_mut().insert(
                 handle.clone(),
-                AssetStateInternal::Error(Rc::new(anyhow!("too many image decodes in flight"))),
+                AssetStateInternal::Error(Rc::new(anyhow!("too many image decodes queued"))),
             );
             self.image_cache.evict_image(&handle.source);
             if let AssetSource::Raw { id } = handle.source {
                 ctx.emit(AssetCacheEvent::RawAssetLoaded { id });
             }
-            return;
         }
+    }
+
+    /// Whether a decode of `len` source bytes may start now. A lone oversized decode is always
+    /// allowed so it cannot starve.
+    fn can_start_decode(&self, len: usize) -> bool {
+        let running = self.in_flight_decodes.get();
+        running < Self::MAX_IN_FLIGHT_RAW_DECODES
+            && (running == 0
+                || self.in_flight_decode_bytes.get().saturating_add(len)
+                    <= Self::MAX_IN_FLIGHT_RAW_DECODE_BYTES)
+    }
+
+    fn start_decode<T: Asset>(
+        &mut self,
+        handle: AssetHandle,
+        generation: u64,
+        bytes: Arc<Vec<u8>>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let len = bytes.len();
         self.in_flight_decodes.set(self.in_flight_decodes.get() + 1);
         self.in_flight_decode_bytes
             .set(self.in_flight_decode_bytes.get() + len);
-        let generation = self.begin_pending_raw(&handle);
         ctx.spawn(
             async move { decode_catching_panics::<T>(&bytes) },
             move |me, result, ctx| {
@@ -631,13 +679,50 @@ impl AssetCache {
                 me.in_flight_decode_bytes
                     .set(me.in_flight_decode_bytes.get().saturating_sub(len));
                 me.finish_pending_raw::<T>(handle, generation, result, ctx);
+                me.pump_decode_queue(ctx);
             },
         );
+    }
+
+    /// Starts queued decodes, oldest first, while slots are free.
+    fn pump_decode_queue(&mut self, ctx: &mut ModelContext<Self>) {
+        loop {
+            let next = {
+                let mut queue = self.decode_queue.borrow_mut();
+                match queue.front() {
+                    Some(front) if self.can_start_decode(front.len) => queue.pop_front(),
+                    _ => None,
+                }
+            };
+            let Some(next) = next else { return };
+            self.queued_decode_bytes
+                .set(self.queued_decode_bytes.get().saturating_sub(next.len));
+            // Skip entries cancelled or superseded while they waited.
+            if self.pending_raw.borrow().get(&next.handle) == Some(&next.generation) {
+                (next.start)(self, ctx);
+            }
+        }
+    }
+
+    /// Drops queued decodes for `handle` (removed or superseded).
+    fn purge_queued(&self, handle: &AssetHandle) {
+        let mut queue = self.decode_queue.borrow_mut();
+        let mut freed = 0;
+        queue.retain(|q| {
+            let keep = &q.handle != handle;
+            if !keep {
+                freed += q.len;
+            }
+            keep
+        });
+        self.queued_decode_bytes
+            .set(self.queued_decode_bytes.get().saturating_sub(freed));
     }
 
     /// Marks `handle` as loading under a fresh generation. An existing loaded value is kept until
     /// the new one is published, so re-sending an id does not flicker blank.
     fn begin_pending_raw(&self, handle: &AssetHandle) -> u64 {
+        self.purge_queued(handle);
         let generation = self.next_generation.get() + 1;
         self.next_generation.set(generation);
         self.pending_raw
@@ -699,6 +784,7 @@ impl AssetCache {
             source: AssetSource::Raw { id: id.to_owned() },
             asset_type: TypeId::of::<T>(),
         };
+        self.purge_queued(&handle);
         let was_pending = self.pending_raw.borrow_mut().remove(&handle).is_some();
         let had_state = self.inner.borrow_mut().remove(&handle).is_some();
         self.image_cache.evict_image(&handle.source);

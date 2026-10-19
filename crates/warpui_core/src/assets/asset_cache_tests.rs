@@ -396,61 +396,118 @@ mod async_raw {
         });
     }
 
+    /// Waits until no raw decode is pending, including ones that only start when a slot frees.
+    async fn settle(app: &mut App, cache: &crate::ModelHandle<AssetCache>) {
+        for _ in 0..200 {
+            app.finish_pending_tasks().await;
+            let any = app.read(|ctx| !cache.as_ref(ctx).pending_raw.borrow().is_empty());
+            if !any {
+                return;
+            }
+        }
+        panic!("decodes never settled");
+    }
+
     #[test]
-    fn in_flight_count_cap_fails_extra_without_sync_decode() {
+    fn decodes_past_the_in_flight_cap_are_queued_and_all_load() {
+        App::test((), |mut app| async move {
+            let cache = app.add_model(|_| new_cache());
+            app.update(|ctx| {
+                cache.update(ctx, |cache, mctx| {
+                    for i in 0..40 {
+                        cache.insert_raw_asset_bytes_async::<ImageType>(
+                            format!("q{i}"),
+                            Arc::new(png_bytes(1 + i % 3, 1)),
+                            mctx,
+                        );
+                    }
+                    assert_eq!(
+                        cache.in_flight_decodes.get(),
+                        AssetCache::MAX_IN_FLIGHT_RAW_DECODES
+                    );
+                    assert_eq!(cache.decode_queue.borrow().len(), 40 - 16);
+                    // Queued ones read as loading, not failed.
+                    assert!(matches!(
+                        state(cache, "q39"),
+                        crate::assets::asset_cache::AssetState::Loading { .. }
+                    ));
+                });
+            });
+            settle(&mut app, &cache).await;
+            app.read(|ctx| {
+                let cache = cache.as_ref(ctx);
+                for i in 0..40u32 {
+                    match state(cache, &format!("q{i}")) {
+                        crate::assets::asset_cache::AssetState::Loaded { data } => {
+                            assert_eq!(data.image_size().map(|s| s.x()), Some((1 + i % 3) as i32));
+                        }
+                        _ => panic!("q{i} should be loaded"),
+                    }
+                }
+                assert_eq!(cache.in_flight_decodes.get(), 0);
+                assert_eq!(cache.in_flight_decode_bytes.get(), 0);
+                assert_eq!(cache.queued_decode_bytes.get(), 0);
+                assert!(cache.decode_queue.borrow().is_empty());
+            });
+        });
+    }
+
+    #[test]
+    fn queue_byte_cap_refuses_only_beyond_the_bound() {
         App::test((), |mut app| async move {
             let cache = app.add_model(|_| new_cache());
             app.update(|ctx| {
                 cache.update(ctx, |cache, mctx| {
                     for i in 0..AssetCache::MAX_IN_FLIGHT_RAW_DECODES {
                         cache.insert_raw_asset_bytes_async::<ImageType>(
-                            format!("c{i}"),
+                            format!("f{i}"),
                             Arc::new(png_bytes(1, 1)),
                             mctx,
                         );
                     }
-                    cache.insert_raw_asset_bytes_async::<ImageType>(
-                        "over".into(),
-                        Arc::new(png_bytes(1, 1)),
-                        mctx,
-                    );
-                    assert!(!cache.is_raw_asset_pending::<ImageType>("over"));
-                    assert!(matches!(
-                        state(cache, "over"),
-                        crate::assets::asset_cache::AssetState::FailedToLoad(_)
-                    ));
-                });
-            });
-            app.finish_pending_tasks().await;
-            app.read(|ctx| {
-                let cache = cache.as_ref(ctx);
-                // The admitted ones finished and freed their slots.
-                assert!(matches!(
-                    state(cache, "c0"),
-                    crate::assets::asset_cache::AssetState::Loaded { .. }
-                ));
-                assert_eq!(cache.in_flight_decodes.get(), 0);
-                assert_eq!(cache.in_flight_decode_bytes.get(), 0);
-            });
-        });
-    }
-
-    #[test]
-    fn in_flight_byte_cap_fails_oversized_batch() {
-        App::test((), |mut app| async move {
-            let cache = app.add_model(|_| new_cache());
-            app.update(|ctx| {
-                cache.update(ctx, |cache, mctx| {
-                    // Zeroed allocation is lazy; this is not a real 600 MiB of RAM.
-                    let big = Arc::new(vec![0u8; AssetCache::MAX_IN_FLIGHT_RAW_DECODE_BYTES + 1]);
+                    // Zeroed allocation is lazy; this is not a real gigabyte of RAM.
+                    let big = Arc::new(vec![0u8; AssetCache::MAX_QUEUED_RAW_DECODE_BYTES + 1]);
                     cache.insert_raw_asset_bytes_async::<ImageType>("big".into(), big, mctx);
                     assert!(!cache.is_raw_asset_pending::<ImageType>("big"));
                     assert!(matches!(
                         state(cache, "big"),
                         crate::assets::asset_cache::AssetState::FailedToLoad(_)
                     ));
-                    assert_eq!(cache.in_flight_decodes.get(), 0);
+                    assert_eq!(cache.queued_decode_bytes.get(), 0);
                 });
+            });
+            settle(&mut app, &cache).await;
+        });
+    }
+
+    #[test]
+    fn removing_a_queued_decode_cancels_it() {
+        App::test((), |mut app| async move {
+            let cache = app.add_model(|_| new_cache());
+            app.update(|ctx| {
+                cache.update(ctx, |cache, mctx| {
+                    for i in 0..20 {
+                        cache.insert_raw_asset_bytes_async::<ImageType>(
+                            format!("x{i}"),
+                            Arc::new(png_bytes(1, 1)),
+                            mctx,
+                        );
+                    }
+                    assert!(cache.remove_raw_asset::<ImageType>("x19"));
+                    assert_eq!(cache.decode_queue.borrow().len(), 3);
+                });
+            });
+            settle(&mut app, &cache).await;
+            app.read(|ctx| {
+                let cache = cache.as_ref(ctx);
+                assert!(matches!(
+                    state(cache, "x18"),
+                    crate::assets::asset_cache::AssetState::Loaded { .. }
+                ));
+                assert!(!matches!(
+                    state(cache, "x19"),
+                    crate::assets::asset_cache::AssetState::Loaded { .. }
+                ));
             });
         });
     }
