@@ -676,3 +676,102 @@ fn test_event_propagation() {
         });
     })
 }
+
+/// A never-painted element whose `dispatch_event` returns a fixed result.
+struct FixedDispatchElement {
+    handles: bool,
+}
+
+impl Element for FixedDispatchElement {
+    fn layout(
+        &mut self,
+        constraint: SizeConstraint,
+        _: &mut LayoutContext,
+        _: &AppContext,
+    ) -> Vector2F {
+        constraint.max
+    }
+
+    fn after_layout(&mut self, _: &mut AfterLayoutContext, _: &AppContext) {}
+
+    fn paint(&mut self, _: Vector2F, _: &mut PaintContext, _: &AppContext) {}
+
+    fn size(&self) -> Option<Vector2F> {
+        None
+    }
+
+    fn origin(&self) -> Option<Point> {
+        None
+    }
+
+    fn dispatch_event(
+        &mut self,
+        _: &DispatchedEvent,
+        _: &mut EventContext,
+        _: &AppContext,
+    ) -> bool {
+        self.handles
+    }
+}
+
+fn key_down_event() -> Event {
+    Event::KeyDown {
+        keystroke: Keystroke::parse("a").expect("valid keystroke"),
+        chars: "a".to_owned(),
+        details: Default::default(),
+        is_composing: false,
+    }
+}
+
+/// #841: an unpainted `EventHandler` must still let its child handle the event.
+#[test]
+fn test_unpainted_handler_dispatches_to_child() {
+    App::test((), |mut app| async move {
+        let (window_id, _) = app.add_window(WindowStyle::NotStealFocus, |_| View::default());
+        let mut presenter = Presenter::new(window_id);
+        app.update(move |ctx| {
+            let mut element = EventHandler::new(Box::new(FixedDispatchElement { handles: true }))
+                .on_keydown(|_, _, _| DispatchEventResult::PropagateToParent);
+            let mut event_ctx = presenter.mock_event_context(ctx.font_cache());
+            let handled = element.dispatch_event(
+                &DispatchedEvent::from(key_down_event()),
+                &mut event_ctx,
+                ctx,
+            );
+            assert!(handled, "a handling child must win even when unpainted");
+        });
+    })
+}
+
+/// #841: an unpainted `EventHandler` with no handling child returns false and
+/// must not panic, for key and mouse events alike.
+#[test]
+fn test_unpainted_handler_without_handling_child_returns_false() {
+    App::test((), |mut app| async move {
+        let (window_id, _) = app.add_window(WindowStyle::NotStealFocus, |_| View::default());
+        let mut presenter = Presenter::new(window_id);
+        app.update(move |ctx| {
+            let mut element = EventHandler::new(Box::new(FixedDispatchElement { handles: false }))
+                .on_keydown(|_, _, _| DispatchEventResult::StopPropagation)
+                .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation);
+            let mut event_ctx = presenter.mock_event_context(ctx.font_cache());
+            let key = element.dispatch_event(
+                &DispatchedEvent::from(key_down_event()),
+                &mut event_ctx,
+                ctx,
+            );
+            assert!(!key);
+            let click = element.dispatch_event(
+                &DispatchedEvent::from(Event::LeftMouseDown {
+                    position: vec2f(1., 1.),
+                    modifiers: Default::default(),
+                    click_count: 1,
+                    is_first_mouse: false,
+                }),
+                &mut event_ctx,
+                ctx,
+            );
+            assert!(!click);
+        });
+    })
+}

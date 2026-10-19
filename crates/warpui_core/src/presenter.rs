@@ -245,8 +245,10 @@ pub struct EventContext<'a> {
     // be fired before the first scene has been rendered.
     scene: Option<Rc<Scene>>,
     rendered_views: &'a mut EntityIdMap<Box<dyn Element>>,
-    /// The views the last layout pass visited. Empty before the first layout.
-    mounted_views: &'a EntityIdSet,
+    window_id: WindowId,
+    /// The window's focused view and its ancestors (root first); empty if
+    /// nothing is focused. Used only for diagnostics.
+    focus_chain: Vec<EntityId>,
     actions: Vec<DispatchedAction>,
     pub font_cache: &'a FontCache,
     pub text_layout_cache: &'a LayoutCache,
@@ -653,7 +655,8 @@ impl Presenter {
         EventContext {
             scene: self.scene.clone(),
             rendered_views: &mut self.rendered_views,
-            mounted_views: &self.mounted_views,
+            window_id: self.window_id,
+            focus_chain: Vec::new(),
             position_cache: &self.position_cache,
             actions: Default::default(),
             font_cache,
@@ -678,7 +681,12 @@ impl Presenter {
         // zoom factor.
         let event = event.scale_down(app.zoom_factor());
         let window_id = self.window_id;
+        let focus_chain = app
+            .focused_view_id(window_id)
+            .map(|focused| self.ancestors(focused))
+            .unwrap_or_default();
         let mut event_ctx = self.create_event_context(app.font_cache());
+        event_ctx.focus_chain = focus_chain;
         let handled = app.root_view_id(window_id).is_some_and(|root_view_id| {
             event_ctx.dispatch_event_on_view(root_view_id, &DispatchedEvent::from(event), app)
         });
@@ -852,20 +860,26 @@ impl PaintContext<'_> {
 }
 
 impl EventContext<'_> {
+    /// The view currently being dispatched to, its `ui_name`, and whether it is
+    /// the window's focused view or an ancestor of it. Diagnostics only.
+    pub(crate) fn current_view_focus_info(
+        &self,
+        app: &AppContext,
+    ) -> Option<(EntityId, String, bool)> {
+        let view_id = *self.view_stack.last()?;
+        let name = app
+            .view_name(self.window_id, view_id)
+            .unwrap_or("<unknown>")
+            .to_owned();
+        Some((view_id, name, self.focus_chain.contains(&view_id)))
+    }
+
     pub fn dispatch_event_on_view(
         &mut self,
         view_id: EntityId,
         event: &DispatchedEvent,
         app: &AppContext,
     ) -> bool {
-        // A view the last layout pass did not visit was never laid out or painted
-        // (or not since it was re-rendered), so its elements have no origin or
-        // z-index to hit-test against and cannot handle the event; dispatching to
-        // it only logs "never painted" for every key press (#841). Before the
-        // first layout nothing is mounted, so there is nothing to compare against.
-        if !self.mounted_views.is_empty() && !self.mounted_views.contains(&view_id) {
-            return false;
-        }
         match self.rendered_views.remove(&view_id) { Some(mut element) => {
             self.view_stack.push(view_id);
             let handled = element.dispatch_event(event, self, app);
