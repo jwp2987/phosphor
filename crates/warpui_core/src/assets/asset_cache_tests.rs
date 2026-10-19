@@ -167,6 +167,7 @@ fn evicts_oldest_versioned_local_file_assets_over_limit() {
 
 mod async_raw {
     use super::*;
+    use crate::assets::asset_cache::Asset;
     use crate::image_cache::{DecodedImage, ImageCache, ImageType};
     use crate::r#async::executor::{Background, Foreground};
     use crate::App;
