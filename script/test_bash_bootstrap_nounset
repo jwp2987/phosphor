@@ -264,6 +264,45 @@ def scenario_set_u_in_rcfile():
         sh.close()
 
 
+def scenario_set_e_trailing_failure_in_rcfile():
+    print("set -e in ~/.bash_profile, whose last command returns non-zero")
+    # #846: `[ -f ~/.fzf.bash ] && source ~/.fzf.bash` as the last line makes
+    # the rcfile, and so the bootstrap's `source`, return 1. Natively that is
+    # exempt from errexit; under the bootstrap it killed the shell.
+    sh = Shell(profile="set -e\n[ -f /nonexistent-$$ ] && source /nonexistent-$$")
+    try:
+        check(sh.wait_bootstrapped(), "bootstraps", sh)
+        check(not sh.dead, "the shell did not exit", sh)
+        check(sh.run("echo rcfail$((3+4))", r"rcfail7"), "a command finishes (Precmd)", sh)
+        check(sh.run('[[ $- == *e* ]] && echo rcfail-e-$((1+8))-on || echo rcfail-e-$((1+8))-off', r"rcfail-e-9-o"),
+              "option probe finishes", sh)
+        check(has(sh, r"rcfail-e-9-on"), "the rcfile's errexit is still in force", sh)
+    finally:
+        sh.close()
+
+
+def scenario_set_e_failure_in_rcfile_still_exits():
+    print("set -e in ~/.bash_profile: a failing command in the file still exits, as natively")
+    sh = Shell(profile="set -e\nfalse\necho not-reached")
+    try:
+        sh.pump(15, lambda: sh.dead)
+        check(sh.dead, "the shell exits", sh)
+        check("Bootstrapped" not in sh.hooks(), "it never bootstraps", sh)
+    finally:
+        sh.close()
+
+
+def scenario_set_e_nested_source_failure_in_rcfile_still_exits():
+    print("set -e in ~/.bash_profile: a sourced file that returns non-zero still exits, as natively")
+    sh = Shell(profile="set -e\nsource <(echo '[ -f /nonexistent-$$ ] && true')\necho not-reached")
+    try:
+        sh.pump(15, lambda: sh.dead)
+        check(sh.dead, "the shell exits", sh)
+        check("Bootstrapped" not in sh.hooks(), "it never bootstraps", sh)
+    finally:
+        sh.close()
+
+
 NOISE = r"unbound variable|cannot overwrite existing file|syntax error"
 
 
@@ -274,6 +313,12 @@ def scenario_set_e_at_prompt():
         check(sh.wait_bootstrapped(), "bootstraps", sh)
         check(sh.run("set -e"), "the `set -e` block finishes (Precmd)", sh)
         check(sh.run("echo e$((1+1))", r"e2"), "the next command finishes (Precmd)", sh)
+        # #837: bash-preexec's dispatchers re-set `$?` with a bare `return N`,
+        # which tripped errexit inside the hook after any command whose
+        # non-zero status errexit itself exempts (`false && true`).
+        check(sh.run("false && true"), "`false && true` finishes (Precmd)", sh)
+        check(sh.run("echo f$((2+2))", r"f4"), "the next command finishes (Precmd)", sh)
+        check(not sh.dead, "the shell survives a non-zero status that errexit exempts", sh)
         # Two generators: the second one's warp_preexec finds the first one's
         # PID already finished, and the kill's non-zero status used to escape
         # warp_preexec and exit the shell.
@@ -346,6 +391,9 @@ def main():
     scenario_set_u_at_prompt()
     scenario_set_u_in_rcfile()
     scenario_set_e_at_prompt()
+    scenario_set_e_trailing_failure_in_rcfile()
+    scenario_set_e_failure_in_rcfile_still_exits()
+    scenario_set_e_nested_source_failure_in_rcfile_still_exits()
     scenario_noclobber()
     scenario_options_untouched_without_set_u()
     if failures:

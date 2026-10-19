@@ -1333,8 +1333,26 @@ esac
         # The rcfiles run under the options the shell started with, and whatever
         # they leave turned on is what the user gets back at the end (#825).
         eval "$__warp_bootstrap_opts_restore"
+        # Phosphor (#846): natively bash runs a login rcfile without errexit
+        # applying to the status of the file itself, so `set -e` followed by a
+        # last line like `[ -f ~/.fzf.bash ] && source ~/.fzf.bash` (status 1)
+        # does not kill the shell. Here the `source` is a plain command of this
+        # script and would. So each `source` below drops errexit as it returns
+        # (the RETURN trap, which fires before bash checks the status) and
+        # __warp_rc_done switches it back on. `set -e; false` inside the file
+        # still exits, as natively. Only the outermost `source` returns at the
+        # depth recorded here, so a file the rcfile sources keeps errexit.
+        __warp_rc_return_trap='if [[ ${#BASH_SOURCE[@]} -le $__warp_rc_depth ]]; then case $- in *e*) __warp_rc_errexit=1; set +e;; esac; fi'
+        __warp_rc_done () {
+            trap - RETURN
+            if [[ -n ${__warp_rc_errexit:-} ]]; then
+                unset __warp_rc_errexit
+                set -e
+            fi
+        }
+        __warp_rc_depth=${#BASH_SOURCE[@]}
         if [[ -e /etc/profile ]]; then
-            source /etc/profile;
+            trap "$__warp_rc_return_trap" RETURN; source /etc/profile; __warp_rc_done
         elif [[ -e /etc/bash.bashrc ]]; then
             # /etc/bash.bashrc is only included in the startup sequence if bash is
             # compiled with -DSYS_BASHRC. This is disabled in bash by default but
@@ -1342,7 +1360,7 @@ esac
             # to tell if it's enabled or not, so just check for the file if there is
             # no /etc/profile and source it if it exists.
             # Note that a lot of the time, /etc/profile sources /etc/bash.bashrc.
-            source /etc/bash.bashrc
+            trap "$__warp_rc_return_trap" RETURN; source /etc/bash.bashrc; __warp_rc_done
         fi
 
         # Quoted, matching the pin (`42effe840:...:1207-1212`). Unquoted,
@@ -1355,11 +1373,11 @@ esac
         # invisible. Command substitution is NOT re-run on the expansion result,
         # so a `$(...)` in $HOME is inert; wrong-file execution is the real risk.
         if [[ -e "$HOME/.bash_profile" ]]; then
-            source "$HOME/.bash_profile"
+            trap "$__warp_rc_return_trap" RETURN; source "$HOME/.bash_profile"; __warp_rc_done
         elif [[ -e "$HOME/.bash_login" ]]; then
-            source "$HOME/.bash_login"
+            trap "$__warp_rc_return_trap" RETURN; source "$HOME/.bash_login"; __warp_rc_done
         elif [[ -e "$HOME/.profile" ]]; then
-            source "$HOME/.profile"
+            trap "$__warp_rc_return_trap" RETURN; source "$HOME/.profile"; __warp_rc_done
         fi
         __warp_relax_opts __warp_bootstrap_opts_restore
 

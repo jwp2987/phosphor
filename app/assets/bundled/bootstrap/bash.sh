@@ -159,7 +159,7 @@
 
      # This function is installed as part of the PROMPT_COMMAND.
      # It will invoke any functions defined in the precmd_functions array.
-     __bp_precmd_invoke_cmd() {
+     __bp_precmd_invoke_cmd_impl() {
          # Save the returned value from our last command, and from each process in
          # its pipeline. Note: this MUST be the first thing done in this function.
          # BP_PIPESTATUS may be unused, ignore
@@ -190,6 +190,14 @@
 
          __bp_set_ret_value "$__bp_last_ret_value"
      }
+ #### Phosphor (#837): the dispatchers re-set `$?` with a bare `return N`
+ #### (__bp_set_ret_value), which under `set -e` exits the shell after any
+ #### command that left a non-zero status errexit itself exempts (`false && true`).
+ #### Run them with errexit/nounset/pipefail relaxed, like every other hook. The
+#### precmd dispatcher ends by handing `$?` back, so its own status is the last
+#### command's; bash restores `$?` itself for the user's next line, so report
+#### success rather than let errexit see that status once the option is restored.
+     function __bp_precmd_invoke_cmd { __warp_run_relaxed __bp_precmd_invoke_cmd_impl "$@" || :; }
 
  #### Phosphor (#807): put __bp_precmd_invoke_cmd back in front of whatever the
  #### user assigned to PROMPT_COMMAND, keeping their command, and run the precmd
@@ -251,7 +259,7 @@
      # interactive prompt display.  Its purpose is to inspect the current
      # environment to attempt to detect if the current command is being invoked
      # interactively, and invoke 'preexec' if so.
-     __bp_preexec_invoke_exec() {
+     __bp_preexec_invoke_exec_impl() {
  #### Phosphor (#807): the exit status of the command that ran before this trap,
  #### saved before anything else can clobber it; __bp_reinstall_prompt_command
  #### reports it for the prompt cycle that lost our precmd.
@@ -365,6 +373,8 @@
          # Run `shopt -s extdebug` to enable
          __bp_set_ret_value "$preexec_ret_value" "$__bp_last_argument_prev_command"
      }
+ #### Phosphor (#837): see __bp_precmd_invoke_cmd.
+     function __bp_preexec_invoke_exec { __warp_run_relaxed __bp_preexec_invoke_exec_impl "$@"; }
 
      __bp_install() {
          # Exit if we already have this installed.
