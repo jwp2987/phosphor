@@ -314,6 +314,57 @@ def scenario_set_e_nested_source_failure_in_rcfile_still_exits():
         sh.close()
 
 
+def scenario_set_e_own_return_trap_trailing_failure():
+    print("set -e and its own RETURN trap in ~/.bash_profile, whose last command returns non-zero")
+    # #896: the rcfile's `trap ... RETURN` replaced the bootstrap's errexit-relaxing
+    # RETURN trap, so the trailing failure killed the shell at bootstrap.
+    sh = Shell(profile="set -e\ntrap 'echo UTRET-$((3+4))' RETURN\n[ -f /nonexistent-$$ ] && true")
+    try:
+        check(sh.wait_bootstrapped(), "bootstraps", sh)
+        check(not sh.dead, "the shell did not exit", sh)
+        check(has(sh, r"UTRET-7"), "the rcfile's own RETURN trap still ran", sh)
+        check(sh.run("echo ownret$((3+4))", r"ownret7"), "a command finishes (Precmd)", sh)
+        check(sh.run('[[ $- == *e* ]] && echo ownret-e-$((1+8))-on || echo ownret-e-$((1+8))-off', r"ownret-e-9-o"),
+              "option probe finishes", sh)
+        check(has(sh, r"ownret-e-9-on"), "the rcfile's errexit is still in force", sh)
+        check(sh.run("trap -p RETURN; echo trapdone$((1+1))", r"trapdone2"), "trap probe finishes", sh)
+        check(not has(sh, r"UTRET-7[\s\S]*trap -- .*RETURN"), "no RETURN trap is left installed", sh)
+    finally:
+        sh.close()
+
+
+def scenario_set_e_own_return_trap_failure_still_exits():
+    print("set -e and its own RETURN trap in ~/.bash_profile: a failing command still exits, as natively")
+    sh = Shell(profile="set -e\ntrap 'echo UTRET' RETURN\nfalse\necho not-reached")
+    try:
+        sh.pump(15, lambda: sh.dead)
+        check(sh.dead, "the shell exits", sh)
+        check("Bootstrapped" not in sh.hooks(), "it never bootstraps", sh)
+        check(not has(sh, r"not-reached"), "the command after the failure did not run", sh)
+    finally:
+        sh.close()
+
+
+def scenario_return_trap_in_rcfile_function():
+    print("a function in ~/.bash_profile that sets its own RETURN trap runs it at its own return, not early")
+    # The common cleanup idiom. The trap wrapper must not run the user's command
+    # early (when the wrapper itself returns) or twice.
+    sh = Shell(profile="f() { trap 'echo FNRET-$((6+1))' RETURN; echo in-f; }\nf\necho after-f\nset -e\n[ -f /nonexistent-$$ ] && true")
+    try:
+        check(sh.wait_bootstrapped(), "bootstraps", sh)
+        check(not sh.dead, "the shell did not exit", sh)
+        out = sh.text()
+        # A RETURN trap is global and persists, so it fires once more when the
+        # `source`d file itself returns: bash does exactly that for `source f`
+        # (a native login shell reads the file without a RETURN, hence once).
+        # What matters is that it fired at f's return, not early (inside the
+        # trap wrapper) and not a third time.
+        check(re.search(r"in-f\s+FNRET-7\s+after-f", out) is not None, "it ran at f's return, between in-f and after-f", sh)
+        check(out.count("FNRET-7") == 2, f"FNRET ran at f's return and the source's return only (ran {out.count('FNRET-7')})", sh)
+    finally:
+        sh.close()
+
+
 NOISE = r"unbound variable|cannot overwrite existing file|syntax error"
 
 
@@ -426,6 +477,9 @@ def main():
     scenario_set_e_trailing_failure_in_rcfile()
     scenario_set_e_failure_in_rcfile_still_exits()
     scenario_set_e_nested_source_failure_in_rcfile_still_exits()
+    scenario_set_e_own_return_trap_trailing_failure()
+    scenario_set_e_own_return_trap_failure_still_exits()
+    scenario_return_trap_in_rcfile_function()
     scenario_noclobber()
     scenario_options_untouched_without_set_u()
     if failures:

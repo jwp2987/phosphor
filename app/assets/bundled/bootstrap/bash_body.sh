@@ -1355,9 +1355,38 @@ esac
         # __warp_rc_done switches it back on. `set -e; false` inside the file
         # still exits, as natively. Only the outermost `source` returns at the
         # depth recorded here, so a file the rcfile sources keeps errexit.
+        #
+        # #896: a RETURN trap is global, so an rcfile that installs its own
+        # (`trap '...' RETURN`) replaced this one and the shell died anyway. While
+        # the rcfiles run, `trap` is therefore a function that composes a RETURN
+        # trap with ours (the user's command first, then ours) instead of
+        # replacing it. Any other trap call passes through to the builtin.
+        # `set -e` semantics inside the file are untouched: nothing here runs the
+        # file under `||` or `&&`, which would silence errexit inside it too.
+        # A RETURN trap installed inside a function also fires when that function
+        # returns, which would run the user's command early, hence the FUNCNAME test.
         __warp_rc_return_trap='if [[ ${#BASH_SOURCE[@]} -le $__warp_rc_depth ]]; then case $- in *e*) __warp_rc_errexit=1; set +e;; esac; fi'
+        trap () {
+            local __warp_t_cmd __warp_t_sig __warp_t_rest=() __warp_t_ret=
+            if [[ ${1-} == -- ]]; then shift; elif [[ ${1-} == -* && ${1-} != - ]]; then builtin trap "$@"; return; fi
+            if [[ $# -lt 2 ]]; then builtin trap "$@"; return; fi
+            __warp_t_cmd=$1; shift
+            for __warp_t_sig in "$@"; do
+                case $__warp_t_sig in
+                    RETURN|return|SIGRETURN) __warp_t_ret=1 ;;
+                    *) __warp_t_rest+=("$__warp_t_sig") ;;
+                esac
+            done
+            if [[ -z $__warp_t_ret ]]; then builtin trap -- "$__warp_t_cmd" "$@"; return; fi
+            if [[ ${#__warp_t_rest[@]} -gt 0 ]]; then builtin trap -- "$__warp_t_cmd" "${__warp_t_rest[@]}" || return; fi
+            if [[ $__warp_t_cmd == - ]]; then __warp_t_cmd=; fi
+            builtin trap -- 'if [[ ${FUNCNAME[0]-} != trap ]]; then
+'"$__warp_t_cmd"'
+'"$__warp_rc_return_trap"'
+fi' RETURN
+        }
         __warp_rc_done () {
-            trap - RETURN
+            builtin trap - RETURN
             if [[ -n ${__warp_rc_errexit:-} ]]; then
                 unset __warp_rc_errexit
                 set -e
@@ -1365,7 +1394,7 @@ esac
         }
         __warp_rc_depth=${#BASH_SOURCE[@]}
         if [[ -e /etc/profile ]]; then
-            trap "$__warp_rc_return_trap" RETURN; source /etc/profile; __warp_rc_done
+            builtin trap "$__warp_rc_return_trap" RETURN; source /etc/profile; __warp_rc_done
         elif [[ -e /etc/bash.bashrc ]]; then
             # /etc/bash.bashrc is only included in the startup sequence if bash is
             # compiled with -DSYS_BASHRC. This is disabled in bash by default but
@@ -1373,7 +1402,7 @@ esac
             # to tell if it's enabled or not, so just check for the file if there is
             # no /etc/profile and source it if it exists.
             # Note that a lot of the time, /etc/profile sources /etc/bash.bashrc.
-            trap "$__warp_rc_return_trap" RETURN; source /etc/bash.bashrc; __warp_rc_done
+            builtin trap "$__warp_rc_return_trap" RETURN; source /etc/bash.bashrc; __warp_rc_done
         fi
 
         # Quoted, matching the pin (`42effe840:...:1207-1212`). Unquoted,
@@ -1386,12 +1415,13 @@ esac
         # invisible. Command substitution is NOT re-run on the expansion result,
         # so a `$(...)` in $HOME is inert; wrong-file execution is the real risk.
         if [[ -e "$HOME/.bash_profile" ]]; then
-            trap "$__warp_rc_return_trap" RETURN; source "$HOME/.bash_profile"; __warp_rc_done
+            builtin trap "$__warp_rc_return_trap" RETURN; source "$HOME/.bash_profile"; __warp_rc_done
         elif [[ -e "$HOME/.bash_login" ]]; then
-            trap "$__warp_rc_return_trap" RETURN; source "$HOME/.bash_login"; __warp_rc_done
+            builtin trap "$__warp_rc_return_trap" RETURN; source "$HOME/.bash_login"; __warp_rc_done
         elif [[ -e "$HOME/.profile" ]]; then
-            trap "$__warp_rc_return_trap" RETURN; source "$HOME/.profile"; __warp_rc_done
+            builtin trap "$__warp_rc_return_trap" RETURN; source "$HOME/.profile"; __warp_rc_done
         fi
+        unset -f trap __warp_rc_done
         __warp_relax_opts __warp_bootstrap_opts_restore
 
         rcfiles_end_time="$(LC_ALL="C"; echo $EPOCHREALTIME)"
