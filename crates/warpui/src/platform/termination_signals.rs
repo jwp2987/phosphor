@@ -441,6 +441,7 @@ pub(crate) fn exit_after_signal_shutdown_for(initiating_signal: Option<i32>) {
 /// on every platform, including Linux; the mac glue that calls it
 /// (`platform::mac::delegate`) stays `cfg(target_os = "macos")`.
 #[derive(Debug)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) struct TerminationAttribution {
     state: parking_lot::Mutex<AttributionState>,
 }
@@ -450,6 +451,7 @@ pub(crate) struct TerminationAttribution {
 // static uses for "no request has run yet" -- `TerminationAttribution::new`
 // always starts it at 1 instead.
 #[derive(Debug)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 struct AttributionState {
     /// The generation to hand out to the next request that does not find one
     /// already in flight. Monotonically increasing; never reused, so a
@@ -462,11 +464,13 @@ struct AttributionState {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 struct InFlightRequest {
     generation: u64,
     signal: Option<i32>,
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 impl TerminationAttribution {
     pub(crate) const fn new() -> Self {
         Self {
