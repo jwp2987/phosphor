@@ -1875,9 +1875,9 @@ fn render_glyph_svg(
 
 /// Logs a render problem for an image once, not on every frame (#910). The set is bounded so
 /// a flood of bad images cannot grow it without limit.
-fn warn_image_once(image_id: u32, kind: bool, message: &str) {
+fn warn_image_once(image_id: u32, kind: u8, message: &str) {
     use std::sync::Mutex;
-    static WARNED: Mutex<Option<std::collections::HashSet<(u32, bool)>>> = Mutex::new(None);
+    static WARNED: Mutex<Option<std::collections::HashSet<(u32, u8)>>> = Mutex::new(None);
     let mut guard = WARNED.lock().unwrap_or_else(|e| e.into_inner());
     let set = guard.get_or_insert_with(Default::default);
     if set.len() >= 4096 {
@@ -1922,7 +1922,12 @@ fn render_image(
     let image = match deferred {
         DeferredImage::State(AssetState::Loaded { data }) => data,
         // Still decoding off-thread (#880); the view repaints when it finishes.
-        DeferredImage::State(AssetState::Evicted | AssetState::Loading { .. }) => {
+        DeferredImage::State(AssetState::Loading { .. }) => {
+            return;
+        }
+        // Dropped to stay within the raw-image memory budget; say so once, not blank silently.
+        DeferredImage::State(AssetState::Evicted) => {
+            warn_image_once(image_id, 2, "Image was evicted from the image cache");
             return;
         }
         DeferredImage::Pending { stale } => {
@@ -1950,7 +1955,7 @@ fn render_image(
             return;
         }
         DeferredImage::State(_) => {
-            warn_image_once(image_id, false, "Could not load image to render");
+            warn_image_once(image_id, 0, "Could not load image to render");
             return;
         }
     };
@@ -1968,7 +1973,7 @@ fn render_image(
             );
         }
         Image::Animated(_) => {
-            warn_image_once(image_id, true, "Image should be static");
+            warn_image_once(image_id, 1, "Image should be static");
         }
     }
 }

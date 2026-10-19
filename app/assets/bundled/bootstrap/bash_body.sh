@@ -871,6 +871,17 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         # app/src/terminal/model/ansi/mod.rs).
         #
         # We also use 'command sed' to ensure that we aren't accidentally executing an alias or function named 'sed'
+        #
+        # Phosphor (#923): a value made only of characters that need no escaping (letters, digits,
+        # space and . _ / @ + : , = % ~ ( ) -) is returned as is, with no sed/tr fork. The Bootstrapped
+        # hook escapes a dozen such values on every tab open, and each used to cost a subshell and
+        # two processes. The set is conservative: anything else (quotes, backslashes, control
+        # characters, newlines, bytes that are not valid text) takes the sed path below unchanged.
+        local __warp_ej="$*"
+        case $__warp_ej in
+            *[![:alnum:]\ ._/@+:,=%~\(\)-]*) ;;
+            *) printf '%s' "$__warp_ej"; return ;;
+        esac
         LC_ALL=C command -p sed -E 's/(["\\])/\\\1/g; s/'$'\b''/\\b/g; s/'$'\t''/\\t/g; s/'$'\f''/\\f/g; s/'$'\r''/\\r/g;'"${WARP_ESCAPE_JSON_CTRL_SED-} "'$!s/$/\\n/' <<<"$*" | LC_ALL=C command -p tr -d '\n'
     }
 

@@ -216,7 +216,7 @@ fn exit_after_a_heredoc_is_still_seen() {
 
 #[test]
 fn fish_never_needs_a_subshell() {
-    assert!(!needs_subshell(ShellType::Fish, "exit 1"));
+    assert!(needs_subshell(ShellType::Fish, "exit 1"));
     assert!(wrap_command(Some(ShellType::Fish), "exit 1").starts_with(" begin;"));
 }
 
@@ -419,5 +419,36 @@ fn every_bash_zsh_wrapper_form_carries_the_history_marker() {
 fn fish_wrapper_starts_with_a_space_so_fish_keeps_it_out_of_history() {
     for command in ["ls", "echo a\necho b"] {
         assert!(wrap_command(Some(ShellType::Fish), command).starts_with(" begin;"));
+    }
+}
+
+#[test]
+fn fish_commands_that_end_the_shell_run_in_a_child_fish() {
+    for command in [
+        "exit 3",
+        "exec ls /tmp",
+        "return 2",
+        "false; and exit",
+        "true; or exit 1",
+        "echo a | exit 2",
+        "eval 'exit 3'",
+        "exec fish -c 'echo hi'",
+    ] {
+        assert!(needs_subshell(ShellType::Fish, command), "{command}");
+        let wrapped = wrap_command(Some(ShellType::Fish), command);
+        assert!(wrapped.starts_with(" begin; set -lx PAGER 'cat'"), "{wrapped}");
+        assert!(
+            wrapped.contains("(status fish-path); $__phosphor_ap_fish -c '"),
+            "{wrapped}"
+        );
+        assert!(wrapped.ends_with("'; end"), "{wrapped}");
+    }
+    // Quotes and backslashes survive the single-quoted -c argument.
+    let wrapped = wrap_command(Some(ShellType::Fish), "exit 3 # it's \\ ok");
+    assert!(wrapped.contains("-c 'exit 3 # it\\'s \\\\ ok'"), "{wrapped}");
+    // Everything else keeps running in the user's own fish.
+    for command in ["cd /tmp", "set -gx FOO bar", "source ~/env.fish", "echo exit", "git log"] {
+        assert!(!needs_subshell(ShellType::Fish, command), "{command}");
+        assert!(!wrap_command(Some(ShellType::Fish), command).contains("fish-path"));
     }
 }

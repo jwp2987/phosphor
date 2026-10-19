@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use core::fmt;
 use itertools::Itertools;
 use std::{
@@ -15,14 +15,14 @@ use std::{
 use strum_macros::EnumIter;
 
 use crate::{
+    Entity, SingletonEntity,
     assets::asset_cache::{Asset, AssetCache, AssetSource, AssetState, PreparedAsset},
     util::parse_u32,
-    Entity, SingletonEntity,
 };
 use image::{
+    AnimationDecoder, DynamicImage, Frame, ImageBuffer, ImageDecoder, ImageFormat,
     codecs::{gif::GifDecoder, webp::WebPDecoder},
     imageops::FilterType,
-    AnimationDecoder, DynamicImage, Frame, ImageBuffer, ImageDecoder, ImageFormat,
 };
 use parking_lot::RwLock;
 use pathfinder_geometry::vector::Vector2I;
@@ -327,6 +327,12 @@ fn decode_limits() -> image::Limits {
     limits
 }
 
+/// The longest side a raw (pty / inline) raster image is kept at once decoded. Anything larger is
+/// downscaled at decode time: a placement can never usefully show more pixels than a screen has,
+/// and an 8000x8000 RGBA image is 256 MB, so a few of them blew the 320 MB raw-asset budget and
+/// evicted every other image (#928).
+pub const MAX_RAW_IMAGE_SIDE: u32 = 4096;
+
 /// Estimates the memory an SVG costs the asset cache: the RGBA bytes of one rasterisation at its
 /// intrinsic size. The parsed tree has no cheap exact size, but without an estimate SVGs counted
 /// as zero bytes and bypassed the cache budget entirely (#880).
@@ -434,6 +440,28 @@ impl DecodedImage {
         }
     }
 
+    /// Like [`Self::decode`], but a still raster image whose longest side exceeds
+    /// [`MAX_RAW_IMAGE_SIDE`] is downscaled (aspect ratio kept) before it is retained.
+    pub fn decode_bounded(data: &[u8]) -> anyhow::Result<DecodedImage> {
+        let decoded = Self::decode(data)?;
+        Ok(match decoded {
+            DecodedImage::Static(image)
+                if image.width().max(image.height()) > MAX_RAW_IMAGE_SIDE =>
+            {
+                let (w, h) = resize_dimensions(
+                    image.width(),
+                    image.height(),
+                    MAX_RAW_IMAGE_SIDE,
+                    MAX_RAW_IMAGE_SIDE,
+                    FitType::Contain,
+                );
+                let small = image::imageops::resize(&image.img, w, h, FilterType::Triangle);
+                DecodedImage::Static(Arc::new(StaticImage { img: small }))
+            }
+            other => other,
+        })
+    }
+
     /// The CPU-heavy decode (PNG/JPEG/GIF/WebP decoding, SVG parsing). Safe to call from any
     /// thread; enforces the decode limits.
     pub fn decode(data: &[u8]) -> anyhow::Result<DecodedImage> {
@@ -516,7 +544,9 @@ impl DecodedImage {
                     // Each frame is canvas-sized; the running total bounds
                     // how many are kept.
                     let frames = collect_frames_bounded(decoder.into_frames())?;
-                    Ok(DecodedImage::Animated(Arc::new(AnimatedImage::from(frames))))
+                    Ok(DecodedImage::Animated(Arc::new(AnimatedImage::from(
+                        frames,
+                    ))))
                 } else {
                     let img = DynamicImage::from_decoder(decoder)?.into_rgba8();
                     Ok(DecodedImage::Static(Arc::new(StaticImage { img })))
@@ -529,7 +559,9 @@ impl DecodedImage {
                 check_decoded_size(width, height)?;
                 let decoder = GifDecoder::new(std::io::Cursor::new(data))?;
                 let frames = collect_frames_bounded(decoder.into_frames())?;
-                Ok(DecodedImage::Animated(Arc::new(AnimatedImage::from(frames))))
+                Ok(DecodedImage::Animated(Arc::new(AnimatedImage::from(
+                    frames,
+                ))))
             }
             _ => Ok(DecodedImage::Unrecognized),
         }
@@ -544,6 +576,26 @@ impl Asset for ImageType {
     fn decode_in_background(data: &[u8]) -> anyhow::Result<PreparedAsset<ImageType>> {
         let decoded = DecodedImage::decode(data)?;
         Ok(Box::new(move || Ok(decoded.into_image_type())))
+    }
+
+    fn decode_raw_in_background(data: &[u8]) -> anyhow::Result<PreparedAsset<ImageType>> {
+        let decoded = DecodedImage::decode_bounded(data)?;
+        Ok(Box::new(move || Ok(decoded.into_image_type())))
+    }
+
+    fn estimated_decode_bytes(data: &[u8]) -> usize {
+        // Header only, so this is cheap on the UI thread. Anything without a raster header
+        // (SVG, custom `warp-img:`) is estimated at its source size.
+        if data.first() != Some(&b'<') && !data.starts_with(b"warp-img:") {
+            if let Ok(reader) =
+                image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format()
+            {
+                if let Ok((w, h)) = reader.into_dimensions() {
+                    return (w as usize).saturating_mul(h as usize).saturating_mul(4);
+                }
+            }
+        }
+        data.len()
     }
 
     fn size_in_bytes(&self) -> usize {

@@ -4,7 +4,7 @@ use async_channel::{self, Receiver, Sender};
 use bytes::Bytes;
 use derivative::Derivative;
 use futures::FutureExt as _;
-use futures::{future::BoxFuture, Future};
+use futures::{Future, future::BoxFuture};
 use std::any::{Any, TypeId};
 use std::pin::Pin;
 use std::time::SystemTime;
@@ -17,7 +17,7 @@ use std::{
 };
 
 use crate::image_cache::ImageCache;
-use crate::{r#async::executor, Entity, ModelContext, SingletonEntity};
+use crate::{Entity, ModelContext, SingletonEntity, r#async::executor};
 
 use super::AssetProvider;
 
@@ -256,6 +256,8 @@ struct QueuedDecode {
     handle: AssetHandle,
     generation: u64,
     len: usize,
+    /// Estimated transient decode memory (see [`Asset::estimated_decode_bytes`]).
+    est: usize,
     start: QueuedDecodeStart,
 }
 
@@ -269,6 +271,21 @@ pub trait Asset: Any {
     fn try_from_bytes(data: &[u8]) -> anyhow::Result<Self>
     where
         Self: Sized;
+
+    /// [`Self::decode_in_background`] for raw bytes handed in by the terminal or another producer
+    /// (not a file the user opened). May shrink the result to keep the cache within budget.
+    fn decode_raw_in_background(data: &[u8]) -> anyhow::Result<PreparedAsset<Self>>
+    where
+        Self: Sized,
+    {
+        Self::decode_in_background(data)
+    }
+
+    /// A cheap (header-only) upper estimate of the memory decoding `data` transiently needs. The
+    /// decode scheduler uses it to bound concurrent decodes; it must not do real decode work.
+    fn estimated_decode_bytes(data: &[u8]) -> usize {
+        data.len()
+    }
 
     /// Does the expensive part of [`Asset::try_from_bytes`] on the calling thread, which the
     /// asset cache arranges to be a background thread, and returns a closure that completes the
@@ -303,9 +320,13 @@ impl Asset for String {
 
 /// Runs [`Asset::decode_in_background`], turning a decoder panic into an error so the asset ends in
 /// a failed state instead of staying `Loading` forever.
-fn decode_catching_panics<T: Asset>(data: &[u8]) -> Result<PreparedAsset<T>> {
+fn decode_catching_panics<T: Asset>(data: &[u8], raw: bool) -> Result<PreparedAsset<T>> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        T::decode_in_background(data)
+        if raw {
+            T::decode_raw_in_background(data)
+        } else {
+            T::decode_in_background(data)
+        }
     }))
     .unwrap_or_else(|_| Err(anyhow!("the asset decoder panicked")))
 }
@@ -313,7 +334,8 @@ fn decode_catching_panics<T: Asset>(data: &[u8]) -> Result<PreparedAsset<T>> {
 impl AssetCache {
     /// Most raw-image decodes allowed in flight at once.
     pub const MAX_IN_FLIGHT_RAW_DECODES: usize = 16;
-    /// Most input bytes the in-flight raw decodes may hold between them.
+    /// Most estimated decode memory (header width x height x 4) the in-flight raw decodes may need
+    /// between them.
     pub const MAX_IN_FLIGHT_RAW_DECODE_BYTES: usize = 512 * 1024 * 1024;
     /// Most source bytes that may wait in the decode queue. Only beyond this is an image refused.
     pub const MAX_QUEUED_RAW_DECODE_BYTES: usize = 1024 * 1024 * 1024;
@@ -527,6 +549,14 @@ impl AssetCache {
             };
         }
 
+        // Keep what is being drawn at the fresh end of the eviction order, so the budget evicts
+        // images nobody is looking at (#928).
+        if matches!(key.source, AssetSource::Raw { .. }) {
+            if let Some(AssetStateInternal::Loaded { timestamp, .. }) = assets.get_mut(&key) {
+                *timestamp = instant::now() as u64;
+            }
+        }
+
         assets[&key].to_external_type(source)
     }
 
@@ -617,9 +647,10 @@ impl AssetCache {
             asset_type: TypeId::of::<T>(),
         };
         let len = bytes.len();
+        let est = T::estimated_decode_bytes(&bytes);
         let generation = self.begin_pending_raw(&handle);
-        if self.can_start_decode(len) && self.decode_queue.borrow().is_empty() {
-            self.start_decode::<T>(handle, generation, bytes, ctx);
+        if self.can_start_decode(est) && self.decode_queue.borrow().is_empty() {
+            self.start_decode::<T>(handle, generation, bytes, est, ctx);
         } else if self.queued_decode_bytes.get().saturating_add(len)
             <= Self::MAX_QUEUED_RAW_DECODE_BYTES
         {
@@ -630,8 +661,9 @@ impl AssetCache {
                 handle: handle.clone(),
                 generation,
                 len,
+                est,
                 start: Box::new(move |me, ctx| {
-                    me.start_decode::<T>(handle, generation, bytes, ctx);
+                    me.start_decode::<T>(handle, generation, bytes, est, ctx);
                 }),
             });
         } else {
@@ -652,13 +684,14 @@ impl AssetCache {
         }
     }
 
-    /// Whether a decode of `len` source bytes may start now. A lone oversized decode is always
+    /// Whether a decode needing about `est` bytes may start now. The running estimates are
+    /// bounded, so a few huge images cannot be decoded at once; a lone oversized decode is always
     /// allowed so it cannot starve.
-    fn can_start_decode(&self, len: usize) -> bool {
+    fn can_start_decode(&self, est: usize) -> bool {
         let running = self.in_flight_decodes.get();
         running < Self::MAX_IN_FLIGHT_RAW_DECODES
             && (running == 0
-                || self.in_flight_decode_bytes.get().saturating_add(len)
+                || self.in_flight_decode_bytes.get().saturating_add(est)
                     <= Self::MAX_IN_FLIGHT_RAW_DECODE_BYTES)
     }
 
@@ -667,19 +700,19 @@ impl AssetCache {
         handle: AssetHandle,
         generation: u64,
         bytes: Arc<Vec<u8>>,
+        est: usize,
         ctx: &mut ModelContext<Self>,
     ) {
-        let len = bytes.len();
         self.in_flight_decodes.set(self.in_flight_decodes.get() + 1);
         self.in_flight_decode_bytes
-            .set(self.in_flight_decode_bytes.get() + len);
+            .set(self.in_flight_decode_bytes.get() + est);
         ctx.spawn(
-            async move { decode_catching_panics::<T>(&bytes) },
+            async move { decode_catching_panics::<T>(&bytes, true) },
             move |me, result, ctx| {
                 me.in_flight_decodes
                     .set(me.in_flight_decodes.get().saturating_sub(1));
                 me.in_flight_decode_bytes
-                    .set(me.in_flight_decode_bytes.get().saturating_sub(len));
+                    .set(me.in_flight_decode_bytes.get().saturating_sub(est));
                 me.finish_pending_raw::<T>(handle, generation, result, ctx);
                 me.pump_decode_queue(ctx);
             },
@@ -692,7 +725,7 @@ impl AssetCache {
             let next = {
                 let mut queue = self.decode_queue.borrow_mut();
                 match queue.front() {
-                    Some(front) if self.can_start_decode(front.len) => queue.pop_front(),
+                    Some(front) if self.can_start_decode(front.est) => queue.pop_front(),
                     _ => None,
                 }
             };
@@ -816,7 +849,7 @@ impl AssetCache {
                 // Fetch, then do the expensive decode here, off the UI thread (#880). The outer
                 // error is a fetch failure, the inner one a conversion failure.
                 let result: Result<Result<PreparedAsset<T>>> = match future.await {
-                    Ok(bytes) => Ok(decode_catching_panics::<T>(&bytes)),
+                    Ok(bytes) => Ok(decode_catching_panics::<T>(&bytes, false)),
                     Err(err) => Err(err),
                 };
                 // When the fetch finished, send the results to the future running on the foreground executor.
