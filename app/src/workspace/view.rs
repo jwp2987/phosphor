@@ -2677,6 +2677,34 @@ impl Workspace {
         });
     }
 
+    /// Shows an error toast when `settings.toml` could not be written, so a
+    /// setting change that will not survive a restart is not silent (#862).
+    fn subscribe_to_settings_save_failures(
+        toast_stack: ViewHandle<DismissibleToastStack<WorkspaceAction>>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        ctx.subscribe_to_model(&WarpConfig::handle(ctx), move |_me, _, event, ctx| {
+            if let WarpConfigUpdateEvent::SettingsSaveFailed { path, reason } = event {
+                const OBJECT_ID: &str = "settings_save_failed";
+                let path_string = path.display().to_string();
+                let friendly_path = user_friendly_path(
+                    &path_string,
+                    dirs::home_dir().as_ref().and_then(|h| h.to_str()),
+                );
+                let toast = DismissibleToast::error(crate::t!(
+                    "workspace-settings-save-failed-toast",
+                    path = friendly_path.to_string(),
+                    reason = reason.clone()
+                ))
+                .with_object_id(OBJECT_ID.to_owned());
+                toast_stack.update(ctx, |toast_stack, ctx| {
+                    toast_stack.dismiss_toasts_by_prefix(OBJECT_ID, ctx);
+                    toast_stack.add_persistent_toast(toast, ctx);
+                });
+            }
+        });
+    }
+
     /// Tells the user, once, that an unusable `warp.sqlite` was moved aside at
     /// startup and a fresh one created (#860).
     fn show_database_recovery_notice(
@@ -3132,6 +3160,7 @@ impl Workspace {
         Self::subscribe_to_tab_config_errors(toast_stack.clone(), ctx);
         Self::subscribe_to_keybindings_file_errors(toast_stack.clone(), ctx);
         Self::show_database_recovery_notice(&toast_stack, ctx);
+        Self::subscribe_to_settings_save_failures(toast_stack.clone(), ctx);
         Self::subscribe_to_settings_errors(ctx);
         let user_menu = ctx.add_typed_action_view(|_| {
             Menu::new()
