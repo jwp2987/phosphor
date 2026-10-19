@@ -2664,7 +2664,10 @@ pub struct TerminalView {
     last_focus_ts: Option<NaiveDateTime>,
     /// Set when the user approves or rejects a requested command card, until focus has been
     /// handed back from the AI block (#901).
-    reclaim_focus_from_resolved_card: bool,
+    reclaim_focus_until: Option<Instant>,
+    /// Whether focus has already been moved off the card once; after that, an AI block holding
+    /// focus means the user put it there, and the reclaim ends.
+    reclaim_focus_placed: bool,
     tips_completed: ModelHandle<TipsCompleted>,
 
     /// Whether or not this terminal session was ever active.
@@ -4301,7 +4304,8 @@ impl TerminalView {
             ))]
             remote_dir_listing_cache: indexmap::IndexMap::new(),
             last_focus_ts: None,
-            reclaim_focus_from_resolved_card: false,
+            reclaim_focus_until: None,
+            reclaim_focus_placed: false,
             tips_completed: resources.tips_completed.clone(),
             was_ever_visible: false,
             view_id: ctx.view_id(),
@@ -7469,7 +7473,7 @@ impl TerminalView {
             } => {
                 self.redetermine_focus_after_action_event(ctx);
                 // The command is done; stop reclaiming so a later click into a block sticks.
-                self.reclaim_focus_from_resolved_card = false;
+                self.end_focus_reclaim();
                 // Refresh git line changes when files are potentially updated by an action
                 let action_result = action_model
                     .as_ref(ctx)
@@ -8822,6 +8826,7 @@ impl TerminalView {
     /// Windows users expect ctrl-c to copy if there is selected text. Otherwise,
     /// we perform the normal ctrl-c action.
     fn ctrl_c(&mut self, ctx: &mut ViewContext<Self>) {
+        self.end_focus_reclaim();
         // Ctrl-C after an Enter that waits for the typeahead report cancels that Enter and the
         // keys held behind it, instead of being held and replayed after the deferred command.
         // An agent command in flight still gets its single ^C below (#850); only the deferred
@@ -9382,7 +9387,15 @@ impl TerminalView {
             self.report_possible_typeahead(characters);
             self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx)
         };
-        if !written_to_pty {
+        // The pty refused the bytes (agent in control) and the agent input is hidden: keep the
+        // old behaviour and drop them, rather than piling text up in a buffer nobody can see.
+        let refused_with_hidden_input = !written_to_pty
+            && self.should_write_typed_chars_to_pty(ctx)
+            && !{
+                let model = self.model.lock();
+                self.is_input_box_visible(&model, ctx)
+            };
+        if !written_to_pty && !refused_with_hidden_input {
             // We should only insert typed characters into the input box buffer.
             // When input_sequence is triggered on KeyDown, we should focus
             // on the input area and let the editor view handle the TypedCharacters
@@ -9404,7 +9417,7 @@ impl TerminalView {
             self.update_scroll_position_locking(ScrollPositionUpdate::AfterTypedCharacters, ctx);
             self.input
                 .update(ctx, |input, ctx| input.system_insert(characters, ctx));
-            if self.reclaim_focus_from_resolved_card {
+            if self.focus_reclaim_active() {
                 // Keys that arrive before the card's replacement settles keep going to the
                 // input, so focus has to follow them there.
                 self.place_focus_after_card_resolved(ctx);
@@ -11658,10 +11671,34 @@ impl TerminalView {
     /// approved or rejected card is still being replaced it does, until the input is back
     /// (#901).
     fn redetermine_focus_after_action_event(&mut self, ctx: &mut ViewContext<Self>) -> bool {
-        if !self.reclaim_focus_from_resolved_card {
+        if !self.focus_reclaim_active() {
+            return self.redetermine_terminal_focus(ctx);
+        }
+        // Having already left the card, an AI block holding focus means the user clicked or
+        // navigated there: leave it alone and stop reclaiming.
+        if self.reclaim_focus_placed && self.is_any_ai_block_focused(ctx) {
+            self.end_focus_reclaim();
             return self.redetermine_terminal_focus(ctx);
         }
         self.place_focus_after_card_resolved(ctx)
+    }
+
+    /// Whether a post-approval/rejection focus reclaim is still in effect (it lapses after a
+    /// couple of seconds so it can never linger and fight the user).
+    fn focus_reclaim_active(&mut self) -> bool {
+        match self.reclaim_focus_until {
+            Some(until) if Instant::now() < until => true,
+            Some(_) => {
+                self.end_focus_reclaim();
+                false
+            }
+            None => false,
+        }
+    }
+
+    fn end_focus_reclaim(&mut self) {
+        self.reclaim_focus_until = None;
+        self.reclaim_focus_placed = false;
     }
 
     /// Takes focus off the approved/rejected card without ever leaving it somewhere keys die.
@@ -11691,11 +11728,12 @@ impl TerminalView {
         if is_input_visible {
             self.redetermine_global_focus(ctx);
             if !self.is_any_ai_block_focused(ctx) {
-                self.reclaim_focus_from_resolved_card = false;
+                self.end_focus_reclaim();
             }
         } else {
             self.focus_terminal(ctx);
         }
+        self.reclaim_focus_placed = true;
         true
     }
 
@@ -21667,6 +21705,7 @@ impl TerminalView {
                         self.is_todo_popup_visible = false;
                     }
                 }
+                self.end_focus_reclaim();
                 self.redetermine_terminal_focus(ctx);
                 ctx.notify();
             }
@@ -21803,7 +21842,8 @@ impl TerminalView {
                 // The card still holds focus and `redetermine_terminal_focus` refuses to take it
                 // from an AI block, so reclaim it explicitly -- now, and again from the action
                 // events below once the command's block has settled and the input is visible.
-                self.reclaim_focus_from_resolved_card = true;
+                self.reclaim_focus_until = Some(Instant::now() + Duration::from_secs(2));
+                self.reclaim_focus_placed = false;
                 self.place_focus_after_card_resolved(ctx);
             }
             AIBlockEvent::ContinueConversation { conversation_id } => {
