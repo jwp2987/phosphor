@@ -34,6 +34,7 @@ pub mod secrets;
 pub mod selection;
 pub mod session;
 pub mod terminal_model;
+pub mod reply_ledger;
 pub mod typeahead_handoff;
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_utils;
