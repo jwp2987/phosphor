@@ -919,16 +919,41 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         warp_at_least_bash_version "4.0"
     }
 
+    # #829: a reply to a terminal query (DA, an OSC colour query, a cursor position
+    # report) written while no command was reading it is later read by the line
+    # editor as typed text, and the typeahead report hands it back as input.
+    # Sets __warp_stripped to "$1" without those replies. Complete replies (with
+    # their ESC) are removed anywhere; readline has already swallowed the ESC [ ?
+    # prefix of the ones it saw, leaving residue such as `62c` or `10;rgb:...`,
+    # which is removed from the start of the text only (replies queue up before
+    # anything the user typed). Replies are plain ASCII so the loops stay cheap.
+    __warp_strip_terminal_replies () {
+        __warp_stripped=$1
+        local esc=$'\e' bel=$'\a' m
+        local re_any='('"$esc"'\[[?>=]?[0-9;]*[cR])|('"$esc"'\][0-9;]*;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}('"$bel"'|'"$esc"'\\)?)|([0-9]+(;[0-9]+)?;rgba?:[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4}/[0-9a-fA-F]{1,4})'
+        local re_lead='^(([0-9]+(;[0-9]+)*c)|(;?[0-9]+R))'
+        while [[ $__warp_stripped =~ $re_any ]]; do
+            m=${BASH_REMATCH[0]}
+            __warp_stripped=${__warp_stripped/"$m"/}
+        done
+        while [[ $__warp_stripped =~ $re_lead ]]; do
+            m=${BASH_REMATCH[0]}
+            __warp_stripped=${__warp_stripped#"$m"}
+            # A residue can be followed by more of the same, now at the start.
+        done
+    }
+
     # Report the current input buffer contents to Warp. This only works correctly
     # if `warp_input_reporting_supported` returns "1".
     __warp_report_input_impl () {
+        __warp_strip_terminal_replies "${READLINE_LINE:-}"
         if [ "${WARP_IN_MSYS2:-}" = true ]; then
             warp_send_hook_via_kv_pairs_start "InputBuffer"
-            warp_send_hook_kv_pair "buffer" "${READLINE_LINE:-}"
+            warp_send_hook_kv_pair "buffer" "$__warp_stripped"
             warp_send_hook_kv_pair "session_id" "${WARP_SESSION_ID:-}"
             warp_send_hook_via_kv_pairs_end
         else
-            local escaped_input="$(warp_escape_json "${READLINE_LINE:-}")"
+            local escaped_input="$(warp_escape_json "$__warp_stripped")"
             warp_send_json_message "{ \"hook\": \"InputBuffer\", \"value\": { \"buffer\": \"$escaped_input\", \"session_id\": ${WARP_SESSION_ID:-} } }"
         fi
         # This prevents bash from re-printing typeahead after we've removed it.
@@ -1174,7 +1199,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             # Hex-encode the ZSH environment script we use to bootstrap remote zsh b/c it contains control characters
             # We decode on the SSH server using xxd if its available, otherwise fall back to a for-loop over each byte
             # and use printf to convert back to plaintext
-            local zsh_env_script=$(printf '%s' 'unsetopt ZLE RCS GLOBAL_RCS; WARP_SESSION_ID='$remote_session_id'; WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@; WARP_HONOR_PS1='$WARP_HONOR_PS1'; _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n); _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || echo $USER); _msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"zsh\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_user" "$_hostname" | command -p od -An -v -tx1 | command -p tr -d '"'"' \n'"'"'); printf '"'"'\e]9278;d;%s\x07'"'"' $_msg; unset _hostname _user _msg' | command -p od -An -v -tx1 | command -p tr -d ' \n')
+            local zsh_env_script=$(printf '%s' 'unsetopt ZLE RCS GLOBAL_RCS; WARP_SESSION_ID='$remote_session_id'; WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@; WARP_HONOR_PS1='$WARP_HONOR_PS1'; _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n); _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || echo $USER); _ju=${_user//\\/\\\\}; _ju=${_ju//\"/\\\"}; _jh=${_hostname//\\/\\\\}; _jh=${_jh//\"/\\\"}; _msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"zsh\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d '"'"' \n'"'"'); printf '"'"'\e]9278;d;%s\x07'"'"' $_msg; unset _hostname _user _msg _ju _jh' | command -p od -An -v -tx1 | command -p tr -d ' \n')
 
             # Optionally attach to an existing ControlMaster the user already
             # runs for this destination instead of creating our own. Resolve
@@ -1270,11 +1295,12 @@ case "'${SHELL##*/}'" in
       WARP_HONOR_PS1="'$WARP_HONOR_PS1'"
       _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n)
       _user=$(command -v whoami >/dev/null 2>&1 && command whoami 2>/dev/null || echo $USER)
-      _msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"bash\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_user" "$_hostname" | command -p od -An -v -tx1 | command -p tr -d " \n")'"
+      _ju=${_user//\\/\\\\}; _ju=${_ju//\"/\\\"}; _jh=${_hostname//\\/\\\\}; _jh=${_jh//\"/\\\"}
+      _msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"bash\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d " \n")'"
       WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@
       if [[ "'$OS'" == Windows_NT ]]; then WARP_IN_MSYS2=true; else WARP_IN_MSYS2=false; fi
       printf '\''"'\e]9278;d;%s\x07'"'\'' \""'$_msg'"\"')
-      unset _hostname _user _msg
+      unset _hostname _user _msg _ju _jh
       ;;
   zsh) WARP_TMP_DIR="'$(command -p mktemp -d warptmp.XXXXXX)'"
 local ZSH_ENV_SCRIPT='$zsh_env_script'
@@ -1357,9 +1383,38 @@ esac
         # __warp_rc_done switches it back on. `set -e; false` inside the file
         # still exits, as natively. Only the outermost `source` returns at the
         # depth recorded here, so a file the rcfile sources keeps errexit.
+        #
+        # #896: a RETURN trap is global, so an rcfile that installs its own
+        # (`trap '...' RETURN`) replaced this one and the shell died anyway. While
+        # the rcfiles run, `trap` is therefore a function that composes a RETURN
+        # trap with ours (the user's command first, then ours) instead of
+        # replacing it. Any other trap call passes through to the builtin.
+        # `set -e` semantics inside the file are untouched: nothing here runs the
+        # file under `||` or `&&`, which would silence errexit inside it too.
+        # A RETURN trap installed inside a function also fires when that function
+        # returns, which would run the user's command early, hence the FUNCNAME test.
         __warp_rc_return_trap='if [[ ${#BASH_SOURCE[@]} -le $__warp_rc_depth ]]; then case $- in *e*) __warp_rc_errexit=1; set +e;; esac; fi'
+        trap () {
+            local __warp_t_cmd __warp_t_sig __warp_t_rest=() __warp_t_ret=
+            if [[ ${1-} == -- ]]; then shift; elif [[ ${1-} == -* && ${1-} != - ]]; then builtin trap "$@"; return; fi
+            if [[ $# -lt 2 ]]; then builtin trap "$@"; return; fi
+            __warp_t_cmd=$1; shift
+            for __warp_t_sig in "$@"; do
+                case $__warp_t_sig in
+                    RETURN|return|SIGRETURN) __warp_t_ret=1 ;;
+                    *) __warp_t_rest+=("$__warp_t_sig") ;;
+                esac
+            done
+            if [[ -z $__warp_t_ret ]]; then builtin trap -- "$__warp_t_cmd" "$@"; return; fi
+            if [[ ${#__warp_t_rest[@]} -gt 0 ]]; then builtin trap -- "$__warp_t_cmd" "${__warp_t_rest[@]}" || return; fi
+            if [[ $__warp_t_cmd == - ]]; then __warp_t_cmd=; fi
+            builtin trap -- 'if [[ ${FUNCNAME[0]-} != trap ]]; then
+'"$__warp_t_cmd"'
+'"$__warp_rc_return_trap"'
+fi' RETURN
+        }
         __warp_rc_done () {
-            trap - RETURN
+            builtin trap - RETURN
             if [[ -n ${__warp_rc_errexit:-} ]]; then
                 unset __warp_rc_errexit
                 set -e
@@ -1367,7 +1422,7 @@ esac
         }
         __warp_rc_depth=${#BASH_SOURCE[@]}
         if [[ -e /etc/profile ]]; then
-            trap "$__warp_rc_return_trap" RETURN; source /etc/profile; __warp_rc_done
+            builtin trap "$__warp_rc_return_trap" RETURN; source /etc/profile; __warp_rc_done
         elif [[ -e /etc/bash.bashrc ]]; then
             # /etc/bash.bashrc is only included in the startup sequence if bash is
             # compiled with -DSYS_BASHRC. This is disabled in bash by default but
@@ -1375,7 +1430,7 @@ esac
             # to tell if it's enabled or not, so just check for the file if there is
             # no /etc/profile and source it if it exists.
             # Note that a lot of the time, /etc/profile sources /etc/bash.bashrc.
-            trap "$__warp_rc_return_trap" RETURN; source /etc/bash.bashrc; __warp_rc_done
+            builtin trap "$__warp_rc_return_trap" RETURN; source /etc/bash.bashrc; __warp_rc_done
         fi
 
         # Quoted, matching the pin (`42effe840:...:1207-1212`). Unquoted,
@@ -1388,12 +1443,13 @@ esac
         # invisible. Command substitution is NOT re-run on the expansion result,
         # so a `$(...)` in $HOME is inert; wrong-file execution is the real risk.
         if [[ -e "$HOME/.bash_profile" ]]; then
-            trap "$__warp_rc_return_trap" RETURN; source "$HOME/.bash_profile"; __warp_rc_done
+            builtin trap "$__warp_rc_return_trap" RETURN; source "$HOME/.bash_profile"; __warp_rc_done
         elif [[ -e "$HOME/.bash_login" ]]; then
-            trap "$__warp_rc_return_trap" RETURN; source "$HOME/.bash_login"; __warp_rc_done
+            builtin trap "$__warp_rc_return_trap" RETURN; source "$HOME/.bash_login"; __warp_rc_done
         elif [[ -e "$HOME/.profile" ]]; then
-            trap "$__warp_rc_return_trap" RETURN; source "$HOME/.profile"; __warp_rc_done
+            builtin trap "$__warp_rc_return_trap" RETURN; source "$HOME/.profile"; __warp_rc_done
         fi
+        unset -f trap __warp_rc_done
         __warp_relax_opts __warp_bootstrap_opts_restore
 
         rcfiles_end_time="$(LC_ALL="C"; echo $EPOCHREALTIME)"
@@ -1636,7 +1692,14 @@ esac
         else
           local escaped_editor="$(warp_escape_json "$EDITOR")"
           local escaped_shell_path="$(warp_escape_json "$BASH")"
-          local escaped_json="{\"hook\": \"Bootstrapped\", \"value\": {\"histfile\": \"$escaped_histfile\", \"session_id\": ${WARP_SESSION_ID:-}, \"shell\": \"bash\",  \"home_dir\": \"$HOME\", \"user\":\"$_user\", \"host\":\"$_hostname\", \"path\": \"$escaped_path\", \"editor\": \"$escaped_editor\", \"env_var_names\": \"$escaped_env_var_names\", \"abbreviations\": \"$escaped_abbrs\", \"aliases\": \"$escaped_aliases\", \"function_names\": \"$escaped_function_names\", \"builtins\": \"$escaped_builtins\", \"keywords\": \"$escaped_keywords\", \"shell_version\": \"$BASH_VERSION\", \"shell_options\": \"$escaped_shell_options\", \"rcfiles_start_time\": \"$rcfiles_start_time\", \"rcfiles_end_time\": \"$rcfiles_end_time\", \"shell_plugins\": \"$escaped_shell_plugins\", \"vi_mode_enabled\": \"$vi_mode_enabled\", \"os_category\": \"$os_category\", \"linux_distribution\": \"$linux_distribution\", \"wsl_name\": \"$WSL_DISTRO_NAME\", \"shell_path\": \"$escaped_shell_path\"}}"
+          # Free-form values: a login like CORP\tdoe must not decode as a tab (#879).
+          local escaped_home="$(warp_escape_json "$HOME")"
+          local escaped_user="$(warp_escape_json "$_user")"
+          local escaped_host="$(warp_escape_json "$_hostname")"
+          local escaped_distro="$(warp_escape_json "${linux_distribution-}")"
+          local escaped_bash_version="$(warp_escape_json "$BASH_VERSION")"
+          local escaped_wsl_name="$(warp_escape_json "${WSL_DISTRO_NAME-}")"
+          local escaped_json="{\"hook\": \"Bootstrapped\", \"value\": {\"histfile\": \"$escaped_histfile\", \"session_id\": ${WARP_SESSION_ID:-}, \"shell\": \"bash\",  \"home_dir\": \"$escaped_home\", \"user\":\"$escaped_user\", \"host\":\"$escaped_host\", \"path\": \"$escaped_path\", \"editor\": \"$escaped_editor\", \"env_var_names\": \"$escaped_env_var_names\", \"abbreviations\": \"$escaped_abbrs\", \"aliases\": \"$escaped_aliases\", \"function_names\": \"$escaped_function_names\", \"builtins\": \"$escaped_builtins\", \"keywords\": \"$escaped_keywords\", \"shell_version\": \"$escaped_bash_version\", \"shell_options\": \"$escaped_shell_options\", \"rcfiles_start_time\": \"$rcfiles_start_time\", \"rcfiles_end_time\": \"$rcfiles_end_time\", \"shell_plugins\": \"$escaped_shell_plugins\", \"vi_mode_enabled\": \"$vi_mode_enabled\", \"os_category\": \"$os_category\", \"linux_distribution\": \"$escaped_distro\", \"wsl_name\": \"$escaped_wsl_name\", \"shell_path\": \"$escaped_shell_path\"}}"
           warp_send_json_message "$escaped_json"
         fi
     }

@@ -37,6 +37,7 @@ import os
 import pty
 import re
 import select
+import shlex
 import shutil
 import sys
 import tempfile
@@ -80,8 +81,8 @@ def body_contents():
 
 
 class Shell:
-    def __init__(self, zshrc, zshenv=""):
-        self.home = tempfile.mkdtemp(prefix="phosphor-836-")
+    def __init__(self, zshrc, zshenv="", home_prefix="phosphor-836-"):
+        self.home = tempfile.mkdtemp(prefix=home_prefix)
         self.zd = os.path.join(self.home, "zdot")
         self.cwd = os.path.join(self.home, "nogit")  # deliberately not a git repo
         os.makedirs(self.zd)
@@ -142,6 +143,16 @@ class Shell:
             out.append((j.get("hook", "?"), j.get("value") or {}))
         return out
 
+    def invalid_hooks(self):
+        """Count of DCS hook messages whose payload is not valid JSON (the app rejects them)."""
+        bad = 0
+        for m in HOOK_RE.finditer(self.buf):
+            try:
+                json.loads(bytes.fromhex(m.group(1).decode()))
+            except ValueError:
+                bad += 1
+        return bad
+
     def names(self):
         return [n for n, _ in self.hooks()]
 
@@ -156,7 +167,7 @@ class Shell:
         self.pump(1.5)  # let the rc files and the first prompt settle
         os.write(
             self.fd,
-            (f"unsetopt ZLE; WARP_SESSION_ID=4242; WARP_USING_WINDOWS_CON_PTY=false; source {self.body}; echo boot$((20+22))done\r").encode(),
+            (f"unsetopt ZLE; WARP_SESSION_ID=4242; WARP_USING_WINDOWS_CON_PTY=false; source {shlex.quote(self.body)}; echo boot$((20+22))done\r").encode(),
         )
         ok = self.pump(20, lambda: "boot42done" in self.text() and "Bootstrapped" in self.names())
         self.broken = not ok
@@ -188,6 +199,7 @@ class Shell:
 
 
 failures = []
+NOISE_RE = re.compile(r"parameter not set|unbound variable|no such variable")
 
 
 def check(cond, what, shell):
@@ -222,6 +234,25 @@ def scenario(title, zshrc, zshenv=""):
         check_cycle(sh, "false", 1)
         check_cycle(sh, 'sh -c "exit 7"', 7)
         check_cycle(sh, "true", 0)
+        # Under nounset the bootstrap itself must not print "parameter not set"
+        # for HISTFILE, EDITOR or WARP_USING_WINDOWS_CON_PTY (zsh reports it and
+        # carries on, so the hooks still arrive; it is just noise on every start).
+        check(NOISE_RE.search(sh.text()) is None,
+              "no 'parameter not set' / unbound noise is printed", sh)
+    finally:
+        sh.close()
+
+
+def scenario_hostile_home():
+    print("a $HOME containing backslash-t reaches the hooks as a backslash, not a tab")
+    # #879: home_dir was printed raw, so a valid-looking escape like \\t decoded as a tab.
+    sh = Shell("", home_prefix="phosphor-879-\\tx\\")
+    try:
+        check(sh.bootstrap(), "bootstraps", sh)
+        check(sh.invalid_hooks() == 0, "every hook payload is valid JSON", sh)
+        boot = [v for n, v in sh.hooks() if n == "Bootstrapped"]
+        check(bool(boot) and boot[0].get("home_dir") == sh.home,
+              f"home_dir round-trips exactly (got {boot[0].get('home_dir') if boot else None!r})", sh)
     finally:
         sh.close()
 
@@ -263,8 +294,54 @@ def scenario_errexit_repair_agent_rc():
         sh.close()
 
 
+REPLIES = [
+    b"\x1b[?62c",  # DA1
+    b"\x1b[>0;95;0c",  # DA2
+    b"\x1b]10;rgb:ffff/ffff/ffff\x07",  # OSC 10 colour, BEL-terminated
+    b"\x1b]11;rgb:0000/0000/0000\x1b\\",  # OSC 11 colour, ST-terminated
+    b"\x1b]4;1;rgb:cc/00/00\x07",  # OSC 4 palette
+    b"\x1b[24;80R",  # cursor position report
+]
+
+
+def scenario_terminal_replies_in_typeahead():
+    print("replies to terminal queries are not reported as typeahead")
+    # #829: replies written while nothing reads them are later read by zle as
+    # typed text; ESC i reports that text back as the input buffer.
+    sh = Shell("")
+    try:
+        check(sh.bootstrap(), "bootstraps", sh)
+        for r in REPLIES:
+            sh.pump(0.2)
+            os.write(sh.fd, r)
+        sh.pump(0.5)
+        os.write(sh.fd, b"echo kept")
+        sh.pump(0.3)
+        n = len([1 for h, _ in sh.hooks() if h == "InputBuffer"])
+        os.write(sh.fd, b"\x1bi")
+        ok = sh.pump(5, lambda: len([1 for h, _ in sh.hooks() if h == "InputBuffer"]) > n)
+        check(ok, "the input buffer is reported", sh)
+        if ok:
+            got = [v for h, v in sh.hooks() if h == "InputBuffer"][-1]["buffer"]
+            check(got == "echo kept", f"only the typed text is reported (got {got!r})", sh)
+        n = len([1 for h, _ in sh.hooks() if h == "InputBuffer"])
+        sh.pump(0.3)
+        os.write(sh.fd, b"echo 62c")
+        sh.pump(0.3)
+        os.write(sh.fd, b"\x1bi")
+        ok = sh.pump(5, lambda: len([1 for h, _ in sh.hooks() if h == "InputBuffer"]) > n)
+        if ok:
+            got = [v for h, v in sh.hooks() if h == "InputBuffer"][-1]["buffer"]
+            check(got == "echo 62c", f"ordinary typed text is untouched (got {got!r})", sh)
+        else:
+            check(False, "the second input buffer is reported", sh)
+    finally:
+        sh.close()
+
+
 def main():
     print(f"zsh: {ZSH}\nbody: {BODY}")
+    scenario_terminal_replies_in_typeahead()
     scenario("setopt err_return", "setopt err_return")
     scenario("setopt nounset", "setopt nounset")
     scenario("setopt err_return nounset", "setopt err_return nounset")
@@ -275,6 +352,7 @@ def main():
     )
     scenario_err_exit()
     scenario_errexit_repair_agent_rc()
+    scenario_hostile_home()
     if failures:
         print(f"\ntest_zsh_bootstrap_strict_options: {len(failures)} check(s) FAILED")
         return 1
