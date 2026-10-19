@@ -18,7 +18,10 @@ use mio::{self, Events, Interest};
 use parking_lot::{FairMutex, FairMutexGuard};
 
 use crate::terminal::{
-    event_listener::ChannelEventListener, local_tty, model::ansi, TerminalModel,
+    event_listener::ChannelEventListener,
+    local_tty,
+    model::{BlockId, ansi},
+    TerminalModel,
 };
 use crate::terminal::{model::terminal_model::ExitReason, writeable_pty::Message};
 
@@ -62,21 +65,27 @@ struct Writing {
 /// Contains list of items to write, current write state, etc. Anything that
 /// would otherwise be mutated on the `EventLoop` goes here.
 pub struct State {
-    write_list: VecDeque<Cow<'static, [u8]>>,
-    /// Replies to terminal queries (DA, OSC colors, ...), each tagged with whether the
-    /// active block was executing when it was queued. A reply that is still unwritten
-    /// after the command finished is dropped: the shell would otherwise read it back as
-    /// typed text (#829).
-    response_list: VecDeque<(Vec<u8>, bool)>,
+    /// One FIFO of everything bound for the pty, so user input can never overtake an
+    /// earlier terminal-query reply.
+    write_list: VecDeque<QueuedWrite>,
     writing: Option<Writing>,
     parser: ansi::Processor,
+}
+
+/// A queued pty write. `produced_while_executing` is `Some(block id)` for a reply to a
+/// terminal query (DA, OSC colors, ...) that was generated while that block was
+/// executing a command; such a reply still unwritten after the command finished is
+/// dropped, as the shell would otherwise read it back as typed text (#829). User input
+/// and replies produced at the prompt carry `None` and are never dropped.
+struct QueuedWrite {
+    bytes: Cow<'static, [u8]>,
+    produced_while_executing: Option<BlockId>,
 }
 
 impl Default for State {
     fn default() -> State {
         State {
             write_list: VecDeque::new(),
-            response_list: VecDeque::new(),
             parser: ansi::Processor::new(),
             writing: None,
         }
@@ -93,26 +102,47 @@ impl State {
 
     #[inline]
     fn goto_next(&mut self) {
-        self.writing = self.write_list.pop_front().map(Writing::new).or_else(|| {
-            self.response_list
-                .pop_front()
-                .map(|(bytes, _)| Writing::new(Cow::Owned(bytes)))
+        self.writing = self
+            .write_list
+            .pop_front()
+            .map(|entry| Writing::new(entry.bytes));
+    }
+
+    /// Queues user input; never dropped.
+    fn queue_input(&mut self, bytes: Cow<'static, [u8]>) {
+        self.write_list.push_back(QueuedWrite {
+            bytes,
+            produced_while_executing: None,
         });
     }
 
-    /// Queues a reply to a terminal query. `executing` is whether the active block was
-    /// executing a command when the query was parsed.
-    fn queue_response(&mut self, bytes: Vec<u8>, executing: bool) {
+    /// Queues a reply to a terminal query. `executing_block` is the id of the active
+    /// block if it was executing a command when the bytes were handed to the parser
+    /// (read BEFORE parsing: block completion happens synchronously inside the parse).
+    fn queue_response(&mut self, bytes: Vec<u8>, executing_block: Option<BlockId>) {
         if !bytes.is_empty() {
-            self.response_list.push_back((bytes, executing));
+            self.write_list.push_back(QueuedWrite {
+                bytes: Cow::Owned(bytes),
+                produced_while_executing: executing_block,
+            });
         }
     }
 
-    /// Drops queued replies that were produced by a command that has since finished.
-    fn drop_stale_responses(&mut self, executing_now: bool) {
-        if !executing_now {
-            self.response_list.retain(|(_, executing)| !*executing);
-        }
+    /// Drops queued replies produced while a command ran if that command has since
+    /// finished, i.e. the active block changed or is no longer executing.
+    fn drop_stale_responses(&mut self, active_block: &BlockId, executing_now: bool) {
+        self.write_list
+            .retain(|entry| match &entry.produced_while_executing {
+                Some(id) => executing_now && id == active_block,
+                None => true,
+            });
+    }
+
+    #[inline]
+    fn has_tagged(&self) -> bool {
+        self.write_list
+            .iter()
+            .any(|entry| entry.produced_while_executing.is_some())
     }
 
     #[inline]
@@ -122,13 +152,19 @@ impl State {
 
     #[inline]
     fn needs_write(&self) -> bool {
-        self.writing.is_some() || !self.write_list.is_empty() || !self.response_list.is_empty()
+        self.writing.is_some() || !self.write_list.is_empty()
     }
 
     #[inline]
     fn set_current(&mut self, new: Option<Writing>) {
         self.writing = new;
     }
+}
+
+/// The id of the active block if it is currently executing a command.
+fn executing_block_id(terminal: &TerminalModel) -> Option<BlockId> {
+    let block = terminal.block_list().active_block();
+    block.is_executing().then(|| block.id().clone())
 }
 
 impl Writing {
@@ -217,7 +253,7 @@ where
     fn drain_recv_channel(&mut self, state: &mut State) -> ChannelResult {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
-                Message::Input(input) => state.write_list.push_back(input),
+                Message::Input(input) => state.queue_input(input),
                 Message::Shutdown => {
                     return ChannelResult::TerminateLoop {
                         child_exited: false,
@@ -311,13 +347,15 @@ where
             // Upstream: e59c7a491489 "Fix dropped terminal response
             // sequences when PTY writes block" (#11906).
             let mut terminal_response_sequences = Vec::new();
+            // Read the active block BEFORE parsing: replies are generated, and the
+            // command may finish, synchronously inside `parse_bytes`.
+            let executing_block = executing_block_id(terminal.deref());
             state.parser.parse_bytes(
                 terminal.deref_mut(),
                 &buf[..bytes_in_buffer],
                 &mut terminal_response_sequences,
             );
-            let executing = terminal.block_list().active_block().is_executing();
-            state.queue_response(terminal_response_sequences, executing);
+            state.queue_response(terminal_response_sequences, executing_block);
 
             bytes_processed += bytes_in_buffer;
             bytes_in_buffer = 0;
@@ -435,15 +473,16 @@ where
                         // directly, so a blocked PTY write queues and retries instead
                         // of silently dropping them.
                         let mut terminal_response_sequences = Vec::new();
-                        let executing = {
+                        let executing_block = {
                             let mut terminal = self.terminal.lock();
+                            let executing_block = executing_block_id(&terminal);
                             state.parser.finish_sync_output(
                                 &mut *terminal,
                                 &mut terminal_response_sequences,
                             );
-                            terminal.block_list().active_block().is_executing()
+                            executing_block
                         };
-                        state.queue_response(terminal_response_sequences, executing);
+                        state.queue_response(terminal_response_sequences, executing_block);
                         // The flush may have made buffered content visible; ask for a
                         // redraw rather than waiting for the next pty read (#818).
                         self.event_listener.send_wakeup_event();
@@ -507,14 +546,10 @@ where
                     // wait on some readiness (pty readability, pty writability,
                     // or new data to write), go back to the start of the event
                     // loop.
-                    if !state.response_list.is_empty() {
-                        let executing_now = self
-                            .terminal
-                            .lock()
-                            .block_list()
-                            .active_block()
-                            .is_executing();
-                        state.drop_stale_responses(executing_now);
+                    if state.has_tagged() {
+                        let terminal = self.terminal.lock();
+                        let block = terminal.block_list().active_block();
+                        state.drop_stale_responses(block.id(), block.is_executing());
                     }
                     while can_read || (state.needs_write() && can_write) {
                         if can_read {
