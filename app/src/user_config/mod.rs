@@ -81,6 +81,16 @@ pub enum WarpConfigUpdateEvent {
         path: std::path::PathBuf,
         reason: String,
     },
+    /// `settings.toml` was deleted while the app ran and has been written
+    /// back from the in-memory settings (#862).
+    #[allow(dead_code)]
+    SettingsFileRestored {
+        path: std::path::PathBuf,
+    },
+    /// A database notice was recorded off the UI thread and is waiting to be
+    /// shown (#860).
+    #[allow(dead_code)]
+    DatabaseNoticeRaised,
 }
 
 /// Singleton model containing user configurable file entities like themes, launch configs, and

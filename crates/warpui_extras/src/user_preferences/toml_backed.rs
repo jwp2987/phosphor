@@ -23,6 +23,11 @@ const INDENT: &str = "  ";
 /// children don't defeat the check.
 const MAX_INLINE_WIDTH: usize = 100;
 
+/// The largest settings file that is parsed (#863). Real files are a few KB;
+/// a 50 MB one cost ~550 MB of RAM in `toml_edit`. Larger files are refused
+/// (and left untouched on disk) rather than parsed.
+pub const MAX_SETTINGS_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
 /// A failed attempt to write the settings file (#862).
 #[derive(Clone, Debug)]
 pub struct SaveFailure {
@@ -30,7 +35,23 @@ pub struct SaveFailure {
     pub path: PathBuf,
     /// Why, as the OS reported it.
     pub message: String,
+    /// What happened.
+    pub kind: SaveFailureKind,
 }
+
+/// What a [`SaveFailure`] is telling the user.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveFailureKind {
+    /// The settings file could not be written.
+    SaveFailed,
+    /// The settings file was deleted while the app ran and was written back
+    /// from memory (#862); `message` is empty.
+    DeletedAndRestored,
+}
+
+/// How long a missing settings file must stay missing before it is restored.
+/// Editors that save by delete + rename briefly leave no file.
+const RESTORE_CONFIRM_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// Where save failures go. Failures that happen before the UI has taken the
 /// receiver (the store is built long before the workspace exists) are buffered
@@ -157,6 +178,18 @@ impl TomlBackedUserPreferences {
     /// Loads the TOML document from disk, or returns an empty document if
     /// the file doesn't exist.
     fn load_document(file_path: &Path) -> Result<DocumentMut, Error> {
+        if let Ok(metadata) = std::fs::metadata(file_path) {
+            if !metadata.is_file() {
+                return Err(Error::NotAFile(file_path.to_path_buf()));
+            }
+            if metadata.len() > MAX_SETTINGS_FILE_BYTES {
+                return Err(Error::TooLarge {
+                    path: file_path.to_path_buf(),
+                    size: metadata.len(),
+                    limit: MAX_SETTINGS_FILE_BYTES,
+                });
+            }
+        }
         let file_contents = match std::fs::read_to_string(file_path) {
             Ok(contents) => contents,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -213,7 +246,30 @@ impl TomlBackedUserPreferences {
     ///
     /// On parse failure (e.g. the user introduced a syntax error), the old
     /// document is kept and an error is returned.
+    ///
+    /// If the file has been deleted while the app runs and the store holds
+    /// settings, the in-memory document is kept and written back to disk,
+    /// instead of reloading an empty document: that reset every setting to
+    /// its default, and the next change then created a file holding only the
+    /// one changed key (#862). To reset settings, delete the file while the
+    /// app is not running, or delete individual lines.
     pub fn reload_from_disk(&self) -> Result<(), Error> {
+        if self.should_restore_deleted_file() {
+            log::warn!(
+                "Settings file at {} was deleted; restoring it from the current settings",
+                self.file_path.display()
+            );
+            // A failure is logged and reported to the user by `flush`; the
+            // in-memory settings stay intact either way.
+            if self.flush().is_ok() {
+                report_save_failure(SaveFailure {
+                    path: self.file_path.clone(),
+                    message: String::new(),
+                    kind: SaveFailureKind::DeletedAndRestored,
+                });
+            }
+            return Ok(());
+        }
         match Self::load_document(self.file_path.as_path()) {
             Ok(doc) => {
                 *self.document.borrow_mut() = doc;
@@ -229,9 +285,34 @@ impl TomlBackedUserPreferences {
                     "Failed to reload settings file at {}: {err}; keeping previous state",
                     self.file_path.display(),
                 );
+                // A file too big to parse or not a file is never rewritten
+                // from the in-memory document: the next setting change must
+                // not replace what the user has there (#863).
+                if matches!(err, Error::TooLarge { .. } | Error::NotAFile(_)) {
+                    self.write_inhibited.set(true);
+                }
                 Err(err)
             }
         }
+    }
+
+    /// Whether the settings file has vanished from under a store that holds
+    /// settings worth writing back (see [`reload_from_disk`](Self::reload_from_disk)).
+    fn should_restore_deleted_file(&self) -> bool {
+        let missing = || {
+            matches!(
+                std::fs::symlink_metadata(&self.file_path),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound
+            )
+        };
+        if self.write_inhibited.get() || self.document.borrow().as_table().is_empty() || !missing()
+        {
+            return false;
+        }
+        // Editors that save by delete + rename leave the file missing for a
+        // moment; only restore if it is still missing after a short wait.
+        std::thread::sleep(RESTORE_CONFIRM_DELAY);
+        missing()
     }
 
     /// Builds a compound key from a storage key and optional hierarchy.
@@ -311,6 +392,7 @@ impl TomlBackedUserPreferences {
                     report_save_failure(SaveFailure {
                         path: self.file_path.clone(),
                         message: err.to_string(),
+                        kind: SaveFailureKind::SaveFailed,
                     });
                 }
                 Err(err.into())

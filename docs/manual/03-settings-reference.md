@@ -92,6 +92,13 @@ Two exceptions, both noted again in their tables:
   *setting* reloads the object, but editing the linked *file* requires a
   restart.
 
+### Deleting the file while Phosphor runs
+
+If `settings.toml` is deleted while Phosphor is running (and stays gone for a
+moment, so an editor's delete-and-rename save does not count), Phosphor writes
+it back from the settings it holds and shows a notice. To reset your settings,
+quit Phosphor first and then delete the file.
+
 ### What happens when the file is wrong
 
 Phosphor never rewrites or rejects your file. It reports and carries on. Three
@@ -101,6 +108,9 @@ time:
 1. **The file is not valid TOML.** Nothing in it takes effect; every setting
    falls back to its default. Writes are inhibited so a broken file is not
    overwritten with defaults — fix the syntax and the next reload recovers.
+   The same inhibition applies if, while Phosphor runs, the file becomes
+   larger than 2 MiB or is replaced by a directory; it lifts once a reload
+   succeeds.
 2. **A value has the right key but the wrong type or an out-of-range value.**
    That one setting falls back to its default; the rest of the file loads
    normally. Writes to that specific key are inhibited so your
@@ -159,8 +169,13 @@ application sharing one settings file, so most keys affect both; a few are
 TUI-only and a few are GUI-only. Both are marked in the tables below.
 
 **…reset a setting?** Delete its line from `settings.toml`. The default is used
-whenever a key is absent. Deleting the whole file resets every public setting.
-Private settings are unaffected by deleting `settings.toml`.
+whenever a key is absent. Deleting the whole file while Phosphor is closed resets
+every public setting. If you delete it while Phosphor is running, Phosphor writes
+your current settings back instead (a file that vanished by accident should not
+silently reset everything), so quit first to reset. A `settings.toml` larger than
+2 MB is not read, and a path that is a directory is reported as such; in both
+cases defaults are used and the file is left alone. Private settings are
+unaffected by deleting `settings.toml`.
 
 **…keep one settings file across several machines?** You can. Platform-specific
 keys will be reported as unknown on the platforms that do not compile them, which

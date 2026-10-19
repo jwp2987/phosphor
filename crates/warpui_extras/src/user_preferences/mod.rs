@@ -126,6 +126,21 @@ pub enum Error {
     #[error("i/o error")]
     IoError(#[from] std::io::Error),
 
+    /// The settings file path exists but is not a regular file (for example
+    /// it is a directory), so it cannot be read as settings (#895).
+    #[error("{} is not a file", .0.display())]
+    NotAFile(std::path::PathBuf),
+
+    /// The settings file is larger than any real settings file could be, so
+    /// it was not parsed (#863). Parsing a TOML document costs roughly ten
+    /// times its size in memory.
+    #[error("{} is {size} bytes, larger than the {limit} byte limit for a settings file", .path.display())]
+    TooLarge {
+        path: std::path::PathBuf,
+        size: u64,
+        limit: u64,
+    },
+
     /// Catch-all for unclassifiable errors.
     #[error("unknown error")]
     Unknown(#[from] anyhow::Error),

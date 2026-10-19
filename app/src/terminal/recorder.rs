@@ -141,8 +141,28 @@ impl PtyRecorder {
         let pty_reads_rx = self.pty_reads_rx.as_ref()?;
 
         let recordings_dir = self.path.parent()?;
-        if let Err(e) = fs::create_dir_all(recordings_dir) {
-            log::error!("Failed to create PTY recordings directory: {e}");
+        // Check up front that the recording can be written, so an unwritable
+        // state directory is reported instead of the toggle doing nothing.
+        let probe = fs::create_dir_all(recordings_dir).and_then(|()| {
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+                .map(|_| ())
+        });
+        if let Err(e) = probe {
+            log::error!(
+                "Failed to start PTY recording in {}: {e}",
+                recordings_dir.display()
+            );
+            self.show_toast(
+                format!(
+                    "Couldn't start PTY recording in {}: {e}",
+                    warp_core::paths::home_relative_path(recordings_dir)
+                ),
+                None,
+                ctx,
+            );
             return None;
         }
 

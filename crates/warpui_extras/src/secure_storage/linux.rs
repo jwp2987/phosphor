@@ -255,7 +255,12 @@ impl SecureStorage {
                     "Invalid fallback secure-storage directory"
                 )));
             };
-            std::fs::create_dir_all(fallback_dir).map_err(|err| Error::Unknown(err.into()))?;
+            std::fs::create_dir_all(fallback_dir).map_err(|err| {
+                Error::Unknown(anyhow!(
+                    "cannot create secure-storage directory {}: {err}",
+                    fallback_dir.display()
+                ))
+            })?;
             let mut dir_permissions = std::fs::metadata(fallback_dir)
                 .map_err(|err| Error::Unknown(err.into()))?
                 .permissions();
@@ -270,7 +275,12 @@ impl SecureStorage {
             .write(true)
             .mode(0o600)
             .open(&fallback_file)
-            .map_err(|err| Error::Unknown(err.into()))?;
+            .map_err(|err| {
+                Error::Unknown(anyhow!(
+                    "cannot write secure-storage file {}: {err}",
+                    fallback_file.display()
+                ))
+            })?;
         // `.mode()` applies only when *this* call creates the file. A blob left
         // behind by an older build is already `0o644` and `truncate(true)` keeps
         // that mode, so tighten explicitly through the open descriptor -- and do

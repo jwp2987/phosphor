@@ -10,6 +10,9 @@ cfg_if::cfg_if! {
     }
 }
 
+mod database_notice;
+pub use database_notice::{DatabaseProblem, DatabaseProblemNotice};
+
 pub use persistence::model;
 #[cfg_attr(not(feature = "local_fs"), expect(unused_imports))]
 pub use persistence::schema;
@@ -109,6 +112,19 @@ pub fn take_database_recovery_notice() -> Option<PathBuf> {
             None
         }
     }
+}
+
+/// If startup could not open `warp.sqlite` (read-only file or folder, full
+/// disk, ...), or writes to it started failing, returns -- once -- what to tell
+/// the user. Never involves moving the database (#860).
+pub fn take_database_problem_notice() -> Option<DatabaseProblemNotice> {
+    database_notice::take_database_problem_notice()
+}
+
+/// Returns, once, a receiver that gets a message whenever a database notice is
+/// recorded, so the UI can show it without waiting for a window change (#860).
+pub fn take_database_notice_wake_receiver() -> Option<async_channel::Receiver<()>> {
+    database_notice::take_notice_wake_receiver()
 }
 
 /// Prewarms the SQLite connection + runs migrations on a background thread.

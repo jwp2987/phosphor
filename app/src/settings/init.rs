@@ -170,7 +170,7 @@ pub fn init(
     // then keys that name no setting (nothing to substitute — the line is
     // simply inert). Only one can be shown, so the worse news wins.
     let settings_file_error = if let Some(err) = startup_toml_parse_error {
-        Some(super::SettingsFileError::FileParseFailed(err.to_string()))
+        Some(super::SettingsFileError::from_load_error(&err))
     } else if !invalid_setting_keys.is_empty() {
         Some(super::SettingsFileError::InvalidSettings(
             invalid_setting_keys,
@@ -187,6 +187,9 @@ pub fn init(
         match err {
             super::SettingsFileError::FileParseFailed(detail) => {
                 log::error!("Settings file could not be parsed: {detail}");
+            }
+            super::SettingsFileError::FileUnusable(reason) => {
+                log::error!("Settings file cannot be used: {reason}");
             }
             super::SettingsFileError::InvalidSettings(keys) => {
                 log::warn!(
@@ -461,7 +464,7 @@ fn handle_warp_config_change(
         log::warn!("Settings file reload failed: {err}");
         WarpConfig::handle(ctx).update(ctx, |_, ctx| {
             ctx.emit(WarpConfigUpdateEvent::SettingsErrors(
-                super::SettingsFileError::FileParseFailed(err.to_string()),
+                super::SettingsFileError::from_load_error(&err),
             ));
         });
         return;

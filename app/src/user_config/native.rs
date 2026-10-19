@@ -74,11 +74,27 @@ impl super::WarpConfig {
             ctx.spawn_stream_local(
                 failures,
                 |_, failure, ctx| {
-                    ctx.emit(WarpConfigUpdateEvent::SettingsSaveFailed {
-                        path: failure.path,
-                        reason: failure.message,
+                    use warpui_extras::user_preferences::toml_backed::SaveFailureKind;
+                    ctx.emit(match failure.kind {
+                        SaveFailureKind::SaveFailed => WarpConfigUpdateEvent::SettingsSaveFailed {
+                            path: failure.path,
+                            reason: failure.message,
+                        },
+                        SaveFailureKind::DeletedAndRestored => {
+                            WarpConfigUpdateEvent::SettingsFileRestored { path: failure.path }
+                        }
                     });
                 },
+                |_, _| {},
+            );
+        }
+
+        // Database notices raised after startup (#860) come from the SQLite
+        // writer thread; this wakes the UI to show them.
+        if let Some(wake) = crate::persistence::take_database_notice_wake_receiver() {
+            ctx.spawn_stream_local(
+                wake,
+                |_, (), ctx| ctx.emit(WarpConfigUpdateEvent::DatabaseNoticeRaised),
                 |_, _| {},
             );
         }

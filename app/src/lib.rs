@@ -1433,6 +1433,9 @@ fn initialize_app(
         .as_ref()
         .and_then(|err| match err {
             settings::SettingsFileError::FileParseFailed(msg) => Some(msg.clone()),
+            // Not a file, or too large to parse: the user's settings were not
+            // read, so cloud must not be overwritten with defaults either.
+            settings::SettingsFileError::FileUnusable(msg) => Some(msg.clone()),
             settings::SettingsFileError::InvalidSettings(_) => None,
             // Unknown keys mean the file parsed and the loader was happy with
             // every value it did recognize, so local state is fine.

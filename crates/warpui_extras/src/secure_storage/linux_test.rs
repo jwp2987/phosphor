@@ -229,3 +229,23 @@ fn reading_an_absent_or_already_tight_fallback_is_unchanged() {
         & 0o777;
     assert_eq!(mode, 0o600);
 }
+
+/// #861: a fallback directory that is a file is an error naming the path, not
+/// a bare "Not a directory (os error 20)", and nothing is overwritten.
+#[test]
+fn test_fallback_write_error_names_the_path_when_dir_is_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let not_a_dir = dir.path().join("state");
+    std::fs::write(&not_a_dir, b"keep me").unwrap();
+    let storage = SecureStorage::new_with_fallback("darmok", not_a_dir.clone());
+
+    let error = storage
+        .write_owner_only_fallback_value("key", "value")
+        .unwrap_err();
+    let message = format!("{error:?}");
+    assert!(
+        message.contains(&not_a_dir.display().to_string()),
+        "error should name the path: {message}"
+    );
+    assert_eq!(std::fs::read(&not_a_dir).unwrap(), b"keep me");
+}
