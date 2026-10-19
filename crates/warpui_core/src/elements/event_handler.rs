@@ -201,6 +201,11 @@ impl EventHandler {
         self
     }
 
+    /// The visible rect of this element, or `None` if it was never painted.
+    fn visible_rect(&self, ctx: &EventContext) -> Option<pathfinder_geometry::rect::RectF> {
+        ctx.visible_rect(self.origin?, self.size()?)
+    }
+
     fn dispatch_callback(
         &self,
         callback: Option<&RefCell<Handler>>,
@@ -209,7 +214,7 @@ impl EventHandler {
         app: &AppContext,
     ) -> bool {
         if let Some(callback) = callback.as_ref() {
-            if let Some(rect) = ctx.visible_rect(self.origin.unwrap(), self.size().unwrap()) {
+            if let Some(rect) = self.visible_rect(ctx) {
                 if rect.contains_point(position) {
                     return match callback.borrow_mut()(ctx, app, position) {
                         DispatchEventResult::PropagateToParent => false,
@@ -219,6 +224,81 @@ impl EventHandler {
             }
         }
         false
+    }
+}
+
+/// Minimum interval between logs of an event reaching an unpainted handler.
+const UNPAINTED_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Rate limiter for [`log_unpainted_dispatch`]: the last emit time and how many
+/// logs were suppressed since.
+struct LogLimiter {
+    last: std::sync::Mutex<Option<instant::Instant>>,
+    suppressed: std::sync::atomic::AtomicU32,
+}
+
+impl LogLimiter {
+    const fn new() -> Self {
+        Self {
+            last: std::sync::Mutex::new(None),
+            suppressed: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+
+    /// Returns the number of logs suppressed since the last emit if one should
+    /// be emitted now, else `None`.
+    fn check(&self) -> Option<u32> {
+        use std::sync::atomic::Ordering;
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        let now = instant::Instant::now();
+        if last.is_some_and(|t| now.duration_since(t) < UNPAINTED_LOG_INTERVAL) {
+            self.suppressed.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        *last = Some(now);
+        Some(self.suppressed.swap(0, Ordering::Relaxed))
+    }
+}
+
+static UNPAINTED_WARN_LIMITER: LogLimiter = LogLimiter::new();
+static UNPAINTED_DEBUG_LIMITER: LogLimiter = LogLimiter::new();
+
+/// Records an event reaching an `EventHandler` that was never painted (#841).
+///
+/// A hidden-view element tree is expected to be unpainted, so that is only a
+/// `debug`. A KeyDown/TypedCharacters reaching an unpainted handler inside the
+/// window's focused view (or one of its ancestors) means a key press the user
+/// aimed at the focused view found no painted handler, so that is a `warn`.
+fn log_unpainted_dispatch(event: &DispatchedEvent, ctx: &EventContext, app: &AppContext) {
+    let raw = event.raw_event();
+    let kind = EventDiscriminants::from(raw);
+    let is_key = matches!(raw, Event::KeyDown { .. } | Event::TypedCharacters { .. });
+    let focus = if is_key {
+        ctx.current_view_focus_info(app)
+    } else {
+        None
+    };
+    match focus {
+        Some((view_id, view_name, true)) => {
+            if let Some(suppressed) = UNPAINTED_WARN_LIMITER.check() {
+                log::warn!(
+                    "Key event {kind:?} reached an unpainted EventHandler in focused-path view \
+                     {view_id:?} ({view_name}); the key may have been lost \
+                     ({suppressed} similar suppressed)"
+                );
+            }
+        }
+        other => {
+            if let Some(suppressed) = UNPAINTED_DEBUG_LIMITER.check() {
+                let view = other
+                    .map(|(id, name, _)| format!("{id:?} ({name})"))
+                    .unwrap_or_else(|| "unknown view".to_owned());
+                log::debug!(
+                    "Event {kind:?} reached an unpainted EventHandler in non-focused view \
+                     {view} ({suppressed} similar suppressed)"
+                );
+            }
+        }
     }
 }
 
@@ -258,10 +338,10 @@ impl Element for EventHandler {
         }
 
         let Some(z_index) = self.child_max_z_index else {
-            log::error!(
-                "Dispatching event {:?} on EventHandler element which was never painted.",
-                EventDiscriminants::from(event.raw_event())
-            );
+            // Never painted (e.g. a hidden view re-rendered without layout, or a
+            // window that has not laid out yet). The child already had its
+            // chance above; there is no origin/z-index to hit-test against.
+            log_unpainted_dispatch(event, ctx, app);
             return false;
         };
         match event.at_z_index(z_index, ctx) {
@@ -274,10 +354,7 @@ impl Element for EventHandler {
                     fire_on_synthetic_events,
                     fire_when_covered,
                 } = self.mouse_in_behavior;
-                let is_covered = ctx.is_covered(Point::from_vec2f(
-                    *position,
-                    self.child_max_z_index.expect("child max z index not set"),
-                ));
+                let is_covered = ctx.is_covered(Point::from_vec2f(*position, z_index));
                 let should_fire = (!is_synthetic || fire_on_synthetic_events)
                     && (fire_when_covered || !is_covered);
                 if should_fire
@@ -322,8 +399,7 @@ impl Element for EventHandler {
                 ..
             }) => {
                 if let Some(callback) = self.right_mouse_down.as_ref() {
-                    if let Some(rect) = ctx.visible_rect(self.origin.unwrap(), self.size().unwrap())
-                    {
+                    if let Some(rect) = self.visible_rect(ctx) {
                         if rect.contains_point(*position) {
                             let modifiers = ModifiersState {
                                 cmd: *cmd,
@@ -371,8 +447,7 @@ impl Element for EventHandler {
                 modifiers,
             }) => {
                 if let Some(callback) = self.scroll_wheel.as_ref() {
-                    if let Some(rect) = ctx.visible_rect(self.origin.unwrap(), self.size().unwrap())
-                    {
+                    if let Some(rect) = self.visible_rect(ctx) {
                         if rect.contains_point(*position) {
                             return match callback.borrow_mut()(ctx, app, delta, modifiers) {
                                 DispatchEventResult::PropagateToParent => false,
