@@ -49,6 +49,9 @@ use crate::pane_group::focus_state::PaneFocusHandle;
 use crate::prompt::editor_modal::OpenSource as PromptEditorOpenSource;
 use crate::search::slash_command_menu::static_commands::commands::{self, COMMAND_REGISTRY};
 
+use crate::ai::blocklist::misroute_recovery::{
+    agent_view_entry_keeps_offer, MisrouteOffer, RouteReason, SubmitRoute,
+};
 use crate::server::telemetry::{PaletteSource, SlashCommandAcceptedDetails, SlashMenuSource};
 use crate::settings::PrivacySettings;
 use crate::suggestions::ignored_suggestions_model::{
@@ -1222,6 +1225,14 @@ pub enum InputAction {
     /// Clears attached blocks and text selection context.
     ClearAttachedContext,
 
+    /// "Send to agent instead" (#835): the last submit was autodetected as a shell command and
+    /// was not found; send the same text to the agent once.
+    SendLastSubmitToAgent,
+
+    /// "Run as shell command instead" (#835): the last submit was autodetected as an agent
+    /// query; abandon that turn and run the same text as a shell command once.
+    RunLastSubmitAsShell,
+
     /// Fired when the "Get Figma MCP" contextual button is clicked.
     FigmaAddButtonClicked,
 
@@ -1757,6 +1768,12 @@ pub struct Input {
     shell_command_submit_pending: bool,
     /// Whether the last Enter submitted a shell command; read by `input_enter_as_shell_command`.
     last_enter_submitted_shell_command: bool,
+    /// Whether the last Enter submitted an agent query (sent it, or asked to enter the agent view
+    /// with it); read by the misroute recovery to tell a real submit from a refused one (#835).
+    last_enter_submitted_ai_query: bool,
+    /// Set while the "Send to agent instead" recovery submits, so the agent-view entry it causes
+    /// is explicit (and sends on entry) rather than a locked `Input` entry (#835).
+    submitting_misroute_recovery: bool,
 
     /// Weak handle to this input view for drop target data
     weak_view_handle: WeakViewHandle<Input>,
@@ -2233,6 +2250,19 @@ impl Input {
         });
         ctx.subscribe_to_model(&agent_view_controller, |me, _, event, ctx| {
             use crate::ai::blocklist::agent_view::AgentViewControllerEvent;
+            // Any agent-view transition other than the entry the autodetected submit itself
+            // caused makes a remembered submit stale (#835).
+            let invalidates_misroute_offer = match event {
+                AgentViewControllerEvent::EnteredAgentView { origin, .. } => {
+                    !agent_view_entry_keeps_offer(origin)
+                }
+                AgentViewControllerEvent::ExitedAgentView { .. } => true,
+                _ => false,
+            };
+            if invalidates_misroute_offer {
+                me.ai_input_model
+                    .update(ctx, |model, ctx| model.clear_misroute_memory(ctx));
+            }
             if let AgentViewControllerEvent::EnteredAgentView { origin, .. } = event {
                 me.close_suggestion_modes_for_new_conversation(ctx);
                 // Entering Agent View can remove multiline same-line prompt decorator content in a
@@ -3380,6 +3410,8 @@ impl Input {
             is_editor_empty_on_last_edit: is_editor_empty,
             shell_command_submit_pending: false,
             last_enter_submitted_shell_command: false,
+            last_enter_submitted_ai_query: false,
+            submitting_misroute_recovery: false,
             weak_view_handle: ctx.handle(),
             agent_status_view,
             agent_view_controller,
@@ -8977,6 +9009,15 @@ impl Input {
                 }
 
                 let is_editor_empty = self.editor.as_ref(ctx).is_empty(ctx);
+                // Typing anything new dismisses a misroute recovery offer (#835).
+                if matches!(
+                    edit_origin,
+                    EditOrigin::UserTyped | EditOrigin::UserInitiated
+                ) {
+                    self.ai_input_model.update(ctx, |model, ctx| {
+                        model.dismiss_misroute_offer_on_edit(is_editor_empty, ctx);
+                    });
+                }
                 if is_editor_empty != self.is_editor_empty_on_last_edit {
                     self.is_editor_empty_on_last_edit = is_editor_empty;
                     ctx.emit(Event::InputEmptyStateChanged {
@@ -12423,10 +12464,13 @@ impl Input {
             }
 
             let command = self.get_command(ctx);
+            // Read how this submit is routed before the submit resets the input config (#835).
+            let route_reason = self.ai_input_model.as_ref(ctx).submit_route_reason();
             if !self.try_execute_command(&command, ctx) {
                 return;
             }
             self.last_enter_submitted_shell_command = true;
+            self.record_misroute_memory(&command, SubmitRoute::Shell, route_reason, ctx);
 
             if FeatureFlag::AgentMode.is_enabled()
                 && AISettings::as_ref(ctx).is_ai_autodetection_enabled(ctx)
@@ -12505,6 +12549,142 @@ impl Input {
             input_model.set_input_config(previous_config, is_buffer_empty, ctx);
         });
         submitted
+    }
+
+    /// Remembers a submit for the misroute recovery (#835).
+    fn record_misroute_memory(
+        &mut self,
+        text: &str,
+        route: SubmitRoute,
+        reason: RouteReason,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.ai_input_model.update(ctx, |model, ctx| {
+            model.record_submit_route(text, route, reason, ctx);
+        });
+    }
+
+    /// Re-submits `text` once with the input locked to `input_type`, as if the user had chosen
+    /// that route explicitly (so the re-submit is recorded as locked and never offered a recovery
+    /// of its own). The buffer must be empty. If nothing was submitted (the submit was refused),
+    /// the previous input config is restored exactly, including its lock flag.
+    fn resubmit_locked_to(
+        &mut self,
+        text: &str,
+        input_type: InputType,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let (previous_config, previous_lock_flag) =
+            self.ai_input_model.as_ref(ctx).input_config_snapshot();
+        self.ai_input_model.update(ctx, |model, ctx| {
+            model.set_input_config(
+                InputConfig {
+                    input_type,
+                    is_locked: true,
+                },
+                true,
+                ctx,
+            );
+        });
+        self.editor.update(ctx, |editor, ctx| {
+            editor.set_buffer_text(text, ctx);
+        });
+        self.last_enter_submitted_shell_command = false;
+        self.last_enter_submitted_ai_query = false;
+        self.submitting_misroute_recovery = input_type.is_ai();
+        self.input_enter(ctx);
+        self.submitting_misroute_recovery = false;
+        let submitted = match input_type {
+            InputType::Shell => self.last_enter_submitted_shell_command,
+            InputType::AI => self.last_enter_submitted_ai_query,
+        };
+        if !submitted {
+            self.ai_input_model.update(ctx, |model, ctx| {
+                model.restore_input_config(previous_config, previous_lock_flag, ctx);
+            });
+        }
+    }
+
+    /// "Send to agent instead" (#835): sends the text of an autodetected-Shell submit that came
+    /// back "command not found" to the agent, once.
+    fn recover_misroute_send_to_agent(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.editor.as_ref(ctx).is_empty(ctx) {
+            return;
+        }
+        let is_offered = matches!(
+            self.ai_input_model.as_ref(ctx).misroute_offer(),
+            Some(MisrouteOffer::SendToAgent { .. })
+        );
+        if !is_offered {
+            return;
+        }
+        let Some(MisrouteOffer::SendToAgent { text }) = self
+            .ai_input_model
+            .update(ctx, |model, ctx| model.take_misroute_offer(ctx))
+        else {
+            return;
+        };
+        self.resubmit_locked_to(&text, InputType::AI, ctx);
+    }
+
+    /// "Run as shell command instead" (#835): abandons the autodetected agent turn (cancelling it
+    /// if still running, as running a command over a streaming turn does) and runs its text as a
+    /// shell command, once.
+    fn recover_misroute_run_as_shell(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.editor.as_ref(ctx).is_empty(ctx) {
+            return;
+        }
+        let is_offered = matches!(
+            self.ai_input_model.as_ref(ctx).misroute_offer(),
+            Some(MisrouteOffer::RunAsShell { .. })
+        );
+        if !is_offered {
+            return;
+        }
+        // Check that both halves can happen before doing either: the turn is not cancelled and
+        // the offer is not consumed if the command could not run or the view cannot be left.
+        if self.can_execute_command(ctx).is_no() {
+            return;
+        }
+        let agent_view_active = self.agent_view_controller.as_ref(ctx).is_active();
+        if agent_view_active
+            && self
+                .agent_view_controller
+                .as_ref(ctx)
+                .can_exit_agent_view(ctx)
+                .is_err()
+        {
+            return;
+        }
+        let Some(MisrouteOffer::RunAsShell { text }) = self
+            .ai_input_model
+            .update(ctx, |model, ctx| model.take_misroute_offer(ctx))
+        else {
+            return;
+        };
+
+        // Cancel the turn through the existing path used when a command runs over a streaming
+        // conversation.
+        self.ai_controller.update(ctx, |controller, ctx| {
+            let active_conversation_id = BlocklistAIHistoryModel::as_ref(ctx)
+                .active_conversation(self.terminal_view_id)
+                .filter(|conversation| conversation.status().is_in_progress())
+                .map(|conversation| conversation.id());
+            if let Some(active_conversation_id) = active_conversation_id {
+                controller.cancel_conversation_progress(
+                    active_conversation_id,
+                    CancellationReason::UserCommandExecuted,
+                    ctx,
+                );
+            }
+        });
+        // The text was never meant for the agent: leave the agent view it opened.
+        if agent_view_active {
+            self.agent_view_controller.update(ctx, |controller, ctx| {
+                controller.exit_agent_view_without_confirmation(ctx);
+            });
+        }
+        self.resubmit_locked_to(&text, InputType::Shell, ctx);
     }
 
     /// Makes the next Enter in this input run as [`Self::input_enter_as_shell_command`].
@@ -13263,15 +13443,23 @@ impl Input {
             if prompt.is_empty() {
                 return;
             }
-            ctx.emit(Event::EnterAgentView {
-                initial_prompt: Some(prompt),
-                conversation_id: None,
-                origin: AgentViewEntryOrigin::Input {
+            let route_reason = self.ai_input_model.as_ref(ctx).submit_route_reason();
+            self.record_misroute_memory(&prompt, SubmitRoute::Ai, route_reason, ctx);
+            let origin = if std::mem::take(&mut self.submitting_misroute_recovery) {
+                AgentViewEntryOrigin::MisrouteRecovery
+            } else {
+                AgentViewEntryOrigin::Input {
                     was_prompt_autodetected: !self
                         .ai_input_model
                         .as_ref(ctx)
                         .is_input_type_locked(),
-                },
+                }
+            };
+            self.last_enter_submitted_ai_query = true;
+            ctx.emit(Event::EnterAgentView {
+                initial_prompt: Some(prompt),
+                conversation_id: None,
+                origin,
             });
             return;
         }
@@ -13321,6 +13509,15 @@ impl Input {
             model.remove_ignored_suggestion(ai_query.clone(), SuggestionType::AIQuery, ctx);
         });
 
+        // A follow-up inside the agent view is never offered a recovery (#835).
+        if self.agent_view_controller.as_ref(ctx).is_active() {
+            self.ai_input_model
+                .update(ctx, |model, ctx| model.clear_misroute_memory(ctx));
+        } else {
+            let route_reason = self.ai_input_model.as_ref(ctx).submit_route_reason();
+            self.record_misroute_memory(&ai_query, SubmitRoute::Ai, route_reason, ctx);
+        }
+
         self.ai_input_model.update(ctx, |model, ctx| {
             model.handle_input_buffer_submitted(ctx);
         });
@@ -13345,6 +13542,7 @@ impl Input {
             });
         }
 
+        self.last_enter_submitted_ai_query = true;
         ctx.emit(Event::ExecuteAIQuery);
 
         if let Some(workflow_state) = self.workflows_state.selected_workflow_state.as_ref() {
@@ -13764,6 +13962,24 @@ impl Input {
     ) {
         if let BlockType::User(block_completed) = block {
             self.last_user_block_completed = Some(block_completed.clone());
+
+            // Tell the misroute memory how the command ended (#835).
+            if !block_completed.was_part_of_agent_interaction {
+                let command = block_completed.command.get_with(|compute| {
+                    let model = self.model.lock();
+                    compute(model.block_list())
+                });
+                let exit_code = block_completed
+                    .serialized_block
+                    .get_with(|compute| {
+                        let model = self.model.lock();
+                        compute(model.block_list())
+                    })
+                    .exit_code;
+                self.ai_input_model.update(ctx, |model, ctx| {
+                    model.note_command_finished(command, exit_code, ctx);
+                });
+            }
 
             let is_in_fullscreen_agent_view =
                 self.agent_view_controller.as_ref(ctx).is_fullscreen();
@@ -14690,6 +14906,12 @@ impl TypedActionView for Input {
             }
             InputAction::ClearAttachedContext => {
                 self.clear_attached_context(ctx);
+            }
+            InputAction::SendLastSubmitToAgent => {
+                self.recover_misroute_send_to_agent(ctx);
+            }
+            InputAction::RunLastSubmitAsShell => {
+                self.recover_misroute_run_as_shell(ctx);
             }
         }
     }

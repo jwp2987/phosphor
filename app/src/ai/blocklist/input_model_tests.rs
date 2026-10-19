@@ -1216,3 +1216,107 @@ fn typeahead_provenance_ends_with_its_buffer() {
         input_model.read(&app, |model, _| assert!(model.typeahead_prefix.is_none()));
     });
 }
+
+/// #835: the route reason follows the lock, and the remembered submit reaches the offer through
+/// the model (record, command finished, edit).
+#[test]
+fn misroute_offer_follows_route_reason_and_edits() {
+    use warp_core::command::ExitCode;
+
+    App::test((), |mut app| async move {
+        let (input_model, _) = build_input_model(&mut app, StubPolicy::inert(SHELL_UNLOCKED));
+
+        input_model.read(&app, |model, _| {
+            assert_eq!(model.submit_route_reason(), RouteReason::Autodetected);
+        });
+
+        // Autodetected shell submit that came back "command not found" offers the agent.
+        input_model.update(&mut app, |model, ctx| {
+            let reason = model.submit_route_reason();
+            model.record_submit_route("what is a monad", SubmitRoute::Shell, reason, ctx);
+            assert_eq!(model.misroute_offer(), None);
+            model.note_command_finished("what is a monad", ExitCode::from(127), ctx);
+            assert_eq!(
+                model.misroute_offer(),
+                Some(MisrouteOffer::SendToAgent {
+                    text: "what is a monad".to_owned()
+                })
+            );
+            // Typing something new dismisses it.
+            model.dismiss_misroute_offer_on_edit(false, ctx);
+            assert_eq!(model.misroute_offer(), None);
+        });
+    });
+}
+
+/// #835: a locked submit (explicit mode choice) never offers anything.
+#[test]
+fn misroute_offer_never_shown_for_locked_routing() {
+    use warp_core::command::ExitCode;
+
+    App::test((), |mut app| async move {
+        let (locked_model, _) = build_input_model(&mut app, StubPolicy::inert(SHELL_LOCKED));
+        locked_model.update(&mut app, |model, ctx| {
+            let reason = model.submit_route_reason();
+            assert_eq!(reason, RouteReason::Locked);
+            model.record_submit_route("nosuchcmd", SubmitRoute::Shell, reason, ctx);
+            model.note_command_finished("nosuchcmd", ExitCode::from(127), ctx);
+            assert_eq!(model.misroute_offer(), None);
+        });
+    });
+}
+
+/// #835: taking the offer is one-shot, and an agent-view follow-up clears the memory.
+#[test]
+fn misroute_offer_is_one_shot_and_cleared_for_follow_ups() {
+    App::test((), |mut app| async move {
+        let (input_model, _) = build_input_model(&mut app, StubPolicy::inert(AI_UNLOCKED));
+        input_model.update(&mut app, |model, ctx| {
+            model.record_submit_route(
+                "git status",
+                SubmitRoute::Ai,
+                RouteReason::Autodetected,
+                ctx,
+            );
+            assert_eq!(
+                model.take_misroute_offer(ctx),
+                Some(MisrouteOffer::RunAsShell {
+                    text: "git status".to_owned()
+                })
+            );
+            assert_eq!(model.take_misroute_offer(ctx), None);
+
+            model.record_submit_route(
+                "git status",
+                SubmitRoute::Ai,
+                RouteReason::Autodetected,
+                ctx,
+            );
+            model.clear_misroute_memory(ctx);
+            assert_eq!(model.misroute_offer(), None);
+        });
+    });
+}
+
+/// #835: a multi-line agent submit is never offered "run as shell", and the lock-flag snapshot
+/// round-trips through `restore_input_config` untouched.
+#[test]
+fn misroute_multi_line_not_offered_and_config_snapshot_round_trips() {
+    App::test((), |mut app| async move {
+        let (input_model, _) = build_input_model(&mut app, StubPolicy::inert(AI_UNLOCKED));
+        input_model.update(&mut app, |model, ctx| {
+            model.record_submit_route(
+                "echo a\necho b",
+                SubmitRoute::Ai,
+                RouteReason::Autodetected,
+                ctx,
+            );
+            assert_eq!(model.misroute_offer(), None);
+
+            let (config, flag) = model.input_config_snapshot();
+            model.set_input_config(SHELL_LOCKED, true, ctx);
+            model.restore_input_config(config, flag, ctx);
+            assert_eq!(model.input_config_snapshot(), (config, flag));
+        });
+    });
+}

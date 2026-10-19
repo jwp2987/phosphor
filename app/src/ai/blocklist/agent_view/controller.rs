@@ -142,6 +142,9 @@ pub enum AgentViewEntryOrigin {
     ExternalAmbientAgent,
     /// Entered agent view via the CLI (e.g. `warp agent run`).
     Cli,
+    /// Entered agent view by the "Send to agent instead" misroute recovery (#835): the user
+    /// explicitly chose to send the text to the agent, so it is sent on entry.
+    MisrouteRecovery,
     /// Entered agent view by adding an image (drag-and-drop or paste).
     ImageAdded,
     /// Entered agent view by executing a slash command that requires agent mode.
@@ -220,7 +223,9 @@ impl AgentViewEntryOrigin {
             AgentViewEntryOrigin::SlashCommand { trigger } if !trigger.is_keybinding() => {
                 AutoTriggerBehavior::Always
             }
-            AgentViewEntryOrigin::Cli => AutoTriggerBehavior::Always,
+            AgentViewEntryOrigin::Cli | AgentViewEntryOrigin::MisrouteRecovery => {
+                AutoTriggerBehavior::Always
+            }
             AgentViewEntryOrigin::AcceptedPromptSuggestion => AutoTriggerBehavior::Always,
             AgentViewEntryOrigin::LinearDeepLink => AutoTriggerBehavior::Never,
             _ => AutoTriggerBehavior::InAgentView,
