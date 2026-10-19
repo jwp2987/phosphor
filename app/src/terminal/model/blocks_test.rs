@@ -2324,6 +2324,29 @@ fn test_kitty_store_only_does_not_render_in_script_execution_block() {
     assert!(block_list.active_block().output_grid().is_empty());
 }
 
+/// #821: `reinit_shell` replaces the active block, so an unfinished background block before it
+/// must be finished first or it is orphaned (keeping its full-size grids forever).
+#[test]
+fn test_reinit_shell_finishes_pending_background_block() {
+    let mut block_list =
+        new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+
+    insert_block(&mut block_list, "some background command &\n", "\n");
+    input_string(&mut block_list, "bg1");
+    block_list.carriage_return();
+    block_list.linefeed();
+    block_list.on_finish_byte_processing(&ansi::ProcessorInput::new(&[]));
+
+    let bg_index = block_list.active_block_index().0 - 1;
+    assert!(block_list.blocks[bg_index].is_background());
+    assert!(!block_list.blocks[bg_index].finished());
+
+    block_list.reinit_shell();
+
+    assert!(block_list.blocks[bg_index].is_background());
+    assert!(block_list.blocks[bg_index].finished());
+}
+
 #[test]
 fn test_iterm_image_early_output_routes_to_background_block() {
     let _iterm_images = FeatureFlag::ITermImages.override_enabled(true);
