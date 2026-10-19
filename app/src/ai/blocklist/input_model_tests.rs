@@ -461,8 +461,8 @@ fn build_input_model(
         None,  /* session_startup_path */
     )));
     let terminal_view_id = EntityId::new();
-    let conversation_selection = app
-        .add_model(|_| Box::new(MockConversationSelection) as Box<dyn ConversationSelection>);
+    let conversation_selection =
+        app.add_model(|_| Box::new(MockConversationSelection) as Box<dyn ConversationSelection>);
     let ai_context_model = app.add_model(|_| {
         BlocklistAIContextModel::mock_agent_view_less(
             terminal_model.clone(),
@@ -1017,6 +1017,43 @@ fn settled_or_locked_type_is_not_overridden_at_submit() {
         input_model.read(&app, |model, _| {
             assert_eq!(model.input_config(), AI_LOCKED);
         });
+    });
+}
+
+/// #833 F6, agent-ward: prose pasted or typed fast right after a shell command inherits `Shell`;
+/// Enter must move it to the agent when it reads as a request, and leave real commands alone.
+#[test]
+fn pending_prose_inheriting_shell_settles_to_ai_at_submit() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, SHELL_UNLOCKED);
+        for prose in [
+            "help me",
+            "yes please",
+            "watch the logs for errors",
+            "docker vs podman?",
+        ] {
+            input_model.update(&mut app, |model, ctx| {
+                model.apply_autodetected_input_type(InputType::Shell, ctx);
+                model.note_detection_requested(prose.to_owned());
+            });
+            // Only the Shell-ward settle reports `true`.
+            assert!(!settle_for_submit(&mut app, &input_model, prose), "{prose}");
+            input_model.read(&app, |model, ctx| {
+                assert_eq!(model.input_type(), InputType::AI, "{prose}");
+                assert!(!model.is_detection_pending_for(prose, ctx), "{prose}");
+            });
+        }
+        for kept in ["ls -la", "echo this and that", "cargo build"] {
+            input_model.update(&mut app, |model, ctx| {
+                model.apply_autodetected_input_type(InputType::Shell, ctx);
+                model.note_detection_requested(kept.to_owned());
+            });
+            settle_for_submit(&mut app, &input_model, kept);
+            input_model.read(&app, |model, _| {
+                assert_eq!(model.input_type(), InputType::Shell, "{kept}");
+            });
+        }
     });
 }
 

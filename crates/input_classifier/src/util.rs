@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use lazy_static::lazy_static;
 use natural_language_detection::{
-    WordDb, check_if_token_has_shell_syntax, is_ordinary_english_word, is_word,
+    check_if_token_has_shell_syntax, is_ordinary_english_word, is_word, WordDb,
 };
 use warp_completer::ParsedTokensSnapshot;
 
@@ -1063,6 +1063,55 @@ pub fn reads_as_prose(buffer_text: &str) -> bool {
     words
         .get(first_index + 1..)
         .is_some_and(|remaining| has_prose_veto_word(head, remaining))
+}
+
+/// Shell reserved words that head compound commands whose body legitimately contains bare
+/// function words (`for i in a b; do ...`, `if true; then ...`), so [`reads_as_command_headed_prose`]
+/// never fires on them.
+const COMPOUND_COMMAND_HEADS: [&str; 10] = [
+    "for", "while", "until", "if", "case", "select", "function", "time", "do", "then",
+];
+
+/// Fork-original (#834): true iff the buffer has a command-looking head but reads as a request in
+/// English: a bare member of [`PROSE_FUNCTION_WORDS`] after the head (`help me`, `do
+/// it`, `watch the logs for errors`, `npm install fails with EACCES`, `rm -rf ~/proj and clone
+/// again`), or a trailing `?` after a letter (`docker vs podman?`). The safety gate uses it to
+/// turn a classifier's `Shell` verdict back into `AI` even though the first word is an installed
+/// command, which [`first_token_forces_ai_override`] cannot do.
+///
+/// Deliberately narrower than [`reads_as_prose`]: no colon shape (`git commit -m "feat: x"`), no
+/// article or sentence-punctuation rule, no `re-` rule, and compound-command heads
+/// ([`COMPOUND_COMMAND_HEADS`]) are exempt. Quoted words never count, so `echo "to be"` is
+/// unaffected. A buffer with a glued shell operator in its head word, or over
+/// [`MAX_PREFILTER_BYTES`], returns `false`.
+pub fn reads_as_command_headed_prose(buffer_text: &str) -> bool {
+    let text = buffer_text.trim();
+    if text.is_empty() || text.len() > MAX_PREFILTER_BYTES || !has_shell_safe_quoting(text) {
+        return false;
+    }
+    let words = split_shell_words(text);
+    let first_index = words
+        .iter()
+        .take_while(|word| !word.quoted && is_env_assignment_token(&word.text))
+        .count();
+    let Some(first) = words.get(first_index) else {
+        return false;
+    };
+    if first.quoted
+        || first.text.contains(SHELL_WORD_TERMINATORS)
+        || COMPOUND_COMMAND_HEADS.contains(&first.text.as_str())
+    {
+        return false;
+    }
+    let remaining = &words[first_index + 1..];
+    if remaining.is_empty() {
+        return false;
+    }
+    if remaining.iter().any(is_function_word) {
+        return true;
+    }
+    text.strip_suffix('?')
+        .is_some_and(|before| before.ends_with(|c: char| c.is_alphabetic()))
 }
 
 /// Fork-original (#886): true iff `buffer_text` carries no prose evidence anywhere, the head word

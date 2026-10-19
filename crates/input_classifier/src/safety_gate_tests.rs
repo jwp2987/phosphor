@@ -426,3 +426,50 @@ fn test_gate_forces_shell_for_unambiguous_commands_regardless_of_inner_classifie
         }
     });
 }
+
+/// #834: prose that starts with an installed command is overridden to AI even though the first
+/// word has command evidence, while real command lines (including ones with colons, quotes and
+/// compound-command bodies) stay Shell.
+#[test]
+fn test_gate_overrides_command_headed_prose_to_ai() {
+    futures::executor::block_on(async move {
+        let gated = SafetyGatedClassifier::new(AlwaysShellClassifier);
+        for buffer in [
+            "help me",
+            "help me with this",
+            "do it",
+            "install docker and run it",
+            "npm install fails with EACCES",
+            "read main.rs and explain it",
+            "watch the logs for errors",
+            "make sure the build passes",
+            "docker vs podman?",
+            "rm -rf ~/proj and clone again",
+        ] {
+            let input = snapshot_without_descriptions(buffer);
+            let result = gated.detect_input_type(input, &context(true)).await;
+            assert_eq!(
+                result.input_type,
+                InputType::AI,
+                "{buffer:?} should go to AI"
+            );
+        }
+        for buffer in [
+            "git status",
+            "cargo build --release",
+            "git commit -m \"feat: add the thing\"",
+            "echo \"to be or not to be\"",
+            "for i in 1 2 3; do echo $i; done",
+            "if true; then echo y; fi",
+            "cat a b > c.txt",
+        ] {
+            let input = snapshot_without_descriptions(buffer);
+            let result = gated.detect_input_type(input, &context(false)).await;
+            assert_eq!(
+                result.input_type,
+                InputType::Shell,
+                "{buffer:?} should stay Shell"
+            );
+        }
+    });
+}
