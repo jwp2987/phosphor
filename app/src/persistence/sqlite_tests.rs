@@ -2252,6 +2252,8 @@ fn migration_race_error_is_recognised_and_not_unusable() {
 /// fail it within the shared budget instead of freezing the UI -- and must not
 /// make the database look unusable.
 #[test]
+// Test-only: measures wall-clock time against the setup lock budget.
+#[allow(clippy::disallowed_types)]
 fn setup_gives_up_within_the_budget_when_another_connection_holds_the_lock() {
     use diesel::{connection::SimpleConnection, Connection, SqliteConnection};
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
