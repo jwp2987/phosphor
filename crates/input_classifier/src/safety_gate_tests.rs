@@ -505,3 +505,116 @@ fn test_gate_keeps_pipelines_and_keyword_heads_shell_when_commands_loaded() {
         }
     });
 }
+
+/// A fake classifier that always says AI, like a model that scores every line with an English
+/// word in it as a request (#906).
+struct AlwaysAiClassifier;
+
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+impl InputClassifier for AlwaysAiClassifier {
+    async fn detect_input_type(
+        &self,
+        _input: ParsedTokensSnapshot,
+        _context: &Context,
+    ) -> InputClassificationResult {
+        InputClassificationResult::new(
+            InputType::AI,
+            InputClassifierDecisionSource::InputClassifier,
+        )
+    }
+
+    async fn classify_input(
+        &self,
+        _input: ParsedTokensSnapshot,
+        _context: &Context,
+    ) -> anyhow::Result<ClassificationResult> {
+        Ok(ClassificationResult::pure_shell(
+            InputClassifierDecisionSource::ShellHeuristic,
+        ))
+    }
+}
+
+/// The first non-assignment, non-wrapper-free word of the line gets a `token_description`, the
+/// way the completer describes the first word of a command; wrappers are described, their
+/// arguments are not.
+fn snapshot_head_known(buffer_text: &str) -> ParsedTokensSnapshot {
+    let mut snapshot = snapshot_without_descriptions(buffer_text);
+    let index = snapshot
+        .parsed_tokens
+        .iter()
+        .position(|token| !token.token.as_str().contains('='))
+        .unwrap_or(0);
+    if let Some(token) = snapshot.parsed_tokens.get_mut(index) {
+        token.token_description = Some(Description {
+            token: token.token.clone(),
+            description_text: Some("Command".to_string()),
+            suggestion_type: SuggestionType::Command(TopLevelCommandCaseSensitivity::CaseSensitive),
+        });
+    }
+    snapshot
+}
+
+#[test]
+fn test_gate_vetoes_ai_for_known_command_corpus_through_the_whole_gate() {
+    use crate::request_corpus::{PROSE_WITH_COMMAND_HEADS, REAL_COMMANDS_WITH_ENGLISH_ARGS};
+    futures::executor::block_on(async move {
+        let gated = SafetyGatedClassifier::new(AlwaysAiClassifier);
+        let mut leaked = Vec::new();
+        for buffer in REAL_COMMANDS_WITH_ENGLISH_ARGS {
+            for loaded in [true, false] {
+                let result = gated
+                    .detect_input_type(snapshot_head_known(buffer), &context(loaded))
+                    .await;
+                if result.input_type != InputType::Shell {
+                    leaked.push(*buffer);
+                }
+            }
+        }
+        assert!(
+            leaked.is_empty(),
+            "{} leak to the agent: {leaked:#?}",
+            leaked.len()
+        );
+
+        let mut stuck_shell = Vec::new();
+        for buffer in PROSE_WITH_COMMAND_HEADS {
+            let result = gated
+                .detect_input_type(snapshot_head_known(buffer), &context(true))
+                .await;
+            if result.input_type != InputType::AI {
+                stuck_shell.push(*buffer);
+            }
+        }
+        assert!(
+            stuck_shell.is_empty(),
+            "prose vetoed to Shell: {stuck_shell:#?}"
+        );
+    });
+}
+
+#[test]
+fn test_gate_keeps_ai_when_head_is_unknown_or_session_cannot_say() {
+    futures::executor::block_on(async move {
+        let gated = SafetyGatedClassifier::new(AlwaysAiClassifier);
+        for buffer in [
+            "grep this that",
+            "make the build",
+            "nohup grep this the file",
+        ] {
+            // No token_description anywhere: unknown head / stale or absent session data.
+            let result = gated
+                .detect_input_type(snapshot_without_descriptions(buffer), &context(false))
+                .await;
+            assert_eq!(result.input_type, InputType::AI, "{buffer:?}");
+        }
+        // Multi-line pastes are not decided by the veto.
+        let result = gated
+            .detect_input_type(
+                snapshot_head_known("find the bug\nin main.rs"),
+                &context(true),
+            )
+            .await;
+        assert_eq!(result.input_type, InputType::AI);
+    });
+}

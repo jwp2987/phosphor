@@ -1442,6 +1442,56 @@ pub fn reads_as_request_to_agent(buffer_text: &str) -> bool {
     reads_as_command_headed_prose(buffer_text)
 }
 
+/// First word of the command a line runs, after `VAR=x` prefixes and wrappers ([`WRAPPER_HEADS`]).
+pub fn effective_head_word(buffer_text: &str) -> Option<String> {
+    let words = split_shell_words(buffer_text.trim());
+    let first_index = words
+        .iter()
+        .take_while(|word| !word.quoted && is_env_assignment_token(&word.text))
+        .count();
+    effective_head_index(&words, first_index).map(|index| words[index].text.clone())
+}
+
+/// Fork-original (#906): true iff the line is a single short line whose command is one the
+/// session knows. The first parsed token (after `VAR=x` prefixes) must carry command evidence
+/// (a `token_description`: installed command, alias, function or builtin; a one-off keyword; a
+/// path), so an unknown head, or session data that cannot say (`None`/stale: no descriptions),
+/// is never "known". For a wrapper line (`nohup grep ...`, `timeout 5 git ...`) the completer
+/// only describes the wrapper, so the wrapped command counts when it takes free text or is not an
+/// ordinary English word (`grep`, `git`, `ollama`, but not `can`/`fix`). Multi-line and oversized
+/// buffers are never decided here.
+pub fn known_command_head(input: &ParsedTokensSnapshot) -> bool {
+    let text = input.buffer_text.trim();
+    if text.is_empty() || text.len() > MAX_PREFILTER_BYTES || text.contains(['\n', '\r']) {
+        return false;
+    }
+    let mut tokens = input.parsed_tokens.iter();
+    let Some(mut token) = tokens.next() else {
+        return false;
+    };
+    while is_env_assignment_token(token.token.as_str()) {
+        let Some(next) = tokens.next() else {
+            return false;
+        };
+        token = next;
+    }
+    if !has_command_evidence(token) {
+        return false;
+    }
+    let words = split_shell_words(text);
+    let first_index = words
+        .iter()
+        .take_while(|word| !word.quoted && is_env_assignment_token(&word.text))
+        .count();
+    match effective_head_index(&words, first_index) {
+        Some(index) if index == first_index => true,
+        Some(index) => {
+            takes_free_text(&words, index) || !is_ordinary_english_word(&words[index].text)
+        }
+        None => false,
+    }
+}
+
 /// Words that, outside command lines, mark a sentence addressed to someone: first/second person
 /// pronouns, a polite or modal opener and the interrogatives. Deliberately NOT articles or
 /// prepositions (`the`, `to`, `for`, `and`...): those sit in ordinary command lines
