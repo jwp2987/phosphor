@@ -31,7 +31,9 @@ use warpui::elements::{Border, CornerRadius, Fill, Radius, DEFAULT_UI_LINE_HEIGH
 use warpui::fonts::{Cache as FontCache, FamilyId, FontId, Properties, Style, Weight};
 use warpui::geometry::rect::RectF;
 use warpui::geometry::vector::{vec2f, Vector2F};
-use warpui::image_cache::{AnimatedImageBehavior, CacheOption, FitType, Image, ImageCache};
+use warpui::image_cache::{
+    AnimatedImageBehavior, CacheOption, DeferredImage, FitType, Image, ImageCache,
+};
 use warpui::platform::LineStyle;
 use warpui::text_layout::{Line, StyleAndFont, TextStyle, DEFAULT_TOP_BOTTOM_RATIO};
 use warpui::units::{IntoLines as _, Lines, Pixels};
@@ -1899,7 +1901,9 @@ fn render_image(
     let bounds = (image_placement_data.image_size * ctx.scene.scale_factor()).to_i32();
 
     let asset_cache = AssetCache::as_ref(app);
-    let image = ImageCache::as_ref(app).image(
+    // Scaling a large image or rasterising a large SVG is done off the UI thread (#880); until it
+    // is ready the nearest size already rendered is drawn scaled, or nothing on first show.
+    let deferred = ImageCache::as_ref(app).image_deferred(
         AssetSource::Raw {
             id: image_id.to_string(),
         },
@@ -1915,19 +1919,42 @@ fn render_image(
         asset_cache,
     );
 
-    // The raw image should be loaded and ready to render.
-    let image = match image {
-        AssetState::Loaded { data } => data,
+    let image = match deferred {
+        DeferredImage::State(AssetState::Loaded { data }) => data,
         // Still decoding off-thread (#880); the view repaints when it finishes.
-        AssetState::Loading { .. } => {
+        DeferredImage::State(AssetState::Loading { .. }) => {
             return;
         }
         // Dropped to stay within the raw-image memory budget; say so once, not blank silently.
-        AssetState::Evicted => {
+        DeferredImage::State(AssetState::Evicted) => {
             warn_image_once(image_id, 2, "Image was evicted from the image cache");
             return;
         }
-        _ => {
+        DeferredImage::Pending { stale } => {
+            // Poll until the background raster lands; paint-only, the layout is unchanged.
+            ctx.repaint_after_paint_only(std::time::Duration::from_millis(33));
+            if let Some(stale) = stale {
+                if let Image::Static(image) = stale.image.as_ref() {
+                    let from = stale.from_bounds.to_f32();
+                    let to = stale.to_bounds.to_f32();
+                    let scale = Vector2F::new(
+                        if from.x() > 0. { to.x() / from.x() } else { 1. },
+                        if from.y() > 0. { to.y() / from.y() } else { 1. },
+                    );
+                    let src = image.size().to_f32();
+                    let logical_size = Vector2F::new(src.x() * scale.x(), src.y() * scale.y())
+                        / ctx.scene.scale_factor();
+                    ctx.scene.draw_image(
+                        RectF::new(grid_origin + glyph_offset, logical_size),
+                        image.clone(),
+                        1.,
+                        CornerRadius::default(),
+                    );
+                }
+            }
+            return;
+        }
+        DeferredImage::State(_) => {
             warn_image_once(image_id, 0, "Could not load image to render");
             return;
         }
