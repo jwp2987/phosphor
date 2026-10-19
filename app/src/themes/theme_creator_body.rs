@@ -150,8 +150,6 @@ impl ThemeCreatorBody {
     #[cfg_attr(not(feature = "local_fs"), allow(unused))]
     pub fn create_theme(&mut self, ctx: &mut ViewContext<Self>) {
         if let Some(theme_options) = self.theme_options.as_mut() {
-            let theme_name = theme_options.name();
-            let theme_yaml_file_name = format!("{theme_name}.yaml");
             let original_theme_image_path = theme_options.path();
             let original_theme_image_path_clone = original_theme_image_path.clone();
 
@@ -165,6 +163,11 @@ impl ThemeCreatorBody {
             };
 
             let dir = user_config::themes_dir();
+
+            // Never replace a theme that is already there (#873): a hand-written
+            // `{name}.yaml` is the user's work. Pick the next free name instead.
+            let theme_name = unused_theme_name(&dir, &theme_options.name(), image_extension);
+            let theme_yaml_file_name = format!("{theme_name}.yaml");
 
             theme_options.set_path(dir.join(format!("{theme_name}.{image_extension}")));
             let mut errored = true;
@@ -215,11 +218,11 @@ impl ThemeCreatorBody {
             if crate::util::file::write_file_atomically(&path, &theme_yaml).is_ok() {
                 match image_option {
                     Some((image_path, theme_name, image_extension)) => {
-                        if copy(
-                            image_path.clone(),
-                            dir.join(format!("{theme_name}.{image_extension}")),
-                        )
-                        .is_ok()
+                        let destination = dir.join(format!("{theme_name}.{image_extension}"));
+                        // `fs::copy` onto itself truncates the file to nothing
+                        // (#873): the source may already be the theme's own copy.
+                        if is_same_file(&image_path, &destination)
+                            || copy(image_path.clone(), destination).is_ok()
                         {
                             return Some((success_callback)(path));
                         }
@@ -280,6 +283,36 @@ impl ThemeCreatorBody {
 
     fn send_error_toast(&self, message: String, ctx: &mut ViewContext<Self>) {
         ctx.emit(ThemeCreatorBodyEvent::ShowErrorToast { message });
+    }
+}
+
+/// Returns `name`, or `name (2)`, `name (3)`, ... -- the first for which neither
+/// `{name}.yaml` nor `{name}.{image_extension}` exists in `dir`.
+fn unused_theme_name(dir: &std::path::Path, name: &str, image_extension: &str) -> String {
+    let taken = |candidate: &str| {
+        dir.join(format!("{candidate}.yaml"))
+            .symlink_metadata()
+            .is_ok()
+            || dir
+                .join(format!("{candidate}.{image_extension}"))
+                .symlink_metadata()
+                .is_ok()
+    };
+    if !taken(name) {
+        return name.to_owned();
+    }
+    (2..)
+        .map(|n| format!("{name} ({n})"))
+        .find(|candidate| !taken(candidate))
+        .expect("an unbounded range has a free name")
+}
+
+/// Whether both paths name the same existing file.
+#[cfg(feature = "local_fs")]
+fn is_same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
     }
 }
 
@@ -650,3 +683,7 @@ impl TypedActionView for ThemeCreatorBody {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "theme_creator_body_tests.rs"]
+mod tests;
