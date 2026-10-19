@@ -2461,6 +2461,9 @@ struct LocalSessionCanonicalPwdCache {
 }
 
 pub struct TerminalView {
+    /// Image ids this view handed to the asset cache for off-thread decoding and has not yet
+    /// been told finished (#880).
+    pending_image_ids: std::collections::HashSet<u32>,
     pub model: Arc<FairMutex<TerminalModel>>,
     view_handle: WeakViewHandle<Self>,
 
@@ -4168,7 +4171,14 @@ impl TerminalView {
                     terminal_model.remove_image_id_to_metadata_entry(image_id);
                 }
             }
-            AssetCacheEvent::RawAssetLoaded { .. } => ctx.notify(),
+            // Only views that inserted this image repaint (no terminal-model lock needed).
+            AssetCacheEvent::RawAssetLoaded { id } => {
+                if let Ok(id) = id.parse::<u32>() {
+                    if me.pending_image_ids.remove(&id) {
+                        ctx.notify();
+                    }
+                }
+            }
         });
 
         ctx.subscribe_to_model(&AISettings::handle(ctx), |me, _, ai_settings_event, ctx| {
@@ -4220,6 +4230,7 @@ impl TerminalView {
 
         let window_id = ctx.window_id();
         let mut terminal_view = Self {
+            pending_image_ids: Default::default(),
             model,
             input,
             inline_menu_positioner,
@@ -13534,6 +13545,7 @@ impl TerminalView {
                         ctx,
                     );
                 });
+                self.pending_image_ids.insert(*image_id);
                 ctx.notify();
                 send_telemetry_from_ctx!(
                     TelemetryEvent::ImageReceived {

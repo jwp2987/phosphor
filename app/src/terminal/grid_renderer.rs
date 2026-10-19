@@ -1903,7 +1903,8 @@ fn render_image(
     // The raw image should be loaded and ready to render.
     let image = match image {
         AssetState::Loaded { data } => data,
-        AssetState::Evicted => {
+        // Still decoding off-thread (#880); the view repaints when it finishes.
+        AssetState::Evicted | AssetState::Loading { .. } => {
             return;
         }
         _ => {

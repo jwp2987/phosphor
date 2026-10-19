@@ -241,6 +241,10 @@ pub struct AssetCache {
     /// generation (the asset was removed or re-sent meanwhile) is dropped (#880).
     pending_raw: Rc<RefCell<HashMap<AssetHandle, u64>>>,
     next_generation: Cell<u64>,
+    /// Off-thread raw decodes currently running, and the input bytes they hold. Bounded so a
+    /// flood of images from a pty cannot pin unbounded memory (#880).
+    in_flight_decodes: Cell<usize>,
+    in_flight_decode_bytes: Cell<usize>,
 }
 
 /// The result of [`Asset::decode_in_background`]: a `Send` closure that finishes building the
@@ -283,7 +287,20 @@ impl Asset for String {
     }
 }
 
+/// Runs [`Asset::decode_in_background`], turning a decoder panic into an error so the asset ends in
+/// a failed state instead of staying `Loading` forever.
+fn decode_catching_panics<T: Asset>(data: &[u8]) -> Result<PreparedAsset<T>> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        T::decode_in_background(data)
+    }))
+    .unwrap_or_else(|_| Err(anyhow!("the asset decoder panicked")))
+}
+
 impl AssetCache {
+    /// Most raw-image decodes allowed in flight at once.
+    pub const MAX_IN_FLIGHT_RAW_DECODES: usize = 16;
+    /// Most input bytes the in-flight raw decodes may hold between them.
+    pub const MAX_IN_FLIGHT_RAW_DECODE_BYTES: usize = 512 * 1024 * 1024;
     const MAX_RAW_ASSET_SIZE: usize = 320 * 1000 * 1000; // 320MB
     const MAX_VERSIONED_LOCAL_FILE_ASSET_SIZE: usize = 320 * 1000 * 1000; // 320MB
 
@@ -301,6 +318,8 @@ impl AssetCache {
             background_executor,
             pending_raw: Rc::new(RefCell::new(HashMap::new())),
             next_generation: Cell::new(0),
+            in_flight_decodes: Cell::new(0),
+            in_flight_decode_bytes: Cell::new(0),
         }
     }
 
@@ -572,33 +591,65 @@ impl AssetCache {
     pub fn insert_raw_asset_bytes_async<T: Asset>(
         &mut self,
         id: String,
-        bytes: Vec<u8>,
+        bytes: Arc<Vec<u8>>,
         ctx: &mut ModelContext<Self>,
     ) {
         let handle = AssetHandle {
             source: AssetSource::Raw { id },
             asset_type: TypeId::of::<T>(),
         };
+        let len = bytes.len();
+        // Past the cap, fail rather than queue more memory (and never decode synchronously).
+        if self.in_flight_decodes.get() >= Self::MAX_IN_FLIGHT_RAW_DECODES
+            || self.in_flight_decode_bytes.get().saturating_add(len)
+                > Self::MAX_IN_FLIGHT_RAW_DECODE_BYTES
+        {
+            log::warn!(
+                "Too many raw image decodes in flight; refusing {:?}",
+                handle.source
+            );
+            self.pending_raw.borrow_mut().remove(&handle);
+            self.inner.borrow_mut().insert(
+                handle.clone(),
+                AssetStateInternal::Error(Rc::new(anyhow!("too many image decodes in flight"))),
+            );
+            self.image_cache.evict_image(&handle.source);
+            if let AssetSource::Raw { id } = handle.source {
+                ctx.emit(AssetCacheEvent::RawAssetLoaded { id });
+            }
+            return;
+        }
+        self.in_flight_decodes.set(self.in_flight_decodes.get() + 1);
+        self.in_flight_decode_bytes
+            .set(self.in_flight_decode_bytes.get() + len);
         let generation = self.begin_pending_raw(&handle);
         ctx.spawn(
-            async move { T::decode_in_background(&bytes) },
+            async move { decode_catching_panics::<T>(&bytes) },
             move |me, result, ctx| {
+                me.in_flight_decodes
+                    .set(me.in_flight_decodes.get().saturating_sub(1));
+                me.in_flight_decode_bytes
+                    .set(me.in_flight_decode_bytes.get().saturating_sub(len));
                 me.finish_pending_raw::<T>(handle, generation, result, ctx);
             },
         );
     }
 
-    /// Marks `handle` as loading under a fresh generation, replacing any previous state.
+    /// Marks `handle` as loading under a fresh generation. An existing loaded value is kept until
+    /// the new one is published, so re-sending an id does not flicker blank.
     fn begin_pending_raw(&self, handle: &AssetHandle) -> u64 {
         let generation = self.next_generation.get() + 1;
         self.next_generation.set(generation);
         self.pending_raw
             .borrow_mut()
             .insert(handle.clone(), generation);
-        self.inner
-            .borrow_mut()
-            .insert(handle.clone(), AssetStateInternal::loading());
-        self.image_cache.evict_image(&handle.source);
+        let mut inner = self.inner.borrow_mut();
+        if !matches!(
+            inner.get(handle),
+            Some(AssetStateInternal::Loaded { .. } | AssetStateInternal::Loading { .. })
+        ) {
+            inner.insert(handle.clone(), AssetStateInternal::loading());
+        }
         generation
     }
 
@@ -677,7 +728,7 @@ impl AssetCache {
                 // Fetch, then do the expensive decode here, off the UI thread (#880). The outer
                 // error is a fetch failure, the inner one a conversion failure.
                 let result: Result<Result<PreparedAsset<T>>> = match future.await {
-                    Ok(bytes) => Ok(T::decode_in_background(&bytes)),
+                    Ok(bytes) => Ok(decode_catching_panics::<T>(&bytes)),
                     Err(err) => Err(err),
                 };
                 // When the fetch finished, send the results to the future running on the foreground executor.
