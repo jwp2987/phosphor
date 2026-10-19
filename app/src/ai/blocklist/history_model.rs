@@ -301,11 +301,37 @@ pub struct BlocklistAIHistoryModel {
     /// [`Self::forget_terminal_view`] (#843). Their exchanges are gone from
     /// `conversations_by_id`, and `persisted_queries` is a startup snapshot that
     /// never saw them, so this keeps just the query text. Bounded.
-    evicted_queries: std::collections::VecDeque<AIQueryHistory>,
+    /// Each entry carries its conversation id so `all_ai_queries` can skip it once the
+    /// conversation is loaded again (otherwise the live entry and this one duplicate).
+    evicted_queries: std::collections::VecDeque<(AIConversationId, AIQueryHistory)>,
+
+    /// Conversations whose pane closed and which are candidates for eviction from
+    /// `conversations_by_id` (#843). They stay in memory until a later sweep confirms the
+    /// SQLite row exists and matches; the only copy is never dropped on faith.
+    pending_evictions: Vec<PendingEviction>,
+
+    /// Conversations whose write to the SQLite writer thread failed this session. Never
+    /// evicted while present.
+    persist_failed_conversations: HashSet<AIConversationId>,
 
     #[cfg(feature = "local_fs")]
     db_connection: Option<Arc<Mutex<SqliteConnection>>>,
 }
+
+/// A closed pane's conversation awaiting confirmation that SQLite holds it.
+#[derive(Debug, Clone)]
+struct PendingEviction {
+    id: AIConversationId,
+    recorded_at: DateTime<Local>,
+    attempts: u32,
+}
+
+/// Minimum time a conversation stays in memory after its pane closes before a sweep may
+/// evict it.
+const PENDING_EVICTION_MIN_AGE_SECS: i64 = 60;
+/// A pending eviction that still does not match SQLite after this many sweeps is dropped
+/// from the list; the conversation simply stays in memory.
+const PENDING_EVICTION_MAX_ATTEMPTS: u32 = 5;
 
 /// Cap on [`BlocklistAIHistoryModel::evicted_queries`].
 const MAX_EVICTED_QUERIES: usize = 2000;
@@ -2397,9 +2423,17 @@ impl BlocklistAIHistoryModel {
             })
             .collect();
 
+        // Same filter as above: once a conversation is loaded again its live entries win.
+        let evicted_queries_vec: Vec<_> = self
+            .evicted_queries
+            .iter()
+            .filter(|(id, _)| !loaded_conversation_ids.contains(id))
+            .map(|(_, query)| query.clone())
+            .collect();
+
         persisted_queries_vec
             .into_iter()
-            .chain(self.evicted_queries.iter().cloned())
+            .chain(evicted_queries_vec)
             .chain(cleared_queries_vec)
             .chain(live_queries_vec)
     }
@@ -2651,21 +2685,144 @@ impl BlocklistAIHistoryModel {
     /// Releases everything this model holds for a terminal view that is being
     /// permanently discarded (#843). Called from `PaneGroup`'s teardown hook.
     ///
-    /// Always drops the per-view maps. A conversation is additionally dropped from
-    /// `conversations_by_id` only when it can be reloaded on demand, i.e. it is in
-    /// exactly the state a conversation restored from SQLite at startup is in
-    /// (metadata present, loaded via `load_conversation_data`). That requires all of:
-    /// * a DB connection exists (otherwise nothing could reload it),
-    /// * the view is not a transcript viewer (those are not persisted),
-    /// * its metadata exists (so it shows in the conversation list and can be opened),
-    /// * it is not `InProgress`, not live or active in another view, has no rename in
-    ///   flight, and no child that is still live.
-    pub fn forget_terminal_view(&mut self, terminal_view_id: EntityId) {
-        #[cfg(feature = "local_fs")]
-        let can_reload = self.db_connection.is_some();
-        #[cfg(not(feature = "local_fs"))]
-        let can_reload = false;
+    /// Always drops the per-view maps. A conversation's object is released from
+    /// `conversations_by_id` only later, from [`Self::sweep_pending_evictions`], and only
+    /// once SQLite is confirmed (read-only) to hold exactly what is in memory. Closing
+    /// records the conversation as pending when persistence is genuinely active (a DB
+    /// connection, the `persist_conversations` setting, a session-saving execution mode and
+    /// a writer sender) and the conversation is eligible (see `can_evict_now`).
+    pub fn forget_terminal_view(
+        &mut self,
+        terminal_view_id: EntityId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        // A close is also a sweep opportunity for earlier closes.
+        self.sweep_pending_evictions(ctx);
+        let can_reload = self.persistence_is_active(ctx);
         self.forget_terminal_view_impl(terminal_view_id, can_reload);
+        if !self.pending_evictions.is_empty() {
+            self.schedule_pending_eviction_sweep(ctx);
+        }
+    }
+
+    fn persistence_is_active(&self, ctx: &ModelContext<Self>) -> bool {
+        #[cfg(feature = "local_fs")]
+        {
+            self.db_connection.is_some()
+                && *crate::terminal::general_settings::GeneralSettings::as_ref(ctx)
+                    .persist_conversations
+                && warp_core::execution_mode::AppExecutionMode::as_ref(ctx).can_save_session()
+                && crate::GlobalResourceHandlesProvider::as_ref(ctx)
+                    .get()
+                    .model_event_sender
+                    .is_some()
+        }
+        #[cfg(not(feature = "local_fs"))]
+        {
+            let _ = ctx;
+            false
+        }
+    }
+
+    fn schedule_pending_eviction_sweep(&self, ctx: &mut ModelContext<Self>) {
+        ctx.spawn(
+            async {
+                warpui::r#async::Timer::after(std::time::Duration::from_secs(
+                    PENDING_EVICTION_MIN_AGE_SECS as u64 + 1,
+                ))
+                .await;
+            },
+            |model, _, ctx| {
+                model.sweep_pending_evictions(ctx);
+                if !model.pending_evictions.is_empty() {
+                    model.schedule_pending_eviction_sweep(ctx);
+                }
+            },
+        );
+    }
+
+    /// Records that a write for `conversation_id` failed to reach the SQLite writer.
+    pub(crate) fn note_persist_failure(&mut self, conversation_id: AIConversationId) {
+        self.persist_failed_conversations.insert(conversation_id);
+        self.pending_evictions.retain(|p| p.id != conversation_id);
+    }
+
+    /// Whether `id` may be dropped from memory right now, judged purely from in-memory
+    /// state. (Whether SQLite holds it is checked separately, at sweep time.)
+    fn can_evict_now(&self, id: AIConversationId) -> bool {
+        let Some(conversation) = self.conversations_by_id.get(&id) else {
+            return false;
+        };
+        let active_elsewhere = self
+            .active_conversation_for_terminal_view
+            .values()
+            .any(|active| *active == id);
+        // Only settled statuses: never InProgress, TransientError (a recovery is pending),
+        // WaitingForEvents (listening for input) or Blocked (awaiting the user).
+        matches!(
+            conversation.status(),
+            ConversationStatus::Success | ConversationStatus::Error | ConversationStatus::Cancelled
+        ) && self.all_conversations_metadata.contains_key(&id)
+            && !conversation.is_viewing_shared_session()
+            && !conversation.has_unpersisted_local_state()
+            && !self.persist_failed_conversations.contains(&id)
+            && !self.is_conversation_live(id)
+            && !active_elsewhere
+            && !self.in_flight_conversation_renames.contains_key(&id)
+            // Orchestration: a parent with any child is kept (the child cards and pane
+            // creation look children up in memory), and so is a child whose parent is
+            // still loaded.
+            && self
+                .children_by_parent
+                .get(&id)
+                .is_none_or(|children| children.is_empty())
+            && conversation
+                .parent_conversation_id()
+                .is_none_or(|parent| !self.conversations_by_id.contains_key(&parent))
+    }
+
+    /// Evicts pending conversations that are old enough, still eligible, and confirmed
+    /// present and matching in SQLite via the read-only connection.
+    pub(crate) fn sweep_pending_evictions(&mut self, _ctx: &mut ModelContext<Self>) {
+        self.sweep_pending_evictions_with(
+            Local::now(),
+            PENDING_EVICTION_MIN_AGE_SECS,
+            |model, c| model.persisted_row_matches(c),
+        );
+    }
+
+    fn sweep_pending_evictions_with(
+        &mut self,
+        now: DateTime<Local>,
+        min_age_secs: i64,
+        row_matches: impl Fn(&Self, &AIConversation) -> bool,
+    ) {
+        let pending = std::mem::take(&mut self.pending_evictions);
+        let mut still_pending = Vec::new();
+        for mut entry in pending {
+            if !self.can_evict_now(entry.id) {
+                // Reopened, running, or otherwise no longer a candidate: forget it. A later
+                // close records it again.
+                continue;
+            }
+            if (now - entry.recorded_at).num_seconds() < min_age_secs {
+                still_pending.push(entry);
+                continue;
+            }
+            let confirmed = self
+                .conversations_by_id
+                .get(&entry.id)
+                .is_some_and(|conversation| row_matches(self, conversation));
+            if confirmed {
+                self.conversations_by_id.remove(&entry.id);
+            } else {
+                entry.attempts += 1;
+                if entry.attempts < PENDING_EVICTION_MAX_ATTEMPTS {
+                    still_pending.push(entry);
+                }
+            }
+        }
+        self.pending_evictions = still_pending;
     }
 
     fn forget_terminal_view_impl(&mut self, terminal_view_id: EntityId, can_reload: bool) {
@@ -2700,51 +2857,41 @@ impl BlocklistAIHistoryModel {
 
         let mut seen = HashSet::new();
         candidates.retain(|id| seen.insert(*id));
-        let active_elsewhere: HashSet<AIConversationId> = self
-            .active_conversation_for_terminal_view
-            .values()
-            .copied()
-            .collect();
         for id in candidates {
+            if !self.can_evict_now(id) || self.pending_evictions.iter().any(|p| p.id == id) {
+                continue;
+            }
             let Some(conversation) = self.conversations_by_id.get(&id) else {
                 continue;
             };
-            let evictable = !matches!(conversation.status(), ConversationStatus::InProgress)
-                && self.all_conversations_metadata.contains_key(&id)
-                && !self.is_conversation_live(id)
-                && !active_elsewhere.contains(&id)
-                && !self.in_flight_conversation_renames.contains_key(&id)
-                && !self.children_by_parent.get(&id).is_some_and(|children| {
-                    children.iter().any(|child| {
-                        self.is_conversation_live(*child)
-                            || self.conversations_by_id.get(child).is_some_and(|c| {
-                                matches!(c.status(), ConversationStatus::InProgress)
-                            })
-                    })
-                });
-            if !evictable {
-                continue;
-            }
             // Keep up-arrow history for these prompts. Skip when the startup snapshot
             // already covers the conversation (it stops being filtered out once the
-            // conversation is no longer "loaded").
+            // conversation is no longer "loaded"). Replace, never append, any earlier
+            // entries for the same conversation (evict, reopen, evict).
             if !self
                 .persisted_queries
                 .iter()
                 .any(|persisted| persisted.conversation_id == id)
             {
-                for exchange in conversation.root_task_exchanges() {
-                    if let Some(query) =
+                let queries: Vec<AIQueryHistory> = conversation
+                    .root_task_exchanges()
+                    .filter_map(|exchange| {
                         ai_exchange_to_query_history(exchange, HistoryOrder::DifferentSession)
-                    {
-                        self.evicted_queries.push_back(query);
-                    }
+                    })
+                    .collect();
+                self.evicted_queries.retain(|(qid, _)| *qid != id);
+                for query in queries {
+                    self.evicted_queries.push_back((id, query));
                 }
                 while self.evicted_queries.len() > MAX_EVICTED_QUERIES {
                     self.evicted_queries.pop_front();
                 }
             }
-            self.conversations_by_id.remove(&id);
+            self.pending_evictions.push(PendingEviction {
+                id,
+                recorded_at: Local::now(),
+                attempts: 0,
+            });
         }
     }
 

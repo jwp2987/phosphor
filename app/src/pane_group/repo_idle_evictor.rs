@@ -155,10 +155,10 @@ impl RepoIdleEvictor {
         }
         let mut to_detect: Vec<PathBuf> = Vec::new();
         self.evicted.retain(|root| {
-            match paths
-                .iter()
-                .find(|path| path.starts_with(root) || root.starts_with(path))
-            {
+            // Only a path inside the evicted root gets that root indexed again. A path that
+            // is merely an ancestor of the root would detect some other (or no) repo and
+            // leave the root unindexed, so the root must stay marked as evicted.
+            match paths.iter().find(|path| path.starts_with(root)) {
                 Some(path) => {
                     to_detect.push(path.clone());
                     false

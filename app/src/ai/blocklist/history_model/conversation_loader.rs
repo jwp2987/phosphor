@@ -162,6 +162,42 @@ impl BlocklistAIHistoryModel {
         }
     }
 
+    /// True only when the SQLite row for `conversation` exists and holds exactly the tasks
+    /// the conversation holds in memory (same count, and every in-memory task source equal
+    /// to the persisted task with the same id). Read-only. Any doubt (no connection, lock
+    /// failure, read error, unsourced task, mismatch) answers `false`, so callers keep the
+    /// in-memory copy (#843).
+    pub(super) fn persisted_row_matches(&self, conversation: &AIConversation) -> bool {
+        #[cfg(feature = "local_fs")]
+        {
+            let Some(conn) = self.db_connection.clone() else {
+                return false;
+            };
+            let Ok(mut conn) = conn.lock() else {
+                return false;
+            };
+            let id_str = conversation.id().to_string();
+            let Ok(Some(row)) = read_agent_conversation_by_id(&mut conn, &id_str) else {
+                return false;
+            };
+            if conversation.all_tasks().count() != row.tasks.len() {
+                return false;
+            }
+            conversation.all_tasks().all(|task| {
+                task.source().is_some_and(|source| {
+                    row.tasks
+                        .iter()
+                        .any(|persisted| persisted.id == source.id && persisted == source)
+                })
+            })
+        }
+        #[cfg(not(feature = "local_fs"))]
+        {
+            let _ = conversation;
+            false
+        }
+    }
+
     /// Loads a conversation by its server token.
     ///
     /// BYOP has no cloud server and no server conversation tokens, so there is

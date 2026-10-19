@@ -4339,8 +4339,8 @@ impl PaneGroup {
             // Same teardown point (#843): the AI history model's per-view maps (and,
             // when reloadable from SQLite, the full conversations) and the per-view
             // active execution profile.
-            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, _| {
-                history_model.forget_terminal_view(terminal_view_id);
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
+                history_model.forget_terminal_view(terminal_view_id, ctx);
             });
             crate::ai::execution_profiles::profiles::AIExecutionProfilesModel::handle(ctx)
                 .update(ctx, |profiles, _| {

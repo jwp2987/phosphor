@@ -1619,6 +1619,18 @@ impl AIConversation {
         self.write_updated_conversation_state(ctx);
     }
 
+    /// True when this conversation holds in-memory state that the SQLite schema does not
+    /// round-trip (`write_updated_conversation_state` never writes it, and restore never
+    /// reads it), so dropping the object would lose it (#843). Conservative: any
+    /// non-default value counts.
+    pub(crate) fn has_unpersisted_local_state(&self) -> bool {
+        self.fallback_display_title.is_some()
+            || self.has_opened_code_review
+            || self.code_review.is_some()
+            || !self.hidden_exchanges.is_empty()
+            || !self.dismissed_suggestion_ids.is_empty()
+    }
+
     /// Set a fallback title used when no task description or initial query exists.
     pub fn set_fallback_display_title(&mut self, title: String) {
         self.fallback_display_title = Some(title);
@@ -3791,13 +3803,22 @@ impl AIConversation {
         };
 
         let event = self.updated_conversation_state_event_with_retention(retention);
+        let conversation_id = self.id;
         ctx.spawn(
             async move {
                 if let Err(e) = sqlite_sender.send(event) {
                     log::warn!("Failed to send updated AI tasks to sqlite writer thread: {e:?}");
+                    return true;
+                }
+                false
+            },
+            move |history_model, send_failed, _| {
+                // Remember the failure so the pane-close eviction never drops the only
+                // in-memory copy of a conversation whose write was lost (#843).
+                if send_failed {
+                    history_model.note_persist_failure(conversation_id);
                 }
             },
-            |_, _, _| {},
         );
     }
 
