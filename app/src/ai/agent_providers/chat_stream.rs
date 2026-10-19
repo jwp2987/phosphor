@@ -118,6 +118,23 @@ static CONVERSATION_SYSTEM_CTX: std::sync::Mutex<
     Option<(crate::ai::agent::conversation::AIConversationId, Vec<AIAgentContext>)>,
 > = std::sync::Mutex::new(None);
 
+/// Records `ctx` as the context to use for `conversation_id`'s next request that carries
+/// no input context of its own (a BYOP tool-result round trip: the result is committed to
+/// history and removed from the request input, so its fresh context would otherwise be
+/// lost and the request would reuse the one from the turn's first query, reporting the
+/// pre-`cd` directory and branch; #905). A no-op for an empty `ctx`.
+pub(crate) fn remember_conversation_context(
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+    ctx: &[AIAgentContext],
+) {
+    if ctx.is_empty() {
+        return;
+    }
+    *CONVERSATION_SYSTEM_CTX
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = Some((conversation_id, ctx.to_vec()));
+}
+
 /// The head/tail cut a summarization request was actually built with.
 #[derive(Debug, Clone)]
 pub(crate) struct SummarizationHead {
@@ -1961,14 +1978,13 @@ fn build_chat_request(
 ) -> Result<ChatRequest, ConvertToAPITypeError> {
     // When input has a non-empty context: use it directly, and remember it as a fallback
     // for later no-input requests in this conversation.
-    // #892 (git branch staleness): `AIAgentInput::context()` is `Some` for every
-    // request-producing input (user queries, action/tool results, ResumeConversation,
-    // passive suggestions, ...) and the controller builds those via
-    // `input_context_for_request`, so they always carry a fresh branch and never reach
-    // the fallback. Only `SummarizeConversation`, `MessagesReceivedFromAgents` and
-    // `EventsFromAgents` (and an empty input list) have no context and use the
-    // remembered one; those are not branch-sensitive turns, and re-reading the live
-    // branch here would break the cache-stability this fallback exists for.
+    // #892 / #905 (cwd and git branch staleness): a user query carries a fresh context
+    // here. A BYOP tool-result round trip does NOT: its `ActionResult` is committed to
+    // history and removed from `params.input` before this runs, so it reaches the
+    // fallback below. The controller therefore calls `remember_conversation_context`
+    // with the result's fresh context (`input_context::remember_action_result_context`)
+    // before removing it; without that the follow-up request in the same turn kept the
+    // directory and branch of the turn's first query after the agent's own `cd`.
     // When input is empty (tool result / auto-resume): fall back to the last value
     // remembered for this conversation, to avoid the <env> section degrading to default
     // values and breaking the prompt cache.
@@ -10981,6 +10997,81 @@ mod serializer_readiness_tests {
 
     fn request_params(messages: Vec<api::Message>, input: Vec<AIAgentInput>) -> RequestParams {
         RequestParams::new_for_test(input, vec![task_with_messages(messages)])
+    }
+
+    fn last_message_text(request: &ChatRequest) -> String {
+        request
+            .messages
+            .last()
+            .and_then(|m| m.content.first_text())
+            .unwrap_or_default()
+            .to_owned()
+    }
+
+    /// #905: a BYOP tool-result round trip has no input of its own (the result is committed
+    /// to history), so its environment comes from the remembered context. After the agent's
+    /// `cd`, the controller remembers the action result's fresh context, and the follow-up
+    /// request must report the new directory and branch, not the turn's first query's.
+    #[test]
+    fn tool_result_follow_up_reports_cwd_and_branch_after_a_cd() {
+        use crate::ai::blocklist::controller::input_context::remember_action_result_context;
+
+        let ctx = |pwd: &str, branch: &str| -> Arc<[AIAgentContext]> {
+            Arc::from([
+                AIAgentContext::Directory {
+                    pwd: Some(pwd.to_owned()),
+                    home_dir: None,
+                    are_file_symbols_indexed: false,
+                },
+                AIAgentContext::Git {
+                    head: branch.to_owned(),
+                    branch: Some(branch.to_owned()),
+                },
+            ])
+        };
+        let query = |context| AIAgentInput::UserQuery {
+            query: "go".to_owned(),
+            context,
+            static_query_type: None,
+            referenced_attachments: HashMap::new(),
+            user_query_mode: UserQueryMode::default(),
+            running_command: None,
+            intended_agent: None,
+        };
+        let messages = || {
+            vec![make_user_query_message(
+                "task-1",
+                "req-1",
+                "go".to_owned(),
+                &[],
+            )]
+        };
+
+        // First request of the turn: the user query carries the pre-`cd` environment.
+        let first = request_params(messages(), vec![query(ctx("/home/u", "none-yet"))]);
+        let id = first.byop_conversation_id.expect("test params carry an id");
+        let text = last_message_text(&build_request(&first, AgentProviderApiType::OpenAi, false));
+        assert!(text.contains("Working directory: /home/u"), "{text}");
+
+        // The agent's `cd ~/repo` finished; the controller built the result's context
+        // from the new cwd/branch and then removed the result from the input.
+        let mut result = cancelled_action_result_input("call-1");
+        if let AIAgentInput::ActionResult { context, .. } = &mut result {
+            *context = ctx("/home/u/repo", "feature-xyz");
+        }
+        remember_action_result_context(id, [&result]);
+
+        // Follow-up request: no input left, same conversation.
+        let mut follow_up = request_params(messages(), vec![]);
+        follow_up.byop_conversation_id = Some(id);
+        let text = last_message_text(&build_request(
+            &follow_up,
+            AgentProviderApiType::OpenAi,
+            false,
+        ));
+        assert!(text.contains("Working directory: /home/u/repo"), "{text}");
+        assert!(text.contains("Git branch: feature-xyz"), "{text}");
+        assert!(!text.contains("/home/u\n"), "{text}");
     }
 
     /// A `CurrentInput`-sourced, non-cancelled `ActionResult` for a

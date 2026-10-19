@@ -347,6 +347,17 @@ pub fn command_may_change_head(command: &str) -> bool {
     false
 }
 
+/// Whether a shell command probably changes the shell's working directory (`cd`,
+/// `pushd`, `popd`), so the cwd/branch the agent is told about after it must not
+/// trust a value cached before it ran. Over-approximate by design: a false positive
+/// costs one cheap file read.
+pub fn command_may_change_cwd(command: &str) -> bool {
+    command
+        .replace(['&', '|', ';', '\n', '(', ')', '{', '}'], " ")
+        .split_whitespace()
+        .any(|tok| matches!(tok, "cd" | "pushd" | "popd"))
+}
+
 /// Reads the current branch for the repo containing `dir` straight from `.git/HEAD`,
 /// without spawning git. Walks up from `dir`; resolves a `.git` *file* (linked
 /// worktrees and submodules: `gitdir: <path>`). Returns the branch name, or the
