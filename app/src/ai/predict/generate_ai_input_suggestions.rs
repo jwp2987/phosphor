@@ -111,6 +111,25 @@ impl HistoryContext {
     }
 }
 
+/// Whether a finished block belongs in the context sent for next-command suggestions.
+///
+/// Blocks that hold the shell bootstrap (the script typed into the shell, and the startup
+/// scripts it runs) are not something the user ran, and an ssh command whose output was
+/// replaced because it only held an echoed warpification script (`output_grid_hidden`, see
+/// the block-completed handler in `terminal/view.rs`) has nothing but bootstrap text in it
+/// (#856).
+pub(crate) fn is_user_context_block(
+    stage: crate::terminal::model::bootstrap::BootstrapStage,
+    output_grid_hidden: bool,
+) -> bool {
+    use crate::terminal::model::bootstrap::BootstrapStage;
+    !output_grid_hidden
+        && !matches!(
+            stage,
+            BootstrapStage::WarpInput | BootstrapStage::ScriptExecution
+        )
+}
+
 /// Gets the last X user-run command blocks to use as context for the AI model. Truncates blocks
 /// where relevant to top/bottom lines.
 pub fn get_context_messages(
@@ -126,7 +145,9 @@ pub fn get_context_messages(
     let filtered_blocks: Vec<_> = blocks
         .iter()
         .filter(|block| {
-            block.state() == BlockState::DoneWithExecution && !block.is_in_band_command_block()
+            block.state() == BlockState::DoneWithExecution
+                && !block.is_in_band_command_block()
+                && is_user_context_block(block.bootstrap_stage(), block.should_hide_output_grid())
         })
         .collect();
 

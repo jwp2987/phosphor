@@ -12289,6 +12289,23 @@ impl TerminalView {
                 if let BlockType::User(_) = &block_completed_event.block_type {
                     self.on_user_block_completed(&block_completed_event.block_id, ctx);
 
+                    // #856: an ssh command that ends after a warpification script was typed
+                    // into it (killed while hung, or never warpified) has that script echoed
+                    // into its output -- ~70 lines of bootstrap. Keep the command line and
+                    // drop the unreadable dump. Only for the block the script went into.
+                    if self.warpify_state.block_id().as_ref() == Some(&block_completed_event.block_id)
+                        && self.warpify_state.take_ssh_payload_written()
+                    {
+                        let show_ssh_block_debug = BlockVisibilitySettings::as_ref(ctx)
+                            .should_show_ssh_block
+                            .value();
+                        if !show_ssh_block_debug {
+                            self.update_long_running_ssh_block_with_lock(|block| {
+                                block.set_should_hide_output_grid(true);
+                            });
+                        }
+                    }
+
                     // The command that just completed may have been the interactive
                     // SSH-shaped command whose target colors the window footer bar
                     // (`host_footer_color`). `pending_ssh_target` otherwise only gets
@@ -26811,6 +26828,7 @@ impl TerminalView {
         // provokes is validated against an ID this client chose. Mirrors
         // `write_init_subshell_bytes_to_pty`.
         let session_id = self.mint_registered_session_id();
+        self.warpify_state.mark_ssh_payload_written();
         self.clear_line_editor_and_write_to_pty(
             convert_script_to_one_line(&begin_warpify_ssh_session_command(session_id, ctx))
                 .into_bytes(),
@@ -26830,6 +26848,7 @@ impl TerminalView {
         // the remote host; both quote this ID.
         let session_id = self.mint_registered_session_id();
         if let Some(script) = warpify_ssh_session_command(uname, shell_type, session_id, ctx) {
+            self.warpify_state.mark_ssh_payload_written();
             self.clear_line_editor_and_write_to_pty_with_mac_workaround_hack(
                 convert_script_to_one_line(&script).into_bytes(),
                 ctx,
@@ -26854,6 +26873,7 @@ impl TerminalView {
         self.model
             .lock()
             .set_pending_warp_initiated_control_mode_with_install_tmux(install_with_root_method);
+        self.warpify_state.mark_ssh_payload_written();
         self.clear_line_editor_and_write_to_pty(
             convert_script_to_one_line(install_script).into_bytes(),
             ctx,

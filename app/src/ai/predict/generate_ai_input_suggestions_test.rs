@@ -137,3 +137,15 @@ fn test_get_block_content_summary_extreme_narrow_vs_wide() {
     assert!(!output_wide.contains("Output line 974"));
     assert!(output_wide.contains("Output line 975"));
 }
+
+#[test]
+fn bootstrap_and_payload_blocks_are_not_suggestion_context() {
+    use crate::terminal::model::bootstrap::BootstrapStage;
+    assert!(is_user_context_block(BootstrapStage::PostBootstrapPrecmd, false));
+    assert!(is_user_context_block(BootstrapStage::Bootstrapped, false));
+    assert!(is_user_context_block(BootstrapStage::RestoreBlocks, false));
+    assert!(!is_user_context_block(BootstrapStage::WarpInput, false));
+    assert!(!is_user_context_block(BootstrapStage::ScriptExecution, false));
+    // An ssh block whose output was dropped for holding only the echoed script.
+    assert!(!is_user_context_block(BootstrapStage::PostBootstrapPrecmd, true));
+}

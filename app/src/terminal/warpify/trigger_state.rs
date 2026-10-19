@@ -161,6 +161,11 @@ struct WarpifyTriggerState {
 
     is_shell_detection_in_progress: bool,
 
+    /// Whether an ssh warpification script has been typed into the ssh session's pty. The
+    /// remote tty echoes it into the ssh command's block, so if that command ends without
+    /// the session being warpified the block is full of script (#856).
+    ssh_payload_written: bool,
+
     tmux_installation: TmuxInstallationState,
 }
 
@@ -178,6 +183,28 @@ pub struct WarpifyState {
 impl WarpifyState {
     pub fn delete_state(&mut self) {
         self.pending_state.take();
+    }
+
+    /// Records that a warpification script was just written to the ssh session's pty.
+    pub fn mark_ssh_payload_written(&mut self) {
+        if let Some(pending_state) = self.pending_state.as_mut() {
+            pending_state.ssh_payload_written = true;
+        }
+    }
+
+    /// Whether a warpification script was written to the ssh session's pty, and not yet
+    /// accounted for by [`Self::take_ssh_payload_written`].
+    pub fn ssh_payload_written(&self) -> bool {
+        self.pending_state
+            .as_ref()
+            .is_some_and(|state| state.ssh_payload_written)
+    }
+
+    /// Returns [`Self::ssh_payload_written`] and resets it.
+    pub fn take_ssh_payload_written(&mut self) -> bool {
+        self.pending_state
+            .as_mut()
+            .is_some_and(|state| std::mem::take(&mut state.ssh_payload_written))
     }
 
     pub fn is_shell_detection_in_progress(&self) -> bool {
