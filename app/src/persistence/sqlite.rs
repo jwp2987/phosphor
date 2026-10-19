@@ -1488,6 +1488,12 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                     log::info!("SQLite Writer is resumed");
                                 }
                                 Err(err) => {
+                                    // The writer stays paused, so nothing more is saved
+                                    // this session (#860); say so instead of only logging.
+                                    super::database_notice::record_startup_failure(
+                                        &database_path,
+                                        &underlying_error_message(&err),
+                                    );
                                     report_db_error("reconstruction", err, &database_path);
                                 }
                             }
