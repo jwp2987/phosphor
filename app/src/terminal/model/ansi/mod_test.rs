@@ -1675,3 +1675,69 @@ fn parse_osc1337_without_second_param_does_not_panic() {
     let bytes: &[u8] = b"\x1b]1337\x1b\\";
     let (_, _handler) = parse_bytes(bytes);
 }
+
+#[test]
+fn repair_hook_json_doubles_a_backslash_that_is_not_a_valid_escape() {
+    // `whoami` printing `CORP\jdoe` (winbind/AD) leaves `\j` in the payload (#879).
+    assert_eq!(
+        repair_hook_json(br#"{"user": "CORP\jdoe", "n": "a\\b\"c\u00e9\/"}"#).as_deref(),
+        Some(r#"{"user": "CORP\\jdoe", "n": "a\\b\"c\u00e9\/"}"#)
+    );
+    // `\u` without four hex digits is not an escape either.
+    assert_eq!(
+        repair_hook_json(br#"{"h": "C:\users"}"#).as_deref(),
+        Some(r#"{"h": "C:\\users"}"#)
+    );
+}
+
+#[test]
+fn parse_decoded_hook_accepts_init_shell_with_hostile_user_and_hostname() {
+    let payload = br#"{"hook": "InitShell", "value": {"session_id": 167303092612201, "shell": "bash", "user": "CORP\jdoe", "hostname": "h\x\"q"}}"#;
+    match parse_decoded_hook(payload).expect("InitShell must be repaired") {
+        DProtoHook::InitShell { value } => {
+            assert_eq!(value.user, r"CORP\jdoe");
+            assert_eq!(value.hostname, "h\\x\"q");
+        }
+        other => panic!("expected InitShell, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_decoded_hook_salvages_a_precmd_from_its_essential_fields() {
+    // Unparseable even after repair (truncated), but the fields that make the prompt usable are
+    // intact, so the Precmd is still delivered rather than wedging the tab (#879).
+    let payload = br#"{"hook": "Precmd", "value": {"exit_code": 3, "next_block_id": "precmd-1-2", "pwd": "/a", "session_id": 167303092612201, "ps1": "bro"#;
+    match parse_decoded_hook(payload).expect("Precmd must be salvaged") {
+        DProtoHook::Precmd {
+            value: PrecmdHookValue::WithCompletionMetadata(value),
+        } => {
+            assert_eq!(value.prompt_metadata.session_id, Some(167303092612201));
+            assert_eq!(value.completion_metadata.exit_code, ExitCode::from(3));
+        }
+        other => panic!("expected a Precmd with completion metadata, got {other:?}"),
+    }
+    // Without a session id there is nothing to salvage.
+    assert!(
+        parse_decoded_hook(br#"{"hook": "Precmd", "value": {"exit_code": 3, "next_bl"#).is_err()
+    );
+    // A `session_id` cut off mid-number must not be taken as a (wrong) shorter id.
+    assert!(
+        parse_decoded_hook(
+            br#"{"hook": "Precmd", "value": {"exit_code": 3, "next_block_id": "precmd-1-2", "session_id": 1673"#
+        )
+        .is_err()
+    );
+    // Likewise a truncated `exit_code`, and a `Precmd` that is not the hook but merely quoted.
+    assert!(
+        parse_decoded_hook(
+            br#"{"hook": "Precmd", "value": {"next_block_id": "precmd-1-2", "session_id": 7, "exit_code": 1"#
+        )
+        .is_err()
+    );
+    assert!(
+        parse_decoded_hook(
+            br#"{"hook": "Other", "note": "Precmd", "value": {"exit_code": 3, "next_block_id": "a", "session_id": 7, "x"#
+        )
+        .is_err()
+    );
+}
