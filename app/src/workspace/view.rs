@@ -2745,7 +2745,7 @@ impl Workspace {
         }
         let toast_stack_for_timer = toast_stack.clone();
         ctx.spawn(
-            Timer::after(std::time::Duration::from_millis(1500)),
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(1500)),
             move |_me, _, ctx| {
                 let active_window = ctx.windows().active_window();
                 if active_window.is_none() || active_window == Some(ctx.window_id()) {
