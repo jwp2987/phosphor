@@ -1,7 +1,7 @@
 use std::{collections::HashMap, ops::Range};
 
 use super::{AIBlock, TextLocation};
-use crate::ai::agent::{AIAgentTextSection, MessageId};
+use crate::ai::agent::{AIAgentInput, AIAgentTextSection, MessageId};
 use crate::terminal::find::{FindOptions, FindableRichContentView, RichContentMatchId};
 use itertools::Itertools;
 use regex::RegexBuilder;
@@ -46,6 +46,24 @@ impl FindState {
     }
 }
 
+/// Find matches in the rendered user-query text of each input, as `(input_index, char_range)`.
+/// Uses the displayed query so ranges index into what the query block paints.
+pub(super) fn query_find_matches(
+    inputs: &[AIAgentInput],
+    initial_conversation_query: Option<&String>,
+    options: &FindOptions,
+) -> Vec<(usize, Range<usize>)> {
+    let mut out = vec![];
+    for (i, input) in inputs.iter().enumerate() {
+        if let Some(query) = input.display_user_query(initial_conversation_query) {
+            for range in compute_find_matches(&query, options) {
+                out.push((i, range));
+            }
+        }
+    }
+    out
+}
+
 impl FindableRichContentView for AIBlock {
     /// Computes find matches within this AI block and updates the block's `FindState`.
     fn run_find(
@@ -56,21 +74,28 @@ impl FindableRichContentView for AIBlock {
         self.clear_matches(ctx);
 
         let mut new_match_ids = vec![];
-        for (i, input) in self.model.inputs_to_render(ctx).iter().enumerate() {
-            if let Some(query) = input.user_query() {
-                for find_match_range in compute_find_matches(&query, options).into_iter() {
-                    let id = RichContentMatchId::default();
-                    new_match_ids.push(id);
-                    self.find_state.matches.insert(
-                        id,
-                        FindMatchLocation {
-                            text_location: TextLocation::Query { input_index: i },
-                            char_range: find_match_range,
-                            message_id: None,
-                        },
-                    );
-                }
-            }
+        // Match against the text the query block actually renders (`display_user_query`, which
+        // carries the "/agent " prefix on the initial query), not the stored query, so match
+        // offsets line up with the painted highlight (#938).
+        let initial_conversation_query = self
+            .model
+            .conversation(ctx)
+            .and_then(|c| c.initial_user_query());
+        for (input_index, find_match_range) in query_find_matches(
+            self.model.inputs_to_render(ctx),
+            initial_conversation_query.as_ref(),
+            options,
+        ) {
+            let id = RichContentMatchId::default();
+            new_match_ids.push(id);
+            self.find_state.matches.insert(
+                id,
+                FindMatchLocation {
+                    text_location: TextLocation::Query { input_index },
+                    char_range: find_match_range,
+                    message_id: None,
+                },
+            );
         }
 
         if let Some(output) = self.model.status(ctx).output_to_render() {

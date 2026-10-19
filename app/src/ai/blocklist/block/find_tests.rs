@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::compute_find_matches;
+use super::{compute_find_matches, find::query_find_matches};
 use crate::ai::agent::{AIAgentInput, UserQueryMode};
 use crate::terminal::find::FindOptions;
 
@@ -51,4 +51,81 @@ fn find_matches_align_with_plan_prefixed_query() {
 
     let options = FindOptions::default().with_query(Some("tests".to_string()));
     assert_eq!(compute_find_matches(&displayed, &options), vec![12..17]);
+}
+
+fn opts(q: &str) -> FindOptions {
+    FindOptions::default().with_query(Some(q.to_string()))
+}
+
+// #938: `run_find` must index into the rendered ("/agent "-prefixed) query. These exercise the
+// helper `run_find` uses.
+#[test]
+fn query_find_matches_start_middle_end_of_agent_query() {
+    let query = "long answer here".to_string();
+    let inputs = [user_query_input(&query, UserQueryMode::Normal)];
+    // Rendered: "/agent long answer here"
+    assert_eq!(
+        query_find_matches(&inputs, Some(&query), &opts("long")),
+        vec![(0, 7..11)]
+    );
+    assert_eq!(
+        query_find_matches(&inputs, Some(&query), &opts("answer")),
+        vec![(0, 12..18)]
+    );
+    assert_eq!(
+        query_find_matches(&inputs, Some(&query), &opts("here")),
+        vec![(0, 19..23)]
+    );
+    // The prefix itself is rendered text and is findable.
+    assert_eq!(
+        query_find_matches(&inputs, Some(&query), &opts("/agent")),
+        vec![(0, 0..6)]
+    );
+}
+
+#[test]
+fn query_find_matches_multiline_agent_query() {
+    let query = "first line\nsecond line".to_string();
+    let inputs = [user_query_input(&query, UserQueryMode::Normal)];
+    // "/agent first line\nsecond line": "second" starts at 7 + 11 = 18.
+    assert_eq!(
+        query_find_matches(&inputs, Some(&query), &opts("second")),
+        vec![(0, 18..24)]
+    );
+}
+
+#[test]
+fn query_find_matches_without_prefix_is_unchanged() {
+    let query = "long answer".to_string();
+    let inputs = [user_query_input(&query, UserQueryMode::Normal)];
+    // Not the conversation's initial query (a follow-up): no prefix, offsets are as stored.
+    let initial = "something else".to_string();
+    assert_eq!(
+        query_find_matches(&inputs, Some(&initial), &opts("answer")),
+        vec![(0, 5..11)]
+    );
+    // No initial query known at all.
+    assert_eq!(
+        query_find_matches(&inputs, None, &opts("answer")),
+        vec![(0, 5..11)]
+    );
+    // Plan queries are stored with their prefix; unchanged.
+    let plan = [user_query_input("write tests", UserQueryMode::Plan)];
+    assert_eq!(
+        query_find_matches(&plan, None, &opts("tests")),
+        vec![(0, 12..17)]
+    );
+}
+
+#[test]
+fn query_find_matches_uses_input_index_and_skips_non_query_inputs() {
+    let a = "alpha".to_string();
+    let inputs = [
+        user_query_input(&a, UserQueryMode::Normal),
+        user_query_input("alpha again", UserQueryMode::Normal),
+    ];
+    assert_eq!(
+        query_find_matches(&inputs, Some(&a), &opts("alpha")),
+        vec![(0, 7..12), (1, 0..5)]
+    );
 }
