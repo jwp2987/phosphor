@@ -3343,6 +3343,68 @@ fn discard_pending_command_writes_event_projects_to_pty_intent() {
     ));
 }
 
+/// #875: `CancelExecution` interrupts only while the agent still holds the action's in-flight
+/// command, discarding queued writes first and then sending exactly one interrupt. Otherwise it
+/// emits nothing.
+#[test]
+fn cancel_execution_interrupts_only_when_the_agent_holds_the_command() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        let emitted = Rc::new(RefCell::new(Vec::new()));
+        app.update(|ctx| {
+            let emitted = emitted.clone();
+            ctx.subscribe_to_view(&view, move |_, event, _| match event {
+                TuiTerminalSessionEvent::DiscardPendingCommandWrites => {
+                    emitted.borrow_mut().push("discard")
+                }
+                TuiTerminalSessionEvent::InterruptPty => emitted.borrow_mut().push("interrupt"),
+                _ => {}
+            });
+        });
+        let action_id = AIAgentActionId::from("cancel-me".to_owned());
+        let cancel = ShellCommandExecutorEvent::CancelExecution {
+            action_id: action_id.clone(),
+        };
+
+        // No agent command is in flight: nothing is emitted.
+        view.update(&mut app, |view, ctx| {
+            let model = view.terminal_model.clone();
+            view.handle_shell_command_executor_event(&cancel, &model, ctx);
+        });
+        assert!(emitted.borrow().is_empty());
+
+        // The agent holds this action's in-flight command: discard, then one interrupt.
+        view.update(&mut app, |view, ctx| {
+            let mut terminal_model = view.terminal_model.lock();
+            terminal_model.simulate_long_running_block("sleep 100000", "");
+            terminal_model
+                .block_list_mut()
+                .active_block_mut()
+                .set_agent_interaction_mode_for_requested_command(
+                    action_id.clone(),
+                    None,
+                    AIConversationId::new(),
+                );
+            drop(terminal_model);
+            let model = view.terminal_model.clone();
+            view.handle_shell_command_executor_event(&cancel, &model, ctx);
+        });
+        assert_eq!(*emitted.borrow(), vec!["discard", "interrupt"]);
+
+        // A cancel for some other action does not interrupt this command.
+        emitted.borrow_mut().clear();
+        let other = ShellCommandExecutorEvent::CancelExecution {
+            action_id: AIAgentActionId::from("someone-else".to_owned()),
+        };
+        view.update(&mut app, |view, ctx| {
+            let model = view.terminal_model.clone();
+            view.handle_shell_command_executor_event(&other, &model, ctx);
+        });
+        assert!(emitted.borrow().is_empty());
+    });
+}
+
 #[test]
 fn user_input_event_projects_to_raw_user_bytes() {
     let event = TuiTerminalSessionEvent::WriteUserInput(b"hello\r".to_vec().into());

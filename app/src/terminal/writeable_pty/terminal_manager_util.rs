@@ -1,6 +1,7 @@
 use crate::persistence::ModelEvent;
 use crate::terminal::line_editor_status::LineEditorStatus;
 use crate::features::FeatureFlag;
+#[cfg(not(target_family = "wasm"))]
 use crate::terminal::model::escape_sequences;
 use crate::terminal::model::lifecycle::StartCommandOutcome;
 use crate::terminal::model::session::{ExecutorCommandEvent, Sessions};
