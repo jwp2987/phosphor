@@ -3603,6 +3603,8 @@ impl TerminalView {
                 ctx,
             )
         });
+        // This view handles every prompt's precmd event; the hand-off waits for it (#934).
+        model.lock().typeahead_handoff_mut().track_view_precmds();
         let maa_passive_suggestions_model = ctx.add_model(|ctx| {
             MaaPassiveSuggestionsModel::new(
                 active_session.clone(),

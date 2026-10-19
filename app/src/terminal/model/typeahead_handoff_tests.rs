@@ -679,6 +679,7 @@ fn no_request_while_the_view_has_yet_to_handle_the_prompt() {
     let mut handoff = after_submit();
     type_and_flush(&mut handoff, b"echo");
     handoff.on_precmd();
+    handoff.track_view_precmds();
     handoff.note_precmd_pending_view();
     assert!(matches!(
         handoff.on_line_editor_active(true, true),
@@ -703,6 +704,7 @@ fn no_request_while_the_view_has_yet_to_handle_the_prompt() {
 fn the_editor_does_not_take_over_before_the_view_has_the_prompt() {
     let mut handoff = after_submit();
     handoff.on_precmd();
+    handoff.track_view_precmds();
     handoff.note_precmd_pending_view();
     assert!(matches!(
         handoff.on_line_editor_active(true, true),

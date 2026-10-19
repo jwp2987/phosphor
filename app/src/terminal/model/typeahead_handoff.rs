@@ -168,6 +168,10 @@ pub struct TypeaheadHandoff {
     /// run lets it take keys that the reinitialization then erases (#934), so no request is
     /// written, and the editor does not take over, until this is zero.
     precmds_pending_view: u32,
+    /// Whether a terminal view is attached and handles each prompt's precmd event, so
+    /// `precmds_pending_view` is worth counting. Without one (a controller driven on its own)
+    /// nothing would ever clear it.
+    tracks_view_precmds: bool,
 }
 
 /// Identifies an agent's command held behind the user's typeahead.
@@ -310,7 +314,15 @@ impl TypeaheadHandoff {
     /// A prompt was applied to the model; the view has yet to handle its precmd event (model
     /// thread). See [`Self::precmds_pending_view`](TypeaheadHandoff).
     pub fn note_precmd_pending_view(&mut self) {
+        if !self.tracks_view_precmds {
+            return;
+        }
         self.precmds_pending_view = self.precmds_pending_view.saturating_add(1);
+    }
+
+    /// A terminal view is attached and will call [`Self::on_precmd_viewed`] for every prompt.
+    pub fn track_view_precmds(&mut self) {
+        self.tracks_view_precmds = true;
     }
 
     /// The view handled a precmd event, after reinitializing the editor for the finished block
@@ -532,7 +544,10 @@ impl TypeaheadHandoff {
 
     /// The session ended: nothing can answer an outstanding request or run held keys.
     pub fn reset_on_exit(&mut self) {
-        *self = Self::default();
+        *self = Self {
+            tracks_view_precmds: self.tracks_view_precmds,
+            ..Self::default()
+        };
     }
 
     /// Ends the window opened by [`Self::note_editor_took_over`]: focus reached the editor, or
