@@ -344,6 +344,28 @@ fn test_zsh_hooks_survive_strict_options_and_failing_precmd() {
             "`{hook}` must start with `{guard}` (#836)"
         );
     }
+    // warp_title keeps its own `nopromptsubst` in the same setopt.
+    let title = zsh
+        .find("function warp_title {\n")
+        .expect("zsh_body.sh lost `warp_title`");
+    assert!(
+        zsh[title..(title + 600).min(zsh.len())]
+            .contains("setopt localoptions nopromptsubst noerrreturn noerrexit unset"),
+        "warp_title must keep the strict-option guard (#836)"
+    );
+    // warp_precmd takes `$?` first, so its guard is not the first line; check it by
+    // position within the function instead.
+    let precmd = zsh
+        .find("warp_precmd () {\n")
+        .expect("zsh_body.sh lost `warp_precmd`");
+    let head = &zsh[precmd..precmd + 1500.min(zsh.len() - precmd)];
+    let status = head
+        .find("local exit_code=$?")
+        .expect("warp_precmd must capture `$?` first");
+    assert!(
+        head[status..].contains(guard.trim_end()),
+        "warp_precmd must apply `{guard}` right after capturing `$?` (#836)"
+    );
     assert!(
         zsh.contains("# Phosphor (#844)"),
         "zsh_body.sh lost the #844 owed-precmd repair"

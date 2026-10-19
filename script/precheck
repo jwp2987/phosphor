@@ -303,9 +303,11 @@ fi
 #
 # script/test_bash_bootstrap_nounset runs the bash bootstrap in a real bash in
 # a pty (python3 + bash, ~1 s) -- the only check of the bootstrap scripts that
-# needs no build (#825).
+# needs no build (#825). script/test_zsh_bootstrap_strict_options is its zsh
+# counterpart for err_return/nounset/err_exit and failing user precmds (#836,
+# #844).
 step "shell tests (packaging and bootstrap scripts)"
-for shell_test in ./script/macos/test_create_warpctrl_wrapper ./script/test_warpctrl_early_dispatch ./script/test_bash_bootstrap_nounset; do
+for shell_test in ./script/macos/test_create_warpctrl_wrapper ./script/test_warpctrl_early_dispatch ./script/test_bash_bootstrap_nounset ./script/test_zsh_bootstrap_strict_options; do
     [[ -x "$shell_test" ]] || continue
     _shell_rc=0
     _shell_out="$("$shell_test" 2>&1)" || _shell_rc=$?

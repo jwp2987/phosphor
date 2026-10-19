@@ -686,10 +686,10 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
 
   # Runs before showing the prompt
   function warp_set_title_idle_on_precmd {
-# Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
-# expected-failure probe in this hook (no repo, an unset variable) into an
-# early return, a killed shell or a lost Precmd.
-setopt localoptions noerrreturn noerrexit unset
+    # Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
+    # expected-failure probe in this hook (no repo, an unset variable) into an
+    # early return, a killed shell or a lost Precmd.
+    setopt localoptions noerrreturn noerrexit unset
     # If the user wants to set the title using oh-my-zsh, they can
     # set the WARP_DISABLE_AUTO_TITLE flag.
     [[ "${WARP_DISABLE_AUTO_TITLE:-}" != true ]] || return
@@ -704,10 +704,10 @@ setopt localoptions noerrreturn noerrexit unset
 
   # Runs before executing the command
   function warp_set_title_active_on_preexec {
-# Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
-# expected-failure probe in this hook (no repo, an unset variable) into an
-# early return, a killed shell or a lost Precmd.
-setopt localoptions noerrreturn noerrexit unset
+    # Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
+    # expected-failure probe in this hook (no repo, an unset variable) into an
+    # early return, a killed shell or a lost Precmd.
+    setopt localoptions noerrreturn noerrexit unset
     # If the user wants to set the title using oh-my-zsh, they can
     # set the WARP_DISABLE_AUTO_TITLE flag.
     [[ "${WARP_DISABLE_AUTO_TITLE:-}" != true ]] || return
@@ -836,10 +836,10 @@ setopt localoptions noerrreturn noerrexit unset
   # and if not, wrap them with the appropriate markers so that we can direct the
   # prompt bytes to the appropriate grids.
   function warp_update_prompt_vars() {
-# Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
-# expected-failure probe in this hook (no repo, an unset variable) into an
-# early return, a killed shell or a lost Precmd.
-setopt localoptions noerrreturn noerrexit unset
+    # Phosphor (#836): a user's err_return/err_exit/nounset must not turn an
+    # expected-failure probe in this hook (no repo, an unset variable) into an
+    # early return, a killed shell or a lost Precmd.
+    setopt localoptions noerrreturn noerrexit unset
     # 133;A and 133;B are standard prompt marker OSCs. We also follow the standard for the rprompt OSC below.
     # See https://learn.microsoft.com/en-us/windows/terminal/tutorials/shell-integration and
     # https://gitlab.freedesktop.org/terminal-wg/specifications/-/merge_requests/6/diffs for details.

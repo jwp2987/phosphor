@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""Drive the real zsh bootstrap in a pty under err_return/err_exit/nounset.
+
+WHY THIS EXISTS
+---------------
+#836: with `setopt err_return` / `nounset` in the user's rc the Warp hooks
+(warp_preexec, warp_precmd, the title and prompt-var hooks) tripped over their
+own expected-failure probes (no git repo, unset variables) and returned early
+or died, so Precmd never came and the block never finished.
+#844: a user precmd that hits a fatal error (`: ${X:?}`) makes zsh abandon the
+rest of the precmd stage, warp_precmd included; the Precmd was lost.
+Nothing in the Rust suite runs the bootstrap in a real zsh; the Rust test only
+greps for the guard lines. This script is the behavioural check, and needs only
+zsh and python3 (no cargo).
+
+WHAT IT DOES
+------------
+Assembles zsh_body.sh the way `app/src/terminal/bootstrap.rs` does (expand
+`#include`, substitute @@USING_CON_PTY_BOOLEAN@@ with false, drop comment and
+blank lines), starts an interactive zsh in a pty with an isolated ZDOTDIR whose
+.zshrc/.zshenv carry the scenario's options, sources the assembled body, then
+types `false`, `sh -c "exit 7"`, `true` and asserts each yields Preexec,
+CommandFinished (exit 1 / 7 / 0) and Precmd. Under `setopt err_exit` it asserts
+the bootstrap completes and `echo hi` gets a full cycle.
+
+USAGE
+    script/test_zsh_bootstrap_strict_options [--body path/to/zsh_body.sh] [path/to/zsh]
+
+--body substitutes another zsh_body.sh (e.g. `git show main:...` output) to
+prove the script fails against the unfixed bootstrap.
+
+Exit 0 when every scenario passes, 1 otherwise.
+"""
+
+import json
+import os
+import pty
+import re
+import select
+import shutil
+import sys
+import tempfile
+import time
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ASSETS = os.path.join(ROOT, "app", "assets")
+BODY = os.path.join(ASSETS, "bundled", "bootstrap", "zsh_body.sh")
+args = sys.argv[1:]
+if len(args) >= 2 and args[0] == "--body":
+    BODY = os.path.abspath(args[1])
+    args = args[2:]
+ZSH = args[0] if args else (shutil.which("zsh") or "/bin/zsh")
+HOOK_RE = re.compile(rb"\x1bP\$d([0-9a-f]*)\x9c")
+OSC_RE = re.compile(rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+CSI_RE = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def assemble(text):
+    """Mirror bootstrap.rs: inline #include, trim, drop blank and comment lines."""
+    out = []
+    for line in text.split("\n"):
+        if line.startswith("#include "):
+            with open(os.path.join(ASSETS, line[len("#include "):])) as f:
+                out.extend(assemble(f.read()).split("\n"))
+            continue
+        stripped = line.lstrip()
+        if len(stripped) < len(line):
+            line = " " + stripped
+        line = line.rstrip()
+        if not line.strip() or line.strip().startswith("#"):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def body_contents():
+    with open(BODY) as f:
+        text = assemble(f.read())
+    return text.replace("@@USING_CON_PTY_BOOLEAN@@", "false") + "\n"
+
+
+class Shell:
+    def __init__(self, zshrc, zshenv=""):
+        self.home = tempfile.mkdtemp(prefix="phosphor-836-")
+        self.zd = os.path.join(self.home, "zdot")
+        self.cwd = os.path.join(self.home, "nogit")  # deliberately not a git repo
+        os.makedirs(self.zd)
+        os.makedirs(self.cwd)
+        with open(os.path.join(self.zd, ".zshrc"), "w") as f:
+            f.write(zshrc + "\n")
+        with open(os.path.join(self.zd, ".zshenv"), "w") as f:
+            f.write(zshenv + "\n")
+        self.body = os.path.join(self.home, "body.sh")
+        with open(self.body, "w") as f:
+            f.write(body_contents())
+        env = {
+            "HOME": self.home,
+            "ZDOTDIR": self.zd,
+            "USER": os.environ.get("USER", "user"),
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "TERM": "xterm-256color",
+            "LANG": "C.UTF-8",
+            "WARP_IS_LOCAL_SHELL_SESSION": "1",
+            "PS1": "%# ",
+        }
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:
+            os.chdir(self.cwd)
+            # Same startup as shell.rs: minimal rcs; the bootstrap sources the user's
+            # own .zshenv/.zshrc from $ZDOTDIR itself.
+            os.execve(ZSH, [ZSH, "-g", "--no-rcs", "-i"], env)
+        self.buf = b""
+        self.dead = False
+        self.broken = False
+
+    def pump(self, timeout, until=None):
+        end = time.time() + timeout
+        while time.time() < end:
+            if until is not None and until():
+                return True
+            r, _, _ = select.select([self.fd], [], [], 0.05)
+            if not r:
+                continue
+            try:
+                data = os.read(self.fd, 65536)
+            except OSError:
+                data = b""
+            if not data:
+                self.dead = True
+                return until() if until else False
+            self.buf += data
+        return until() if until else False
+
+    def hooks(self):
+        """List of (name, value-dict) for every DCS hook message so far."""
+        out = []
+        for m in HOOK_RE.finditer(self.buf):
+            try:
+                j = json.loads(bytes.fromhex(m.group(1).decode()))
+            except ValueError:
+                continue
+            out.append((j.get("hook", "?"), j.get("value") or {}))
+        return out
+
+    def names(self):
+        return [n for n, _ in self.hooks()]
+
+    def text(self):
+        raw = HOOK_RE.sub(b"", self.buf)
+        raw = OSC_RE.sub(b"", raw)
+        raw = CSI_RE.sub(b"", raw)
+        return raw.decode(errors="replace")
+
+    def bootstrap(self):
+        """Source the assembled body the way the init script does, wait for it."""
+        self.pump(1.5)  # let the rc files and the first prompt settle
+        os.write(
+            self.fd,
+            (f"unsetopt ZLE; WARP_SESSION_ID=4242; WARP_USING_WINDOWS_CON_PTY=false; source {self.body}; echo boot$((20+22))done\r").encode(),
+        )
+        ok = self.pump(20, lambda: "boot42done" in self.text() and "Bootstrapped" in self.names())
+        self.broken = not ok
+        self.pump(1.5)  # the bootstrap command's own Precmd and prompt
+        return ok
+
+    def cycle(self, cmd, timeout=5):
+        """Type a command; return the (name, value) hooks it produced, waiting
+        for its Precmd. Returns None if the shell stops responding."""
+        if self.broken:
+            return None
+        n = len(self.hooks())
+        before = self.names().count("Precmd")
+        os.write(self.fd, (cmd + "\r").encode())
+        ok = self.pump(timeout, lambda: self.names().count("Precmd") > before)
+        if not ok:
+            self.broken = True
+            return self.hooks()[n:]
+        self.pump(0.2)
+        return self.hooks()[n:]
+
+    def close(self):
+        try:
+            os.kill(self.pid, 9)
+            os.waitpid(self.pid, 0)
+        except OSError:
+            pass
+        shutil.rmtree(self.home, ignore_errors=True)
+
+
+failures = []
+
+
+def check(cond, what, shell):
+    if cond:
+        print(f"  ok   {what}")
+        return
+    print(f"  FAIL {what}")
+    failures.append(what)
+    print("       hooks: " + " ".join(shell.names()[-12:]))
+    tail = shell.text()[-1000:]
+    print("       output tail:\n" + "\n".join("         | " + l for l in tail.splitlines()[-12:]))
+
+
+def check_cycle(sh, cmd, want_exit):
+    got = sh.cycle(cmd)
+    names = [n for n, _ in got] if got is not None else []
+    check(
+        names[:3] == ["Preexec", "CommandFinished", "Precmd"],
+        f"`{cmd}` emits Preexec, CommandFinished, Precmd (got {names})",
+        sh,
+    )
+    if want_exit is not None:
+        codes = [v.get("exit_code") for n, v in (got or []) if n == "CommandFinished"]
+        check(codes[:1] == [want_exit], f"`{cmd}` exit code is {want_exit} (got {codes})", sh)
+
+
+def scenario(title, zshrc, zshenv=""):
+    print(title)
+    sh = Shell(zshrc, zshenv)
+    try:
+        check(sh.bootstrap(), "bootstraps", sh)
+        check_cycle(sh, "false", 1)
+        check_cycle(sh, 'sh -c "exit 7"', 7)
+        check_cycle(sh, "true", 0)
+    finally:
+        sh.close()
+
+
+def scenario_err_exit():
+    print("setopt err_exit in .zshrc")
+    sh = Shell("setopt err_exit")
+    try:
+        check(sh.bootstrap(), "bootstraps", sh)
+        check_cycle(sh, "echo hi", 0)
+        check(not sh.dead, "the shell did not exit", sh)
+    finally:
+        sh.close()
+
+
+def main():
+    print(f"zsh: {ZSH}\nbody: {BODY}")
+    scenario("setopt err_return", "setopt err_return")
+    scenario("setopt nounset", "setopt nounset")
+    scenario("setopt err_return nounset", "setopt err_return nounset")
+    scenario(".zshenv with setopt err_return nounset", "", "setopt err_return nounset")
+    scenario(
+        "a user precmd that dies with ${NOPE:?boom}",
+        "_user_precmd() { : ${NOPE:?boom}; }\nprecmd_functions+=(_user_precmd)",
+    )
+    scenario_err_exit()
+    if failures:
+        print(f"\ntest_zsh_bootstrap_strict_options: {len(failures)} check(s) FAILED")
+        return 1
+    print("\ntest_zsh_bootstrap_strict_options: ok")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
