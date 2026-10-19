@@ -229,22 +229,23 @@ fn interleave_conversations(base: Vec<MenuEntry>, conversations: Vec<MenuEntry>)
         .position(|e| e.order == HistoryOrder::CurrentSession)
         .unwrap_or(base.len());
 
+    // Move entries rather than cloning them: with a huge history each clone copies the
+    // command text (#874).
     let mut merged: Vec<MenuEntry> = Vec::with_capacity(base.len() + conversations.len());
-    merged.extend(base.iter().take(current_start_idx).cloned());
+    let mut base = base.into_iter();
+    merged.extend(base.by_ref().take(current_start_idx));
 
-    let base_current = base.into_iter().skip(current_start_idx).collect::<Vec<_>>();
+    let mut base_current = base.peekable();
     let mut conversations = conversations;
     conversations.sort_by(|a, b| a.sort_timestamp.cmp(&b.sort_timestamp));
 
-    let mut i = 0;
     for conv in conversations {
-        while i < base_current.len() && base_current[i].sort_timestamp < conv.sort_timestamp {
-            merged.push(base_current[i].clone());
-            i += 1;
+        while let Some(entry) = base_current.next_if(|e| e.sort_timestamp < conv.sort_timestamp) {
+            merged.push(entry);
         }
         merged.push(conv);
     }
-    merged.extend(base_current.into_iter().skip(i));
+    merged.extend(base_current);
 
     merged
 }
@@ -277,13 +278,14 @@ impl SyncDataSource for InlineHistoryMenuDataSource {
 
         let command_entries = if include_commands {
             history
-                .up_arrow_suggestions_for_terminal_view(
+                .up_arrow_suggestions_with_command_prefix(
                     self.terminal_view_id,
                     session_id,
                     UpArrowHistoryConfig {
                         include_commands: true,
                         include_prompts: false,
                     },
+                    (!trimmed_query.is_empty()).then_some(trimmed_query),
                     app,
                 )
                 .into_iter()

@@ -175,6 +175,30 @@ struct CommandHistorySummary {
     count: u32,
 }
 
+// Identity is the command text alone, so the summaries can live in a `HashSet` looked up by
+// `&str`. The previous `HashMap<String, CommandHistorySummary>` stored a second copy of every
+// command as the key, doubling the memory of a very large persisted history (#863).
+impl PartialEq for CommandHistorySummary {
+    fn eq(&self, other: &Self) -> bool {
+        self.most_recent_entry.command == other.most_recent_entry.command
+    }
+}
+
+impl Eq for CommandHistorySummary {}
+
+impl std::hash::Hash for CommandHistorySummary {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Must hash exactly like `str` for `Borrow<str>` lookups to work.
+        self.most_recent_entry.command.as_str().hash(state);
+    }
+}
+
+impl std::borrow::Borrow<str> for CommandHistorySummary {
+    fn borrow(&self) -> &str {
+        self.most_recent_entry.command.as_str()
+    }
+}
+
 impl CommandHistorySummary {
     fn new(most_recent_entry: HistoryEntry) -> Self {
         Self {
@@ -189,7 +213,7 @@ pub struct History {
     /// For each ShellHost, the de-duped commands from the sqlite "commands" table is stored here.
     /// Each time a history file is read, it gets "joined" to the commands in here to add the
     /// execution metadata from the most recent run.
-    persisted_commands_summary: HashMap<ShellHost, HashMap<String, CommandHistorySummary>>,
+    persisted_commands_summary: HashMap<ShellHost, HashSet<CommandHistorySummary>>,
 
     /// Entries from the history file for the host.  Immutable once loaded and
     /// shared between sessions.
@@ -468,7 +492,7 @@ impl History {
     pub fn new(persisted_commands: Vec<PersistedCommand>) -> Self {
         log::debug!("Creating new History model with persisted commands {persisted_commands:?}");
         let mut persisted_commands_summary =
-            HashMap::<ShellHost, HashMap<String, CommandHistorySummary>>::new();
+            HashMap::<ShellHost, HashSet<CommandHistorySummary>>::new();
 
         for command in persisted_commands {
             if let Some(shell_host) = command.shell_host.as_ref() {
@@ -476,10 +500,13 @@ impl History {
                     .entry(shell_host.clone())
                     .or_default();
                 let hist_entry: HistoryEntry = command.into();
-                summaries
-                    .entry(hist_entry.command.clone())
-                    .and_modify(|summary| summary.count += 1)
-                    .or_insert(CommandHistorySummary::new(hist_entry));
+                // Keep the first-seen entry and count repeats.
+                if let Some(mut existing) = summaries.take(hist_entry.command.as_str()) {
+                    existing.count += 1;
+                    summaries.insert(existing);
+                } else {
+                    summaries.insert(CommandHistorySummary::new(hist_entry));
+                }
             }
         }
 
@@ -495,7 +522,7 @@ impl History {
         self.persisted_commands_summary
             .iter()
             .filter(|(shell_host, _)| shell_host.hostname == hostname)
-            .flat_map(|(_, summaries)| summaries.values())
+            .flat_map(|(_, summaries)| summaries.iter())
             .map(|summary| (summary.count, &summary.most_recent_entry))
             .collect()
     }
@@ -664,7 +691,7 @@ impl History {
                 .map(|command| {
                     self.persisted_commands_summary
                         .get(&host)
-                        .and_then(|summaries| summaries.get(&command))
+                        .and_then(|summaries| summaries.get(command.as_str()))
                         .map(|summary| summary.most_recent_entry.clone())
                         .unwrap_or_else(|| HistoryEntry::command_only(command))
                 })

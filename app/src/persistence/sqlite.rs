@@ -4121,6 +4121,9 @@ fn read_sqlite_data(
     let commands = schema::commands::dsl::commands
         // Ensure the commands come into memory sorted chronologically.
         .order(schema::commands::columns::id.desc())
+        // Only the newest rows: inserts trim to COMMANDS_COUNT_LIMIT, but a database that is
+        // already larger (e.g. 1M rows) must not be loaded wholesale into memory (#863).
+        .limit(COMMANDS_COUNT_LIMIT)
         .load_iter::<model::Command, DefaultLoadingMode>(conn)?
         .filter_map(|command| command.ok())
         .map(PersistedCommand::from)

@@ -53,34 +53,28 @@ fn sort_and_dedupe_suggestions<'a>(
     suggestions.sort_by(|a, b| a.cmp(b, session_id, all_live_session_ids));
 
     // Deduplicate commands and AI queries separately: keep the latest occurrence for each type.
+    // A flag per index rather than a `HashSet<usize>`: with a very large history this runs on
+    // every Up press / keystroke, and the set was a second N-sized allocation (#874).
     let mut seen_commands: HashSet<&str> = HashSet::new();
     let mut seen_ai_queries: HashSet<&str> = HashSet::new();
-    let mut skip_indices: HashSet<usize> = HashSet::new();
+    let mut keep = vec![true; suggestions.len()];
     for (idx, suggestion) in suggestions.iter().enumerate().rev() {
         let text = suggestion.normalized_text();
         if text.is_empty() {
-            skip_indices.insert(idx);
+            keep[idx] = false;
             continue;
         }
-        if suggestion.is_ai_query() {
-            if seen_ai_queries.contains(text) {
-                skip_indices.insert(idx);
-            } else {
-                seen_ai_queries.insert(text);
-            }
-        } else if seen_commands.contains(text) {
-            skip_indices.insert(idx);
+        let first_seen = if suggestion.is_ai_query() {
+            seen_ai_queries.insert(text)
         } else {
-            seen_commands.insert(text);
-        }
+            seen_commands.insert(text)
+        };
+        keep[idx] = first_seen;
     }
 
+    let mut keep = keep.into_iter();
+    suggestions.retain(|_| keep.next().unwrap_or(true));
     suggestions
-        .into_iter()
-        .enumerate()
-        .filter(|(idx, _)| !skip_indices.contains(idx))
-        .map(|(_, suggestion)| suggestion)
-        .collect()
 }
 
 impl History {
@@ -89,6 +83,29 @@ impl History {
         terminal_view_id: EntityId,
         session_id: Option<SessionId>,
         config: UpArrowHistoryConfig,
+        app: &'a AppContext,
+    ) -> Vec<HistoryInputSuggestion<'a>> {
+        self.up_arrow_suggestions_with_command_prefix(
+            terminal_view_id,
+            session_id,
+            config,
+            None,
+            app,
+        )
+    }
+
+    /// Like [`Self::up_arrow_suggestions_for_terminal_view`], but when `command_prefix` is
+    /// given only commands whose trimmed text starts with it are considered. The prefix is
+    /// applied before the sort and dedupe, so a typed prefix shrinks the O(N log N) work to
+    /// the matching entries instead of running it over the whole history (#874). Because
+    /// dedupe keys on the same trimmed text, the result equals filtering afterwards.
+    /// AI queries are not filtered.
+    pub(crate) fn up_arrow_suggestions_with_command_prefix<'a>(
+        &'a self,
+        terminal_view_id: EntityId,
+        session_id: Option<SessionId>,
+        config: UpArrowHistoryConfig,
+        command_prefix: Option<&'a str>,
         app: &'a AppContext,
     ) -> Vec<HistoryInputSuggestion<'a>> {
         // Guarded, as the oracle guards them. These singletons are absent in
@@ -108,10 +125,16 @@ impl History {
             true
         };
 
+        // Lazy iteration over `visible_commands` instead of the `commands` Vec, which
+        // materialised the whole history before any filter ran.
         let commands = session_id
-            .and_then(|session_id| self.commands(session_id))
-            .unwrap_or_default()
+            .and_then(|session_id| self.visible_commands(session_id))
             .into_iter()
+            .flatten()
+            .map(|entry| &**entry)
+            .filter(move |entry| {
+                command_prefix.is_none_or(|prefix| entry.command.trim().starts_with(prefix))
+            })
             .filter(|entry| {
                 ignored_suggestions.is_none_or(|ignored_suggestions| {
                     !ignored_suggestions.is_ignored(&entry.command, SuggestionType::ShellCommand)
