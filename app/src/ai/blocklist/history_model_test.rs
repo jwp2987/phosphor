@@ -6,41 +6,41 @@ use itertools::Itertools;
 use warpui::{App, EntityId};
 
 use crate::{
+    GlobalResourceHandles, GlobalResourceHandlesProvider,
     ai::{
         agent::{
-            api::ServerConversationToken,
-            conversation::{AIConversation, AIConversationId, ConversationStatus, TodoStatus},
-            todos::AIAgentTodoList,
             AIAgentExchange, AIAgentExchangeId, AIAgentInput, AIAgentOutputStatus, AIAgentTodo,
             AIAgentTodoId, FinishedAIAgentOutput, RenderableAIError, Shared,
             TransientNetworkErrorKind, UserQueryMode,
+            api::ServerConversationToken,
+            conversation::{AIConversationId, ConversationStatus, TodoStatus},
+            todos::AIAgentTodoList,
         },
         ambient_agents::{
-            conversation_output_status_from_conversation, AmbientAgentTaskId,
-            AmbientConversationStatus,
+            AmbientAgentTaskId, AmbientConversationStatus,
+            conversation_output_status_from_conversation,
         },
-        blocklist::{controller::RequestInput, ResponseStreamId},
+        blocklist::{ResponseStreamId, controller::RequestInput},
         byop_readiness::{RepairRecord, RepairSource, RepairState, RepairStateStatus, ToolCallKey},
         llms::LLMId,
     },
     input_suggestions::HistoryInputSuggestion,
     persistence::{
+        ModelEvent, PersistedTaskRetention,
         model::{
             AgentConversation, AgentConversationData, AgentConversationRecord,
             AgentConversationSummary, PersistedAutoexecuteMode,
         },
-        ModelEvent, PersistedTaskRetention,
     },
     terminal::model::session::SessionId,
     test_util::settings::initialize_settings_for_tests,
-    GlobalResourceHandles, GlobalResourceHandlesProvider,
 };
 use warp_multi_agent_api as api;
 
 use super::{
-    convert_persisted_conversation_to_ai_conversation_with_metadata, AIConversationMetadata,
-    AIQueryHistoryOutputStatus, BeginConversationRenameError, BlocklistAIHistoryModel,
-    ForkConversationError, PersistedAIInput, PersistedAIInputType,
+    AIConversationMetadata, AIQueryHistoryOutputStatus, BeginConversationRenameError,
+    BlocklistAIHistoryModel, ForkConversationError, PersistedAIInput, PersistedAIInputType,
+    convert_persisted_conversation_to_ai_conversation_with_metadata,
 };
 
 fn initialize_history_model_test_app(app: &mut App) {
@@ -469,8 +469,8 @@ fn test_ai_queries_for_terminal_view_up_arrow_history() {
         ];
 
         // Create history model with persisted queries as a singleton
-        let history_model =
-            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(persisted_queries, vec![], &[]));
+        let history_model = app
+            .add_singleton_model(|_| BlocklistAIHistoryModel::new(persisted_queries, vec![], &[]));
 
         // Helper function to get and sort AI queries using the same logic as Input
         let get_sorted_queries = |model: &BlocklistAIHistoryModel| -> Vec<String> {
@@ -648,7 +648,8 @@ fn test_transcript_viewer_terminal_view_is_not_marked_historical() {
         let now = Local::now();
         let terminal_view_id = EntityId::new();
 
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let conversation_id = history_model.update(&mut app, |history_model, ctx| {
             history_model.start_new_conversation(terminal_view_id, false, false, ctx)
@@ -700,7 +701,8 @@ fn test_transcript_viewer_terminal_view_is_not_marked_historical() {
 #[test]
 fn test_ambient_agent_conversations_excluded_from_list_but_accessible_by_id() {
     App::test((), |mut app| async move {
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let regular_id = AIConversationId::new();
         let ambient_id = AIConversationId::new();
@@ -772,7 +774,8 @@ fn test_child_agent_conversations_excluded_from_list_but_accessible_by_id() {
     use crate::ai::agent::conversation::AIConversation;
 
     App::test((), |mut app| async move {
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let regular_id = AIConversationId::new();
 
@@ -857,8 +860,8 @@ fn test_initialize_historical_conversations_indexes_child_conversations() {
             tasks: vec![],
         }];
 
-        let history_model =
-            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &conversations));
+        let history_model = app
+            .add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &conversations));
 
         history_model.read(&app, |model, _| {
             // The child conversation should be indexed under its parent.
@@ -881,7 +884,8 @@ fn test_initialize_historical_conversations_indexes_child_conversations() {
 fn test_set_parent_for_conversation_populates_index() {
     App::test((), |mut app| async move {
         let terminal_view_id = EntityId::new();
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         // Create parent and child conversations via start_new_conversation.
         let parent_id = history_model.update(&mut app, |model, ctx| {
@@ -916,7 +920,8 @@ fn test_set_parent_for_conversation_populates_index() {
 fn test_set_parent_for_conversation_dedup() {
     App::test((), |mut app| async move {
         let terminal_view_id = EntityId::new();
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let parent_id = history_model.update(&mut app, |model, ctx| {
             model.start_new_conversation(terminal_view_id, false, false, ctx)
@@ -942,7 +947,8 @@ fn test_set_parent_for_conversation_dedup() {
 fn test_set_parent_multiple_children() {
     App::test((), |mut app| async move {
         let terminal_view_id = EntityId::new();
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let parent_id = history_model.update(&mut app, |model, ctx| {
             model.start_new_conversation(terminal_view_id, false, false, ctx)
@@ -972,7 +978,8 @@ fn test_set_parent_multiple_children() {
 #[test]
 fn test_child_conversation_ids_of_unknown_parent() {
     App::test((), |app| async move {
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
         let unknown_id = AIConversationId::new();
 
         history_model.read(&app, |model, _| {
@@ -988,7 +995,8 @@ fn test_restore_conversations_maintains_children_by_parent() {
 
     App::test((), |mut app| async move {
         let terminal_view_id = EntityId::new();
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let parent_id = AIConversationId::new();
         let mut child_conv = AIConversation::new(false);
@@ -1011,7 +1019,8 @@ fn test_restore_conversations_dedup_children_by_parent() {
 
     App::test((), |mut app| async move {
         let terminal_view_id = EntityId::new();
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let parent_id = AIConversationId::new();
         let mut child_conv_a = AIConversation::new(false);
@@ -1042,7 +1051,8 @@ fn test_all_cleared_conversations_includes_terminal_view_id() {
         let now = Local::now();
         let terminal_view_id = EntityId::new();
 
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let conversation_id = history_model.update(&mut app, |history_model, ctx| {
             history_model.start_new_conversation(terminal_view_id, false, false, ctx)
@@ -1104,7 +1114,8 @@ fn test_toggle_autoexecute_override_persists_updated_conversation_state() {
         global_resource_handles.model_event_sender = Some(sender);
         app.add_singleton_model(|_| GlobalResourceHandlesProvider::new(global_resource_handles));
 
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
         let terminal_view_id = EntityId::new();
 
         let conversation_id = history_model.update(&mut app, |history_model, ctx| {
@@ -1139,7 +1150,8 @@ fn test_find_by_token_after_restore_conversations() {
     use crate::ai::agent::conversation::AIConversation;
 
     App::test((), |mut app| async move {
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
         let terminal_view_id = EntityId::new();
 
         let mut conversation = AIConversation::new(false);
@@ -1174,7 +1186,8 @@ fn test_find_by_token_returns_none_after_remove_conversation() {
         global_resource_handles.model_event_sender = Some(sender);
         app.add_singleton_model(|_| GlobalResourceHandlesProvider::new(global_resource_handles));
 
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let mut conversation = AIConversation::new(false);
         conversation.set_server_conversation_token("removable-token".to_string());
@@ -1212,7 +1225,8 @@ fn test_find_by_token_returns_none_after_reset() {
     use crate::ai::agent::conversation::AIConversation;
 
     App::test((), |mut app| async move {
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let mut conversation = AIConversation::new(false);
         conversation.set_server_conversation_token("reset-token".to_string());
@@ -1242,7 +1256,8 @@ fn test_find_by_token_after_initialize_output_for_response_stream() {
         initialize_history_model_test_app(&mut app);
 
         let now = Local::now();
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
         let terminal_view_id = EntityId::new();
 
         let conversation_id = history_model.update(&mut app, |history_model, ctx| {
@@ -1313,7 +1328,8 @@ fn test_find_by_token_after_assign_run_id_for_conversation() {
         // `GlobalResourceHandlesProvider`. Register both so the persist path has the
         // singletons it legitimately needs.
         crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
         let terminal_view_id = EntityId::new();
 
         let conversation_id = history_model.update(&mut app, |history_model, ctx| {
@@ -1351,7 +1367,8 @@ fn test_find_by_token_after_insert_forked_conversation_from_tasks() {
     use crate::persistence::model::AgentConversationData;
 
     App::test((), |mut app| async move {
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let forked_conversation_id = AIConversationId::new();
         let conversation_data = AgentConversationData {
@@ -1411,7 +1428,8 @@ fn test_find_by_token_after_mark_conversations_historical_for_terminal_view() {
         initialize_history_model_test_app(&mut app);
 
         let now = Local::now();
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
         let terminal_view_id = EntityId::new();
 
         // Needs a real exchange to pass `conversation_would_render_in_blocklist`.
@@ -1482,7 +1500,8 @@ fn test_find_by_token_after_mark_conversations_historical_for_terminal_view() {
 #[test]
 fn test_set_server_conversation_token_rebinds_reverse_index() {
     App::test((), |mut app| async move {
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
         let terminal_view_id = EntityId::new();
 
         let conversation_id = history_model.update(&mut app, |history_model, ctx| {
@@ -1521,7 +1540,8 @@ fn test_fork_conversation_rejects_an_empty_source() {
     use crate::ai::agent::conversation::AIConversation;
 
     App::test((), |mut app| async move {
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
         let source = AIConversation::new(false);
 
         let error = history_model.update(&mut app, |model, ctx| {
@@ -1556,7 +1576,8 @@ fn test_fork_conversation_preserves_task_ids_when_requested() {
         global_resource_handles.model_event_sender = Some(sender);
         app.add_singleton_model(|_| GlobalResourceHandlesProvider::new(global_resource_handles));
 
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
         let terminal_view_id = EntityId::new();
 
         let source_id = AIConversationId::new();
@@ -1697,9 +1718,11 @@ fn begin_conversation_rename_updates_title_and_cached_metadata() {
                     .map(|metadata| metadata.title.as_str()),
                 Some("Manual title"),
             );
-            assert!(model
-                .in_flight_conversation_renames
-                .contains_key(&conversation_id));
+            assert!(
+                model
+                    .in_flight_conversation_renames
+                    .contains_key(&conversation_id)
+            );
         });
     });
 }
@@ -1741,9 +1764,11 @@ fn begin_conversation_rename_rejects_conversation_without_server_token() {
                     .map(|metadata| metadata.title.as_str()),
                 Some("Generated title"),
             );
-            assert!(!model
-                .in_flight_conversation_renames
-                .contains_key(&conversation_id));
+            assert!(
+                !model
+                    .in_flight_conversation_renames
+                    .contains_key(&conversation_id)
+            );
         });
     });
 }
@@ -1779,9 +1804,11 @@ fn begin_conversation_rename_rejects_optimistic_root_task() {
                 .expect("conversation should have a root task");
             assert!(root_task.source().is_none());
             assert_eq!(root_task.description(), "");
-            assert!(!model
-                .in_flight_conversation_renames
-                .contains_key(&conversation_id));
+            assert!(
+                !model
+                    .in_flight_conversation_renames
+                    .contains_key(&conversation_id)
+            );
         });
     });
 }
@@ -1812,7 +1839,11 @@ fn complete_conversation_rename_applies_normalized_title_and_clears_in_flight_st
             model
                 .begin_conversation_rename(conversation_id, "Manual title".to_string(), ctx)
                 .expect("rename should begin");
-            model.complete_conversation_rename(conversation_id, "Normalized title".to_string(), ctx);
+            model.complete_conversation_rename(
+                conversation_id,
+                "Normalized title".to_string(),
+                ctx,
+            );
         });
 
         history_model.read(&app, |model, _| {
@@ -1832,9 +1863,11 @@ fn complete_conversation_rename_applies_normalized_title_and_clears_in_flight_st
                     .map(|metadata| metadata.title.as_str()),
                 Some("Normalized title"),
             );
-            assert!(!model
-                .in_flight_conversation_renames
-                .contains_key(&conversation_id));
+            assert!(
+                !model
+                    .in_flight_conversation_renames
+                    .contains_key(&conversation_id)
+            );
         });
     });
 }
@@ -1885,9 +1918,11 @@ fn fail_conversation_rename_reverts_title_and_cached_metadata() {
                     .map(|metadata| metadata.title.as_str()),
                 Some("Generated title"),
             );
-            assert!(!model
-                .in_flight_conversation_renames
-                .contains_key(&conversation_id));
+            assert!(
+                !model
+                    .in_flight_conversation_renames
+                    .contains_key(&conversation_id)
+            );
         });
     });
 }
@@ -1922,9 +1957,11 @@ fn begin_conversation_rename_rejects_second_rename_while_in_flight() {
                 .conversation(&conversation_id)
                 .expect("conversation should exist");
             assert_eq!(conversation.title().as_deref(), Some("Manual title"));
-            assert!(model
-                .in_flight_conversation_renames
-                .contains_key(&conversation_id));
+            assert!(
+                model
+                    .in_flight_conversation_renames
+                    .contains_key(&conversation_id)
+            );
         });
     });
 }
@@ -1939,7 +1976,8 @@ fn test_update_event_sequence_persists_updated_conversation_state() {
         global_resource_handles.model_event_sender = Some(sender);
         app.add_singleton_model(|_| GlobalResourceHandlesProvider::new(global_resource_handles));
 
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
         let terminal_view_id = EntityId::new();
 
         let conversation_id = history_model.update(&mut app, |history_model, ctx| {
@@ -1978,7 +2016,8 @@ fn test_remove_child_conversation_cleans_parent_index() {
     App::test((), |mut app| async move {
         initialize_history_model_test_app(&mut app);
         let terminal_view_id = EntityId::new();
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
         let parent_id = history_model.update(&mut app, |model, ctx| {
             model.start_new_conversation(terminal_view_id, false, false, ctx)
         });
@@ -2004,7 +2043,8 @@ fn test_remove_parent_conversation_cleans_incoming_and_outgoing_index_entries() 
     App::test((), |mut app| async move {
         initialize_history_model_test_app(&mut app);
         let terminal_view_id = EntityId::new();
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
         let grandparent_id = history_model.update(&mut app, |model, ctx| {
             model.start_new_conversation(terminal_view_id, false, false, ctx)
         });
@@ -2037,15 +2077,22 @@ fn test_remove_parent_conversation_cleans_incoming_and_outgoing_index_entries() 
 fn statuses_after_stream_error(
     error: RenderableAIError,
     recovery_pending: bool,
-) -> (Option<ConversationStatus>, Option<AmbientConversationStatus>) {
-    type Captured = (Option<ConversationStatus>, Option<AmbientConversationStatus>);
+) -> (
+    Option<ConversationStatus>,
+    Option<AmbientConversationStatus>,
+) {
+    type Captured = (
+        Option<ConversationStatus>,
+        Option<AmbientConversationStatus>,
+    );
     let derived: std::sync::Arc<std::sync::Mutex<Captured>> =
         std::sync::Arc::new(std::sync::Mutex::<Captured>::new((None, None)));
     let derived_for_test = std::sync::Arc::clone(&derived);
     App::test((), |mut app| async move {
         initialize_history_model_test_app(&mut app);
         let terminal_view_id = EntityId::new();
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let conversation_id = history_model.update(&mut app, |model, ctx| {
             model.start_new_conversation(terminal_view_id, false, false, ctx)
@@ -2972,7 +3019,8 @@ fn fork_exact_reconciles_fork_point_client_tool_calls() {
     App::test((), |mut app| async move {
         initialize_settings_for_tests(&mut app);
         let _receiver = install_mock_model_event_sender(&mut app);
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let root_task_id = "root-task";
         let orphan_id = "toolu_orphan";
@@ -3168,8 +3216,8 @@ fn test_initialize_historical_conversations_uses_root_task_description_title() {
             }],
         }];
 
-        let history_model =
-            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &conversations));
+        let history_model = app
+            .add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &conversations));
 
         history_model.read(&app, |model, _| {
             let metadata = model
@@ -3211,8 +3259,8 @@ fn test_initialize_historical_conversations_uses_summary_column_without_tasks() 
             tasks: vec![],
         }];
 
-        let history_model =
-            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &conversations));
+        let history_model = app
+            .add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &conversations));
 
         history_model.read(&app, |model, _| {
             let metadata = model
@@ -3279,8 +3327,8 @@ fn test_initialize_historical_conversations_skips_unrestorable_and_unlisted_summ
             ),
         ];
 
-        let history_model =
-            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &conversations));
+        let history_model = app
+            .add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &conversations));
 
         history_model.read(&app, |model, _| {
             assert!(model.get_conversation_metadata(&unrestorable_id).is_none());
@@ -5419,83 +5467,18 @@ fn block_completion_does_not_finish_a_non_cli_subagent() {
     });
 }
 
-/// #843: a discarded view's per-view maps are always released; the conversation object is
-/// dropped only when it is reloadable (metadata present, not live elsewhere, DB available).
+/// #843: closing a view releases its per-view maps but keeps the conversation objects
+/// (they stay restorable and are never dropped from memory).
 #[test]
-fn test_forget_terminal_view_evicts_only_reloadable_conversations() {
-    App::test((), |mut app| async move {
-        let history_model =
-            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
-        let closing_view = EntityId::new();
-        let other_view = EntityId::new();
-
-        let (with_meta, without_meta, shared) = history_model.update(&mut app, |model, ctx| {
-            let with_meta = model.start_new_conversation(closing_view, false, false, ctx);
-            let without_meta = model.start_new_conversation(closing_view, false, false, ctx);
-            let shared = model.start_new_conversation(closing_view, false, false, ctx);
-            for id in [with_meta, shared] {
-                let metadata = AIConversationMetadata::from(model.conversation(&id).unwrap());
-                model.all_conversations_metadata.insert(id, metadata);
-            }
-            for id in [with_meta, without_meta, shared] {
-                set_test_status(model, id, closing_view, ConversationStatus::Success, ctx);
-            }
-            // `shared` is also live in another view.
-            model
-                .live_conversation_ids_for_terminal_view
-                .entry(other_view)
-                .or_default()
-                .push(shared);
-            model
-                .terminal_view_created_at
-                .insert(closing_view, Local::now());
-            (with_meta, without_meta, shared)
-        });
-
-        history_model.update(&mut app, |model, _| {
-            model.forget_terminal_view_impl(closing_view, true);
-            // Closing only records the candidate; nothing is dropped until a sweep confirms
-            // the SQLite row.
-            assert!(model.conversation(&with_meta).is_some());
-            model.sweep_pending_evictions_with(Local::now(), 0, |_, _| true);
-        });
-
-        history_model.read(&app, |model, _| {
-            assert!(
-                !model
-                    .live_conversation_ids_for_terminal_view
-                    .contains_key(&closing_view)
-            );
-            assert!(!model.terminal_view_created_at.contains_key(&closing_view));
-            assert!(
-                model.conversation(&with_meta).is_none(),
-                "reloadable: evicted"
-            );
-            assert!(model.get_conversation_metadata(&with_meta).is_some());
-            assert!(
-                model.conversation(&without_meta).is_some(),
-                "no metadata means it cannot be reloaded: kept"
-            );
-            assert!(
-                model.conversation(&shared).is_some(),
-                "live in another view: kept"
-            );
-        });
-    });
-}
-
-/// Without a DB connection nothing can be reloaded, so only the per-view maps go.
-#[test]
-fn test_forget_terminal_view_keeps_conversations_when_not_reloadable() {
+fn test_forget_terminal_view_drops_per_view_maps_and_keeps_conversations() {
     App::test((), |mut app| async move {
         let history_model =
             app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
         let view = EntityId::new();
         let id = history_model.update(&mut app, |model, ctx| {
             let id = model.start_new_conversation(view, false, false, ctx);
-            let metadata = AIConversationMetadata::from(model.conversation(&id).unwrap());
-            model.all_conversations_metadata.insert(id, metadata);
-            model.forget_terminal_view_impl(view, false);
+            model.terminal_view_created_at.insert(view, Local::now());
+            model.forget_terminal_view(view, ctx);
             id
         });
         history_model.read(&app, |model, _| {
@@ -5505,545 +5488,17 @@ fn test_forget_terminal_view_keeps_conversations_when_not_reloadable() {
                     .live_conversation_ids_for_terminal_view
                     .contains_key(&view)
             );
-        });
-    });
-}
-
-fn set_test_status(
-    model: &mut BlocklistAIHistoryModel,
-    id: AIConversationId,
-    view: EntityId,
-    status: ConversationStatus,
-    ctx: &mut warpui::ModelContext<BlocklistAIHistoryModel>,
-) {
-    model
-        .conversation_mut(&id)
-        .unwrap()
-        .update_status(status, view, ctx);
-}
-
-/// Starts a conversation in `view` with metadata and the given status, ready to be forgotten.
-fn start_closable_conversation(
-    model: &mut BlocklistAIHistoryModel,
-    view: EntityId,
-    status: ConversationStatus,
-    ctx: &mut warpui::ModelContext<BlocklistAIHistoryModel>,
-) -> AIConversationId {
-    let id = model.start_new_conversation(view, false, false, ctx);
-    let metadata = AIConversationMetadata::from(model.conversation(&id).unwrap());
-    model.all_conversations_metadata.insert(id, metadata);
-    set_test_status(model, id, view, status, ctx);
-    id
-}
-
-fn add_test_query(
-    model: &mut BlocklistAIHistoryModel,
-    id: AIConversationId,
-    view: EntityId,
-    text: &str,
-    ctx: &mut warpui::ModelContext<BlocklistAIHistoryModel>,
-) {
-    let exchange = create_exchange_with_query(text, Local::now(), None);
-    let task_id = model.conversation(&id).unwrap().get_root_task_id().clone();
-    let request_input = RequestInput {
-        conversation_id: id,
-        input_messages: HashMap::from([(task_id, exchange.input)]),
-        working_directory: exchange.working_directory,
-        model_id: exchange.model_id,
-        coding_model_id: exchange.coding_model_id,
-        cli_agent_model_id: exchange.cli_agent_model_id,
-        computer_use_model_id: exchange.computer_use_model_id,
-        shared_session_response_initiator: exchange.response_initiator,
-        request_start_ts: exchange.start_time,
-        supported_tools_override: None,
-    };
-    model
-        .update_conversation_for_new_request_input(
-            request_input,
-            ResponseStreamId::new_for_test(),
-            view,
-            ctx,
-        )
-        .unwrap();
-}
-
-/// #843: a conversation whose SQLite row cannot be confirmed (never written: persistence
-/// off, shared session, write dropped) is never evicted, however many sweeps run.
-#[test]
-fn test_forget_terminal_view_keeps_conversation_without_confirmed_row() {
-    App::test((), |mut app| async move {
-        initialize_history_model_test_app(&mut app);
-        let history_model =
-            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
-        let view = EntityId::new();
-        let id = history_model.update(&mut app, |model, ctx| {
-            let id = start_closable_conversation(model, view, ConversationStatus::Success, ctx);
-            model.forget_terminal_view_impl(view, true);
-            for _ in 0..10 {
-                model.sweep_pending_evictions_with(Local::now(), 0, |_, _| false);
-            }
-            id
-        });
-        history_model.read(&app, |model, _| {
-            assert!(model.conversation(&id).is_some(), "no DB row: kept");
-        });
-
-        // Persistence off at close time (`can_reload == false`) records nothing at all.
-        let view2 = EntityId::new();
-        history_model.update(&mut app, |model, ctx| {
-            let id2 = start_closable_conversation(model, view2, ConversationStatus::Success, ctx);
-            model.forget_terminal_view_impl(view2, false);
-            assert!(!model.pending_evictions.iter().any(|p| p.id == id2));
-            model.sweep_pending_evictions_with(Local::now(), 0, |_, _| true);
-            assert!(model.conversation(&id2).is_some());
-        });
-    });
-}
-
-/// Eviction waits for the minimum age and for a confirmed matching row; a reported write
-/// failure vetoes it.
-#[test]
-fn test_pending_eviction_waits_for_confirmed_row_and_respects_write_failure() {
-    App::test((), |mut app| async move {
-        initialize_history_model_test_app(&mut app);
-        let history_model =
-            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
-        let view = EntityId::new();
-        history_model.update(&mut app, |model, ctx| {
-            let ok = start_closable_conversation(model, view, ConversationStatus::Success, ctx);
-            let failed = start_closable_conversation(model, view, ConversationStatus::Error, ctx);
-            model.forget_terminal_view_impl(view, true);
-            assert_eq!(model.pending_evictions.len(), 2);
-
-            // Too young.
-            model.sweep_pending_evictions_with(Local::now(), 60, |_, _| true);
-            assert!(model.conversation(&ok).is_some());
-            assert_eq!(model.pending_evictions.len(), 2);
-
-            // A write failure reported after recording vetoes eviction.
-            model.note_persist_failure(failed);
-            model.sweep_pending_evictions_with(Local::now(), 0, |_, _| true);
-            assert!(model.conversation(&failed).is_some());
-            assert!(model.conversation(&ok).is_none(), "confirmed row: evicted");
-        });
-    });
-}
-
-/// A conversation reopened (live again) before the sweep is not evicted.
-#[test]
-fn test_pending_eviction_skips_reopened_conversation() {
-    App::test((), |mut app| async move {
-        initialize_history_model_test_app(&mut app);
-        let history_model =
-            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
-        let view = EntityId::new();
-        let new_view = EntityId::new();
-        history_model.update(&mut app, |model, ctx| {
-            let id = start_closable_conversation(model, view, ConversationStatus::Success, ctx);
-            model.forget_terminal_view_impl(view, true);
-            model
-                .live_conversation_ids_for_terminal_view
-                .entry(new_view)
-                .or_default()
-                .push(id);
-            model.sweep_pending_evictions_with(Local::now(), 0, |_, _| true);
-            assert!(model.conversation(&id).is_some());
-        });
-    });
-}
-
-/// Orchestration: a parent with children, and a child whose parent is still loaded, are
-/// never evicted (the child cards and pane creation look children up in memory).
-#[test]
-fn test_forget_terminal_view_keeps_orchestration_trees() {
-    App::test((), |mut app| async move {
-        initialize_history_model_test_app(&mut app);
-        let history_model =
-            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
-        let parent_view = EntityId::new();
-        let child_view = EntityId::new();
-        history_model.update(&mut app, |model, ctx| {
-            let parent =
-                start_closable_conversation(model, parent_view, ConversationStatus::Success, ctx);
-            let child = model.start_new_child_conversation(
-                child_view,
-                "child".to_owned(),
-                parent,
-                None,
-                ctx,
-            );
-            let metadata = AIConversationMetadata::from(model.conversation(&child).unwrap());
-            model.all_conversations_metadata.insert(child, metadata);
-            set_test_status(model, child, child_view, ConversationStatus::Success, ctx);
-
-            // The child's pane closes while the parent is loaded (its pane is still open).
-            model.forget_terminal_view_impl(child_view, true);
-            model.sweep_pending_evictions_with(Local::now(), 0, |_, _| true);
             assert!(
-                model.conversation(&child).is_some(),
-                "parent loaded: child kept"
+                !model
+                    .cleared_conversation_ids_for_terminal_view
+                    .contains_key(&view)
             );
-
-            // The parent's pane closes: it has a child, so it stays too.
-            model.forget_terminal_view_impl(parent_view, true);
-            model.sweep_pending_evictions_with(Local::now(), 0, |_, _| true);
             assert!(
-                model.conversation(&parent).is_some(),
-                "has a child: parent kept"
+                !model
+                    .active_conversation_for_terminal_view
+                    .contains_key(&view)
             );
-            assert_eq!(model.child_conversations_of(parent).len(), 1);
-        });
-    });
-}
-
-/// Only settled statuses are evictable.
-#[test]
-fn test_forget_terminal_view_only_evicts_terminal_statuses() {
-    App::test((), |mut app| async move {
-        initialize_history_model_test_app(&mut app);
-        let history_model =
-            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
-        let view = EntityId::new();
-        history_model.update(&mut app, |model, ctx| {
-            let non_terminal = [
-                ConversationStatus::InProgress,
-                ConversationStatus::TransientError,
-                ConversationStatus::WaitingForEvents,
-                ConversationStatus::Blocked {
-                    blocked_action: "x".to_owned(),
-                },
-            ]
-            .map(|status| start_closable_conversation(model, view, status, ctx));
-            let terminal = [
-                ConversationStatus::Success,
-                ConversationStatus::Error,
-                ConversationStatus::Cancelled,
-            ]
-            .map(|status| start_closable_conversation(model, view, status, ctx));
-
-            model.forget_terminal_view_impl(view, true);
-            model.sweep_pending_evictions_with(Local::now(), 0, |_, _| true);
-            for id in non_terminal {
-                assert!(model.conversation(&id).is_some());
-            }
-            // Only `Success` is something restore reproduces from an exchange-less root
-            // task; `Error`/`Cancelled` here have no exchange backing them, so restore would
-            // come back `Success` and the conversation is kept.
-            let [success, error, cancelled] = terminal;
-            assert!(model.conversation(&success).is_none());
-            assert!(model.conversation(&error).is_some());
-            assert!(model.conversation(&cancelled).is_some());
-        });
-    });
-}
-
-/// A conversation holding state the schema does not round-trip is never evicted.
-#[test]
-fn test_forget_terminal_view_keeps_conversation_with_unpersisted_state() {
-    App::test((), |mut app| async move {
-        initialize_history_model_test_app(&mut app);
-        let history_model =
-            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
-        let view = EntityId::new();
-        history_model.update(&mut app, |model, ctx| {
-            let titled = start_closable_conversation(model, view, ConversationStatus::Success, ctx);
-            model
-                .conversation_mut(&titled)
-                .unwrap()
-                .set_fallback_display_title("Linear Issue".to_owned());
-            let reviewed =
-                start_closable_conversation(model, view, ConversationStatus::Success, ctx);
-            model
-                .conversation_mut(&reviewed)
-                .unwrap()
-                .mark_code_review_as_opened();
-            model.forget_terminal_view_impl(view, true);
-            model.sweep_pending_evictions_with(Local::now(), 0, |_, _| true);
-            assert!(model.conversation(&titled).is_some());
-            assert!(model.conversation(&reviewed).is_some());
-        });
-    });
-}
-
-/// Evict, reopen, evict again must not leave duplicate up-arrow entries, and a reopened
-/// conversation's entries come from its live exchanges only.
-#[test]
-fn test_evicted_queries_have_no_duplicates_after_evict_reopen_evict() {
-    App::test((), |mut app| async move {
-        initialize_history_model_test_app(&mut app);
-        let history_model =
-            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
-        let view = EntityId::new();
-        let reopen_view = EntityId::new();
-        history_model.update(&mut app, |model, ctx| {
-            let id = start_closable_conversation(model, view, ConversationStatus::Success, ctx);
-            add_test_query(model, id, view, "only query", ctx);
-            set_test_status(model, id, view, ConversationStatus::Success, ctx);
-            let texts = |model: &BlocklistAIHistoryModel| -> Vec<String> {
-                model
-                    .all_ai_queries(None)
-                    .map(|q| q.query_text.clone())
-                    .collect()
-            };
-
-            // First close: up-arrow history survives, exactly once, before and after the sweep.
-            let snapshot = model.conversation(&id).unwrap().clone();
-            model.forget_terminal_view_impl(view, true);
-            assert_eq!(texts(model), vec!["only query"]);
-            model.sweep_pending_evictions_with(Local::now(), 0, |_, _| true);
-            assert!(model.conversation(&id).is_none());
-            assert_eq!(texts(model), vec!["only query"]);
-
-            // Reopen (what a reload from SQLite does): the live entry replaces the evicted
-            // one, with no duplicate.
-            model.conversations_by_id.insert(id, snapshot);
-            model
-                .live_conversation_ids_for_terminal_view
-                .entry(reopen_view)
-                .or_default()
-                .push(id);
-            assert_eq!(texts(model), vec!["only query"]);
-
-            // Close and evict again: still exactly one.
-            model.forget_terminal_view_impl(reopen_view, true);
-            model.sweep_pending_evictions_with(Local::now(), 0, |_, _| true);
-            assert!(model.conversation(&id).is_none());
-            assert_eq!(texts(model), vec!["only query"]);
-            assert_eq!(model.evicted_queries.len(), 1);
-        });
-    });
-}
-
-/// The `conversation_data` JSON the writer would persist for `conversation` right now.
-fn persisted_conversation_data_string(conversation: &AIConversation) -> String {
-    match conversation.updated_conversation_state_event() {
-        crate::persistence::ModelEvent::UpdateMultiAgentConversation {
-            conversation_data, ..
-        } => serde_json::to_string(&conversation_data).unwrap(),
-        _ => panic!("expected an UpdateMultiAgentConversation event"),
-    }
-}
-
-/// #843: a change that touches only `conversation_data` (pin, event sequence, run id,
-/// usage) and whose write was lost must veto eviction: the row's tasks still match, but
-/// restore would rebuild a different conversation.
-#[cfg(feature = "local_fs")]
-#[test]
-fn test_pending_eviction_keeps_conversation_with_lost_task_neutral_write() {
-    use super::conversation_loader::conversation_data_matches;
-    type Mutation = fn(&mut AIConversation);
-    let mutations: [(&str, Mutation); 4] = [
-        ("pin", |c| c.set_pinned(true)),
-        ("event sequence", |c| c.set_last_event_sequence(42)),
-        ("run id", |c| c.set_run_id(uuid::Uuid::new_v4().to_string())),
-        ("usage", |c| {
-            c.update_cost_and_usage_for_request(
-                None,
-                vec![],
-                Some(
-                    api::response_event::stream_finished::ConversationUsageMetadata {
-                        credits_spent: 3.0,
-                        ..Default::default()
-                    },
-                ),
-                false,
-            )
-            .unwrap();
-        }),
-    ];
-    App::test((), |mut app| async move {
-        initialize_history_model_test_app(&mut app);
-        let history_model =
-            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
-        let view = EntityId::new();
-        history_model.update(&mut app, |model, ctx| {
-            // Control: the row holds exactly the in-memory data, so it is evicted.
-            let control =
-                start_closable_conversation(model, view, ConversationStatus::Success, ctx);
-            let control_row =
-                persisted_conversation_data_string(model.conversation(&control).unwrap());
-            model.forget_terminal_view_impl(view, true);
-            model.sweep_pending_evictions_with(Local::now(), 0, |_, c| {
-                c.id() == control && conversation_data_matches(c, &control_row)
-            });
-            assert!(model.conversation(&control).is_none(), "control evicted");
-
-            for (name, mutate) in mutations {
-                let view = EntityId::new();
-                let id = start_closable_conversation(model, view, ConversationStatus::Success, ctx);
-                // What SQLite holds: the state before the (lost) write.
-                let stale_row =
-                    persisted_conversation_data_string(model.conversation(&id).unwrap());
-                mutate(model.conversation_mut(&id).unwrap());
-                assert_ne!(
-                    persisted_conversation_data_string(model.conversation(&id).unwrap()),
-                    stale_row,
-                    "precondition: {name} changes conversation_data"
-                );
-                model.forget_terminal_view_impl(view, true);
-                for _ in 0..3 {
-                    model.sweep_pending_evictions_with(Local::now(), 0, |_, c| {
-                        conversation_data_matches(c, &stale_row)
-                    });
-                }
-                assert!(
-                    model.conversation(&id).is_some(),
-                    "{name}: lost write must block eviction"
-                );
-            }
-        });
-    });
-}
-
-/// A writer that paused, removed, reconstructed or failed to write blocks all eviction.
-#[test]
-fn test_degraded_persistence_blocks_eviction() {
-    App::test((), |mut app| async move {
-        initialize_history_model_test_app(&mut app);
-        let history_model =
-            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
-        let view = EntityId::new();
-        history_model.update(&mut app, |model, ctx| {
-            let id = start_closable_conversation(model, view, ConversationStatus::Success, ctx);
-            model.forget_terminal_view_impl(view, true);
-            assert_eq!(model.pending_evictions.len(), 1);
-            model.mark_persistence_degraded();
-            model.sweep_pending_evictions_with(Local::now(), 0, |_, _| true);
-            assert!(model.conversation(&id).is_some());
-            // And a conversation closed after the degradation is never even recorded.
-            let view2 = EntityId::new();
-            let id2 = start_closable_conversation(model, view2, ConversationStatus::Success, ctx);
-            model.forget_terminal_view_impl(view2, true);
-            assert!(!model.pending_evictions.iter().any(|p| p.id == id2));
-            model.sweep_pending_evictions_with(Local::now(), 0, |_, _| true);
-            assert!(model.conversation(&id2).is_some());
-        });
-    });
-}
-
-/// Closing an already-pending conversation again restarts its age and attempts.
-#[test]
-fn test_reclose_resets_pending_eviction_clock() {
-    App::test((), |mut app| async move {
-        initialize_history_model_test_app(&mut app);
-        let history_model =
-            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
-        let view = EntityId::new();
-        let view2 = EntityId::new();
-        history_model.update(&mut app, |model, ctx| {
-            let id = start_closable_conversation(model, view, ConversationStatus::Success, ctx);
-            model.forget_terminal_view_impl(view, true);
-            // Age the entry and burn attempts.
-            model.pending_evictions[0].recorded_at = Local::now() - chrono::Duration::hours(1);
-            model.pending_evictions[0].attempts = 3;
-            // Reopened in another view, then that view closes.
-            model
-                .live_conversation_ids_for_terminal_view
-                .entry(view2)
-                .or_default()
-                .push(id);
-            model.forget_terminal_view_impl(view2, true);
-            assert_eq!(model.pending_evictions.len(), 1, "no duplicate entry");
-            assert_eq!(model.pending_evictions[0].attempts, 0);
-            assert!(
-                (Local::now() - model.pending_evictions[0].recorded_at).num_seconds() < 60,
-                "clock restarted"
-            );
-            model.sweep_pending_evictions_with(Local::now(), 60, |_, _| true);
-            assert!(model.conversation(&id).is_some(), "too young again");
-        });
-    });
-}
-
-/// Only one sweep timer chain exists no matter how many panes close.
-#[test]
-fn test_only_one_sweep_chain_is_scheduled() {
-    App::test((), |mut app| async move {
-        initialize_history_model_test_app(&mut app);
-        let history_model =
-            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
-        history_model.update(&mut app, |model, ctx| {
-            assert!(!model.sweep_scheduled);
-            model.schedule_pending_eviction_sweep(ctx);
-            assert!(model.sweep_scheduled);
-            // Further requests are no-ops while a chain is outstanding.
-            model.schedule_pending_eviction_sweep(ctx);
-            model.schedule_pending_eviction_sweep(ctx);
-            assert!(model.sweep_scheduled);
-        });
-    });
-}
-
-/// Every in-memory-only field blocks eviction.
-#[test]
-fn test_in_memory_only_fields_block_eviction() {
-    type Mutation =
-        fn(&mut AIConversation, EntityId, &mut warpui::ModelContext<BlocklistAIHistoryModel>);
-    let mutations: [(&str, Mutation); 5] = [
-        ("suggestions", |c, _, _| {
-            c.set_existing_suggestions_for_test(Default::default())
-        }),
-        ("error message", |c, view, ctx| {
-            c.update_status_with_error_message(
-                ConversationStatus::Error,
-                Some("boom".to_owned()),
-                view,
-                ctx,
-            )
-        }),
-        ("request cost", |c, _, _| {
-            c.update_cost_and_usage_for_request(
-                Some(crate::ai::agent::RequestCost::new(1.0)),
-                vec![],
-                None,
-                true,
-            )
-            .unwrap();
-        }),
-        ("token usage", |c, _, _| {
-            c.update_cost_and_usage_for_request(
-                None,
-                vec![api::response_event::stream_finished::TokenUsage {
-                    model_id: "m".to_owned(),
-                    total_input: 1,
-                    output: 1,
-                    input_cache_read: 0,
-                    input_cache_write: 0,
-                    cost_in_cents: 0.0,
-                }],
-                None,
-                true,
-            )
-            .unwrap();
-        }),
-        // Restore would derive Success from an exchange-less root task.
-        ("status restore would not reproduce", |c, view, ctx| {
-            c.update_status(ConversationStatus::Cancelled, view, ctx)
-        }),
-    ];
-    App::test((), |mut app| async move {
-        initialize_history_model_test_app(&mut app);
-        let history_model =
-            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
-        history_model.update(&mut app, |model, ctx| {
-            for (name, mutate) in mutations {
-                let view = EntityId::new();
-                let id = start_closable_conversation(model, view, ConversationStatus::Success, ctx);
-                assert!(
-                    !model
-                        .conversation(&id)
-                        .unwrap()
-                        .has_unpersisted_local_state(),
-                    "precondition for {name}"
-                );
-                mutate(model.conversation_mut(&id).unwrap(), view, ctx);
-                model.forget_terminal_view_impl(view, true);
-                model.sweep_pending_evictions_with(Local::now(), 0, |_, _| true);
-                assert!(
-                    model.conversation(&id).is_some(),
-                    "{name} must block eviction"
-                );
-            }
+            assert!(!model.terminal_view_created_at.contains_key(&view));
         });
     });
 }

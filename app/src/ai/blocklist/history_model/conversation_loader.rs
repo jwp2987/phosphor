@@ -162,48 +162,6 @@ impl BlocklistAIHistoryModel {
         }
     }
 
-    /// True only when the SQLite row for `conversation` exists and holds exactly the tasks
-    /// the conversation holds in memory (same count, and every in-memory task source equal
-    /// to the persisted task with the same id). Read-only. Any doubt (no connection, lock
-    /// failure, read error, unsourced task, mismatch) answers `false`, so callers keep the
-    /// in-memory copy (#843).
-    pub(super) fn persisted_row_matches(&self, conversation: &AIConversation) -> bool {
-        #[cfg(feature = "local_fs")]
-        {
-            let Some(conn) = self.db_connection.clone() else {
-                return false;
-            };
-            let Ok(mut conn) = conn.lock() else {
-                return false;
-            };
-            let id_str = conversation.id().to_string();
-            let Ok(Some(row)) = read_agent_conversation_by_id(&mut conn, &id_str) else {
-                return false;
-            };
-            // Everything restore rebuilds from `conversation_data` (token, usage, reverted
-            // actions, artifacts, run id, event sequence, pin, ...) must match too: several
-            // of those change without touching a task.
-            if !conversation_data_matches(conversation, &row.conversation.conversation_data) {
-                return false;
-            }
-            if conversation.all_tasks().count() != row.tasks.len() {
-                return false;
-            }
-            conversation.all_tasks().all(|task| {
-                task.source().is_some_and(|source| {
-                    row.tasks
-                        .iter()
-                        .any(|persisted| persisted.id == source.id && persisted == source)
-                })
-            })
-        }
-        #[cfg(not(feature = "local_fs"))]
-        {
-            let _ = conversation;
-            false
-        }
-    }
-
     /// Loads a conversation by its server token.
     ///
     /// BYOP has no cloud server and no server conversation tokens, so there is
@@ -477,43 +435,5 @@ impl BlocklistAIHistoryModel {
         // superset of the rows that reach `collected`. Matches the pin, which
         // has no such loop.
         self.all_conversations_metadata = collected;
-    }
-}
-
-/// Normalizes `reverted_action_ids` (a `HashSet`, so serialized in arbitrary order) by
-/// sorting it, so two serializations of equal data compare equal.
-#[cfg(feature = "local_fs")]
-fn normalized_conversation_data_value(
-    data: &crate::persistence::model::AgentConversationData,
-) -> Option<serde_json::Value> {
-    let mut value = serde_json::to_value(data).ok()?;
-    if let Some(serde_json::Value::Array(ids)) = value.get_mut("reverted_action_ids") {
-        ids.sort_by_key(|id| id.to_string());
-    }
-    Some(value)
-}
-
-/// True only when the persisted `conversation_data` JSON, parsed into the same struct the
-/// writer serializes, is identical to what the in-memory conversation would write now.
-/// Any parse or serialization doubt answers `false`.
-#[cfg(feature = "local_fs")]
-pub(super) fn conversation_data_matches(conversation: &AIConversation, persisted: &str) -> bool {
-    let Ok(persisted) =
-        serde_json::from_str::<crate::persistence::model::AgentConversationData>(persisted)
-    else {
-        return false;
-    };
-    let crate::persistence::ModelEvent::UpdateMultiAgentConversation {
-        conversation_data, ..
-    } = conversation.updated_conversation_state_event()
-    else {
-        return false;
-    };
-    match (
-        normalized_conversation_data_value(&persisted),
-        normalized_conversation_data_value(&conversation_data),
-    ) {
-        (Some(a), Some(b)) => a == b,
-        _ => false,
     }
 }

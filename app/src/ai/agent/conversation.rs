@@ -1252,11 +1252,6 @@ impl AIConversation {
 
     /// Sets the pin state. Callers must follow up with
     /// `write_updated_conversation_state` to push the change to SQLite.
-    #[cfg(test)]
-    pub(crate) fn set_existing_suggestions_for_test(&mut self, suggestions: Suggestions) {
-        self.existing_suggestions = Some(suggestions);
-    }
-
     pub fn set_pinned(&mut self, pinned: bool) {
         self.pinned = pinned;
     }
@@ -1622,26 +1617,6 @@ impl AIConversation {
         self.task_store
             .modify_root_task(|root_task| root_task.update_description(root_task_description));
         self.write_updated_conversation_state(ctx);
-    }
-
-    /// True when this conversation holds in-memory state that the SQLite schema does not
-    /// round-trip (`write_updated_conversation_state` never writes it, and restore never
-    /// reads it), so dropping the object would lose it (#843). Conservative: any
-    /// non-default value counts.
-    pub(crate) fn has_unpersisted_local_state(&self) -> bool {
-        self.fallback_display_title.is_some()
-            || self.has_opened_code_review
-            || self.code_review.is_some()
-            || !self.hidden_exchanges.is_empty()
-            || !self.dismissed_suggestion_ids.is_empty()
-            // In-memory-only: none of these is written to or rebuilt from SQLite (#843).
-            || self.existing_suggestions.is_some()
-            || self.status_error_message.is_some()
-            || self.total_request_cost.value() != 0.0
-            || !self.total_token_usage_by_model.is_empty()
-            // Restore re-derives the status from the root task's last exchange; a status
-            // that restore would not reproduce is state SQLite cannot give back.
-            || self.status != Self::derive_status_from_root_task(&self.get_root_task())
     }
 
     /// Set a fallback title used when no task description or initial query exists.
@@ -3626,7 +3601,7 @@ impl AIConversation {
         }
     }
 
-    pub(crate) fn updated_conversation_state_event(&self) -> ModelEvent {
+    fn updated_conversation_state_event(&self) -> ModelEvent {
         self.updated_conversation_state_event_with_retention(PersistedTaskRetention::DeleteMissing)
     }
 
@@ -3773,16 +3748,9 @@ impl AIConversation {
                     "sqlite sender is unavailable".to_owned(),
                 )
             })?;
-        let conversation_id = self.id;
         sqlite_sender
             .try_send(self.updated_conversation_state_event())
-            .map_err(|e| {
-                // The write is lost: never evict the only in-memory copy (#843).
-                ctx.spawn(async {}, move |history_model, _, _| {
-                    history_model.note_persist_failure(conversation_id);
-                });
-                UpdateConversationError::ByopPreflightPersistenceSend(format!("{e:?}"))
-            })
+            .map_err(|e| UpdateConversationError::ByopPreflightPersistenceSend(format!("{e:?}")))
     }
 
     pub(crate) fn write_updated_conversation_state(
@@ -3823,22 +3791,13 @@ impl AIConversation {
         };
 
         let event = self.updated_conversation_state_event_with_retention(retention);
-        let conversation_id = self.id;
         ctx.spawn(
             async move {
                 if let Err(e) = sqlite_sender.send(event) {
                     log::warn!("Failed to send updated AI tasks to sqlite writer thread: {e:?}");
-                    return true;
-                }
-                false
-            },
-            move |history_model, send_failed, _| {
-                // Remember the failure so the pane-close eviction never drops the only
-                // in-memory copy of a conversation whose write was lost (#843).
-                if send_failed {
-                    history_model.note_persist_failure(conversation_id);
                 }
             },
+            |_, _, _| {},
         );
     }
 
