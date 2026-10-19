@@ -23,13 +23,15 @@ pub(crate) fn look_for_wayland_compositor() -> Option<String> {
     // have false positives, like processes that name-clash with these compositors.
     let uid = nix::unistd::getuid();
     let euid = nix::unistd::geteuid();
-    if let Some(ps_output) = Command::new("ps")
+    // Keep the `Child` handle so that we can `wait()` on `ps` once `grep` has
+    // consumed its output. Dropping a `Child` without waiting leaves a zombie
+    // for the lifetime of the app (#830).
+    let mut ps_child = Command::new("ps")
         .args(["-u", &format!("{euid}"), "-U", &format!("{uid}")])
         .stdout(Stdio::piped())
         .spawn()
-        .ok()
-        .and_then(|output| output.stdout)
-    {
+        .ok()?;
+    let wm_name = ps_child.stdout.take().and_then(|ps_output| {
         let wm_match_cmd = Command::new("grep")
             .args(
                 ["-m", "1", "-o", "-F", "-i"].iter().chain(
@@ -41,17 +43,17 @@ pub(crate) fn look_for_wayland_compositor() -> Option<String> {
             .stdin(Stdio::from(ps_output))
             .output()
             .ok()
-            .filter(|out| out.status.success());
-
-        if let Some(wm_name_raw) = wm_match_cmd {
-            if let Ok(wm_name) = String::from_utf8(wm_name_raw.stdout) {
-                if !wm_name.is_empty() {
-                    return Some(wm_name);
-                }
-            }
-        }
+            .filter(|out| out.status.success())?;
+        String::from_utf8(wm_match_cmd.stdout)
+            .ok()
+            .filter(|wm_name| !wm_name.is_empty())
+    });
+    // `grep -m 1` may exit before `ps` finishes writing, so `ps` can die of
+    // SIGPIPE; either way, reap it.
+    if let Err(err) = ps_child.wait() {
+        log::debug!("Failed to reap `ps` child: {err}");
     }
-    None
+    wm_name
 }
 
 /// Returns the name of the Wayland compositor by looking at the Wayland

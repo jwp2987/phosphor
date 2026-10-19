@@ -221,6 +221,8 @@ pub struct Pty {
     token: mio::Token,
     signals: Signals,
     signals_token: mio::Token,
+    /// Set after the first TIOCSWINSZ failure so later ones log at debug, not warn.
+    winsize_failure_logged: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -643,6 +645,7 @@ impl Pty {
             token: PTY_TOKEN,
             signals,
             signals_token: SIGNALS_TOKEN,
+            winsize_failure_logged: false,
         };
         pty.on_resize(&size);
         Ok(pty)
@@ -737,7 +740,16 @@ impl EventedPty for Pty {
         let res = unsafe { libc::ioctl(self.fd.as_raw_fd(), libc::TIOCSWINSZ, &win as *const _) };
 
         if res < 0 {
-            panic!("ioctl TIOCSWINSZ failed: {}", io::Error::last_os_error());
+            // A failed resize (e.g. EBADF/EIO after the child exited) must not
+            // take down the PTY reader thread; log and keep going.
+            // Warn once per pty; a dead pty fails on every subsequent resize.
+            let err = io::Error::last_os_error();
+            if self.winsize_failure_logged {
+                log::debug!("ioctl TIOCSWINSZ failed: {err}");
+            } else {
+                self.winsize_failure_logged = true;
+                log::warn!("ioctl TIOCSWINSZ failed: {err}");
+            }
         }
     }
 

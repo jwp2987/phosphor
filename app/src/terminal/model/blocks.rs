@@ -4350,6 +4350,10 @@ impl ansi::Handler for BlockList {
         delegate!(self.scroll_up(lines))
     }
 
+    fn explicit_scroll_up(&mut self, lines: usize) -> ScrollDelta {
+        delegate!(self.explicit_scroll_up(lines))
+    }
+
     fn scroll_down(&mut self, lines: usize) -> ScrollDelta {
         delegate!(self.scroll_down(lines))
     }

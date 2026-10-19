@@ -1646,7 +1646,7 @@ where
                 handler.set_scrolling_region(top, bottom);
             }
             ('S', None) => {
-                handler.scroll_up(next_param_or(1) as usize);
+                handler.explicit_scroll_up(next_param_or(1) as usize);
             }
             ('s', None) => handler.save_cursor_position(),
             ('T', None) => {

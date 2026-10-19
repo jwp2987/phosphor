@@ -23,6 +23,8 @@ struct MockHandler {
     pluggable_notifications: Vec<(Option<String>, String)>,
     hyperlink_events: Vec<Option<Hyperlink>>,
     cwd_updates: Vec<String>,
+    scroll_ups: Vec<usize>,
+    explicit_scroll_ups: Vec<usize>,
     registered_session_ids: HashSet<SessionId>,
     should_validate_dcs_hook_session_id: bool,
 }
@@ -107,7 +109,13 @@ impl Handler for MockHandler {
 
     fn set_horizontal_tabstop(&mut self) {}
 
-    fn scroll_up(&mut self, _: usize) -> ScrollDelta {
+    fn scroll_up(&mut self, rows: usize) -> ScrollDelta {
+        self.scroll_ups.push(rows);
+        ScrollDelta::zero()
+    }
+
+    fn explicit_scroll_up(&mut self, rows: usize) -> ScrollDelta {
+        self.explicit_scroll_ups.push(rows);
         ScrollDelta::zero()
     }
 
@@ -276,6 +284,8 @@ impl Default for MockHandler {
             pluggable_notifications: Vec::new(),
             hyperlink_events: Vec::new(),
             cwd_updates: Vec::new(),
+            scroll_ups: Vec::new(),
+            explicit_scroll_ups: Vec::new(),
             registered_session_ids: HashSet::new(),
             // Deviation from the pin: the pin defaults this to `true` because every hook value
             // struct there carries a `session_id` field. Here only `InitShell`, `ExitShell`, and
@@ -301,6 +311,15 @@ fn parse_bytes(bytes: &[u8]) -> (Processor, MockHandler) {
     parser.parse_bytes(&mut handler, bytes, &mut io::sink());
 
     (parser, handler)
+}
+
+/// #822: CSI S (SU) is an explicit scroll, which handlers tracking find's dirty rows must see
+/// separately from a plain `scroll_up`.
+#[test]
+fn csi_s_dispatches_explicit_scroll_up() {
+    let (_, handler) = parse_bytes(b"\x1b[2S");
+    assert_eq!(handler.explicit_scroll_ups, vec![2]);
+    assert!(handler.scroll_ups.is_empty());
 }
 
 fn parse_bytes_with_registered_sessions(
