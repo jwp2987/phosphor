@@ -1447,3 +1447,49 @@ fn should_show_agent_mode_ask_user_question_speedbump_round_trips_to_false() {
         });
     });
 }
+
+// --- `handles_command_snapshots` (#855, fork-authored) ---
+
+#[test]
+fn handles_command_snapshots_is_auto_by_default_and_writes_nothing() {
+    let model = AgentProviderModel::from_id("gpt-5".to_string());
+    assert_eq!(model.handles_command_snapshots, None);
+    let serialized = toml::to_string(&model).expect("should serialize");
+    assert!(
+        !serialized.contains("handles_command_snapshots"),
+        "Auto must not materialize in settings.toml: {serialized}"
+    );
+}
+
+#[test]
+fn handles_command_snapshots_round_trips_both_overrides() {
+    for value in [true, false] {
+        let mut model = AgentProviderModel::from_id("deepseek-v4-flash".to_string());
+        model.handles_command_snapshots = Some(value);
+        let serialized = toml::to_string(&model).expect("should serialize");
+        let deserialized: AgentProviderModel =
+            toml::from_str(&serialized).expect("should deserialize");
+        assert_eq!(deserialized.handles_command_snapshots, Some(value));
+    }
+}
+
+#[test]
+fn handles_command_snapshots_explicit_value_beats_the_default() {
+    let mut provider = AgentProvider::new_empty();
+    provider.base_url = "https://api.openai.com/v1".to_string();
+
+    let mut big = AgentProviderModel::from_id("gpt-5".to_string());
+    assert!(big.resolved_handles_command_snapshots(&provider));
+    big.handles_command_snapshots = Some(false);
+    assert!(!big.resolved_handles_command_snapshots(&provider));
+
+    let mut small = AgentProviderModel::from_id("deepseek-v4-flash".to_string());
+    assert!(!small.resolved_handles_command_snapshots(&provider));
+    small.handles_command_snapshots = Some(true);
+    assert!(small.resolved_handles_command_snapshots(&provider));
+
+    provider.api_type = AgentProviderApiType::Ollama;
+    provider.base_url = "http://localhost:11434".to_string();
+    let local = AgentProviderModel::from_id("claude-sonnet-4-5".to_string());
+    assert!(!local.resolved_handles_command_snapshots(&provider));
+}

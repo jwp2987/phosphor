@@ -341,6 +341,17 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
   }
   zle -N warp_kill_buffer_and_reset_insert_mode
 
+  # Phosphor (#855): an agent command typed by the app saves the pager variables, overrides
+  # them for the command, and restores them itself. If it is interrupted (Ctrl-C) that restore
+  # never ran; __phosphor_ap_active is still set, so the next prompt puts everything back.
+  # Keep the loop identical to `posix_restore` in agent_shell_wrap.rs.
+  __phosphor_ap_restore_pagers () {
+    for __phosphor_ap_v in PAGER GIT_PAGER MANPAGER SYSTEMD_PAGER PSQL_PAGER AWS_PAGER GH_PAGER BAT_PAGER GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+      eval "if [ -n \"\${__phosphor_ap_s_$__phosphor_ap_v-}\" ]; then export $__phosphor_ap_v=\"\$__phosphor_ap_o_$__phosphor_ap_v\"; else unset $__phosphor_ap_v; fi; unset __phosphor_ap_s_$__phosphor_ap_v __phosphor_ap_o_$__phosphor_ap_v"
+    done
+    unset __phosphor_ap_v __phosphor_ap_active
+  }
+
   # Note that this is very performance sensitive code, so try not to
   # invoke any external commands in here.
   warp_precmd () {
@@ -355,11 +366,18 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
       # expected-failure probe in this hook (no repo, an unset variable) into an
       # early return, a killed shell or a lost Precmd.
       setopt localoptions noerrreturn noerrexit unset
+      # Phosphor (#855): an agent command run under errexit hands its status over in
+      # __phosphor_ap_rc instead of re-raising it (which would exit the user's shell).
+      # Phosphor (#855): see __phosphor_ap_restore_pagers.
+      if [[ -n ${__phosphor_ap_active:-} ]]; then __phosphor_ap_restore_pagers; fi
       # Phosphor (#828): _warp_repair_hooks runs this outside the precmd hook,
       # where $? is no longer the user's command; it passes that status here.
       if [[ -n ${1:-} ]]; then
         exit_code=$1
       fi
+      # Phosphor (#855): the marker is the agent command's real status and wins over
+      # $1, which on the errexit repair path is only the wrapper tail's $? (0).
+      if [[ -n ${__phosphor_ap_rc:-} ]]; then exit_code=$__phosphor_ap_rc; unset __phosphor_ap_rc; fi
       _WARP_PRECMD_PENDING=""
       # Compute the next block ID once so the CommandFinished hook and the following Precmd hook
       # report the same ID. The Precmd carries this completion metadata so the client can classify

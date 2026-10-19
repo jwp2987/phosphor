@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use warp_multi_agent_api as api;
 
 use super::OpenAiTool;
@@ -52,7 +52,7 @@ fn parameters() -> Value {
             },
             "wait_until_complete": {
                 "type": "boolean",
-                "description": "Default true (return only after the command finishes; good for one-shot commands). Commands that never exit on their own — dev servers / background processes / tail -f / interactive REPLs — MUST set false, or the current turn hangs forever waiting for a result. With false, a LongRunningCommandSnapshot is returned immediately and later turns continue via read/write_to_long_running_shell_command.",
+                "description": "Default true (return only after the command finishes; good for one-shot commands). Commands that never exit on their own — dev servers / background processes / tail -f / interactive REPLs — MUST set false, or the current turn hangs forever waiting for a result. With false, a LongRunningCommandSnapshot is returned immediately and later turns continue via read/write_to_long_running_shell_command. With true, you can still get status \"running\" (with a command_id) if the command stalls on a prompt or pager or runs past about 120 s: it is NOT finished and must not be re-run; poll it with read_shell_command_output, or answer a stalled prompt with write_to_long_running_shell_command.",
                 "default": true
             }
         },
@@ -100,6 +100,8 @@ fn result_to_json(result: &api::message::tool_call_result::Result) -> Option<Val
         // Long-running command: launched but not yet finished. Expose the snapshot to the
         // model so it can decide whether to keep reading (read_shell_command_output) or
         // writing (write_to_long_running_*).
+        // No `reason` ("stalled" / "timeout") field: the snapshot proto carries none, and a
+        // guess here would be worse than none. The tool description explains both causes.
         Some(ShellR::LongRunningCommandSnapshot(s)) => json!({
             "status": "running",
             "command": r.command,

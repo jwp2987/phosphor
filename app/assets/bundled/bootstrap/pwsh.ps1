@@ -425,6 +425,8 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
         #
         # Note that this is not going to be 100% accurate, as some cmdlets will fail
         # without setting a $LASTEXITCODE, meaning the $LASTEXITCODE will be stale.
+        # Phosphor (#855): the agent-command wrapper leaves its captured status in these.
+        Remove-Variable __phosphor_ap_ok, __phosphor_ap_ec -Scope Global -ErrorAction SilentlyContinue
         $warpCommandNotFound = $script:commandNotFound
         $script:commandNotFound = $false
 

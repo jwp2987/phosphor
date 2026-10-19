@@ -7,6 +7,7 @@ use super::*;
 use crate::ai::agent::AIAgentAction;
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::task::TaskId;
+use crate::settings::AgentProvider;
 use crate::terminal::event::BlockWorkingDirectoryUpdatedEvent;
 use crate::terminal::model::block::BlockMetadata;
 use crate::terminal::model::session::Sessions;
@@ -131,14 +132,87 @@ fn preserves_explicit_or_non_interactive_read_delays() {
 
 #[test]
 fn requested_command_wait_until_completion_does_not_use_snapshot_timeout() {
+    // A model that cannot drive snapshots is waited for, as before #855.
     assert_eq!(
-        action_result_delay_for_requested_command(true),
+        action_result_delay_for_requested_command(true, false),
         ActionResultDelay::UntilCompletion
     );
     assert_eq!(
-        action_result_delay_for_requested_command(false),
+        action_result_delay_for_requested_command(false, false),
         ActionResultDelay::Default
     );
+}
+
+/// The snapshot-mode decision (#855): only a waited command changes with the model.
+#[test]
+fn snapshot_capable_models_get_a_bounded_stall_aware_wait() {
+    assert_eq!(
+        action_result_delay_for_requested_command(true, true),
+        ActionResultDelay::OnCompletionOrStall {
+            timeout: ShellCommandExecutor::MAX_AGENT_DELAY_DURATION
+        }
+    );
+    assert_eq!(
+        ShellCommandExecutor::MAX_AGENT_DELAY_DURATION,
+        Duration::from_secs(120)
+    );
+    // An unwaited command is the same for every model.
+    assert_eq!(
+        action_result_delay_for_requested_command(false, true),
+        ActionResultDelay::Default
+    );
+}
+
+#[test]
+fn a_stalled_snapshot_is_marked_preempted() {
+    let delay = ActionResultDelay::OnCompletionOrStall {
+        timeout: Duration::from_secs(120),
+    };
+    assert!(compute_is_preempted(WakeReason::Stalled, delay));
+    assert!(compute_is_preempted(WakeReason::Timeout, delay));
+    assert!(compute_is_preempted(WakeReason::ForceRefresh, delay));
+    assert!(!compute_is_preempted(WakeReason::BlockFinished, delay));
+}
+
+#[test]
+fn snapshot_mode_follows_the_model_setting_then_the_default() {
+    let mut provider = AgentProvider::new_empty();
+    provider.id = "p1".to_owned();
+    provider.base_url = "https://api.example.com/v1".to_owned();
+    let mut big = crate::settings::AgentProviderModel::from_id("claude-sonnet-4-5".to_owned());
+    let small = crate::settings::AgentProviderModel::from_id("deepseek-v4-flash".to_owned());
+    provider.models = vec![big.clone(), small];
+    let providers = [provider.clone()];
+
+    assert!(handles_command_snapshots_for(
+        &providers,
+        "byop:p1:claude-sonnet-4-5"
+    ));
+    assert!(!handles_command_snapshots_for(
+        &providers,
+        "byop:p1:deepseek-v4-flash"
+    ));
+    // Not BYOP, unknown provider, unknown model: the fork's previous behaviour.
+    assert!(!handles_command_snapshots_for(&providers, "auto"));
+    assert!(!handles_command_snapshots_for(
+        &providers,
+        "byop:other:claude-sonnet-4-5"
+    ));
+    assert!(!handles_command_snapshots_for(&providers, "byop:p1:nope"));
+
+    // The explicit per-model setting wins in both directions.
+    big.handles_command_snapshots = Some(false);
+    provider.models[0] = big;
+    provider.models[1].handles_command_snapshots = Some(true);
+    let providers = [provider];
+    assert!(!handles_command_snapshots_for(
+        &providers,
+        "byop:p1:claude-sonnet-4-5"
+    ));
+    assert!(handles_command_snapshots_for(
+        &providers,
+        "byop:p1:deepseek-v4-flash"
+    ));
 }
 
 #[test]
@@ -180,7 +254,7 @@ fn preemption_logic_covers_until_completion_timeout() {
 }
 
 /// Reproduces the hang case: a heredoc terminator must stay alone on its own line;
-/// the closing `)` must not get concatenated onto it.
+/// the closing `}` must not get concatenated onto it.
 /// Concatenating to `PY)` means the shell never sees the terminator, gets stuck at
 /// PS2, and the command never finishes.
 #[test]
@@ -198,8 +272,8 @@ fn multiline_heredoc_keeps_delimiter_and_closer_on_their_own_lines() {
         );
         assert_eq!(
             lines[lines.len() - 1],
-            ")",
-            "closing paren isn't alone on its own line: {wrapped}"
+            "}",
+            "closing brace isn't alone on its own line: {wrapped}"
         );
         assert!(
             wrapped.contains("PAGER=cat"),
@@ -214,7 +288,7 @@ fn multiline_heredoc_keeps_delimiter_and_closer_on_their_own_lines() {
 fn multiline_trailing_comment_does_not_swallow_closer() {
     let command = "echo start\necho done # trailing comment";
 
-    assert!(wrap_command_without_pager(Some(ShellType::Bash), command).ends_with("\n)"));
+    assert!(wrap_command_without_pager(Some(ShellType::Bash), command).ends_with("\n}"));
     assert!(wrap_command_without_pager(Some(ShellType::Fish), command).ends_with("\nend"));
     assert!(wrap_command_without_pager(Some(ShellType::PowerShell), command).ends_with("\n}"));
 }
@@ -229,7 +303,7 @@ fn single_line_trailing_comment_does_not_swallow_closer() {
     let command = "ls -la  # clean listing";
     assert!(!command.contains('\n'));
 
-    assert!(wrap_command_without_pager(Some(ShellType::Bash), command).ends_with("\n)"));
+    assert!(wrap_command_without_pager(Some(ShellType::Bash), command).ends_with("\n}"));
     assert!(wrap_command_without_pager(Some(ShellType::Fish), command).ends_with("\nend"));
     assert!(wrap_command_without_pager(Some(ShellType::PowerShell), command).ends_with("\n}"));
 }
@@ -670,4 +744,28 @@ fn manual_cancel_of_a_user_held_agent_command_does_not_interrupt_again() {
 
         assert!(interrupts.borrow().is_empty());
     });
+}
+
+/// #855: when Phosphor closed a pager, the model is told the output may be incomplete, and
+/// only a finished command's output carries the note.
+#[test]
+fn pager_closed_note_is_appended_to_finished_output_only() {
+    let finished = ActionResult::CommandFinished {
+        block_id: BlockId::new(),
+        output: "first screen".to_owned(),
+        exit_code: 0.into(),
+        start_ts: None,
+        completed_ts: None,
+    };
+    let ActionResult::CommandFinished { output, .. } = with_pager_closed_note(finished) else {
+        panic!("a finished command stays finished");
+    };
+    assert!(output.starts_with("first screen\n"), "{output}");
+    assert!(output.contains("Phosphor closed it"), "{output}");
+    assert!(output.contains("--no-pager"), "{output}");
+
+    assert!(matches!(
+        with_pager_closed_note(ActionResult::Cancelled),
+        ActionResult::Cancelled
+    ));
 }

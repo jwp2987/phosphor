@@ -110,6 +110,7 @@ common-toast-link-blocked-scheme = Blocked link: { $scheme }: links of this kind
 # Files: app/src/ai/agent_management/**
 # =============================================================================
 
+agent-command-pager-closed-note = A pager opened and Phosphor closed it; output above may be only the first screen — rerun with --no-pager or `| cat` for the rest.
 agent-management-filter-all-tooltip = View your agent tasks plus all shared team tasks
 agent-management-filter-personal = Personal
 agent-management-filter-personal-tooltip = View agent tasks you created
@@ -1726,6 +1727,8 @@ settings-agent-providers-disable-provider-tooltip = Hide this provider's models 
 settings-agent-providers-enable-provider-tooltip = Show this provider's models in the picker again
 settings-agent-providers-modality-chip-tooltip = Cycles Auto (inferred from the model catalog) → On → Off
 settings-agent-providers-reasoning-chip-tooltip = Toggle whether this model exposes reasoning output
+settings-agent-providers-command-snapshots-chip = Command snapshots
+settings-agent-providers-command-snapshots-chip-tooltip = Cycles Auto (large hosted models yes; local and flash / mini / nano / haiku class no) → On → Off. On: a stalled agent command returns a screen snapshot the model answers with its write-to-command tool. Off: Phosphor waits for the command, closes a stalled pager itself and hands other full-screen programs to you.
 settings-agent-providers-tool-call-chip-tooltip = Toggle whether this model supports tool calls
 settings-agent-providers-base-url-tooltip = The API endpoint requests are sent to — usually ends in /v1
 settings-agent-providers-api-type-tooltip = Which API protocol this provider speaks — sets how requests and responses are formatted

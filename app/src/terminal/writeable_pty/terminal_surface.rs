@@ -151,6 +151,25 @@ where
     #[cfg(unix)]
     fn on_stalled_interactive_prompt(&mut self, _ctx: &mut ViewContext<Self>) {}
 
+    /// A fingerprint of the screen while the active block is an agent command whose tool call
+    /// is blocked waiting for completion AND is on the alternate screen or in raw mode
+    /// (`is_raw_mode`: termios has ICANON off), `None` otherwise. Consulted once a second;
+    /// the manager feeds it to a `FullscreenStallDetector` (#855).
+    #[cfg(unix)]
+    fn fullscreen_stall_fingerprint(&self, _is_raw_mode: bool, _ctx: &AppContext) -> Option<u64> {
+        None
+    }
+
+    /// The waited agent command is stalled on a pager Phosphor identified by process name:
+    /// send it `q` and remember to tell the model.
+    #[cfg(unix)]
+    fn on_stalled_pager(&mut self, _ctx: &mut ViewContext<Self>) {}
+
+    /// The waited agent command is stalled on a full-screen program that is not a known
+    /// pager (or could not be identified): hand it to the user, send no keys.
+    #[cfg(unix)]
+    fn on_stalled_fullscreen_app(&mut self, _ctx: &mut ViewContext<Self>) {}
+
     /// Whether the poller should keep running after a prompt is detected, so a later prompt in
     /// the same command is detected too. `false` keeps the original one-detection-per-command
     /// behavior (one "needs attention" notification per command).

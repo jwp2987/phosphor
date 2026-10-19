@@ -1534,6 +1534,18 @@ pub struct AgentProviderModel {
     #[serde(default, skip_serializing_if = "is_false")]
     pub disabled: bool,
 
+    /// Whether this model can drive upstream Warp's "running command snapshot" contract
+    /// (#855): a waited agent command that stalls on a pager / prompt / full-screen program
+    /// (or runs past 120s) returns a screen snapshot and the model answers it with
+    /// `write_to_long_running_shell_command`. Tri-state:
+    /// - `None` (toml field absent) = Auto: `agent_providers::command_snapshots` decides from
+    ///   the model id and endpoint (large hosted models yes; local, flash / mini / nano /
+    ///   haiku class no)
+    /// - `Some(true)` = Force-On, `Some(false)` = Force-Off (wait for completion; Phosphor
+    ///   closes a stalled pager itself and hands other full-screen programs to the user)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handles_command_snapshots: Option<bool>,
+
     /// This model's own token price, overriding [`AgentProvider::token_price`] whole when set.
     /// The override is all-or-nothing rather than per-field, so a model's price table is read
     /// exactly as it was entered instead of silently mixing two sources.
@@ -1575,9 +1587,22 @@ impl AgentProviderModel {
             image: None,
             pdf: None,
             audio: None,
+            handles_command_snapshots: None,
             disabled: false,
             token_price: None,
         }
+    }
+
+    /// Whether to give this model upstream's running-command snapshots: the user's explicit
+    /// choice, else the model-id / endpoint default.
+    pub fn resolved_handles_command_snapshots(&self, provider: &AgentProvider) -> bool {
+        self.handles_command_snapshots.unwrap_or_else(|| {
+            crate::ai::agent_providers::command_snapshots::default_handles_command_snapshots(
+                &self.id,
+                &provider.base_url,
+                provider.api_type == AgentProviderApiType::Ollama,
+            )
+        })
     }
 
     /// The price to bill this model's tokens at: its own [`Self::token_price`] if set,
@@ -1615,6 +1640,8 @@ impl<'de> Deserialize<'de> for AgentProviderModel {
                 #[serde(default)]
                 audio: Option<bool>,
                 #[serde(default)]
+                handles_command_snapshots: Option<bool>,
+                #[serde(default)]
                 disabled: bool,
                 #[serde(default)]
                 token_price: Option<TokenPrice>,
@@ -1632,6 +1659,7 @@ impl<'de> Deserialize<'de> for AgentProviderModel {
                 image,
                 pdf,
                 audio,
+                handles_command_snapshots,
                 disabled,
                 token_price,
             } => {
@@ -1656,6 +1684,7 @@ impl<'de> Deserialize<'de> for AgentProviderModel {
                     image,
                     pdf,
                     audio,
+                    handles_command_snapshots,
                     disabled,
                     token_price,
                 })

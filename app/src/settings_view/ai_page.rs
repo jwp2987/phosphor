@@ -2843,6 +2843,12 @@ pub enum AISettingsPageAction {
         model_index: usize,
         kind: ModelCapabilityKind,
     },
+    /// Tri-state cycles whether a single model gets running-command snapshots (#855).
+    /// `None (Auto) -> Some(true) -> Some(false) -> None`.
+    CycleAgentProviderModelCommandSnapshots {
+        provider_id: String,
+        model_index: usize,
+    },
     /// Toggles a single model's reasoning flag (a plain bool field, not tri-state).
     ToggleAgentProviderModelReasoning {
         provider_id: String,
@@ -4330,6 +4336,28 @@ impl TypedActionView for AISettingsPageView {
                             };
                             // Tri-state cycle: None -> Some(true) -> Some(false) -> None.
                             *slot = match *slot {
+                                None => Some(true),
+                                Some(true) => Some(false),
+                                Some(false) => None,
+                            };
+                        }
+                    }
+                    report_settings_write_error!(
+                        settings.agent_providers.set_value(providers, ctx),
+                        ctx
+                    );
+                });
+                self.rebuild_current_page(ctx);
+            }
+            AISettingsPageAction::CycleAgentProviderModelCommandSnapshots {
+                provider_id,
+                model_index,
+            } => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let mut providers = settings.agent_providers.value().clone();
+                    if let Some(p) = providers.iter_mut().find(|p| p.id == *provider_id) {
+                        if let Some(m) = p.models.get_mut(*model_index) {
+                            m.handles_command_snapshots = match m.handles_command_snapshots {
                                 None => Some(true),
                                 Some(true) => Some(false),
                                 Some(false) => None,

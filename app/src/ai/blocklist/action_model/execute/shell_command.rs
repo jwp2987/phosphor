@@ -10,11 +10,12 @@ use futures::{FutureExt, select};
 use futures_lite::pin;
 use itertools::Itertools;
 use parking_lot::FairMutex;
+use settings::Setting as _;
 use warp_core::command::ExitCode;
 use warp_core::execution_mode::AppExecutionMode;
 use warp_util::path::ShellFamily;
 use warpui::r#async::{Spawnable, Timer};
-use warpui::{Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
+use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
 
 use crate::ai::agent::{
     AIAgentActionId, AIAgentActionType, AIAgentPtyWriteMode, CancellationReason,
@@ -22,13 +23,17 @@ use crate::ai::agent::{
     RequestCommandOutputResult, ShellCommandDelay, ShellCommandError,
     TransferShellCommandControlToUserResult, WriteToLongRunningShellCommandResult,
 };
+use crate::ai::agent_providers::llm_id;
 use crate::ai::blocklist::BlocklistAIPermissions;
 use crate::ai::blocklist::permissions::CommandExecutionPermission;
 use crate::ai::execution_profiles::WriteToPtyPermission;
+use crate::ai::llms::LLMPreferences;
 use crate::features::FeatureFlag;
+use crate::settings::{AISettings, AgentProvider};
 use crate::terminal::event::BlockMetadataReceivedEvent;
 use crate::terminal::model::block::{
-    Block, BlockId, CURSOR_MARKER, formatted_terminal_contents_for_input,
+    Block, BlockId, CURSOR_MARKER, STALL_SNAPSHOT_AFTER, StallTracker,
+    formatted_terminal_contents_for_input, interactive_prompt_candidate, screen_fingerprint,
 };
 use crate::terminal::model::session::command_executor::{
     POSIX_GENERATOR_WRAPPER, POWERSHELL_GENERATOR_WRAPPER,
@@ -114,10 +119,15 @@ pub struct ShellCommandExecutor {
     /// an interactive prompt -- every other path hands the agent a snapshot within seconds --
     /// so the terminal view consults this before handing a stalled prompt to the user.
     awaiting_completion_action_ids: HashSet<AIAgentActionId>,
+    /// Waited actions whose stalled pager Phosphor closed with `q` (#855). Their result gets
+    /// a note saying so, because the output is then only the pager's first screen.
+    pager_closed_action_ids: HashSet<AIAgentActionId>,
 }
 
 impl ShellCommandExecutor {
     pub const MAX_WAIT_DURATION: Duration = Duration::from_secs(2);
+    /// How often a snapshot-capable model's waited command is checked for a stalled screen.
+    const STALL_POLL_INTERVAL: Duration = Duration::from_millis(500);
     /// Maximum delay we will honor for any agent-requested wait. Applies both  
     /// to finite `ShellCommandDelay::Duration` requests and to  
     /// `ShellCommandDelay::OnCompletion`, which would otherwise wait indefinitely.  
@@ -152,6 +162,7 @@ impl ShellCommandExecutor {
             terminal_view_id,
             control_handback_sender: None,
             awaiting_completion_action_ids: HashSet::new(),
+            pager_closed_action_ids: HashSet::new(),
         }
     }
 
@@ -159,6 +170,22 @@ impl ShellCommandExecutor {
     /// its command to complete (`wait_until_completion`), rather than polling it with snapshots.
     pub fn is_awaiting_completion(&self, action_id: &AIAgentActionId) -> bool {
         self.awaiting_completion_action_ids.contains(action_id)
+    }
+
+    /// Records that Phosphor closed a pager the waited command `action_id` had opened, so the
+    /// result handed to the model says the output may be incomplete.
+    pub fn note_pager_closed(&mut self, action_id: &AIAgentActionId) {
+        self.pager_closed_action_ids.insert(action_id.clone());
+    }
+
+    /// Whether the active model gets upstream's running-command snapshots (see
+    /// `AgentProviderModel::handles_command_snapshots`). A model that is not a configured
+    /// BYOP model keeps the fork's wait-for-completion behaviour.
+    fn active_model_handles_command_snapshots(&self, ctx: &AppContext) -> bool {
+        let llm =
+            LLMPreferences::as_ref(ctx).get_active_base_model(ctx, Some(self.terminal_view_id));
+        let providers = AISettings::as_ref(ctx).agent_providers.value();
+        handles_command_snapshots_for(providers, llm.id.as_str())
     }
 
     /// Whether any `wait_until_completion` request is in flight. Cheap, and needs no
@@ -323,10 +350,14 @@ impl ShellCommandExecutor {
     /// overwritten by `cat`'s exit code (almost always 0), so the agent would see
     /// exit_code=0 even when `cargo check` failed, leading to wrong conclusions.
     ///
-    /// Instead this uses `PAGER=cat GIT_PAGER=cat MANPAGER=cat` executed in a
-    /// subshell/script block, which covers pager behavior for most CLIs (git, man,
-    /// bat, kubectl, psql, gh, ...) while letting the outer `$?` / `$LASTEXITCODE`
-    /// come from the command itself.
+    /// Instead this uses `PAGER=cat GIT_PAGER=cat MANPAGER=cat` (and the per-tool
+    /// variables in `agent_shell_wrap::PAGER_VARS`) set for the command only, which
+    /// covers pager behavior for most CLIs (git, man, bat, kubectl, psql, gh, ...)
+    /// while letting the outer `$?` / `$LASTEXITCODE` come from the command itself.
+    /// Since #855 the command runs in the user's REAL shell (a `{ ...; }` group that
+    /// saves and restores those variables), so `cd` / `export` / venv activation
+    /// persist; commands that end or reconfigure the shell keep a subshell, see
+    /// `agent_shell_wrap::needs_subshell`.
     ///
     /// **Two hardening measures** (given that `ActionResultDelay::UntilCompletion`
     /// has no short timeout, see #138):
@@ -399,6 +430,14 @@ impl ShellCommandExecutor {
                 // truly long-running commands like tail -f / dev servers still go
                 // through the original LongRunningCommandSnapshot path.
                 let _ = uses_pager; // Field kept for API compatibility, but no longer relied on semantically
+                // Pagers are off for every waited command in BOTH modes (#855). What differs
+                // is what happens when the command still stalls: a snapshot-capable model gets
+                // upstream's `LongRunningCommandSnapshot` after a stall (or 120s) and drives
+                // the program with the write-to-command tool; any other model is waited for
+                // (up to `MAX_UNTIL_COMPLETION_DURATION`) while Phosphor closes a stalled
+                // pager itself and hands other full-screen programs to the user.
+                let handles_snapshots =
+                    *wait_until_completion && self.active_model_handles_command_snapshots(ctx);
                 let decorated_command = if *wait_until_completion {
                     self.turn_off_pager_for_command(command, ctx)
                 } else {
@@ -412,7 +451,11 @@ impl ShellCommandExecutor {
                 let block_selector = BlockSelector::RequestedCommandId(action_id.clone());
                 let command = command.clone();
                 drop(model);
-                if *wait_until_completion {
+                // Only a tool call that is blocked until the command finishes can hang on a
+                // prompt or a full-screen program with nobody able to answer, so only those
+                // are eligible for the hand-over (#673) and the pager auto-quit. A
+                // snapshot-capable model gets a snapshot within seconds and answers itself.
+                if *wait_until_completion && !handles_snapshots {
                     self.awaiting_completion_action_ids
                         .insert(action_id.clone());
                 }
@@ -420,18 +463,28 @@ impl ShellCommandExecutor {
                 ActionExecution::new_async(
                     self.action_result_future(
                         block_selector.clone(),
-                        action_result_delay_for_requested_command(*wait_until_completion),
+                        action_result_delay_for_requested_command(
+                            *wait_until_completion,
+                            handles_snapshots,
+                        ),
                     ),
                     move |result, ctx| {
+                        let mut pager_closed = false;
                         // Remove the senders from the maps.
                         if let Some(handle) = handle.upgrade(ctx) {
                             handle.update(ctx, |me, _| {
                                 me.block_finished_senders.remove(&block_selector);
                                 me.force_refresh_senders.remove(&block_selector);
                                 me.awaiting_completion_action_ids.remove(&action_id);
+                                pager_closed = me.pager_closed_action_ids.remove(&action_id);
                             });
                         }
 
+                        let result = if pager_closed {
+                            with_pager_closed_note(result)
+                        } else {
+                            result
+                        };
                         action_result_for_requested_command(command, result)
                     },
                 )
@@ -706,13 +759,49 @@ impl ShellCommandExecutor {
                     // so there's no need to signal preemption (the agent already anticipates an incomplete command state).
                     Some(duration.min(Self::MAX_AGENT_DELAY_DURATION))
                 }
-                ActionResultDelay::OnCompletion { timeout } => {
+                ActionResultDelay::OnCompletion { timeout }
+                | ActionResultDelay::OnCompletionOrStall { timeout } => {
                     Some(timeout.min(Self::MAX_AGENT_DELAY_DURATION))
                 }
                 ActionResultDelay::Default => Some(Self::MAX_WAIT_DURATION),
             };
 
-            let wake_reason = if let Some(timeout_duration) = timeout_duration {
+            let wake_reason = if matches!(delay, ActionResultDelay::OnCompletionOrStall { .. }) {
+                let timeout_duration = timeout_duration.unwrap_or(Self::MAX_AGENT_DELAY_DURATION);
+                // Upstream's contract for a model that can answer it: resolve when the
+                // command finishes, when its screen stops changing on a full-screen program
+                // or a prompt, or at the latest at the timeout. The model then reacts to the
+                // snapshot (sends `q`, answers the prompt) with the write-to-command tool.
+                let deadline = Timer::after(timeout_duration).fuse();
+                pin!(deadline);
+                let mut tracker = StallTracker::default();
+                loop {
+                    let tick = Timer::after(Self::STALL_POLL_INTERVAL).fuse();
+                    pin!(tick);
+                    select! {
+                        val = block_metadata_received_rx.as_mut() => match val {
+                            Ok(_) => break WakeReason::BlockFinished,
+                            Err(_) => return ActionResult::Cancelled,
+                        },
+                        val = force_refresh_rx.as_mut() => match val {
+                            Ok(_) => break WakeReason::ForceRefresh,
+                            Err(_) => return ActionResult::Cancelled,
+                        },
+                        _ = deadline.as_mut() => break WakeReason::Timeout,
+                        _ = tick => {
+                            let fingerprint = {
+                                let model = terminal_model.lock();
+                                stall_fingerprint(&model, &block_selector)
+                            };
+                            let stalled_for =
+                                tracker.observe(fingerprint, std::time::Instant::now());
+                            if stalled_for >= STALL_SNAPSHOT_AFTER {
+                                break WakeReason::Stalled;
+                            }
+                        }
+                    }
+                }
+            } else if let Some(timeout_duration) = timeout_duration {
                 let timeout = Timer::after(timeout_duration).fuse();
                 pin!(timeout);
                 select! {
@@ -895,21 +984,6 @@ impl ShellCommandExecutor {
     }
 }
 
-/// Pager-suppression prelude for bash/zsh. Exported inside a subshell; the subshell's
-/// exit code equals the last command's exit code, preserving the real `$?`. First
-/// unset the PAGER/GIT_PAGER/MANPAGER inherited from the parent shell, then export=cat.
-const POSIX_NO_PAGER_PRELUDE: &str = "unset PAGER GIT_PAGER MANPAGER; export PAGER=cat GIT_PAGER=cat MANPAGER=cat GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager GIT_CONFIG_VALUE_0=cat";
-
-/// fish: `set -lx` inside a begin/end block is a local export, and `$status` reflects
-/// the last command. Use `set -e` to clear inherited variables first, then `set -lx`
-/// to assign cat.
-const FISH_NO_PAGER_PRELUDE: &str = "set -e PAGER; set -e GIT_PAGER; set -e MANPAGER; set -lx PAGER cat; set -lx GIT_PAGER cat; set -lx MANPAGER cat; set -lx GIT_CONFIG_COUNT 1; set -lx GIT_CONFIG_KEY_0 core.pager; set -lx GIT_CONFIG_VALUE_0 cat";
-
-/// pwsh: the script block's local `$env:` doesn't pollute the outer session, and
-/// `$LASTEXITCODE` passes through. `Remove-Item Env:` clears inherited values, then
-/// assigns cat; `-ErrorAction SilentlyContinue` handles variables that don't exist.
-const PWSH_NO_PAGER_PRELUDE: &str = "Remove-Item Env:PAGER -ErrorAction SilentlyContinue; Remove-Item Env:GIT_PAGER -ErrorAction SilentlyContinue; Remove-Item Env:MANPAGER -ErrorAction SilentlyContinue; $env:PAGER='cat'; $env:GIT_PAGER='cat'; $env:MANPAGER='cat'; $env:GIT_CONFIG_COUNT='1'; $env:GIT_CONFIG_KEY_0='core.pager'; $env:GIT_CONFIG_VALUE_0='cat'";
-
 /// Wraps `command` in a "pager disabled" scope, see [`ShellCommandExecutor::turn_off_pager_for_command`].
 ///
 /// **Invariant: a multi-line command's closing token (`)` / `end` / `}`) must be
@@ -933,53 +1007,7 @@ const PWSH_NO_PAGER_PRELUDE: &str = "Remove-Item Env:PAGER -ErrorAction Silently
 /// bash 3.2). Multi-line commands are already split on those shells regardless, so
 /// this function doesn't make that case any worse.
 fn wrap_command_without_pager(shell_type: Option<ShellType>, command: &str) -> String {
-    // An unknown shell can't be decorated safely, so pass the command through as-is —
-    // pager suppression is completely ineffective on this path, and we can only rely on
-    // the MAX_UNTIL_COMPLETION_DURATION fallback timeout to avoid hanging forever. Only
-    // the known-shell branches below need the trailing-whitespace trim, so it's scoped to
-    // them rather than applied up front (an unrecognized shell gets `command` back
-    // byte-exact, matching the old `turn_off_pager_for_command`'s guarantee for this path).
-    let Some(shell_type) = shell_type else {
-        return command.to_owned();
-    };
-    // Trailing newlines/whitespace on the command would leave a blank line before the
-    // closing token — harmless semantically, but it clutters the blocklist display.
-    let command = command.trim_end();
-    // A `#` anywhere in the command means its last line could plausibly end in a
-    // comment (a real shell tokenizer would need full quote-tracking to know for sure;
-    // this is deliberately conservative in the same direction as the heredoc check
-    // below -- false positives just mean the wrapped form is used when it wasn't
-    // strictly necessary, never a hang). If the closer were concatenated onto that
-    // same line, `#` would swallow it exactly like an unterminated heredoc does, so
-    // this also needs the "closer alone on its own line" wrapped form.
-    let needs_wrapped_form = command.contains('\n') || command.contains('#');
-
-    match shell_type {
-        ShellType::Zsh | ShellType::Bash => {
-            let prelude = POSIX_NO_PAGER_PRELUDE;
-            if needs_wrapped_form {
-                format!("({prelude}\n{command}\n)")
-            } else {
-                format!("({prelude}; {command})")
-            }
-        }
-        ShellType::Fish => {
-            let prelude = FISH_NO_PAGER_PRELUDE;
-            if needs_wrapped_form {
-                format!("begin; {prelude}\n{command}\nend")
-            } else {
-                format!("begin; {prelude}; {command}; end")
-            }
-        }
-        ShellType::PowerShell => {
-            let prelude = PWSH_NO_PAGER_PRELUDE;
-            if needs_wrapped_form {
-                format!("& {{ {prelude}\n{command}\n}}")
-            } else {
-                format!("& {{ {prelude}; {command} }}")
-            }
-        }
-    }
+    super::agent_shell_wrap::wrap_command(shell_type, command)
 }
 
 /// The waiting strategy used internally by `action_result_future`.
@@ -993,7 +1021,15 @@ enum ActionResultDelay {
     UntilCompletion,
     Default,
     Duration(Duration),
-    OnCompletion { timeout: Duration },
+    OnCompletion {
+        timeout: Duration,
+    },
+    /// Like `OnCompletion`, but also resolves early with a snapshot once the screen has sat
+    /// unchanged (an alternate-screen program, or a prompt waiting for input) for
+    /// `STALL_SNAPSHOT_AFTER`: upstream's contract for a model that can answer it (#855).
+    OnCompletionOrStall {
+        timeout: Duration,
+    },
 }
 
 impl ActionResultDelay {
@@ -1015,6 +1051,9 @@ impl ActionResultDelay {
 enum WakeReason {
     BlockFinished,
     Timeout,
+    /// The screen stopped changing on a full-screen program or a prompt
+    /// (`ActionResultDelay::OnCompletionOrStall`).
+    Stalled,
     /// User clicked `Check now` in the warping indicator, short-circuiting  
     /// the agent-set poll timer. Treated as a preemption so the server does  
     /// not interpret the early snapshot as a completion.  
@@ -1033,20 +1072,102 @@ enum WakeReason {
 /// - `Timeout` with delay `UntilCompletion` (hit the pager-hang fallback timeout,
 ///   see #138)
 fn compute_is_preempted(wake: WakeReason, delay: ActionResultDelay) -> bool {
-    matches!(wake, WakeReason::ForceRefresh)
+    matches!(wake, WakeReason::ForceRefresh | WakeReason::Stalled)
         || matches!(
             (wake, delay),
             (WakeReason::Timeout, ActionResultDelay::OnCompletion { .. })
+                | (
+                    WakeReason::Timeout,
+                    ActionResultDelay::OnCompletionOrStall { .. }
+                )
                 | (WakeReason::Timeout, ActionResultDelay::UntilCompletion)
         )
 }
 
-fn action_result_delay_for_requested_command(wait_until_completion: bool) -> ActionResultDelay {
-    if wait_until_completion {
-        ActionResultDelay::UntilCompletion
-    } else {
-        ActionResultDelay::Default
+/// How an agent `RequestCommandOutput` is waited on. `handles_snapshots` only matters for a
+/// waited command (#855): the model gets upstream's bounded wait ending in a snapshot, where
+/// any other model gets the fork's wait-for-completion.
+fn action_result_delay_for_requested_command(
+    wait_until_completion: bool,
+    handles_snapshots: bool,
+) -> ActionResultDelay {
+    match (wait_until_completion, handles_snapshots) {
+        (false, _) => ActionResultDelay::Default,
+        (true, true) => ActionResultDelay::OnCompletionOrStall {
+            timeout: ShellCommandExecutor::MAX_AGENT_DELAY_DURATION,
+        },
+        (true, false) => ActionResultDelay::UntilCompletion,
     }
+}
+
+/// Whether the model behind `llm_id` (a `byop:<provider>:<model>` id) gets running-command
+/// snapshots. A non-BYOP or unknown model is `false`: the fork's behaviour before #855.
+fn handles_command_snapshots_for(providers: &[AgentProvider], llm_id: &str) -> bool {
+    let Some((provider_id, model_id)) = llm_id::decode(&ai::LLMId::from(llm_id.to_owned())) else {
+        return false;
+    };
+    providers
+        .iter()
+        .find(|provider| provider.id == provider_id)
+        .and_then(|provider| {
+            provider
+                .models
+                .iter()
+                .find(|model| model.id == model_id)
+                .map(|model| model.resolved_handles_command_snapshots(provider))
+        })
+        .unwrap_or(false)
+}
+
+/// What the model is told when Phosphor closed a pager the command had opened.
+fn pager_closed_note() -> String {
+    crate::t!("agent-command-pager-closed-note")
+}
+
+/// Appends [`pager_closed_note`] to a finished command's output.
+fn with_pager_closed_note(result: ActionResult) -> ActionResult {
+    match result {
+        ActionResult::CommandFinished {
+            block_id,
+            mut output,
+            exit_code,
+            start_ts,
+            completed_ts,
+        } => {
+            if !output.ends_with('\n') && !output.is_empty() {
+                output.push('\n');
+            }
+            output.push_str(&pager_closed_note());
+            ActionResult::CommandFinished {
+                block_id,
+                output,
+                exit_code,
+                start_ts,
+                completed_ts,
+            }
+        }
+        other => other,
+    }
+}
+
+/// A fingerprint of the screen while it is in a state a stalled command can be snapshotted
+/// from -- an alternate-screen program, or a prompt waiting for input -- and `None` while
+/// the command is just running.
+fn stall_fingerprint(model: &TerminalModel, block_selector: &BlockSelector) -> Option<u64> {
+    let block = block_selector.get_block(model)?;
+    if block.finished() {
+        return None;
+    }
+    if model.is_alt_screen_active() {
+        let contents = formatted_terminal_contents_for_input(
+            model.alt_screen().grid_handler(),
+            None,
+            CURSOR_MARKER,
+        );
+        return Some(screen_fingerprint(("alt", contents)));
+    }
+    let candidate = interactive_prompt_candidate(block.output_grid().grid_handler())?;
+    Some(screen_fingerprint(("prompt", format!("{candidate:?}"))))
 }
 
 /// Maps the agent-requested `ShellCommandDelay` to the internally-used

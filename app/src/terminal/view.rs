@@ -27195,6 +27195,82 @@ impl TerminalSurface for TerminalView {
     }
 
     #[cfg(unix)]
+    fn fullscreen_stall_fingerprint(&self, is_raw_mode: bool, ctx: &AppContext) -> Option<u64> {
+        use crate::terminal::model::block::{
+            CURSOR_MARKER, formatted_terminal_contents_for_input, screen_fingerprint,
+        };
+        // Same gate as `pending_interactive_prompt`: only a tool call blocked until the command
+        // completes can be stuck on a full-screen program with nobody to quit it, and the
+        // executor (which needs no terminal-model lock) is asked first because this runs once
+        // a second for every polled block.
+        let executor = self.ai_action_model.as_ref(ctx).shell_command_executor(ctx);
+        let executor = executor.as_ref(ctx);
+        if !executor.has_any_awaiting_completion() {
+            return None;
+        }
+
+        let model = self.model.lock();
+        let active_block = model.block_list().active_block();
+        if !(active_block.is_agent_requested_command() && active_block.is_agent_driving_command())
+        {
+            return None;
+        }
+        let action_id = active_block.requested_command_action_id()?;
+        if !executor.is_awaiting_completion(action_id) {
+            return None;
+        }
+        let is_alt_screen = model.is_alt_screen_active();
+        if !(is_alt_screen || is_raw_mode) {
+            return None;
+        }
+        let contents = if is_alt_screen {
+            formatted_terminal_contents_for_input(
+                model.alt_screen().grid_handler(),
+                None,
+                CURSOR_MARKER,
+            )
+        } else {
+            formatted_terminal_contents_for_input(
+                active_block.output_grid().grid_handler(),
+                Some(1000),
+                CURSOR_MARKER,
+            )
+        };
+        Some(screen_fingerprint((is_alt_screen, contents)))
+    }
+
+    #[cfg(unix)]
+    fn on_stalled_pager(&mut self, ctx: &mut ViewContext<Self>) {
+        // The poller identified the foreground process as `less` / `more` / `most` / `pager`
+        // on this machine's own pty, so `q` quits it. Tell the executor first: the output the
+        // model gets is then only the pager's first screen, and its result says so.
+        let Some(action_id) = self
+            .model
+            .lock()
+            .block_list()
+            .active_block()
+            .requested_command_action_id()
+            .cloned()
+        else {
+            return;
+        };
+        let executor = self.ai_action_model.as_ref(ctx).shell_command_executor(ctx);
+        executor.update(ctx, |executor, _| executor.note_pager_closed(&action_id));
+        self.write_agent_bytes_to_pty(&b"q"[..], &AIAgentPtyWriteMode::Raw, ctx);
+    }
+
+    #[cfg(unix)]
+    fn on_stalled_fullscreen_app(&mut self, ctx: &mut ViewContext<Self>) {
+        // Not a known pager: no keys are sent. Same hand-over as a stalled prompt; the agent's
+        // tool call keeps waiting and gets the command's real result once the user is done.
+        if self.is_agent_driving_active_block() {
+            self.cli_subagent_controller.update(ctx, |controller, ctx| {
+                controller.switch_control_to_user(UserTakeOverReason::BlockedOnInput, ctx);
+            });
+        }
+    }
+
+    #[cfg(unix)]
     fn should_stop_password_prompt_polling(&self, completed: &AfterBlockCompletedEvent) -> bool {
         matches!(
             &completed.block_type,
