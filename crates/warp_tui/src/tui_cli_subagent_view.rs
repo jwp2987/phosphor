@@ -681,7 +681,7 @@ impl TuiCLISubagentView {
             );
         }
         if target.control_state.is_agent_blocked() {
-            if let Some(action) = blocked_action {
+            if let Some(action) = blocked_action.as_ref() {
                 let mut presentation = blocked_action_presentation(&action.action);
                 if presentation.detail.is_none() && hidden_command.is_none() {
                     // A requested command that the card does not elide is shown whole, in its
@@ -690,7 +690,7 @@ impl TuiCLISubagentView {
                     // until the user asks for it, so the card never shows a clipped command
                     // (#865).
                     presentation.detail =
-                        blocked_command_text(&action).map(|c| tui_command_review(c).text);
+                        blocked_command_text(action).map(|c| tui_command_review(c).text);
                 }
                 content.add_child(
                     TuiText::new(presentation.summary)
