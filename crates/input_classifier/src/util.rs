@@ -1143,7 +1143,7 @@ const FREE_TEXT_ARG_HEADS: &[&str] = &[
 /// (`watch the logs`, `help me`, `explain this error`). Any other installed head needs a second
 /// distinct request word or an opener pair ([`REQUEST_OPENER_PAIRS`]), because a single request
 /// word is routine in arguments (`make it`, `make this target`).
-const REQUEST_OPENER_HEADS: &[&str] = [
+const REQUEST_OPENER_HEADS: &[&str] = &[
     "help",
     "show",
     "tell",
@@ -1168,7 +1168,7 @@ const REQUEST_OPENER_HEADS: &[&str] = [
 
 /// Two-word openers (`make sure the build passes`, `find out why`) after which one request word
 /// is enough.
-const REQUEST_OPENER_PAIRS: &[(&str, &str)] = [
+const REQUEST_OPENER_PAIRS: &[(&str, &str)] = &[
     ("make", "sure"),
     ("find", "out"),
     ("figure", "out"),
