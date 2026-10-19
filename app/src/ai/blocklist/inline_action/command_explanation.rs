@@ -23,7 +23,10 @@ pub(crate) const MAX_COMMAND_CHARS: usize = 12_000;
 
 /// Headroom over [`MAX_COMMAND_CHARS`] for the wrapper text, so the one-shot's own cap never
 /// cuts the closing tag off a command that was already sized for this call.
-const MAX_USER_CHARS: usize = MAX_COMMAND_CHARS + 1_000;
+///
+/// Escaping `</command` (see [`escape_command_close_tag`]) adds one char per occurrence, and
+/// every occurrence is at least 9 chars long, hence the extra eighth.
+const MAX_USER_CHARS: usize = MAX_COMMAND_CHARS + MAX_COMMAND_CHARS / 8 + 1_000;
 
 /// Low: the explanation must track the command, not free-associate.
 const TEMPERATURE: f32 = 0.2;
@@ -49,6 +52,10 @@ pub(crate) enum LocalRiskCategory {
     StopsServices,
     KillsProcesses,
     RebootsOrShutsDown,
+    /// Redirects, `tee`, `sed -i`, `cp`, `mv`: writes that may clobber an existing file.
+    WritesFiles,
+    /// `apt remove`, `npm uninstall` and the like.
+    RemovesPackages,
 }
 
 impl LocalRiskCategory {
@@ -60,9 +67,10 @@ impl LocalRiskCategory {
             | LocalRiskCategory::RunsRemoteCode
             | LocalRiskCategory::StopsServices
             | LocalRiskCategory::RebootsOrShutsDown => RiskLevel::Destructive,
-            LocalRiskCategory::PrivilegeOrPermissions | LocalRiskCategory::KillsProcesses => {
-                RiskLevel::Caution
-            }
+            LocalRiskCategory::PrivilegeOrPermissions
+            | LocalRiskCategory::KillsProcesses
+            | LocalRiskCategory::WritesFiles
+            | LocalRiskCategory::RemovesPackages => RiskLevel::Caution,
         }
     }
 }
@@ -247,16 +255,34 @@ pub(crate) async fn request_explanation(
 pub(crate) fn build_user_prompt(command: &str) -> String {
     let total_chars = command.chars().count();
     if total_chars <= MAX_COMMAND_CHARS {
+        let command = escape_command_close_tag(command);
         return format!(
             "Explain this command the agent wants to run.\n<command>\n{command}\n</command>"
         );
     }
     let shown: String = command.chars().take(MAX_COMMAND_CHARS).collect();
+    let shown = escape_command_close_tag(&shown);
     format!(
         "Explain this command the agent wants to run. It is {total_chars} characters long; only \
          the first {MAX_COMMAND_CHARS} are shown, and the rest is hidden from you.\n\
          <command truncated=\"true\">\n{shown}\n</command>"
     )
+}
+
+/// Rewrites every `</command` (any case) to `<\/command`, so the command text can't close the
+/// fence early and have the rest read as instructions outside it.
+fn escape_command_close_tag(command: &str) -> String {
+    const NEEDLE: &str = "</command";
+    let lower = command.to_ascii_lowercase();
+    let mut out = String::with_capacity(command.len());
+    let mut last = 0;
+    for (start, _) in lower.match_indices(NEEDLE) {
+        out.push_str(&command[last..start]);
+        out.push_str("<\\/command");
+        last = start + NEEDLE.len();
+    }
+    out.push_str(&command[last..]);
+    out
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -319,6 +345,17 @@ pub(crate) fn parse_explanation(raw: &str, command: &str) -> Option<CommandExpla
     if model_risk.is_none() && risks.is_empty() && explanation.is_empty() {
         return None;
     }
+    // The model only saw the head of an over-long command, so "safe" (or no verdict) says
+    // nothing about the tail.
+    if command.chars().count() > MAX_COMMAND_CHARS {
+        if model_risk.is_none_or(|level| level == RiskLevel::Safe) {
+            model_risk = Some(RiskLevel::Caution);
+        }
+        risks.push(crate::t!(
+            "ai-command-explanation-risk-truncated",
+            limit = MAX_COMMAND_CHARS.to_string()
+        ));
+    }
     Some(CommandExplanation {
         model_risk,
         risks,
@@ -328,17 +365,26 @@ pub(crate) fn parse_explanation(raw: &str, command: &str) -> Option<CommandExpla
 }
 
 fn parse_risk_level(value: &str) -> Option<RiskLevel> {
-    let value = value.to_ascii_uppercase();
-    // Most severe first, so a hedged "SAFE, but DESTRUCTIVE if ..." reads as destructive.
-    if value.contains("DESTRUCTIVE") {
-        Some(RiskLevel::Destructive)
-    } else if value.contains("CAUTION") {
-        Some(RiskLevel::Caution)
-    } else if value.contains("SAFE") {
-        Some(RiskLevel::Safe)
-    } else {
-        None
-    }
+    let value = value.trim_matches(|c: char| c.is_whitespace() || "*_#.:[]".contains(c));
+    let mut words = value
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_uppercase);
+    // Only a leading SAFE / CAUTION / DESTRUCTIVE is a verdict. "UNSAFE", "NOT SAFE" and the
+    // like lead with something else and read as no verdict, never as Safe.
+    let level_of = |word: &str| match word {
+        "SAFE" => Some(RiskLevel::Safe),
+        "CAUTION" => Some(RiskLevel::Caution),
+        "DESTRUCTIVE" => Some(RiskLevel::Destructive),
+        _ => None,
+    };
+    let first = level_of(&words.next()?)?;
+    // Most severe wins, so a hedged "SAFE, but DESTRUCTIVE if ..." reads as destructive.
+    Some(
+        words
+            .filter_map(|word| level_of(&word))
+            .fold(first, RiskLevel::max),
+    )
 }
 
 fn push_risk(risks: &mut Vec<String>, line: &str) {
@@ -361,19 +407,30 @@ fn strip_prefix_ignore_ascii_case<'a>(text: &'a str, prefix: &str) -> Option<&'a
 }
 
 /// Removes `<think>…</think>`-style blocks, which reasoning models emit before the answer.
+/// Case-insensitive. An unterminated open tag drops everything from it on, and a lone close tag
+/// (the open was cut off upstream) drops everything up to the last one.
 fn strip_reasoning_blocks(raw: &str) -> String {
     let mut out = raw.to_owned();
     for tag in ["think", "reasoning", "thought", "scratchpad"] {
         let open = format!("<{tag}>");
         let close = format!("</{tag}>");
-        while let (Some(start), Some(end)) = (
-            out.find(&open),
-            out.find(&close).map(|idx| idx + close.len()),
-        ) {
-            if end <= start {
+        // ASCII lowercasing keeps byte offsets, so indices into `lower` index `out`.
+        loop {
+            let lower = out.to_ascii_lowercase();
+            let Some(start) = lower.find(&open) else {
                 break;
+            };
+            match lower[start + open.len()..].find(&close) {
+                Some(rel) => out.replace_range(start..start + open.len() + rel + close.len(), ""),
+                None => {
+                    out.truncate(start);
+                    break;
+                }
             }
-            out.replace_range(start..end, "");
+        }
+        let lower = out.to_ascii_lowercase();
+        if let Some(idx) = lower.rfind(&close) {
+            out.replace_range(..idx + close.len(), "");
         }
     }
     out
@@ -401,89 +458,140 @@ fn strip_code_fence(raw: &str) -> &str {
 struct SimpleCommand {
     words: Vec<String>,
     piped: bool,
+    /// Targets of the output redirections (`>`, `>>`, `&>`, `>&file`) that are not
+    /// `/dev/null` or a file-descriptor duplication like `2>&1`.
+    redirects: Vec<String>,
 }
 
-/// Splits a command line into simple commands at `;`, `&`, `|`, `&&`, `||`, newlines and
-/// parentheses, unquoting words. Deliberately approximate -- no expansions, heredocs or
-/// redirection parsing -- because it only feeds [`local_risk_flags`], which errs towards
+/// Splits a command line into simple commands at `;`, `&`, `|`, `&&`, `||`, newlines,
+/// parentheses and backticks, unquoting words, and collects output redirection targets.
+/// Deliberately approximate -- no expansions or heredocs -- because it only feeds [`local_risk_flags`], which errs towards
 /// flagging.
 fn split_simple_commands(line: &str) -> Vec<SimpleCommand> {
-    let mut commands = Vec::new();
-    let mut words = Vec::new();
-    let mut word = String::new();
-    let mut in_word = false;
-    let mut piped = false;
-    let mut chars = line.chars().peekable();
+    /// An output redirection operator was just read; the next word is its target.
+    #[derive(Clone, Copy)]
+    struct PendingRedirect {
+        /// `>&`, whose target may be a file descriptor.
+        dup: bool,
+    }
 
-    fn end_word(word: &mut String, in_word: &mut bool, words: &mut Vec<String>) {
-        if *in_word {
-            words.push(std::mem::take(word));
-            *in_word = false;
+    #[derive(Default)]
+    struct Builder {
+        commands: Vec<SimpleCommand>,
+        words: Vec<String>,
+        redirects: Vec<String>,
+        word: String,
+        in_word: bool,
+        piped: bool,
+        pending: Option<PendingRedirect>,
+    }
+
+    impl Builder {
+        fn end_word(&mut self) {
+            if !self.in_word {
+                return;
+            }
+            let word = std::mem::take(&mut self.word);
+            self.in_word = false;
+            match self.pending.take() {
+                None => self.words.push(word),
+                Some(PendingRedirect { dup })
+                    if word == "/dev/null"
+                        || (dup && (word == "-" || word.chars().all(|c| c.is_ascii_digit()))) => {}
+                Some(_) => self.redirects.push(word),
+            }
+        }
+
+        fn end_command(&mut self) {
+            self.end_word();
+            self.pending = None;
+            if !self.words.is_empty() || !self.redirects.is_empty() {
+                self.commands.push(SimpleCommand {
+                    words: std::mem::take(&mut self.words),
+                    piped: self.piped,
+                    redirects: std::mem::take(&mut self.redirects),
+                });
+            }
         }
     }
+
+    let mut b = Builder::default();
+    let mut chars = line.chars().peekable();
 
     while let Some(c) = chars.next() {
         match c {
             '\'' => {
-                in_word = true;
+                b.in_word = true;
                 for c in chars.by_ref() {
                     if c == '\'' {
                         break;
                     }
-                    word.push(c);
+                    b.word.push(c);
                 }
             }
             '"' => {
-                in_word = true;
+                b.in_word = true;
                 while let Some(c) = chars.next() {
                     match c {
                         '"' => break,
                         '\\' => {
                             if let Some(escaped) = chars.next() {
-                                word.push(escaped);
+                                b.word.push(escaped);
                             }
                         }
-                        c => word.push(c),
+                        c => b.word.push(c),
                     }
                 }
             }
             '\\' => {
-                in_word = true;
+                b.in_word = true;
                 if let Some(escaped) = chars.next() {
                     if escaped != '\n' {
-                        word.push(escaped);
+                        b.word.push(escaped);
                     }
                 }
             }
-            ';' | '&' | '|' | '\n' | '(' | ')' => {
-                end_word(&mut word, &mut in_word, &mut words);
-                if !words.is_empty() {
-                    commands.push(SimpleCommand {
-                        words: std::mem::take(&mut words),
-                        piped,
-                    });
+            '>' | '&' if c == '>' || chars.peek() == Some(&'>') => {
+                // `&>file` / `&>>file` / `>file` / `>>file` / `>|file` / `>&file`; a file
+                // descriptor prefix like the `2` of `2>` belongs to the operator, not a word.
+                if c == '&' {
+                    chars.next();
                 }
+                if b.in_word && !b.word.is_empty() && b.word.chars().all(|d| d.is_ascii_digit()) {
+                    b.word.clear();
+                    b.in_word = false;
+                } else {
+                    b.end_word();
+                }
+                if matches!(chars.peek(), Some('>' | '|')) {
+                    chars.next();
+                }
+                let dup = c == '>' && chars.peek() == Some(&'&');
+                if dup {
+                    chars.next();
+                }
+                b.pending = Some(PendingRedirect { dup });
+            }
+            ';' | '&' | '|' | '\n' | '(' | ')' | '`' => {
+                b.end_command();
                 let doubled = (c == '&' || c == '|') && chars.peek() == Some(&c);
                 if doubled {
                     chars.next();
                 }
-                piped = c == '|' && !doubled;
-                if piped && chars.peek() == Some(&'&') {
+                b.piped = c == '|' && !doubled;
+                if b.piped && chars.peek() == Some(&'&') {
                     chars.next();
                 }
             }
-            c if c.is_whitespace() => end_word(&mut word, &mut in_word, &mut words),
+            c if c.is_whitespace() => b.end_word(),
             c => {
-                in_word = true;
-                word.push(c);
+                b.in_word = true;
+                b.word.push(c);
             }
         }
     }
-    end_word(&mut word, &mut in_word, &mut words);
-    if !words.is_empty() {
-        commands.push(SimpleCommand { words, piped });
-    }
-    commands
+    b.end_command();
+    b.commands
 }
 
 /// Flags well-known destructive, disruptive or privileged operations in `command` by syntax
@@ -546,16 +654,122 @@ fn is_assignment(word: &str) -> bool {
 
 /// Whether `args` contains a short flag cluster with `letter` (`-rf` has `r`) or `long`.
 fn has_flag(args: &[String], letter: char, long: &str) -> bool {
-    args.iter().any(|arg| {
-        arg == long || (arg.starts_with('-') && !arg.starts_with("--") && arg[1..].contains(letter))
-    })
+    args.iter()
+        .any(|arg| arg == long || short_cluster_has(arg, letter))
 }
 
-/// The first argument that is not an option.
-fn subcommand(args: &[String]) -> Option<&str> {
+/// Whether `arg` is a short flag cluster (`-rf`) containing `letter`.
+fn short_cluster_has(arg: &str, letter: char) -> bool {
+    arg.starts_with('-') && !arg.starts_with("--") && arg[1..].contains(letter)
+}
+
+/// Global options of `tool` that take their value as a separate argument, so the value is not
+/// mistaken for a subcommand (`kubectl -n prod delete`, `git -C repo reset`).
+fn value_options(tool: &str) -> &'static [&'static str] {
+    match tool {
+        "git" => &["-C", "-c", "--git-dir", "--work-tree", "--namespace"],
+        "kubectl" | "oc" | "helm" => &[
+            "-n",
+            "--namespace",
+            "--context",
+            "--kube-context",
+            "--cluster",
+            "--user",
+            "--kubeconfig",
+            "-s",
+            "--server",
+            "--as",
+            "--token",
+        ],
+        "docker" | "podman" | "nerdctl" | "docker-compose" => &[
+            "-H",
+            "--host",
+            "--context",
+            "-f",
+            "--file",
+            "-p",
+            "--project-name",
+            "--profile",
+            "--env-file",
+        ],
+        _ => &[],
+    }
+}
+
+/// Indices into `args` of the arguments that are neither options nor the value of one of
+/// `tool`'s [`value_options`].
+fn positional_indices(tool: &str, args: &[String]) -> Vec<usize> {
+    let with_value = value_options(tool);
+    let mut indices = Vec::new();
+    let mut skip_next = false;
+    for (index, arg) in args.iter().enumerate() {
+        if std::mem::take(&mut skip_next) {
+            continue;
+        }
+        if arg.starts_with('-') {
+            skip_next = with_value.contains(&arg.as_str());
+        } else {
+            indices.push(index);
+        }
+    }
+    indices
+}
+
+/// Options of `docker exec` / `kubectl exec` that take a separate value.
+const EXEC_OPTIONS_WITH_VALUE: &[&str] = &[
+    "-e",
+    "--env",
+    "-u",
+    "--user",
+    "-w",
+    "--workdir",
+    "--env-file",
+    "--detach-keys",
+    "-c",
+    "--container",
+];
+
+/// The command `docker exec [opts] <container> <cmd...>` runs, given the args after `exec`.
+fn docker_exec_command(after_exec: &[String]) -> &[String] {
+    let mut rest = after_exec;
+    let mut container_seen = false;
+    while let Some((arg, tail)) = rest.split_first() {
+        if arg == "--" {
+            rest = tail;
+            continue;
+        }
+        if arg.starts_with('-') {
+            let consumed = if EXEC_OPTIONS_WITH_VALUE.contains(&arg.as_str()) {
+                2
+            } else {
+                1
+            };
+            rest = &rest[consumed.min(rest.len())..];
+        } else if !container_seen {
+            container_seen = true;
+            rest = tail;
+        } else {
+            return rest;
+        }
+    }
+    &[]
+}
+
+/// The script argument of `sh -c '...'`, with `-c` anywhere in a short flag cluster
+/// (`bash -lc`, `-ec`).
+fn shell_c_script(args: &[String]) -> Option<&str> {
+    let index = args.iter().position(|arg| short_cluster_has(arg, 'c'))?;
+    args.get(index + 1).map(String::as_str)
+}
+
+const PACKAGE_MANAGERS: &[&str] = &[
+    "apt", "apt-get", "dnf", "yum", "pacman", "brew", "pip", "pip3", "npm", "pnpm", "yarn", "cargo",
+];
+
+/// Whether `args` has an operand that is neither an option nor `/dev/null`.
+fn has_non_null_operand(args: &[String]) -> bool {
     args.iter()
-        .map(String::as_str)
-        .find(|arg| !arg.starts_with('-'))
+        .any(|arg| !arg.starts_with('-') && arg != "/dev/null")
 }
 
 fn collect_simple_command_flags(
@@ -564,6 +778,14 @@ fn collect_simple_command_flags(
     depth: usize,
     flags: &mut Vec<LocalRiskFlag>,
 ) {
+    for target in &simple.redirects {
+        push_flag(
+            flags,
+            LocalRiskCategory::WritesFiles,
+            format!("> {target}"),
+            remote_host,
+        );
+    }
     let mut words = simple.words.as_slice();
     // Skip assignments and wrappers to reach the command that actually runs.
     loop {
@@ -588,11 +810,21 @@ fn collect_simple_command_flags(
         }
         words = &words[1..];
         while let Some(option) = words.first().filter(|word| word.starts_with('-')) {
-            let takes_value = matches!(name, "sudo" | "doas")
-                && matches!(
+            let takes_value = match name {
+                "sudo" | "doas" => matches!(
                     option.as_str(),
                     "-u" | "-g" | "-U" | "-C" | "-D" | "-h" | "-p"
-                );
+                ),
+                "nice" => option == "-n",
+                "ionice" => matches!(option.as_str(), "-c" | "-n" | "-p"),
+                "xargs" => matches!(
+                    option.as_str(),
+                    "-n" | "-I" | "-P" | "-L" | "-d" | "-E" | "-s" | "-a"
+                ),
+                "env" => matches!(option.as_str(), "-u" | "-C" | "-S"),
+                "timeout" => matches!(option.as_str(), "-s" | "-k"),
+                _ => false,
+            };
             let consumed = if takes_value { 2 } else { 1 };
             words = &words[consumed.min(words.len())..];
         }
@@ -605,7 +837,8 @@ fn collect_simple_command_flags(
         return;
     };
     let name = basename(first);
-    let sub = subcommand(args);
+    let positions = positional_indices(name, args);
+    let sub = positions.first().map(|&index| args[index].as_str());
     let sub_trigger = |sub: &str| format!("{name} {sub}");
 
     match name {
@@ -662,6 +895,32 @@ fn collect_simple_command_flags(
                 "git reset --hard".to_owned(),
                 remote_host,
             ),
+            Some("push") if args.iter().any(|arg| arg.starts_with(':') && arg.len() > 1) => {
+                push_flag(
+                    flags,
+                    LocalRiskCategory::RewritesHistory,
+                    "git push :branch".to_owned(),
+                    remote_host,
+                )
+            }
+            Some("checkout") if args.iter().any(|arg| arg == ".") => push_flag(
+                flags,
+                LocalRiskCategory::OverwritesData,
+                "git checkout .".to_owned(),
+                remote_host,
+            ),
+            Some("stash")
+                if args
+                    .iter()
+                    .any(|arg| matches!(arg.as_str(), "drop" | "clear")) =>
+            {
+                push_flag(
+                    flags,
+                    LocalRiskCategory::DeletesData,
+                    "git stash drop".to_owned(),
+                    remote_host,
+                )
+            }
             Some("clean") => push_flag(
                 flags,
                 LocalRiskCategory::DeletesData,
@@ -698,21 +957,74 @@ fn collect_simple_command_flags(
                 remote_host,
             );
             if name == "su" {
-                if let Some(index) = args.iter().position(|arg| arg == "-c") {
-                    if let Some(inner) = args.get(index + 1) {
-                        if depth < MAX_NESTING {
-                            collect_flags(inner, remote_host, depth + 1, flags);
-                        }
+                if let Some(inner) = shell_c_script(args) {
+                    if depth < MAX_NESTING {
+                        collect_flags(inner, remote_host, depth + 1, flags);
                     }
                 }
             }
         }
+        "eval" => {
+            if depth < MAX_NESTING && !args.is_empty() {
+                collect_flags(&args.join(" "), remote_host, depth + 1, flags);
+            }
+        }
+        "tee" if has_non_null_operand(args) && !has_flag(args, 'a', "--append") => push_flag(
+            flags,
+            LocalRiskCategory::WritesFiles,
+            "tee".to_owned(),
+            remote_host,
+        ),
+        "sed"
+            if args
+                .iter()
+                .any(|arg| arg.starts_with("--in-place") || short_cluster_has(arg, 'i')) =>
+        {
+            push_flag(
+                flags,
+                LocalRiskCategory::WritesFiles,
+                "sed -i".to_owned(),
+                remote_host,
+            )
+        }
+        "cp" | "mv" => push_flag(
+            flags,
+            LocalRiskCategory::WritesFiles,
+            name.to_owned(),
+            remote_host,
+        ),
+        "rsync" if args.iter().any(|arg| arg.starts_with("--delete")) => push_flag(
+            flags,
+            LocalRiskCategory::DeletesData,
+            "rsync --delete".to_owned(),
+            remote_host,
+        ),
+        "crontab" if args.iter().any(|arg| short_cluster_has(arg, 'r')) => push_flag(
+            flags,
+            LocalRiskCategory::DeletesData,
+            "crontab -r".to_owned(),
+            remote_host,
+        ),
+        name if PACKAGE_MANAGERS.contains(&name) => {
+            let removal = positions
+                .iter()
+                .take(2)
+                .map(|&i| args[i].as_str())
+                .any(|word| matches!(word, "remove" | "purge" | "uninstall" | "autoremove" | "rm"))
+                || (name == "pacman" && args.iter().any(|arg| arg.starts_with("-R")));
+            if removal {
+                push_flag(
+                    flags,
+                    LocalRiskCategory::RemovesPackages,
+                    format!("{name} remove"),
+                    remote_host,
+                );
+            }
+        }
         name if SHELLS.contains(&name) => {
-            if let Some(index) = args.iter().position(|arg| arg == "-c") {
-                if let Some(inner) = args.get(index + 1) {
-                    if depth < MAX_NESTING {
-                        collect_flags(inner, remote_host, depth + 1, flags);
-                    }
+            if let Some(inner) = shell_c_script(args) {
+                if depth < MAX_NESTING {
+                    collect_flags(inner, remote_host, depth + 1, flags);
                 }
             } else if simple.piped {
                 push_flag(
@@ -775,12 +1087,29 @@ fn collect_simple_command_flags(
             remote_host,
         ),
         "docker" | "podman" | "docker-compose" | "nerdctl" => {
-            let positional: Vec<&str> = args
+            let positional: Vec<&str> = positions
                 .iter()
-                .map(String::as_str)
-                .filter(|arg| !arg.starts_with('-'))
                 .take(2)
+                .map(|&index| args[index].as_str())
                 .collect();
+            if depth < MAX_NESTING {
+                // `docker exec c cmd` / `docker compose exec svc cmd` run `cmd`.
+                if let Some(exec) = positions.iter().take(2).find(|&&i| args[i] == "exec") {
+                    let command = docker_exec_command(&args[exec + 1..]);
+                    if !command.is_empty() {
+                        collect_simple_command_flags(
+                            &SimpleCommand {
+                                words: command.to_vec(),
+                                piped: false,
+                                redirects: Vec::new(),
+                            },
+                            remote_host,
+                            depth + 1,
+                            flags,
+                        );
+                    }
+                }
+            }
             let category = positional.iter().find_map(|word| match *word {
                 "stop" | "kill" | "restart" | "pause" | "down" => {
                     Some(LocalRiskCategory::StopsServices)
@@ -798,6 +1127,23 @@ fn collect_simple_command_flags(
             }
         }
         "kubectl" | "oc" => match sub {
+            Some("exec") if depth < MAX_NESTING => {
+                if let Some(dashes) = args.iter().position(|arg| arg == "--") {
+                    let command = &args[dashes + 1..];
+                    if !command.is_empty() {
+                        collect_simple_command_flags(
+                            &SimpleCommand {
+                                words: command.to_vec(),
+                                piped: false,
+                                redirects: Vec::new(),
+                            },
+                            remote_host,
+                            depth + 1,
+                            flags,
+                        );
+                    }
+                }
+            }
             Some(sub @ ("delete" | "drain" | "cordon")) => push_flag(
                 flags,
                 LocalRiskCategory::StopsServices,

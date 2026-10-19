@@ -2308,7 +2308,8 @@ impl RequestedCommandView {
                     ),
                     Some(RiskLevel::Safe) => (
                         crate::t!("ai-command-explanation-risk-safe"),
-                        theme.ui_green_color(),
+                        // Neutral, not green: "safe" here is only the absence of a finding.
+                        main_color,
                     ),
                     None => (
                         crate::t!("ai-command-explanation-risk-unknown"),
@@ -3017,6 +3018,8 @@ fn local_risk_category_label(category: LocalRiskCategory) -> String {
         LocalRiskCategory::StopsServices => crate::t!("ai-command-risk-stops-services"),
         LocalRiskCategory::KillsProcesses => crate::t!("ai-command-risk-kills-processes"),
         LocalRiskCategory::RebootsOrShutsDown => crate::t!("ai-command-risk-reboots"),
+        LocalRiskCategory::WritesFiles => crate::t!("ai-command-risk-writes-files"),
+        LocalRiskCategory::RemovesPackages => crate::t!("ai-command-risk-removes-packages"),
     }
 }
 
