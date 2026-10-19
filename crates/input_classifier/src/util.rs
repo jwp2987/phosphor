@@ -1486,7 +1486,9 @@ pub fn known_command_head(input: &ParsedTokensSnapshot) -> bool {
     match effective_head_index(&words, first_index) {
         Some(index) if index == first_index => true,
         Some(index) => {
-            takes_free_text(&words, index) || !is_ordinary_english_word(&words[index].text)
+            takes_free_text(&words, index)
+                || is_one_off_shell_command_keyword(&words[index].text)
+                || !is_ordinary_english_word(&words[index].text)
         }
         None => false,
     }
