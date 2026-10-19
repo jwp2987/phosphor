@@ -12043,12 +12043,25 @@ impl Input {
         };
         // #833: only the active session's own bootstrap data can say its shell does not know the
         // first word; anything the session cannot answer keeps the inherited type.
-        let head_unknown_to_shell = snapshot
-            .buffer_text
-            .split_whitespace()
-            .next()
-            .zip(self.active_session(ctx))
-            .is_some_and(|(word, session)| session.knows_command_word(word) == Some(false));
+        // The session queried must be the bootstrapped prompt session the line will run in: not
+        // while a command is running (a non-warpified ssh, `docker exec`, `sudo -s`,
+        // `nix-shell`, or the gap before a subshell/ssh session bootstraps all leave the previous
+        // session as the active one) and not before bootstrap completes.
+        let prompt_session_is_the_target = {
+            let model = self.model.lock();
+            model.block_list().is_bootstrapped()
+                && !model
+                    .block_list()
+                    .active_block()
+                    .is_active_and_long_running()
+        };
+        let head_unknown_to_shell = prompt_session_is_the_target
+            && snapshot
+                .buffer_text
+                .split_whitespace()
+                .next()
+                .zip(self.active_session(ctx))
+                .is_some_and(|(word, session)| session.knows_command_word(word) == Some(false));
         self.ai_input_model.update(ctx, |model, ctx| {
             model.settle_pending_detection_for_submit(&snapshot, head_unknown_to_shell, ctx);
         });

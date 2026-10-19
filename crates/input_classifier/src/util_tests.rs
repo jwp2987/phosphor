@@ -1029,10 +1029,10 @@ fn test_reads_as_request_to_agent_hard_negatives_for_real_commands() {
 #[test]
 fn test_reads_as_prose_with_unknown_head_accepts_clear_prose() {
     for text in [
-        "summarize the open issues for me",
-        "tell the team about the outage",
-        "frobnicate the widgets, then ship it",
+        "summarize the open issues and tell me what to fix",
         "explain why the build is slow?",
+        "tell Josh what happened please",
+        "frobnicate everything for me please",
     ] {
         assert!(reads_as_prose_with_unknown_head(text), "{text:?}");
     }
@@ -1041,31 +1041,49 @@ fn test_reads_as_prose_with_unknown_head_accepts_clear_prose() {
 #[test]
 fn test_reads_as_prose_with_unknown_head_keeps_command_shapes_shell() {
     for text in [
-        // Too short: a typo'd command or a bare word.
+        // Commands whose head the bootstrap snapshot can lack (tool installed since).
+        "newtool deploy the app to staging",
+        "poetry add requests numpy",
+        "mytool --force run migrations for prod",
+        "newtool deploy the app to Staging",
+        "newtool push the image for me",
+        "newtool run Migrations now",
+        // One signal only.
+        "tell Josh about outages",
+        "summarize open issues, then triage",
+        "frobnicate everything for me",
+        // Too short.
         "frobnicate",
         "frobnicate the",
         // Paths, assignments, non-word heads.
-        "./run the tests now",
-        "~/bin/run the tests now",
-        "/usr/bin/run the tests now",
-        "FOO=1 summarize the open issues",
-        "foo-bar the open issues",
-        "$HOME the open issues",
-        "'summarize' the open issues",
+        "./run what to fix please",
+        "~/bin/run what to fix please",
+        "/usr/bin/run what to fix please",
+        "FOO=1 summarize what to fix please",
+        "foo-bar what to fix please",
+        "$HOME what to fix please",
+        "'summarize' what to fix please",
+        // Flags, `=`, `/`, `.`, `:`, `@`, digits after the head.
+        "summarize -v what to fix please",
+        "summarize what to fix please --force",
+        "summarize what to fix please x=1",
+        "summarize what to fix please a/b",
+        "summarize what to fix please a.txt",
+        "summarize what to fix please.",
+        "summarize what to fix please a:b",
+        "summarize what to fix please a@b",
+        "summarize what to fix please 3",
         // Shell operators and expansions anywhere.
-        "summarize the issues | less",
-        "summarize the issues > out.txt",
-        "summarize the issues && echo it",
-        "summarize the $(date) issues",
-        "summarize the issues; ls",
-        "summarize (the) issues",
-        "summarize the\nissues",
+        "summarize what to fix please | less",
+        "summarize what to fix please > out.txt",
+        "summarize what to fix please && echo it",
+        "summarize what to $(date) fix please",
+        "summarize what to fix please; ls",
+        "summarize (what) to fix please",
+        "summarize what\nto fix please",
         // One-off keyword and compound heads.
-        "echo the open issues for me",
-        "for the open issues in me",
-        // No prose evidence at all.
-        "frob b22 b23",
-        "xtecho b5 blk.txt",
+        "echo what to fix please",
+        "for what to fix please",
     ] {
         assert!(!reads_as_prose_with_unknown_head(text), "{text:?}");
     }

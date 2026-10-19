@@ -504,3 +504,49 @@ fn knows_command_word_declines_to_answer_without_session_data() {
         assert_eq!(session.knows_command_word("summarize"), None);
     });
 }
+
+#[test]
+fn knows_command_word_goes_stale_after_a_command_that_may_change_the_command_set() {
+    App::test((), |_app| async move {
+        // Commands that cannot add a known command leave the snapshot trusted.
+        let session = session_with_known_names(ShellType::Bash);
+        session.set_external_commands(["git"]);
+        for harmless in [
+            "ls -la",
+            "git status",
+            "echo hello world",
+            "grep -r foo src",
+        ] {
+            session.note_user_command(harmless);
+            assert_eq!(
+                session.knows_command_word("newtool"),
+                Some(false),
+                "{harmless}"
+            );
+        }
+        // Each of these may have installed a tool, changed PATH or defined a function/alias,
+        // after which `newtool` can no longer be called unknown.
+        for changing in [
+            "pip install newtool",
+            "sudo apt install newtool",
+            "cargo install newtool",
+            "npm i -g newtool",
+            "brew install newtool",
+            "source venv/bin/activate",
+            ". ./env.sh",
+            "export PATH=$HOME/bin:$PATH",
+            "PATH=/opt/x:$PATH true",
+            "alias nt=newtool",
+            "cd ~/project",
+            "make && ls",
+            "eval \"$(direnv export bash)\"",
+        ] {
+            let session = session_with_known_names(ShellType::Bash);
+            session.set_external_commands(["git"]);
+            assert_eq!(session.knows_command_word("newtool"), Some(false));
+            session.note_user_command(changing);
+            assert_eq!(session.knows_command_word("newtool"), None, "{changing}");
+            assert_eq!(session.knows_command_word("ll"), None, "{changing}");
+        }
+    });
+}

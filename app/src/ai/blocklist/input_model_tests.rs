@@ -1253,12 +1253,11 @@ fn pending_prose_with_unknown_first_word_settles_to_ai_at_submit() {
             ));
             input_model.read(app, |model, _| model.input_type())
         };
-        // No request word, so the existing #834 rule does not apply to these: only the
-        // unknown-head rule can move them.
+        // No #834 request word (`the`, `it`, ...), so only the unknown-head rule can move these.
         for prose in [
-            "summarize open issues, then triage",
-            "tell Josh about outages",
-            "frobnicate widgets, ship quickly",
+            "summarize everything for me please",
+            "tell Josh what happened please",
+            "explain why builds are slow?",
         ] {
             assert_eq!(enter(&mut app, prose, true), InputType::AI, "{prose}");
             // Head is an alias/function/builtin/PATH executable, or the session has no data:
@@ -1268,12 +1267,14 @@ fn pending_prose_with_unknown_first_word_settles_to_ai_at_submit() {
         for kept in [
             "frobnicate",
             "frobnicate widgets,",
-            "./run widgets, ship quickly",
-            "~/bin/run widgets, ship quickly",
-            "FOO=1 summarize open issues, then triage",
-            "summarize open issues, then triage | less",
-            "summarize open issues, then triage && echo ok",
-            "echo open issues, then triage",
+            "./run what to fix please",
+            "~/bin/run what to fix please",
+            "FOO=1 summarize what to fix please",
+            "summarize what to fix please | less",
+            "summarize what to fix please && echo it",
+            "echo what to fix please",
+            "mytool --force run migrations for prod",
+            "tell Josh about outages",
         ] {
             assert_eq!(enter(&mut app, kept, true), InputType::Shell, "{kept}");
         }
@@ -1286,11 +1287,11 @@ fn pending_typeahead_with_unknown_first_word_stays_shell() {
     App::test((), |mut app| async move {
         let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
         let input_model = build_autodetecting_input_model(&mut app, SHELL_UNLOCKED);
-        let text = "summarize the open issues for me";
+        let text = "summarize everything for me please";
         input_model.update(&mut app, |model, ctx| {
             model.apply_autodetected_input_type(InputType::Shell, ctx);
             model.note_detection_requested(text.to_owned());
-            model.note_typeahead_inserted("summarize the".to_owned());
+            model.note_typeahead_inserted("summarize every".to_owned());
         });
         settle_for_submit_with_head(&mut app, &input_model, text, true);
         input_model.read(&app, |model, _| {

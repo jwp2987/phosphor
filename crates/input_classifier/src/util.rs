@@ -1203,18 +1203,29 @@ pub fn reads_as_request_to_agent(buffer_text: &str) -> bool {
     !is_one_off_shell_command_keyword(head) && reads_as_command_headed_prose(buffer_text)
 }
 
+/// Words that, outside command lines, mark a sentence addressed to someone: first/second person
+/// pronouns, a polite or modal opener and the interrogatives. Deliberately NOT articles or
+/// prepositions (`the`, `to`, `for`, `and`...): those sit in ordinary command lines
+/// (`newtool deploy the app to staging`).
+const STRONG_PROSE_WORDS: [&str; 16] = [
+    "me", "please", "you", "my", "i", "can", "could", "would", "should", "what", "why", "how",
+    "which", "who", "when", "where",
+];
+
 /// Fork-original (#833): the prose test for a line whose first word the session's shell does not
 /// know (no alias, function, builtin, keyword or `$PATH` executable of that name). The caller
-/// establishes that fact from the session's own bootstrap data; this predicate only says whether
-/// the line is clearly prose rather than a command with a typo'd or missing head.
+/// establishes that fact from the session's own bootstrap data -- a snapshot that can be missing a
+/// tool installed or a function defined since -- so this predicate has to be strict enough that a
+/// real command with a head the snapshot lacks (`newtool deploy the app to staging`, `poetry add
+/// requests numpy`, `mytool --force run migrations for prod`) is never read as prose, because
+/// routing it to the agent would send its arguments off the machine.
 ///
-/// Deliberately conservative -- every one of these keeps the line Shell: fewer than three words
-/// (a bare word or pair is a typo'd command far more often than a sentence); a head that is
-/// quoted, an assignment (`X=1 cmd`), a path (`./x`, `~/x`, `/x`, anything with `/`), a flag, a
-/// variable or not purely alphabetic; any shell operator or expansion character anywhere
-/// (`| & ; < > ( ) ` $ \`, newline); unsafe quoting; or no prose evidence in the whole line
-/// ([`has_no_prose_evidence`] is false only when a function word, article, sentence comma/period,
-/// `?` ending, colon shape or dictionary-English word is present).
+/// Stays Shell unless ALL of: three or more words; a bare, unquoted, purely alphabetic head that
+/// is not an assignment, a one-off keyword or a compound-command head; no shell operator or
+/// expansion character (`| & ; < > ( ) ` $ \`, newline) and shell-safe quoting; no word after the
+/// head that looks like a flag (`-x`), or contains `=`, `/`, `.`, `:`, `@` or a digit; and at
+/// least two independent strong prose signals among: distinct [`STRONG_PROSE_WORDS`] members
+/// (unquoted, case-insensitive), a final `?`, a Capitalised word after the head.
 pub fn reads_as_prose_with_unknown_head(buffer_text: &str) -> bool {
     let text = buffer_text.trim();
     if text.is_empty()
@@ -1239,7 +1250,31 @@ pub fn reads_as_prose_with_unknown_head(buffer_text: &str) -> bool {
     {
         return false;
     }
-    !has_no_prose_evidence(text)
+    let rest = &words[1..];
+    if rest.iter().any(|word| {
+        word.text.starts_with('-')
+            || word.text.contains(['=', '/', '.', ':', '@'])
+            || word.text.chars().any(|c| c.is_ascii_digit())
+    }) {
+        return false;
+    }
+    let mut signals: HashSet<String> = HashSet::new();
+    for word in rest.iter().filter(|word| !word.quoted) {
+        let bare = word.text.trim_matches(|c: char| !c.is_alphanumeric());
+        let lower = bare.to_lowercase();
+        if STRONG_PROSE_WORDS.contains(&lower.as_str()) {
+            signals.insert(lower);
+        } else if bare.chars().count() >= 2
+            && bare.starts_with(|c: char| c.is_ascii_uppercase())
+            && bare.chars().skip(1).all(|c| c.is_ascii_lowercase())
+        {
+            signals.insert("<capitalised>".to_owned());
+        }
+    }
+    if text.ends_with('?') {
+        signals.insert("<question-mark>".to_owned());
+    }
+    signals.len() >= 2
 }
 
 /// Fork-original (#886): true iff `buffer_text` carries no prose evidence anywhere, the head word
