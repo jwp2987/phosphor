@@ -28,7 +28,7 @@ use crate::{
 };
 
 pub(crate) mod up_arrow;
-pub(crate) use up_arrow::UpArrowHistoryConfig;
+pub(crate) use up_arrow::{UpArrowHistoryConfig, UpArrowSnapshot};
 
 /// Data model for a history command persisted to sqlite, used as an intermediate representation
 /// between the sqlite schema (sqlite::model::Command) and the [`History`] model.
@@ -960,6 +960,22 @@ impl History {
                 })
                 .map(|(_, h)| h),
         )
+    }
+
+    /// An O(1) upper bound on how many commands [`Self::visible_commands`] can yield for the
+    /// session (it ignores the skip and session filters). Lets callers pick a cheap or an
+    /// off-main-thread strategy without walking the history first.
+    pub fn visible_commands_upper_bound(&self, session_id: SessionId) -> usize {
+        let Some(shell_host) = self.session_id_to_shell_host.get(&session_id) else {
+            return 0;
+        };
+        self.history_file_commands
+            .get(shell_host)
+            .map_or(0, |commands| commands.len())
+            + self
+                .session_commands
+                .get(shell_host)
+                .map_or(0, |commands| commands.len())
     }
 
     /// `commands_shared` returns the same logical set as [`Self::commands`], but with shared

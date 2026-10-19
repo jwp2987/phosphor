@@ -12234,14 +12234,17 @@ impl Input {
             .suggestions_mode_model
             .as_ref(ctx)
             .is_inline_history_menu()
-            && self
-                .inline_history_menu_view
-                .as_ref(ctx)
-                .model()
-                .as_ref(ctx)
-                .selected_item()
-                .is_some()
+            && (self.inline_history_menu_view.as_ref(ctx).is_pending(ctx)
+                || self
+                    .inline_history_menu_view
+                    .as_ref(ctx)
+                    .model()
+                    .as_ref(ctx)
+                    .selected_item()
+                    .is_some())
         {
+            // While the list is still being built, Enter is queued and applied to the fresh
+            // rows (#874); it never accepts, or falls through past, a stale row.
             self.inline_history_menu_view
                 .update(ctx, |view, ctx| view.accept_selected_item(ctx));
             return;

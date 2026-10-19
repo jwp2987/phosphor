@@ -9,8 +9,8 @@ use futures_util::stream::AbortHandle;
 use itertools::Itertools;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use warpui::r#async::Timer;
 use warpui::{Action, AppContext, Entity, ModelContext};
@@ -102,6 +102,9 @@ pub struct SearchMixer<T: Action + Clone> {
 
     /// Tracks whether the current query has emitted its initial set of visible results yet.
     initial_results_emitted: bool,
+
+    /// How long a query waits for its async sources before committing whatever it has.
+    initial_results_timeout: Duration,
 }
 
 impl<T: Action + Clone> Entity for SearchMixer<T> {
@@ -144,7 +147,15 @@ impl<T: Action + Clone> SearchMixer<T> {
             query_generation: 0,
             pending_results: None,
             initial_results_emitted: false,
+            initial_results_timeout: INITIAL_RESULTS_TIMEOUT,
         }
+    }
+
+    /// Overrides how long a query waits for slow async sources before committing partial
+    /// (possibly empty) results. For menus whose single source must finish before there is
+    /// anything meaningful to show, so an early empty commit would read as "No results".
+    pub fn set_initial_results_timeout(&mut self, timeout: Duration) {
+        self.initial_results_timeout = timeout;
     }
 
     /// Set the deduplication strategy for the mixer
@@ -283,8 +294,9 @@ impl<T: Action + Clone> SearchMixer<T> {
                 self.commit_pending_results_for_current_query(ctx);
             } else {
                 let query_generation = self.query_generation;
+                let initial_results_timeout = self.initial_results_timeout;
                 let _ = ctx.spawn(
-                    async move { Timer::after(INITIAL_RESULTS_TIMEOUT).await },
+                    async move { Timer::after(initial_results_timeout).await },
                     move |mixer, _, ctx| {
                         mixer.commit_pending_results_after_timeout(query_generation, ctx);
                     },
@@ -394,6 +406,14 @@ impl<T: Action + Clone> SearchMixer<T> {
                 // because there might already be a running query that's taking long.
                 if let Some(abort_handle) = latest_run_abort_handle.take() {
                     abort_handle.abort();
+                }
+
+                // A source that can answer cheaply right now does so synchronously, so a small
+                // input pays no loading state and no extra event-loop turn.
+                if let Some(inline_results) = source.run_query_inline(&query, ctx) {
+                    let source_id = data_source_id;
+                    self.add_new_results(source_id, inline_results, ctx);
+                    return;
                 }
 
                 // Only run async sources in the zero state if the async source indicated it should run in the
@@ -591,6 +611,17 @@ pub trait AsyncDataSource: 'static + Send + Sync {
         query: &Query,
         app: &AppContext,
     ) -> BoxFuture<'static, Result<Vec<QueryResult<Self::Action>>, DataSourceRunErrorWrapper>>;
+
+    /// Optionally answers the query synchronously, on the calling thread, instead of through
+    /// the future returned by `run_query`. Return `Some` only when that is cheap. The default
+    /// is `None`, which always takes the async path.
+    fn run_query_inline(
+        &self,
+        _query: &Query,
+        _app: &AppContext,
+    ) -> Option<Result<Vec<QueryResult<Self::Action>>, DataSourceRunErrorWrapper>> {
+        None
+    }
 
     /// Function that should be run in the callback after `run_query` finishes.
     fn on_query_finished(&self, _ctx: &mut AppContext) {}
