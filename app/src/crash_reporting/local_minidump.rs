@@ -378,6 +378,8 @@ impl Drop for MinidumpGuard {
         if let Err(err) = self.child.kill() {
             log::warn!("Unable to kill minidump child process: {err:#}");
         }
+        // Reap the killed child so it isn't left as a zombie (#830).
+        let _ = self.child.wait();
     }
 }
 

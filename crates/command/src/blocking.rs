@@ -10,6 +10,20 @@ use std::process::{Child, CommandArgs, CommandEnvs, ExitStatus, Output, Stdio};
 #[cfg(windows)]
 use {super::windows::JobObject, std::os::windows::io::AsRawHandle};
 
+/// Reaps a fire-and-forget child on a background thread.
+///
+/// Dropping a [`std::process::Child`] without `wait()`ing on it leaves a zombie
+/// for the lifetime of the app (#830). Use this for children we deliberately
+/// don't track (e.g. `xdg-open`, editor launches). Falls back to dropping the
+/// handle if the thread cannot be created.
+pub fn reap_in_background(mut child: Child) {
+    let _ = std::thread::Builder::new()
+        .name("child reaper".into())
+        .spawn(move || {
+            let _ = child.wait();
+        });
+}
+
 /// Wrapper around a [`std::process::Command`] that ensures any new Command is set with the windows
 /// `CREATE_NO_WINDOW` flag to avoid a console window temporarily popping up.
 #[derive(Debug)]

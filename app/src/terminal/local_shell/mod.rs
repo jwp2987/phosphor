@@ -10,6 +10,8 @@ use crate::terminal::available_shells::AvailableShells;
 use crate::terminal::local_tty::shell::ShellStarterSourceOrWslName;
 #[cfg(feature = "local_tty")]
 use command::r#async::Command;
+#[cfg(feature = "local_tty")]
+use warpui::r#async::FutureExt;
 use warpui::{Entity, ModelContext, SingletonEntity};
 
 #[derive(Debug)]
@@ -237,6 +239,10 @@ pub async fn execute_command(
     }
 }
 
+/// Upper bound on the interactive login shell PATH capture (#830).
+#[cfg(feature = "local_tty")]
+const INTERACTIVE_SHELL_CAPTURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 // PATH is emitted between these sentinels so startup stdout from rc files
 // (fastfetch, MOTD banners, etc.) can't be mistaken for PATH content.
 #[cfg(feature = "local_tty")]
@@ -314,12 +320,19 @@ async fn capture_interactive_shell_env(
     }
 
     // stdin(null) prevents any prompts from blocking
+    //
+    // The shell sources the user's rc files, which can hang (a prompt, a stuck
+    // network mount). Bound it and kill the shell when the future is dropped on
+    // timeout so it doesn't leak (#830).
     let output: std::process::Output = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .kill_on_drop(true)
         .output()
+        .with_timeout(INTERACTIVE_SHELL_CAPTURE_TIMEOUT)
         .await
+        .map_err(|_| anyhow!("Interactive shell PATH capture timed out"))?
         .map_err(|e| anyhow!("Failed to spawn interactive shell: {}", e))?;
 
     if !output.status.success() {
