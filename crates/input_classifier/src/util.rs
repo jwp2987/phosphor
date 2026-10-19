@@ -1137,7 +1137,136 @@ const FREE_TEXT_ARG_HEADS: &[&str] = &[
     "todo.sh",
     "task",
     "whereis",
+    "ollama",
+    "llm",
+    "sgpt",
+    "shell_gpt",
+    "aichat",
+    "tgpt",
+    "chatgpt",
+    "mods",
+    "ask",
+    "aider",
+    "fabric",
+    "gpt",
+    "fish_ai",
+    "q",
 ];
+
+/// Commands that run another command given as their arguments (#897). The head that decides
+/// whether the line is shell is the command they run, not the wrapper.
+const WRAPPER_HEADS: &[&str] = &[
+    "env", "nohup", "nice", "timeout", "command", "doas", "xargs", "exec", "builtin", "stdbuf",
+    "ionice", "chrt", "taskset", "unbuffer",
+];
+
+/// Wrapper options that take a separate value (`nice -n 5`, `timeout -s KILL`, `xargs -I {}`).
+const WRAPPER_VALUE_OPTIONS: &[&str] = &[
+    "-n", "-s", "-k", "-u", "-g", "-c", "-p", "-t", "-I", "-a", "-o", "-e",
+];
+
+/// Openers that are also real binaries which run their argument as a command (`watch ls`): they
+/// only count as an opener when a request word or another opener follows (`watch the logs`).
+const BINARY_OPENER_HEADS: &[&str] = &["watch", "look", "explain", "describe"];
+
+/// Words that start an inner command or keystrokes (`docker run ubuntu echo what is the date`,
+/// `tmux send-keys what is this Enter`) after a non-opener head.
+const INNER_COMMAND_WORDS: &[&str] = &[
+    "echo",
+    "printf",
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "fish",
+    "send-keys",
+    "sudo",
+];
+
+fn word_basename(word: &ShellWord) -> &str {
+    word.text.rsplit('/').next().unwrap_or(&word.text)
+}
+
+fn is_duration_word(token: &str) -> bool {
+    token.starts_with(|c: char| c.is_ascii_digit())
+        && token
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '.' | 's' | 'm' | 'h' | 'd'))
+}
+
+/// Index of the word that names the command actually run: skips `VAR=x` words and
+/// [`WRAPPER_HEADS`] with their options, assignments and numeric/duration arguments.
+fn effective_head_index(words: &[ShellWord], start: usize) -> Option<usize> {
+    let mut i = start;
+    loop {
+        let word = words.get(i)?;
+        if !word.quoted && is_env_assignment_token(&word.text) {
+            i += 1;
+            continue;
+        }
+        if word.quoted || !WRAPPER_HEADS.contains(&word_basename(word)) {
+            return Some(i);
+        }
+        i += 1;
+        while let Some(next) = words.get(i) {
+            if next.text.starts_with('-') {
+                i += 1;
+                if WRAPPER_VALUE_OPTIONS.contains(&next.text.as_str()) {
+                    i += 1;
+                }
+            } else if is_env_assignment_token(&next.text) || is_duration_word(&next.text) {
+                i += 1;
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+/// The effective head plus, for a [`BINARY_OPENER_HEADS`] head not followed by a request word or
+/// opener, the effective head of the command it runs.
+fn effective_head_chain(words: &[ShellWord], start: usize) -> Vec<usize> {
+    let Some(head) = effective_head_index(words, start) else {
+        return Vec::new();
+    };
+    let mut chain = vec![head];
+    if BINARY_OPENER_HEADS.contains(&word_basename(&words[head]))
+        && !binary_opener_is_request(words, head)
+        && let Some(next) = effective_head_index(words, head + 1)
+    {
+        chain.push(next);
+    }
+    chain
+}
+
+/// True when the word after a [`BINARY_OPENER_HEADS`] head is a request word or an opener.
+fn binary_opener_is_request(words: &[ShellWord], head: usize) -> bool {
+    words.get(head + 1).is_some_and(|next| {
+        is_request_word(next)
+            || (!next.quoted && REQUEST_OPENER_HEADS.contains(&next.text.as_str()))
+    })
+}
+
+/// True when the command at `index` takes free text, a nested command or keystrokes as its
+/// arguments, so request words after it are data.
+fn takes_free_text(words: &[ShellWord], index: usize) -> bool {
+    let head = word_basename(&words[index]);
+    let later = &words[index + 1..];
+    let has = |names: &[&str]| {
+        later
+            .iter()
+            .any(|word| !word.quoted && names.contains(&word.text.as_str()))
+    };
+    if FREE_TEXT_ARG_HEADS.contains(&head) {
+        return true;
+    }
+    match head {
+        "docker" | "podman" | "nerdctl" | "kubectl" => return has(&["run", "exec"]),
+        "tmux" => return has(&["send-keys"]),
+        _ => {}
+    }
+    !REQUEST_OPENER_HEADS.contains(&head) && has(INNER_COMMAND_WORDS)
+}
 
 /// Heads that open a request on their own: one request word after them is enough
 /// (`watch the logs`, `help me`, `explain this error`). Any other installed head needs a second
@@ -1255,8 +1384,8 @@ pub fn reads_as_command_headed_prose(buffer_text: &str) -> bool {
     {
         return true;
     }
-    let head_basename = first.text.rsplit('/').next().unwrap_or(&first.text);
-    if FREE_TEXT_ARG_HEADS.contains(&head_basename) {
+    let chain = effective_head_chain(&words, first_index);
+    if chain.iter().any(|&index| takes_free_text(&words, index)) {
         return false;
     }
     if remaining.len() >= 2
@@ -1270,7 +1399,8 @@ pub fn reads_as_command_headed_prose(buffer_text: &str) -> bool {
             .filter(|word| is_request_word(word))
             .map(|word| word.text.as_str())
             .collect();
-        let opener = REQUEST_OPENER_HEADS.contains(&first.text.as_str())
+        let opener = (REQUEST_OPENER_HEADS.contains(&first.text.as_str())
+            && (chain.len() < 2 || !BINARY_OPENER_HEADS.contains(&first.text.as_str())))
             || REQUEST_OPENER_PAIRS
                 .iter()
                 .any(|(head, next)| first.text == *head && remaining[0].text == *next);
@@ -1302,11 +1432,14 @@ pub fn reads_as_command_headed_prose(buffer_text: &str) -> bool {
 /// of course and is never prose. The one predicate the safety gate and the Enter-time settle
 /// (#833 F6) share.
 pub fn reads_as_request_to_agent(buffer_text: &str) -> bool {
-    let head = buffer_text
-        .split_whitespace()
-        .find(|word| !word.contains('='))
-        .unwrap_or_default();
-    !is_one_off_shell_command_keyword(head) && reads_as_command_headed_prose(buffer_text)
+    let words = split_shell_words(buffer_text.trim());
+    if effective_head_chain(&words, 0)
+        .iter()
+        .any(|&index| is_one_off_shell_command_keyword(&words[index].text))
+    {
+        return false;
+    }
+    reads_as_command_headed_prose(buffer_text)
 }
 
 /// Words that, outside command lines, mark a sentence addressed to someone: first/second person
@@ -1352,6 +1485,7 @@ pub fn reads_as_prose_with_unknown_head(buffer_text: &str) -> bool {
         || is_env_assignment_token(&head.text)
         || !head.text.chars().all(|c| c.is_ascii_alphabetic())
         || is_one_off_shell_command_keyword(&head.text)
+        || FREE_TEXT_ARG_HEADS.contains(&head.text.as_str())
         || COMPOUND_COMMAND_HEADS.contains(&head.text.as_str())
     {
         return false;
