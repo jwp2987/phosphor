@@ -283,8 +283,8 @@ fn render_worktree_substitutes_default_branch_name() {
                 .map(|command| command.exec.as_str())
                 .collect::<Vec<_>>(),
             [
-                format!("git worktree add -b my-feature-branch -- {path_word}"),
-                format!("cd {path_word}"),
+                format!("command git worktree add -b my-feature-branch -- {path_word}"),
+                format!("command cd {path_word}"),
             ]
         );
     } else {

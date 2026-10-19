@@ -415,7 +415,7 @@ impl DefaultWorktreePlaceholders<'_> {
                 values.insert(key.to_string(), value.to_string());
             }
         }
-        crate::tab_configs::tab_config::render_command(&command, &values)
+        crate::tab_configs::tab_config::render_command(&command, &values, None)
             .map_err(|err| format!("refusing to put it in a worktree command: {err}"))
     }
 }

@@ -418,6 +418,37 @@ from the user's own tab-config form, not from untrusted input, so this is accept
 the check is structural and an option the table does not know makes it refuse any
 placeholder in that segment.
 
+## Tab config commands with a placeholder skip aliases and functions (#884) — IMPROVED
+
+A tab-config command that substitutes a placeholder is safety-checked structurally
+(`reparsing_command` family in `app/src/tab_configs/tab_config.rs`), but an alias or
+function from the user's rc file that stands in for the command word is invisible to that
+check (`alias gco='eval git checkout'` makes `gco {{branch}}` run the value). The pin has no
+such check at all. **We do:** `render_command` prefixes the command word of every segment
+(`; & | ( )`-separated, so pipelines and `&&` chains too) of a command that substitutes a
+placeholder, so the shell skips aliases and functions for it: bash/zsh `command word`; fish
+`command word`, or `builtin word` for a builtin (fish's `command` finds only external
+programs); PowerShell `& (Microsoft.PowerShell.Core\Get-Command -CommandType
+Cmdlet,Application,ExternalScript -TotalCount 1 word)` (aliases and functions are not among
+those command types; default aliases such as `cd`/`ls` are first mapped to their cmdlet).
+Left alone: shell syntax (`for`, `done`, `[[`, ...), a path, `command`/`builtin`/`exec`;
+`time`/`noglob`/`nocorrect` are skipped to the command they run. A segment that cannot be
+prefixed without changing its meaning is refused like any other unsafe command: a quoted
+command name (`'git' x {{v}}`), `case`/`select`/`switch`, a function definition. Commands
+with no substituted placeholder are not touched, and the worktree-config generator
+(`user_config`) renders unprefixed, because the saved TOML is rendered again when opened.
+**The dialect is chosen from the pane's `shell`; without one it is a guess** (PowerShell on
+Windows, else `$SHELL`) because the real shell exists only after rendering. A wrong guess
+makes the command fail, it never runs something else. **Cost:** an alias-only tab config
+(`gco {{branch}}`) now fails with command-not-found; write the real command. A same-pane
+`alias`/function/`hash -p` definition used with a placeholder is still refused at render
+(`defined_then_used_with_placeholder`): the prefix would make the use fail anyway, the early
+error is clearer, and `hash -p` is not bypassed by `command`. Aliases defined in rc files
+that shadow `command` itself, and a shadowed `Get-Command` in PowerShell, are out of scope.
+PowerShell and the fish builtin list are unverified in real shells; bash, zsh and fish
+alias/function bypass is covered by `test_prefixed_command_ignores_aliases_and_functions_in_real_shells`.
+<!-- markers: keep:command_words_to_prefix keep:command_prefix keep:test_prefixed_command_ignores_aliases_and_functions_in_real_shells -->
+
 ---
 
 ## The import test is necessary, not sufficient
@@ -2279,8 +2310,8 @@ upstream's behavior is actually a defect rather than a preference.
   operators, `printf`/`print` with `-v` or a numeric conversion, `export -i`, `wait -p`,
   `set -A`, PowerShell's `--%` and a placeholder inside `[...]`. Quoted command names and flags
   are seen unquoted (`'ssh'`, `e''val`, `bash '-c'`). This is not a shell parser: wrappers it
-  does not model (`strace`, `dbus-run-session`, `/proc/self/exe`, ...), aliases, functions and
-  scripts that evaluate their arguments, and values a shell evaluates later (`PS1`,
+  does not model (`strace`, `dbus-run-session`, `/proc/self/exe`, ...), scripts that evaluate
+  their arguments (aliases and functions of the command word are bypassed by a prefix, see #884), and values a shell evaluates later (`PS1`,
   `PROMPT_COMMAND`, `GIT_SSH_COMMAND=` prefixes) are invisible to it. Placeholders are
   supported only as ordinary arguments to ordinary commands; anything that evaluates its
   arguments as code is unsupported, and mostly refused. A command outside

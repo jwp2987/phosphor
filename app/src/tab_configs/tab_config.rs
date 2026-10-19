@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "local_fs")]
 use toml::Value;
-use warp_util::path::needs_control_char_quoting;
+use warp_util::path::{ShellDialect, needs_control_char_quoting};
 
 /// Describes a tab config file that failed to parse.
 ///
@@ -455,6 +455,9 @@ struct StrippedCommand {
     /// `'ssh'`, `s'sh'` and `e''val` are `ssh` and `eval`, while `'a;ssh;b'` stays the one
     /// harmless word `a_ssh_b`.
     words: Vec<char>,
+    /// For each char of [`Self::words`], the index of the char it came from in the text that
+    /// was stripped (a literal's content chars map to their own position inside the quotes).
+    words_origin: Vec<usize>,
 }
 
 /// Checks the quoted literals in `residual`, or says why one is unsafe.
@@ -470,6 +473,7 @@ struct StrippedCommand {
 fn strip_literal_quoted_strings(residual: &[char]) -> Result<StrippedCommand, &'static str> {
     let mut marked = Vec::with_capacity(residual.len());
     let mut words = Vec::with_capacity(residual.len());
+    let mut words_origin = Vec::with_capacity(residual.len());
     let mut index = 0;
     while index < residual.len() {
         let c = residual[index];
@@ -480,6 +484,7 @@ fn strip_literal_quoted_strings(residual: &[char]) -> Result<StrippedCommand, &'
             c => {
                 marked.push(c);
                 words.push(c);
+                words_origin.push(index);
                 index += 1;
                 continue;
             }
@@ -505,9 +510,14 @@ fn strip_literal_quoted_strings(residual: &[char]) -> Result<StrippedCommand, &'
                 inner
             }
         }));
+        words_origin.extend(index + 1..index + 1 + length);
         index += length + 2;
     }
-    Ok(StrippedCommand { marked, words })
+    Ok(StrippedCommand {
+        marked,
+        words,
+        words_origin,
+    })
 }
 
 /// Shell syntax that a command with a substituted placeholder must not contain anywhere: a
@@ -945,7 +955,69 @@ fn segment_evaluates_placeholder(words: &[&str]) -> Option<&'static str> {
     None
 }
 
-/// Checks the command word of every segment of a command that substitutes a placeholder.
+/// A command word [`command_words_to_prefix`] found, to be prefixed so aliases and functions
+/// cannot stand in for it.
+struct CommandWord {
+    /// Char offset of the word in the checked text.
+    start: usize,
+    /// Length of the word in chars.
+    len: usize,
+    word: String,
+}
+
+/// One word of a segment, with where it is in the checked text.
+struct SegmentWord {
+    text: String,
+    start: usize,
+}
+
+/// Splits `residual` into segments of words at `; & | ( )`, line breaks and standalone
+/// `{`/`}` words, keeping each word's char offset.
+fn split_segments(residual: &[char]) -> Vec<Vec<SegmentWord>> {
+    fn end_word(
+        word: &mut Option<SegmentWord>,
+        current: &mut Vec<SegmentWord>,
+        segments: &mut Vec<Vec<SegmentWord>>,
+    ) {
+        if let Some(finished) = word.take() {
+            if matches!(finished.text.as_str(), "{" | "}") {
+                if !current.is_empty() {
+                    segments.push(std::mem::take(current));
+                }
+            } else {
+                current.push(finished);
+            }
+        }
+    }
+    let mut segments = Vec::new();
+    let mut current: Vec<SegmentWord> = Vec::new();
+    let mut word: Option<SegmentWord> = None;
+    for (at, &c) in residual.iter().enumerate() {
+        if matches!(c, ';' | '&' | '|' | '(' | ')' | '\n') {
+            end_word(&mut word, &mut current, &mut segments);
+            if !current.is_empty() {
+                segments.push(std::mem::take(&mut current));
+            }
+        } else if c.is_whitespace() {
+            end_word(&mut word, &mut current, &mut segments);
+        } else {
+            word.get_or_insert_with(|| SegmentWord {
+                text: String::new(),
+                start: at,
+            })
+            .text
+            .push(c);
+        }
+    }
+    end_word(&mut word, &mut current, &mut segments);
+    if !current.is_empty() {
+        segments.push(current);
+    }
+    segments
+}
+
+/// Checks the command word of every segment of a command that substitutes a placeholder, and
+/// returns the command words that [`render_command`] must prefix (see [`command_prefix`]).
 ///
 /// Best-effort and structural, not a shell parser. The command is split into segments at
 /// `; & | ( )` and at standalone `{`/`}` words. In each, leading keywords (`if`, `!`,
@@ -970,44 +1042,36 @@ fn segment_evaluates_placeholder(words: &[&str]) -> Option<&'static str> {
 /// `dbus-run-session`, `unshare`, ...) are in [`DENIED_COMMANDS`]; a segment with a placeholder
 /// is also refused when the placeholder is the value of a variable evaluated later
 /// ([`EVALUATED_VARIABLES`]: `PS1`, `PROMPT_COMMAND`, `GIT_SSH_COMMAND`, `EDITOR`, ...; #884).
-/// Aliases and functions defined by an earlier command of the same pane are caught by
-/// [`defined_then_used_with_placeholder`]; ones defined elsewhere (rc files, scripts) are
-/// invisible here, and placeholders are supported only as ordinary arguments to ordinary
-/// commands.
-fn reparsing_command(residual: &[char]) -> Option<&'static str> {
-    let text: String = residual
-        .iter()
-        .map(|&c| {
-            if matches!(c, ';' | '&' | '|' | '(' | ')') {
-                '\n'
-            } else {
-                c
-            }
-        })
-        .collect();
-    let mut segments: Vec<Vec<&str>> = Vec::new();
-    for line in text.lines() {
-        let mut current = Vec::new();
-        for word in line.split_whitespace() {
-            if matches!(word, "{" | "}") {
-                if !current.is_empty() {
-                    segments.push(std::mem::take(&mut current));
-                }
-            } else {
-                current.push(word);
-            }
-        }
-        if !current.is_empty() {
-            segments.push(current);
-        }
-    }
-
-    for words in segments {
+///
+/// Aliases and functions defined in rc files cannot be seen from here, so instead of trying to
+/// see them the first command word of every segment is returned for prefixing (#884): the
+/// shell is then told to skip aliases and functions for it. The word is left alone when it
+/// is shell syntax (`for`, `done`, `[[`, ...) or when the segment already says so
+/// (`command`, `builtin`, `exec`); a transparent precommand (`time`, `noglob`, `nocorrect`)
+/// is skipped to its command. A segment whose command word cannot be prefixed without
+/// changing what it means is refused: a `case`/`select`/`switch` statement, a function
+/// definition (`name() {`, `function name`). Aliases and functions defined earlier in the same
+/// pane are caught by [`defined_then_used_with_placeholder`]; `hash -p` is not bypassed by
+/// the prefix.
+fn command_words_to_prefix(residual: &[char]) -> Result<Vec<CommandWord>, &'static str> {
+    /// Words that are shell syntax: never prefixed.
+    const SYNTAX_WORDS: [&str; 20] = [
+        "for", "foreach", "in", "done", "fi", "esac", "end", "[[", "((", "exit", "return", "break",
+        "continue", "try", "catch", "finally", "elseif", "until", "while", "!",
+    ];
+    /// Statements whose words are patterns, not commands: cannot be prefixed.
+    const PATTERN_STATEMENTS: [&str; 3] = ["case", "select", "switch"];
+    let mut to_prefix = Vec::new();
+    for segment in split_segments(residual) {
+        let words: Vec<&str> = segment.iter().map(|word| word.text.as_str()).collect();
         if let Some(problem) = segment_evaluates_placeholder(&words) {
-            return Some(problem);
+            return Err(problem);
         }
         let mut index = 0;
         while let Some(&word) = words.get(index) {
+            if word == "function" {
+                return Err("a function definition");
+            }
             if LEADING_KEYWORDS.contains(&word) || is_assignment(word) {
                 index += 1;
             } else if let Some(takes_next) = redirection_takes_next_word(word) {
@@ -1017,14 +1081,45 @@ fn reparsing_command(residual: &[char]) -> Option<&'static str> {
             }
         }
 
+        let mut settled = false;
         while let Some(&command_word) = words.get(index) {
             if let Some(problem) = command_word_problem(command_word) {
-                return Some(problem);
+                return Err(problem);
             }
             let command = command_name(command_word);
+            if !settled {
+                if PATTERN_STATEMENTS.contains(&command_word) {
+                    return Err("a case, select or switch statement");
+                }
+                let after = segment[index].start + command_word.chars().count();
+                let opens_definition = residual[after.min(residual.len())..]
+                    .iter()
+                    .find(|c| !c.is_whitespace())
+                    .is_some_and(|&c| c == '(');
+                if opens_definition {
+                    return Err("a function definition");
+                }
+                match command.as_str() {
+                    // Already skips aliases and functions, or runs the program directly.
+                    "command" | "builtin" | "exec" | "-" => settled = true,
+                    // Run the next word as a command, with the shell's lookup.
+                    "time" | "noglob" | "nocorrect" => {}
+                    _ if SYNTAX_WORDS.contains(&command_word) => settled = true,
+                    // A path is never an alias or function.
+                    _ if command_word.contains('/') => settled = true,
+                    _ => {
+                        to_prefix.push(CommandWord {
+                            start: segment[index].start,
+                            len: command_word.chars().count(),
+                            word: command_word.to_string(),
+                        });
+                        settled = true;
+                    }
+                }
+            }
             if !PRECOMMANDS.contains(&command.as_str()) {
                 if arguments_evaluate_code(&command, &words[index + 1..]) {
-                    return Some("arguments that make the command evaluate code or arithmetic");
+                    return Err("arguments that make the command evaluate code or arithmetic");
                 }
                 break;
             }
@@ -1036,7 +1131,7 @@ fn reparsing_command(residual: &[char]) -> Option<&'static str> {
                     .iter()
                     .any(|word| is_shell_running_option(&command, word))
             {
-                return Some("a precommand option that runs a shell");
+                return Err("a precommand option that runs a shell");
             }
             let options = precommand_options(&command);
             index += 1;
@@ -1045,7 +1140,7 @@ fn reparsing_command(residual: &[char]) -> Option<&'static str> {
                     break;
                 }
                 if is_shell_running_option(&command, option) {
-                    return Some("a precommand option that runs a shell");
+                    return Err("a precommand option that runs a shell");
                 }
                 if option == "--" {
                     index += 1;
@@ -1070,7 +1165,105 @@ fn reparsing_command(residual: &[char]) -> Option<&'static str> {
             index += options.positional;
         }
     }
-    None
+    Ok(to_prefix)
+}
+
+/// fish builtins a user commonly writes: `command` finds only external programs in fish, so
+/// these are prefixed with `builtin` instead.
+const FISH_BUILTINS: [&str; 22] = [
+    "cd", "echo", "pwd", "set", "test", "[", "printf", "true", "false", "read", "string", "math",
+    "count", "contains", "status", "type", "jobs", "wait", "source", "emit", "random", "abbr",
+];
+
+/// PowerShell's default aliases for cmdlets, which `Get-Command -CommandType Cmdlet` does not
+/// list: resolved to the cmdlet they stand for.
+const POWERSHELL_ALIASES: [(&str, &str); 24] = [
+    ("cd", "Set-Location"),
+    ("chdir", "Set-Location"),
+    ("sl", "Set-Location"),
+    ("ls", "Get-ChildItem"),
+    ("dir", "Get-ChildItem"),
+    ("gci", "Get-ChildItem"),
+    ("echo", "Write-Output"),
+    ("write", "Write-Output"),
+    ("cat", "Get-Content"),
+    ("type", "Get-Content"),
+    ("gc", "Get-Content"),
+    ("rm", "Remove-Item"),
+    ("del", "Remove-Item"),
+    ("erase", "Remove-Item"),
+    ("ri", "Remove-Item"),
+    ("rmdir", "Remove-Item"),
+    ("rd", "Remove-Item"),
+    ("cp", "Copy-Item"),
+    ("copy", "Copy-Item"),
+    ("mv", "Move-Item"),
+    ("move", "Move-Item"),
+    ("pwd", "Get-Location"),
+    ("gl", "Get-Location"),
+    ("clear", "Clear-Host"),
+];
+
+/// What to write in place of a command word so the shell skips any alias or function of that
+/// name (#884).
+///
+/// - bash and zsh: `command word` (also runs builtins).
+/// - fish: `command word`, or `builtin word` for a builtin, because fish's `command` only
+///   finds external programs.
+/// - PowerShell: `& (Microsoft.PowerShell.Core\Get-Command -CommandType
+///   Cmdlet,Application,ExternalScript -TotalCount 1 word)`, which resolves only a cmdlet, an
+///   executable or a script and invokes the result; aliases and functions are not among those
+///   command types. A default alias (`cd`, `ls`, ...) is resolved to its cmdlet first.
+fn command_prefix(dialect: ShellDialect, word: &str) -> String {
+    match dialect {
+        ShellDialect::Posix => format!("command {word}"),
+        ShellDialect::Fish => {
+            if FISH_BUILTINS.contains(&word) {
+                format!("builtin {word}")
+            } else {
+                format!("command {word}")
+            }
+        }
+        ShellDialect::PowerShell => {
+            let lower = word.to_ascii_lowercase();
+            let target = POWERSHELL_ALIASES
+                .iter()
+                .find(|(alias, _)| *alias == lower)
+                .map_or(word, |(_, cmdlet)| *cmdlet);
+            format!(
+                "& (Microsoft.PowerShell.Core\\Get-Command -CommandType \
+                 Cmdlet,Application,ExternalScript -TotalCount 1 {target})"
+            )
+        }
+    }
+}
+
+/// The dialect a tab config pane's `shell` names: PowerShell for `pwsh`/`powershell`, fish
+/// for `fish`, otherwise the POSIX family (bash, zsh, sh, ...).
+pub(crate) fn dialect_for_shell_name(shell: &str) -> ShellDialect {
+    let name = command_name(shell);
+    match name.as_str() {
+        "pwsh" | "powershell" | "pwsh-preview" => ShellDialect::PowerShell,
+        "fish" => ShellDialect::Fish,
+        _ => ShellDialect::Posix,
+    }
+}
+
+/// The dialect of the user's default shell, for a pane that does not name one. The default is
+/// chosen at runtime (the OS's choice, or the settings) after commands are rendered, so this
+/// is a guess: PowerShell on Windows, otherwise what `$SHELL` names. A wrong guess makes the
+/// prefixed command fail to run; it never runs something else. Set `shell` on the pane to be
+/// exact. Tests always see POSIX.
+fn default_shell_dialect() -> ShellDialect {
+    if cfg!(test) {
+        ShellDialect::Posix
+    } else if cfg!(windows) {
+        ShellDialect::PowerShell
+    } else {
+        std::env::var("SHELL")
+            .map(|shell| dialect_for_shell_name(&shell))
+            .unwrap_or(ShellDialect::Posix)
+    }
 }
 
 /// What [`scan_definitions`] found in one command.
@@ -1465,7 +1658,10 @@ fn has_numeric_conversion(word: &str) -> bool {
 /// word-initial `#`, no `$` or `[` directly before a placeholder or placeholder inside
 /// `[...]`, and every segment's command word must pass the structural check in
 /// [`reparsing_command`] (a plain word, not a shell, interpreter, evaluator or
-/// arithmetic/name builtin, no evaluating flags). This is best-effort, not a shell parser:
+/// arithmetic/name builtin, no evaluating flags). Then the command word of every segment is
+/// prefixed (`command git ...`; see [`command_prefix`]) for `dialect`, so aliases and functions
+/// from the user's rc files cannot stand in for it (#884); `None` leaves commands unprefixed
+/// (for text that is rendered again later). This is best-effort, not a shell parser:
 /// placeholders are supported only as ordinary arguments to ordinary commands. Anything else
 /// is an
 /// error naming the placeholders: quotes around or near the placeholder, command
@@ -1475,6 +1671,7 @@ fn has_numeric_conversion(word: &str) -> bool {
 pub(crate) fn render_command(
     template: &str,
     values: &HashMap<String, String>,
+    dialect: Option<ShellDialect>,
 ) -> Result<String, String> {
     use handlebars::parser::{ParsedArgumentResult, ParsedArgumentsIterator};
 
@@ -1532,22 +1729,45 @@ pub(crate) fn render_command(
         return Ok(template.to_string());
     }
 
-    // The command with every substituted span replaced by `PLACEHOLDER_MARK`.
+    // The command with every substituted span replaced by `PLACEHOLDER_MARK`, and for each of
+    // its chars the index of the template char it stands for.
     let mut residual = Vec::with_capacity(chars.len());
+    let mut residual_origin: Vec<usize> = Vec::with_capacity(chars.len());
     let mut cursor = 0;
     for (start, end, _, _) in &spans {
         residual.extend_from_slice(&chars[cursor..*start]);
+        residual_origin.extend(cursor..*start);
         residual.push(PLACEHOLDER_MARK);
+        residual_origin.push(*start);
         cursor = *end;
     }
     residual.extend_from_slice(&chars[cursor..]);
+    residual_origin.extend(cursor..chars.len());
+    // (template char range, text) replacing each command word, in order.
+    let mut insertions: Vec<(usize, usize, String)> = Vec::new();
     let checked = strip_literal_quoted_strings(&residual).and_then(|stripped| {
-        match forbidden_syntax_around_placeholders(&stripped.marked)
-            .or_else(|| reparsing_command(&stripped.words))
-        {
-            Some(what) => Err(what),
-            None => Ok(()),
+        if let Some(what) = forbidden_syntax_around_placeholders(&stripped.marked) {
+            return Err(what);
         }
+        for command_word in command_words_to_prefix(&stripped.words)? {
+            let Some(dialect) = dialect else {
+                continue;
+            };
+            let origin = |at: usize| residual_origin[stripped.words_origin[at]];
+            let first = origin(command_word.start);
+            let last = origin(command_word.start + command_word.len - 1);
+            // The word must be written out plainly in the template, with a boundary before
+            // it: a quoted or partly quoted command name has no place to put the prefix.
+            let plain = last - first + 1 == command_word.len
+                && (first == 0
+                    || chars[first - 1].is_whitespace()
+                    || matches!(chars[first - 1], ';' | '&' | '|' | '('));
+            if !plain {
+                return Err("a quoted command name");
+            }
+            insertions.push((first, last + 1, command_prefix(dialect, &command_word.word)));
+        }
+        Ok(())
     });
     if let Err(what) = checked {
         let names = spans
@@ -1563,12 +1783,24 @@ pub(crate) fn render_command(
         ));
     }
 
+    // Substituted words and prefixed command words, in template order. A command word never
+    // overlaps a span: one that touched a placeholder was refused above.
+    let mut edits: Vec<(usize, usize, &str)> = spans
+        .iter()
+        .map(|(start, end, word, _)| (*start, *end, word.as_str()))
+        .chain(
+            insertions
+                .iter()
+                .map(|(start, end, text)| (*start, *end, text.as_str())),
+        )
+        .collect();
+    edits.sort_by_key(|(start, _, _)| *start);
     let mut out = String::with_capacity(template.len());
     let mut cursor = 0;
-    for (start, end, word, _) in &spans {
-        out.extend(&chars[cursor..*start]);
-        out.push_str(word);
-        cursor = *end;
+    for (start, end, text) in edits {
+        out.extend(&chars[cursor..start]);
+        out.push_str(text);
+        cursor = end;
     }
     out.extend(&chars[cursor..]);
     Ok(out)
@@ -1684,6 +1916,10 @@ fn resolve_pane_node(
             .unwrap_or_default();
 
         let command_values = command_values_for_pane(context, directory.as_deref());
+        let dialect = node
+            .shell
+            .as_deref()
+            .map_or_else(default_shell_dialect, dialect_for_shell_name);
         let mut scanned: Vec<(String, bool)> = Vec::new();
         let commands: Vec<CommandTemplate> = node
             .commands
@@ -1693,7 +1929,7 @@ fn resolve_pane_node(
             .map(|cmd| {
                 upgrade_legacy_worktree_path(cmd, directory.as_deref())
                     .and_then(|cmd| {
-                        let exec = render_command(&cmd, &command_values)?;
+                        let exec = render_command(&cmd, &command_values, Some(dialect))?;
                         scanned.push((cmd.to_string(), exec != *cmd));
                         Ok(exec)
                     })
