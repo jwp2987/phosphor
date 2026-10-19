@@ -10,7 +10,7 @@ pub(super) mod shared_session;
 mod slash_command;
 use input_context::{
     action_result_context, add_pending_file_attachments, input_context_for_request,
-    parse_context_attachments,
+    parse_context_attachments, remember_action_result_context,
 };
 pub use slash_command::*;
 
@@ -467,6 +467,15 @@ impl RequestInput {
     }
 
     fn remove_action_results_by_tool_call_id(&mut self, keys: &HashSet<(String, String)>) -> usize {
+        // The removed results' context (cwd, git branch) is the only fresh environment
+        // this round trip has; keep it for the request (#905).
+        remember_action_result_context(
+            self.conversation_id,
+            self.all_inputs().filter(|input| {
+                matches!(input, AIAgentInput::ActionResult { result, .. }
+                    if keys.contains(&(result.task_id.to_string(), result.id.to_string())))
+            }),
+        );
         let mut removed = 0;
         for inputs in self.input_messages.values_mut() {
             let before = inputs.len();
