@@ -245,6 +245,8 @@ pub struct EventContext<'a> {
     // be fired before the first scene has been rendered.
     scene: Option<Rc<Scene>>,
     rendered_views: &'a mut EntityIdMap<Box<dyn Element>>,
+    /// The views the last layout pass visited. Empty before the first layout.
+    mounted_views: &'a EntityIdSet,
     actions: Vec<DispatchedAction>,
     pub font_cache: &'a FontCache,
     pub text_layout_cache: &'a LayoutCache,
@@ -651,6 +653,7 @@ impl Presenter {
         EventContext {
             scene: self.scene.clone(),
             rendered_views: &mut self.rendered_views,
+            mounted_views: &self.mounted_views,
             position_cache: &self.position_cache,
             actions: Default::default(),
             font_cache,
@@ -855,6 +858,14 @@ impl EventContext<'_> {
         event: &DispatchedEvent,
         app: &AppContext,
     ) -> bool {
+        // A view the last layout pass did not visit was never laid out or painted
+        // (or not since it was re-rendered), so its elements have no origin or
+        // z-index to hit-test against and cannot handle the event; dispatching to
+        // it only logs "never painted" for every key press (#841). Before the
+        // first layout nothing is mounted, so there is nothing to compare against.
+        if !self.mounted_views.is_empty() && !self.mounted_views.contains(&view_id) {
+            return false;
+        }
         match self.rendered_views.remove(&view_id) { Some(mut element) => {
             self.view_stack.push(view_id);
             let handled = element.dispatch_event(event, self, app);

@@ -90,6 +90,7 @@ fn test_position_cache_caching() {
 struct RepaintCounts {
     layout_calls: Cell<u32>,
     paint_calls: Cell<u32>,
+    dispatch_calls: Cell<u32>,
 }
 
 /// A leaf element that records every `layout`/`paint` call it receives, so a test
@@ -139,6 +140,9 @@ impl Element for CountingElement {
         _ctx: &mut EventContext,
         _app: &AppContext,
     ) -> bool {
+        self.counts
+            .dispatch_calls
+            .set(self.counts.dispatch_calls.get() + 1);
         false
     }
 }
@@ -587,11 +591,11 @@ impl Element for GatedChild {
 
     fn dispatch_event(
         &mut self,
-        _event: &DispatchedEvent,
-        _ctx: &mut EventContext,
-        _app: &AppContext,
+        event: &DispatchedEvent,
+        ctx: &mut EventContext,
+        app: &AppContext,
     ) -> bool {
-        false
+        self.child.dispatch_event(event, ctx, app)
     }
 }
 
@@ -801,6 +805,43 @@ fn test_notifying_an_unmounted_child_of_a_mounted_parent_still_builds_a_frame() 
             frames.layout_calls.get(),
             frames_before + 1,
             "a child of a mounted parent must still get its frame when notified"
+        );
+    })
+}
+
+/// An event must not be dispatched into a view the last layout pass did not
+/// visit: its element tree has not been painted (a hidden tab's terminal, or a
+/// block-list item outside the viewport), so an `EventHandler` there can only
+/// log "never painted" and drop it. See issue #841.
+#[test]
+fn test_events_are_not_dispatched_to_unmounted_views() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, root) = app.add_window(WindowStyle::NotStealFocus, SwitchingRootView::new);
+        let (child, lay_out_child) = root.update(app, |root, _ctx| {
+            (root.child.clone(), root.lay_out_child.clone())
+        });
+        let child_counts = child.update(app, |child, _ctx| child.counts.clone());
+        let presenter = app.presenter(window_id).unwrap();
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        assert!(presenter.borrow().is_view_mounted(child.id()));
+
+        let event = || crate::Event::TypedCharacters {
+            chars: "a".to_string(),
+        };
+        app.update(|ctx| ctx.simulate_window_event(event(), window_id, presenter.clone()));
+        assert_eq!(child_counts.dispatch_calls.get(), 1);
+
+        // Stop laying the child out: it is still rendered, but not mounted.
+        let tab = root.update(app, |root, _| root.tab.clone());
+        lay_out_child.set(false);
+        tab.update(app, |_, ctx| ctx.notify());
+        assert!(!presenter.borrow().is_view_mounted(child.id()));
+        app.update(|ctx| ctx.simulate_window_event(event(), window_id, presenter.clone()));
+        assert_eq!(
+            child_counts.dispatch_calls.get(),
+            1,
+            "an unmounted view must not receive events"
         );
     })
 }
