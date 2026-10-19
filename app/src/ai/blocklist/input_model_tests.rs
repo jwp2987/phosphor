@@ -1243,7 +1243,7 @@ fn misroute_offer_follows_route_reason_and_edits() {
                 })
             );
             // Typing something new dismisses it.
-            model.note_buffer_edited(false, ctx);
+            model.dismiss_misroute_offer_on_edit(false, ctx);
             assert_eq!(model.misroute_offer(), None);
         });
 

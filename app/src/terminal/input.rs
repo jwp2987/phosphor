@@ -8992,7 +8992,7 @@ impl Input {
                     EditOrigin::UserTyped | EditOrigin::UserInitiated
                 ) {
                     self.ai_input_model.update(ctx, |model, ctx| {
-                        model.note_buffer_edited(is_editor_empty, ctx);
+                        model.dismiss_misroute_offer_on_edit(is_editor_empty, ctx);
                     });
                 }
                 if is_editor_empty != self.is_editor_empty_on_last_edit {

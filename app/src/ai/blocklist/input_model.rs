@@ -1041,7 +1041,7 @@ impl BlocklistAIInputModel {
     }
 
     /// Reports an edit of the input buffer; typing anything new dismisses the offer (#835).
-    pub fn note_buffer_edited(&mut self, buffer_is_empty: bool, ctx: &mut ModelContext<Self>) {
+    pub fn dismiss_misroute_offer_on_edit(&mut self, buffer_is_empty: bool, ctx: &mut ModelContext<Self>) {
         if self.misroute.note_buffer_edited(buffer_is_empty) {
             ctx.notify();
         }
