@@ -5180,7 +5180,11 @@ impl TuiTerminalSessionView {
         ctx: &mut ViewContext<Self>,
     ) {
         match event {
-            ShellCommandExecutorEvent::ExecuteCommand { action_id, command } => {
+            ShellCommandExecutorEvent::ExecuteCommand {
+                action_id,
+                command,
+                display_command,
+            } => {
                 let Some((session_id, conversation_id)) = (|| {
                     let model = model.lock();
                     let session_id = model.block_list().active_block().session_id()?;
@@ -5193,6 +5197,12 @@ impl TuiTerminalSessionView {
                     );
                     return;
                 };
+
+                if let Some(display_command) = display_command {
+                    model
+                        .lock()
+                        .set_agent_display_command(action_id.clone(), display_command.clone());
+                }
 
                 ctx.emit(TuiTerminalSessionEvent::ExecuteCommand(Box::new(
                     ExecuteCommandEvent {
