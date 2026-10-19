@@ -21,6 +21,9 @@ impl AssetProvider for Assets {
             "cache-test.svg" => Ok(Cow::Borrowed(
                 br##"<svg width="20" height="10" viewBox="0 0 20 10" xmlns="http://www.w3.org/2000/svg"><rect width="20" height="10" fill="#ffffff"/></svg>"##,
             )),
+            "big-test.svg" => Ok(Cow::Borrowed(
+                br##"<svg width="1000" height="1000" viewBox="0 0 1000 1000" xmlns="http://www.w3.org/2000/svg"><rect width="1000" height="1000" fill="#336699"/></svg>"##,
+            )),
             "fit-test.rgba" => Ok(Cow::Borrowed(
                 b"warp-img:rgba:4:2:\xff\x00\x00\xff\xff\x00\x00\xff\x00\x00\xff\xff\x00\x00\xff\xff\x00\xff\x00\xff\x00\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff",
             )),
@@ -888,4 +891,116 @@ fn test_oversized_svg_is_rejected_at_parse_time() {
     assert!(ImageType::try_from_bytes(huge).is_err());
     let small = br##"<svg width="20" height="10" xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>"##;
     assert!(ImageType::try_from_bytes(small).is_ok());
+}
+
+fn deferred_big_svg(
+    image_cache: &ImageCache,
+    asset_cache: &AssetCache,
+    side: i32,
+) -> DeferredImage {
+    image_cache.image_deferred(
+        AssetSource::Bundled {
+            path: "big-test.svg",
+        },
+        Vector2I::new(side, side),
+        FitType::Contain,
+        AnimatedImageBehavior::FullAnimation,
+        CacheOption::BySize,
+        None,
+        asset_cache,
+    )
+}
+
+fn wait_for_deferred_big_svg(
+    image_cache: &ImageCache,
+    asset_cache: &AssetCache,
+    side: i32,
+) -> Rc<Image> {
+    for _ in 0..2000 {
+        if let DeferredImage::State(AssetState::Loaded { data }) =
+            deferred_big_svg(image_cache, asset_cache, side)
+        {
+            return data;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("background rasterisation never finished");
+}
+
+#[test]
+fn deferred_large_svg_is_pending_then_ready_at_the_wanted_size() {
+    let asset_cache = new_asset_cache();
+    let image_cache = ImageCache::new();
+    assert!(matches!(
+        deferred_big_svg(&image_cache, &asset_cache, 300),
+        DeferredImage::Pending { stale: None }
+    ));
+    let image = wait_for_deferred_big_svg(&image_cache, &asset_cache, 300);
+    let Image::Static(image) = image.as_ref() else {
+        panic!("expected a static image");
+    };
+    assert_eq!(image.size(), Vector2I::new(300, 300));
+
+    // A new size shows the previous one while it is rasterised, then the exact size.
+    match deferred_big_svg(&image_cache, &asset_cache, 400) {
+        DeferredImage::Pending { stale: Some(stale) } => {
+            assert_eq!(stale.from_bounds, Vector2I::new(300, 300));
+            assert_eq!(stale.to_bounds, Vector2I::new(400, 400));
+        }
+        _ => panic!("expected pending with a stale image"),
+    }
+    let image = wait_for_deferred_big_svg(&image_cache, &asset_cache, 400);
+    let Image::Static(image) = image.as_ref() else {
+        panic!("expected a static image");
+    };
+    assert_eq!(image.size(), Vector2I::new(400, 400));
+}
+
+#[test]
+fn small_images_are_never_deferred() {
+    let asset_cache = new_asset_cache();
+    let image_cache = ImageCache::new();
+    let deferred = image_cache.image_deferred(
+        AssetSource::Bundled {
+            path: "cache-test.svg",
+        },
+        Vector2I::new(40, 20),
+        FitType::Contain,
+        AnimatedImageBehavior::FullAnimation,
+        CacheOption::BySize,
+        None,
+        &asset_cache,
+    );
+    assert!(matches!(
+        deferred,
+        DeferredImage::State(AssetState::Loaded { .. })
+    ));
+}
+
+#[test]
+fn evicting_while_pending_drops_the_stale_result() {
+    let asset_cache = new_asset_cache();
+    let image_cache = ImageCache::new();
+    assert!(matches!(
+        deferred_big_svg(&image_cache, &asset_cache, 300),
+        DeferredImage::Pending { .. }
+    ));
+    image_cache.evict_image(&AssetSource::Bundled {
+        path: "big-test.svg",
+    });
+    // Let the worker finish; its result must be discarded, not inserted.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    image_cache.drain_ready();
+    assert!(image_cache.images.read().is_empty());
+}
+
+#[test]
+fn rendered_sizes_per_asset_are_bounded() {
+    let asset_cache = new_asset_cache();
+    let image_cache = ImageCache::new();
+    for side in 300..(300 + 2 * MAX_RENDERED_SIZES_PER_ASSET as i32) {
+        wait_for_deferred_big_svg(&image_cache, &asset_cache, side);
+    }
+    let cache = image_cache.images.read();
+    assert!(cache.values().all(|sizes| sizes.len() <= MAX_RENDERED_SIZES_PER_ASSET));
 }
