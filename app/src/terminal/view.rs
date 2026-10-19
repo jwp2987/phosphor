@@ -2412,6 +2412,16 @@ fn subagent_finished_queue_delivery(
     }
 }
 
+/// Whether a focused AI block still allows `redetermine_terminal_focus` to move focus to the
+/// terminal. Normally it does not (the user is navigating that block); a PTY hand-over to the
+/// user overrides it so their answer is not typed into the command's card (issue #852).
+fn ai_block_focus_permits_terminal_reset(
+    take_focus_from_ai_block: bool,
+    ai_block_focused: bool,
+) -> bool {
+    take_focus_from_ai_block || !ai_block_focused
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AgentTranscriptNavigationDirection {
     Previous,
@@ -6784,7 +6794,13 @@ impl TerminalView {
             CLISubagentEvent::UpdatedControl {
                 agent_has_control, ..
             } => {
-                self.redetermine_terminal_focus(ctx);
+                if *agent_has_control {
+                    self.redetermine_terminal_focus(ctx);
+                } else {
+                    // The user now owns the PTY (take-over, Stop, or a prompt hand-over):
+                    // keystrokes must reach it even if focus was left on the command's card.
+                    self.redetermine_terminal_focus_for_user_takeover(ctx);
+                }
                 self.emit_long_running_command_agent_interaction_state_changed(
                     *agent_has_control,
                     ctx,
@@ -11562,6 +11578,27 @@ impl TerminalView {
     /// from other parts of the app, the find bar, or the block filter editor.
     /// See [`Self::redetermine_global_focus`] to change focus without checking that the terminal is focused.
     fn redetermine_terminal_focus(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        self.redetermine_terminal_focus_inner(false, ctx)
+    }
+
+    /// Like [`Self::redetermine_terminal_focus`], but also takes focus back from an AI block.
+    /// Used when an agent-run command hands the PTY to the user (a password or `[y/N]` prompt):
+    /// approving the command leaves focus on its card, and the guard that keeps focus on an AI
+    /// block the user is navigating would otherwise leave their answer typed into the card,
+    /// where it is dropped (issue #852). Still never steals focus from another pane or from the
+    /// find bar, block filter or a queued-prompt editor.
+    fn redetermine_terminal_focus_for_user_takeover(
+        &mut self,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        self.redetermine_terminal_focus_inner(true, ctx)
+    }
+
+    fn redetermine_terminal_focus_inner(
+        &mut self,
+        take_focus_from_ai_block: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
         // Only reset focus if this terminal is focused; don't steal it from another part
         // of the app, or from an AI block / code diff the user is navigating.
         // An inline edit of a queued prompt is an interactive child the user is
@@ -11573,7 +11610,10 @@ impl TerminalView {
         let reset_focus = ctx.is_self_or_child_focused()
             && !self.find_bar.is_self_or_child_focused(ctx)
             && !self.block_filter_editor.is_self_or_child_focused(ctx)
-            && !self.is_any_ai_block_focused(ctx)
+            && ai_block_focus_permits_terminal_reset(
+                take_focus_from_ai_block,
+                self.is_any_ai_block_focused(ctx),
+            )
             && !self
                 .input
                 .as_ref(ctx)

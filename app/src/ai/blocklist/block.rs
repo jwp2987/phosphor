@@ -1247,8 +1247,15 @@ impl AIBlock {
                 }
                 CLISubagentEvent::UpdatedControl {
                     requested_command_action_id: Some(requested_command_action_id),
+                    agent_has_control,
                     ..
                 } => {
+                    // The command now waits on the user (a prompt hand-over, or a take-over):
+                    // show its block instead of leaving the prompt hidden in a collapsed
+                    // card (issue #852).
+                    if !*agent_has_control {
+                        me.expand_requested_command_view(requested_command_action_id, ctx);
+                    }
                     if let Some(requested_command_view) =
                         me.requested_commands.get(requested_command_action_id)
                     {
