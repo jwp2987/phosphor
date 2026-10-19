@@ -3,6 +3,14 @@
 #
 # Tip: Ask Phosphor Agent to update this tab config for you using /skills -> /update-tab-config!
 #   e.g. "/update-tab-config turn this into a 2x2 tab config with one pane running my dev server"
+#
+# Commands that use a {{placeholder}} (a param or {{repo}}) run each command word with your
+# shell's aliases and functions skipped, so the value cannot reach an alias or function you
+# defined in your shell's startup file. Write the real command, not a shortcut: `git
+# checkout {{branch}}`, not `gco {{branch}}`. Set `shell = "pwsh"` (or "fish", "zsh", ...) on
+# a pane to be exact about which shell syntax is used (without it, a command that uses a
+# shell-specific builtin such as `export` together with a placeholder is refused); commands
+# without a placeholder run as written.
 
 name = "My Tab Config"
 
