@@ -2452,3 +2452,10 @@ orchestration trees (children are looked up in memory). The attempted design is 
   output ordering (a parser-wide change) for a code path that is compiled out of default builds.
   The *decode* half is asynchronous (`#880`: `AssetCache::insert_raw_asset_bytes_async`).
   Reverse only alongside a decision to make the pty parser able to suspend on a pending image.
+
+## Toast "Show more" has no keyboard toggle — declined 2026-10-19 (#902, #908)
+
+The expand/collapse button of `DismissibleToast` used to toggle on Enter and Space. Key events reach every
+`EventHandler` in the window, not only the focused one, and elements here are not focusable, so a visible toast
+swallowed every space typed into every input. The handler was removed; the toggle is mouse-only. Reverse only
+together with a focusable toast button (keys routed to it only while it holds focus).
