@@ -452,6 +452,14 @@ impl AIExecutionProfilesModel {
     }
 
     /// Sets the active profile for a specific terminal view.
+    /// Drops the per-view active-profile entry for a terminal view that is being
+    /// permanently discarded (#843). The `EntityId` is never looked up again.
+    pub fn forget_terminal_view(&mut self, terminal_view_id: EntityId) -> bool {
+        self.active_profiles_per_session
+            .remove(&terminal_view_id)
+            .is_some()
+    }
+
     pub fn set_active_profile(
         &mut self,
         terminal_view_id: EntityId,

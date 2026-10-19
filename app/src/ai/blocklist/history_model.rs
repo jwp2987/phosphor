@@ -297,9 +297,18 @@ pub struct BlocklistAIHistoryModel {
     /// Holds the rollback snapshot used if the rename fails.
     in_flight_conversation_renames: HashMap<AIConversationId, InFlightConversationRename>,
 
+    /// Up-arrow query history for conversations evicted from memory by
+    /// [`Self::forget_terminal_view`] (#843). Their exchanges are gone from
+    /// `conversations_by_id`, and `persisted_queries` is a startup snapshot that
+    /// never saw them, so this keeps just the query text. Bounded.
+    evicted_queries: std::collections::VecDeque<AIQueryHistory>,
+
     #[cfg(feature = "local_fs")]
     db_connection: Option<Arc<Mutex<SqliteConnection>>>,
 }
+
+/// Cap on [`BlocklistAIHistoryModel::evicted_queries`].
+const MAX_EVICTED_QUERIES: usize = 2000;
 
 impl BlocklistAIHistoryModel {
     pub(crate) fn new(
@@ -2390,6 +2399,7 @@ impl BlocklistAIHistoryModel {
 
         persisted_queries_vec
             .into_iter()
+            .chain(self.evicted_queries.iter().cloned())
             .chain(cleared_queries_vec)
             .chain(live_queries_vec)
     }
@@ -2635,6 +2645,106 @@ impl BlocklistAIHistoryModel {
             }
             self.all_conversations_metadata
                 .insert(metadata.id, metadata);
+        }
+    }
+
+    /// Releases everything this model holds for a terminal view that is being
+    /// permanently discarded (#843). Called from `PaneGroup`'s teardown hook.
+    ///
+    /// Always drops the per-view maps. A conversation is additionally dropped from
+    /// `conversations_by_id` only when it can be reloaded on demand, i.e. it is in
+    /// exactly the state a conversation restored from SQLite at startup is in
+    /// (metadata present, loaded via `load_conversation_data`). That requires all of:
+    /// * a DB connection exists (otherwise nothing could reload it),
+    /// * the view is not a transcript viewer (those are not persisted),
+    /// * its metadata exists (so it shows in the conversation list and can be opened),
+    /// * it is not `InProgress`, not live or active in another view, has no rename in
+    ///   flight, and no child that is still live.
+    pub fn forget_terminal_view(&mut self, terminal_view_id: EntityId) {
+        #[cfg(feature = "local_fs")]
+        let can_reload = self.db_connection.is_some();
+        #[cfg(not(feature = "local_fs"))]
+        let can_reload = false;
+        self.forget_terminal_view_impl(terminal_view_id, can_reload);
+    }
+
+    fn forget_terminal_view_impl(&mut self, terminal_view_id: EntityId, can_reload: bool) {
+        let is_transcript_viewer =
+            self.is_terminal_view_conversation_transcript_viewer(terminal_view_id);
+        // Make sure metadata exists for everything restorable before we drop objects.
+        self.mark_conversations_historical_for_terminal_view(terminal_view_id);
+
+        let mut candidates: Vec<AIConversationId> = Vec::new();
+        if let Some(ids) = self
+            .live_conversation_ids_for_terminal_view
+            .remove(&terminal_view_id)
+        {
+            candidates.extend(ids);
+        }
+        if let Some(ids) = self
+            .cleared_conversation_ids_for_terminal_view
+            .remove(&terminal_view_id)
+        {
+            candidates.extend(ids);
+        }
+        self.active_conversation_for_terminal_view
+            .remove(&terminal_view_id);
+        self.terminal_view_created_at.remove(&terminal_view_id);
+        self.ambient_agent_terminal_view_ids
+            .remove(&terminal_view_id);
+
+        if !can_reload || is_transcript_viewer {
+            // Transcript viewers stay in the set so their conversations keep being filtered.
+            return;
+        }
+
+        let mut seen = HashSet::new();
+        candidates.retain(|id| seen.insert(*id));
+        let active_elsewhere: HashSet<AIConversationId> = self
+            .active_conversation_for_terminal_view
+            .values()
+            .copied()
+            .collect();
+        for id in candidates {
+            let Some(conversation) = self.conversations_by_id.get(&id) else {
+                continue;
+            };
+            let evictable = !matches!(conversation.status(), ConversationStatus::InProgress)
+                && self.all_conversations_metadata.contains_key(&id)
+                && !self.is_conversation_live(id)
+                && !active_elsewhere.contains(&id)
+                && !self.in_flight_conversation_renames.contains_key(&id)
+                && !self.children_by_parent.get(&id).is_some_and(|children| {
+                    children.iter().any(|child| {
+                        self.is_conversation_live(*child)
+                            || self.conversations_by_id.get(child).is_some_and(|c| {
+                                matches!(c.status(), ConversationStatus::InProgress)
+                            })
+                    })
+                });
+            if !evictable {
+                continue;
+            }
+            // Keep up-arrow history for these prompts. Skip when the startup snapshot
+            // already covers the conversation (it stops being filtered out once the
+            // conversation is no longer "loaded").
+            if !self
+                .persisted_queries
+                .iter()
+                .any(|persisted| persisted.conversation_id == id)
+            {
+                for exchange in conversation.root_task_exchanges() {
+                    if let Some(query) =
+                        ai_exchange_to_query_history(exchange, HistoryOrder::DifferentSession)
+                    {
+                        self.evicted_queries.push_back(query);
+                    }
+                }
+                while self.evicted_queries.len() > MAX_EVICTED_QUERIES {
+                    self.evicted_queries.pop_front();
+                }
+            }
+            self.conversations_by_id.remove(&id);
         }
     }
 

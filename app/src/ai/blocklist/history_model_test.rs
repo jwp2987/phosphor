@@ -5418,3 +5418,76 @@ fn block_completion_does_not_finish_a_non_cli_subagent() {
         });
     });
 }
+
+/// #843: a discarded view's per-view maps are always released; the conversation object is
+/// dropped only when it is reloadable (metadata present, not live elsewhere, DB available).
+#[test]
+fn test_forget_terminal_view_evicts_only_reloadable_conversations() {
+    App::test((), |mut app| async move {
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let closing_view = EntityId::new();
+        let other_view = EntityId::new();
+
+        let (with_meta, without_meta, shared) =
+            history_model.update(&mut app, |model, ctx| {
+                let with_meta = model.start_new_conversation(closing_view, false, false, ctx);
+                let without_meta = model.start_new_conversation(closing_view, false, false, ctx);
+                let shared = model.start_new_conversation(closing_view, false, false, ctx);
+                for id in [with_meta, shared] {
+                    let metadata = AIConversationMetadata::from(model.conversation(&id).unwrap());
+                    model.all_conversations_metadata.insert(id, metadata);
+                }
+                // `shared` is also live in another view.
+                model
+                    .live_conversation_ids_for_terminal_view
+                    .entry(other_view)
+                    .or_default()
+                    .push(shared);
+                model.terminal_view_created_at.insert(closing_view, Local::now());
+                (with_meta, without_meta, shared)
+            });
+
+        history_model.update(&mut app, |model, _| {
+            model.forget_terminal_view_impl(closing_view, true);
+        });
+
+        history_model.read(&app, |model, _| {
+            assert!(!model
+                .live_conversation_ids_for_terminal_view
+                .contains_key(&closing_view));
+            assert!(!model.terminal_view_created_at.contains_key(&closing_view));
+            assert!(model.conversation(&with_meta).is_none(), "reloadable: evicted");
+            assert!(model.get_conversation_metadata(&with_meta).is_some());
+            assert!(
+                model.conversation(&without_meta).is_some(),
+                "no metadata means it cannot be reloaded: kept"
+            );
+            assert!(
+                model.conversation(&shared).is_some(),
+                "live in another view: kept"
+            );
+        });
+    });
+}
+
+/// Without a DB connection nothing can be reloaded, so only the per-view maps go.
+#[test]
+fn test_forget_terminal_view_keeps_conversations_when_not_reloadable() {
+    App::test((), |mut app| async move {
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let view = EntityId::new();
+        let id = history_model.update(&mut app, |model, ctx| {
+            let id = model.start_new_conversation(view, false, false, ctx);
+            let metadata = AIConversationMetadata::from(model.conversation(&id).unwrap());
+            model.all_conversations_metadata.insert(id, metadata);
+            model.forget_terminal_view_impl(view, false);
+            id
+        });
+        history_model.read(&app, |model, _| {
+            assert!(model.conversation(&id).is_some());
+            assert!(!model.live_conversation_ids_for_terminal_view.contains_key(&view));
+        });
+    });
+}
