@@ -3268,6 +3268,11 @@ impl Element for BlockListElement {
         ctx: &mut LayoutContext,
         app: &AppContext,
     ) -> Vector2F {
+        // Rich content is only laid out while near the viewport, but its views stay
+        // alive and focus-reachable. See issue #842.
+        for view_id in self.rich_content_elements.keys() {
+            ctx.mark_lazy_child(*view_id);
+        }
         if let Some(overflow_menu_button) = &mut self.overflow_menu_button {
             overflow_menu_button.layout(
                 SizeConstraint::strict(vec2f(BLOCK_HOVER_BUTTON_HEIGHT, BLOCK_HOVER_BUTTON_HEIGHT)),

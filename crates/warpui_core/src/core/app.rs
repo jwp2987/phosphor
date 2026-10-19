@@ -3070,6 +3070,7 @@ impl AppContext {
         if !self.windows.contains_key(&window_id) {
             log::info!("missing core window data!");
         }
+        self.focus_check_after_layout.remove(&window_id);
         let (Some(window), Some(bounds)) = (
             self.windows.remove(&window_id),
             self.window_bounds.remove(&window_id),
@@ -4754,7 +4755,11 @@ impl AppContext {
             self.window_invalidations.get(&window_id).is_some_and(|i| {
                 !i.updated.is_empty() || !i.removed.is_empty() || i.redraw_requested
             }) || autotracking::windows_with_invalidations().contains(&window_id);
+        // Defer first: if the presenter is busy (mid-frame) or the layout is not
+        // current, the check must run after the next full layout, not be dropped.
+        self.focus_check_after_layout.insert(window_id);
         let Some(presenter) = self.presenter(window_id) else {
+            self.focus_check_after_layout.remove(&window_id);
             return;
         };
         let Ok(presenter) = presenter.try_borrow() else {
@@ -4765,12 +4770,11 @@ impl AppContext {
                 "window {window_id:?}: deferring focus reachability check of {view_name} \
                  ({focused:?}) until after the next full layout"
             );
-            drop(presenter);
-            self.focus_check_after_layout.insert(window_id);
             return;
         }
         let reachable = presenter.is_view_reachable(focused);
         drop(presenter);
+        self.focus_check_after_layout.remove(&window_id);
         if reachable {
             log::debug!(
                 "window {window_id:?}: focused view {view_name} ({focused:?}) is reachable"

@@ -5,7 +5,7 @@ use pathfinder_geometry::vector::Vector2F;
 use std::{cell::Cell, rc::Rc, time::Duration};
 
 use crate::{
-    AfterLayoutContext, App, AppContext, Element, Entity, EventContext, LayoutContext,
+    AfterLayoutContext, App, AppContext, Element, Entity, EntityId, EventContext, LayoutContext,
     PaintContext, SizeConstraint, TypedActionView, ViewContext, ViewHandle,
     r#async::Timer,
     elements::{ParentElement, Point, Stack},
@@ -353,13 +353,18 @@ fn test_refocus_root_defers_while_invalidation_pending() {
     })
 }
 
-/// #842: a focused view that a lazily laid-out container did not visit (an
-/// off-screen row) but whose parent is mounted keeps focus.
+/// #842: the dismissed-menu shape. A persistent child view keeps its `parents`
+/// link to a parent that is still mounted, but the parent stops emitting its
+/// `ChildView` (the terminal closing its context menu). The child is alive but
+/// unmounted, so it cannot take input: after a settled frame focus must return
+/// to the root. (This replaces a test that asserted such a view KEEPS focus
+/// because its parent is mounted; that test encoded the very bug of #842.)
 #[test]
-fn test_refocus_root_keeps_focus_when_parent_is_mounted() {
+fn test_refocus_root_when_persistent_child_stops_being_emitted_by_mounted_parent() {
     App::test((), |mut app| async move {
         let app = &mut app;
         let (window_id, root) = app.add_window(WindowStyle::NotStealFocus, SwitchingRootView::new);
+        let root_view_id = app.root_view_id(window_id).unwrap();
         let (child, tab, lay_out_child) = root.update(app, |root, _| {
             (
                 root.child.clone(),
@@ -375,6 +380,41 @@ fn test_refocus_root_keeps_focus_when_parent_is_mounted() {
         app.update(|ctx| ctx.simulate_render_frame(window_id));
         let presenter = app.presenter(window_id).unwrap();
         assert!(presenter.borrow().is_view_mounted(tab.id()));
+        assert!(!presenter.borrow().is_view_mounted(child.id()));
+
+        app.update(|ctx| ctx.refocus_root_if_focus_unreachable(window_id));
+        assert_eq!(
+            app.focused_view_id(window_id),
+            Some(root_view_id),
+            "a live child its mounted parent no longer emits must lose focus"
+        );
+    })
+}
+
+/// #842: the lazy-row shape. A lazy container that skips laying out a child it
+/// owns (an off-screen row) reports it with `mark_lazy_child`; that view stays
+/// reachable and keeps focus.
+#[test]
+fn test_refocus_root_keeps_focus_on_lazily_skipped_child() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, root) = app.add_window(WindowStyle::NotStealFocus, SwitchingRootView::new);
+        let (child, tab, lay_out_child, mark_lazy) = root.update(app, |root, _| {
+            (
+                root.child.clone(),
+                root.tab.clone(),
+                root.lay_out_child.clone(),
+                root.mark_lazy.clone(),
+            )
+        });
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        child.update(app, |_, ctx| ctx.focus_self());
+
+        lay_out_child.set(false);
+        mark_lazy.set(true);
+        tab.update(app, |_, ctx| ctx.notify());
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        let presenter = app.presenter(window_id).unwrap();
         assert!(!presenter.borrow().is_view_mounted(child.id()));
 
         app.update(|ctx| ctx.refocus_root_if_focus_unreachable(window_id));
@@ -716,6 +756,9 @@ impl TypedActionView for CountingChildView {
 struct GatedChild {
     child: Box<dyn Element>,
     lay_out_child: Rc<Cell<bool>>,
+    /// When set, a skipped child is reported as a lazily skipped child of this
+    /// container (as a real lazy list does for off-screen rows). See issue #842.
+    mark_lazy: Option<(Rc<Cell<bool>>, EntityId)>,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -730,6 +773,11 @@ impl Element for GatedChild {
         let size = if self.lay_out_child.get() {
             self.child.layout(constraint, ctx, app)
         } else {
+            if let Some((mark_lazy, child_id)) = &self.mark_lazy
+                && mark_lazy.get()
+            {
+                ctx.mark_lazy_child(*child_id);
+            }
             constraint.max
         };
         self.size = Some(size);
@@ -774,6 +822,7 @@ impl Element for GatedChild {
 struct TabView {
     child: ViewHandle<CountingChildView>,
     lay_out_child: Rc<Cell<bool>>,
+    mark_lazy: Rc<Cell<bool>>,
 }
 
 impl Entity for TabView {
@@ -785,6 +834,7 @@ impl crate::core::View for TabView {
         Box::new(GatedChild {
             child: ChildView::new(&self.child).finish(),
             lay_out_child: self.lay_out_child.clone(),
+            mark_lazy: Some((self.mark_lazy.clone(), self.child.id())),
             size: None,
             origin: None,
         })
@@ -810,15 +860,18 @@ struct SwitchingRootView {
     child: ViewHandle<CountingChildView>,
     show_child: bool,
     lay_out_child: Rc<Cell<bool>>,
+    mark_lazy: Rc<Cell<bool>>,
 }
 
 impl SwitchingRootView {
     fn new(ctx: &mut ViewContext<Self>) -> Self {
         let child = ctx.add_view(|_| CountingChildView::default());
         let lay_out_child = Rc::new(Cell::new(true));
+        let mark_lazy = Rc::new(Cell::new(false));
         let tab = ctx.add_view(|_| TabView {
             child: child.clone(),
             lay_out_child: lay_out_child.clone(),
+            mark_lazy: mark_lazy.clone(),
         });
         Self {
             counts: Rc::default(),
@@ -826,6 +879,7 @@ impl SwitchingRootView {
             child,
             show_child: true,
             lay_out_child,
+            mark_lazy,
         }
     }
 }
