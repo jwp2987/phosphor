@@ -83,9 +83,17 @@ fn control_keys_typed_by_the_user_disable_filtering() {
 }
 
 #[test]
-fn only_the_line_after_the_last_terminator_is_tracked() {
-    assert_eq!(filtered(&["\x1b[24;1R"], &["ls\r", "Rx"], "RRx"), "Rx");
-    assert_eq!(filtered(&["\x1b[24;1R"], &["ls\r"], "R"), "");
+fn text_after_an_enter_is_not_modelled_until_a_command_starts() {
+    // The line that was run may have been put back (histverify); nothing is known yet.
+    assert_eq!(filtered(&["\x1b[24;1R"], &["ls\r", "Rx"], "RRx"), "RRx");
+    assert_eq!(filtered(&["\x1b[24;1R"], &["ls\r"], "R"), "R");
+    // Once a command started the line is empty again.
+    let mut ledger = ledger_with(&[]);
+    ledger.note_input(b"ls\r");
+    ledger.on_command_start();
+    ledger.note_replies(b"\x1b[24;1R");
+    ledger.note_input(b"Rx");
+    assert_eq!(ledger.filter_report("RRx".into()), "Rx");
 }
 
 #[test]
@@ -162,8 +170,8 @@ fn a_kept_report_leaves_the_line_untracked_until_it_is_known_to_be_empty() {
     ledger.note_replies(b"\x1b[24;1R");
     assert_eq!(ledger.filter_report("R".into()), "R");
     // Enter, or the kill prefix every command is written with, empties the line.
-    ledger.note_replies(b"\x1b[24;1R");
     ledger.note_input(b" \x0b\x15echo hi\r");
+    ledger.on_command_start();
     ledger.note_replies(b"\x1b[24;1R");
     assert_eq!(ledger.filter_report("R".into()), "");
 }
@@ -255,6 +263,7 @@ fn a_command_written_with_the_kill_prefix_leaves_a_tracked_empty_line() {
     let mut ledger = ledger_with(&[]);
     ledger.note_input(b"x");
     ledger.note_input(b" \x0b\x15echo hi\r");
+    ledger.on_command_start();
     ledger.note_replies(b"\x1b[24;1R");
     assert_eq!(ledger.filter_report("R".into()), "");
 }
@@ -276,10 +285,15 @@ fn the_input_report_request_adds_nothing_to_the_line() {
 }
 
 #[test]
-fn an_enter_only_write_empties_the_line() {
+fn an_enter_alone_does_not_recover_tracking_but_a_command_write_does() {
     let mut ledger = ledger_with(&["\x1b[24;1R"]);
     ledger.note_input(b"\x1b[D");
     ledger.note_input(b"\r");
+    ledger.on_command_start();
+    assert_eq!(ledger.filter_report("R".into()), "R");
+    ledger.note_replies(b"\x1b[24;1R");
+    ledger.note_input(b" \x0b\x15ls\r");
+    ledger.on_command_start();
     ledger.note_replies(b"\x1b[24;1R");
     assert_eq!(ledger.filter_report("R".into()), "");
 }
@@ -363,4 +377,69 @@ fn a_combined_query_burst_behind_a_zle_history_recall() {
         filtered(&no_dcs, &[], "bash /tmp/x.sh720;992t"),
         "bash /tmp/x.sh720;992t"
     );
+}
+
+#[test]
+fn unseen_text_ending_in_a_one_character_payload_tail_is_kept() {
+    let replies = ["\x1bP>|Phosphor(0.1.12)", "\x1b\\"];
+    assert_eq!(filtered(&replies, &["foo"], "echo (a)foo"), "echo (a)foo");
+    assert_eq!(filtered(&replies, &[], "echo (a)"), "echo (a)");
+    assert_eq!(filtered(&replies, &[], "ls \\"), "ls \\");
+}
+
+#[test]
+fn a_line_put_back_by_histverify_is_not_residue() {
+    // `!!` + Enter: the expansion is back on the line after the ledger saw an Enter.
+    let mut ledger = ledger_with(&["\x1b[24;1R"]);
+    ledger.note_input(b"!!\r");
+    assert_eq!(ledger.filter_report("R".into()), "R");
+    let mut ledger = ledger_with(&["\x1b[?62;c"]);
+    ledger.note_input(b"!!\r");
+    assert_eq!(ledger.filter_report("c".into()), "c");
+}
+
+#[test]
+fn a_prefilled_line_is_not_residue() {
+    // `print -z`, `read -e -i`, `fc`: text the app never wrote.
+    let replies = ["\x1b[24;1R", "\x1bP>|Phosphor(0.1.12)", "\x1b\\"];
+    assert_eq!(filtered(&replies, &[], "echo hi"), "echo hi");
+    assert_eq!(filtered(&replies, &[], "make (all)"), "make (all)");
+    assert_eq!(filtered(&replies, &["x"], "echo hi)x"), "echo hi)x");
+}
+
+#[test]
+fn a_vi_mode_ctrl_u_that_left_text_behind_is_not_trusted() {
+    let mut ledger = ledger_with(&["\x1b[24;1R"]);
+    // The kill pair is written; zsh viins ^U left "ab" in the line. No command started, so the
+    // emptiness is unconfirmed.
+    ledger.note_input(b" \x0b\x15");
+    assert_eq!(ledger.filter_report("abR".into()), "abR");
+    let mut ledger = ledger_with(&["\x1b[24;1R"]);
+    ledger.note_input(b" \x0b\x15");
+    assert_eq!(ledger.filter_report("R".into()), "R");
+}
+
+#[test]
+fn a_huge_paste_without_a_newline_is_not_held_in_memory() {
+    let mut ledger = ledger_with(&["\x1b[24;1R"]);
+    let chunk = "a".repeat(1000);
+    for _ in 0..8_000 {
+        ledger.note_input(chunk.as_bytes());
+        assert!(ledger.tracked_len() <= 4096 + 1000);
+    }
+    ledger.note_input("b".repeat(8 * 1024 * 1024).as_bytes());
+    assert!(ledger.tracked_len() <= 4096);
+    assert_eq!(ledger.filter_report("R".into()), "R");
+    // A command write recovers tracking.
+    ledger.note_input(b" \x0b\x15ls\r");
+    ledger.on_command_start();
+    ledger.note_replies(b"\x1b[24;1R");
+    assert_eq!(ledger.filter_report("R".into()), "");
+}
+
+#[test]
+fn a_forgotten_reply_cannot_explain_text() {
+    let mut ledger = ledger_with(&["\x1b[24;1R", "\x1b[?62;c"]);
+    ledger.forget_replies(b"\x1b[24;1R");
+    assert_eq!(ledger.filter_report("R".into()), "R");
 }

@@ -132,13 +132,25 @@ impl State {
     }
 
     /// Drops queued replies produced while a command ran if that command has since
-    /// finished, i.e. the active block changed or is no longer executing.
-    fn drop_stale_responses(&mut self, active_block: &BlockId, executing_now: bool) {
-        self.write_list
-            .retain(|entry| match &entry.produced_while_executing {
-                Some(id) => executing_now && id == active_block,
-                None => true,
-            });
+    /// finished, i.e. the active block changed or is no longer executing. Returns the dropped
+    /// bytes, so the reply ledger can forget replies that never reached the pty.
+    fn drop_stale_responses(
+        &mut self,
+        active_block: &BlockId,
+        executing_now: bool,
+    ) -> Vec<Cow<'static, [u8]>> {
+        let mut dropped = Vec::new();
+        self.write_list = std::mem::take(&mut self.write_list)
+            .into_iter()
+            .filter_map(|entry| match &entry.produced_while_executing {
+                Some(id) if !(executing_now && id == active_block) => {
+                    dropped.push(entry.bytes);
+                    None
+                }
+                _ => Some(entry),
+            })
+            .collect();
+        dropped
     }
 
     #[inline]
@@ -585,7 +597,14 @@ where
                     if state.has_tagged() {
                         let terminal = self.terminal.lock();
                         let block = terminal.block_list().active_block();
-                        state.drop_stale_responses(block.id(), block.is_executing());
+                        let dropped =
+                            state.drop_stale_responses(block.id(), block.is_executing());
+                        if !dropped.is_empty() {
+                            let mut ledger = self.reply_ledger.lock();
+                            for bytes in &dropped {
+                                ledger.forget_replies(bytes);
+                            }
+                        }
                     }
                     while can_read || (state.needs_write() && can_write) {
                         if can_read {

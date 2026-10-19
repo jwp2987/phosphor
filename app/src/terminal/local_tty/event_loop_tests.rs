@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::*;
+use crate::terminal::model::reply_ledger::ReplyLedger;
 use crate::terminal::SizeInfo;
 use crate::terminal::local_tty::{ChildEvent, EventedReadWrite, mio_channel};
 
@@ -255,4 +256,22 @@ fn replies_are_recorded_as_the_parser_writes_them() {
     writer.write_all(b"\x1b[24;1R").unwrap();
     assert_eq!(ledger.lock().filter_report("R".into()), "");
     assert_eq!(replies, b"\x1b[24;1R");
+}
+
+/// #921: a stale reply the event loop drops (#829) never reaches the pty, so the ledger must
+/// not keep it as something that could explain text in the shell's line.
+#[test]
+fn a_dropped_stale_reply_is_returned_so_the_ledger_can_forget_it() {
+    let mut state = State::default();
+    state.queue_response(b"\x1b[24;1R".to_vec(), Some(block("cmd")));
+    state.queue_response(b"\x1b[?62;c".to_vec(), None);
+    let dropped = state.drop_stale_responses(&block("next"), false);
+    assert_eq!(dropped, vec![Cow::<[u8]>::Owned(b"\x1b[24;1R".to_vec())]);
+
+    let mut ledger = ReplyLedger::default();
+    ledger.note_replies(b"\x1b[24;1R");
+    ledger.note_replies(b"\x1b[?62;c");
+    ledger.forget_replies(&dropped[0]);
+    // The CPR was never written; only the device attributes reply could have left residue.
+    assert_eq!(ledger.filter_report("R".into()), "R");
 }

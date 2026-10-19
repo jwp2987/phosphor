@@ -26,6 +26,8 @@ const MAX_REPLIES: usize = 64;
 /// User bytes kept; past this the typed text is no longer tracked and nothing is filtered.
 const MAX_USER_BYTES: usize = 4096;
 /// The shells' input reporting request (`ESC i`). It reports the line; it adds nothing to it.
+/// The longest head searched for junk ahead of residue.
+const MAX_SPLIT_SEARCH: usize = 1024;
 const INPUT_REPORT_REQUEST: &[u8] = b"\x1bi";
 
 /// Fails safe: the ledger only ever drops text when every byte that could be in the shell's line
@@ -44,6 +46,14 @@ pub struct ReplyLedger {
     user_untracked: bool,
     /// The previous character written was Ctrl-K; with Ctrl-U it kills the whole line.
     after_kill_forward: bool,
+    /// The line was emptied by a write (Ctrl-K Ctrl-U, or Enter) but nothing confirmed it is
+    /// empty: a shell can put text back (`histverify`, `print -z`, `read -e -i`) and a vi-mode
+    /// Ctrl-U does not kill the whole line. A command starting (preexec) or a report that is
+    /// exactly what was written confirms it.
+    unconfirmed: bool,
+    /// An Enter was written since the line was last emptied, so anything written after it
+    /// belongs to a line the ledger no longer models.
+    after_enter: bool,
 }
 
 impl ReplyLedger {
@@ -80,6 +90,31 @@ impl ReplyLedger {
         self.replies.push_back(piece.to_owned());
     }
 
+    #[cfg(test)]
+    fn tracked_len(&self) -> usize {
+        self.user_text.len()
+    }
+
+    /// Forgets replies that were recorded when generated but never written to the pty (a stale
+    /// reply the event loop dropped, #829), so they cannot explain text later.
+    pub fn forget_replies(&mut self, bytes: &[u8]) {
+        let text = String::from_utf8_lossy(bytes);
+        let mut start = 0;
+        let mut pieces = Vec::new();
+        for (i, ch) in text.char_indices() {
+            if ch == '\u{1b}' && i > start {
+                pieces.push(&text[start..i]);
+                start = i;
+            }
+        }
+        pieces.push(&text[start..]);
+        for piece in pieces.into_iter().filter(|p| !p.is_empty()) {
+            if let Some(index) = self.replies.iter().rposition(|r| r == piece) {
+                self.replies.remove(index);
+            }
+        }
+    }
+
     /// Records one write to the pty, whatever its origin (typed keys, a released hold, a
     /// command, an agent's input, a synced pane).
     pub fn note_input(&mut self, bytes: &[u8]) {
@@ -98,30 +133,58 @@ impl ReplyLedger {
                 self.user_untracked = true;
             }
             match ch {
-                // Enter runs the line: what was in it is gone, and the line starts empty.
-                '\r' | '\n' => self.line_is_empty(),
+                // Enter runs the line, or a shell puts it back; either way the line is not
+                // known to be empty until a command starts.
+                '\r' | '\n' => {
+                    self.user_text.clear();
+                    self.unconfirmed = true;
+                    self.after_enter = true;
+                }
                 // Resolved by the next character.
                 '\u{0b}' => {}
-                // Ctrl-K then Ctrl-U (the prefix every command is written with) kills the line.
-                '\u{15}' if after_kill_forward => self.line_is_empty(),
+                // Ctrl-K then Ctrl-U (the prefix every command is written with) kills the
+                // line, which recovers tracking but must be confirmed.
+                '\u{15}' if after_kill_forward => {
+                    self.clear_line();
+                    self.unconfirmed = true;
+                }
                 c if c.is_control() => self.user_untracked = true,
-                c => self.user_text.push(c),
+                _ if self.after_enter => self.user_untracked = true,
+                c if !self.user_untracked => {
+                    if self.user_text.len() >= MAX_USER_BYTES {
+                        // Too much to model; stop holding on to it.
+                        self.user_untracked = true;
+                        self.user_text.clear();
+                    } else {
+                        self.user_text.push(c);
+                    }
+                }
+                _ => {}
             }
-        }
-        if self.user_text.len() > MAX_USER_BYTES {
-            self.user_untracked = true;
         }
     }
 
-    fn line_is_empty(&mut self) {
+    fn clear_line(&mut self) {
         self.user_text.clear();
         self.user_untracked = false;
         self.after_kill_forward = false;
+        self.unconfirmed = false;
+        self.after_enter = false;
+    }
+
+    /// Whether every byte that could be in the shell's line is accounted for.
+    fn line_is_known(&self) -> bool {
+        !self.user_untracked && !self.unconfirmed && !self.after_kill_forward
     }
 
     /// A command started. Replies from before it were read (or killed) at the prompt.
     pub fn on_command_start(&mut self) {
         self.replies.clear();
+        // The line was consumed by the command that started, so it is empty again.
+        if !self.user_untracked && !self.after_kill_forward {
+            self.unconfirmed = false;
+            self.after_enter = false;
+        }
     }
 
     /// Returns `report` without the residue of replies this app wrote.
@@ -165,16 +228,12 @@ impl ReplyLedger {
 
     fn clear(&mut self) {
         self.replies.clear();
-        self.line_is_empty();
+        self.clear_line();
     }
 
     /// The tail of `report` after the residue, or `None` when there is nothing to drop.
     fn strip_residue<'a>(&self, report: &'a str) -> Option<&'a str> {
-        if self.replies.is_empty()
-            || self.user_untracked
-            || self.after_kill_forward
-            || report.is_empty()
-        {
+        if self.replies.is_empty() || !self.line_is_known() || report.is_empty() {
             return None;
         }
         let head_len = report.strip_suffix(self.user_text.as_str())?.len();
@@ -182,14 +241,25 @@ impl ReplyLedger {
             return None;
         }
         let head = &report[..head_len];
-        (self.is_made_of_reply_tails(head) || self.is_junk_then_reply_tails(head))
-            .then(|| &report[head_len..])
+        // Residue alone, or (for a device control string reply) junk ahead of residue that
+        // contains a real stretch of the payload.
+        let accepted = self.tails_explain(head).is_some()
+            || head.len() <= MAX_SPLIT_SEARCH
+                && self.replies.iter().any(|r| r.starts_with("\u{1b}P"))
+                && head
+                    .char_indices()
+                    .skip(1)
+                    .any(|(i, _)| self.tails_explain(&head[i..]) == Some(true));
+        accepted.then(|| &report[head_len..])
     }
 
     /// Whether `head` is spelled entirely by the tails of replies, in order: what a line editor
-    /// leaves behind after it swallowed the escape prefix of each.
-    fn is_made_of_reply_tails(&self, head: &str) -> bool {
+    /// leaves behind after it swallowed the escape prefix of each. `Some(true)` when that
+    /// included a stretch of at least two characters of a device control string reply's payload
+    /// (`>|Phosphor(`...), which is what zle's `ESC P` leaves.
+    fn tails_explain(&self, head: &str) -> Option<bool> {
         let mut rest = head;
+        let mut dcs_payload = false;
         for reply in &self.replies {
             if rest.is_empty() {
                 break;
@@ -201,25 +271,11 @@ impl ReplyLedger {
                 .map(|(i, _)| &reply[i..])
                 .find(|tail| rest.starts_with(tail))
             {
+                dcs_payload |= reply.starts_with("\u{1b}P") && tail.chars().count() >= 2;
                 rest = &rest[tail.len()..];
             }
         }
-        rest.is_empty()
-    }
-
-    /// Whether `head` is some junk followed by the tails of replies, when a device control
-    /// string reply was written. zle binds `ESC P` to `history-search-backward`, so the line
-    /// holds a recalled history line (or whatever it did to the text before it) ahead of the
-    /// payload; none of it was typed, since every typed byte is accounted for separately.
-    fn is_junk_then_reply_tails(&self, head: &str) -> bool {
-        const MAX_SPLIT_SEARCH: usize = 1024;
-        let has_dcs = self.replies.iter().any(|r| r.starts_with("\u{1b}P"));
-        has_dcs
-            && head.len() <= MAX_SPLIT_SEARCH
-            && head
-                .char_indices()
-                .skip(1)
-                .any(|(i, _)| self.is_made_of_reply_tails(&head[i..]))
+        rest.is_empty().then_some(dcs_payload)
     }
 }
 
