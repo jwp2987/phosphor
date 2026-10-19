@@ -2279,3 +2279,48 @@ upstream's behavior is actually a defect rather than a preference.
   exact path and executes nothing; a `-dash` base fails inside git without running anything.
   The PowerShell spellings are unverified in a real shell.
   <!-- markers: keep:portable_shell_word keep:WORKTREE_PATH_VAR keep:test_hostile_repo_name_is_quoted_as_part_of_one_path_word keep:test_portable_shell_word_spellings keep:test_placeholder_near_shell_syntax_is_refused keep:try_render_tab_config -->
+
+- **Waited agent commands run in the user's real shell with pagers disabled by environment,
+  and a model that cannot drive snapshots gets a pager auto-quit instead** (`#855`,
+  2026-10-18, `app/src/ai/blocklist/action_model/execute/agent_shell_wrap.rs`,
+  `.../execute/shell_command.rs`, `app/src/ai/agent_providers/command_snapshots.rs`,
+  `app/src/terminal/model/block/interaction_mode.rs`,
+  `app/assets/bundled/bootstrap/{bash,zsh}_body.sh`). **Upstream:** the agent's command is
+  typed into the user's shell as is; only a model that sets `uses_pager` AND waits gets
+  `(cmd) | command cat`. Every agent wait is capped (`MAX_WAIT_DURATION` 2s,
+  `MAX_AGENT_DELAY_DURATION` 120s even for wait-until-completion) and then returns a
+  `LongRunningCommandSnapshot`, which the model answers with the write-to-long-running-
+  command tool, e.g. `q` to a pager
+  (`4111d08f9:app/src/ai/blocklist/action_model/execute/shell_command.rs`).
+  **Why we differ:** OpenWarp's `69edd7c30` (inherited here) found small BYOP models
+  (deepseek-v4-flash) cannot follow the snapshot contract: they never set `uses_pager`, a
+  `git log` stops at the `less` prompt, the snapshot comes back and they keep issuing new
+  tool calls while the pty is wedged. So every `wait_until_completion` command has its pager
+  environment neutralised, regardless of `uses_pager`, and waits up to 30 minutes. That fix
+  wrapped the command in a subshell, which kept the real exit code (unlike `| cat`) but
+  silently discarded `cd`, `export` and venv activation while the block list showed them as
+  run in the session. **We do:** (1) the command runs in the user's own shell. bash/zsh use
+  a `{ ...; }` group that saves `PAGER GIT_PAGER MANPAGER SYSTEMD_PAGER PSQL_PAGER
+  AWS_PAGER GH_PAGER BAT_PAGER GIT_CONFIG_COUNT/KEY_0/VALUE_0` (remembering which were
+  unset), exports the overrides, runs the command, captures `$?`, restores every variable
+  and re-raises the status with `(exit $rc)`; fish uses block-scoped `set -lx` (a Ctrl-C
+  ends the scope, so it needs no backstop); pwsh saves and restores the process
+  environment in `try/finally`. A command that at top level uses `exit`, `exec`, `set -e/-u/
+  -o errexit|nounset|pipefail`, `trap`, `ulimit`, `unset PATH`, or an error-behaviour
+  `shopt`/`setopt`/`unsetopt` keeps the subshell. If an interrupt skips the restore, the bash
+  and zsh precmd hooks restore from the `__phosphor_ap_*` markers. (2) Pagers are disabled
+  for every model; what differs is a stall. `AgentProviderModel::handles_command_snapshots`
+  (`Option<bool>`, settings.toml and the AI settings page) defaults by model id and
+  endpoint: large hosted models (Claude Opus/Sonnet, GPT-4/5 class, o-series, Gemini Pro,
+  non-mini Grok) get upstream's behaviour with a snapshot after the screen sits unchanged
+  for 3s or at 120s; local/Ollama and flash/mini/nano/haiku class keep the wait. (3) For a
+  snapshot-off model, local session only, a stalled alt-screen/raw-mode program whose
+  foreground process is exactly `less`, `more`, `most` or `pager` gets `q` and the result
+  says the output may be only the first screen; any other stalled full-screen program is
+  handed to the user through the #673 `BlockedOnInput` hand-over; keys are never sent to a
+  process that is not a known pager or cannot be identified. **Evidence:** the wedge is
+  reproducible with any small model and `git log`; the discarded state is reproducible in
+  bash/zsh/fish by running `(cd /; true)` and checking `$PWD`. **Not fixable here:** a
+  variable that was set but not exported is exported again by the restore; the pwsh form is
+  unverified in a real shell.
+  <!-- markers: keep:wrap_command keep:needs_subshell keep:model_id_handles_command_snapshots keep:is_known_pager_name keep:FullscreenStallDetector -->
