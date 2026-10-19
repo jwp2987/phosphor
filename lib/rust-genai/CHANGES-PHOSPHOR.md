@@ -204,3 +204,9 @@ tarball, not introduced by this port. Not part of the default feature set
 this fork's delta, and not something Phosphor's app currently uses. Left
 alone rather than silently patched into an undocumented, untracked local
 change; worth a heads-up if `otel` is ever turned on.
+
+### HTML page with a success status — Phosphor-specific (#856)
+
+| file | change |
+|---|---|
+| `webc/web_stream.rs` | A 2xx response whose `Content-Type` is `text/html`/`application/xhtml`, or whose first body chunk opens with `<!DOCTYPE html`/`<html`, now ends the stream with `Error::HttpError` carrying the success status and a truncated body, instead of being parsed as SSE (it has no `data:` lines, so the stream ended silently empty and the app showed a misleading error). The app maps a success-status `HttpError` to "the provider returned a web page". No new `Error` variant, so nothing destructuring `Error` exhaustively changes. |

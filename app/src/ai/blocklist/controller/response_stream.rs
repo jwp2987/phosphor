@@ -52,6 +52,86 @@ pub(crate) fn recovery_backoff_after_attempts(attempts_made: usize) -> Duration 
     Duration::from_millis(500u64 << attempts_made.saturating_sub(1).min(4))
 }
 
+/// Why a recovery attempt is waiting, for the user-facing countdown (#853/#854 follow-up).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetryWaitKind {
+    /// The provider rate limited the request (HTTP 429, or it sent a `Retry-After`).
+    RateLimited,
+    /// Any other transient failure: dropped connection, 5xx, timeout.
+    Connection,
+}
+
+impl RetryWaitKind {
+    pub(crate) fn for_error(error: &AIApiError) -> Self {
+        if error.is_rate_limited() || error.retry_after().is_some() {
+            Self::RateLimited
+        } else {
+            Self::Connection
+        }
+    }
+}
+
+type RetryWaits = std::collections::HashMap<AIConversationId, (RetryWaitKind, instant::Instant)>;
+
+/// The recovery waits currently in flight, by conversation. A wait is a deadline, not a
+/// counter, so an entry that is never cleared (a path that forgot to) stops being reported
+/// the moment its deadline passes; clearing on cancel/finish just makes that prompt.
+static RETRY_WAITS: std::sync::LazyLock<std::sync::Mutex<RetryWaits>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Records that `conversation_id` is waiting `wait` before its next recovery attempt.
+pub(crate) fn set_retry_wait(
+    conversation_id: AIConversationId,
+    kind: RetryWaitKind,
+    wait: Duration,
+) {
+    if let Ok(mut waits) = RETRY_WAITS.lock() {
+        waits.insert(conversation_id, (kind, instant::Instant::now() + wait));
+    }
+}
+
+/// Conversations that already have a countdown pulse chain running, so a retry and a resume
+/// that overlap share one chain instead of each starting their own.
+static PULSING_RETRY_WAITS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<AIConversationId>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Returns whether there was a wait to clear.
+pub(crate) fn clear_retry_wait(conversation_id: AIConversationId) -> bool {
+    RETRY_WAITS
+        .lock()
+        .is_ok_and(|mut waits| waits.remove(&conversation_id).is_some())
+}
+
+/// The wait `conversation_id` is in the middle of, with the time left (rounded up to whole
+/// seconds, at least 1), or `None` when it is not waiting.
+pub(crate) fn current_retry_wait(
+    conversation_id: AIConversationId,
+) -> Option<(RetryWaitKind, u64)> {
+    let waits = RETRY_WAITS.lock().ok()?;
+    let (kind, deadline) = *waits.get(&conversation_id)?;
+    let remaining = deadline.checked_duration_since(instant::Instant::now())?;
+    if remaining.is_zero() {
+        return None;
+    }
+    Some((
+        kind,
+        remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0),
+    ))
+}
+
+/// The countdown line shown while a recovery attempt waits.
+pub(crate) fn retry_wait_message(kind: RetryWaitKind, secs: u64) -> String {
+    match kind {
+        RetryWaitKind::RateLimited => {
+            crate::t!("agent-retry-wait-rate-limited", secs = secs.to_string())
+        }
+        RetryWaitKind::Connection => {
+            crate::t!("agent-retry-wait-connection", secs = secs.to_string())
+        }
+    }
+}
+
 /// The wait before a recovery attempt: the exponential `backoff`, stretched to the
 /// provider's `Retry-After` when it asked for longer (#854). A hint shorter than the backoff
 /// never shortens it. `retry_after` arrives already clamped (`api_error::MAX_RETRY_AFTER`),
@@ -742,12 +822,56 @@ impl ResponseStream {
                 wait.await;
             },
             move |me, _, ctx| {
-                me.retry(None, ctx);
+                me.retry(None, RetryWaitKind::Connection, ctx);
             },
         );
     }
 
-    fn retry(&mut self, retry_after: Option<Duration>, ctx: &mut ModelContext<Self>) {
+    /// Wakes the views observing the history model once a second for as long as
+    /// `conversation_id` is waiting, so the countdown ticks. A views-only nudge: it emits no
+    /// history event, so no other consumer of the model sees it.
+    fn pulse_retry_wait(conversation_id: AIConversationId, ctx: &mut ModelContext<Self>) {
+        // One chain per conversation: a second caller while one is running just has its
+        // wait picked up by the running chain's next tick.
+        let started = PULSING_RETRY_WAITS
+            .lock()
+            .is_ok_and(|mut pulsing| pulsing.insert(conversation_id));
+        if started {
+            Self::pulse_retry_wait_tick(conversation_id, ctx);
+        }
+    }
+
+    fn pulse_retry_wait_tick(conversation_id: AIConversationId, ctx: &mut ModelContext<Self>) {
+        BlocklistAIHistoryModel::handle(ctx).update(ctx, |_, ctx| ctx.notify());
+        if current_retry_wait(conversation_id).is_some() {
+            let _ = ctx.spawn(
+                async move {
+                    warpui::r#async::Timer::after(Duration::from_secs(1)).await;
+                },
+                move |_, _, ctx| Self::pulse_retry_wait_tick(conversation_id, ctx),
+            );
+        } else if let Ok(mut pulsing) = PULSING_RETRY_WAITS.lock() {
+            pulsing.remove(&conversation_id);
+        }
+    }
+
+    /// Forgets this stream's recovery wait (the wait ended, or the stream was cancelled).
+    fn clear_own_retry_wait(&self, ctx: &mut ModelContext<Self>) {
+        if let Some(conversation_id) = self.ai_identifiers.client_conversation_id {
+            // Only nudge the views when a wait was actually showing: this runs on every
+            // streamed event, and a redraw per token is not free.
+            if clear_retry_wait(conversation_id) {
+                BlocklistAIHistoryModel::handle(ctx).update(ctx, |_, ctx| ctx.notify());
+            }
+        }
+    }
+
+    fn retry(
+        &mut self,
+        retry_after: Option<Duration>,
+        kind: RetryWaitKind,
+        ctx: &mut ModelContext<Self>,
+    ) {
         if self.cancelled {
             return;
         }
@@ -780,6 +904,10 @@ impl ResponseStream {
             recovery_backoff_after_attempts(self.recovery.attempts_used()),
             retry_after,
         );
+        if let Some(conversation_id) = self.ai_identifiers.client_conversation_id {
+            set_retry_wait(conversation_id, kind, backoff);
+            Self::pulse_retry_wait(conversation_id, ctx);
+        }
         let _ = ctx.spawn(
             async move {
                 // Race the wait against cancellation: a cancel during a long `Retry-After`
@@ -838,6 +966,7 @@ impl ResponseStream {
         self.current_request_id = None;
         self.cancelled = true;
         self.pending_resume = None;
+        self.clear_own_retry_wait(ctx);
         let Some(cancellation_tx) = self.cancellation_tx.take() else {
             return;
         };
@@ -889,6 +1018,10 @@ impl ResponseStream {
             return;
         }
         self.time_to_latest_event = Local::now().signed_duration_since(self.start_time);
+        if event.is_ok() {
+            // The request is flowing again, so the wait is over.
+            self.clear_own_retry_wait(ctx);
+        }
 
         match &event {
             Ok(response_event) => {
@@ -972,7 +1105,7 @@ impl ResponseStream {
                         // Only emit error telemetry here if we're retrying.
                         // Final errors that aren't being retried are emitted elsewhere.
                         self.emit_retryable_agent_mode_error_telemetry(format!("{e:?}"), ctx);
-                        self.retry(e.retry_after(), ctx);
+                        self.retry(e.retry_after(), RetryWaitKind::for_error(e), ctx);
                         // Don't emit the error event, we're retrying
                         // TODO: emit a separate event if controller needs to know about failures that are being retried
                         return;
@@ -1003,6 +1136,10 @@ impl ResponseStream {
                             action.log_label(),
                             self.recovery.attempts_used() + 1,
                         );
+                        if let Some(conversation_id) = self.ai_identifiers.client_conversation_id {
+                            set_retry_wait(conversation_id, RetryWaitKind::for_error(e), backoff);
+                            Self::pulse_retry_wait(conversation_id, ctx);
+                        }
                         self.pending_resume = Some(PendingResume {
                             recovery: self.recovery.next_attempt(),
                             backoff,
@@ -1036,6 +1173,10 @@ impl ResponseStream {
     fn on_response_stream_complete(&mut self, request_id: Uuid, ctx: &mut ModelContext<Self>) {
         if self.current_request_id.is_none_or(|id| id != request_id) {
             return;
+        }
+        // A scheduled resume's wait starts as this stream finishes; keep showing it.
+        if self.pending_resume.is_none() {
+            self.clear_own_retry_wait(ctx);
         }
         ctx.emit(ResponseStreamEvent::AfterStreamFinished { cancellation: None });
         self.cancellation_tx = None;

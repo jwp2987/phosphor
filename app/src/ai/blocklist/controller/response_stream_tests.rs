@@ -6,6 +6,9 @@ use super::{
     ResponseStream, ResponseStreamId, lrc_tag_in_lacks_confirmation_ui, recovery_action,
     recovery_backoff_after_attempts, recovery_wait,
 };
+use super::{RetryWaitKind, clear_retry_wait, current_retry_wait, set_retry_wait};
+use crate::ai::agent::conversation::AIConversationId;
+use crate::ai::api_error::AIApiError;
 // `agent_sdk` (and so the driver's recovery deadline) is native-only here.
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::agent_sdk::driver::AUTO_RESUME_TIMEOUT;
@@ -327,6 +330,53 @@ fn retry_after_stretches_but_never_shortens_the_recovery_wait() {
     assert!(
         recovery_wait(backoff, Some(crate::ai::api_error::MAX_RETRY_AFTER)) * 2
             <= AUTO_RESUME_TIMEOUT
+    );
+}
+
+/// #853/#854 follow-up: the countdown reads the recorded wait, rounds up to whole seconds, and
+/// is gone once cleared or expired.
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn retry_wait_registry_reports_then_clears() {
+    let id = AIConversationId::new();
+    assert_eq!(current_retry_wait(id), None);
+    set_retry_wait(id, RetryWaitKind::RateLimited, Duration::from_secs(30));
+    let (kind, secs) = current_retry_wait(id).expect("wait is recorded");
+    assert_eq!(kind, RetryWaitKind::RateLimited);
+    assert!((29..=30).contains(&secs), "got {secs}");
+    // Another conversation is unaffected.
+    assert_eq!(current_retry_wait(AIConversationId::new()), None);
+    assert!(clear_retry_wait(id));
+    assert!(!clear_retry_wait(id));
+    assert_eq!(current_retry_wait(id), None);
+}
+
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn retry_wait_expires_on_its_own() {
+    let id = AIConversationId::new();
+    set_retry_wait(id, RetryWaitKind::Connection, Duration::ZERO);
+    assert_eq!(current_retry_wait(id), None);
+    clear_retry_wait(id);
+}
+
+#[test]
+fn retry_wait_kind_follows_the_error() {
+    let rl = AIApiError::ErrorStatus(http::StatusCode::TOO_MANY_REQUESTS, String::new(), None);
+    let hinted = AIApiError::ErrorStatus(
+        http::StatusCode::SERVICE_UNAVAILABLE,
+        String::new(),
+        Some(std::time::Duration::from_secs(5)),
+    );
+    let bad_gateway = AIApiError::ErrorStatus(http::StatusCode::BAD_GATEWAY, String::new(), None);
+    assert_eq!(RetryWaitKind::for_error(&rl), RetryWaitKind::RateLimited);
+    assert_eq!(
+        RetryWaitKind::for_error(&hinted),
+        RetryWaitKind::RateLimited
+    );
+    assert_eq!(
+        RetryWaitKind::for_error(&bad_gateway),
+        RetryWaitKind::Connection
     );
 }
 

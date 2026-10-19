@@ -161,6 +161,12 @@ struct WarpifyTriggerState {
 
     is_shell_detection_in_progress: bool,
 
+    /// The exact warpification scripts typed into the ssh session's pty. The remote tty
+    /// echoes them into the ssh command's block, so if that command ends without the session
+    /// being warpified the block can be full of script (#856). Kept as strings, not a flag,
+    /// so only the echoed copy is ever dropped from what the user sees.
+    ssh_payloads_written: Vec<String>,
+
     tmux_installation: TmuxInstallationState,
 }
 
@@ -178,6 +184,21 @@ pub struct WarpifyState {
 impl WarpifyState {
     pub fn delete_state(&mut self) {
         self.pending_state.take();
+    }
+
+    /// Records the exact warpification script that was just written to the ssh session's pty.
+    pub fn mark_ssh_payload_written(&mut self, payload: &str) {
+        if let Some(pending_state) = self.pending_state.as_mut() {
+            pending_state.ssh_payloads_written.push(payload.to_owned());
+        }
+    }
+
+    /// Returns the scripts recorded by [`Self::mark_ssh_payload_written`] and clears them.
+    pub fn take_ssh_payloads_written(&mut self) -> Vec<String> {
+        self.pending_state
+            .as_mut()
+            .map(|state| std::mem::take(&mut state.ssh_payloads_written))
+            .unwrap_or_default()
     }
 
     pub fn is_shell_detection_in_progress(&self) -> bool {
@@ -441,5 +462,62 @@ impl WarpifyState {
             return self.on_warpified_session_complete(state, ctx);
         };
         None
+    }
+}
+
+/// Whether the visible output of an ssh block (ignoring all whitespace) consists solely of
+/// echoed copies of the warpification `payloads` the client wrote -- the last one possibly
+/// truncated -- optionally followed by ssh kill messages ("Killed by signal N",
+/// "Connection to HOST closed."). Anything else (an ssh error, a banner, session output)
+/// makes this false so the output is kept (#856).
+pub(crate) fn ssh_output_is_payload_only(output: &str, payloads: &[String]) -> bool {
+    use regex::Regex;
+    use std::sync::LazyLock;
+    static KILL_MESSAGES: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"^(?:Killedbysignal\d*\.?|Connectionto[A-Za-z0-9._:\[\]@%-]+closed(?:byremotehost)?\.?)+$",
+        )
+        .expect("invalid regex")
+    });
+    fn squash(text: &str) -> String {
+        text.chars().filter(|c| !c.is_whitespace()).collect()
+    }
+    let output = squash(output);
+    if output.is_empty() || payloads.is_empty() {
+        return false;
+    }
+    let payloads: Vec<String> = payloads
+        .iter()
+        .map(|payload| squash(payload))
+        .filter(|payload| !payload.is_empty())
+        .collect();
+    let mut rest = output.as_str();
+    let mut consumed_payload = false;
+    loop {
+        if rest.is_empty() {
+            return consumed_payload;
+        }
+        if let Some(payload) = payloads.iter().find(|p| rest.starts_with(p.as_str())) {
+            rest = &rest[payload.len()..];
+            consumed_payload = true;
+            continue;
+        }
+        // The echo may be cut short (the command was killed mid-script), optionally followed
+        // by a kill message. Try the longest echoed prefix first.
+        let common = payloads
+            .iter()
+            .map(|p| {
+                rest.bytes()
+                    .zip(p.bytes())
+                    .take_while(|(a, b)| a == b)
+                    .count()
+            })
+            .max()
+            .unwrap_or(0);
+        return (1..=common)
+            .rev()
+            .filter(|len| rest.is_char_boundary(*len))
+            .any(|len| KILL_MESSAGES.is_match(&rest[len..]) || len == rest.len())
+            || (consumed_payload && KILL_MESSAGES.is_match(rest));
     }
 }

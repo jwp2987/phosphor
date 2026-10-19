@@ -28,6 +28,8 @@ pub struct WebStream {
 	partial_message: Option<String>,
 	// If a poll retrieved multiple messages, we keep them to be sent in the next poll
 	remaining_messages: Option<VecDeque<String>>,
+	// Phosphor (#856): whether the first body chunk has been checked for an HTML page.
+	html_checked: bool,
 	// Incomplete trailing UTF-8 bytes from the previous chunk.
 	// When a multi-byte character is split across TCP/HTTP chunk boundaries,
 	// the trailing bytes are carried over to be prepended to the next chunk.
@@ -53,6 +55,7 @@ impl WebStream {
 			partial_message: None,
 			remaining_messages: None,
 			utf8_carry: Vec::new(),
+			html_checked: false,
 		}
 	}
 
@@ -65,6 +68,7 @@ impl WebStream {
 			partial_message: None,
 			remaining_messages: None,
 			utf8_carry: Vec::new(),
+			html_checked: false,
 		}
 	}
 }
@@ -113,6 +117,23 @@ impl Stream for WebStream {
 							this.response_future = Some(Box::pin(error_future));
 							continue;
 						}
+						// Phosphor (#856): a 2xx `text/html` body is a proxy / captive-portal / wrong-base-URL
+						// page, not an API response. Surface it as an `HttpError` carrying the (successful)
+						// status so the app can say so, instead of failing later as a JSON parse error.
+						let is_html = response
+							.headers()
+							.get(reqwest::header::CONTENT_TYPE)
+							.and_then(|v| v.to_str().ok())
+							.is_some_and(content_type_is_html);
+						if is_html {
+							this.response_future = None;
+							let error_future = async move {
+								let body = response.text().await.unwrap_or_default();
+								Err::<Response, BoxError>(Box::new(html_response_error(status, &body)))
+							};
+							this.response_future = Some(Box::pin(error_future));
+							continue;
+						}
 						let bytes_stream = response.bytes_stream().map_err(|e| Box::new(e) as BoxError);
 						this.bytes_stream = Some(Box::pin(bytes_stream));
 						this.response_future = None;
@@ -152,6 +173,18 @@ impl Stream for WebStream {
 
 						// We already validated raw[..valid_up_to] is valid UTF-8 above.
 						let buff_string = String::from_utf8(raw[..valid_up_to].to_vec()).unwrap();
+
+						// Phosphor (#856): a body that opens like an HTML page (some proxies send no
+						// content type) is not an event stream either.
+						if !this.html_checked && !buff_string.trim().is_empty() {
+							this.html_checked = true;
+							if looks_like_html(&buff_string) {
+								return Poll::Ready(Some(Err(Box::new(html_response_error(
+									reqwest::StatusCode::OK,
+									&buff_string,
+								)) as BoxError)));
+							}
+						}
 
 						// -- Iterate through the parts
 						let buff_response = match this.stream_mode {
@@ -209,6 +242,29 @@ impl Stream for WebStream {
 
 			return Poll::Ready(None);
 		}
+	}
+}
+
+/// Whether a `Content-Type` header value names an HTML document.
+pub(crate) fn content_type_is_html(content_type: &str) -> bool {
+	let ct = content_type.trim_start().to_ascii_lowercase();
+	ct.starts_with("text/html") || ct.starts_with("application/xhtml")
+}
+
+/// Whether a body opens like an HTML document (`<!DOCTYPE html` or `<html`).
+pub(crate) fn looks_like_html(body: &str) -> bool {
+	let head: String = body.trim_start().chars().take(16).collect::<String>().to_ascii_lowercase();
+	head.starts_with("<!doctype html") || head.starts_with("<html")
+}
+
+/// The error for a successful response that is an HTML page. Shaped as an `HttpError` whose
+/// status is a success code, which no real status failure can be; the body is truncated.
+fn html_response_error(status: reqwest::StatusCode, body: &str) -> GenaiError {
+	GenaiError::HttpError {
+		status,
+		canonical_reason: status.canonical_reason().unwrap_or("OK").to_string(),
+		body: body.chars().take(512).collect(),
+		retry_after: None,
 	}
 }
 
@@ -273,4 +329,25 @@ fn process_buff_string_delimited(
 		next_messages,
 		candidate_message,
 	})
+}
+
+#[cfg(test)]
+mod html_tests {
+	use super::*;
+
+	#[test]
+	fn content_type_html_detection() {
+		assert!(content_type_is_html("text/html; charset=utf-8"));
+		assert!(content_type_is_html("  TEXT/HTML"));
+		assert!(!content_type_is_html("text/event-stream"));
+		assert!(!content_type_is_html("application/json"));
+	}
+
+	#[test]
+	fn body_html_detection() {
+		assert!(looks_like_html("<!DOCTYPE html><html>"));
+		assert!(looks_like_html("\n  <html lang=en>"));
+		assert!(!looks_like_html("data: {\"id\":1}"));
+		assert!(!looks_like_html("{\"error\":\"<html>\"}"));
+	}
 }

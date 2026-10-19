@@ -467,6 +467,10 @@ pub struct Block {
     /// If `true`, the output grid should not be rendered.
     should_hide_output_grid: bool,
 
+    /// If `true`, this ssh block's output was only the echoed warpification script (#856), so
+    /// it is not meaningful context for suggestions.
+    ssh_payload_only: bool,
+
     /// If `true`, the command grid should not be rendered.
     ///
     /// This is a *layout* fact, not only a painting one: [`Self::height`] and
@@ -1087,6 +1091,7 @@ impl Block {
             has_received_user_input: false,
             hidden: false,
             should_hide_output_grid: false,
+            ssh_payload_only: false,
             should_hide_command_grid: false,
             leading_linefeeds_ignored: 0,
             is_ai_ugc_telemetry_enabled,
@@ -1553,6 +1558,14 @@ impl Block {
 
     pub fn should_hide_output_grid(&self) -> bool {
         self.should_hide_output_grid
+    }
+
+    pub fn is_ssh_payload_only(&self) -> bool {
+        self.ssh_payload_only
+    }
+
+    pub fn set_ssh_payload_only(&mut self, payload_only: bool) {
+        self.ssh_payload_only = payload_only;
     }
 
     pub fn set_should_hide_output_grid(&mut self, should_hide: bool) {

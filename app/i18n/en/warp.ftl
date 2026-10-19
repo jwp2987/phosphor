@@ -2440,6 +2440,9 @@ agent-shortcuts-toggle-auto-accept = toggle auto-accept
 agent-shortcuts-pause-agent = pause agent
 agent-error-will-resume-when-network-restored = Will resume conversation when network connectivity is restored...
 agent-error-attempting-resume-conversation = Attempting to resume conversation...
+agent-retry-wait-rate-limited = Rate limited by provider - retrying in { $secs } s
+agent-retry-wait-connection = Connection problem - retrying in { $secs } s
+agent-error-provider-returned-html = The provider returned a web page instead of an API response - check the base URL / proxy.
 
 # --- ANCHOR-SUB-TOGGLE-PAIR (settings-toggle-pair) ---
 toggle-setting-enable = Enable { $suffix }

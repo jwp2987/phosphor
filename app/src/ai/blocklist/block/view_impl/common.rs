@@ -3,6 +3,7 @@
 // Renders persistent input-compatible loading animation and text indicator the appropriate message
 // based on the request type and status.
 
+use crate::ai::blocklist::controller::response_stream::{current_retry_wait, retry_wait_message};
 use std::borrow::Cow;
 #[cfg(feature = "local_fs")]
 use std::collections::HashMap;
@@ -474,6 +475,23 @@ pub fn render_warping_indicator<V: View>(
                 }
             }
         }
+    };
+
+    // A recovery attempt is waiting out a provider `Retry-After` or a backoff: say so, with a
+    // countdown, instead of the generic label. Static text with the clock icon, because the
+    // shimmer animation restarts whenever its text changes and this changes every second.
+    // The Stop button below cancels the wait.
+    let message = match props
+        .model
+        .conversation(app)
+        .and_then(|conversation| current_retry_wait(conversation.id()))
+    {
+        Some((kind, secs)) => {
+            should_render_waiting_icon = true;
+            non_shimmering_text = None;
+            retry_wait_message(kind, secs)
+        }
+        None => message,
     };
 
     let appearance = Appearance::as_ref(app);
