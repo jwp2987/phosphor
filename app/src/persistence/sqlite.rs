@@ -615,13 +615,32 @@ fn establish_connection(database_url: &str, read_only: bool) -> Result<SqliteCon
     // The auto-checkpoint interval is lowered from the default of 1000 because all writes
     // already run in a background thread and can afford to checkpoint slightly more often.
     // At the default value, the WAL can grow larger than a typical database (for our usage).
-    conn.batch_execute(
-        r#"
+    //
+    // Switching a fresh file to WAL takes the write lock, so it races with any other opener of
+    // the same new database (the prewarm thread, a second instance) exactly as migrating does
+    // (#902). Wait long for that lock, and retry a "locked" that SQLite reports without
+    // consulting the busy handler, instead of failing the launch.
+    conn.batch_execute(&format!(
+        "PRAGMA busy_timeout = {MIGRATION_LOCK_TIMEOUT_MS};"
+    ))?;
+    let mut wal_result = Ok(());
+    for attempt in 0..=WAL_LOCK_RETRIES {
+        wal_result = conn.batch_execute(
+            r#"
         PRAGMA journal_mode=WAL;
         PRAGMA wal_autocheckpoint=500;
     "#,
-    )
-    .context("Failed to enable WAL")?;
+        );
+        let locked = wal_result.as_ref().err().is_some_and(|err| {
+            diesel_database_error_message(err).contains("database is locked")
+        });
+        if !locked {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50 * (attempt as u64 + 1)));
+    }
+    wal_result.context("Failed to enable WAL")?;
+    conn.batch_execute("PRAGMA busy_timeout = 1000;")?;
 
     Ok(conn)
 }
@@ -1415,6 +1434,9 @@ fn setup_database(database_path: &Path) -> Result<SqliteConnection> {
 /// database. A cold migration takes a few hundred milliseconds; this only has
 /// to outlast a slow disk.
 const MIGRATION_LOCK_TIMEOUT_MS: u32 = 30_000;
+
+/// How many times enabling WAL is retried when SQLite reports the database locked.
+const WAL_LOCK_RETRIES: usize = 10;
 
 /// How many times a migrator re-checks after losing a race to another one.
 const MIGRATION_RACE_RETRIES: usize = 5;
