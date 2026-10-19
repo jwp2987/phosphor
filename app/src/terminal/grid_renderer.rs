@@ -1871,6 +1871,21 @@ fn render_glyph_svg(
     }
 }
 
+/// Logs a render problem for an image once, not on every frame (#910). The set is bounded so
+/// a flood of bad images cannot grow it without limit.
+fn warn_image_once(image_id: u32, kind: bool, message: &str) {
+    use std::sync::Mutex;
+    static WARNED: Mutex<Option<std::collections::HashSet<(u32, bool)>>> = Mutex::new(None);
+    let mut guard = WARNED.lock().unwrap_or_else(|e| e.into_inner());
+    let set = guard.get_or_insert_with(Default::default);
+    if set.len() >= 4096 {
+        set.clear();
+    }
+    if set.insert((image_id, kind)) {
+        log::warn!("{message} (image id = {image_id})");
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_image(
     image_id: u32,
@@ -1908,7 +1923,7 @@ fn render_image(
             return;
         }
         _ => {
-            log::warn!("Could not load image to render (image id = {image_id})");
+            warn_image_once(image_id, false, "Could not load image to render");
             return;
         }
     };
@@ -1926,7 +1941,7 @@ fn render_image(
             );
         }
         Image::Animated(_) => {
-            log::warn!("Image should be static");
+            warn_image_once(image_id, true, "Image should be static");
         }
     }
 }
