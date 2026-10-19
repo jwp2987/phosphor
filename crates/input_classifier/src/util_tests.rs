@@ -1088,3 +1088,130 @@ fn test_reads_as_prose_with_unknown_head_keeps_command_shapes_shell() {
         assert!(!reads_as_prose_with_unknown_head(text), "{text:?}");
     }
 }
+
+/// #897: real commands whose free-text arguments contain REQUEST_WORDS. None may read as a request
+/// to the agent: a real command sent to the agent is the worse error.
+const REAL_COMMANDS_WITH_ENGLISH_ARGS: &[&str] = &[
+    "grep -rn this src",
+    "grep it file.txt",
+    "grep the file.txt",
+    "grep what notes.txt",
+    "grep why log.txt",
+    "grep you README",
+    "grep this that",
+    "rg that notes.txt",
+    "rg the src",
+    "rg how it works",
+    "ag this src",
+    "ag the lib",
+    "ack the TODO",
+    "ack it src",
+    "egrep this that file",
+    "fgrep the notes.txt",
+    "git grep this",
+    "git grep the src",
+    "git log --grep the release",
+    "git log --grep=the --oneline",
+    "git commit -m the fix",
+    "git commit -m fix it for you",
+    "git stash save this thing",
+    "git tag -a v1 -m the release",
+    "git notes add -m what is this",
+    "man what it",
+    "man the ls",
+    "apropos what is",
+    "apropos the file",
+    "say this is it",
+    "say how are you",
+    "espeak what the",
+    "notify-send the build finished",
+    "notify-send why it failed",
+    "figlet the end",
+    "cowsay what is this",
+    "find . -name the",
+    "find . -name this -print",
+    "sed -n /the/p file",
+    "sed s/the/that/ file",
+    "awk /the/ file",
+    "jq .the data.json",
+    "kubectl get pods -n the",
+    "kubectl logs the pod",
+    "docker run --name the nginx",
+    "docker run --name this-one image",
+    "ssh host grep the log",
+    "ssh host tail the file",
+    "todo add buy the milk",
+    "todo add fix it later",
+    "make it",
+    "make this",
+    "make the",
+    "make the build",
+    "make this target",
+    "make it work",
+    "locate this file",
+    "which the thing",
+    "FOO=1 grep the src",
+    "/usr/bin/grep the src",
+];
+
+/// #897: prose whose head is a real command; it must still route to the agent.
+const PROSE_WITH_COMMAND_HEADS: &[&str] = &[
+    "make sure the build passes",
+    "make sure it works",
+    "can you fix this",
+    "can you look at the logs",
+    "show me the logs",
+    "show me",
+    "help me",
+    "help me with this",
+    "tell me how to deploy",
+    "give me the logs",
+    "watch the logs for errors",
+    "find out why it crashes",
+    "find out what the error is",
+    "explain why the test fails",
+    "explain this error",
+    "why is the build slow",
+    "what is the build doing",
+    "how do I fix this",
+    "how does this work",
+    "could you check the logs",
+    "would you run it again",
+    "should we revert the commit",
+    "teach me how to use git",
+    "remind me what the plan was",
+    "look at the logs for me",
+    "why is the build slow?",
+    "docker vs podman?",
+    "describe the failing test",
+];
+
+#[test]
+fn test_reads_as_request_to_agent_corpus_real_commands_stay_shell() {
+    assert!(REAL_COMMANDS_WITH_ENGLISH_ARGS.len() >= 40);
+    let misrouted: Vec<_> = REAL_COMMANDS_WITH_ENGLISH_ARGS
+        .iter()
+        .filter(|text| reads_as_request_to_agent(text))
+        .collect();
+    assert!(
+        misrouted.is_empty(),
+        "{} of {} real commands misroute: {misrouted:#?}",
+        misrouted.len(),
+        REAL_COMMANDS_WITH_ENGLISH_ARGS.len()
+    );
+}
+
+#[test]
+fn test_reads_as_request_to_agent_corpus_prose_routes_to_agent() {
+    assert!(PROSE_WITH_COMMAND_HEADS.len() >= 20);
+    let missed: Vec<_> = PROSE_WITH_COMMAND_HEADS
+        .iter()
+        .filter(|text| !reads_as_request_to_agent(text))
+        .collect();
+    assert!(
+        missed.is_empty(),
+        "{} of {} prose lines stay shell: {missed:#?}",
+        missed.len(),
+        PROSE_WITH_COMMAND_HEADS.len()
+    );
+}
