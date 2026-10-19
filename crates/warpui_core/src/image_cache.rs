@@ -1083,7 +1083,7 @@ const RASTER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 const MAX_LIVE_RASTER_THREADS: usize = 6;
 /// SVGs with more nodes than this are not rasterised in the background (they can take many
 /// seconds); the image is reported as failed to load.
-const MAX_SVG_NODES: usize = 100_000;
+const MAX_SVG_NODES: usize = 1_000_000;
 /// Bytes of rendered sizes kept across the whole cache; the least recently used go first.
 const MAX_RENDERED_BYTES: usize = 256 * 1024 * 1024;
 
@@ -1185,6 +1185,8 @@ pub struct ImageCache {
     test_deadline_ms: Rc<Cell<u64>>,
     #[cfg(test)]
     test_budget: Rc<Cell<usize>>,
+    #[cfg(test)]
+    test_max_svg_nodes: Rc<Cell<usize>>,
 }
 
 impl ImageCache {
@@ -1518,6 +1520,14 @@ impl ImageCache {
         let live = self.live_threads.clone();
         let abandoned = Arc::new(std::sync::atomic::AtomicBool::new(false));
         #[cfg(test)]
+        let max_svg_nodes = if self.test_max_svg_nodes.get() != 0 {
+            self.test_max_svg_nodes.get()
+        } else {
+            MAX_SVG_NODES
+        };
+        #[cfg(not(test))]
+        let max_svg_nodes = MAX_SVG_NODES;
+        #[cfg(test)]
         let hook = self.test_hook.get();
         inflight.fetch_add(1, Ordering::AcqRel);
         live.fetch_add(1, Ordering::AcqRel);
@@ -1536,7 +1546,7 @@ impl ImageCache {
                             _ => {}
                         }
                         if let ImageType::Svg { svg } = &data {
-                            if svg_node_count(svg) > MAX_SVG_NODES {
+                            if svg_node_count(svg) > max_svg_nodes {
                                 return Err(anyhow!("SVG has too many nodes to rasterise"));
                             }
                         }

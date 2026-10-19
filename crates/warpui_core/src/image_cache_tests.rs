@@ -33,7 +33,7 @@ impl AssetProvider for Assets {
                 let mut svg = String::from(
                     r##"<svg width="1000" height="1000" xmlns="http://www.w3.org/2000/svg">"##,
                 );
-                for _ in 0..(MAX_SVG_NODES + 1) {
+                for _ in 0..2001 {
                     svg.push_str(r##"<rect width="1" height="1"/>"##);
                 }
                 svg.push_str("</svg>");
@@ -1261,6 +1261,7 @@ fn a_stuck_rasterisation_times_out_and_frees_its_slot() {
 fn an_svg_with_too_many_nodes_is_refused() {
     let asset_cache = new_asset_cache();
     let image_cache = ImageCache::new();
+    image_cache.test_max_svg_nodes.set(2000);
     wait_until(|| {
         matches!(
             request(&image_cache, &asset_cache, "many-nodes.svg", 300),
