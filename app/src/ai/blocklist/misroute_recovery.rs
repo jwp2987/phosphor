@@ -17,9 +17,25 @@ use std::time::Duration;
 use instant::Instant;
 use warp_core::command::ExitCode;
 
-/// How long the "run as shell command instead" offer stays available after an AI submit.
-/// The offer is meant for the agent's response in progress or just after it.
-pub const AGENT_TO_SHELL_OFFER_WINDOW: Duration = Duration::from_secs(120);
+use super::agent_view::AgentViewEntryOrigin;
+
+/// How long an offer stays available: for "run as shell command instead", from the AI submit
+/// (the offer is meant for the agent's response in progress or just after it); for "send to
+/// agent instead", from the moment the command came back not found.
+pub const OFFER_WINDOW: Duration = Duration::from_secs(120);
+
+/// Whether an agent-view transition makes a remembered submit stale. The one transition that
+/// does not is the entry the autodetected agent submit itself caused (it is recorded just before
+/// that entry is announced); every other entry or exit -- slash commands included -- is a
+/// different conversation context.
+pub fn agent_view_entry_keeps_offer(origin: &AgentViewEntryOrigin) -> bool {
+    matches!(
+        origin,
+        AgentViewEntryOrigin::Input {
+            was_prompt_autodetected: true
+        }
+    )
+}
 
 /// Where a submit went.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -56,6 +72,8 @@ struct LastSubmit {
     reason: RouteReason,
     /// Exit code of the block the text produced, once it has finished. Shell route only.
     exit_code: Option<ExitCode>,
+    /// When that block finished.
+    finished_at: Option<Instant>,
     recorded_at: Instant,
 }
 
@@ -81,13 +99,19 @@ impl MisrouteMemory {
             route,
             reason,
             exit_code: None,
+            finished_at: None,
             recorded_at: now,
         });
     }
 
     /// Notes that a user command finished. Only the remembered shell submit it belongs to (same
     /// text, no exit code yet) is updated. Returns whether the offer may have changed.
-    pub fn note_command_finished(&mut self, command: &str, exit_code: ExitCode) -> bool {
+    pub fn note_command_finished(
+        &mut self,
+        command: &str,
+        exit_code: ExitCode,
+        now: Instant,
+    ) -> bool {
         match self.last.as_mut() {
             Some(last)
                 if last.route == SubmitRoute::Shell
@@ -95,6 +119,7 @@ impl MisrouteMemory {
                     && last.text == command.trim() =>
             {
                 last.exit_code = Some(exit_code);
+                last.finished_at = Some(now);
                 true
             }
             _ => false,
@@ -122,17 +147,28 @@ impl MisrouteMemory {
             return None;
         }
         match last.route {
-            SubmitRoute::Shell => last
-                .exit_code
-                .is_some_and(|code| code.was_command_not_found())
-                .then(|| MisrouteOffer::SendToAgent {
-                    text: last.text.clone(),
-                }),
-            SubmitRoute::Ai => (now.duration_since(last.recorded_at) < AGENT_TO_SHELL_OFFER_WINDOW)
+            SubmitRoute::Shell => {
+                let finished_at = last.finished_at?;
+                (last.exit_code?.was_command_not_found()
+                    && now.saturating_duration_since(finished_at) < OFFER_WINDOW)
+                    .then(|| MisrouteOffer::SendToAgent {
+                        text: last.text.clone(),
+                    })
+            }
+            // A multi-line paste must not be one click from running as a script.
+            SubmitRoute::Ai => (!last.text.contains('\n')
+                && now.saturating_duration_since(last.recorded_at) < OFFER_WINDOW)
                 .then(|| MisrouteOffer::RunAsShell {
                     text: last.text.clone(),
                 }),
         }
+    }
+
+    /// When the offer on offer at `now` expires, so the UI can re-render then.
+    pub fn offer_expires_at(&self, now: Instant) -> Option<Instant> {
+        self.offer(now)?;
+        let last = self.last.as_ref()?;
+        Some(last.finished_at.unwrap_or(last.recorded_at) + OFFER_WINDOW)
     }
 
     /// Consumes the offer: returns it (if one is on offer at `now`) and forgets the submit so the

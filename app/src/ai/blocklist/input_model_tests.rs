@@ -1297,3 +1297,26 @@ fn misroute_offer_is_one_shot_and_cleared_for_follow_ups() {
         });
     });
 }
+
+/// #835: a multi-line agent submit is never offered "run as shell", and the lock-flag snapshot
+/// round-trips through `restore_input_config` untouched.
+#[test]
+fn misroute_multi_line_not_offered_and_config_snapshot_round_trips() {
+    App::test((), |mut app| async move {
+        let (input_model, _) = build_input_model(&mut app, StubPolicy::inert(AI_UNLOCKED));
+        input_model.update(&mut app, |model, ctx| {
+            model.record_submit_route(
+                "echo a\necho b",
+                SubmitRoute::Ai,
+                RouteReason::Autodetected,
+                ctx,
+            );
+            assert_eq!(model.misroute_offer(), None);
+
+            let (config, flag) = model.input_config_snapshot();
+            model.set_input_config(SHELL_LOCKED, true, ctx);
+            model.restore_input_config(config, flag, ctx);
+            assert_eq!(model.input_config_snapshot(), (config, flag));
+        });
+    });
+}

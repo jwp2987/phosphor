@@ -649,7 +649,7 @@ impl BlocklistAIInputModel {
 
     /// Restores a previous input config without recomputing whether the lock was set while the
     /// buffer was empty.
-    fn restore_input_config(
+    pub fn restore_input_config(
         &mut self,
         new_config: InputConfig,
         was_lock_set_with_empty_buffer: bool,
@@ -1017,7 +1017,30 @@ impl BlocklistAIInputModel {
     ) {
         self.misroute
             .record_submit(text, route, reason, Instant::now());
+        self.schedule_misroute_expiry(ctx);
         ctx.notify();
+    }
+
+    /// Re-renders (observers are notified) once the current offer expires, so a stale label
+    /// disappears without waiting for some other event.
+    fn schedule_misroute_expiry(&self, ctx: &mut ModelContext<Self>) {
+        let now = Instant::now();
+        let Some(deadline) = self.misroute.offer_expires_at(now) else {
+            return;
+        };
+        let wait = deadline.saturating_duration_since(now) + std::time::Duration::from_millis(50);
+        ctx.spawn(
+            async move {
+                warpui::r#async::Timer::after(wait).await;
+            },
+            |_, _, ctx| ctx.notify(),
+        );
+    }
+
+    /// The input config and its `was_lock_set_with_empty_buffer` flag, to hand back to
+    /// [`Self::restore_input_config`] after a temporary override.
+    pub fn input_config_snapshot(&self) -> (InputConfig, bool) {
+        (self.input_config, self.was_lock_set_with_empty_buffer)
     }
 
     /// Forgets the remembered submit, e.g. for agent-view follow-ups, which are never offered
@@ -1035,7 +1058,11 @@ impl BlocklistAIInputModel {
         exit_code: warp_core::command::ExitCode,
         ctx: &mut ModelContext<Self>,
     ) {
-        if self.misroute.note_command_finished(command, exit_code) {
+        if self
+            .misroute
+            .note_command_finished(command, exit_code, Instant::now())
+        {
+            self.schedule_misroute_expiry(ctx);
             ctx.notify();
         }
     }
