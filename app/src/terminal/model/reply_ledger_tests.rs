@@ -443,3 +443,22 @@ fn a_forgotten_reply_cannot_explain_text() {
     ledger.forget_replies(b"\x1b[24;1R");
     assert_eq!(ledger.filter_report("R".into()), "R");
 }
+
+#[test]
+fn a_command_written_as_a_bracketed_paste_leaves_a_tracked_line() {
+    // How commands reach a shell with bracketed paste: kill prefix, paste markers, Enter.
+    let mut ledger = ledger_with(&[]);
+    ledger.note_input(b" \x0b\x15");
+    ledger.note_input(b"\x1b[200~bash x.sh\x1b[201~\r");
+    ledger.on_command_start();
+    ledger.note_replies(b"\x1b[24;1R");
+    ledger.note_input(b"Rx");
+    assert_eq!(ledger.filter_report("RRx".into()), "Rx");
+}
+
+#[test]
+fn bracketed_paste_markers_around_typed_text_are_transparent() {
+    let mut ledger = ledger_with(&["\x1b[24;1R"]);
+    ledger.note_input(b"\x1b[200~abc\x1b[201~");
+    assert_eq!(ledger.filter_report("Rabc".into()), "abc");
+}

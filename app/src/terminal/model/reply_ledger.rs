@@ -28,6 +28,7 @@ const MAX_USER_BYTES: usize = 4096;
 /// The shells' input reporting request (`ESC i`). It reports the line; it adds nothing to it.
 /// The longest head searched for junk ahead of residue.
 const MAX_SPLIT_SEARCH: usize = 1024;
+const BRACKETED_PASTE_MARKERS: [&str; 2] = ["\u{1b}[200~", "\u{1b}[201~"];
 const INPUT_REPORT_REQUEST: &[u8] = b"\x1bi";
 
 /// Fails safe: the ledger only ever drops text when every byte that could be in the shell's line
@@ -125,7 +126,21 @@ impl ReplyLedger {
             self.user_untracked = true;
             return;
         };
-        for ch in text.chars() {
+        let mut skip_until = 0;
+        for (index, ch) in text.char_indices() {
+            if index < skip_until {
+                continue;
+            }
+            // Bracketed paste markers only frame the text between them (commands are written
+            // that way); what is pasted lands in the line like typed text.
+            if ch == '\u{1b}'
+                && let Some(marker) = BRACKETED_PASTE_MARKERS
+                    .iter()
+                    .find(|m| text[index..].starts_with(**m))
+            {
+                skip_until = index + marker.len();
+                continue;
+            }
             let after_kill_forward =
                 std::mem::replace(&mut self.after_kill_forward, ch == '\u{0b}');
             // A Ctrl-K not followed by Ctrl-U edited the line at an unknown cursor position.
