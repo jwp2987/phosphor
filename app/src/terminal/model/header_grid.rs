@@ -660,6 +660,40 @@ impl HeaderGrid {
         }
     }
 
+    /// Replaces the command text echoed into the grid with `text`, keeping the prompt (#904).
+    ///
+    /// An agent command is typed into the shell wrapped (pager overrides, restore, status
+    /// capture), and the shell echoes all of it; the block, its title and the text handed to
+    /// the model as context should show the command the agent actually asked for. Does nothing
+    /// once the grid is finished or when the command start is unknown.
+    pub fn replace_command_text(&mut self, text: &str) {
+        let Some(CommandStartPoint::CommandStart { point }) = self.cached_command_start_point
+        else {
+            return;
+        };
+        if self.prompt_and_command_grid.finished() {
+            return;
+        }
+        // The shell's echo of Enter leaves the cursor at column 0 of a later row; keep that shape.
+        let cursor = self.prompt_and_command_grid.grid_handler().cursor_point();
+        let ended_with_newline = cursor.col == 0 && cursor.row > point.row;
+        if !self
+            .prompt_and_command_grid
+            .grid_handler_mut()
+            .truncate_from_point(point)
+        {
+            return;
+        }
+        let mut bytes = text
+            .replace("\r\n", "\n")
+            .replace('\n', "\r\n")
+            .into_bytes();
+        if ended_with_newline {
+            bytes.extend_from_slice(b"\r\n");
+        }
+        Processor::new().parse_bytes(&mut self.prompt_and_command_grid, &bytes, &mut io::sink());
+    }
+
     pub fn is_command_finished(&self) -> bool {
         self.prompt_and_command_grid.finished()
     }

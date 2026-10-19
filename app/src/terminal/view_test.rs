@@ -7734,6 +7734,66 @@ fn escape_stops_turn_and_interrupts_running_agent_command() {
     })
 }
 
+/// #899 / #900: a command that ignores ^C (a nested interactive shell) must not leave Stop
+/// doing nothing. When the interrupted command is still running after the grace period, the
+/// stop is escalated: the conversation is cancelled and the command is handed to the user.
+#[test]
+fn ignored_interrupt_of_agent_command_escalates_to_a_stop() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, conversation_id) = setup_running_agent_command(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_action(&TerminalAction::CtrlC, ctx);
+            let block_id = view.model.lock().block_list().active_block().id().clone();
+
+            // A different block is none of the escalation's business.
+            view.escalate_agent_command_that_ignored_interrupt(
+                &crate::terminal::model::block::BlockId::new(),
+                ctx,
+            );
+            assert!(
+                view.model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_agent_driving_command()
+            );
+
+            // The command is still running when the grace period ends.
+            view.escalate_agent_command_that_ignored_interrupt(&block_id, ctx);
+        });
+
+        terminal.read(&app, |view, ctx| {
+            let conversation = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&conversation_id)
+                .expect("conversation should exist");
+            assert_eq!(conversation.status(), &ConversationStatus::Cancelled);
+            assert!(
+                !view
+                    .model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_agent_driving_command(),
+                "the command is the user's after the escalated stop"
+            );
+        });
+        assert!(
+            pty_writes
+                .borrow()
+                .iter()
+                .filter(|write| **write == vec![warp_terminal::model::escape_sequences::C0::ETX])
+                .count()
+                >= 2,
+            "the escalation interrupts once more along with the stop"
+        );
+    })
+}
+
 /// Counterpart: Escape during a user's own long-running command is input for the program and
 /// must not be turned into an interrupt.
 #[test]

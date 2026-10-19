@@ -2351,6 +2351,12 @@ impl Block {
         self.header_grid.command_to_string()
     }
 
+    /// Shows `command` as this block's command in place of the text the shell echoed. See
+    /// `HeaderGrid::replace_command_text` (#904).
+    pub(super) fn replace_command_text(&mut self, command: &str) {
+        self.header_grid.replace_command_text(command);
+    }
+
     /// Returns the top-level command executed in this block.
     /// Aliases are also resolved.
     ///

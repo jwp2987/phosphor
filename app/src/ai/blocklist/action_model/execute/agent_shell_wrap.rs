@@ -18,7 +18,12 @@
 //!
 //! A command that, at its top level, would change or end the shell itself in a way a group
 //! cannot contain (`exit`, `exec`, `set -e`, `trap`, ...) keeps the subshell form; see
-//! [`needs_subshell`].
+//! [`needs_subshell`]. The exception is `exec <shell>`: in the subshell it would leave a second,
+//! unhooked interactive shell holding the terminal, so it is refused before any wrapping (see
+//! [`exec_into_shell`]).
+//!
+//! Every wrapped form carries [`HISTORY_MARKER`] (or, for fish, a leading space) so the shell's
+//! history filter keeps the wrapper out of the history file (#904).
 //!
 //! **Invariant (unchanged since e9cbc20b0): the closing token must be alone on its own
 //! line** whenever the command is multi-line, ends in a comment, or ends in `&` / `;`, or a
@@ -61,6 +66,13 @@ const OVERRIDES: &[(&str, &str)] = &[
 ];
 
 /// Names of the temporaries the bash/zsh group uses. Unlikely to collide with user code.
+/// Substring present in every bash/zsh wrapper form. The bootstrap scripts' history filters
+/// (`HISTIGNORE` in `bash_body.sh`, `_warp_zshaddhistory` in `zsh_body.sh`) match on it so the
+/// ~900-character wrapper never lands in the user's history file (#904). MATCHED PAIR with
+/// those two scripts. fish has no pattern filter; it skips lines with a leading space, which
+/// [`wrap_command`] adds.
+pub(crate) const HISTORY_MARKER: &str = "__phosphor_ap_";
+
 const MARKER_ACTIVE: &str = "__phosphor_ap_active";
 const MARKER_RC: &str = "__phosphor_ap_rc";
 
@@ -106,6 +118,14 @@ fn errexit_guard(shell_type: ShellType, action: &str) -> String {
 /// safely run in a group.
 fn posix_subshell_prelude() -> String {
     format!("unset PAGER GIT_PAGER MANPAGER; {}", posix_export())
+}
+
+/// A no-op simple command in front of the subshell. It carries [`HISTORY_MARKER`] (the group
+/// form has it in its variable names, a bare `( ... )` has none) and, for bash, it is a simple
+/// command of the user's own shell: bash's DEBUG trap, which reports `Preexec`, fires for
+/// simple commands but not for a `( ... )` list, so a bare subshell never got a `Preexec`.
+fn posix_subshell_lead() -> String {
+    format!(": {HISTORY_MARKER}subshell; ")
 }
 
 fn fish_prelude() -> String {
@@ -187,11 +207,12 @@ pub(super) fn wrap_command(shell_type: Option<ShellType>, command: &str) -> Stri
 
     match shell_type {
         ShellType::Zsh | ShellType::Bash if subshell => {
+            let lead = posix_subshell_lead();
             let prelude = posix_subshell_prelude();
             if own_line {
-                format!("({prelude}\n{command}\n)")
+                format!("{lead}({prelude}\n{command}\n)")
             } else {
-                format!("({prelude}; {command})")
+                format!("{lead}({prelude}; {command})")
             }
         }
         ShellType::Zsh | ShellType::Bash => {
@@ -219,10 +240,12 @@ pub(super) fn wrap_command(shell_type: Option<ShellType>, command: &str) -> Stri
         }
         ShellType::Fish => {
             let prelude = fish_prelude();
+            // The leading space keeps the line out of fish's history (#904); see
+            // `HISTORY_MARKER`.
             if own_line {
-                format!("begin; {prelude}\n{command}\nend")
+                format!(" begin; {prelude}\n{command}\nend")
             } else {
-                format!("begin; {prelude}; {command}; end")
+                format!(" begin; {prelude}; {command}; end")
             }
         }
         ShellType::PowerShell => {
@@ -264,6 +287,64 @@ pub(super) fn needs_subshell(shell_type: ShellType, command: &str) -> bool {
             _ => posix_command_needs_subshell(name, args),
         }
     })
+}
+
+/// Programs that, once `exec`ed, leave an interactive shell holding the terminal (#899, #900).
+const SHELL_PROGRAMS: &[&str] = &[
+    "sh", "bash", "zsh", "fish", "dash", "ksh", "mksh", "ash", "csh", "tcsh", "pwsh", "nu",
+    "xonsh", "elvish",
+];
+
+/// If `command` would, at its top level, `exec` into a shell, returns that shell's name.
+///
+/// `exec bash` replaces the process the command runs in. Unwrapped it replaces the user's own
+/// hooked shell; in the subshell form it replaces the subshell, which becomes a second
+/// interactive shell holding the terminal with none of Phosphor's hooks: the command never
+/// finishes, so the agent's tool call never returns, and ^C is ignored at its prompt (#899,
+/// #900). There is no way to run that on the agent's behalf that ends, so it is refused
+/// up front with an explanation the model can act on.
+pub(super) fn exec_into_shell(shell_type: Option<ShellType>, command: &str) -> Option<String> {
+    if shell_type == Some(ShellType::PowerShell) {
+        return None;
+    }
+    simple_commands(command).iter().find_map(|words| {
+        let (name, args) = command_name_and_args(words)?;
+        if name != "exec" {
+            return None;
+        }
+        exec_target_shell(args)
+    })
+}
+
+fn exec_target_shell(args: &[String]) -> Option<String> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--" {
+            continue;
+        }
+        if arg == "-a" {
+            // `-a NAME` sets argv[0]; the program follows.
+            iter.next();
+            continue;
+        }
+        if arg.starts_with('-') && arg.len() > 1 {
+            continue;
+        }
+        if is_assignment(arg) {
+            continue;
+        }
+        let base = arg.rsplit('/').next().unwrap_or(arg);
+        let base = base.strip_suffix(".exe").unwrap_or(base);
+        if base == "env" {
+            continue;
+        }
+        // `exec "$SHELL"` / `exec $SHELL`: the user's login shell, by definition a shell.
+        if matches!(arg.as_str(), "$SHELL" | "${SHELL}" | "$0" | "${0}") {
+            return Some("$SHELL".to_owned());
+        }
+        return SHELL_PROGRAMS.contains(&base).then(|| base.to_owned());
+    }
+    None
 }
 
 /// Words that may precede the real command name in a simple command.

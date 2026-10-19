@@ -2527,3 +2527,69 @@ fn dropped_oversized_apc_abandons_pending_kitty_transmission() {
         IsReceivingKittyActionData::No => panic!("expected a new pending transmission"),
     }
 }
+
+/// #904: an agent command typed into the shell in its wrapped form is shown, titled and handed
+/// to the model as the command the agent asked for, not the ~900-character wrapper.
+#[test]
+fn agent_display_command_replaces_the_echoed_wrapper_at_preexec() {
+    let wrapped = format!(
+        "{{ __phosphor_ap_active=1; {}; {{ git status; }} && __phosphor_ap_rc=0 || __phosphor_ap_rc=$?; }}",
+        "export PAGER=cat ".repeat(40)
+    );
+    assert!(wrapped.len() > 600);
+    for (display, expected) in [
+        ("git status", "git status"),
+        ("echo a\necho b", "echo a\necho b"),
+    ] {
+        // A grid tall enough that the whole echo stays in the visible region, as in a real
+        // window; the 10x7 default of `TerminalModel::mock` scrolls it into history.
+        let mut size = block_size();
+        size.size = crate::terminal::SizeInfo::new_without_font_metrics(40, 120);
+        let mut model = TerminalModel::new_for_test(
+            size,
+            crate::terminal::color::List::from(&crate::terminal::color::Colors::default()),
+            crate::terminal::event_listener::ChannelEventListener::new_for_test(),
+            std::sync::Arc::new(warpui::r#async::executor::Background::default()),
+            false,
+            None,
+            false,
+            false,
+            None,
+        );
+        let action_id = crate::ai::agent::AIAgentActionId::from("act-1".to_owned());
+        {
+            let block = model.block_list_mut().active_block_mut();
+            block.start();
+            block.set_agent_interaction_mode_for_requested_command(
+                action_id.clone(),
+                None,
+                AIConversationId::new(),
+            );
+        }
+        model.set_agent_display_command(action_id, display.to_owned());
+        model.process_bytes(format!("{wrapped}\r\n").as_str());
+        model.preexec(PreexecValue {
+            command: wrapped.clone(),
+            session_id: None,
+        });
+        let shown = model.block_list().active_block().command_to_string();
+        assert_eq!(shown, expected);
+        assert!(!shown.contains("__phosphor_ap_"));
+    }
+}
+
+/// Only the block of the action the display command was registered for is rewritten.
+#[test]
+fn agent_display_command_does_not_touch_other_blocks() {
+    let mut model = TerminalModel::mock(None, None);
+    model.set_agent_display_command(
+        crate::ai::agent::AIAgentActionId::from("other".to_owned()),
+        "git status".to_owned(),
+    );
+    model.block_list_mut().active_block_mut().start();
+    model.simulate_cmd("ls -la\r\n");
+    assert_eq!(
+        model.block_list().active_block().command_to_string(),
+        "ls -la"
+    );
+}

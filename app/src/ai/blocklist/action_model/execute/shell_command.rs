@@ -409,6 +409,17 @@ impl ShellCommandExecutor {
                         RequestCommandOutputResult::CancelledBeforeExecution,
                     ));
                 }
+                // `exec <shell>` would leave a second, unhooked interactive shell holding the
+                // terminal (or replace the user's own): the command never ends and ^C is ignored
+                // at its prompt (#899, #900). Refuse it with a result the model can act on.
+                if let Some(shell) = super::agent_shell_wrap::exec_into_shell(
+                    self.active_session.as_ref(ctx).shell_type(ctx),
+                    command,
+                ) {
+                    return ActionExecution::Sync(AIAgentActionResultType::RequestCommandOutput(
+                        exec_into_shell_refusal(command, &shell),
+                    ));
+                }
                 // Zap: unconditionally disable the pager for synchronous
                 // wait-until-completion commands (wait_until_completion=true).
                 //
@@ -443,9 +454,11 @@ impl ShellCommandExecutor {
                 } else {
                     command.clone()
                 };
+                let display_command = (decorated_command != *command).then(|| command.clone());
                 ctx.emit(ShellCommandExecutorEvent::ExecuteCommand {
                     action_id: action_id.clone(),
                     command: decorated_command,
+                    display_command,
                 });
 
                 let block_selector = BlockSelector::RequestedCommandId(action_id.clone());
@@ -981,6 +994,26 @@ impl ShellCommandExecutor {
         _ctx: &mut ModelContext<Self>,
     ) -> BoxFuture<'static, ()> {
         futures::future::ready(()).boxed()
+    }
+}
+
+/// The tool result for a refused `exec <shell>` (see [`super::agent_shell_wrap::exec_into_shell`]).
+/// It is a failed completion rather than a new result kind so it reaches every provider's
+/// tool-result encoding unchanged.
+fn exec_into_shell_refusal(command: &str, shell: &str) -> RequestCommandOutputResult {
+    RequestCommandOutputResult::Completed {
+        block_id: BlockId::new(),
+        command: command.to_owned(),
+        output: format!(
+            "The command was not run. `exec {shell}` replaces the terminal's shell with a new \
+             interactive one that never exits on its own, so this tool call could never \
+             finish and the user would lose their terminal session. To run something in a \
+             different shell, use a non-interactive invocation instead, for example \
+             `{shell} -c '<commands>'`, or just run the commands directly."
+        ),
+        exit_code: ExitCode::from(1),
+        start_ts: None,
+        completed_ts: None,
     }
 }
 
@@ -1573,6 +1606,9 @@ pub enum ShellCommandExecutorEvent {
     ExecuteCommand {
         action_id: AIAgentActionId,
         command: String,
+        /// The command the agent asked for, when `command` is a wrapped form of it: what the
+        /// block, the tab title and the model's context should show (#904).
+        display_command: Option<String>,
     },
     WriteToPty {
         input: Bytes,

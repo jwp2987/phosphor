@@ -1,3 +1,4 @@
+use crate::ai::agent::AIAgentActionId;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::blocklist::SerializedBlockListItem;
 use crate::terminal::available_shells::AvailableShell;
@@ -478,6 +479,9 @@ pub struct TerminalModel {
     /// (`FeatureFlag::TypeaheadHandoff`). Kept here so every routing and request decision is made
     /// under the model lock.
     typeahead_handoff: TypeaheadHandoff,
+    /// The command the user should see for an agent command typed into the shell in a wrapped
+    /// form, by the action that requested it (#904). Consumed at preexec.
+    agent_display_commands: HashMap<AIAgentActionId, String>,
     /// Whether the blocklist has been cleared in the lifetime of this terminal model.
     pub blocklist_has_been_cleared: bool,
 
@@ -1190,6 +1194,7 @@ impl TerminalModel {
             block_list,
             lifecycle_coordinator: BlockLifecycleCoordinator::default(),
             typeahead_handoff: TypeaheadHandoff::default(),
+            agent_display_commands: HashMap::new(),
             blocklist_has_been_cleared: false,
             alt_screen_active: false,
             title_stack: Vec::new(),
@@ -2734,7 +2739,28 @@ impl TerminalModel {
         });
     }
 
-    fn apply_preexec(&mut self, data: PreexecValue) {
+    /// Records the command to show for the agent command `action_id`, which is about to be
+    /// typed into the shell in a wrapped form (#904).
+    pub fn set_agent_display_command(&mut self, action_id: AIAgentActionId, command: String) {
+        // Entries are consumed at preexec; bound the leftovers of commands that never ran.
+        if self.agent_display_commands.len() >= 32 {
+            self.agent_display_commands.clear();
+        }
+        self.agent_display_commands.insert(action_id, command);
+    }
+
+    fn apply_preexec(&mut self, mut data: PreexecValue) {
+        let display_command = self
+            .block_list
+            .active_block()
+            .requested_command_action_id()
+            .and_then(|action_id| self.agent_display_commands.remove(action_id));
+        if let Some(display_command) = display_command {
+            self.block_list
+                .active_block_mut()
+                .replace_command_text(&display_command);
+            data.command = display_command;
+        }
         if FeatureFlag::TypeaheadHandoff.is_enabled() {
             // A block nobody started is a line the shell read from the tty itself: typeahead.
             let active_block = self.block_list.active_block();
