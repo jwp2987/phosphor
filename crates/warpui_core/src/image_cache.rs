@@ -323,6 +323,15 @@ fn decode_limits() -> image::Limits {
     limits
 }
 
+/// Estimates the memory an SVG costs the asset cache: the RGBA bytes of one rasterisation at its
+/// intrinsic size. The parsed tree has no cheap exact size, but without an estimate SVGs counted
+/// as zero bytes and bypassed the cache budget entirely (#880).
+fn svg_rasterized_byte_estimate(width: f32, height: f32) -> usize {
+    let pixels = (f64::from(width.max(0.)) * f64::from(height.max(0.))).ceil();
+    // Float to int casts saturate, and NaN becomes 0.
+    (pixels * 4.) as usize
+}
+
 /// Fails unless a `width` x `height` RGBA frame is within the decode limits.
 fn check_decoded_size(width: u32, height: u32) -> Result<()> {
     if width > MAX_DECODED_IMAGE_DIMENSION || height > MAX_DECODED_IMAGE_DIMENSION {
@@ -407,7 +416,14 @@ impl Asset for ImageType {
                 fontdb: SVG_FONT_DB.clone(),
                 ..Default::default()
             };
-            let svg = Rc::new(usvg::Tree::from_data(data, &options)?);
+            let svg = usvg::Tree::from_data(data, &options)?;
+            let bytes = svg_rasterized_byte_estimate(svg.size().width(), svg.size().height());
+            if bytes as u64 > MAX_DECODED_IMAGE_BYTES {
+                return Err(anyhow!(
+                    "SVG would rasterise to {bytes} bytes, over the {MAX_DECODED_IMAGE_BYTES} limit"
+                ));
+            }
+            let svg = Rc::new(svg);
             return Ok(ImageType::Svg { svg });
         }
 
@@ -506,7 +522,9 @@ impl Asset for ImageType {
 
     fn size_in_bytes(&self) -> usize {
         match self {
-            ImageType::Svg { .. } => 0, // TODO: How do we calculate svg size in bytes?
+            ImageType::Svg { svg } => {
+                svg_rasterized_byte_estimate(svg.size().width(), svg.size().height())
+            }
             ImageType::StaticBitmap { image } => image.rgba_bytes().len(),
             ImageType::AnimatedBitmap { image } => image
                 .frames

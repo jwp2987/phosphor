@@ -48,7 +48,7 @@ ROOT_FILES = {"mod.rs", "lib.rs", "main.rs"}
 # string literals (e.g. diff_validation/mod_test.rs builds a `mod proxy;`
 # fixture inside a &str), which a line scanner cannot distinguish from a real
 # declaration without parsing.
-SKIP_PREFIXES = ("lib/rust-genai/", "vendor/")
+SKIP_PREFIXES = ("lib/rust-genai/", "lib/cosmic-text/", "vendor/")
 SKIP_SUBSTRINGS = ("/test_data/",)
 
 

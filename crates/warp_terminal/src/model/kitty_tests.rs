@@ -91,9 +91,15 @@ fn size_that_wraps_to_zero_is_not_accepted() {
 fn dimension_cap_boundary() {
     let max = MAX_KITTY_IMAGE_DIMENSION;
 
-    // At the cap the dimensions are fine; the (empty) payload is what's wrong.
-    let result = kitty_action_from_chunks(format!("a=t,f=32,s={max},v={max}").as_bytes());
+    // At the dimension cap (with the other side small enough to stay under the byte cap) the
+    // dimensions are fine; the (empty) payload is what's wrong.
+    let result = kitty_action_from_chunks(format!("a=t,f=32,s={max},v=1").as_bytes());
     assert!(is_size_mismatch(&result), "{result:?}");
+
+    // A square at the cap would be 400 MB of RGBA, over the byte cap (#880, which is kept
+    // under the image cache's 320 MB budget), so it is rejected up front too.
+    let result = kitty_action_from_chunks(format!("a=t,f=32,s={max},v={max}").as_bytes());
+    assert!(is_dimensions_too_large(&result), "{result:?}");
 
     // One past the cap in either dimension is rejected up front.
     for control in [
@@ -104,20 +110,26 @@ fn dimension_cap_boundary() {
         assert!(is_dimensions_too_large(&result), "{control}: {result:?}");
     }
 
-    // The byte cap is exactly a cap-sized RGBA square.
+    // The byte cap is exactly an 8192x8192 RGBA square, and it stays under the
+    // asset cache's 320 MB budget.
+    assert!(MAX_KITTY_IMAGE_BYTES < 320 * 1000 * 1000);
+    let side = 8192;
     let mut control_data = KittyControlData {
-        width: max,
-        height: max,
+        width: side,
+        height: side,
         ..Default::default()
     };
     assert_eq!(
         raw_pixel_byte_count(&control_data).unwrap(),
         Some(MAX_KITTY_IMAGE_BYTES)
     );
+    control_data.height = side + 1;
+    assert!(raw_pixel_byte_count(&control_data).is_err());
+    control_data.height = side;
     control_data.pixel_data_format = KittyPixelDataFormat::Rgb24Bit;
     assert_eq!(
         raw_pixel_byte_count(&control_data).unwrap(),
-        Some(3 * max as usize * max as usize)
+        Some(3 * side as usize * side as usize)
     );
     control_data.pixel_data_format = KittyPixelDataFormat::Png;
     control_data.width = u32::MAX;
@@ -309,4 +321,92 @@ fn f100_rejects_non_png_payloads() {
     let control = format!("a=t,f=100;{payload}");
     let result = kitty_action_from_chunks(control.as_bytes());
     assert!(result.is_err(), "{result:?}");
+}
+
+#[cfg(feature = "local_fs")]
+mod file_read {
+    use super::*;
+    use std::time::Duration;
+
+    /// #824: a stalled read must not hold the caller past the deadline.
+    #[test]
+    fn run_with_timeout_gives_up_on_a_stalled_worker() {
+        let started = std::time::Instant::now();
+        let result = run_with_timeout(Duration::from_millis(20), || {
+            std::thread::sleep(Duration::from_secs(5));
+            1
+        });
+        assert!(result.is_none());
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn run_with_timeout_returns_the_result_of_fast_work() {
+        assert_eq!(run_with_timeout(Duration::from_secs(5), || 7), Some(7));
+    }
+
+    /// #824: the in-flight cap refuses past its limit and frees slots on release.
+    #[test]
+    fn slot_cap_refuses_past_the_limit() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let counter = AtomicUsize::new(0);
+        for _ in 0..3 {
+            assert!(try_acquire_slot(&counter, 3));
+        }
+        assert!(!try_acquire_slot(&counter, 3));
+        counter.fetch_sub(1, Ordering::AcqRel);
+        assert!(try_acquire_slot(&counter, 3));
+        assert_eq!(counter.load(Ordering::Acquire), 3);
+    }
+
+    /// #824: a helper that finishes releases its slot.
+    #[test]
+    fn finished_helper_releases_its_slot() {
+        let before = IN_FLIGHT_FILE_READS.load(std::sync::atomic::Ordering::Acquire);
+        assert_eq!(run_with_timeout(Duration::from_secs(5), || 1), Some(1));
+        // The guard drops right after the send; give the thread a moment.
+        for _ in 0..100 {
+            if IN_FLIGHT_FILE_READS.load(std::sync::atomic::Ordering::Acquire) <= before {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("in-flight slot was never released");
+    }
+
+    /// #824: an abandoned `t=t` read must leave the temp file alone.
+    #[test]
+    fn abandoned_temp_read_does_not_delete_the_file() {
+        use std::sync::atomic::AtomicBool;
+        let dir = std::env::temp_dir();
+        let path = dir.join("kitty-abandon-test-tty-graphics-protocol.png");
+        std::fs::write(&path, b"x").unwrap();
+        let abandoned = AtomicBool::new(true);
+        let _ = read_file_blocking(path.to_str().unwrap().as_bytes().to_vec(), true, &abandoned);
+        assert!(path.exists());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A regular file named by `t=f` is still read (now on a helper thread).
+    #[test]
+    fn simple_file_is_read_off_thread() {
+        let dir = env::temp_dir().join(format!("kitty-read-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("image.bin");
+        fs::write(&path, b"pixels").unwrap();
+
+        let data = read_file(path.to_str().unwrap().as_bytes().to_vec(), false);
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(data.unwrap(), b"pixels");
+    }
+
+    /// A nonexistent file is an error reply, not a hang or a panic.
+    #[test]
+    fn missing_file_is_an_error() {
+        let result = read_file(b"/nonexistent/kitty-read-test".to_vec(), false);
+        assert!(matches!(
+            result,
+            Err(InvalidKittyPayload::FileError(FileError::FileReadError(_)))
+        ));
+    }
 }

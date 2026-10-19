@@ -21,10 +21,12 @@ use super::escape_sequences::C1;
 pub const MAX_KITTY_IMAGE_DIMENSION: u32 = 10_000;
 
 /// The most image bytes a single kitty transmission may decode to, whatever
-/// the medium (direct payload, zlib output, file, shared memory). Matches
-/// kitty's own `MAX_DATA_SZ` and is exactly a `MAX_KITTY_IMAGE_DIMENSION`
-/// square RGBA image.
-pub const MAX_KITTY_IMAGE_BYTES: usize = 400_000_000;
+/// the medium (direct payload, zlib output, file, shared memory). Equal to
+/// `MAX_DECODED_IMAGE_BYTES` (exactly an 8192x8192 RGBA image), which sits under
+/// the asset cache's 320 MB budget, so an accepted image is never decoded only
+/// to be evicted straight away (#880). Kitty's own `MAX_DATA_SZ` is 400 MB, so a
+/// raw image between the two sizes that kitty accepts is refused here.
+pub const MAX_KITTY_IMAGE_BYTES: usize = warpui::image_cache::MAX_DECODED_IMAGE_BYTES as usize;
 
 /// The most base64 text one kitty transmission may accumulate across all its
 /// chunks (and the most a single APC sequence may buffer) before the terminal
@@ -811,8 +813,112 @@ pub fn parse_kitty_chunk(chunk: &[u8]) -> KittyChunk {
     }
 }
 
+/// The longest the pty/model thread waits for a `t=f` / `t=t` file to be
+/// validated and read (#824). The read is size-capped and cannot block on a
+/// FIFO, but a file on a hung network mount still can.
+#[cfg(feature = "local_fs")]
+const KITTY_FILE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Most detached `kitty-file-read` helpers allowed to be alive at once. A
+/// helper stuck on a hung mount never exits, so without a cap a program that
+/// keeps printing `t=f` sequences leaks one thread per sequence (#824).
+#[cfg(feature = "local_fs")]
+const MAX_IN_FLIGHT_FILE_READS: usize = 8;
+
+/// Helpers currently alive (running or stuck).
+#[cfg(feature = "local_fs")]
+static IN_FLIGHT_FILE_READS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Claims a slot in `counter` if fewer than `max` are taken.
+#[cfg(feature = "local_fs")]
+fn try_acquire_slot(counter: &std::sync::atomic::AtomicUsize, max: usize) -> bool {
+    use std::sync::atomic::Ordering;
+    counter
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            (n < max).then_some(n + 1)
+        })
+        .is_ok()
+}
+
+/// Releases the in-flight slot when the helper finishes, even on panic.
+#[cfg(feature = "local_fs")]
+struct SlotGuard(&'static std::sync::atomic::AtomicUsize);
+
+#[cfg(feature = "local_fs")]
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// Runs `work` on a helper thread and waits at most `timeout` for its result.
+/// On timeout the helper is detached (it finishes, or stays stuck, on its own
+/// without holding up the caller) and `None` is returned. `None` is also
+/// returned, without spawning, when too many helpers are already in flight.
+#[cfg(feature = "local_fs")]
+fn run_with_timeout<T: Send + 'static>(
+    timeout: std::time::Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    if !try_acquire_slot(&IN_FLIGHT_FILE_READS, MAX_IN_FLIGHT_FILE_READS) {
+        return None;
+    }
+    let guard = SlotGuard(&IN_FLIGHT_FILE_READS);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    // If the spawn fails the closure (and its guard) is dropped, releasing the slot.
+    std::thread::Builder::new()
+        .name("kitty-file-read".to_owned())
+        .spawn(move || {
+            let _guard = guard;
+            let _ = sender.send(work());
+        })
+        .ok()?;
+    receiver.recv_timeout(timeout).ok()
+}
+
+/// Reads the file a `t=f` / `t=t` transmission names, off the pty/model thread
+/// and with a deadline, so a stalled filesystem cannot freeze the terminal (#824).
 #[cfg(feature = "local_fs")]
 fn read_file(decoded_payload: Vec<u8>, is_temp: bool) -> Result<Vec<u8>, InvalidKittyPayload> {
+    read_file_with_timeout(decoded_payload, is_temp, KITTY_FILE_READ_TIMEOUT)
+}
+
+#[cfg(feature = "local_fs")]
+fn read_file_with_timeout(
+    decoded_payload: Vec<u8>,
+    is_temp: bool,
+    timeout: std::time::Duration,
+) -> Result<Vec<u8>, InvalidKittyPayload> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    if IN_FLIGHT_FILE_READS.load(Ordering::Acquire) >= MAX_IN_FLIGHT_FILE_READS {
+        return Err(InvalidKittyPayload::FileError(FileError::FileReadError(
+            "too many file reads are stuck; refusing another".to_owned(),
+        )));
+    }
+    // Set once the caller has stopped waiting; a late helper must not then
+    // delete a `t=t` temp file nobody will ever use the data from.
+    let abandoned = Arc::new(AtomicBool::new(false));
+    let helper_abandoned = abandoned.clone();
+    run_with_timeout(timeout, move || {
+        read_file_blocking(decoded_payload, is_temp, &helper_abandoned)
+    })
+    .unwrap_or_else(|| {
+        abandoned.store(true, Ordering::Release);
+        Err(InvalidKittyPayload::FileError(FileError::FileReadError(
+            "timed out reading the file".to_owned(),
+        )))
+    })
+}
+
+#[cfg(feature = "local_fs")]
+fn read_file_blocking(
+    decoded_payload: Vec<u8>,
+    is_temp: bool,
+    abandoned: &std::sync::atomic::AtomicBool,
+) -> Result<Vec<u8>, InvalidKittyPayload> {
     let path = match str::from_utf8(&decoded_payload[..]) {
         Ok(path) => path,
         Err(err) => return Err(KittyDecodeError::InvalidUtf8(err.to_string()).into()),
@@ -841,7 +947,7 @@ fn read_file(decoded_payload: Vec<u8>, is_temp: bool) -> Result<Vec<u8>, Invalid
         }
     };
 
-    if is_temp {
+    if is_temp && !abandoned.load(std::sync::atomic::Ordering::Acquire) {
         safe_delete_temp_file(path);
     }
 

@@ -776,8 +776,9 @@ upstream's behavior is actually a defect rather than a preference.
       edit stays on the card and in the pending action.
 
   **Not done here:**
-  - The renderer bug itself (in `fonts.rs` / cosmic-text) still affects any other text with a
-    word over 16,384 chars, including the card's edit-mode editor.
+  - The renderer bug itself is fixed (#864): `lib/cosmic-text` is vendored with the empty-run
+    shaping skipped (`lib/cosmic-text/CHANGES-PHOSPHOR.md`), so no text surface drops a word over
+    16,384 chars any more. The card's display-only break points above stay as defence in depth.
   - This entry covers the GUI card only. The TUI shell command view draws its own editor in
     terminal cells, and its accept marks the text it runs as shown. Whether it can hide part
     of a command is tracked in #865.
@@ -943,17 +944,21 @@ upstream's behavior is actually a defect rather than a preference.
   (`CustomImageFormat::expected_byte_count`) and an overflow is an error reply. A raw RGB/RGBA
   transmission whose `s`/`v` exceed `MAX_KITTY_IMAGE_DIMENSION` (10000) is rejected before its
   medium is read or its payload decompressed -- a direct payload has already been base64-decoded
-  by then, under the `MAX_KITTY_IMAGE_BYTES` (400 MB) cap on the assembled chunks. zlib output
-  is bounded by the byte count `s`/`v` declare (by the 400 MB cap for PNG). Both limits are
-  kitty's own, so nothing kitty accepts is refused here. Kitty desired dimensions are fitted
+  by then, under the `MAX_KITTY_IMAGE_BYTES` (268 MB, an 8192x8192 RGBA image, equal to
+  `MAX_DECODED_IMAGE_BYTES` and under the 320 MB image-cache budget so an accepted image is never
+  evicted at once, #880) cap on the assembled chunks. zlib output is bounded by the byte count
+  `s`/`v` declare (by the byte cap for PNG). The dimension limit is kitty's own; kitty's 400 MB
+  data limit is lowered, so a raw image over 268 MB that kitty accepts is refused here. Kitty desired dimensions are fitted
   inside the remaining columns and `MAX_IMAGE_CELL_HEIGHT` rows (aspect kept when only one of
   `c`/`r` is given), as iTerm's already were; cell-count products saturate. **Not covered:**
   the file and shared-memory media (`t=f`/`t=t`/`t=s`) are latent -- default builds
-  leave the app's `local_fs` feature off. If enabled, their reads are capped at 400 MB, must
+  leave the app's `local_fs` feature off. If enabled, their reads are capped at `MAX_KITTY_IMAGE_BYTES`, must
   resolve (symlinks followed) to a regular file outside `/proc`, `/sys` and `/dev` (so a FIFO
   never blocks), and `t=t` needs a temp-dir path containing `tty-graphics-protocol` (#824);
-  still read on the pty thread. Raw APC bytes and chunked transmissions are capped at
-  `MAX_KITTY_BASE64_BYTES` (the base64 size of 400 MB) before completion; past it the
+  the path check and read run on a helper thread with a 2 s deadline (`KITTY_FILE_READ_TIMEOUT`), so
+  a stalled filesystem cannot freeze the pty thread; base64/zlib decoding is still on it (bounded by
+  the size caps) and the placement is still applied synchronously. Raw APC bytes and chunked transmissions are capped at
+  `MAX_KITTY_BASE64_BYTES` (the base64 size of `MAX_KITTY_IMAGE_BYTES`) before completion; past it the
   transmission is dropped with an error reply (#877). Kitty `f=100` accepts only PNG, and
   pty-supplied image sizes (kitty and iTerm) are read from the header only; GIF/WebP/PNG/JPEG
   decoding is bounded by `MAX_DECODED_IMAGE_DIMENSION` and `MAX_DECODED_IMAGE_BYTES` (#880).

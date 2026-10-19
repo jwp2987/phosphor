@@ -865,3 +865,27 @@ fn header_dimensions_match_decoded_dimensions() {
         .unwrap();
     assert_eq!(from_header, decoded);
 }
+
+/// #880: SVGs used to report 0 bytes and so bypassed the asset cache budget.
+#[test]
+fn svg_size_is_estimated_from_rasterized_dimensions() {
+    assert_eq!(svg_rasterized_byte_estimate(20., 10.), 800);
+    assert_eq!(svg_rasterized_byte_estimate(0.5, 0.5), 4);
+    assert_eq!(svg_rasterized_byte_estimate(-5., 10.), 0);
+    assert_eq!(svg_rasterized_byte_estimate(f32::NAN, 10.), 0);
+    assert!(svg_rasterized_byte_estimate(f32::MAX, f32::MAX) >= MAX_DECODED_IMAGE_BYTES as usize);
+
+    let svg = br##"<svg width="20" height="10" viewBox="0 0 20 10" xmlns="http://www.w3.org/2000/svg"><rect width="20" height="10" fill="#ffffff"/></svg>"##;
+    let image = <ImageType as Asset>::try_from_bytes(svg).unwrap();
+    assert!(matches!(image, ImageType::Svg { .. }));
+    assert_eq!(image.size_in_bytes(), 20 * 10 * 4);
+}
+
+#[test]
+fn test_oversized_svg_is_rejected_at_parse_time() {
+    // 10_000 x 10_000 x 4 = 400 MB, over MAX_DECODED_IMAGE_BYTES.
+    let huge = br##"<svg width="10000" height="10000" xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>"##;
+    assert!(ImageType::try_from_bytes(huge).is_err());
+    let small = br##"<svg width="20" height="10" xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>"##;
+    assert!(ImageType::try_from_bytes(small).is_ok());
+}
