@@ -1442,6 +1442,30 @@ impl Session {
             .map(Deref::deref)
     }
 
+    /// Whether this session's shell would recognise `word` as the head of a command: an alias,
+    /// function, builtin, keyword or abbreviation reported by this session's bootstrap, or an
+    /// executable on its `$PATH` (#833). `None` when the session cannot say -- the `$PATH` scan
+    /// has not succeeded yet, or the bootstrap carried no builtin list (every real shell has
+    /// some, so an empty set means the data never arrived). A caller must treat `None` as
+    /// "do not guess". Each subshell and ssh session is its own `Session`, so this is always
+    /// the answer for the shell the user is typing into.
+    pub fn knows_command_word(&self, word: &str) -> Option<bool> {
+        if !self.has_loaded_external_commands() || self.info.builtins.is_empty() {
+            return None;
+        }
+        let case_insensitive = matches!(
+            self.command_case_sensitivity,
+            TopLevelCommandCaseSensitivity::CaseInsensitive
+        );
+        Some(self.top_level_commands().any(|name| {
+            if case_insensitive {
+                name.eq_ignore_ascii_case(word)
+            } else {
+                name == word
+            }
+        }))
+    }
+
     pub fn path(&self) -> &Option<String> {
         &self.info.path
     }

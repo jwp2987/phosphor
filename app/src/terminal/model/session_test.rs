@@ -462,3 +462,45 @@ fn a_failed_enumeration_leaves_the_bootstrap_names_intact() {
         }
     });
 }
+
+fn session_with_known_names(shell_type: ShellType) -> Arc<Session> {
+    let info = SessionInfo::new_for_test()
+        .with_shell_type(shell_type)
+        .with_aliases(HashMap::from([(SmolStr::from("ll"), "ls -l".to_owned())]))
+        .with_function_names(names(&["myfunc"]))
+        .with_builtins(names(&["cd", "echo"]));
+    Arc::new(Session::new(info, RecordingCommandExecutor::failing()))
+}
+
+#[test]
+fn knows_command_word_covers_aliases_functions_builtins_and_path_executables() {
+    App::test((), |_app| async move {
+        let session = session_with_known_names(ShellType::Bash);
+        session.set_external_commands(["git"]);
+        for known in ["ll", "myfunc", "cd", "git"] {
+            assert_eq!(session.knows_command_word(known), Some(true), "{known}");
+        }
+        for unknown in ["summarize", "frobnicate", "tell"] {
+            assert_eq!(
+                session.knows_command_word(unknown),
+                Some(false),
+                "{unknown}"
+            );
+        }
+    });
+}
+
+#[test]
+fn knows_command_word_declines_to_answer_without_session_data() {
+    App::test((), |_app| async move {
+        // The $PATH scan has not landed.
+        let session = session_with_known_names(ShellType::Bash);
+        assert_eq!(session.knows_command_word("summarize"), None);
+
+        // The bootstrap carried no builtin list.
+        let info = SessionInfo::new_for_test().with_shell_type(ShellType::Zsh);
+        let session = Arc::new(Session::new(info, RecordingCommandExecutor::failing()));
+        session.set_external_commands(["git"]);
+        assert_eq!(session.knows_command_word("summarize"), None);
+    });
+}

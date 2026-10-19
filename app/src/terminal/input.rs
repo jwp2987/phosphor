@@ -12041,8 +12041,16 @@ impl Input {
                 parsed_tokens: Vec::new(),
             },
         };
+        // #833: only the active session's own bootstrap data can say its shell does not know the
+        // first word; anything the session cannot answer keeps the inherited type.
+        let head_unknown_to_shell = snapshot
+            .buffer_text
+            .split_whitespace()
+            .next()
+            .zip(self.active_session(ctx))
+            .is_some_and(|(word, session)| session.knows_command_word(word) == Some(false));
         self.ai_input_model.update(ctx, |model, ctx| {
-            model.settle_pending_detection_for_submit(&snapshot, ctx);
+            model.settle_pending_detection_for_submit(&snapshot, head_unknown_to_shell, ctx);
         });
     }
 
