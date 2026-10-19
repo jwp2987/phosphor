@@ -1018,7 +1018,7 @@ fn estimated_command_rows_counts_lines_and_soft_wraps() {
     assert_eq!(super::estimated_command_rows("echo hi"), 1);
     assert_eq!(super::estimated_command_rows("a\nb\nc\nd\ne"), 5);
     assert_eq!(super::estimated_command_rows("a\n\n\n\n\n\npayload"), 7);
-    assert_eq!(super::estimated_command_rows(&"x".repeat(200)), 5);
+    assert_eq!(super::estimated_command_rows(&"x".repeat(200)), 13);
 }
 
 #[test]
@@ -1029,4 +1029,89 @@ fn command_review_note_reports_hidden_rows() {
     assert!(note.contains("more rows"), "{note}");
     let short = super::command_review_note("a\nb\nc\nd\ne", 5, 5);
     assert!(short.contains("shown in full"), "{short}");
+}
+
+#[test]
+fn command_too_long_message_names_the_line_count_and_the_editor_key() {
+    let message = super::command_too_long_message(57);
+    assert!(
+        message.contains("too long to review here (57 lines)"),
+        "{message}"
+    );
+    assert!(message.contains("Press e"), "{message}");
+}
+
+/// #865: a command beyond `COMMAND_REVIEW_MAX_ROWS` is never run by Accept alone. It stays
+/// pending until the user has been in the editor on that exact text, and an edit re-arms it.
+#[test]
+fn over_long_command_stays_gated_until_opened_in_the_editor() {
+    App::test((), |mut app| async move {
+        app.update(super::init);
+        let command = (0..40)
+            .map(|i| format!("echo line-{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let action = command_action("action-long", &command);
+        let view = add_shell_view(
+            &mut app,
+            action.clone(),
+            Arc::new(FairMutex::new(TerminalModel::mock(None, None))),
+        );
+        let (action_model, conversation_id) = app.read(|ctx| {
+            let view = view.as_ref(ctx);
+            (view.action_model.clone(), view.conversation_id)
+        });
+        action_model.update(&mut app, |model, ctx| {
+            queue_tui_permission_action(model, action.clone(), conversation_id, ctx);
+        });
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| {
+                view.as_ref(ctx)
+                    .permission_prompt
+                    .as_ref(ctx)
+                    .is_active(ctx)
+            })
+        })
+        .await;
+
+        let still_pending = |app: &App| {
+            app.read(|ctx| {
+                let model = action_model.as_ref(ctx);
+                model
+                    .get_pending_actions_for_conversation(&conversation_id)
+                    .any(|pending| pending.id == action.id)
+                    && model.get_action_result(&action.id).is_none()
+            })
+        };
+
+        // First and second Accept are both refused: the command was never opened in the editor.
+        for _ in 0..2 {
+            view.update(&mut app, |view, ctx| view.accept(ctx));
+            assert!(still_pending(&app));
+        }
+        app.read(|ctx| assert!(view.as_ref(ctx).opened_in_editor.is_none()));
+
+        // Opening the editor and leaving it records the reviewed text.
+        let prompt = app.read(|ctx| view.as_ref(ctx).permission_prompt.clone());
+        prompt.update(&mut app, |prompt, ctx| {
+            prompt.handle_action(&TuiPermissionPromptAction::EditBody, ctx);
+        });
+        view.update(&mut app, |view, ctx| {
+            view.handle_action(&TuiShellCommandViewAction::SaveCommandEdit, ctx)
+        });
+        app.read(|ctx| {
+            assert_eq!(
+                view.as_ref(ctx).opened_in_editor.as_deref(),
+                Some(command.as_str())
+            );
+        });
+
+        // An edit changes the text, so the gate re-arms and Accept is refused again.
+        let editor = app.read(|ctx| view.as_ref(ctx).command_editor.clone());
+        editor.update(&mut app, |editor, ctx| {
+            editor.set_text(format!("{command}\necho appended"), ctx)
+        });
+        view.update(&mut app, |view, ctx| view.accept(ctx));
+        assert!(still_pending(&app));
+    });
 }

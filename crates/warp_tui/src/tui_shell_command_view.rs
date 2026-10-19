@@ -46,8 +46,9 @@ const COMMAND_EDITOR_ROWS: u32 = 4;
 /// Most rows the editor grows to when a long command must be reviewed before it runs.
 const COMMAND_REVIEW_MAX_ROWS: u32 = 24;
 /// Assumed soft-wrap width when estimating how many rows a command needs. Deliberately narrow so
-/// the estimate errs towards gating.
-const COMMAND_REVIEW_WRAP_COLS: usize = 40;
+/// the estimate errs towards gating: the card padding leaves roughly terminal width minus 8 for
+/// the editor, so a narrow terminal wraps far earlier than 40 columns.
+const COMMAND_REVIEW_WRAP_COLS: usize = 16;
 const SHELL_COMMAND_EDITING: &str = "TuiShellCommandEditing";
 
 pub(crate) fn init(app: &mut AppContext) {
@@ -139,6 +140,9 @@ pub(super) struct TuiShellCommandView {
     command_was_edited: bool,
     /// The exact command text the user was shown in the expanded editor (#865).
     reviewed_command: Option<String>,
+    /// The exact command text that was on screen when the user left the editor view (`e`). A
+    /// command estimated beyond `COMMAND_REVIEW_MAX_ROWS` cannot be accepted until this matches.
+    opened_in_editor: Option<String>,
     state: ShellCommandViewState,
     command_running: Cell<bool>,
     header_mouse_state: MouseStateHandle,
@@ -170,6 +174,14 @@ fn estimated_command_rows(command: &str) -> u32 {
                 .max(1) as u32
         })
         .sum()
+}
+
+/// The refusal shown when a command is too long to review inside the approval card.
+fn command_too_long_message(lines: usize) -> String {
+    format!(
+        "This command is too long to review here ({lines} lines). Press e to open it in the \
+         editor and read it fully before accepting."
+    )
 }
 
 /// The note shown under the expanded editor, with counts for anything still out of view.
@@ -249,6 +261,7 @@ impl TuiShellCommandView {
             permission_prompt,
             command_was_edited: false,
             reviewed_command: None,
+            opened_in_editor: None,
             state: ShellCommandViewState::new_collapsed(),
             command_running: Cell::new(false),
             header_mouse_state: MouseStateHandle::default(),
@@ -307,6 +320,9 @@ impl TuiShellCommandView {
         // update to this same action is a genuinely new revision, not the
         // edit we just applied, so allow `update_action` to resync again.
         self.command_was_edited = false;
+        // The user has been in the editor with this exact text (any later edit changes it and
+        // re-arms the over-long gate in `accept`).
+        self.opened_in_editor = Some(self.command_editor.as_ref(ctx).text(ctx));
         self.permission_prompt
             .update(ctx, |prompt, ctx| prompt.restore_options_focus(ctx));
         self.invalidate_layout(ctx);
@@ -322,6 +338,22 @@ impl TuiShellCommandView {
             return;
         }
         let rows = estimated_command_rows(&command);
+        if rows > COMMAND_REVIEW_MAX_ROWS
+            && self.opened_in_editor.as_deref() != Some(command.as_str())
+        {
+            // Even the grown editor cannot show this command, so a second Accept must not run it
+            // unseen. Stay gated until the user has opened the editor on this exact text (#865).
+            self.command_editor.update(ctx, |editor, ctx| {
+                editor.set_viewport_rows(COMMAND_REVIEW_MAX_ROWS, ctx)
+            });
+            self.reviewed_command = Some(command.clone());
+            let lines = command.split('\n').count();
+            self.permission_prompt.update(ctx, |prompt, ctx| {
+                prompt.set_body_error(Some(command_too_long_message(lines)), ctx);
+            });
+            self.invalidate_layout(ctx);
+            return;
+        }
         if rows > COMMAND_EDITOR_ROWS && self.reviewed_command.as_deref() != Some(command.as_str())
         {
             // The 4-row editor may be hiding part of this command (extra lines, a long line,

@@ -98,6 +98,12 @@ impl TuiEditorBehavior {
         self
     }
 
+    /// Returns this behavior with a different number of visible rows, keeping every other field.
+    pub(crate) const fn with_viewport_rows(mut self, viewport_rows: u32) -> Self {
+        self.viewport_rows = viewport_rows;
+        self
+    }
+
     /// Returns the number of visible editor rows.
     pub(crate) const fn viewport_rows(self) -> u32 {
         self.viewport_rows

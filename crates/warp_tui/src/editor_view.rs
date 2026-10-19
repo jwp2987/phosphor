@@ -89,7 +89,7 @@ impl TuiEditorView {
 
     /// Changes how many rows the multiline viewport shows.
     pub(crate) fn set_viewport_rows(&mut self, viewport_rows: u32, ctx: &mut ViewContext<Self>) {
-        self.editor_behavior = TuiEditorBehavior::multiline(viewport_rows);
+        self.editor_behavior = self.editor_behavior.with_viewport_rows(viewport_rows);
         ctx.notify();
     }
 
