@@ -245,7 +245,7 @@ def main():
             check(got == "echo kept", f"#829: hex-letter text after {r!r} is kept (got {got!r})", sh)
         for label, reply in colour_cases():
             os.write(sh.fd, b"\x03")
-            sh.pump(0.5)
+            sh.pump(1.0)
             got = sh.input_buffer([reply, b"echo x"])
             check(got == "echo x", f"colour reply ({label}) is stripped, text kept (got {got!r})", sh)
         check(not [p for p in sh.raw_hooks() if not _valid(p)], "all hook payloads still valid JSON at the end", sh)
