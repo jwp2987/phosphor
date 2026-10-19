@@ -23,6 +23,10 @@ fn main() -> Result<()> {
     }
 
     println!("cargo:rerun-if-changed=build.rs");
+    // The `Assets` RustEmbed (src/lib.rs) embeds each file with include_bytes!, which cargo
+    // tracks, but it lists the folder itself only at compile time: a file *added* under
+    // assets/bundled (e.g. a new bootstrap script) would otherwise not trigger a rebuild.
+    println!("cargo:rerun-if-changed=assets/bundled");
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_OS");
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_FAMILY");
 
