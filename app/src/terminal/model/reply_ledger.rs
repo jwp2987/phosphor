@@ -301,17 +301,36 @@ impl ReplyLedger {
             }
             // The longest tail of this reply that starts what is left; a reply the shell
             // consumed whole leaves nothing, so it may match nothing.
-            if let Some(tail) = reply
+            if let Some(len) = reply
                 .char_indices()
-                .map(|(i, _)| &reply[i..])
-                .find(|tail| rest.starts_with(tail))
+                .find_map(|(i, _)| residue_len(rest, &reply[i..]))
             {
-                dcs_payload |= reply.starts_with("\u{1b}P") && tail.chars().count() >= 2;
-                rest = &rest[tail.len()..];
+                dcs_payload |= reply.starts_with("\u{1b}P") && rest[..len].chars().count() >= 2;
+                rest = &rest[len..];
             }
         }
         rest.is_empty().then_some(dcs_payload)
     }
+}
+
+/// How much of the start of `rest` is what a line editor left of `tail`, a tail of a reply, or
+/// `None`. The tail may be there verbatim, or without the control characters a line editor
+/// consumes (the ESC that introduces a sequence is gone with its prefix, and the BEL that
+/// terminates an OSC reply never reaches the line), or, for a reply ended by ST (`ESC \`), without
+/// the whole terminator.
+fn residue_len(rest: &str, tail: &str) -> Option<usize> {
+    if rest.starts_with(tail) {
+        return Some(tail.len());
+    }
+    let plain: String = tail.chars().filter(|c| !c.is_control()).collect();
+    let without_st: String = tail
+        .strip_suffix("\u{1b}\\")
+        .map(|t| t.chars().filter(|c| !c.is_control()).collect())
+        .unwrap_or_default();
+    [plain, without_st]
+        .into_iter()
+        .find(|candidate| !candidate.is_empty() && rest.starts_with(candidate.as_str()))
+        .map(|candidate| candidate.len())
 }
 
 #[cfg(test)]
