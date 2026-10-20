@@ -491,3 +491,39 @@ fn ctrl_p_empties_a_line_the_app_did_not_expect_but_must_be_confirmed() {
 fn backspace_removes_tracked_text() {
     assert_eq!(filtered(&["\x1b[24;1R"], &["abc", "\x7f"], "Rab"), "ab");
 }
+
+#[test]
+fn powershell_input_report_request_adds_nothing_to_the_line() {
+    let mut ledger = ledger_with(&["\x1b[1;1R"]);
+    ledger.note_input(b"\x1b1");
+    assert_eq!(ledger.filter_report("1;1R".into()), "");
+}
+
+#[test]
+fn a_powershell_command_write_leaves_a_tracked_line() {
+    // ESC 2 (kill line), bracketed paste, Enter.
+    for write in [
+        &b"\x1b2\x1b[200~Write-Output a\x1b[201~\r"[..],
+        b"\x1b2Write-Output a\r",
+    ] {
+        let mut ledger = ledger_with(&[]);
+        ledger.note_input(write);
+        ledger.on_command_start();
+        ledger.note_replies(b"\x1b[1;1R");
+        ledger.note_replies(b"\x1bP>|Phosphor()\x1b\\");
+        assert_eq!(
+            ledger.filter_report("1;1R>|Phosphor()".into()),
+            "",
+            "{write:?}"
+        );
+    }
+    // Typed fragments that look like residue are kept.
+    for typed in ["Rscript", "62c", "1R", "1;2R"] {
+        let mut ledger = ledger_with(&["\x1b[1;1R"]);
+        ledger.note_input(b"\x1b2\r");
+        ledger.on_command_start();
+        ledger.note_replies(b"\x1b[1;1R");
+        ledger.note_input(typed.as_bytes());
+        assert_eq!(ledger.filter_report(typed.into()), typed);
+    }
+}

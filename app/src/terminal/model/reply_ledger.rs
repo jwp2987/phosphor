@@ -29,7 +29,9 @@ const MAX_USER_BYTES: usize = 4096;
 /// The longest head searched for junk ahead of residue.
 const MAX_SPLIT_SEARCH: usize = 1024;
 const BRACKETED_PASTE_MARKERS: [&str; 2] = ["\u{1b}[200~", "\u{1b}[201~"];
-const INPUT_REPORT_REQUEST: &[u8] = b"\x1bi";
+const INPUT_REPORT_REQUESTS: [&[u8]; 2] = [b"\x1bi", b"\x1b1"];
+/// PowerShell's kill-whole-line (`Alt+2`, BackwardDeleteLine), what its commands are written with.
+const POWERSHELL_KILL_LINE: &str = "\u{1b}2";
 
 /// Fails safe: the ledger only ever drops text when every byte that could be in the shell's line
 /// is accounted for. Every pty write goes through [`ReplyLedger::note_input`], which either
@@ -119,7 +121,7 @@ impl ReplyLedger {
     /// Records one write to the pty, whatever its origin (typed keys, a released hold, a
     /// command, an agent's input, a synced pane).
     pub fn note_input(&mut self, bytes: &[u8]) {
-        if bytes == INPUT_REPORT_REQUEST {
+        if INPUT_REPORT_REQUESTS.contains(&bytes) {
             return;
         }
         let Ok(text) = std::str::from_utf8(bytes) else {
@@ -129,6 +131,12 @@ impl ReplyLedger {
         let mut skip_until = 0;
         for (index, ch) in text.char_indices() {
             if index < skip_until {
+                continue;
+            }
+            if ch == '\u{1b}' && text[index..].starts_with(POWERSHELL_KILL_LINE) {
+                skip_until = index + POWERSHELL_KILL_LINE.len();
+                self.clear_line();
+                self.unconfirmed = true;
                 continue;
             }
             // Bracketed paste markers only frame the text between them (commands are written
