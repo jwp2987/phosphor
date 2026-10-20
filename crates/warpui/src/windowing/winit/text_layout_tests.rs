@@ -1003,8 +1003,8 @@ fn test_huge_word_is_bounded_but_long_word_is_complete() {
     let huge = "a".repeat(cap * 3);
     let glyphs = glyph_count_with_spans(&huge, &[(cap * 3, false)]);
     assert!(
-        glyphs > 0 && glyphs <= cap,
-        "huge word shaped {glyphs} glyphs, cap is {cap}"
+        glyphs > 0 && glyphs <= cap + 1,
+        "huge word has {glyphs} glyphs, cap is {cap} (+1 placeholder)"
     );
 }
 
