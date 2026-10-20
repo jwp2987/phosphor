@@ -454,6 +454,10 @@ impl CompletionContext for SessionContext {
     fn top_level_commands_fully_loaded(&self) -> bool {
         self.session.has_finished_loading_external_commands()
     }
+
+    fn top_level_command_data_is_current(&self) -> bool {
+        self.session.command_data_is_current()
+    }
 }
 
 impl SessionContext {

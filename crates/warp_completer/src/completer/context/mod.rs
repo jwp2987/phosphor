@@ -127,6 +127,15 @@ pub trait CompletionContext: Send + Sync {
     fn top_level_commands_fully_loaded(&self) -> bool {
         false
     }
+
+    /// Whether the command data behind [`Self::top_level_commands`] is still current (#935, #833):
+    /// `false` once the session has run something that could have changed it (an install,
+    /// `source`, `export PATH=...`, `cd`...), because a freshly installed or defined command is
+    /// then absent from the snapshot. Callers that treat absence as "not a command" must require
+    /// this. Defaults to `false` (cannot say); a live session overrides it.
+    fn top_level_command_data_is_current(&self) -> bool {
+        false
+    }
 }
 
 /// Keeps track of which separators characters are relevant in file paths.

@@ -173,4 +173,9 @@ pub struct Context {
     /// the unknown-single-word rule (#935): a lone word the session knows nothing about is a
     /// message to the agent there, not a command that can only end in `command not found`.
     pub in_active_agent_view: bool,
+    /// Whether the session's command data is still current: no command that could have changed
+    /// it (an install, `source`, `export PATH=`, `cd`...) has run since it was captured (#833).
+    /// The unknown-single-word rule requires it, so a command installed or defined since never
+    /// reads as unknown (#935).
+    pub command_data_current: bool,
 }

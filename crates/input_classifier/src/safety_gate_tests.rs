@@ -48,6 +48,7 @@ fn context(commands_fully_loaded: bool) -> Context {
         is_agent_follow_up: false,
         commands_fully_loaded,
         in_active_agent_view: false,
+        command_data_current: true,
     }
 }
 
@@ -698,6 +699,12 @@ fn test_gate_keeps_known_commands_and_other_shapes_shell_inside_a_conversation()
             },
             Context {
                 commands_fully_loaded: false,
+                ..agent_conversation_context()
+            },
+            // Stale data (an install, `cd`, `export PATH=`... ran): a freshly installed command
+            // is absent from the snapshot, so a lone word must stay in the shell (#935).
+            Context {
+                command_data_current: false,
                 ..agent_conversation_context()
             },
         ] {

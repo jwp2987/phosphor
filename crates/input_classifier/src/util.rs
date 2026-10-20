@@ -344,7 +344,8 @@ pub fn is_unknown_single_word_in_agent_conversation(
 ) -> bool {
     if !(context.in_active_agent_view
         && context.is_agent_follow_up
-        && context.commands_fully_loaded)
+        && context.commands_fully_loaded
+        && context.command_data_current)
     {
         return false;
     }
