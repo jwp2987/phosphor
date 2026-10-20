@@ -91,9 +91,11 @@ fn var_list() -> String {
 /// form the detection missed cannot end the user's shell. The user's own definitions (functions;
 /// an alias is untouched) are saved as text and put back byte-identical by [`posix_restore`] and
 /// by the precmd backstop, so the user's own `exit`, `logout` and Ctrl-D work again afterwards,
-/// also when the command failed or was interrupted. `builtin exit` / `command exit` bypass the
-/// guard and are caught by the detection instead.
-const POSIX_GUARD_SAVE: &str = r#"__phosphor_ap_gx=$(typeset -f exit 2>/dev/null); __phosphor_ap_gl=$(typeset -f logout 2>/dev/null); function exit { return "${1:-0}"; }; function logout { return 0; }"#;
+/// also when the command failed or was interrupted. Subshells (`( ... )`, `$( ... )`, generators)
+/// inherit the functions, so inside one (`BASH_SUBSHELL` / `ZSH_SUBSHELL` above zero) the guard
+/// exits for real: it only has to protect the user's own shell. `builtin exit` / `command exit`
+/// bypass the guard and are caught by the detection instead.
+const POSIX_GUARD_SAVE: &str = r#"__phosphor_ap_gx=$(typeset -f exit 2>/dev/null); __phosphor_ap_gl=$(typeset -f logout 2>/dev/null); function exit { __phosphor_ap_s=$?; if [ "${BASH_SUBSHELL:-${ZSH_SUBSHELL:-0}}" != 0 ]; then builtin exit "${1:-$__phosphor_ap_s}"; fi; return "${1:-0}"; }; function logout { __phosphor_ap_s=$?; if [ "${BASH_SUBSHELL:-${ZSH_SUBSHELL:-0}}" != 0 ]; then builtin exit "$__phosphor_ap_s"; fi; return 0; }"#;
 
 /// Undoes [`POSIX_GUARD_SAVE`]. Keep identical to the loop in the bootstrap backstops.
 pub(crate) const POSIX_GUARD_RESTORE: &str = r#"unset -f exit logout; if [ -n "$__phosphor_ap_gx" ]; then eval "$__phosphor_ap_gx"; fi; if [ -n "$__phosphor_ap_gl" ]; then eval "$__phosphor_ap_gl"; fi; unset __phosphor_ap_gx __phosphor_ap_gl"#;
@@ -280,7 +282,7 @@ pub(super) fn wrap_command(shell_type: Option<ShellType>, command: &str) -> Stri
                 // function shadow the builtin); the user's own function, if any, is copied
                 // aside and put back by name, and `fish.sh` has a prompt-event backstop for an
                 // interrupted command. The command's exact `$status` is re-raised last.
-                let guard = "set -g __phosphor_ap_guard 1; functions -q exit; and functions -c exit __phosphor_ap_gx; function exit; return 0; end";
+                let guard = "set -g __phosphor_ap_guard 1; functions -q exit; and functions -c exit __phosphor_ap_gx; function exit; set -q argv[1]; and return $argv[1]; return 0; end";
                 let unguard = "set -l __phosphor_ap_st $status; functions -e exit; functions -q __phosphor_ap_gx; and functions -c __phosphor_ap_gx exit; functions -q __phosphor_ap_gx; and functions -e __phosphor_ap_gx; set -e __phosphor_ap_guard; command sh -c \"exit $__phosphor_ap_st\"";
                 if own_line {
                     format!(" begin; {prelude}; {guard}\n{command}\n{unguard}; end")
@@ -481,6 +483,44 @@ fn pwsh_safe_dot_source(raw_target: &str) -> bool {
 /// `switch { default { exit } }`, `iex $c`, ...), so this over-approximates: a false positive
 /// only costs that one command's `cd` / `$env:` persistence, a miss kills the user's shell.
 fn pwsh_may_end_host(command: &str) -> bool {
+    pwsh_may_end_host_in(command, true)
+}
+
+/// The raw targets of `. file` dot-sourcing statements (quotes removed), `{` blocks excluded.
+fn pwsh_dot_source_targets(command: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    let bytes: Vec<(usize, char)> = command.char_indices().collect();
+    for (k, &(at, c)) in bytes.iter().enumerate() {
+        let next = bytes.get(k + 1).map(|n| n.1);
+        if c == '.'
+            && next.is_some_and(|n| n == ' ' || n == '\t')
+            && pwsh_command_position(command, at)
+        {
+            let rest = command[at + 1..].trim_start_matches([' ', '\t']);
+            if rest.starts_with('{') {
+                continue;
+            }
+            let target: String = match rest.chars().next() {
+                Some(q @ ('\'' | '"')) => rest[1..].chars().take_while(|&d| d != q).collect(),
+                _ => rest
+                    .chars()
+                    .take_while(|c| !c.is_whitespace() && !matches!(c, ';' | '|' | ')'))
+                    .collect(),
+            };
+            targets.push(target);
+        }
+    }
+    targets
+}
+
+/// A dot-sourced file that can be read here and whose text holds nothing that might end the host
+/// (no `exit`, `$PID`, dynamic invocation, nested dot-sourcing, ...) runs in the user's pwsh,
+/// which has no `exit` guard; anything else, readable or not, goes to the child.
+fn pwsh_sourced_file_is_benign(target: &str) -> bool {
+    read_sourced_file(target).is_some_and(|text| !pwsh_may_end_host_in(&text, false))
+}
+
+fn pwsh_may_end_host_in(command: &str, follow_sources: bool) -> bool {
     let Some(code) = pwsh_scan(command, PwshScan::Code) else {
         return true;
     };
@@ -539,6 +579,7 @@ fn pwsh_may_end_host(command: &str) -> bool {
     }
     // `& $cmd`, `& (...)`: a command chosen at runtime. And `. file`: dot-sourcing runs the
     // file in the user's scope, where its `exit` ends the host.
+    let mut dot_sources = 0usize;
     let raw_chars: Vec<(usize, char)> = lower.char_indices().collect();
     for (k, &(at, c)) in raw_chars.iter().enumerate() {
         let prev = k.checked_sub(1).map(|p| raw_chars[p].1);
@@ -562,9 +603,17 @@ fn pwsh_may_end_host(command: &str) -> bool {
                 .take_while(|c| !c.is_whitespace() && !matches!(c, ';' | '|' | ')'))
                 .collect();
             if !target.starts_with('{') && !pwsh_safe_dot_source(&target) {
-                return true;
+                dot_sources += 1;
             }
         }
+    }
+    if dot_sources > 0 {
+        let targets = pwsh_dot_source_targets(command);
+        return !(follow_sources
+            && targets.len() >= dot_sources
+            && targets
+                .iter()
+                .all(|t| pwsh_safe_dot_source(t) || pwsh_sourced_file_is_benign(t)));
     }
     false
 }
@@ -608,27 +657,70 @@ pub(super) fn needs_subshell(shell_type: ShellType, command: &str) -> bool {
     })
 }
 
-/// Files whose `source` / `.` is the point of the command (activating an environment, loading
-/// the shell's own rc) and not known to end the shell, so they keep running in the user's shell.
-fn is_safe_to_source(args: &[String]) -> bool {
-    let Some(file) = args.iter().find(|a| !a.starts_with('-')) else {
+thread_local! {
+    /// The session's working directory (local sessions only) while a command is being wrapped,
+    /// so a sourced file given by a relative path can be read and scanned.
+    static SOURCE_CWD: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// [`wrap_command`], able to read a sourced / dot-sourced file relative to `cwd`.
+pub(super) fn wrap_command_in(
+    shell_type: Option<ShellType>,
+    command: &str,
+    cwd: Option<&str>,
+) -> String {
+    SOURCE_CWD.with(|c| *c.borrow_mut() = cwd.map(std::path::PathBuf::from));
+    let wrapped = wrap_command(shell_type, command);
+    SOURCE_CWD.with(|c| *c.borrow_mut() = None);
+    wrapped
+}
+
+/// The first 256 KiB of the file `target` names (`~` expanded, relative to the session's working
+/// directory), if it can be read here. `None` for a remote session, a missing or unreadable file.
+fn read_sourced_file(target: &str) -> Option<String> {
+    use std::io::Read as _;
+    let target = target.trim_matches(['\'', '"']);
+    let path = if let Some(rest) = target.strip_prefix("~/") {
+        std::path::PathBuf::from(std::env::var_os("HOME")?).join(rest)
+    } else {
+        let p = std::path::PathBuf::from(target);
+        if p.is_absolute() {
+            p
+        } else {
+            SOURCE_CWD.with(|c| c.borrow().clone())?.join(p)
+        }
+    };
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(256 * 1024)
+        .read_to_string(&mut text)
+        .ok()?;
+    Some(text)
+}
+
+/// Whether a sourced file visibly holds a hazard that the in-shell `exit` guard cannot stop:
+/// `builtin exit` / `command exit`, `exec`, or a `kill` of the shell's own pid. A file that cannot
+/// be read (remote session, dynamic path) is run in the shell: the guard covers a plain `exit`.
+fn sourced_file_is_hazard(args: &[String], fish: bool) -> bool {
+    let Some(target) = args.iter().find(|a| !a.starts_with('-')) else {
         return false;
     };
-    let base = file.rsplit('/').next().unwrap_or(file);
-    matches!(
-        base,
-        "activate"
-            | "activate.fish"
-            | "activate.csh"
-            | ".bashrc"
-            | ".zshrc"
-            | ".bash_profile"
-            | ".zprofile"
-            | ".profile"
-            | "config.fish"
-            | ".env"
-            | ".envrc"
-    )
+    let Some(text) = read_sourced_file(target) else {
+        return false;
+    };
+    let mentions_self = ["$$", "$PPID", "$BASHPID", "$fish_pid", "%self"]
+        .iter()
+        .any(|r| text.contains(r));
+    let has_word = |w: &str| {
+        text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .any(|t| t == w)
+    };
+    let _ = fish;
+    text.contains("builtin exit")
+        || text.contains("command exit")
+        || has_word("exec")
+        || (has_word("kill") && mentions_self)
 }
 
 /// Whether text handed to `eval` is only known at runtime (a variable, a command substitution).
@@ -649,7 +741,7 @@ fn fish_command_needs_subshell(name: &str, args: &[String]) -> bool {
         // `kill $fish_pid`, `kill %self`: fish has no subshell, so it runs in a child fish
         // whose own pid and `%self` are the child's.
         "kill" => true,
-        "source" | "." => !is_safe_to_source(args),
+        "source" | "." => sourced_file_is_hazard(args, true),
         // `eval` runs its arguments in the current shell.
         "eval" => {
             let text = args.join(" ");
@@ -932,8 +1024,10 @@ fn is_error_behaviour_option(word: &str) -> bool {
 fn posix_command_needs_subshell(name: &str, args: &[String]) -> bool {
     match name {
         "exit" | "exec" | "trap" | "ulimit" | "return" | "logout" => true,
-        // A sourced file runs in the shell itself, and its `exit` ends it.
-        "source" | "." => !is_safe_to_source(args),
+        // A sourced file runs in the shell itself (its `exit` returns, see `POSIX_GUARD_SAVE`),
+        // so its exports persist. Only a file that can be SEEN to hold a hazard the guard cannot
+        // stop (`builtin exit`, `kill $$`, `exec`) goes to the subshell.
+        "source" | "." => sourced_file_is_hazard(args, false),
         // `eval` runs its arguments in the current shell, so `eval exit` or `eval "set -e"`
         // is `exit` / `set -e`. Text only known at runtime (`eval "$v"`) might be anything.
         "eval" => {

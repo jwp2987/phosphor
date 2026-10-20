@@ -836,9 +836,6 @@ const POSIX_ENDS_SHELL: &[&str] = &[
     "for i in 1; do exit; done",
     "true && exit 5",
     "false || exit 6",
-    "source ./exits.sh",
-    ". ./exits.sh",
-    "source /tmp/script-that-exits.sh",
     "exec ls",
     "exec > /tmp/log",
     "logout",
@@ -869,6 +866,9 @@ const POSIX_STAYS: &[&str] = &[
     "source venv/bin/activate",
     ". venv/bin/activate",
     "source ~/.bashrc",
+    "source ./env.sh",
+    ". ./env.sh",
+    "source /tmp/not-readable-here.sh",
     "eval echo hi",
     "eval \"cd /tmp\"",
     "echo $((1<<2))",
@@ -977,8 +977,6 @@ fn fish_every_shell_ending_form_runs_in_a_child_fish() {
         "eval $v",
         "eval \"$v\"",
         "eval exit",
-        "source ./exits.fish",
-        ". ./exits.fish",
         "return",
         "return 2",
         "exit",
@@ -1000,6 +998,8 @@ fn fish_every_shell_ending_form_runs_in_a_child_fish() {
         "# exit",
         "source ~/.config/fish/config.fish",
         "source venv/bin/activate.fish",
+        "source ./env.fish",
+        ". ./env.fish",
         "eval echo hi",
         "cat exit.txt",
     ] {
@@ -1371,5 +1371,162 @@ mod real_shells {
         assert!(bash.contains(POSIX_GUARD_RESTORE));
         assert!(zsh.contains(POSIX_GUARD_RESTORE));
         assert!(fish.contains("function __phosphor_ap_fish_restore --on-event fish_prompt"));
+    }
+}
+
+// ---- sourced files run in the user's shell (#941 follow-up) ----
+
+mod sourcing {
+    use super::*;
+    use std::fs;
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("phosphor_ap_{tag}_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_sourced_file_runs_in_the_shell_unless_it_visibly_holds_a_hazard() {
+        let dir = temp_dir("src");
+        let cwd = dir.to_str().unwrap();
+        fs::write(dir.join("env.sh"), "export FOO=1\ncd /tmp\n").unwrap();
+        fs::write(dir.join("exits.sh"), "echo before\nexit 3\n").unwrap();
+        fs::write(dir.join("hazard1.sh"), "builtin exit 3\n").unwrap();
+        fs::write(dir.join("hazard2.sh"), "command exit 3\n").unwrap();
+        fs::write(dir.join("hazard3.sh"), "kill -9 $$\n").unwrap();
+        fs::write(dir.join("hazard4.sh"), "exec ls\n").unwrap();
+        for shell in [
+            Some(ShellType::Bash),
+            Some(ShellType::Zsh),
+            Some(ShellType::Fish),
+        ] {
+            for ok in [
+                "source env.sh",
+                ". ./env.sh",
+                "source exits.sh",
+                "source ./missing.sh",
+            ] {
+                let wrapped = wrap_command_in(shell, ok, Some(cwd));
+                assert!(
+                    wrapped.starts_with(" begin;") || wrapped.starts_with("{ "),
+                    "{shell:?} {ok}: {wrapped}"
+                );
+                assert!(
+                    !wrapped.contains("fish-path") && !wrapped.contains("__phosphor_ap_subshell"),
+                    "{wrapped}"
+                );
+            }
+            for bad in [
+                "source hazard1.sh",
+                "source ./hazard2.sh",
+                ". hazard3.sh",
+                "source hazard4.sh",
+            ] {
+                let wrapped = wrap_command_in(shell, bad, Some(cwd));
+                assert!(
+                    wrapped.contains("fish-path") || wrapped.contains("__phosphor_ap_subshell"),
+                    "{shell:?} {bad}: {wrapped}"
+                );
+            }
+        }
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn pwsh_dot_sources_a_file_with_no_exit_like_text_in_the_shell() {
+        let dir = temp_dir("pwsrc");
+        let cwd = dir.to_str().unwrap();
+        fs::write(dir.join("env.ps1"), "$env:FOO = '1'\nSet-Location /tmp\n").unwrap();
+        fs::write(dir.join("exits.ps1"), "Write-Output hi\nexit 3\n").unwrap();
+        fs::write(dir.join("pid.ps1"), "Stop-Process -Id $PID\n").unwrap();
+        fs::write(dir.join("nested.ps1"), ". ./env.ps1\n").unwrap();
+        let in_shell = |c: &str| {
+            !wrap_command_in(Some(ShellType::PowerShell), c, Some(cwd)).contains("-EncodedCommand ")
+        };
+        assert!(in_shell(". ./env.ps1"));
+        assert!(in_shell(". 'env.ps1'"));
+        assert!(in_shell(". \"env.ps1\"; Set-Location /tmp"));
+        assert!(!in_shell(". ./exits.ps1"));
+        assert!(!in_shell(". ./pid.ps1"));
+        assert!(!in_shell(". ./nested.ps1"));
+        assert!(!in_shell(". ./missing.ps1"));
+        assert!(!in_shell(". $f"));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn real_shells_persist_a_sourced_file_and_survive_one_that_exits() {
+        use super::real_shells::run;
+        let dir = temp_dir("realsrc");
+        let cwd = dir.to_str().unwrap();
+        fs::write(dir.join("env.sh"), "export FOO=1\ncd /tmp\n").unwrap();
+        fs::write(dir.join("exits.sh"), "echo before\nexit 3\n").unwrap();
+        fs::write(dir.join("env.fish"), "set -gx FOO 1\ncd /tmp\n").unwrap();
+        fs::write(dir.join("exits.fish"), "echo before\nexit 3\n").unwrap();
+        for (shell, env, exits, probe, alive) in [
+            (
+                ShellType::Bash,
+                "source env.sh",
+                "source exits.sh",
+                "echo pwd=$PWD foo=$FOO",
+                "printf 'ALIVE rc=%s\\n' \"$?\"",
+            ),
+            (
+                ShellType::Zsh,
+                "source env.sh",
+                "source exits.sh",
+                "echo pwd=$PWD foo=$FOO",
+                "printf 'ALIVE rc=%s\\n' \"$?\"",
+            ),
+            (
+                ShellType::Fish,
+                "source env.fish",
+                "source exits.fish",
+                "echo pwd=$PWD foo=$FOO",
+                "echo ALIVE rc=$status",
+            ),
+        ] {
+            let wrapped = wrap_command_in(Some(shell), env, Some(cwd));
+            let script = format!("cd {cwd}\n{wrapped}\n{probe}");
+            let Some((out, _)) = run(shell, &script) else {
+                continue;
+            };
+            assert!(out.contains("pwd=/tmp foo=1"), "{shell:?}: {out}");
+            let wrapped = wrap_command_in(Some(shell), exits, Some(cwd));
+            let script = format!("cd {cwd}\n{wrapped}\n{alive}");
+            let (out, _) = run(shell, &script).unwrap();
+            assert!(
+                out.contains("before") && out.contains("ALIVE rc=3"),
+                "{shell:?}: {out}"
+            );
+        }
+        fs::remove_dir_all(dir).ok();
+    }
+}
+
+// ---- the exit guard inside subshells (#941 follow-up) ----
+
+#[test]
+fn the_exit_guard_exits_for_real_inside_subshells() {
+    use real_shells::run;
+    // `$e` hides the word `exit` from the detection, so the command runs in the guarded group.
+    for shell in POSIX {
+        let wrapped = wrap_command(
+            Some(shell),
+            "e=exit; ( $e 4 ); echo sub=$?; x=$($e 5; echo no); echo \"x=[$x] st=$?\"; $e 9; echo guarded-returns",
+        );
+        assert!(wrapped.starts_with("{ "), "{wrapped}");
+        let Some((out, _)) = run(shell, &wrapped) else {
+            continue;
+        };
+        assert!(out.contains("sub=4"), "{shell:?}: {out}");
+        assert!(out.contains("x=[] st=5"), "{shell:?}: {out}");
+        // ... while the user's own shell is still protected.
+        assert!(out.contains("guarded-returns"), "{shell:?}: {out}");
+        // A subshell function defined by the agent that calls exit leaves only its subshell too.
+        let wrapped = wrap_command(Some(shell), "e=exit; f() { $e 6; }; ( f ); echo f=$?");
+        let (out, _) = run(shell, &wrapped).unwrap();
+        assert!(out.contains("f=6"), "{shell:?}: {out}");
     }
 }
