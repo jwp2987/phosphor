@@ -91,7 +91,7 @@ pub fn is_local_endpoint(base_url: &str) -> bool {
     {
         return true;
     }
-    let octets: Vec<u8> = host.split('.').filter_map(|p| p.parse().ok()).collect();
+    let octets: Vec<u8> = host.split('.').filter_map(|p| p.parse::<u8>().ok()).collect();
     if octets.len() == 4 && host.split('.').count() == 4 {
         return match octets[..] {
             [127, ..] | [10, ..] | [192, 168, ..] => true,
