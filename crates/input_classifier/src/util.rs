@@ -1188,7 +1188,7 @@ const FREE_TEXT_ARG_HEADS: &[&str] = &[
 /// whether the line is shell is the command they run, not the wrapper.
 const WRAPPER_HEADS: &[&str] = &[
     "env", "nohup", "nice", "timeout", "command", "doas", "xargs", "exec", "builtin", "stdbuf",
-    "ionice", "chrt", "taskset", "unbuffer",
+    "ionice", "chrt", "taskset", "unbuffer", "time", "sudo", "setsid",
 ];
 
 /// Wrapper options that take a separate value (`nice -n 5`, `timeout -s KILL`, `xargs -I {}`).
@@ -1521,7 +1521,9 @@ pub fn known_command_head(input: &ParsedTokensSnapshot) -> bool {
                 || is_one_off_shell_command_keyword(&words[index].text)
                 || !is_ordinary_english_word(&words[index].text)
         }
-        None => false,
+        // Only a described wrapper and its options so far (`nice`, `nice -n 5`): a command line
+        // in progress, never prose (#933).
+        None => true,
     }
 }
 
