@@ -11,6 +11,7 @@ use std::{
     ops::DerefMut,
     sync::Arc,
     thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use log::error;
@@ -18,10 +19,10 @@ use mio::{self, Events, Interest};
 use parking_lot::{FairMutex, FairMutexGuard};
 
 use crate::terminal::{
+    TerminalModel,
     event_listener::ChannelEventListener,
     local_tty,
     model::{BlockId, ansi, reply_ledger::SharedReplyLedger},
-    TerminalModel,
 };
 use crate::terminal::{model::terminal_model::ExitReason, writeable_pty::Message};
 
@@ -77,10 +78,23 @@ pub struct State {
     /// pty is in canonical mode: nobody can read a reply there (it has no line terminator), so
     /// it would sit in the tty until the shell's line editor takes it for typed text (#937).
     reply_gate_open: bool,
+    /// How many entries of `write_list` are gated replies, so the questions asked on every
+    /// loop iteration are O(1) even under a flood of unread queries.
+    gated_count: usize,
+    /// When replies started being withheld, so the re-check can back off for a reply that stays
+    /// held.
+    withheld_since: Option<Instant>,
 }
 
-/// How often a withheld reply re-checks whether the pty has left canonical mode.
-const REPLY_GATE_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+/// How often a withheld reply re-checks whether the pty has left canonical mode: promptly for the
+/// first second (a program that queries and then switches to raw mode does so within
+/// milliseconds), then less often for a reply nobody is waiting for.
+const REPLY_GATE_POLL: Duration = Duration::from_millis(10);
+const REPLY_GATE_POLL_SLOW: Duration = Duration::from_millis(100);
+const REPLY_GATE_SLOW_AFTER: Duration = Duration::from_secs(1);
+/// Most gated replies kept. A program that queries in a loop without reading gets its oldest
+/// replies dropped; nobody can read them from a cooked tty anyway.
+const MAX_GATED_REPLIES: usize = 1024;
 
 /// A queued pty write. `produced_while_executing` is `Some(block id)` for a reply to a
 /// terminal query (DA, OSC colors, ...) that was generated while that block was
@@ -108,6 +122,8 @@ impl Default for State {
             parser: ansi::Processor::new(),
             writing: None,
             reply_gate_open: true,
+            gated_count: 0,
+            withheld_since: None,
         }
     }
 }
@@ -125,24 +141,59 @@ impl State {
         // The first entry that may be written now: a withheld reply is skipped, not waited for,
         // so user input behind it is never delayed.
         let open = self.reply_gate_open;
-        let next = self
-            .write_list
-            .iter()
-            .position(|entry| open || !entry.is_gated())
-            .and_then(|index| self.write_list.remove(index));
+        let next = if open || self.gated_count == 0 {
+            self.write_list.pop_front()
+        } else if self.write_list.len() == self.gated_count {
+            None
+        } else {
+            self.write_list
+                .iter()
+                .position(|entry| !entry.is_gated())
+                .and_then(|index| self.write_list.remove(index))
+        };
+        if next.as_ref().is_some_and(QueuedWrite::is_gated) {
+            self.gated_count -= 1;
+        }
         self.writing = next.map(|entry| Writing::new(entry.bytes));
     }
 
     /// Whether any queued write is a reply that the gate may be withholding.
     #[inline]
     fn has_gated(&self) -> bool {
-        self.write_list.iter().any(QueuedWrite::is_gated)
+        self.gated_count > 0
     }
 
     /// Whether some replies are being withheld right now.
     #[inline]
     fn is_withholding(&self) -> bool {
         !self.reply_gate_open && self.has_gated()
+    }
+
+    /// Opens or closes the gate for the pty's current mode, and notes when withholding began.
+    fn set_reply_gate(&mut self, pty_is_canonical: Option<bool>) {
+        self.reply_gate_open = pty_is_canonical != Some(true);
+        if self.is_withholding() {
+            self.withheld_since.get_or_insert_with(Instant::now);
+        } else {
+            self.withheld_since = None;
+        }
+    }
+
+    /// How soon to re-check the pty's mode, while a reply is withheld.
+    fn gate_timeout(&self) -> Option<Duration> {
+        self.is_withholding().then(|| match self.withheld_since {
+            Some(since) if since.elapsed() >= REPLY_GATE_SLOW_AFTER => REPLY_GATE_POLL_SLOW,
+            _ => REPLY_GATE_POLL,
+        })
+    }
+
+    /// How long the event loop may sleep, given the synchronized-output timeout and any withheld
+    /// reply waiting for the pty to leave canonical mode.
+    fn poll_timeout(&self, sync_timeout: Option<Duration>) -> Option<Duration> {
+        match (sync_timeout, self.gate_timeout()) {
+            (Some(sync), Some(gate)) => Some(sync.min(gate)),
+            (sync, gate) => sync.or(gate),
+        }
     }
 
     /// Queues user input; never dropped.
@@ -157,14 +208,37 @@ impl State {
     /// Queues a reply to a terminal query. `executing_block` is the id of the active
     /// block if it was executing a command when the bytes were handed to the parser
     /// (read BEFORE parsing: block completion happens synchronously inside the parse).
-    fn queue_response(&mut self, bytes: Vec<u8>, executing_block: Option<BlockId>) {
-        if !bytes.is_empty() {
-            self.write_list.push_back(QueuedWrite {
-                bytes: Cow::Owned(bytes),
-                produced_while_executing: executing_block,
-                is_reply: true,
-            });
+    ///
+    /// Returns the bytes of gated replies evicted to stay within `MAX_GATED_REPLIES`.
+    fn queue_response(
+        &mut self,
+        bytes: Vec<u8>,
+        executing_block: Option<BlockId>,
+    ) -> Vec<Cow<'static, [u8]>> {
+        let mut evicted = Vec::new();
+        if bytes.is_empty() {
+            return evicted;
         }
+        let entry = QueuedWrite {
+            bytes: Cow::Owned(bytes),
+            produced_while_executing: executing_block,
+            is_reply: true,
+        };
+        if entry.is_gated() {
+            self.gated_count += 1;
+            while self.gated_count > MAX_GATED_REPLIES {
+                if let Some(index) = self.write_list.iter().position(QueuedWrite::is_gated)
+                    && let Some(old) = self.write_list.remove(index)
+                {
+                    self.gated_count -= 1;
+                    evicted.push(old.bytes);
+                } else {
+                    break;
+                }
+            }
+        }
+        self.write_list.push_back(entry);
+        evicted
     }
 
     /// Drops queued replies produced while a command ran if that command has since
@@ -186,14 +260,15 @@ impl State {
                 _ => Some(entry),
             })
             .collect();
+        // Everything dropped was a tagged reply, i.e. gated.
+        self.gated_count -= dropped.len();
         dropped
     }
 
     #[inline]
     fn has_tagged(&self) -> bool {
-        self.write_list
-            .iter()
-            .any(|entry| entry.produced_while_executing.is_some())
+        // Only replies carry a tag, and those are the gated ones.
+        self.gated_count > 0
     }
 
     #[inline]
@@ -204,10 +279,8 @@ impl State {
     #[inline]
     fn needs_write(&self) -> bool {
         self.writing.is_some()
-            || self
-                .write_list
-                .iter()
-                .any(|entry| self.reply_gate_open || !entry.is_gated())
+            || (self.reply_gate_open && !self.write_list.is_empty())
+            || self.write_list.len() > self.gated_count
     }
 
     #[inline]
@@ -304,12 +377,12 @@ where
             Ok(poll) => {
                 let reply_ledger = terminal.lock().reply_ledger();
                 Ok(EventLoop {
-                poll,
-                pty,
-                rx,
-                reply_ledger,
-                terminal,
-                event_listener,
+                    poll,
+                    pty,
+                    rx,
+                    reply_ledger,
+                    terminal,
+                    event_listener,
                 })
             }
             Err(err) => {
@@ -326,6 +399,17 @@ where
         }
     }
 
+    /// Opens the reply gate once the pty has left canonical mode (or if that cannot be told, as
+    /// on platforms without termios), and closes it while the pty is canonical.
+    fn refresh_reply_gate(&self, state: &mut State) {
+        let canonical = if state.has_gated() {
+            self.pty.is_canonical()
+        } else {
+            None
+        };
+        state.set_reply_gate(canonical);
+    }
+
     /// Drain the channel.
     /// Returns `false` when a shutdown message was received.
     fn drain_recv_channel(&mut self, state: &mut State) -> ChannelResult {
@@ -339,7 +423,7 @@ where
                 Message::Shutdown => {
                     return ChannelResult::TerminateLoop {
                         child_exited: false,
-                    }
+                    };
                 }
                 Message::Resize(size) => self.pty.on_resize(&size),
                 Message::ChildExited => return ChannelResult::TerminateLoop { child_exited: true },
@@ -440,7 +524,13 @@ where
                     ledger: &self.reply_ledger,
                 },
             );
-            state.queue_response(terminal_response_sequences, executing_block);
+            let evicted = state.queue_response(terminal_response_sequences, executing_block);
+            if !evicted.is_empty() {
+                let mut ledger = self.reply_ledger.lock();
+                for bytes in &evicted {
+                    ledger.forget_replies(bytes);
+                }
+            }
 
             bytes_processed += bytes_in_buffer;
             bytes_in_buffer = 0;
@@ -546,11 +636,8 @@ where
                     let sync_state_timeout = state.parser.sync_output_remaining_timeout();
                     // While replies are withheld, wake often enough to notice the pty leaving
                     // canonical mode.
-                    let gate_poll = state.is_withholding().then_some(REPLY_GATE_POLL);
-                    let poll_timeout = match (sync_state_timeout, gate_poll) {
-                        (Some(sync), Some(gate)) => Some(sync.min(gate)),
-                        (sync, gate) => sync.or(gate),
-                    };
+                    let gate_poll = state.gate_timeout();
+                    let poll_timeout = state.poll_timeout(sync_state_timeout);
                     if let Err(err) = self.poll.poll(&mut events, poll_timeout) {
                         match err.kind() {
                             ErrorKind::Interrupted => continue,
@@ -560,8 +647,8 @@ where
 
                     // If there were no events but `poll` returned, that means we hit the timeout.
                     // (A wake-up for the reply gate alone is not the synchronized-output timeout.)
-                    let woke_for_gate = gate_poll.is_some()
-                        && sync_state_timeout.is_none_or(|sync| REPLY_GATE_POLL < sync);
+                    let woke_for_gate = gate_poll
+                        .is_some_and(|gate| sync_state_timeout.is_none_or(|sync| gate < sync));
                     if events.is_empty() && !woke_for_gate {
                         // Same reasoning as the `parse_bytes` call above: route any
                         // response sequences through `write_list` instead of writing
@@ -580,7 +667,14 @@ where
                             );
                             executing_block
                         };
-                        state.queue_response(terminal_response_sequences, executing_block);
+                        let evicted =
+                            state.queue_response(terminal_response_sequences, executing_block);
+                        if !evicted.is_empty() {
+                            let mut ledger = self.reply_ledger.lock();
+                            for bytes in &evicted {
+                                ledger.forget_replies(bytes);
+                            }
+                        }
                         // The flush may have made buffered content visible; ask for a
                         // redraw rather than waiting for the next pty read (#818).
                         self.event_listener.send_wakeup_event();
@@ -647,8 +741,7 @@ where
                     if state.has_tagged() {
                         let terminal = self.terminal.lock();
                         let block = terminal.block_list().active_block();
-                        let dropped =
-                            state.drop_stale_responses(block.id(), block.is_executing());
+                        let dropped = state.drop_stale_responses(block.id(), block.is_executing());
                         if !dropped.is_empty() {
                             let mut ledger = self.reply_ledger.lock();
                             for bytes in &dropped {
@@ -656,9 +749,7 @@ where
                             }
                         }
                     }
-                    if state.has_gated() {
-                        state.reply_gate_open = self.pty.is_canonical() != Some(true);
-                    }
+                    self.refresh_reply_gate(&mut state);
                     while can_read || (state.needs_write() && can_write) {
                         if can_read {
                             match self.pty_read(&mut state, &mut buf, &mut can_read) {
@@ -685,11 +776,7 @@ where
                             }
                         }
 
-                        if state.has_gated() {
-                            // Open the gate once the pty has left canonical mode (or if that
-                            // cannot be told, as on platforms without termios).
-                            state.reply_gate_open = self.pty.is_canonical() != Some(true);
-                        }
+                        self.refresh_reply_gate(&mut state);
                         if state.needs_write() && can_write {
                             if let Err(err) = self.pty_write(&mut state, &mut can_write) {
                                 error!("Error writing to PTY in event loop: {err}");
