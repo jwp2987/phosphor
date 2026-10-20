@@ -1,6 +1,7 @@
 use std::{collections::HashMap, ops::Range};
 
 use super::model::AIBlockModelHelper as _;
+use super::view_impl::common::rendered_query_text;
 use super::{AIBlock, TextLocation};
 use crate::ai::agent::{AIAgentInput, AIAgentTextSection, MessageId};
 use crate::terminal::find::{FindOptions, FindableRichContentView, RichContentMatchId};
@@ -48,7 +49,7 @@ impl FindState {
 }
 
 /// Find matches in the rendered user-query text of each input, as `(input_index, char_range)`.
-/// Uses the displayed query so ranges index into what the query block paints.
+/// Uses the rendered query (prefix added, @-references stripped) so ranges index into what the query block paints.
 pub(super) fn query_find_matches(
     inputs: &[AIAgentInput],
     initial_conversation_query: Option<&String>,
@@ -56,7 +57,7 @@ pub(super) fn query_find_matches(
 ) -> Vec<(usize, Range<usize>)> {
     let mut out = vec![];
     for (i, input) in inputs.iter().enumerate() {
-        if let Some(query) = input.display_user_query(initial_conversation_query) {
+        if let Some((query, _)) = rendered_query_text(input, initial_conversation_query) {
             for range in compute_find_matches(&query, options) {
                 out.push((i, range));
             }

@@ -4165,6 +4165,21 @@ fn context_reference_icon(attachment: &AIAgentAttachment) -> Icon {
     }
 }
 
+/// The exact text the query block renders for `input`, plus its context references: the
+/// displayed query (with the "/agent " prefix on the initial query) with @-references stripped.
+/// Shared by the renderer and by find so match offsets index the painted text (#938, #939).
+pub(in crate::ai::blocklist::block) fn rendered_query_text(
+    input: &AIAgentInput,
+    initial_conversation_query: Option<&String>,
+) -> Option<(String, Vec<QueryContextReference>)> {
+    let mut user_query = input.display_user_query(initial_conversation_query)?;
+    let context_references = query_context_references(input, &user_query);
+    if !context_references.is_empty() {
+        user_query = display_query_without_context_references(&user_query, &context_references);
+    }
+    Some((user_query, context_references))
+}
+
 pub(super) fn display_query_without_context_references(
     displayed_query: &str,
     context_references: &[QueryContextReference],
