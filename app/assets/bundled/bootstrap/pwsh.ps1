@@ -1,6 +1,10 @@
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseApprovedVerbs', '', Scope = 'Function', Target = 'Warp-*', Justification = 'Warp-* functions are ours')]
 param()
 
+# The exact line(s) this session typed to source this file; Warp-Preexec removes them from the
+# user's history (#942). Anchored to this session's own path, never a pattern.
+$global:_warpBootstrapHistoryLines = if ($PSCommandPath) { @(". $PSCommandPath", ". '$PSCommandPath'", ". `"$PSCommandPath`"") } else { @() }
+
 # Wrap things in a module to avoid cluttering the global scope. We assign it to '$null' to suppress
 # the console output from creating the module.
 # NOTE: If you do need a function to be global and also have access to variables in this scope, add
@@ -252,9 +256,13 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         # Remove any instance of the 'Warp-Run-GeneratorCommand' call from the user's history
         Microsoft.PowerShell.Core\Clear-History -CommandLine 'Warp-Run-GeneratorCommand*'
         # ... and the agent-command wrapper (agent_shell_wrap.rs HISTORY_MARKER; #942)
-        Microsoft.PowerShell.Core\Clear-History -CommandLine '*__phosphor_ap*'
+        Microsoft.PowerShell.Core\Clear-History -CommandLine ([System.Management.Automation.WildcardPattern]::Escape('. { $__phosphor_ap = @{}; foreach ($__phosphor_ap_v in @(') + '*')
         # ... and the bootstrap's own lines (they would otherwise be the first entries of the user's history)
-        Microsoft.PowerShell.Core\Clear-History -CommandLine '. /tmp/.tmp*.ps1', 'Microsoft.PowerShell.Core\Remove-Module -Name PSReadline*'
+        foreach ($bootstrapLine in @($global:_warpBootstrapHistoryLines) + 'Microsoft.PowerShell.Core\Remove-Module -Name PSReadline -ErrorAction Ignore*') {
+            if ($bootstrapLine) {
+                Microsoft.PowerShell.Core\Clear-History -CommandLine ($(if ($bootstrapLine.EndsWith('*')) { $bootstrapLine } else { [System.Management.Automation.WildcardPattern]::Escape($bootstrapLine) }))
+            }
+        }
     }
 
     function Warp-Finish-Update([string]$updateId) {
@@ -393,7 +401,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         PSReadLine\Set-PSReadLineOption -AddToHistoryHandler {
             param([string]$line)
 
-            if ($line -match '^Warp-Run-GeneratorCommand' -or $line -match '__phosphor_ap') {
+            if ($line -match '^Warp-Run-GeneratorCommand' -or $line.StartsWith('. { $__phosphor_ap = @{}; foreach ($__phosphor_ap_v in @(', [System.StringComparison]::Ordinal)) {
                 return $false
             }
             return $true
@@ -442,6 +450,17 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             1
         } else {
             $code
+        }
+
+        # Phosphor: the agent wrapper saved the user's $LASTEXITCODE and reset it; the code is
+        # computed, so put the user's value back.
+        if (Microsoft.PowerShell.Management\Test-Path variable:global:__phosphor_ap_lecset) {
+            if ($global:__phosphor_ap_lecset) {
+                $global:LASTEXITCODE = $global:__phosphor_ap_lec
+            } else {
+                Microsoft.PowerShell.Utility\Remove-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore
+            }
+            Microsoft.PowerShell.Utility\Remove-Variable __phosphor_ap_lecset, __phosphor_ap_lec -Scope Global -ErrorAction Ignore
         }
 
         $newTitle = $PWD.Path
