@@ -1,6 +1,7 @@
 //! Tests for PTY event loop setup (#882).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use super::*;
 use crate::terminal::SizeInfo;
@@ -13,8 +14,29 @@ struct FakePty {
     register_error: Option<i32>,
     killed: Arc<AtomicBool>,
     reader: io::Empty,
-    writer: io::Sink,
+    writer: CaptureWriter,
+    /// What `is_canonical` reports: 0 = cannot tell, 1 = raw, 2 = canonical.
+    mode: Arc<AtomicU8>,
 }
+
+/// A pty writer that records what the event loop writes.
+#[derive(Clone, Default)]
+struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
+
+impl io::Write for CaptureWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+const MODE_UNKNOWN: u8 = 0;
+const MODE_RAW: u8 = 1;
+const MODE_CANONICAL: u8 = 2;
 
 impl FakePty {
     fn new(register_error: Option<i32>) -> (Self, Arc<AtomicBool>) {
@@ -24,7 +46,8 @@ impl FakePty {
                 register_error,
                 killed: killed.clone(),
                 reader: io::empty(),
-                writer: io::sink(),
+                writer: CaptureWriter::default(),
+                mode: Arc::new(AtomicU8::new(MODE_UNKNOWN)),
             },
             killed,
         )
@@ -33,7 +56,7 @@ impl FakePty {
 
 impl EventedReadWrite for FakePty {
     type Reader = io::Empty;
-    type Writer = io::Sink;
+    type Writer = CaptureWriter;
 
     fn register(&mut self, _: &mio::Poll, _: mio::Interest) -> io::Result<()> {
         match self.register_error {
@@ -58,7 +81,7 @@ impl EventedReadWrite for FakePty {
         PTY_TOKEN
     }
 
-    fn writer(&mut self) -> &mut io::Sink {
+    fn writer(&mut self) -> &mut CaptureWriter {
         &mut self.writer
     }
 
@@ -68,6 +91,14 @@ impl EventedReadWrite for FakePty {
 }
 
 impl local_tty::EventedPty for FakePty {
+    fn is_canonical(&self) -> Option<bool> {
+        match self.mode.load(Ordering::SeqCst) {
+            MODE_RAW => Some(false),
+            MODE_CANONICAL => Some(true),
+            _ => None,
+        }
+    }
+
     fn child_event_token(&self) -> mio::Token {
         SIGNALS_TOKEN
     }
@@ -343,4 +374,187 @@ fn a_withheld_reply_is_dropped_when_its_command_finishes() {
 fn a_pty_that_cannot_tell_its_mode_never_withholds() {
     let (pty, _) = FakePty::new(None);
     assert_eq!(local_tty::EventedPty::is_canonical(&pty), None);
+}
+
+/// An event loop over a pty whose mode and written bytes the test controls.
+struct GateHarness {
+    event_loop: EventLoop<FakePty>,
+    mode: Arc<AtomicU8>,
+    written: Arc<Mutex<Vec<u8>>>,
+}
+
+fn gate_harness() -> GateHarness {
+    let (pty, _) = FakePty::new(None);
+    let mode = pty.mode.clone();
+    let written = pty.writer.0.clone();
+    GateHarness {
+        event_loop: new_event_loop(pty).expect("event loop"),
+        mode,
+        written,
+    }
+}
+
+impl GateHarness {
+    /// What one pass of the event loop does before writing: recompute the gate, then write.
+    fn pass(&mut self, state: &mut State) {
+        self.event_loop.refresh_reply_gate(state);
+        let mut can_write = true;
+        if state.needs_write() {
+            self.event_loop.pty_write(state, &mut can_write).unwrap();
+        }
+    }
+
+    fn take_written(&self) -> Vec<u8> {
+        std::mem::take(&mut *self.written.lock().unwrap())
+    }
+}
+
+/// `[R(gated), K]` writes `K` while the pty is canonical, and `R` once it leaves canonical mode.
+#[test]
+fn the_loop_writes_a_withheld_reply_only_after_the_pty_leaves_canonical_mode() {
+    let mut h = gate_harness();
+    let mut state = State::default();
+    state.queue_response(b"\x1b[24;1R".to_vec(), Some(block("cmd")));
+    state.queue_input(Cow::Borrowed(b"K"));
+
+    h.mode.store(MODE_CANONICAL, Ordering::SeqCst);
+    h.pass(&mut state);
+    assert_eq!(h.take_written(), b"K");
+    assert!(state.is_withholding());
+    h.pass(&mut state);
+    assert_eq!(h.take_written(), b"", "still canonical: still withheld");
+
+    h.mode.store(MODE_RAW, Ordering::SeqCst);
+    h.pass(&mut state);
+    assert_eq!(h.take_written(), b"\x1b[24;1R");
+    assert!(!state.is_withholding());
+}
+
+#[test]
+fn the_loop_recomputes_the_gate_when_the_pty_returns_to_canonical_mode() {
+    let mut h = gate_harness();
+    let mut state = State::default();
+    h.mode.store(MODE_RAW, Ordering::SeqCst);
+    state.queue_response(b"A".to_vec(), Some(block("cmd")));
+    h.pass(&mut state);
+    assert_eq!(h.take_written(), b"A", "raw: written at once");
+
+    h.mode.store(MODE_CANONICAL, Ordering::SeqCst);
+    state.queue_response(b"B".to_vec(), Some(block("cmd")));
+    h.pass(&mut state);
+    assert_eq!(h.take_written(), b"", "canonical again: withheld");
+}
+
+#[test]
+fn a_pty_that_cannot_tell_its_mode_writes_replies_at_once() {
+    let mut h = gate_harness();
+    let mut state = State::default();
+    state.queue_response(b"A".to_vec(), Some(block("cmd")));
+    h.pass(&mut state);
+    assert_eq!(h.take_written(), b"A");
+}
+
+/// The wake-up that re-checks the pty is 10 ms for the first second, then 100 ms; the
+/// synchronized-output timeout still wins when it is sooner; nothing withheld, no gate wake-up.
+#[test]
+fn the_poll_timeout_follows_the_gate() {
+    let mut state = closed_gate_state();
+    assert_eq!(state.poll_timeout(None), None, "nothing withheld");
+    assert_eq!(
+        state.poll_timeout(Some(Duration::from_millis(7))),
+        Some(Duration::from_millis(7))
+    );
+
+    state.queue_response(b"R".to_vec(), Some(block("cmd")));
+    state.set_reply_gate(Some(true));
+    assert_eq!(state.poll_timeout(None), Some(REPLY_GATE_POLL));
+    assert_eq!(
+        state.poll_timeout(Some(Duration::from_millis(3))),
+        Some(Duration::from_millis(3))
+    );
+    assert_eq!(
+        state.poll_timeout(Some(Duration::from_secs(5))),
+        Some(REPLY_GATE_POLL)
+    );
+
+    // After a second of being held, the re-check backs off.
+    state.withheld_since = Some(Instant::now() - Duration::from_secs(2));
+    assert_eq!(state.poll_timeout(None), Some(REPLY_GATE_POLL_SLOW));
+
+    // Released or dropped: no gate wake-up and the clock restarts.
+    state.set_reply_gate(Some(false));
+    assert_eq!(state.poll_timeout(None), None);
+    assert_eq!(state.withheld_since, None);
+}
+
+/// A flood of unread queries stays bounded and every question asked per iteration is O(1).
+#[test]
+fn a_flood_of_gated_replies_is_bounded_and_cheap() {
+    let mut state = closed_gate_state();
+    let mut evicted = 0;
+    for _ in 0..100_000 {
+        evicted += state
+            .queue_response(b"\x1b[1;1R".to_vec(), Some(block("cmd")))
+            .len();
+    }
+    assert_eq!(state.gated_count, MAX_GATED_REPLIES);
+    assert_eq!(evicted, 100_000 - MAX_GATED_REPLIES);
+    assert_eq!(state.write_list.len(), MAX_GATED_REPLIES);
+
+    let started = Instant::now();
+    for _ in 0..100_000 {
+        assert!(!state.needs_write());
+        assert!(state.is_withholding());
+        assert!(state.has_gated());
+        assert!(state.has_tagged());
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+/// The same questions with 100k entries really queued (bypassing the cap): still O(1).
+#[test]
+fn the_per_iteration_questions_are_constant_time_with_a_hundred_thousand_gated_entries() {
+    let mut state = closed_gate_state();
+    for _ in 0..100_000 {
+        state.write_list.push_back(QueuedWrite {
+            bytes: Cow::Borrowed(b"R"),
+            produced_while_executing: Some(block("cmd")),
+            is_reply: true,
+        });
+    }
+    state.gated_count = 100_000;
+    let started = Instant::now();
+    for _ in 0..100_000 {
+        assert!(!state.needs_write());
+        assert!(state.is_withholding());
+        assert!(state.has_gated());
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+    // Dropping them keeps the count right.
+    let dropped = state.drop_stale_responses(&block("next"), false);
+    assert_eq!(dropped.len(), 100_000);
+    assert_eq!(state.gated_count, 0);
+    assert!(!state.has_gated());
+}
+
+#[test]
+fn the_gated_count_follows_writes_and_drops() {
+    let mut state = closed_gate_state();
+    state.queue_response(b"A".to_vec(), Some(block("cmd")));
+    state.queue_response(b"B".to_vec(), Some(block("cmd")));
+    state.queue_input(Cow::Borrowed(b"K"));
+    assert_eq!(state.gated_count, 2);
+    assert_eq!(drain(&mut state), vec![b"K".to_vec()]);
+    assert_eq!(state.gated_count, 2);
+    state.reply_gate_open = true;
+    assert_eq!(drain(&mut state), vec![b"A".to_vec(), b"B".to_vec()]);
+    assert_eq!(state.gated_count, 0);
 }
