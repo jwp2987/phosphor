@@ -919,3 +919,74 @@ fn a_view_event_without_a_pending_prompt_is_harmless() {
         ActiveDecision::Committed
     );
 }
+
+#[test]
+fn keys_typed_while_the_request_is_outstanding_queue_behind_a_held_enter() {
+    let mut handoff = young_after_submit();
+    type_and_flush(&mut handoff, b"abc");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    // The request is out; the editor owns input in general, but not ahead of the held Enter.
+    assert_eq!(handoff.state(), &HandoffState::AwaitingReport);
+    assert!(handoff.routes_keys_to_pty());
+    assert!(handoff.wants_terminal_focus());
+    for key in [&b"d"[..], b"e", b"f"] {
+        assert_eq!(handoff.on_user_bytes(key), UserBytesRoute::Held);
+    }
+    assert_eq!(
+        handoff.on_report(),
+        ReportDisposition::InsertThenSubmitYoung
+    );
+    // The order typed is the order executed: the Enter, then d, e, f.
+    assert_eq!(
+        handoff.state(),
+        &HandoffState::HoldAfterEnter {
+            held: b"def".to_vec(),
+            released: true,
+        }
+    );
+}
+
+#[test]
+fn without_a_held_enter_the_editor_owns_keys_while_the_request_is_outstanding() {
+    let handoff = awaiting_report();
+    assert!(!handoff.routes_keys_to_pty());
+    assert!(!handoff.wants_terminal_focus());
+}
+
+#[test]
+fn a_young_line_is_submitted_only_on_an_actual_verdict() {
+    let wait = Duration::from_millis(100);
+    // The verdict is pending: wait, however long it takes up to the cap.
+    assert_eq!(
+        young_submit_decision(true, true, Duration::ZERO),
+        YoungSubmit::Wait
+    );
+    assert_eq!(young_submit_decision(true, true, wait), YoungSubmit::Wait);
+    assert_eq!(
+        young_submit_decision(true, true, YOUNG_DETECTION_CAP - Duration::from_millis(1)),
+        YoungSubmit::Wait
+    );
+    // It landed: submit, with no further delay.
+    assert_eq!(
+        young_submit_decision(true, false, Duration::ZERO),
+        YoungSubmit::Submit
+    );
+    // Never submit on a guess: no classifier, or none that answered in time.
+    assert_eq!(
+        young_submit_decision(false, false, Duration::ZERO),
+        YoungSubmit::KeepInEditor
+    );
+    assert_eq!(
+        young_submit_decision(false, true, wait),
+        YoungSubmit::KeepInEditor
+    );
+    assert_eq!(
+        young_submit_decision(true, true, YOUNG_DETECTION_CAP),
+        YoungSubmit::KeepInEditor
+    );
+}

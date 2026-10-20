@@ -580,6 +580,17 @@ lazy_static! {
     };
 }
 
+/// What a young line's text needs before its deferred Enter may run (#933).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum YoungTypeaheadDetection {
+    /// Nothing to classify.
+    NotNeeded,
+    /// Detection was requested; wait for its verdict.
+    Requested,
+    /// The classifier cannot run; the text must not be submitted.
+    CannotRun,
+}
+
 #[derive(PartialEq, Eq, Copy, Clone, Serialize)]
 pub enum TelemetryInputSuggestionsMode {
     HistoryFuzzySearch,
@@ -12638,12 +12649,13 @@ impl Input {
     }
 
     /// For a line the typeahead hand-off inserted right after a command (#933): when it reads as
-    /// English (not a valid slash command, not prose-free shell typeahead), requests input-type
-    /// detection for it, which the insert did not, and returns true.
+    /// English (not a valid slash command, not prose-free shell typeahead) its text must be
+    /// classified before it is submitted, which the insert did not do (system edits request no
+    /// detection). Requests the detection for the exact buffer text.
     pub(crate) fn request_detection_for_young_typeahead(
         &mut self,
         ctx: &mut ViewContext<Self>,
-    ) -> bool {
+    ) -> YoungTypeaheadDetection {
         let text = self.editor.as_ref(ctx).buffer_text(ctx);
         if self.buffer_is_slash_command(ctx)
             || input_classifier::util::has_no_prose_evidence(&text)
@@ -12652,12 +12664,22 @@ impl Input {
                 .as_ref(ctx)
                 .should_run_input_autodetection(ctx)
         {
-            return false;
+            // Shell typeahead, a slash command, or an input type the user chose: nothing to
+            // classify.
+            return YoungTypeaheadDetection::NotNeeded;
+        }
+        if self.completion_session_context(ctx).is_none() {
+            return YoungTypeaheadDetection::CannotRun;
         }
         self.ai_input_model
             .update(ctx, |model, _| model.clear_typeahead_provenance());
         self.request_input_detection_for_current_buffer(ctx);
-        true
+        YoungTypeaheadDetection::Requested
+    }
+
+    /// Whether the classifier can answer for the buffer: a session to parse it against exists.
+    pub(crate) fn can_classify_buffer(&self, ctx: &AppContext) -> bool {
+        self.completion_session_context(ctx).is_some()
     }
 
     /// Whether detection requested for the buffer has not delivered its verdict yet.
