@@ -60,7 +60,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             try {
                 $cmd = Microsoft.PowerShell.Core\Get-Command -CommandType Application node 2>$null
                 if ($null -eq $cmd) { return '' }
-                $nv = & $cmd.Source --version 2>$null
+                $nv = '' | & $cmd.Source --version 2>$null
                 if ($null -ne $nv -and "$nv" -ne '') {
                     return $nv
                 }
@@ -288,7 +288,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         param([string]$sourceFileName)
 
         $aptConfig = Microsoft.PowerShell.Core\Get-Command -Type Application apt-config | Microsoft.PowerShell.Utility\Select-Object -First 1
-        & $aptConfig shell '$aptSourcesDir' 'Dir::Etc::sourceparts/d' | Microsoft.PowerShell.Utility\Invoke-Expression
+        '' | & $aptConfig shell '$aptSourcesDir' 'Dir::Etc::sourceparts/d' | Microsoft.PowerShell.Utility\Invoke-Expression
 
         $sourceFilePath = "${aptSourcesDir}${sourceFileName}"
 
@@ -319,7 +319,10 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         $GIT_OPTIONAL_LOCKS = $env:GIT_OPTIONAL_LOCKS
         $env:GIT_OPTIONAL_LOCKS = 0
         try {
-            &(Microsoft.PowerShell.Core\Get-Command -CommandType Application git | Microsoft.PowerShell.Utility\Select-Object -First 1) $args
+            # Pipe an empty line into git so PowerShell redirects its stdin. A native command that
+            # inherits the terminal makes .NET reconfigure the tty around the child, and keys
+            # typed ahead while the prompt runs lose their Enter (two lines run as one, #934).
+            '' | &(Microsoft.PowerShell.Core\Get-Command -CommandType Application git | Microsoft.PowerShell.Utility\Select-Object -First 1) $args
         } finally {
             $env:GIT_OPTIONAL_LOCKS = $GIT_OPTIONAL_LOCKS
         }

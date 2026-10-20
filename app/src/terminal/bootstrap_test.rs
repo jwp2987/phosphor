@@ -414,3 +414,66 @@ fn bash_warp_title_joins_multiline_commands_with_a_separator() {
         );
     }
 }
+
+/// #934: a native command that inherits the terminal's stdin makes .NET reconfigure the tty
+/// around the child, which drops the Enter the user typed ahead while the prompt ran (two lines
+/// then run as one). Every native command the PowerShell bootstrap runs must get a redirected
+/// stdin: pipe an empty string into it. This scans the bootstrap for call-operator invocations
+/// and fails on any that is neither piped nor on the list of PowerShell-only callees below.
+#[test]
+fn powershell_bootstrap_native_calls_redirect_stdin() {
+    // Callees that are PowerShell script blocks, not native processes: the user's own prompt
+    // and the PSConsoleHostReadLine wrapper. A user's prompt that runs native commands is theirs.
+    const NOT_NATIVE: [&str; 2] = [
+        "& $global:_warpOriginalPrompt",
+        "& $script:oldPSConsoleHostReadLine",
+    ];
+    // Generator commands arrive as text and run through Invoke-Expression; they are not a
+    // fixed call site, so they cannot take a pipe here.
+    const NOT_A_CALL_SITE: [&str; 1] = ["Invoke-Expression -Command"];
+
+    let files = [
+        (
+            "pwsh.ps1",
+            include_str!("../../assets/bundled/bootstrap/pwsh.ps1"),
+        ),
+        (
+            "pwsh_init_shell.ps1",
+            include_str!("../../assets/bundled/bootstrap/pwsh_init_shell.ps1"),
+        ),
+        (
+            "pwsh_init_subshell.ps1",
+            include_str!("../../assets/bundled/bootstrap/pwsh_init_subshell.ps1"),
+        ),
+    ];
+    let mut offenders = Vec::new();
+    let mut piped = 0;
+    for (name, text) in files {
+        for (index, line) in text.lines().enumerate() {
+            let code = line.trim();
+            if code.starts_with('#') {
+                continue;
+            }
+            let calls = code.contains("& $") || code.contains("&(");
+            if !calls || NOT_NATIVE.iter().any(|ok| code.contains(ok)) {
+                continue;
+            }
+            if NOT_A_CALL_SITE.iter().any(|ok| code.contains(ok)) {
+                continue;
+            }
+            if code.contains("'' | &") {
+                piped += 1;
+            } else {
+                offenders.push(format!("{name}:{}: {code}", index + 1));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "native calls in the PowerShell bootstrap without a redirected stdin (pipe '' into them): {offenders:#?}"
+    );
+    assert!(
+        piped >= 3,
+        "expected the git, node and apt-config calls to be piped, saw {piped}"
+    );
+}
