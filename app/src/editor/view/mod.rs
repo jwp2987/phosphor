@@ -1832,6 +1832,8 @@ pub struct EditorView {
     /// A cached copy of autocomplete_symbols from Settings (to avoid performing
     /// a settings read on every typed character).
     autocomplete_symbols_setting: bool,
+    /// When it returns true, typed symbols are inserted literally even if auto-pairing is on.
+    autocomplete_symbols_veto: Option<Box<dyn Fn() -> bool>>,
     /// A cached copy of cursor_display_type from Settings (to avoid performing
     /// a settings read on every typed character).
     /// If `None`, we do not wish to respect the user's cursor display preference.
@@ -3266,6 +3268,7 @@ impl EditorView {
             window_id: ctx.window_id(),
             autocomplete_symbols_allowed: options.autocomplete_symbols,
             autocomplete_symbols_setting: *editor_settings_handle.as_ref(ctx).autocomplete_symbols,
+            autocomplete_symbols_veto: None,
             cursor_display_override,
             autosuggestion_state: None,
             next_command_model: None,
@@ -3816,6 +3819,11 @@ impl EditorView {
             model.set_interaction_state(interaction_state);
         });
         ctx.notify();
+    }
+
+    pub fn with_autocomplete_symbols_veto(mut self, veto: Box<dyn Fn() -> bool>) -> Self {
+        self.autocomplete_symbols_veto = Some(veto);
+        self
     }
 
     pub fn set_autocomplete_symbols_allowed(&mut self, enable: bool) {
@@ -5062,8 +5070,12 @@ impl EditorView {
     }
 
     pub fn user_insert(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
-        let should_autocomplete_symbols =
-            self.autocomplete_symbols_allowed && self.autocomplete_symbols_setting;
+        let should_autocomplete_symbols = self.autocomplete_symbols_allowed
+            && self.autocomplete_symbols_setting
+            && !self
+                .autocomplete_symbols_veto
+                .as_ref()
+                .is_some_and(|veto| veto());
         let action = PlainTextEditorViewAction::from_inserted_str(text);
         self.edit(
             ctx,

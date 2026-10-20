@@ -990,3 +990,15 @@ fn a_young_line_is_submitted_only_on_an_actual_verdict() {
         YoungSubmit::KeepInEditor
     );
 }
+
+#[test]
+fn editor_text_precedes_report_only_outside_plain_editor_ownership() {
+    // #949: keys typed into the editor while the report is outstanding are followed by the
+    // report in front of them, so the editor must not auto-pair them.
+    assert!(!TypeaheadHandoff::default().editor_text_precedes_report());
+    let mut handoff = awaiting_report();
+    assert!(handoff.editor_text_precedes_report());
+    handoff.on_report();
+    assert!(!handoff.editor_text_precedes_report());
+    assert!(after_submit().editor_text_precedes_report());
+}

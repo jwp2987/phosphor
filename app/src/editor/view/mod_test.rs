@@ -3651,6 +3651,32 @@ fn test_autopair_backspace_and_overtype_inside_and_outside_quotes() {
 }
 
 #[test]
+fn test_autocomplete_symbols_veto_inserts_literally() {
+    // #949: while the typeahead hand-off is outstanding the shell's report lands in front of
+    // typed text, so typed symbols must be inserted exactly as typed.
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            let vetoed = std::rc::Rc::new(std::cell::Cell::new(true));
+            let veto = vetoed.clone();
+            let mut editor = EditorView::new_with_base_text("", Default::default(), ctx)
+                .with_autocomplete_symbols_veto(Box::new(move || veto.get()));
+            editor.set_autocomplete_symbols_allowed(true);
+            for c in "a\" b(c)\"".chars() {
+                editor.user_insert(&c.to_string(), ctx);
+            }
+            assert_eq!(editor.buffer_text(ctx), "a\" b(c)\"");
+
+            vetoed.set(false);
+            editor.user_insert("(", ctx);
+            assert_eq!(editor.buffer_text(ctx), "a\" b(c)\"()");
+            editor
+        });
+    });
+}
+
+#[test]
 fn test_autocomplete_symbols() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);

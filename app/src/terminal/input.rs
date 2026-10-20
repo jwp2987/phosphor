@@ -2557,6 +2557,7 @@ impl Input {
             // Clones used in render_decorator_elements closure below.
             let prompt_render_helper_clone = prompt_render_helper.clone();
             let model_clone = model.clone();
+            let model_for_autopair_veto = model.clone();
             // Clone used in keymap_context_modifier closure below.
             let terminal_model_for_keymap_context = model.clone();
             let has_prompt_suggestion_banner_for_keymap = has_prompt_suggestion_banner.clone();
@@ -2741,6 +2742,17 @@ impl Input {
                     ..Default::default()
                 };
                 EditorView::new(options, ctx)
+                    // Auto-pairing is off while the typeahead hand-off is not editor-owned (#949):
+                    // text typed now is prefixed by the shell's report, so the editor cannot know
+                    // its quote/bracket context. A blocking lock, like the rest of this file: a
+                    // `try_lock` that vetoed on contention would drop auto-pairing at random
+                    // whenever the pty thread holds the model during output.
+                    .with_autocomplete_symbols_veto(Box::new(move || {
+                        model_for_autopair_veto
+                            .lock()
+                            .typeahead_handoff()
+                            .editor_text_precedes_report()
+                    }))
                     .with_next_command_model(next_command_model.clone())
                     .with_context_model(ai_context_model.clone())
             })

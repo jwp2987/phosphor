@@ -288,6 +288,14 @@ impl TypeaheadHandoff {
         )
     }
 
+    /// Whether text the editor receives now will be followed by the shell's report in front of
+    /// it (or never reaches the editor at all), i.e. the editor cannot know the quote or bracket
+    /// context of what it is given (#949). The editor must insert typed symbols literally: an
+    /// auto-inserted closer would pair with an opener that is in the report, not the editor.
+    pub fn editor_text_precedes_report(&self) -> bool {
+        !matches!(self.state, HandoffState::EditorOwned)
+    }
+
     /// Whether `PtyController` must hold its queued writes: the shell's line may hold user bytes
     /// that a queued command's kill prefix would destroy before they were reported.
     pub fn holds_queued_writes(&self) -> bool {
