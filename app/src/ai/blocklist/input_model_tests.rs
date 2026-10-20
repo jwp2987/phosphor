@@ -1504,3 +1504,40 @@ fn pending_known_command_line_settles_to_shell_at_submit() {
         }
     });
 }
+
+/// #933: Enter on English text waits for the verdict of its classification rather than running
+/// it on the inherited type; shell typeahead, slash commands, prose-free text and a text the
+/// wait already gave up on do not wait.
+#[test]
+fn enter_waits_for_the_verdict_only_for_unclassified_prose() {
+    use EnterProvenance::{Classifiable, ShellTypeahead};
+    let wait = should_wait_for_verdict_before_submit;
+    assert!(wait(true, false, true, Classifiable, false));
+    assert!(!wait(false, false, true, Classifiable, false), "prose-free text");
+    assert!(!wait(true, true, true, Classifiable, false), "slash command");
+    assert!(!wait(true, false, false, Classifiable, false), "verdict landed");
+    assert!(!wait(true, false, true, ShellTypeahead, false), "typeahead for a running command");
+    assert!(!wait(true, false, true, Classifiable, true), "second Enter after giving up");
+}
+
+#[test]
+fn typeahead_is_young_only_while_the_provenance_lasts() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, SHELL_UNLOCKED);
+        input_model.update(&mut app, |model, _| {
+            assert!(!model.typeahead_is_young());
+            model.note_typeahead_inserted("expl".to_owned());
+            assert!(!model.typeahead_is_young(), "a plain hand-off insert is shell typeahead");
+            model.mark_typeahead_young();
+            assert!(model.typeahead_is_young());
+            // The user replaced the text: the provenance and its youth end.
+            model.note_buffer_edited("something else");
+            assert!(!model.typeahead_is_young());
+            model.note_typeahead_inserted("ls".to_owned());
+            model.mark_typeahead_young();
+            model.clear_typeahead_provenance();
+            assert!(!model.typeahead_is_young());
+        });
+    });
+}

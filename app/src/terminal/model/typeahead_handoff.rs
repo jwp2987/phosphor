@@ -146,6 +146,10 @@ pub enum ReportDisposition {
     InsertLegacy,
     /// Insert it at the front of the editor; the editor now owns input.
     Insert,
+    /// As [`Self::Insert`], for a line the user began typing right after a command, before the app
+    /// knew the shell was back at its prompt (#933): not typeahead for a running program, so an
+    /// Enter on it must wait for a classification of the text.
+    InsertYoung,
     /// Insert it, then run the Enter that was deferred while it was outstanding, as a shell
     /// command (shell typeahead).
     InsertThenSubmit,
@@ -624,6 +628,22 @@ impl TypeaheadHandoff {
         mem::take(&mut self.young_hold_started).then_some(self.young_hold_id)
     }
 
+    /// A lone EOF (^D) is about to be written while an Enter is held: the tty keeps typeahead
+    /// across it (unlike ^C, ^Z and ^\\, which flush it), so the held Enter and the keys behind
+    /// it must reach the program before the EOF (#933). Returns them with the EOF, to be routed
+    /// and written as one user write.
+    pub fn take_young_hold_before_eof(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
+        if !bytes.contains(&0x04) || bytes.iter().any(|b| matches!(b, 0x03 | 0x1a | 0x1c)) {
+            return None;
+        }
+        if !matches!(self.state, HandoffState::PtyOwned { .. }) {
+            return None;
+        }
+        let mut held = self.young_hold.take()?;
+        held.extend_from_slice(bytes);
+        Some(held)
+    }
+
     /// The window of hold `id` ran out with no prompt: the command is running, so the held Enter
     /// and the keys behind it are typeahead for it. Returns the bytes to write, counted as a
     /// routed user write. `None` when that hold is gone (a later one has another id), or the
@@ -741,9 +761,13 @@ impl TypeaheadHandoff {
                     self.young_line = false;
                     return ReportDisposition::InsertThenSubmitYoung;
                 }
-                self.young_line = false;
+                let young = mem::take(&mut self.young_line);
                 self.state = HandoffState::EditorOwned;
-                ReportDisposition::Insert
+                if young {
+                    ReportDisposition::InsertYoung
+                } else {
+                    ReportDisposition::Insert
+                }
             }
             Owner::Hold { released: false } => {
                 self.mark_released();

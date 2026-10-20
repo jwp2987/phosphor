@@ -188,6 +188,10 @@ pub struct BlocklistAIInputModel {
     /// Dropped by a submit, an emptied buffer, an edit that removes the typeahead from the front
     /// (select-all and paste), or the user choosing AI explicitly.
     typeahead_prefix: Option<String>,
+    /// Whether that typeahead began right after a command, before the app knew the shell was
+    /// back at its prompt (#933): not typed ahead for a running program, so it is classified like
+    /// anything typed in the editor.
+    typeahead_young: bool,
 
     /// Whether the input buffer was empty at the time the lock was set.  This will be true
     /// if a persistent lock is in place and a buffer is submitted.
@@ -254,6 +258,7 @@ impl BlocklistAIInputModel {
             pending_detection_buffer: None,
             detection_generation: 0,
             typeahead_prefix: None,
+            typeahead_young: false,
             was_lock_set_with_empty_buffer: false,
             misroute: MisrouteMemory::default(),
             agent_view_controller: None,
@@ -464,6 +469,7 @@ impl BlocklistAIInputModel {
             pending_detection_buffer: None,
             detection_generation: 0,
             typeahead_prefix: None,
+            typeahead_young: false,
             was_lock_set_with_empty_buffer: false,
             misroute: MisrouteMemory::default(),
             autodetect_abort_handle: None,
@@ -832,6 +838,7 @@ impl BlocklistAIInputModel {
     /// [`Self::typeahead_prefix`].
     pub fn note_typeahead_inserted(&mut self, typeahead: String) {
         self.typeahead_prefix = (!typeahead.trim().is_empty()).then_some(typeahead);
+        self.typeahead_young = false;
     }
 
     /// Forgets an explicit input-type write and the detection suppression it opened (#933). For
@@ -840,6 +847,16 @@ impl BlocklistAIInputModel {
     /// first detection request is swallowed, so the new text would never be classified.
     pub fn clear_explicit_input_type_set(&mut self) {
         self.explicit_input_type_set = None;
+    }
+
+    /// Marks the typeahead provenance just noted as young (#933).
+    pub fn mark_typeahead_young(&mut self) {
+        self.typeahead_young = self.typeahead_prefix.is_some();
+    }
+
+    /// Whether the buffer carries typeahead provenance that is young (#933).
+    pub fn typeahead_is_young(&self) -> bool {
+        self.typeahead_prefix.is_some() && self.typeahead_young
     }
 
     /// Drops the typeahead provenance (#933): the text is to be routed like anything the user
@@ -1743,6 +1760,33 @@ async fn most_recent_close_match<'a>(
 /// otherwise it goes to the classifier. Residual: command-headed prose with no veto word (`find
 /// large files`, `install docker`, `free up disk space`) does not read as prose, so a failed
 /// entry for it can still route it and its near-variants to Shell.
+/// What the buffer's typeahead provenance says about Enter (#933).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnterProvenance {
+    /// Typed in the editor, or typeahead that began right after a command.
+    Classifiable,
+    /// Typed ahead for a running command (#886): shell typeahead, decided by the shell rules.
+    ShellTypeahead,
+}
+
+/// Whether an Enter must wait for the verdict of the detection requested for the exact buffer text
+/// before it submits (#933). Text that reads as English must never be run by the shell on an
+/// inherited input type because the verdict had not landed yet. Real commands wait only for the
+/// classification itself, which the safety gate resolves to Shell.
+pub fn should_wait_for_verdict_before_submit(
+    has_prose_evidence: bool,
+    is_slash_command: bool,
+    verdict_pending: bool,
+    provenance: EnterProvenance,
+    gave_up_on_this_text: bool,
+) -> bool {
+    has_prose_evidence
+        && !is_slash_command
+        && verdict_pending
+        && provenance == EnterProvenance::Classifiable
+        && !gave_up_on_this_text
+}
+
 fn shell_history_candidates<'a>(
     entries: impl Iterator<Item = &'a HistoryEntry>,
     buffer_text: &str,

@@ -9697,7 +9697,17 @@ impl TerminalView {
         data: B,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
-        let bytes: Cow<'static, [u8]> = data.into();
+        let mut bytes: Cow<'static, [u8]> = data.into();
+        // #933: an EOF does not flush typeahead, so Enters held behind the young window go first.
+        if FeatureFlag::TypeaheadHandoff.is_enabled()
+            && let Some(with_held) = self
+                .model
+                .lock()
+                .typeahead_handoff_mut()
+                .take_young_hold_before_eof(&bytes)
+        {
+            bytes = Cow::Owned(with_held);
+        }
         let handoff_route = {
             let mut terminal_model = self.model.lock();
             let active_block = terminal_model.block_list().active_block();
@@ -10063,8 +10073,11 @@ impl TerminalView {
         let disposition = self.model.lock().typeahead_handoff_mut().on_report();
         match disposition {
             ReportDisposition::InsertLegacy => self.handle_typeahead_event(ctx),
-            ReportDisposition::Insert => {
+            ReportDisposition::Insert | ReportDisposition::InsertYoung => {
                 self.insert_typeahead_from_handoff(ctx);
+                if disposition == ReportDisposition::InsertYoung {
+                    self.input.update(ctx, |input, ctx| input.mark_typeahead_young(ctx));
+                }
                 self.note_editor_took_over();
                 self.redetermine_terminal_focus(ctx);
             }

@@ -1002,3 +1002,52 @@ fn editor_text_precedes_report_only_outside_plain_editor_ownership() {
     assert!(!handoff.editor_text_precedes_report());
     assert!(after_submit().editor_text_precedes_report());
 }
+
+#[test]
+fn a_report_for_a_line_begun_right_after_a_command_is_young() {
+    // The typed keys went to the pty before the app knew the prompt was back; the report brings
+    // them to the editor, where an Enter on them waits for a classification (#933).
+    let mut young = young_after_submit();
+    type_and_flush(&mut young, b"explain");
+    young.on_precmd();
+    assert_eq!(
+        young.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert_eq!(young.on_report(), ReportDisposition::InsertYoung);
+    // Typeahead for a command that had been running a while is not.
+    let mut old = awaiting_report();
+    assert_eq!(old.on_report(), ReportDisposition::Insert);
+}
+
+#[test]
+fn an_eof_flushes_a_held_enter_ahead_of_itself_but_other_signals_drop_it() {
+    // ^D does not flush the tty's typeahead: `cat` typed into right after it started, then ^D,
+    // must receive the lines (#933).
+    let mut handoff = young_after_submit();
+    type_and_flush(&mut handoff, b"line one");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(handoff.on_user_bytes(b"line two\r"), UserBytesRoute::Held);
+    let combined = handoff
+        .take_young_hold_before_eof(&[0x04])
+        .expect("held bytes");
+    assert_eq!(combined, b"\rline two\r\x04".to_vec());
+    assert!(!handoff.has_young_hold());
+    // Routed as one user write, counting both Enters, plus the submitted command's.
+    assert_eq!(
+        handoff.on_user_bytes(&combined),
+        UserBytesRoute::WriteCounted
+    );
+    assert!(handoff.has_unanswered_lines());
+    // ^C (and ^Z, ^\) flush the tty's typeahead anyway, and ^D with nothing held is a no-op.
+    let mut handoff = young_after_submit();
+    type_and_flush(&mut handoff, b"x");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(handoff.take_young_hold_before_eof(&[0x03]), None);
+    assert_eq!(handoff.take_young_hold_before_eof(&[0x04, 0x03]), None);
+    assert!(handoff.has_young_hold());
+    assert_eq!(
+        young_after_submit().take_young_hold_before_eof(&[0x04]),
+        None
+    );
+}
