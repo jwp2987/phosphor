@@ -13,10 +13,25 @@ use crate::terminal::model::reply_ledger::ReplyLedger;
 struct FakePty {
     register_error: Option<i32>,
     killed: Arc<AtomicBool>,
-    reader: io::Empty,
+    reader: FakeReader,
     writer: CaptureWriter,
     /// What `is_canonical` reports: 0 = cannot tell, 1 = raw, 2 = canonical.
     mode: Arc<AtomicU8>,
+}
+
+/// A pty reader that reports end-of-file, or fails with a fixed errno on every read.
+#[derive(Default)]
+struct FakeReader {
+    errno: Option<i32>,
+}
+
+impl io::Read for FakeReader {
+    fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+        match self.errno {
+            Some(errno) => Err(io::Error::from_raw_os_error(errno)),
+            None => Ok(0),
+        }
+    }
 }
 
 /// A pty writer that records what the event loop writes.
@@ -45,7 +60,7 @@ impl FakePty {
             Self {
                 register_error,
                 killed: killed.clone(),
-                reader: io::empty(),
+                reader: FakeReader::default(),
                 writer: CaptureWriter::default(),
                 mode: Arc::new(AtomicU8::new(MODE_UNKNOWN)),
             },
@@ -55,7 +70,7 @@ impl FakePty {
 }
 
 impl EventedReadWrite for FakePty {
-    type Reader = io::Empty;
+    type Reader = FakeReader;
     type Writer = CaptureWriter;
 
     fn register(&mut self, _: &mio::Poll, _: mio::Interest) -> io::Result<()> {
@@ -73,7 +88,7 @@ impl EventedReadWrite for FakePty {
         Ok(())
     }
 
-    fn reader(&mut self) -> &mut io::Empty {
+    fn reader(&mut self) -> &mut FakeReader {
         &mut self.reader
     }
 
@@ -557,4 +572,78 @@ fn the_gated_count_follows_writes_and_drops() {
     state.reply_gate_open = true;
     assert_eq!(drain(&mut state), vec![b"A".to_vec(), b"B".to_vec()]);
     assert_eq!(state.gated_count, 0);
+}
+
+/// #953: a hang-up (`EIO` on the master) with a gated reply queued must end the I/O pass
+/// instead of re-reading the dead fd forever. Run on a thread so a regression fails the test
+/// rather than hanging it.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+#[test]
+fn a_hung_up_pty_ends_the_io_pass_and_drops_queued_writes() {
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut pty, _) = FakePty::new(None);
+        pty.reader.errno = Some(libc::EIO);
+        pty.mode.store(MODE_CANONICAL, Ordering::SeqCst);
+        let mut event_loop = new_event_loop(pty).expect("event loop");
+        let mut state = State::default();
+        // A gated reply (held because the pty is canonical) and user input behind it.
+        state.queue_response(b"reply".to_vec(), Some(block("b")));
+        state.queue_input(Cow::Borrowed(b"typed"));
+        let mut buf = [0u8; 64];
+        let (mut can_read, mut can_write) = (true, true);
+        let mut passes = 0;
+        // The caller returns to `poll` after each pass; a pass that leaves `can_read` set
+        // would be re-run immediately.
+        while can_read && passes < 100 {
+            event_loop
+                .service_io(&mut state, &mut buf, &mut can_read, &mut can_write)
+                .expect("EIO is a hang-up, not an error");
+            passes += 1;
+        }
+        let _ = done_tx.send((
+            passes,
+            can_read,
+            can_write,
+            state.hung_up,
+            state.needs_write(),
+            state.has_gated(),
+        ));
+    });
+    let (passes, can_read, can_write, hung_up, needs_write, has_gated) = done_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("service_io spun on a hung-up pty");
+    assert_eq!(passes, 1);
+    assert!(!can_read && !can_write);
+    assert!(hung_up);
+    assert!(!needs_write && !has_gated, "queued writes are dropped");
+}
+
+#[test]
+fn a_hung_up_pty_wakes_the_loop_to_look_for_the_exit() {
+    let mut state = State::default();
+    assert_eq!(state.poll_timeout(None), None);
+    state.hung_up = true;
+    assert_eq!(state.poll_timeout(None), Some(HUNG_UP_POLL));
+    assert_eq!(
+        state.poll_timeout(Some(Duration::from_millis(5))),
+        Some(Duration::from_millis(5))
+    );
+}
+
+/// Any other read error still stops the loop.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+#[test]
+fn a_fatal_read_error_still_stops_the_loop() {
+    let (mut pty, _) = FakePty::new(None);
+    pty.reader.errno = Some(libc::EBADF);
+    let mut event_loop = new_event_loop(pty).expect("event loop");
+    let mut state = State::default();
+    let mut buf = [0u8; 64];
+    let (mut can_read, mut can_write) = (true, true);
+    assert!(
+        event_loop
+            .service_io(&mut state, &mut buf, &mut can_read, &mut can_write)
+            .is_err()
+    );
 }

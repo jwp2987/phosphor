@@ -86,6 +86,13 @@ pub trait EventedPty: EventedReadWrite {
         None
     }
 
+    /// Whether the child process has exited, asked directly (a non-blocking wait) rather than
+    /// through a child event. Used after the pty hangs up, when the exit signal may already have
+    /// been consumed (#953). Platforms that cannot ask report `false`.
+    fn has_exited(&mut self) -> bool {
+        false
+    }
+
     /// Terminate the PTY process
     fn kill(self) -> Result<()>;
 }
