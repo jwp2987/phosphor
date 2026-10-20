@@ -527,3 +527,66 @@ fn a_powershell_command_write_leaves_a_tracked_line() {
         assert_eq!(ledger.filter_report(typed.into()), typed);
     }
 }
+
+#[test]
+fn osc_colour_reply_residue_without_its_escape_and_bel_is_dropped() {
+    // PSReadLine (pwsh) swallows the ESC ] prefix and the BEL terminator (#943).
+    let replies = [
+        "\x1b]10;rgb:ffff/ffff/ffff\x07",
+        "\x1b]11;rgb:0000/0000/0000\x07",
+    ];
+    assert_eq!(
+        filtered(&replies, &[], "10;rgb:ffff/ffff/ffff11;rgb:0000/0000/0000"),
+        ""
+    );
+    assert_eq!(filtered(&replies, &[], "10;rgb:ffff/ffff/ffff"), "");
+    assert_eq!(filtered(&replies[1..], &[], "11;rgb:0000/0000/0000"), "");
+    assert_eq!(
+        filtered(
+            &replies,
+            &["Write-Output a"],
+            "10;rgb:ffff/ffff/ffff11;rgb:0000/0000/0000Write-Output a"
+        ),
+        "Write-Output a"
+    );
+    // The BEL, if the editor kept it, is explained too.
+    assert_eq!(
+        filtered(
+            &replies,
+            &[],
+            "10;rgb:ffff/ffff/ffff\x0711;rgb:0000/0000/0000\x07"
+        ),
+        ""
+    );
+}
+
+#[test]
+fn osc_reply_ended_by_st_is_explained_with_or_without_the_terminator() {
+    let replies = ["\x1b]11;rgb:0000/0000/0000\x1b\\"];
+    assert_eq!(filtered(&replies, &[], "11;rgb:0000/0000/0000"), "");
+    assert_eq!(filtered(&replies, &[], "11;rgb:0000/0000/0000\\"), "");
+}
+
+#[test]
+fn typed_text_that_resembles_an_osc_reply_is_not_dropped_without_a_reply() {
+    // Nothing recorded: nothing is dropped, however much the text looks like residue.
+    assert_eq!(
+        filtered(&[], &[], "10;rgb:ffff/ffff/ffff"),
+        "10;rgb:ffff/ffff/ffff"
+    );
+    // Typed by the user (so it is in the typed text), it is kept even beside a reply.
+    let replies = ["\x1b]10;rgb:ffff/ffff/ffff\x07"];
+    assert_eq!(
+        filtered(
+            &replies,
+            &["10;rgb:ffff/ffff/ffff"],
+            "10;rgb:ffff/ffff/ffff"
+        ),
+        "10;rgb:ffff/ffff/ffff"
+    );
+    // A different colour than the one queried is not residue of it.
+    assert_eq!(
+        filtered(&replies, &[], "10;rgb:0000/0000/0000"),
+        "10;rgb:0000/0000/0000"
+    );
+}
