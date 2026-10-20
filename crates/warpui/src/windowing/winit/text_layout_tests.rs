@@ -1080,6 +1080,47 @@ fn test_capped_first_line_does_not_shift_following_lines() {
     assert_eq!(before.end_index(), n + 1, "first paragraph's last row ends at the newline");
 }
 
+/// #940: the single-line path (`layout_line`, no soft wrap; used for agent query text) is bounded
+/// by the same shaping cap: a 3 MB unbroken word yields at most cap + 1 glyphs, its end index is
+/// the true text length, and layout stays fast.
+#[test]
+fn test_layout_line_of_huge_word_is_bounded_and_ends_at_text_end() {
+    let (font_db, roboto) = init_fonts();
+    let n = 3_000_000;
+    let text = "a".repeat(n);
+    let line_style = LineStyle {
+        font_size: FONT_SIZE,
+        line_height_ratio: DEFAULT_UI_LINE_HEIGHT_RATIO,
+        baseline_ratio: DEFAULT_TOP_BOTTOM_RATIO,
+        fixed_width_tab_size: None,
+    };
+    let started = std::time::Instant::now();
+    let line = font_db.text_layout_system().layout_line(
+        &text,
+        line_style,
+        &[(
+            0..n,
+            StyleAndFont::new(roboto, Properties::default(), TextStyle::new()),
+        )],
+        400.,
+        crate::text_layout::ClipConfig::default(),
+    );
+    let elapsed = started.elapsed();
+    eprintln!("layout_line of a 3 MB word took {elapsed:?}");
+
+    let glyphs: usize = line.runs.iter().map(|run| run.glyphs.len()).sum();
+    let cap = cosmic_text::MAX_SHAPED_WORD_BYTES;
+    assert!(glyphs > 0 && glyphs <= cap + 1, "{glyphs} glyphs, cap {cap}");
+    // Painting walks only `runs[*].glyphs` and `caret_positions`, so both bound the paint cost.
+    assert!(line.caret_positions.len() <= cap + 1);
+    assert_eq!(line.end_index(), n);
+    assert_eq!(line.last_glyph().unwrap().index + 1, n);
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "layout_line of a 3 MB word took {elapsed:?}"
+    );
+}
+
 /// #864: two words over the limit in differently styled spans, a word that crosses a style
 /// boundary, and a long word starting in a non-default style all used to lose glyphs (the
 /// attrs-list-defaults heuristic can only match one span).
