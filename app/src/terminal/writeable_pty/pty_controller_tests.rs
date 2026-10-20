@@ -1679,6 +1679,13 @@ mod typeahead_handoff {
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
             let harness = harness(&mut app);
             submit(&mut app, &harness, "sleep 1");
+            // Typeahead for a command that has been running a while (not a line begun right
+            // after it, #933).
+            harness
+                .model
+                .lock()
+                .typeahead_handoff_mut()
+                .age_last_activity_for_test();
             user_types(&mut app, &harness, b"ec");
             shell_runs_a_command(&harness.model, "sleep 1");
             line_editor_becomes_active(&mut app, &harness);
@@ -2099,9 +2106,21 @@ mod typeahead_handoff {
             let _recovery = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
             let harness = harness(&mut app);
             submit(&mut app, &harness, "sleep 2");
+            // Typed while the command runs, not right after it was written (#933).
+            harness
+                .model
+                .lock()
+                .typeahead_handoff_mut()
+                .age_last_activity_for_test();
             user_types(&mut app, &harness, b"ls");
             shell_runs_a_command(&harness.model, "sleep 2");
             fire_queued_command(&mut app, &harness);
+            // A line typed during the command, long after it began (#933).
+            harness
+                .model
+                .lock()
+                .typeahead_handoff_mut()
+                .age_last_activity_for_test();
             user_types(&mut app, &harness, b"\r\r");
 
             shell_runs_a_command(&harness.model, "ls");

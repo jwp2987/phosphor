@@ -12074,6 +12074,10 @@ impl Input {
     /// submit, which sent whole runs of `echo bN >> ~/blk.txt` to the agent. See
     /// `BlocklistAIInputModel::settle_pending_detection_for_submit` for what may be decided here.
     fn settle_pending_input_detection_for_submit(&mut self, ctx: &mut ViewContext<Self>) {
+        // #933: a valid slash command (`/agent go`) always goes to the agent. The slash model
+        // moves the input to AI when it sees the buffer; an Enter that arrives before that event
+        // has been applied must not run the line as a shell command.
+        self.redetect_slash_command_before_submit(ctx);
         let buffer_text = self.buffer_text(ctx);
         let snapshot = match &self.last_parsed_tokens {
             Some(parsed) if parsed.buffer_text == buffer_text => parsed.clone(),
@@ -12583,6 +12587,89 @@ impl Input {
             input_model.set_input_config(previous_config, is_buffer_empty, ctx);
         });
         submitted
+    }
+
+    /// Brings the slash command model up to date with the buffer before a submit (#933): an
+    /// Enter that arrives before the buffer's update was applied, or a buffer the typeahead
+    /// hand-off filled, must not leave a valid slash command (`/agent go`) undetected and run as
+    /// a shell command.
+    fn redetect_slash_command_before_submit(&mut self, ctx: &mut ViewContext<Self>) {
+        let text = self.editor.as_ref(ctx).buffer_text(ctx);
+        if !text.starts_with('/')
+            || self
+                .slash_command_model
+                .as_ref(ctx)
+                .state()
+                .is_detected_command_or_skill()
+        {
+            return;
+        }
+        if self
+            .slash_command_model
+            .as_ref(ctx)
+            .detect_command(&text, ctx)
+            .is_detected_command_or_skill()
+        {
+            self.slash_command_model
+                .update(ctx, |model, ctx| model.redetect(text, ctx));
+        }
+    }
+
+    /// For a line the typeahead hand-off inserted right after a command (#933): when it reads as
+    /// English (not a valid slash command, not prose-free shell typeahead), requests input-type
+    /// detection for it, which the insert did not, and returns true.
+    pub(crate) fn request_detection_for_young_typeahead(
+        &mut self,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        let text = self.editor.as_ref(ctx).buffer_text(ctx);
+        if self.buffer_is_slash_command(ctx)
+            || input_classifier::util::has_no_prose_evidence(&text)
+            || !self
+                .ai_input_model
+                .as_ref(ctx)
+                .should_run_input_autodetection(ctx)
+        {
+            return false;
+        }
+        self.ai_input_model
+            .update(ctx, |model, _| model.clear_typeahead_provenance());
+        self.request_input_detection_for_current_buffer(ctx);
+        true
+    }
+
+    /// Whether detection requested for the buffer has not delivered its verdict yet.
+    pub(crate) fn detection_pending_for_buffer(&self, ctx: &AppContext) -> bool {
+        let text = self.editor.as_ref(ctx).buffer_text(ctx);
+        self.ai_input_model
+            .as_ref(ctx)
+            .is_detection_pending_for(&text, ctx)
+    }
+
+    /// Whether the buffer is a valid slash command or skill command (`/agent go`), which never
+    /// runs as a shell command whatever the timing (#933).
+    pub(crate) fn buffer_is_slash_command(&self, ctx: &AppContext) -> bool {
+        let text = self.editor.as_ref(ctx).buffer_text(ctx);
+        self.slash_command_model
+            .as_ref(ctx)
+            .detect_command(&text, ctx)
+            .is_detected_command_or_skill()
+    }
+
+    /// Runs the Enter the typeahead hand-off deferred, routed like any Enter in the editor
+    /// (#933): the text is prose the user typed right after a command ran, before the app knew
+    /// the shell was back at its prompt, so natural-language detection decides it (the
+    /// agent-ward rules apply: no typeahead provenance). Returns whether a shell command was
+    /// submitted.
+    pub(crate) fn input_enter_routed_after_typeahead_report(
+        &mut self,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        self.ai_input_model
+            .update(ctx, |input_model, _| input_model.clear_typeahead_provenance());
+        self.last_enter_submitted_shell_command = false;
+        self.input_enter(ctx);
+        self.last_enter_submitted_shell_command
     }
 
     /// Remembers a submit for the misroute recovery (#835).

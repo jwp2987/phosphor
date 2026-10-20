@@ -3,6 +3,15 @@ use super::*;
 /// A hand-off whose submitted command has been written, i.e. the state every hand-off starts
 /// from.
 fn after_submit() -> TypeaheadHandoff {
+    let mut handoff = young_after_submit();
+    // A command that has been running longer than `YOUNG_ENTER_WINDOW` (#933).
+    handoff.last_activity_at = None;
+    handoff
+}
+
+/// A hand-off whose command was written just now, so an Enter the user types may be a line typed
+/// at a prompt the app has not noticed yet (#933).
+fn young_after_submit() -> TypeaheadHandoff {
     let mut handoff = TypeaheadHandoff::default();
     assert!(handoff.on_command_written().is_empty());
     handoff
@@ -669,4 +678,187 @@ fn the_window_survives_focus_moved_by_a_key_it_applied() {
     // Any other focus change ends it.
     handoff.on_editor_focused();
     assert!(!handoff.editor_took_over_within(window, start));
+}
+
+#[test]
+fn an_enter_typed_right_after_a_command_is_held_until_the_prompt_and_run_in_the_editor() {
+    let mut handoff = young_after_submit();
+    assert_eq!(handoff.on_user_bytes(b"frob"), UserBytesRoute::WriteCounted);
+    handoff.on_user_write_flushed();
+    // The Enter and the keys behind it are held, not written (#933).
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    let id = handoff.take_young_hold_started().expect("a hold started");
+    assert_eq!(handoff.take_young_hold_started(), None);
+    assert_eq!(handoff.on_user_bytes(b"x"), UserBytesRoute::Held);
+    assert_eq!(handoff.writes_in_flight(), 0);
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    // The timer of a hold the report already ran does nothing.
+    assert_eq!(handoff.expire_young_hold(id), None);
+    assert_eq!(
+        handoff.on_report(),
+        ReportDisposition::InsertThenSubmitYoung
+    );
+    assert_eq!(
+        handoff.state(),
+        &HandoffState::HoldAfterEnter {
+            held: b"x".to_vec(),
+            released: true,
+        }
+    );
+}
+
+#[test]
+fn a_held_enter_is_written_as_typeahead_when_no_prompt_comes() {
+    let mut handoff = young_after_submit();
+    type_and_flush(&mut handoff, b"abc");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    let id = handoff.take_young_hold_started().unwrap();
+    assert_eq!(handoff.on_user_bytes(b"d"), UserBytesRoute::Held);
+    assert_eq!(handoff.expire_young_hold(id), Some(b"\rd".to_vec()));
+    // Counted as the routed write it now is, and its Enter is queued for the shell.
+    assert_eq!(handoff.writes_in_flight(), 1);
+    assert!(handoff.has_unanswered_lines());
+    assert_eq!(handoff.expire_young_hold(id), None);
+}
+
+#[test]
+fn an_enter_is_not_held_on_an_empty_line_or_for_an_old_command() {
+    let mut handoff = young_after_submit();
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    let mut old = after_submit();
+    type_and_flush(&mut old, b"abc");
+    assert_eq!(old.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+}
+
+#[test]
+fn signal_and_eof_bytes_are_never_held_and_drop_a_held_enter() {
+    for signal in [0x03u8, 0x04, 0x1a, 0x1c] {
+        let mut handoff = young_after_submit();
+        type_and_flush(&mut handoff, b"x");
+        assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+        let id = handoff.take_young_hold_started().unwrap();
+        // The byte goes out at once, counted, and the held Enter is dropped.
+        assert_eq!(
+            handoff.on_user_bytes(&[signal]),
+            UserBytesRoute::WriteCounted
+        );
+        assert!(!handoff.has_young_hold());
+        assert_eq!(handoff.expire_young_hold(id), None);
+    }
+    // Not even as the first byte of a would-be hold.
+    let mut handoff = young_after_submit();
+    type_and_flush(&mut handoff, b"x");
+    assert_eq!(
+        handoff.on_user_bytes(b"\r\x03"),
+        UserBytesRoute::WriteCounted
+    );
+    assert!(!handoff.has_young_hold());
+}
+
+#[test]
+fn an_expired_timer_cannot_release_a_later_hold() {
+    let mut handoff = young_after_submit();
+    type_and_flush(&mut handoff, b"abc");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    let first = handoff.take_young_hold_started().unwrap();
+    handoff.on_user_bytes(&[0x03]);
+    handoff.on_user_write_flushed();
+    assert_eq!(handoff.on_interrupt(), InterruptOutcome::CommandRunning);
+    type_and_flush(&mut handoff, b"def");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    let second = handoff.take_young_hold_started().unwrap();
+    assert_ne!(first, second);
+    assert_eq!(handoff.expire_young_hold(first), None);
+    assert!(handoff.has_young_hold());
+    assert_eq!(handoff.expire_young_hold(second), Some(b"\r".to_vec()));
+}
+
+#[test]
+fn a_hold_does_not_outlive_the_state_it_was_made_in() {
+    // An uncounted command's kill prefix ends the line the Enter belongs to.
+    let mut handoff = young_after_submit();
+    type_and_flush(&mut handoff, b"abc");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    handoff.on_uncounted_command_written();
+    assert!(!handoff.has_young_hold());
+    assert_eq!(handoff.on_user_bytes(b"x"), UserBytesRoute::WriteCounted);
+
+    // A command from the editor takes the held keys behind it.
+    let mut handoff = young_after_submit();
+    type_and_flush(&mut handoff, b"abc");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(handoff.on_user_bytes(b"x"), UserBytesRoute::Held);
+    assert_eq!(handoff.on_command_written(), b"\rx".to_vec());
+    assert!(!handoff.has_young_hold());
+
+    // A hold in a state that cannot own one is dropped, not appended to.
+    let mut handoff = young_after_submit();
+    type_and_flush(&mut handoff, b"abc");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    let id = handoff.take_young_hold_started().unwrap();
+    handoff.reset_on_exit();
+    assert_eq!(handoff.expire_young_hold(id), None);
+}
+
+#[test]
+fn only_a_line_begun_right_after_a_command_gets_the_routed_submit() {
+    // Began young; the Enter is typed in the editor while the report is outstanding.
+    let mut young = young_after_submit();
+    type_and_flush(&mut young, b"frob");
+    young.on_precmd();
+    assert_eq!(
+        young.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert!(young.defer_enter());
+    assert_eq!(young.on_report(), ReportDisposition::InsertThenSubmitYoung);
+    // Typed ahead of a command that had been running a while: shell typeahead, as before.
+    let mut old = awaiting_report();
+    assert!(old.defer_enter());
+    assert_eq!(old.on_report(), ReportDisposition::InsertThenSubmit);
+}
+
+#[test]
+fn an_enter_is_held_when_the_prompt_is_known_but_the_request_has_not_gone_out() {
+    // The precmd was processed before the Enter, but the request waits for the typed bytes to
+    // be flushed: the Enter must not run the line as shell typeahead (#933).
+    let mut handoff = young_after_submit();
+    assert_eq!(handoff.on_user_bytes(b"pwd"), UserBytesRoute::WriteCounted);
+    handoff.on_precmd();
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    handoff.on_user_write_flushed();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert_eq!(
+        handoff.on_report(),
+        ReportDisposition::InsertThenSubmitYoung
+    );
+}
+
+#[test]
+fn the_deferred_submit_stays_pending_until_it_runs_or_is_cancelled() {
+    // The view may wait for a detection verdict before running the Enter (#933); Ctrl-C meanwhile
+    // cancels it, which the wait must see.
+    let mut handoff = young_after_submit();
+    type_and_flush(&mut handoff, b"frob");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert!(!handoff.deferred_submit_pending());
+    assert_eq!(
+        handoff.on_report(),
+        ReportDisposition::InsertThenSubmitYoung
+    );
+    assert!(handoff.deferred_submit_pending());
+    assert!(handoff.cancel_deferred_enter());
+    assert!(!handoff.deferred_submit_pending());
 }

@@ -492,8 +492,8 @@ use crate::terminal::model::terminal_model::{
     BlockSelectionCardinality, SelectedBlocks, WithinModel,
 };
 use crate::terminal::model::typeahead_handoff::{
-    HeldKeysRelease, InterruptOutcome, ReportDisposition, UserBytesRoute, forces_shell_submit,
-    text_for_editor,
+    HeldKeysRelease, InterruptOutcome, ReportDisposition, UserBytesRoute, YOUNG_ENTER_WINDOW,
+    forces_shell_submit, text_for_editor,
 };
 use crate::terminal::model::{
     ansi::{ClearMode, Handler},
@@ -2212,6 +2212,10 @@ impl BlocklistAIRenderContext {
         (self.is_ai_input_enabled && self.should_highlight_context).then(|| ai_brand_color(theme))
     }
 }
+
+/// How long a young line's deferred Enter waits for the verdict of its input-type detection
+/// (#933).
+const YOUNG_DETECTION_WAIT: Duration = Duration::from_millis(500);
 
 /// Groups together some structs to represent the state of the Terminal View for the
 /// current frame. Passed to `AltScreenElement` and `BlockListElement`.
@@ -9720,6 +9724,20 @@ impl TerminalView {
             }
         };
         if handoff_route == UserBytesRoute::Held {
+            // #933: an Enter held because the command may already have finished.
+            let hold_id = if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                self.model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .take_young_hold_started()
+            } else {
+                None
+            };
+            if let Some(hold_id) = hold_id {
+                ctx.spawn(Timer::after(YOUNG_ENTER_WINDOW), move |me, _, ctx| {
+                    me.release_expired_young_hold(hold_id, ctx);
+                });
+            }
             return true;
         }
 
@@ -9733,6 +9751,21 @@ impl TerminalView {
         }
         self.emit_non_editor_typed_event(bytes_vec, ctx);
         true
+    }
+
+    /// The window of a held Enter ran out with no prompt (#933): the command is running, so the
+    /// Enter and the keys behind it go to the pty as typeahead.
+    fn release_expired_young_hold(&mut self, hold_id: u64, ctx: &mut ViewContext<Self>) {
+        let bytes = self
+            .model
+            .lock()
+            .typeahead_handoff_mut()
+            .expire_young_hold(hold_id);
+        if let Some(bytes) = bytes {
+            ctx.emit(Event::WriteHandoffUserBytesToPty {
+                bytes: Cow::Owned(bytes),
+            });
+        }
     }
 
     /// Write to the PTY if the session has finished bootstrapping and
@@ -10035,17 +10068,20 @@ impl TerminalView {
                 self.note_editor_took_over();
                 self.redetermine_terminal_focus(ctx);
             }
-            ReportDisposition::InsertThenSubmit => {
+            ReportDisposition::InsertThenSubmit | ReportDisposition::InsertThenSubmitYoung => {
+                let young = disposition == ReportDisposition::InsertThenSubmitYoung;
                 self.insert_typeahead_from_handoff(ctx);
-                if !self.submit_deferred_enter(ctx) {
-                    let release = self
-                        .model
-                        .lock()
-                        .typeahead_handoff_mut()
-                        .release_after_unsubmitted_enter();
-                    if let Some(release) = release {
-                        self.release_held_keys(release, ctx);
-                    }
+                // #933: text the hand-off inserted was never classified (system edits do not
+                // request detection), so a line typed right after a command that reads as
+                // English is classified now, and its Enter waits for the verdict (bounded).
+                let needs_detection = young
+                    && self.input.update(ctx, |input, ctx| {
+                        input.request_detection_for_young_typeahead(ctx)
+                    });
+                if needs_detection {
+                    self.submit_deferred_enter_after_detection(Instant::now(), ctx);
+                } else {
+                    self.run_deferred_enter(young, ctx);
                 }
             }
             ReportDisposition::Stash => {}
@@ -10073,13 +10109,63 @@ impl TerminalView {
         ctx.notify();
     }
 
+    /// Runs the deferred Enter and, if it submitted no shell command, releases the keys held
+    /// behind it.
+    fn run_deferred_enter(&mut self, young: bool, ctx: &mut ViewContext<Self>) {
+        if !self.submit_deferred_enter(young, ctx) {
+            let release = self
+                .model
+                .lock()
+                .typeahead_handoff_mut()
+                .release_after_unsubmitted_enter();
+            if let Some(release) = release {
+                self.release_held_keys(release, ctx);
+            }
+        }
+    }
+
+    /// Waits (at most [`YOUNG_DETECTION_WAIT`]) for the verdict of the detection requested for a
+    /// young line, then runs its deferred Enter (#933). Ctrl-C meanwhile cancels the Enter.
+    fn submit_deferred_enter_after_detection(
+        &mut self,
+        started: Instant,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if !self.model.lock().typeahead_handoff().deferred_submit_pending() {
+            return;
+        }
+        let pending = self
+            .input
+            .read(ctx, |input, ctx| input.detection_pending_for_buffer(ctx));
+        if pending && started.elapsed() < YOUNG_DETECTION_WAIT {
+            ctx.spawn(Timer::after(Duration::from_millis(15)), move |me, _, ctx| {
+                me.submit_deferred_enter_after_detection(started, ctx);
+            });
+            return;
+        }
+        self.run_deferred_enter(true, ctx);
+    }
+
     /// Runs the Enter the typeahead hand-off deferred while a report was outstanding. It runs
     /// as a shell command: the text came from the shell's line and the user typed it as one, so
     /// natural-language detection must not route it to the agent. Returns whether it submitted a
     /// shell command.
-    fn submit_deferred_enter(&mut self, ctx: &mut ViewContext<Self>) -> bool {
-        self.input
-            .update(ctx, |input, ctx| input.input_enter_as_shell_command(ctx))
+    ///
+    /// `young` (#933) is a line the user began typing right after a command, before the app knew
+    /// the shell was back at its prompt. Text that reads as English, and a valid slash command
+    /// (`/agent go`), is routed like any Enter in the editor; prose-free text still runs as a
+    /// shell command.
+    fn submit_deferred_enter(&mut self, young: bool, ctx: &mut ViewContext<Self>) -> bool {
+        self.input.update(ctx, |input, ctx| {
+            if young
+                && (input.buffer_is_slash_command(ctx)
+                    || !input_classifier::util::has_no_prose_evidence(&input.buffer_text(ctx)))
+            {
+                input.input_enter_routed_after_typeahead_report(ctx)
+            } else {
+                input.input_enter_as_shell_command(ctx)
+            }
+        })
     }
 
     /// Releases the keys held behind a deferred Enter whose submit wrote no command.

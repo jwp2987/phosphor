@@ -20,6 +20,21 @@ use instant::Instant;
 use crate::ai::agent::AIAgentActionId;
 use crate::ai::agent::conversation::AIConversationId;
 
+/// How long after a command was written (or a prompt or preexec seen) an Enter the user types
+/// while the pty owns input may still be a line typed at a prompt the app has not noticed yet
+/// (#933). The shell logs its precmd before the app has processed it, so a line typed and
+/// Entered right after a command finished reaches the pty while the app still counts the command
+/// as running; written as typeahead it would run as a shell command, unclassified. Such an Enter
+/// is held until the prompt arrives, then routed like an Enter in the editor; if no prompt comes
+/// within this window the command is running and the Enter is written as typeahead.
+pub const YOUNG_ENTER_WINDOW: Duration = Duration::from_millis(600);
+
+/// Control bytes that signal or end input (^C, ^Z, ^\\, ^D). They are never held: they drop a
+/// held Enter and are written at once.
+fn is_signal_byte(byte: &u8) -> bool {
+    matches!(byte, 0x03 | 0x04 | 0x1a | 0x1c)
+}
+
 /// Who owns the user's keystrokes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum HandoffState {
@@ -96,8 +111,13 @@ pub enum ReportDisposition {
     InsertLegacy,
     /// Insert it at the front of the editor; the editor now owns input.
     Insert,
-    /// Insert it, then run the Enter that was deferred while it was outstanding.
+    /// Insert it, then run the Enter that was deferred while it was outstanding, as a shell
+    /// command (shell typeahead).
     InsertThenSubmit,
+    /// As [`Self::InsertThenSubmit`], for a line the user began typing right after a command,
+    /// before the app knew the shell was back at its prompt (#933): the Enter is routed like any
+    /// Enter in the editor.
+    InsertThenSubmitYoung,
     /// Leave it stored and insert it when the editor next takes over, so it is not wiped with a
     /// submitted command's text.
     Stash,
@@ -162,6 +182,20 @@ pub struct TypeaheadHandoff {
     /// A key applied within that window moved focus to the editor itself; the resulting focus
     /// event must not end the window.
     focus_moved_by_takeover_key: bool,
+    /// The last command written, prompt or preexec seen (see [`YOUNG_ENTER_WINDOW`]).
+    last_activity_at: Option<Instant>,
+    /// The user's Enter, and every key typed after it, held while the pty owns input and the
+    /// command that was written may already have finished (#933). Nothing in it was written.
+    young_hold: Option<Vec<u8>>,
+    /// A hold was just created, so the view must arm its expiry timer.
+    young_hold_started: bool,
+    /// Identifies the current hold; a timer armed for an earlier one must not release it.
+    young_hold_id: u64,
+    /// Whether the line the user is typing began within [`YOUNG_ENTER_WINDOW`] of the last
+    /// activity, i.e. before the app could know the shell was at its prompt (#933).
+    young_line: bool,
+    /// Whether the Enter deferred behind the report ends such a line.
+    deferred_young: bool,
 }
 
 /// Identifies an agent's command held behind the user's typeahead.
@@ -266,6 +300,10 @@ impl TypeaheadHandoff {
     /// A command from the input editor was accepted and written (or queued) to the pty. Returns
     /// the keys held since a deferred Enter, which must be written right after the command.
     pub fn on_command_written(&mut self) -> Vec<u8> {
+        // An Enter held behind the request follows the command as typeahead (#933).
+        let pending_hold = self.young_hold.take();
+        self.young_line = false;
+        self.deferred_young = false;
         let (held, enters_before, precmds_seen) = match mem::take(&mut self.state) {
             HandoffState::HoldAfterEnter { held, .. } => (held, 0, 0),
             // Lines the user already queued are still ahead of this command in the tty.
@@ -273,9 +311,14 @@ impl TypeaheadHandoff {
                 enters_written,
                 precmds_seen,
                 ..
-            } => (Vec::new(), enters_written, precmds_seen),
+            } => (
+                pending_hold.unwrap_or_default(),
+                enters_written,
+                precmds_seen,
+            ),
             HandoffState::EditorOwned | HandoffState::AwaitingReport => (Vec::new(), 0, 0),
         };
+        self.last_activity_at = Some(Instant::now());
         let (held_enters, wrote_user_bytes) = scan_line_terminators(&held, false);
         self.state = HandoffState::PtyOwned {
             wrote_user_bytes,
@@ -290,6 +333,9 @@ impl TypeaheadHandoff {
     /// precmd does not make lines the user queued ahead of it look answered. Its kill prefix and
     /// Enter end whatever line it lands on.
     pub fn on_uncounted_command_written(&mut self) {
+        // Its kill prefix ends the line a held Enter belongs to.
+        self.young_hold = None;
+        self.young_line = false;
         if let HandoffState::PtyOwned {
             wrote_user_bytes,
             enters_written,
@@ -304,6 +350,7 @@ impl TypeaheadHandoff {
     /// The shell emitted a precmd hook (model thread).
     pub fn on_precmd(&mut self) {
         self.activity_generation = self.activity_generation.wrapping_add(1);
+        self.last_activity_at = Some(Instant::now());
         if let HandoffState::PtyOwned { precmds_seen, .. } = &mut self.state {
             *precmds_seen = precmds_seen.saturating_add(1);
         }
@@ -314,6 +361,7 @@ impl TypeaheadHandoff {
     /// whether the pty took over input.
     pub fn on_preexec(&mut self, shell_started: bool) -> bool {
         self.activity_generation = self.activity_generation.wrapping_add(1);
+        self.last_activity_at = Some(Instant::now());
         if shell_started && self.state == HandoffState::EditorOwned {
             self.state = HandoffState::PtyOwned {
                 wrote_user_bytes: false,
@@ -366,6 +414,10 @@ impl TypeaheadHandoff {
                         }
                     }
                 } else if !can_request {
+                    if self.young_hold.is_some() {
+                        // The hold's expiry writes the Enter; nothing can ask the shell for its line.
+                        return ActiveDecision::Drain;
+                    }
                     self.state = HandoffState::EditorOwned;
                     ActiveDecision::Committed
                 } else if no_line_queued && at_prompt && self.writes_in_flight == 0 {
@@ -394,6 +446,115 @@ impl TypeaheadHandoff {
     }
 
     fn route_user_bytes(&mut self, bytes: &[u8], reaches_shell_line: bool) -> UserBytesRoute {
+        // A signal or EOF byte is never held: it drops a held Enter and goes out at once.
+        if bytes.iter().any(is_signal_byte) {
+            self.young_hold = None;
+            return self.route_user_bytes_unheld(bytes, reaches_shell_line);
+        }
+        self.drop_stale_hold();
+        // #933: keys typed behind a held Enter stay behind it, until the report brings the
+        // line back and the Enter is run (or until the hold expires). Keys the editor takes
+        // while the request is outstanding do not pass through here and can land ahead of the
+        // held Enter; that window is the report's latency.
+        if let Some(hold) = &mut self.young_hold {
+            hold.extend_from_slice(bytes);
+            return UserBytesRoute::Held;
+        }
+        if self.should_hold_young_enter(bytes, reaches_shell_line, Instant::now()) {
+            self.young_hold = Some(bytes.to_vec());
+            self.young_hold_id = self.young_hold_id.wrapping_add(1);
+            self.young_hold_started = true;
+            return UserBytesRoute::Held;
+        }
+        self.route_user_bytes_unheld(bytes, reaches_shell_line)
+    }
+
+    /// A hold only lives in `PtyOwned` and `AwaitingReport`; any other state has run, flushed
+    /// or dropped it.
+    fn drop_stale_hold(&mut self) {
+        if !matches!(
+            self.state,
+            HandoffState::PtyOwned { .. } | HandoffState::AwaitingReport
+        ) {
+            self.young_hold = None;
+        }
+    }
+
+    /// Whether `bytes` are an Enter the user typed on a line that has content, while the only
+    /// line the shell has not answered is the command that was just written, and that command is
+    /// younger than [`YOUNG_ENTER_WINDOW`] (see there).
+    fn should_hold_young_enter(
+        &self,
+        bytes: &[u8],
+        reaches_shell_line: bool,
+        now: Instant,
+    ) -> bool {
+        matches!(
+            self.state,
+            HandoffState::PtyOwned {
+                wrote_user_bytes: true,
+                enters_written,
+                precmds_seen,
+            } if reaches_shell_line
+                // No line queued behind the one just written: the shell is running it, or is
+                // back at its prompt (`precmds_seen` caught up) with the line still waiting for
+                // the request that hands it to the editor.
+                && enters_written <= precmds_seen.saturating_add(1)
+                && matches!(bytes.first(), Some(b'\r' | b'\n'))
+                && (self.young_line
+                    || self.last_activity_at.is_some_and(|at| {
+                        now.saturating_duration_since(at) < YOUNG_ENTER_WINDOW
+                    }))
+        )
+    }
+
+    /// Makes the last command look older than [`YOUNG_ENTER_WINDOW`], for tests that model
+    /// typeahead for a command that has been running a while.
+    #[cfg(test)]
+    pub(crate) fn age_last_activity_for_test(&mut self) {
+        self.last_activity_at = None;
+    }
+
+    /// Whether the Enter deferred behind the report has not run yet: the keys typed since are
+    /// held behind it. False once it ran, or was cancelled.
+    pub fn deferred_submit_pending(&self) -> bool {
+        matches!(
+            self.state,
+            HandoffState::HoldAfterEnter { released: true, .. }
+        )
+    }
+
+    /// Whether an Enter is held, for tests.
+    #[cfg(test)]
+    pub(crate) fn has_young_hold(&self) -> bool {
+        self.young_hold.is_some()
+    }
+
+    /// Takes the "a hold was just created" flag, returning the hold's id so the view arms its
+    /// expiry timer once.
+    pub fn take_young_hold_started(&mut self) -> Option<u64> {
+        mem::take(&mut self.young_hold_started).then_some(self.young_hold_id)
+    }
+
+    /// The window of hold `id` ran out with no prompt: the command is running, so the held Enter
+    /// and the keys behind it are typeahead for it. Returns the bytes to write, counted as a
+    /// routed user write. `None` when that hold is gone (a later one has another id), or the
+    /// request already went out (the report will bring the line back and run the Enter).
+    pub fn expire_young_hold(&mut self, id: u64) -> Option<Vec<u8>> {
+        self.drop_stale_hold();
+        if id != self.young_hold_id || !matches!(self.state, HandoffState::PtyOwned { .. }) {
+            return None;
+        }
+        let bytes = self.young_hold.take()?;
+        self.route_user_bytes_unheld(&bytes, true);
+        Some(bytes)
+    }
+
+    fn route_user_bytes_unheld(
+        &mut self,
+        bytes: &[u8],
+        reaches_shell_line: bool,
+    ) -> UserBytesRoute {
         match &mut self.state {
             HandoffState::PtyOwned {
                 wrote_user_bytes,
@@ -402,6 +563,14 @@ impl TypeaheadHandoff {
             } => {
                 let mut wrote_an_enter = false;
                 if reaches_shell_line {
+                    if !*wrote_user_bytes
+                        && !matches!(bytes.first(), Some(b'\r' | b'\n'))
+                        && self.last_activity_at.is_some_and(|at| {
+                            Instant::now().saturating_duration_since(at) < YOUNG_ENTER_WINDOW
+                        })
+                    {
+                        self.young_line = true;
+                    }
                     let (enters, dirty) = scan_line_terminators(bytes, *wrote_user_bytes);
                     *enters_written = enters_written.saturating_add(enters);
                     *wrote_user_bytes = dirty;
@@ -460,6 +629,7 @@ impl TypeaheadHandoff {
         if self.state != HandoffState::AwaitingReport {
             return false;
         }
+        self.deferred_young = self.young_line;
         self.state = HandoffState::HoldAfterEnter {
             held: Vec::new(),
             released: false,
@@ -472,12 +642,29 @@ impl TypeaheadHandoff {
         match self.owner() {
             Owner::Editor => ReportDisposition::InsertLegacy,
             Owner::AwaitingReport => {
+                // #933: the user's Enter was held behind the request; run it now, in the editor,
+                // with the keys typed after it held behind it.
+                if let Some(mut held) = self.young_hold.take() {
+                    let rest = held.split_off(1);
+                    self.state = HandoffState::HoldAfterEnter {
+                        held: rest,
+                        released: true,
+                    };
+                    self.young_line = false;
+                    return ReportDisposition::InsertThenSubmitYoung;
+                }
+                self.young_line = false;
                 self.state = HandoffState::EditorOwned;
                 ReportDisposition::Insert
             }
             Owner::Hold { released: false } => {
                 self.mark_released();
-                ReportDisposition::InsertThenSubmit
+                if mem::take(&mut self.deferred_young) {
+                    self.young_line = false;
+                    ReportDisposition::InsertThenSubmitYoung
+                } else {
+                    ReportDisposition::InsertThenSubmit
+                }
             }
             Owner::Hold { released: true } | Owner::Pty { .. } => ReportDisposition::Stash,
         }
@@ -546,6 +733,7 @@ impl TypeaheadHandoff {
     /// A Ctrl-C was written while the pty owned input. The tty discards queued typeahead and the
     /// shell discards its line, so nothing the user typed survives it.
     pub fn on_interrupt(&mut self) -> InterruptOutcome {
+        self.young_hold = None;
         match self.owner() {
             Owner::Pty {
                 enters_written,
@@ -589,7 +777,9 @@ impl TypeaheadHandoff {
                 self.state = HandoffState::EditorOwned;
                 true
             }
-            Owner::Editor | Owner::Pty { .. } | Owner::AwaitingReport => false,
+            // #933: an Enter held behind the request is cancelled with its keys.
+            Owner::AwaitingReport => self.young_hold.take().is_some(),
+            Owner::Editor | Owner::Pty { .. } => false,
         }
     }
 

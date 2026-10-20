@@ -13983,6 +13983,48 @@ fn typeahead_handoff_ctrl_c_on_an_agent_command_is_not_held() {
     })
 }
 
+/// #933 x ^C: an Enter held because the command may already have finished does not swallow a
+/// Ctrl-C typed within the window. The ETX is written to the pty, once, and the hold is dropped.
+#[test]
+fn typeahead_handoff_ctrl_c_within_the_young_enter_window_reaches_the_pty() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let etx_writes = Rc::new(RefCell::new(0usize));
+        let seen = etx_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
+                Event::WriteBytesToPty { bytes } | Event::WriteHandoffUserBytesToPty { bytes }
+                    if bytes.contains(&C0::ETX) =>
+                {
+                    *seen.borrow_mut() += 1
+                }
+                _ => {}
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.block_list_mut().active_block_mut().start();
+                let handoff = model.typeahead_handoff_mut();
+                handoff.on_command_written();
+                handoff.on_user_bytes(b"x");
+                handoff.on_user_write_flushed();
+            }
+            // Enter within the window: held, nothing written.
+            view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+            assert!(view.model.lock().typeahead_handoff().has_young_hold());
+            assert_eq!(*etx_writes.borrow(), 0);
+            view.handle_action(&TerminalAction::CtrlC, ctx);
+        });
+        assert_eq!(*etx_writes.borrow(), 1, "the ETX byte reached the pty");
+        terminal.read(&app, |view, _| {
+            assert!(!view.model.lock().typeahead_handoff().has_young_hold());
+        });
+    })
+}
+
 /// An agent's running async action whose command is held behind the user's typeahead: never
 /// written, so the active block is a plain prompt that does not hold it.
 /// `terminal_with_real_async_agent_command` tags the prompt block itself with the command (a

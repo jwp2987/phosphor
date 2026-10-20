@@ -834,6 +834,12 @@ impl BlocklistAIInputModel {
         self.typeahead_prefix = (!typeahead.trim().is_empty()).then_some(typeahead);
     }
 
+    /// Drops the typeahead provenance (#933): the text is to be routed like anything the user
+    /// typed in the editor, so the agent-ward rules apply to it.
+    pub fn clear_typeahead_provenance(&mut self) {
+        self.typeahead_prefix = None;
+    }
+
     /// The typeahead provenance currently held (#886), for view tests.
     #[cfg(test)]
     pub(crate) fn typeahead_prefix(&self) -> Option<&str> {

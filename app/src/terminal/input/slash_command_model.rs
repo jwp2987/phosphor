@@ -207,6 +207,19 @@ impl SlashCommandModel {
         }
     }
 
+    /// Re-detects a slash command in `new_content`, the editor's current text, as if it had just
+    /// been typed (#933). For a submit that arrives before the buffer model heard of the edit, or
+    /// for a buffer filled by the typeahead hand-off.
+    pub fn redetect(&mut self, new_content: String, ctx: &mut ModelContext<Self>) {
+        self.handle_input_buffer_update(
+            &InputBufferUpdateEvent {
+                old_content: String::new(),
+                new_content,
+            },
+            ctx,
+        );
+    }
+
     /// Called by SlashCommandsMenu when menu is dismissed.
     /// Only `UserEscape` blocks future execution; `NoResults` allows it.
     pub fn disable(&mut self, ctx: &mut ModelContext<Self>) {
