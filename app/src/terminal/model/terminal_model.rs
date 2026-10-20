@@ -55,6 +55,7 @@ use super::selection::ScrollDelta;
 use super::session::{BootstrapSessionType, InBandCommandOutputReceiver, SessionId};
 use super::tmux::commands::TmuxCommand;
 use super::early_output::TypeaheadMode;
+use super::reply_ledger::SharedReplyLedger;
 use super::typeahead_handoff::TypeaheadHandoff;
 use super::{
     super::{AltScreen, BlockList},
@@ -479,6 +480,9 @@ pub struct TerminalModel {
     /// (`FeatureFlag::TypeaheadHandoff`). Kept here so every routing and request decision is made
     /// under the model lock.
     typeahead_handoff: TypeaheadHandoff,
+    /// Replies written to the pty and text the user wrote, so a reply that leaks into the
+    /// shell's line can be told from typed text (#921).
+    reply_ledger: SharedReplyLedger,
     /// The command the user should see for an agent command typed into the shell in a wrapped
     /// form, by the action that requested it (#904). Consumed at preexec.
     agent_display_commands: HashMap<AIAgentActionId, String>,
@@ -1194,6 +1198,7 @@ impl TerminalModel {
             block_list,
             lifecycle_coordinator: BlockLifecycleCoordinator::default(),
             typeahead_handoff: TypeaheadHandoff::default(),
+            reply_ledger: SharedReplyLedger::default(),
             agent_display_commands: HashMap::new(),
             blocklist_has_been_cleared: false,
             alt_screen_active: false,
@@ -1789,6 +1794,11 @@ impl TerminalModel {
 
     pub fn typeahead_handoff_mut(&mut self) -> &mut TypeaheadHandoff {
         &mut self.typeahead_handoff
+    }
+
+    /// The ledger of query replies and pty writes, shared with the pty event loop.
+    pub fn reply_ledger(&self) -> SharedReplyLedger {
+        self.reply_ledger.clone()
     }
 
     /// Whether the shell is at its prompt with no command started, so the typeahead request
@@ -2771,6 +2781,7 @@ impl TerminalModel {
                 && !self.shared_session_status.is_viewer();
             self.typeahead_handoff.on_preexec(shell_started);
         }
+        self.reply_ledger.lock().on_command_start();
         self.block_list.apply_preexec_to_active(data);
         self.emit_handler_event(HandlerEvent::Preexec);
     }
@@ -3445,7 +3456,13 @@ impl ansi::Handler for TerminalModel {
         self.clear_visible_screen();
     }
 
-    fn input_buffer(&mut self, data: InputBufferValue) {
+    fn input_buffer(&mut self, mut data: InputBufferValue) {
+        // Drop the residue of query replies this app wrote that the line editor took for typed
+        // text (#921), before the report becomes typeahead.
+        data.buffer = self
+            .reply_ledger
+            .lock()
+            .filter_report(std::mem::take(&mut data.buffer));
         delegate!(self.input_buffer(data));
     }
 

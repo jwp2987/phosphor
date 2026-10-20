@@ -20,7 +20,7 @@ use parking_lot::{FairMutex, FairMutexGuard};
 use crate::terminal::{
     event_listener::ChannelEventListener,
     local_tty,
-    model::{BlockId, ansi},
+    model::{BlockId, ansi, reply_ledger::SharedReplyLedger},
     TerminalModel,
 };
 use crate::terminal::{model::terminal_model::ExitReason, writeable_pty::Message};
@@ -46,6 +46,9 @@ pub struct EventLoop<T: local_tty::EventedPty> {
     pty: T,
     rx: Receiver<Message>,
     terminal: Arc<FairMutex<TerminalModel>>,
+    /// Query replies and every pty write, so a reply that leaks into the shell's line can be
+    /// told from typed text (#921).
+    reply_ledger: SharedReplyLedger,
 
     /// The event listener is available to the PTY event loop
     /// to emit relevant events to subscribers. The ansi handler
@@ -129,13 +132,25 @@ impl State {
     }
 
     /// Drops queued replies produced while a command ran if that command has since
-    /// finished, i.e. the active block changed or is no longer executing.
-    fn drop_stale_responses(&mut self, active_block: &BlockId, executing_now: bool) {
-        self.write_list
-            .retain(|entry| match &entry.produced_while_executing {
-                Some(id) => executing_now && id == active_block,
-                None => true,
-            });
+    /// finished, i.e. the active block changed or is no longer executing. Returns the dropped
+    /// bytes, so the reply ledger can forget replies that never reached the pty.
+    fn drop_stale_responses(
+        &mut self,
+        active_block: &BlockId,
+        executing_now: bool,
+    ) -> Vec<Cow<'static, [u8]>> {
+        let mut dropped = Vec::new();
+        self.write_list = std::mem::take(&mut self.write_list)
+            .into_iter()
+            .filter_map(|entry| match &entry.produced_while_executing {
+                Some(id) if !(executing_now && id == active_block) => {
+                    dropped.push(entry.bytes);
+                    None
+                }
+                _ => Some(entry),
+            })
+            .collect();
+        dropped
     }
 
     #[inline]
@@ -192,6 +207,25 @@ impl Writing {
     }
 }
 
+/// Collects the replies the parser generates, and records each in the ledger as it is
+/// generated, so a report parsed later in the same chunk sees them.
+struct ReplyWriter<'a> {
+    replies: &'a mut Vec<u8>,
+    ledger: &'a SharedReplyLedger,
+}
+
+impl io::Write for ReplyWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.ledger.lock().note_replies(buf);
+        self.replies.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 enum ChannelResult {
     Continue,
     TerminateLoop { child_exited: bool },
@@ -227,13 +261,17 @@ where
         });
 
         match registered {
-            Ok(poll) => Ok(EventLoop {
+            Ok(poll) => {
+                let reply_ledger = terminal.lock().reply_ledger();
+                Ok(EventLoop {
                 poll,
                 pty,
                 rx,
+                reply_ledger,
                 terminal,
                 event_listener,
-            }),
+                })
+            }
             Err(err) => {
                 // The `Poll` was dropped when the closure above returned the
                 // error, closing the epoll instance and with it any
@@ -253,7 +291,11 @@ where
     fn drain_recv_channel(&mut self, state: &mut State) -> ChannelResult {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
-                Message::Input(input) => state.queue_input(input),
+                Message::Input(input) => {
+                    // The single choke point for everything written to the pty.
+                    self.reply_ledger.lock().note_input(&input);
+                    state.queue_input(input)
+                }
                 Message::Shutdown => {
                     return ChannelResult::TerminateLoop {
                         child_exited: false,
@@ -353,7 +395,10 @@ where
             state.parser.parse_bytes(
                 terminal.deref_mut(),
                 &buf[..bytes_in_buffer],
-                &mut terminal_response_sequences,
+                &mut ReplyWriter {
+                    replies: &mut terminal_response_sequences,
+                    ledger: &self.reply_ledger,
+                },
             );
             state.queue_response(terminal_response_sequences, executing_block);
 
@@ -478,7 +523,10 @@ where
                             let executing_block = executing_block_id(&terminal);
                             state.parser.finish_sync_output(
                                 &mut *terminal,
-                                &mut terminal_response_sequences,
+                                &mut ReplyWriter {
+                                    replies: &mut terminal_response_sequences,
+                                    ledger: &self.reply_ledger,
+                                },
                             );
                             executing_block
                         };
@@ -549,7 +597,14 @@ where
                     if state.has_tagged() {
                         let terminal = self.terminal.lock();
                         let block = terminal.block_list().active_block();
-                        state.drop_stale_responses(block.id(), block.is_executing());
+                        let dropped =
+                            state.drop_stale_responses(block.id(), block.is_executing());
+                        if !dropped.is_empty() {
+                            let mut ledger = self.reply_ledger.lock();
+                            for bytes in &dropped {
+                                ledger.forget_replies(bytes);
+                            }
+                        }
                     }
                     while can_read || (state.needs_write() && can_write) {
                         if can_read {

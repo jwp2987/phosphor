@@ -2523,3 +2523,14 @@ which contradicts the existing `test_autocomplete_symbols` expectation
 (`abc" (` becomes `abc" ()`), would need that test weakened (AGENTS.md 5.6), and
 would regress `"$(...)"` / `"${...}"` pairing. Users who hit it can turn off
 Settings > Features > "Autocomplete quotes, parentheses, and brackets".
+
+## A line + Enter typed while a querying command runs executes with the reply's residue (#937) — not fixed
+
+`printf '\e[6n'; sleep 3`, then `echo held` + Enter typed while it sleeps: the shell reads the unread reply, then the
+line, and executes `Recho held` (bash) / `1Recho held` (zsh). No typeahead report exists at that point (the shell
+runs an Enter-terminated line itself), so the reply ledger (#921), which filters the report, cannot help.
+Every app-side remedy was rejected because it cannot tell a program that will read the reply (fzf, vim, `read`)
+from one that will not: holding or reordering the typed Enter breaks the former; withholding or flushing replies
+breaks them too; writing a kill-line ahead of the typed bytes lands inside a program that reads stdin. #933's
+hold covers only an Enter within 600 ms of the command being written. A real fix is shell-side (drain and
+re-submit the tty's pending input at precmd), a separate design. Reverse only with that design.
