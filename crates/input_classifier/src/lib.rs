@@ -47,6 +47,11 @@ pub enum InputClassifierDecisionSource {
     /// case-insensitively (e.g. "run", "Run", "then", "Please", "delete"), so the result was
     /// overridden to AI. See `util::first_token_forces_ai_override` and `safety_gate`.
     NoFirstTokenCommandEvidence,
+    /// Fork-original, not in the pin (#935): a classifier scored the input as Shell, but inside an
+    /// active agent view, directly after an agent block, the whole input is one plain word the
+    /// session fully knows no command, alias, function or builtin by (`frobxone`), so it was
+    /// overridden to AI. See `util::is_unknown_single_word_in_agent_conversation`.
+    UnknownSingleWordInAgentConversation,
     /// Fork-original, not in the pin (#808): the buffer was unambiguously a shell command line
     /// (a command-shaped first word plus a shell operator used as a shell uses it, or a
     /// command-shaped first word with no English prose after it), so it was forced to Shell
@@ -163,4 +168,14 @@ pub struct Context {
     /// `false` means only a stronger prose *shape* (not dictionary membership alone) may
     /// override a Shell result. See `util::first_token_forces_ai_override` for the full rule.
     pub commands_fully_loaded: bool,
+    /// Whether the input is typed inside an active agent view (a conversation is the context).
+    /// Consumed by [`safety_gate::SafetyGatedClassifier`] together with `is_agent_follow_up` for
+    /// the unknown-single-word rule (#935): a lone word the session knows nothing about is a
+    /// message to the agent there, not a command that can only end in `command not found`.
+    pub in_active_agent_view: bool,
+    /// Whether the session's command data is still current: no command that could have changed
+    /// it (an install, `source`, `export PATH=`, `cd`...) has run since it was captured (#833).
+    /// The unknown-single-word rule requires it, so a command installed or defined since never
+    /// reads as unknown (#935).
+    pub command_data_current: bool,
 }

@@ -17,7 +17,8 @@ use crate::{
     ClassificationResult, Context, InputClassificationResult, InputClassifier,
     InputClassifierDecisionSource, InputType,
     util::{
-        first_token_forces_ai_override, is_unambiguous_shell_command, known_command_head,
+        first_token_forces_ai_override, is_unambiguous_shell_command,
+        is_unknown_single_word_in_agent_conversation, known_command_head,
         reads_as_request_to_agent,
     },
 };
@@ -64,6 +65,17 @@ impl<C: InputClassifier> InputClassifier for SafetyGatedClassifier<C> {
             return InputClassificationResult::new(
                 InputType::AI,
                 InputClassifierDecisionSource::NoFirstTokenCommandEvidence,
+            );
+        }
+        // #935: a lone word nothing on the session answers to, typed straight after an agent
+        // block in an active agent view, is a message to the agent (`frobxone`). Known commands
+        // carry a description and never reach this.
+        if matches!(result.input_type, InputType::Shell)
+            && is_unknown_single_word_in_agent_conversation(&input, context)
+        {
+            return InputClassificationResult::new(
+                InputType::AI,
+                InputClassifierDecisionSource::UnknownSingleWordInAgentConversation,
             );
         }
         // #834: the head is a real command, so the check above cannot fire, but the words after

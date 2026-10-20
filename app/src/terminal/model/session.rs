@@ -1477,6 +1477,13 @@ impl Session {
         }))
     }
 
+    /// False once a command that could have changed what the shell recognises has run
+    /// ([`Self::note_user_command`]); the snapshots behind [`Self::knows_command_word`] are then
+    /// stale (#833, #935).
+    pub fn command_data_is_current(&self) -> bool {
+        !self.command_data_stale.load(Ordering::Acquire)
+    }
+
     /// Records a command the user has run in this session. If it could have changed what the
     /// shell recognises (a package install, `source`/`.`, `export`, `alias`, `eval`, `cd` into a
     /// directory a hook such as direnv/nvm reacts to, an environment activation, a build that

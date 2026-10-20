@@ -493,6 +493,22 @@ fn initial_config_comes_from_policy() {
     });
 }
 
+/// #935: the post-cancel restore applies only inside an active agent view; with no agent view
+/// controller (the TUI surface) it declines and leaves the config to the classic-mode fallback.
+#[test]
+fn restore_after_cancellation_declines_outside_an_agent_view() {
+    App::test((), |mut app| async move {
+        let (input_model, _) = build_input_model(&mut app, StubPolicy::inert(SHELL_UNLOCKED));
+        let restored = input_model.update(&mut app, |model, ctx| {
+            model.restore_agent_view_input_after_cancellation(ctx)
+        });
+        assert!(!restored);
+        input_model.read(&app, |model, _| {
+            assert_eq!(model.input_config(), SHELL_UNLOCKED);
+        });
+    });
+}
+
 #[test]
 fn locked_ai_write_requires_policy_permission() {
     App::test((), |mut app| async move {
