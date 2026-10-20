@@ -2506,3 +2506,12 @@ who sets `setopt errexit` in `.zshrc` therefore does NOT have errexit at the Pho
 (everything else the files set is kept). Reason: errexit left on ends the shell on the first
 failing command, including commands Phosphor runs for itself (generators outside a git repo), and
 on any typo. Reverse only together with auditing every internal command path.
+
+## Words past 128 KiB are shaped only up to that cap (#940)
+
+A single unbroken word longer than `MAX_SHAPED_WORD_BYTES` (128 KiB, vendored
+`lib/cosmic-text/src/shape.rs`) is shaped only for its first 128 KiB. Reason: after the #864
+fix a 3 MB paste of one word was shaped in full, costing ~330 bytes per glyph and a ~1 GB
+transient heap (1050 MB vs 365 MB on v0.1.12). Words up to 128 KiB (the #864 30k-char case)
+keep every glyph. Text past the cap is still in the editor buffer (typing, undo, submit are
+unaffected); it just has no glyphs. Multi-line huge pastes are unchanged.
