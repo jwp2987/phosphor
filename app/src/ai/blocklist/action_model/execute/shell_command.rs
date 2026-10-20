@@ -378,7 +378,15 @@ impl ShellCommandExecutor {
     /// `MAX_UNTIL_COMPLETION_DURATION` fallback guarantees the agent won't hang
     /// **forever**.
     fn turn_off_pager_for_command(&self, command: &String, ctx: &mut ModelContext<Self>) -> String {
-        wrap_command_without_pager(self.active_session.as_ref(ctx).shell_type(ctx), command)
+        let session = self.active_session.as_ref(ctx);
+        // The working directory is only meaningful for reading a sourced file in a local session.
+        let cwd = match session.current_working_directory_location(ctx) {
+            Some(warp_util::local_or_remote_path::LocalOrRemotePath::Local(_)) => {
+                session.current_working_directory().cloned()
+            }
+            _ => None,
+        };
+        super::agent_shell_wrap::wrap_command_in(session.shell_type(ctx), command, cwd.as_deref())
     }
 
     pub(super) fn execute(
@@ -1068,6 +1076,7 @@ fn exec_into_shell_refusal(command: &str, shell: &str) -> RequestCommandOutputRe
 /// multiple blocks on shells that don't support bracketed paste (e.g. macOS's stock
 /// bash 3.2). Multi-line commands are already split on those shells regardless, so
 /// this function doesn't make that case any worse.
+#[cfg(test)]
 fn wrap_command_without_pager(shell_type: Option<ShellType>, command: &str) -> String {
     super::agent_shell_wrap::wrap_command(shell_type, command)
 }
