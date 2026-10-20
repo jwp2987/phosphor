@@ -28,7 +28,7 @@ identical to upstream so the root `Cargo.lock` entry stays valid (only its
 
 | file | what changed |
 |---|---|
-| `src/shape.rs` | `ShapeWord::new_in_buffer`: skip shaping the empty run when `start_run == start_egc` (first grapheme has attrs incompatible with the defaults). Shaping an empty run dropped glyphs of long words (#864). Runs use absolute byte offsets, so no index bookkeeping changes for non-empty runs. |
+| `src/shape.rs` | `ShapeWord::new_in_buffer`: skip shaping the empty run when `start_run == start_egc` (first grapheme has attrs incompatible with the defaults). Shaping an empty run dropped glyphs of long words (#864). Runs use absolute byte offsets, so no index bookkeeping changes for non-empty runs. `ShapeWord::new_in_buffer` (#940): a word longer than `MAX_SHAPED_WORD_BYTES` (128 KiB) is shaped only up to that cap, bounding a multi-megabyte paste's layout memory. |
 
 ## Re-pin steps
 

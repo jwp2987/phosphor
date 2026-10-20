@@ -992,6 +992,22 @@ fn glyph_count_with_spans(text: &str, spans: &[(usize, bool)]) -> usize {
     line.runs.iter().map(|run| run.glyphs.len()).sum()
 }
 
+/// #940: a 30,000-char word keeps every glyph (#864), while a multi-megabyte word is shaped only
+/// up to the cap so a huge paste cannot cost ~1 GB of layout.
+#[test]
+fn test_huge_word_is_bounded_but_long_word_is_complete() {
+    let long = "a".repeat(30_000);
+    assert_eq!(glyph_count_with_spans(&long, &[(30_000, false)]), 30_000);
+
+    let cap = cosmic_text::MAX_SHAPED_WORD_BYTES;
+    let huge = "a".repeat(cap * 3);
+    let glyphs = glyph_count_with_spans(&huge, &[(cap * 3, false)]);
+    assert!(
+        glyphs > 0 && glyphs <= cap,
+        "huge word shaped {glyphs} glyphs, cap is {cap}"
+    );
+}
+
 /// #864: two words over the limit in differently styled spans, a word that crosses a style
 /// boundary, and a long word starting in a non-default style all used to lose glyphs (the
 /// attrs-list-defaults heuristic can only match one span).

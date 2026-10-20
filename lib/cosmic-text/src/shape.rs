@@ -537,6 +537,10 @@ impl ShapeGlyph {
     }
 }
 
+/// Longest word, in bytes, that is shaped; the rest of a longer word is not shaped
+/// (Phosphor #940).
+pub const MAX_SHAPED_WORD_BYTES: usize = 128 * 1024;
+
 /// A shaped word (for word wrapping)
 #[derive(Clone, Debug)]
 pub struct ShapeWord {
@@ -578,6 +582,18 @@ impl ShapeWord {
         blank: bool,
         shaping: Shaping,
     ) -> Self {
+        // Phosphor (#940): bound the glyphs one word can produce. A multi-megabyte
+        // unbroken word (a huge paste) otherwise costs ~330 bytes per glyph across
+        // shaping, layout and the layout cache, a transient ~1 GB. Past the cap the
+        // tail of the word is left unshaped (it has no glyphs, as before #864).
+        let mut word_range = word_range;
+        if word_range.len() > MAX_SHAPED_WORD_BYTES {
+            let mut end = word_range.start + MAX_SHAPED_WORD_BYTES;
+            while !line.is_char_boundary(end) {
+                end -= 1;
+            }
+            word_range.end = end;
+        }
         let word = &line[word_range.clone()];
 
         log::trace!(
