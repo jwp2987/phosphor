@@ -20352,6 +20352,13 @@ impl Workspace {
         .finish()
     }
 
+    /// The top-bar cloud-off icon. It means the OPERATING SYSTEM reports no full internet
+    /// connectivity, nothing else (#935): `NetworkStatus` is written only by the platform's
+    /// reachability callback (Linux: NetworkManager `StateChanged`, anything but
+    /// `NM_STATE_CONNECTED_GLOBAL`; macOS/Windows/wasm equivalents) and by the debug toggle. A
+    /// failed or rate-limited (429) provider request never touches it, and it clears as soon as
+    /// the OS reports connectivity again. On a host behind a captive portal, a LAN-only
+    /// NetworkManager state or a firewalled test box it stays up regardless of agent traffic.
     fn render_offline_button(&self, appearance: &Appearance) -> Box<dyn Element> {
         let ui_builder = appearance.ui_builder().clone();
 

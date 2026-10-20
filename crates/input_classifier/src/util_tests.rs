@@ -42,6 +42,18 @@ async fn one_off_keyword_short_circuits() {
     clear_all_token_descriptions(&mut token);
     assert!(is_likely_shell_command(&token, word_tokens_count).await);
 
+    // #935: `doas` is a privilege wrapper like `sudo`; it is often not installed (no token
+    // description), and the wrapped command still decides.
+    for line in ["doas grep this the file", "doas apt update"] {
+        let mut token = mock_parsed_input_token(line.to_string()).await;
+        let word_tokens_count = token.parsed_tokens.len();
+        clear_all_token_descriptions(&mut token);
+        assert!(
+            is_likely_shell_command(&token, word_tokens_count).await,
+            "{line}"
+        );
+    }
+
     let mut token = mock_parsed_input_token("agy doctor".to_string()).await;
     let word_tokens_count = token.parsed_tokens.len();
     clear_all_token_descriptions(&mut token);

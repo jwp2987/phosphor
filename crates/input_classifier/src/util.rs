@@ -23,7 +23,7 @@ lazy_static! {
     /// often thinks we're intentionally trying to push them away from those CLIs into Agent Mode,
     /// so we mitigate the risk by always treating as shell. `warp` is the command that launches the
     /// Warp Agent CLI / TUI, so bare `warp` (and `warp …` invocations) should classify as shell.
-    static ref ONE_OFF_SHELL_COMMAND_KEYWORDS: HashSet<&'static str> = HashSet::from(["#", "echo", "man", "sudo", "claude", "codex", "gemini", "agy", "omp", "warp"]);
+    static ref ONE_OFF_SHELL_COMMAND_KEYWORDS: HashSet<&'static str> = HashSet::from(["#", "echo", "man", "sudo", "doas", "claude", "codex", "gemini", "agy", "omp", "warp"]);
 
     static ref ONE_OFF_NATURAL_LANGUAGE_WORDS: HashSet<&'static str> = HashSet::from(["hello", "hi", "hey", "hola", "thanks", "explain", "yes", "no", "what", "nice", "1. "]);
 
@@ -330,6 +330,36 @@ pub fn first_token_forces_ai_override(
     }
 
     commands_fully_loaded || buffer_has_prose_colon_shape(&input.buffer_text)
+}
+
+/// #935: inside an active agent view, directly after an agent block, a lone plain word that the
+/// session fully knows no command, alias, function or builtin by (`frobxone`) is a message to the
+/// agent: run in the shell it can only end in `command not found`. Requires `commands_fully_loaded`
+/// (known-absent, not merely not-yet-loaded), a single word of letters, digits, `_` and `-`
+/// starting with a letter, and no command evidence (no `token_description`, not a one-off keyword
+/// or path-like). Real commands (`ls`, `git`) carry a description and stay Shell.
+pub fn is_unknown_single_word_in_agent_conversation(
+    input: &ParsedTokensSnapshot,
+    context: &crate::Context,
+) -> bool {
+    if !(context.in_active_agent_view
+        && context.is_agent_follow_up
+        && context.commands_fully_loaded)
+    {
+        return false;
+    }
+    let text = input.buffer_text.trim();
+    let [token] = input.parsed_tokens.as_slice() else {
+        return false;
+    };
+    token.token.as_str() == text
+        && text.len() <= 64
+        && text.starts_with(|c: char| c.is_ascii_alphabetic())
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        && !has_command_evidence(token)
+        && !is_known_shell_command_word(text)
 }
 
 /// Characters that end a bare shell word when [`is_unambiguous_shell_command`] scans

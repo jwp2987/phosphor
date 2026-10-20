@@ -371,3 +371,46 @@ fn test_zsh_hooks_survive_strict_options_and_failing_precmd() {
         "zsh_body.sh lost the #844 owed-precmd repair"
     );
 }
+
+/// #935: a pasted multi-line command must title the tab with a visible separator instead of
+/// running the lines together ("gradle onegradle two"). Runs the real `warp_title` of the bash
+/// bootstrap with a stub `__warp_emit`; skipped, visibly, when bash is missing.
+#[cfg(unix)]
+#[test]
+fn bash_warp_title_joins_multiline_commands_with_a_separator() {
+    use std::process::Command;
+
+    let bash = include_str!("../../assets/bundled/bootstrap/bash_body.sh");
+    let start = bash
+        .find("    warp_title () {\n")
+        .expect("bash_body.sh lost `warp_title`");
+    let end = start
+        + bash[start..]
+            .find("\n    }\n")
+            .expect("warp_title has no end")
+        + 7;
+    let function = &bash[start..end];
+    let script = format!("__warp_emit() {{ printf \"$@\"; }}\n{function}\nwarp_title \"$1\"\n");
+    for (input, expected) in [
+        ("gradle one\ngradle two", "gradle one ; gradle two"),
+        ("a\r\nb", "a ; b"),
+        ("ls -la", "ls -la"),
+    ] {
+        let output = match Command::new("bash")
+            .args(["--noprofile", "--norc", "-c", &script, "bash", input])
+            .output()
+        {
+            Ok(output) => output,
+            Err(err) => {
+                eprintln!("skipping: bash is not installed ({err})");
+                return;
+            }
+        };
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(
+            stdout,
+            format!("\u{1b}]0;{expected}\u{7}"),
+            "input {input:?}"
+        );
+    }
+}

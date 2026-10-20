@@ -224,6 +224,7 @@ async fn handle_classify(
         current_input_type: InputType::Shell,
         is_agent_follow_up: false,
         commands_fully_loaded: true,
+        in_active_agent_view: false,
     };
 
     println!("Input: \"{input}\"");
@@ -289,6 +290,7 @@ async fn handle_verify(
                 current_input_type: InputType::Shell,
                 is_agent_follow_up: false,
                 commands_fully_loaded: true,
+                in_active_agent_view: false,
             };
 
             // Use classify_input to get probabilities

@@ -4386,6 +4386,13 @@ impl BlocklistAIController {
     /// * Executing a task automatically -> interactive AI input
     /// * Interactive AI input -> interactive shell input
     fn set_input_mode_for_cancellation(&mut self, ctx: &mut ModelContext<Self>) {
+        // Inside an active agent view the conversation stays the context for the follow-up
+        // (#935): restore AI input like an approve would instead of downgrading to shell.
+        if self.input_model.update(ctx, |input_model, ctx| {
+            input_model.restore_agent_view_input_after_cancellation(ctx)
+        }) {
+            return;
+        }
         // If the request was cancelled, default to shell mode with autodetection
         // enabled.
         self.input_model.update(ctx, |input_model, ctx| {

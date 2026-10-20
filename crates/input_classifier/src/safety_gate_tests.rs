@@ -47,6 +47,7 @@ fn context(commands_fully_loaded: bool) -> Context {
         current_input_type: InputType::AI,
         is_agent_follow_up: false,
         commands_fully_loaded,
+        in_active_agent_view: false,
     }
 }
 
@@ -616,5 +617,111 @@ fn test_gate_keeps_ai_when_head_is_unknown_or_session_cannot_say() {
             )
             .await;
         assert_eq!(result.input_type, InputType::AI);
+    });
+}
+
+/// #935: the context of a follow-up typed straight after an agent block inside an active agent
+/// view (e.g. after a Ctrl+C reject or an approve).
+fn agent_conversation_context() -> Context {
+    Context {
+        in_active_agent_view: true,
+        is_agent_follow_up: true,
+        ..context(true)
+    }
+}
+
+#[test]
+fn test_gate_sends_an_unknown_single_word_to_the_agent_inside_a_conversation() {
+    futures::executor::block_on(async move {
+        let gated = SafetyGatedClassifier::new(AlwaysShellClassifier);
+        for buffer in ["frobxone", "zzqx", "frob-two", "frob_three9"] {
+            let result = gated
+                .detect_input_type(
+                    snapshot_without_descriptions(buffer),
+                    &agent_conversation_context(),
+                )
+                .await;
+            assert_eq!(result.input_type, InputType::AI, "{buffer:?}");
+            assert_eq!(
+                result.source,
+                InputClassifierDecisionSource::UnknownSingleWordInAgentConversation
+            );
+        }
+    });
+}
+
+#[test]
+fn test_gate_keeps_known_commands_and_other_shapes_shell_inside_a_conversation() {
+    futures::executor::block_on(async move {
+        let gated = SafetyGatedClassifier::new(AlwaysShellClassifier);
+        // Known commands carry a description (`ls`, `git`, a user function): never rerouted.
+        for buffer in ["ls", "git", "deploy"] {
+            let result = gated
+                .detect_input_type(
+                    snapshot_with_first_token_described(buffer),
+                    &agent_conversation_context(),
+                )
+                .await;
+            assert_eq!(result.input_type, InputType::Shell, "{buffer:?}");
+        }
+        // Paths, assignments, keyworded or multi-word lines are not an "unknown single word".
+        for buffer in [
+            "./frobxone",
+            "/bin/frobxone",
+            "FOO=1",
+            "~",
+            "frobxone --help",
+            "sudo",
+        ] {
+            let result = gated
+                .detect_input_type(
+                    snapshot_without_descriptions(buffer),
+                    &agent_conversation_context(),
+                )
+                .await;
+            assert_ne!(
+                result.source,
+                InputClassifierDecisionSource::UnknownSingleWordInAgentConversation,
+                "{buffer:?}"
+            );
+        }
+        // Outside a conversation, without a follow-up, or when the session cannot say whether
+        // the word is a command, the classifier's Shell verdict stands.
+        for context in [
+            Context {
+                in_active_agent_view: false,
+                ..agent_conversation_context()
+            },
+            Context {
+                is_agent_follow_up: false,
+                ..agent_conversation_context()
+            },
+            Context {
+                commands_fully_loaded: false,
+                ..agent_conversation_context()
+            },
+        ] {
+            let result = gated
+                .detect_input_type(snapshot_without_descriptions("frobxone"), &context)
+                .await;
+            assert_eq!(result.input_type, InputType::Shell);
+        }
+    });
+}
+
+/// #935: `doas` is a privilege wrapper like `sudo`; on a host without it nothing describes the
+/// head, and the one-off keyword must still keep the line out of the agent.
+#[test]
+fn test_gate_vetoes_ai_for_doas_wrapped_commands_without_any_session_data() {
+    futures::executor::block_on(async move {
+        let gated = SafetyGatedClassifier::new(AlwaysAiClassifier);
+        for buffer in ["doas grep this the file", "doas rg the src"] {
+            for loaded in [true, false] {
+                let result = gated
+                    .detect_input_type(snapshot_without_descriptions(buffer), &context(loaded))
+                    .await;
+                assert_eq!(result.input_type, InputType::Shell, "{buffer:?}");
+            }
+        }
     });
 }

@@ -538,6 +538,34 @@ impl BlocklistAIInputModel {
         self.set_input_config_internal(new_config, ctx);
     }
 
+    /// #935: after a cancel or reject inside an active agent view the conversation is still the
+    /// context, so the follow-up input gets the state an approve leaves behind: AI, unlocked when
+    /// autodetection is enabled (so a clearly-shell line such as a known command still runs in
+    /// the shell, via the #906 veto at Enter) and locked otherwise. Returns false, doing nothing,
+    /// outside an active agent view; the caller then falls back to the classic-mode downgrade.
+    pub fn restore_agent_view_input_after_cancellation(
+        &mut self,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        if !FeatureFlag::AgentView.is_enabled()
+            || !self
+                .agent_view_controller
+                .as_ref()
+                .is_some_and(|c| c.as_ref(ctx).is_active())
+        {
+            return false;
+        }
+        let is_autodetection_enabled = AISettings::as_ref(ctx).is_ai_autodetection_enabled(ctx);
+        self.set_input_config_internal(
+            InputConfig {
+                input_type: InputType::AI,
+                is_locked: !is_autodetection_enabled,
+            },
+            ctx,
+        );
+        true
+    }
+
     /// Swaps between Agent/Shell input types while preserving lock state. Temporarily disables
     /// autodetection.
     pub fn set_input_type(&mut self, input_type: InputType, ctx: &mut ModelContext<Self>) {
@@ -1261,6 +1289,13 @@ impl BlocklistAIInputModel {
             }
         };
 
+        // #935: only inside an active agent view does an unknown single word read as a message.
+        let in_active_agent_view = FeatureFlag::AgentView.is_enabled()
+            && self
+                .agent_view_controller
+                .as_ref()
+                .is_some_and(|c| c.as_ref(ctx).is_active());
+
         let classifier = InputClassifierModel::as_ref(ctx).classifier();
         let handle = ctx
             .spawn(
@@ -1339,6 +1374,7 @@ impl BlocklistAIInputModel {
                         current_input_type,
                         is_agent_follow_up,
                         commands_fully_loaded: completion_context.top_level_commands_fully_loaded(),
+                        in_active_agent_view,
                     };
                     // The classifier now also reports *why* it decided (an
                     // `InputClassifierDecisionSource`, #428); this model does not
