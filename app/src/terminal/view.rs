@@ -278,7 +278,9 @@ use crate::terminal::general_settings::GeneralSettings;
 use crate::terminal::grid_size_util::grid_cell_dimensions;
 use crate::terminal::host_footer_color;
 use crate::terminal::input::decorations::InputBackgroundJobOptions;
-use crate::terminal::input::{CommandExecutionSource, InputAction, InputEmptyStateChangeReason};
+use crate::terminal::input::{
+    CommandExecutionSource, InputAction, InputEmptyStateChangeReason, YoungTypeaheadDetection,
+};
 use crate::terminal::ligature_settings::{should_use_ligature_rendering, LigatureSettings};
 #[cfg(feature = "local_tty")]
 use crate::terminal::local_tty::get_shell_starter;
@@ -493,7 +495,7 @@ use crate::terminal::model::terminal_model::{
 };
 use crate::terminal::model::typeahead_handoff::{
     HeldKeysRelease, InterruptOutcome, ReportDisposition, UserBytesRoute, YOUNG_ENTER_WINDOW,
-    forces_shell_submit, text_for_editor,
+    YoungSubmit, forces_shell_submit, text_for_editor, young_submit_decision,
 };
 use crate::terminal::model::{
     ansi::{ClearMode, Handler},
@@ -2212,10 +2214,6 @@ impl BlocklistAIRenderContext {
         (self.is_ai_input_enabled && self.should_highlight_context).then(|| ai_brand_color(theme))
     }
 }
-
-/// How long a young line's deferred Enter waits for the verdict of its input-type detection
-/// (#933).
-const YOUNG_DETECTION_WAIT: Duration = Duration::from_millis(500);
 
 /// Groups together some structs to represent the state of the Terminal View for the
 /// current frame. Passed to `AltScreenElement` and `BlockListElement`.
@@ -10076,14 +10074,19 @@ impl TerminalView {
                 // #933: text the hand-off inserted was never classified (system edits do not
                 // request detection), so a line typed right after a command that reads as
                 // English is classified now, and its Enter waits for the verdict (bounded).
-                let needs_detection = young
-                    && self.input.update(ctx, |input, ctx| {
+                let detection = if young {
+                    self.input.update(ctx, |input, ctx| {
                         input.request_detection_for_young_typeahead(ctx)
-                    });
-                if needs_detection {
-                    self.submit_deferred_enter_after_detection(Instant::now(), ctx);
+                    })
                 } else {
-                    self.run_deferred_enter(young, ctx);
+                    YoungTypeaheadDetection::NotNeeded
+                };
+                match detection {
+                    YoungTypeaheadDetection::NotNeeded => self.run_deferred_enter(young, ctx),
+                    YoungTypeaheadDetection::Requested => {
+                        self.submit_deferred_enter_after_detection(Instant::now(), ctx);
+                    }
+                    YoungTypeaheadDetection::CannotRun => self.keep_deferred_enter_text(ctx),
                 }
             }
             ReportDisposition::Stash => {}
@@ -10126,8 +10129,10 @@ impl TerminalView {
         }
     }
 
-    /// Waits (at most [`YOUNG_DETECTION_WAIT`]) for the verdict of the detection requested for a
-    /// young line, then runs its deferred Enter (#933). Ctrl-C meanwhile cancels the Enter.
+    /// Waits for the verdict of the detection requested for a young line's exact text, then runs
+    /// its deferred Enter (#933). It never submits on an inherited or default input type: if the
+    /// classifier cannot answer (no verdict within [`YOUNG_DETECTION_CAP`]) the text stays in the
+    /// editor, unsubmitted. Ctrl-C meanwhile cancels the Enter.
     fn submit_deferred_enter_after_detection(
         &mut self,
         started: Instant,
@@ -10136,16 +10141,35 @@ impl TerminalView {
         if !self.model.lock().typeahead_handoff().deferred_submit_pending() {
             return;
         }
-        let pending = self
-            .input
-            .read(ctx, |input, ctx| input.detection_pending_for_buffer(ctx));
-        if pending && started.elapsed() < YOUNG_DETECTION_WAIT {
-            ctx.spawn(Timer::after(Duration::from_millis(15)), move |me, _, ctx| {
-                me.submit_deferred_enter_after_detection(started, ctx);
-            });
-            return;
+        let (can_run, pending) = self.input.read(ctx, |input, ctx| {
+            (
+                input.can_classify_buffer(ctx),
+                input.detection_pending_for_buffer(ctx),
+            )
+        });
+        match young_submit_decision(can_run, pending, started.elapsed()) {
+            YoungSubmit::Submit => self.run_deferred_enter(true, ctx),
+            YoungSubmit::Wait => {
+                ctx.spawn(Timer::after(Duration::from_millis(10)), move |me, _, ctx| {
+                    me.submit_deferred_enter_after_detection(started, ctx);
+                });
+            }
+            YoungSubmit::KeepInEditor => self.keep_deferred_enter_text(ctx),
         }
-        self.run_deferred_enter(true, ctx);
+    }
+
+    /// Ends a deferred Enter without submitting: the text stays in the editor for the user to
+    /// submit, and the keys held behind the Enter are released as they are after an unsubmitted
+    /// Enter.
+    fn keep_deferred_enter_text(&mut self, ctx: &mut ViewContext<Self>) {
+        let release = self
+            .model
+            .lock()
+            .typeahead_handoff_mut()
+            .release_after_unsubmitted_enter();
+        if let Some(release) = release {
+            self.release_held_keys(release, ctx);
+        }
     }
 
     /// Runs the Enter the typeahead hand-off deferred while a report was outstanding. It runs

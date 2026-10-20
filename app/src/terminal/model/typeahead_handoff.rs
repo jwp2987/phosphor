@@ -29,6 +29,41 @@ use crate::ai::agent::conversation::AIConversationId;
 /// within this window the command is running and the Enter is written as typeahead.
 pub const YOUNG_ENTER_WINDOW: Duration = Duration::from_millis(600);
 
+/// The longest a young line's deferred Enter waits for the verdict of its input-type detection
+/// (#933). A verdict that has not come by then means the classifier is not going to answer; the
+/// text stays in the editor, unsubmitted.
+pub const YOUNG_DETECTION_CAP: Duration = Duration::from_secs(5);
+
+/// What the view does with the deferred Enter of a young line whose text must be classified
+/// before it is submitted (#933). It is never submitted on an inherited or default input type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum YoungSubmit {
+    /// The verdict for the exact buffer text has landed: run the Enter.
+    Submit,
+    /// Keep waiting for the verdict.
+    Wait,
+    /// The classifier cannot answer: keep the text in the editor and let the user press Enter.
+    KeepInEditor,
+}
+
+/// Decides [`YoungSubmit`]. `can_run` is whether a classification can run at all;
+/// `verdict_pending` whether the verdict for the buffer has not landed yet.
+pub fn young_submit_decision(
+    can_run: bool,
+    verdict_pending: bool,
+    waited: Duration,
+) -> YoungSubmit {
+    if !can_run {
+        YoungSubmit::KeepInEditor
+    } else if !verdict_pending {
+        YoungSubmit::Submit
+    } else if waited >= YOUNG_DETECTION_CAP {
+        YoungSubmit::KeepInEditor
+    } else {
+        YoungSubmit::Wait
+    }
+}
+
 /// Control bytes that signal or end input (^C, ^Z, ^\\, ^D). They are never held: they drop a
 /// held Enter and are written at once.
 fn is_signal_byte(byte: &u8) -> bool {
@@ -226,7 +261,14 @@ impl TypeaheadHandoff {
         matches!(
             self.state,
             HandoffState::PtyOwned { .. } | HandoffState::HoldAfterEnter { .. }
-        )
+        ) || self.holds_young_enter_behind_request()
+    }
+
+    /// The request is outstanding and the user's Enter is held behind it (#933): keys typed now
+    /// must queue behind that Enter, not reach the editor ahead of it, so the terminal keeps
+    /// routing them (into the hold).
+    fn holds_young_enter_behind_request(&self) -> bool {
+        self.state == HandoffState::AwaitingReport && self.young_hold.is_some()
     }
 
     /// Whether the terminal, rather than the input editor, should hold focus.
