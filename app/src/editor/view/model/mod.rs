@@ -77,6 +77,48 @@ lazy_static! {
         AUTOCOMPLETE_SYMBOLS.values().cloned().collect();
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum QuoteState {
+    None,
+    Single,
+    Double,
+}
+
+/// Shell-style quote state at the end of `prefix`: a backslash escapes the next character
+/// outside quotes and inside double quotes (so `\"` neither opens nor closes), and nothing is
+/// special inside single quotes except the closing `'`.
+fn quote_state(prefix: &str) -> QuoteState {
+    let mut state = QuoteState::None;
+    let mut chars = prefix.chars();
+    while let Some(c) = chars.next() {
+        match (state, c) {
+            (QuoteState::None | QuoteState::Double, '\\') => {
+                chars.next();
+            }
+            (QuoteState::None, '\'') => state = QuoteState::Single,
+            (QuoteState::None, '"') => state = QuoteState::Double,
+            (QuoteState::Single, '\'') | (QuoteState::Double, '"') => state = QuoteState::None,
+            _ => {}
+        }
+    }
+    state
+}
+
+/// Whether typing `bracket` (`(`, `[` or `{`) after `prefix` should auto-insert its closer.
+/// Outside quotes always. Inside single quotes never (`$(` is literal there in POSIX shells).
+/// Inside double quotes only `(` and `{` directly after an unescaped `$`.
+fn bracket_may_autopair(prefix: &str, bracket: char) -> bool {
+    match quote_state(prefix) {
+        QuoteState::None => true,
+        QuoteState::Single => false,
+        QuoteState::Double => {
+            matches!(bracket, '(' | '{')
+                && prefix.ends_with('$')
+                && !prefix[..prefix.len() - 1].ends_with('\\')
+        }
+    }
+}
+
 /// A snapshot of the editor that does not expose
 /// buffer implementation details.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1105,6 +1147,22 @@ impl EditorModel {
             if self.no_cursor_only_selections(ctx) {
                 self.insert_characters_wrap_around_selection(text, completion, ctx);
                 return;
+            }
+
+            // Inside an open quote, only `$(` and `${` (in double quotes) pair; `[` never does.
+            // Otherwise a bracket typed inside a string and never closed leaves its auto-inserted
+            // closer behind, and everything typed afterwards lands before it (#946).
+            if matches!(text, "(" | "[" | "{") {
+                let bracket = text.chars().next().expect("bracket is one char");
+                let buffer_text = self.buffer_text(ctx);
+                let blocked = self.selection_to_char_offset_ranges(ctx).iter().any(|range| {
+                    let prefix: String = buffer_text.chars().take(range.start.as_usize()).collect();
+                    !bracket_may_autopair(&prefix, bracket)
+                });
+                if blocked {
+                    self.insert_internal(text, None, SelectionInsertion::No, ctx);
+                    return;
+                }
             }
 
             let buffer = self.buffer(ctx);

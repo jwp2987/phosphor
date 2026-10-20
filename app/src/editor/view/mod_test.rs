@@ -3488,6 +3488,117 @@ fn test_autocomplete_symbols_backspace_in_middle() {
     });
 }
 
+/// Types `text` one keystroke per update and returns the buffer.
+fn type_autopair(text: &str) -> String {
+    let out = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+    let out2 = out.clone();
+    let text = text.to_owned();
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let view = autopair_test_editor(&mut app);
+        for c in text.chars() {
+            view.update(&mut app, |e, ctx| e.user_insert(&c.to_string(), ctx));
+        }
+        view.read(&app, |e, ctx| *out2.borrow_mut() = e.buffer_text(ctx));
+    });
+    let s = out.borrow().clone();
+    s
+}
+
+/// #946: a `[` typed inside a double-quoted string is not auto-paired, so a typed
+/// `[Console]::Write("`e[6n")` ends up exactly as typed.
+#[test]
+fn test_autopair_unclosed_bracket_in_quote_round_trips() {
+    for typed in [
+        "[Console]::Write(\"`e[6n\")",
+        "[Console]::Write(\"`e[6n`e[>0q`e[c`e[?u\")",
+    ] {
+        assert_eq!(type_autopair(typed), typed);
+    }
+}
+
+#[test]
+fn test_autopair_dollar_paren_and_brace_still_pair_in_double_quotes() {
+    // The auto-inserted closers prove the pairing happened.
+    assert_eq!(type_autopair("\"$(date"), "\"$(date)\"");
+    assert_eq!(type_autopair("\"${x"), "\"${x}\"");
+    assert_eq!(type_autopair("\"$(date)\""), "\"$(date)\"");
+    assert_eq!(type_autopair("\"${x}\""), "\"${x}\"");
+}
+
+#[test]
+fn test_autopair_inside_double_quotes_only_dollar_pairs() {
+    assert_eq!(type_autopair("\"a ("), "\"a (\"");
+    assert_eq!(type_autopair("\"a {"), "\"a {\"");
+    assert_eq!(type_autopair("\"a ["), "\"a [\"");
+    assert_eq!(type_autopair("\"a $["), "\"a $[\"");
+}
+
+#[test]
+fn test_autopair_single_quotes_are_literal() {
+    // Shell semantics: `$(` is literal inside single quotes, so nothing pairs there.
+    // (the opening `'` itself still auto-closes, hence the trailing quote)
+    assert_eq!(type_autopair("'$("), "'$('");
+    assert_eq!(type_autopair("'a [b {c ("), "'a [b {c ('");
+    // Typing the closing quote overtypes the auto-inserted one, then pairing resumes.
+    assert_eq!(type_autopair("'a'"), "'a'");
+    assert_eq!(type_autopair("'a' ("), "'a' ()");
+}
+
+#[test]
+fn test_autopair_escaped_quotes_do_not_open_or_close() {
+    // `\"` outside quotes is a literal quote, so `(` after it is still outside any quote.
+    // (the typed `"` auto-closes, so its closer trails the buffer)
+    assert_eq!(type_autopair("echo \\\" ("), "echo \\\" ()\"");
+    // `\"` inside a double-quoted string does not close it, so `[` still does not pair.
+    // (the escaped quote overtypes the auto-inserted closer, as it always has)
+    assert_eq!(type_autopair("\"a \\\" ["), "\"a \\\" [");
+}
+
+#[test]
+fn test_autopair_pairs_again_after_quote_closed() {
+    assert_eq!(type_autopair("\"x\" ["), "\"x\" []");
+    assert_eq!(type_autopair("\"x\" ("), "\"x\" ()");
+    assert_eq!(type_autopair("\"x\" {"), "\"x\" {}");
+    assert_eq!(type_autopair("f(\"x\", g[1])"), "f(\"x\", g[1])");
+}
+
+#[test]
+fn test_autopair_backspace_and_overtype_inside_and_outside_quotes() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let view = autopair_test_editor(&mut app);
+        let type_str = |app: &mut App, text: &str| {
+            for c in text.chars() {
+                view.update(app, |e, ctx| e.user_insert(&c.to_string(), ctx));
+            }
+        };
+        let bs = |app: &mut App| view.update(app, |e, ctx| e.backspace(ctx));
+        let text = |app: &App| view.read(app, |e, ctx| e.buffer_text(ctx));
+
+        // Outside quotes: empty pair backspace removes both halves.
+        type_str(&mut app, "f(");
+        assert_eq!(text(&app), "f()");
+        bs(&mut app);
+        assert_eq!(text(&app), "f");
+
+        // Inside quotes: `$(` pairs, backspace removes the pair, `[` stays single.
+        type_str(&mut app, " \"$(");
+        assert_eq!(text(&app), "f \"$()\"");
+        bs(&mut app);
+        assert_eq!(text(&app), "f \"$\"");
+        type_str(&mut app, "x[");
+        assert_eq!(text(&app), "f \"$x[\"");
+        bs(&mut app);
+        bs(&mut app);
+        type_str(&mut app, "(a)");
+        // `$(` pairs again, and the typed `)` overtypes its closer, then `"` overtypes.
+        assert_eq!(text(&app), "f \"$(a)\"");
+        type_str(&mut app, "\"");
+        assert_eq!(text(&app), "f \"$(a)\"");
+    });
+}
+
 #[test]
 fn test_autocomplete_symbols() {
     App::test((), |mut app| async move {
@@ -3507,14 +3618,16 @@ fn test_autocomplete_symbols() {
             editor.user_insert("\"", ctx);
             assert_eq!(editor.buffer_text(ctx), "abc\"");
 
+            // The `"` above is unclosed, so `(` is inside an open quote and (since #946)
+            // does not auto-pair unless it follows `$`.
             editor.user_insert(" ", ctx);
             editor.user_insert("(", ctx);
-            assert_eq!(editor.buffer_text(ctx), "abc\" ()");
+            assert_eq!(editor.buffer_text(ctx), "abc\" (");
 
             editor.undo(ctx);
             assert_eq!(editor.buffer_text(ctx), "abc\" ");
             editor.redo(ctx);
-            assert_eq!(editor.buffer_text(ctx), "abc\" ()");
+            assert_eq!(editor.buffer_text(ctx), "abc\" (");
 
             editor.backspace(ctx);
             assert_eq!(editor.buffer_text(ctx), "abc\" ");
