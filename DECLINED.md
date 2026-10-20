@@ -2506,3 +2506,20 @@ who sets `setopt errexit` in `.zshrc` therefore does NOT have errexit at the Pho
 (everything else the files set is kept). Reason: errexit left on ends the shell on the first
 failing command, including commands Phosphor runs for itself (generators outside a git repo), and
 on any typo. Reverse only together with auditing every internal command path.
+
+## Input auto-pair leaves the closer of a bracket typed but never closed (#946) — declined 2026-10-19
+
+Typing `[Console]::Write("`e[6n")` yields `[Console]::Write("`e[6n")]")`. The
+text is not mis-overtyped: the user typed `[` inside the string and never typed
+`]`, so the auto-inserted `]` stays at the cursor and everything typed after it
+lands before it. v0.1.12 and the pin behave identically, and every *balanced*
+sequence (`[Console]::Write("x")`, `echo "$(date)"`, `f(a[0], "b")`,
+`'it'"s"`, backticks, backspace in the middle) round-trips exactly; those are
+now pinned by `test_autocomplete_symbols_typed_text_round_trips` and
+`test_autocomplete_symbols_backspace_in_middle`.
+
+The only fix is a string-context heuristic (do not pair brackets inside quotes),
+which contradicts the existing `test_autocomplete_symbols` expectation
+(`abc" (` becomes `abc" ()`), would need that test weakened (AGENTS.md 5.6), and
+would regress `"$(...)"` / `"${...}"` pairing. Users who hit it can turn off
+Settings > Features > "Autocomplete quotes, parentheses, and brackets".

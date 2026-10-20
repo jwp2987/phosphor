@@ -3416,6 +3416,78 @@ fn test_delete_all_on_ephemeral_edit() {
     });
 }
 
+/// Creates an editor with symbol autocompletion on and the cursor at column 0.
+/// Each keystroke below is its own `update` so the display map is synced
+/// between keystrokes, as it is in the app (overtype moves the cursor through it).
+fn autopair_test_editor(app: &mut App) -> warpui::ViewHandle<EditorView> {
+    let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+        let mut editor = EditorView::new_with_base_text("", Default::default(), ctx);
+        editor.set_autocomplete_symbols_allowed(true);
+        editor
+            .select_ranges(vec![DisplayPoint::new(0, 0)..DisplayPoint::new(0, 0)], ctx)
+            .unwrap();
+        editor
+    });
+    view
+}
+
+/// Typing balanced text character by character with autopairing on must
+/// reproduce the typed text exactly: every typed closer overtypes the
+/// auto-inserted one (#946).
+#[test]
+fn test_autocomplete_symbols_typed_text_round_trips() {
+    let cases = [
+        "[Console]::Write(\"x\")",
+        "echo \"$(date)\"",
+        "f(a[0], \"b\")",
+        "'it'\"s\"",
+        "echo `x`",
+        "{ echo \"$(f (a))\"; }",
+        "x=\"${HOME}/a[1]\"",
+    ];
+    for typed in cases {
+        App::test((), |mut app| async move {
+            initialize_app(&mut app);
+            let view = autopair_test_editor(&mut app);
+            for c in typed.chars() {
+                view.update(&mut app, |editor, ctx| {
+                    editor.user_insert(&c.to_string(), ctx)
+                });
+            }
+            view.read(&app, |editor, ctx| {
+                assert_eq!(editor.buffer_text(ctx), typed, "typed {typed:?}");
+            });
+        });
+    }
+}
+
+/// Backspacing in the middle of a nested pair and retyping must still end up
+/// as typed.
+#[test]
+fn test_autocomplete_symbols_backspace_in_middle() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let view = autopair_test_editor(&mut app);
+        let type_str = |app: &mut App, text: &str| {
+            for c in text.chars() {
+                view.update(app, |editor, ctx| editor.user_insert(&c.to_string(), ctx));
+            }
+        };
+        type_str(&mut app, "f(a[0");
+        view.read(&app, |e, ctx| assert_eq!(e.buffer_text(ctx), "f(a[0])"));
+        view.update(&mut app, |e, ctx| e.backspace(ctx));
+        type_str(&mut app, "1])");
+        view.read(&app, |e, ctx| assert_eq!(e.buffer_text(ctx), "f(a[1])"));
+
+        // Backspacing over a closer typed past the pair, then retyping a quoted
+        // pair, still round-trips.
+        view.update(&mut app, |e, ctx| e.backspace(ctx));
+        view.update(&mut app, |e, ctx| e.backspace(ctx));
+        type_str(&mut app, "\"q\")");
+        view.read(&app, |e, ctx| assert_eq!(e.buffer_text(ctx), "f(a[1\"q\")"));
+    });
+}
+
 #[test]
 fn test_autocomplete_symbols() {
     App::test((), |mut app| async move {

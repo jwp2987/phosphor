@@ -273,8 +273,16 @@ impl TerminalView {
                     WarpificationMode::Ssh { .. } => {
                         self.handle_action(&TerminalAction::WarpifySSHSession, ctx);
                     }
-                    WarpificationMode::Subshell { .. } => {
-                        self.handle_action(&TerminalAction::TriggerSubshellBootstrap, ctx);
+                    WarpificationMode::Subshell { command } => {
+                        // The footer clears its own mode before emitting this event, so
+                        // `TriggerSubshellBootstrap` (which re-reads the pending command
+                        // from the footer) would see no command, treat a pwsh subshell as
+                        // an unknown shell and type the POSIX probe into it (#945). Use
+                        // the command carried by the event instead, as ctrl+i effectively
+                        // does via the banner.
+                        let shell_type =
+                            super::shell_type_for_recognized_powershell_subshell_command(command);
+                        self.trigger_subshell_bootstrap(shell_type, false, ctx);
                     }
                 }
                 send_telemetry_from_ctx!(
