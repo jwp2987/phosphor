@@ -20,6 +20,14 @@ threads-required = 2
 filter = 'package(warp_tui)'
 retries = 2
 
+[[profile.default.overrides]]
+# #940: lays out a 3 MB word and asserts it finishes within a wall-clock bound
+# (~3 s alone in a debug build). Sharing the CPUs with the rest of the suite
+# pushes it past the bound (7.9 s seen), so it runs alone instead of the bound
+# being loosened.
+filter = 'test(test_layout_line_of_huge_word_is_bounded_and_ends_at_text_end)'
+threads-required = "num-cpus"
+
 [profile.ci]
 # Print out output for failing tests as soon as they fail, and also at the end
 # of the run (for easy scrollability).
