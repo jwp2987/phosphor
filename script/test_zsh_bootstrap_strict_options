@@ -392,12 +392,12 @@ def scenario_terminal_replies_in_typeahead():
         # reply ledger (which knows what it wrote) removes residue, the shell does not guess.
         for typed in ("62c", "1R", "0c", ";1R", "R", "24;80R", "8;45;124t", "1;2$y", ">|x(1)"):
             sh.pump(0.3)
-            n = len(sh.hook_jsons("InputBuffer"))
+            n = len([1 for h, _ in sh.hooks() if h == "InputBuffer"])
             os.write(sh.fd, typed.encode())
             sh.pump(0.3)
             os.write(sh.fd, b"\x1bi")
-            ok = sh.pump(5, lambda: len(sh.hook_jsons("InputBuffer")) > n)
-            got = sh.hook_jsons("InputBuffer")[-1]["value"]["buffer"] if ok else None
+            ok = sh.pump(5, lambda: len([1 for h, _ in sh.hooks() if h == "InputBuffer"]) > n)
+            got = [v for h, v in sh.hooks() if h == "InputBuffer"][-1]["buffer"] if ok else None
             check(got == typed, f"typed {typed!r} is reported unchanged (got {got!r})", sh)
         # Text that starts with hex letters right after a reply must survive, whatever the
         # reply's colour width or terminator (an over-greedy strip ate `ec` of `echo`).
