@@ -84,6 +84,10 @@ pub struct State {
     /// When replies started being withheld, so the re-check can back off for a reply that stays
     /// held.
     withheld_since: Option<Instant>,
+    /// The pty reported a hang-up (`EIO` on the master) but the child's exit has not been seen
+    /// yet. Nothing more can be read or written, so the loop must wait for the exit event
+    /// instead of retrying the dead fd (#953).
+    hung_up: bool,
 }
 
 /// How often a withheld reply re-checks whether the pty has left canonical mode: promptly for the
@@ -91,6 +95,9 @@ pub struct State {
 /// milliseconds), then less often for a reply nobody is waiting for.
 const REPLY_GATE_POLL: Duration = Duration::from_millis(10);
 const REPLY_GATE_POLL_SLOW: Duration = Duration::from_millis(100);
+/// While the pty has hung up, how often to check whether the child has exited, in case its
+/// `SIGCHLD` was consumed before the hang-up was seen.
+const HUNG_UP_POLL: Duration = Duration::from_millis(100);
 const REPLY_GATE_SLOW_AFTER: Duration = Duration::from_secs(1);
 /// Most gated replies kept. A program that queries in a loop without reading gets its oldest
 /// replies dropped; nobody can read them from a cooked tty anyway.
@@ -124,6 +131,7 @@ impl Default for State {
             reply_gate_open: true,
             gated_count: 0,
             withheld_since: None,
+            hung_up: false,
         }
     }
 }
@@ -190,9 +198,14 @@ impl State {
     /// How long the event loop may sleep, given the synchronized-output timeout and any withheld
     /// reply waiting for the pty to leave canonical mode.
     fn poll_timeout(&self, sync_timeout: Option<Duration>) -> Option<Duration> {
-        match (sync_timeout, self.gate_timeout()) {
+        let timeout = match (sync_timeout, self.gate_timeout()) {
             (Some(sync), Some(gate)) => Some(sync.min(gate)),
             (sync, gate) => sync.or(gate),
+        };
+        if self.hung_up {
+            Some(timeout.map_or(HUNG_UP_POLL, |t| t.min(HUNG_UP_POLL)))
+        } else {
+            timeout
         }
     }
 
@@ -269,6 +282,14 @@ impl State {
     fn has_tagged(&self) -> bool {
         // Only replies carry a tag, and those are the gated ones.
         self.gated_count > 0
+    }
+
+    /// Drops every queued and partially written byte, for a pty that can no longer be written.
+    fn discard_pending_writes(&mut self) {
+        self.write_list.clear();
+        self.writing = None;
+        self.gated_count = 0;
+        self.withheld_since = None;
     }
 
     #[inline]
@@ -594,6 +615,56 @@ where
         Ok(())
     }
 
+    /// Reads and writes the pty for as long as it is ready, then returns so the caller can wait
+    /// for the next readiness event. `Err(())` means the loop must stop.
+    ///
+    /// A hang-up (`EIO` from the master once the child has closed the slave) ends reading for
+    /// good: `can_read` is cleared and the loop goes back to `poll`, where the child's exit
+    /// event (or the shutdown message) arrives. It used to `continue` with `can_read` still set,
+    /// which re-read the dead fd forever without ever polling: a 100% CPU "PTY reader" thread
+    /// that could not be shut down, so closing the tab blocked the UI thread joining it (#953).
+    fn service_io(
+        &mut self,
+        state: &mut State,
+        buf: &mut [u8],
+        can_read: &mut bool,
+        can_write: &mut bool,
+    ) -> Result<(), ()> {
+        self.refresh_reply_gate(state);
+        while *can_read || (state.needs_write() && *can_write) {
+            if *can_read {
+                if let Err(err) = self.pty_read(state, buf, can_read) {
+                    // On Linux, a `read` on the master side of a PTY can fail with `EIO` if the
+                    // client side hangs up. `io::Error::kind()` cannot be used here: EIO maps
+                    // to `ErrorKind::Uncategorized`, which is unstable and deliberately
+                    // unmatchable from outside std. Compare the raw errno instead.
+                    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+                    if err.raw_os_error() == Some(libc::EIO) {
+                        *can_read = false;
+                        *can_write = false;
+                        state.hung_up = true;
+                        // Nothing queued can reach a dead pty, and a withheld reply would
+                        // keep the gate poll timer armed.
+                        state.discard_pending_writes();
+                        return Ok(());
+                    }
+
+                    error!("Error reading from PTY in event loop: {err}");
+                    return Err(());
+                }
+            }
+
+            self.refresh_reply_gate(state);
+            if state.needs_write() && *can_write {
+                if let Err(err) = self.pty_write(state, can_write) {
+                    error!("Error writing to PTY in event loop: {err}");
+                    return Err(());
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn spawn(mut self) -> JoinHandle<()> {
         #[cfg(test)]
         let feature_flag_overrides = warp_core::features::get_overrides();
@@ -648,7 +719,9 @@ where
                     // If there were no events but `poll` returned, that means we hit the timeout.
                     // (A wake-up for the reply gate alone is not the synchronized-output timeout.)
                     let woke_for_gate = gate_poll
-                        .is_some_and(|gate| sync_state_timeout.is_none_or(|sync| gate < sync));
+                        .is_some_and(|gate| sync_state_timeout.is_none_or(|sync| gate < sync))
+                        || (state.hung_up
+                            && sync_state_timeout.is_none_or(|sync| HUNG_UP_POLL < sync));
                     if events.is_empty() && !woke_for_gate {
                         // Same reasoning as the `parse_bytes` call above: route any
                         // response sequences through `write_list` instead of writing
@@ -750,39 +823,17 @@ where
                         }
                     }
                     self.refresh_reply_gate(&mut state);
-                    while can_read || (state.needs_write() && can_write) {
-                        if can_read {
-                            match self.pty_read(&mut state, &mut buf, &mut can_read) {
-                                Ok(_) => {}
-                                Err(err) => {
-                                    // On Linux, a `read` on the master side of a PTY can fail
-                                    // with `EIO` if the client side hangs up.  In that case,
-                                    // just loop back round for the inevitable `Exited` event.
-                                    // This sucks, but checking the process is either racy or
-                                    // blocking.
-                                    //
-                                    // `io::Error::kind()` cannot be used here: EIO maps to
-                                    // `ErrorKind::Uncategorized`, which is unstable and
-                                    // deliberately unmatchable from outside std. Compare the
-                                    // raw errno instead.
-                                    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-                                    if err.raw_os_error() == Some(libc::EIO) {
-                                        continue;
-                                    }
-
-                                    error!("Error reading from PTY in event loop: {err}");
-                                    break 'event_loop;
-                                }
-                            }
-                        }
-
-                        self.refresh_reply_gate(&mut state);
-                        if state.needs_write() && can_write {
-                            if let Err(err) = self.pty_write(&mut state, &mut can_write) {
-                                error!("Error writing to PTY in event loop: {err}");
-                                break 'event_loop;
-                            }
-                        }
+                    match self.service_io(&mut state, &mut buf, &mut can_read, &mut can_write) {
+                        Ok(()) => {}
+                        Err(()) => break 'event_loop,
+                    }
+                    // After a hang-up the exit event may already have been consumed; ask the
+                    // child directly rather than waiting on a signal that will not come.
+                    if state.hung_up && self.pty.has_exited() {
+                        self.terminal.lock().exit(ExitReason::ShellProcessExited);
+                        child_exited = true;
+                        self.event_listener.send_wakeup_event();
+                        break 'event_loop;
                     }
                 }
 

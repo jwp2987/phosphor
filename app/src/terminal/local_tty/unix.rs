@@ -741,6 +741,10 @@ impl EventedPty for Pty {
         self.signals_token
     }
 
+    fn has_exited(&mut self) -> bool {
+        matches!(self.pty_handle.has_process_terminated(), Ok(true))
+    }
+
     fn is_canonical(&self) -> Option<bool> {
         fd_is_canonical(self.fd.as_raw_fd())
     }
