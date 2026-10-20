@@ -12671,9 +12671,18 @@ impl Input {
         if self.completion_session_context(ctx).is_none() {
             return YoungTypeaheadDetection::CannotRun;
         }
-        self.ai_input_model
-            .update(ctx, |model, _| model.clear_typeahead_provenance());
+        self.ai_input_model.update(ctx, |model, _| {
+            model.clear_typeahead_provenance();
+            // The previous command's forced-shell submit opened a 250 ms window in which the
+            // first detection request is swallowed (#833); this text is a new question.
+            model.clear_explicit_input_type_set();
+        });
         self.request_input_detection_for_current_buffer(ctx);
+        // The request must have registered. A request that was suppressed would never get a
+        // verdict, and the Enter must not run on the inherited input type instead.
+        if !self.detection_pending_for_buffer(ctx) {
+            return YoungTypeaheadDetection::CannotRun;
+        }
         YoungTypeaheadDetection::Requested
     }
 

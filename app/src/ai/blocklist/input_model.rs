@@ -834,6 +834,14 @@ impl BlocklistAIInputModel {
         self.typeahead_prefix = (!typeahead.trim().is_empty()).then_some(typeahead);
     }
 
+    /// Forgets an explicit input-type write and the detection suppression it opened (#933). For
+    /// text that arrives by the typeahead hand-off: the explicit write (a forced-shell submit of
+    /// the previous command) was a choice for a different buffer, and within its window the
+    /// first detection request is swallowed, so the new text would never be classified.
+    pub fn clear_explicit_input_type_set(&mut self) {
+        self.explicit_input_type_set = None;
+    }
+
     /// Drops the typeahead provenance (#933): the text is to be routed like anything the user
     /// typed in the editor, so the agent-ward rules apply to it.
     pub fn clear_typeahead_provenance(&mut self) {
