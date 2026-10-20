@@ -24,30 +24,25 @@ pub(crate) const MAX_NAVIGATION_TEXT_CHARS: usize = 1024;
 /// Keeps at most [`MAX_NAVIGATION_TEXT_CHARS`] chars of `text`, cut on a char boundary, and
 /// drops the original allocation when it had to be cut. Empty stays empty.
 fn bounded_navigation_text(text: String) -> String {
-    match text.char_indices().nth(MAX_NAVIGATION_TEXT_CHARS) {
+    match bounded_prefix_len(&text) {
         None => text,
-        Some((byte_index, _)) => {
-            let mut end = byte_index;
-            // Don't leave a dangling joiner / variation selector that would attach to nothing.
-            while end > 0
-                && matches!(
-                    text[..end].chars().next_back(),
-                    Some('\u{200d}' | '\u{fe0f}')
-                )
-            {
-                end -= text[..end].chars().next_back().map_or(0, char::len_utf8);
-            }
-            text[..end].to_owned()
-        }
+        Some(end) => text[..end].to_owned(),
     }
 }
 
 /// Borrowing variant: copies only the bounded prefix, never the full text.
 fn bounded_navigation_text_ref(text: &str) -> String {
-    match text.char_indices().nth(MAX_NAVIGATION_TEXT_CHARS) {
-        None => text.to_owned(),
-        Some((byte_index, _)) => bounded_navigation_text(text[..byte_index].to_owned()),
+    text[..bounded_prefix_len(text).unwrap_or(text.len())].to_owned()
+}
+
+/// Byte length of the prefix to keep, or `None` when `text` is already within the cap.
+fn bounded_prefix_len(text: &str) -> Option<usize> {
+    let (mut end, _) = text.char_indices().nth(MAX_NAVIGATION_TEXT_CHARS)?;
+    // Don't leave a dangling joiner / variation selector that would attach to nothing.
+    while let Some(last @ ('\u{200d}' | '\u{fe0f}')) = text[..end].chars().next_back() {
+        end -= last.len_utf8();
     }
+    Some(end)
 }
 
 /// Result from matching a conversation.
