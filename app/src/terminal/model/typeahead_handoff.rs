@@ -182,6 +182,16 @@ pub struct TypeaheadHandoff {
     /// A key applied within that window moved focus to the editor itself; the resulting focus
     /// event must not end the window.
     focus_moved_by_takeover_key: bool,
+    /// Prompts the model has seen whose precmd event the terminal view has not handled yet.
+    /// The view's handling of a prompt reinitializes the input editor (the finished block's
+    /// `BlockCompleted`), wiping what the editor holds. Giving the editor input before that has
+    /// run lets it take keys that the reinitialization then erases (#934), so no request is
+    /// written, and the editor does not take over, until this is zero.
+    precmds_pending_view: u32,
+    /// Whether a terminal view is attached and handles each prompt's precmd event, so
+    /// `precmds_pending_view` is worth counting. Without one (a controller driven on its own)
+    /// nothing would ever clear it.
+    tracks_view_precmds: bool,
     /// The last command written, prompt or preexec seen (see [`YOUNG_ENTER_WINDOW`]).
     last_activity_at: Option<Instant>,
     /// The user's Enter, and every key typed after it, held while the pty owns input and the
@@ -347,6 +357,26 @@ impl TypeaheadHandoff {
         }
     }
 
+    /// A prompt was applied to the model; the view has yet to handle its precmd event (model
+    /// thread). See [`Self::precmds_pending_view`](TypeaheadHandoff).
+    pub fn note_precmd_pending_view(&mut self) {
+        if !self.tracks_view_precmds {
+            return;
+        }
+        self.precmds_pending_view = self.precmds_pending_view.saturating_add(1);
+    }
+
+    /// A terminal view is attached and will call [`Self::on_precmd_viewed`] for every prompt.
+    pub fn track_view_precmds(&mut self) {
+        self.tracks_view_precmds = true;
+    }
+
+    /// The view handled a precmd event, after reinitializing the editor for the finished block
+    /// (main thread).
+    pub fn on_precmd_viewed(&mut self) {
+        self.precmds_pending_view = self.precmds_pending_view.saturating_sub(1);
+    }
+
     /// The shell emitted a precmd hook (model thread).
     pub fn on_precmd(&mut self) {
         self.activity_generation = self.activity_generation.wrapping_add(1);
@@ -404,6 +434,14 @@ impl TypeaheadHandoff {
                 precmds_seen,
             } => {
                 let no_line_queued = precmds_seen >= enters_written;
+                if no_line_queued && self.precmds_pending_view > 0 {
+                    // The editor has yet to be reinitialized for the finished block, which
+                    // would erase whatever it took meanwhile. Keys keep going to the pty; the
+                    // view's handling of the prompt decides again (#934).
+                    return ActiveDecision::Wait {
+                        activity_generation: self.activity_generation,
+                    };
+                }
                 if !wrote_user_bytes {
                     if no_line_queued {
                         self.state = HandoffState::EditorOwned;
@@ -693,7 +731,10 @@ impl TypeaheadHandoff {
 
     /// The session ended: nothing can answer an outstanding request or run held keys.
     pub fn reset_on_exit(&mut self) {
-        *self = Self::default();
+        *self = Self {
+            tracks_view_precmds: self.tracks_view_precmds,
+            ..Self::default()
+        };
     }
 
     /// Ends the window opened by [`Self::note_editor_took_over`]: focus reached the editor, or

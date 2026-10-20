@@ -909,6 +909,18 @@ struct ViewerCommandExecutionRequest {
     original_buffer: String,
 }
 
+/// What an editor holds beyond the text it submitted: nothing when it holds exactly that, the
+/// text after it when it begins with it, everything when nothing was submitted from it (the
+/// completed block was a typeahead line the shell ran) or the text was edited since. Blank
+/// remainders do not count.
+fn newer_than_submission<'a>(submission: Option<&str>, current: &'a str) -> Option<&'a str> {
+    let rest = match submission {
+        Some(submitted) => current.strip_prefix(submitted).unwrap_or(current),
+        None => current,
+    };
+    (!rest.trim().is_empty()).then_some(rest)
+}
+
 /// Where a command execution request originates from.
 #[derive(Clone)]
 pub enum CommandExecutionSource {
@@ -1768,6 +1780,12 @@ pub struct Input {
     shell_command_submit_pending: bool,
     /// Whether the last Enter submitted a shell command; read by `input_enter_as_shell_command`.
     last_enter_submitted_shell_command: bool,
+    /// What the editor held when it last submitted a command. The editor is cleared when that
+    /// command's block completes, not when it is submitted, so keys the user typed in the
+    /// meantime would be erased with it. Completion clears only this text and keeps anything
+    /// newer (#934). `None` when the block that completes was not submitted from the editor
+    /// (a typeahead line the shell ran itself): then nothing in the editor belongs to it.
+    editor_submission: Option<String>,
     /// Whether the last Enter submitted an agent query (sent it, or asked to enter the agent view
     /// with it); read by the misroute recovery to tell a real submit from a refused one (#835).
     last_enter_submitted_ai_query: bool,
@@ -3410,6 +3428,7 @@ impl Input {
             is_editor_empty_on_last_edit: is_editor_empty,
             shell_command_submit_pending: false,
             last_enter_submitted_shell_command: false,
+            editor_submission: None,
             last_enter_submitted_ai_query: false,
             submitting_misroute_recovery: false,
             weak_view_handle: ctx.handle(),
@@ -6355,6 +6374,9 @@ impl Input {
                 });
             }
 
+            if matches!(source, CommandExecutionSource::User) {
+                self.editor_submission = Some(self.editor.as_ref(ctx).buffer_text(ctx));
+            }
             self.start_block_and_write_command_to_pty(command, source, ctx);
             did_execute = true;
         } else {
@@ -13998,6 +14020,30 @@ impl Input {
     /// This is on a performance-sensitive path.
     ///
     /// If the newly created block is for an executed user command, the input buffer is cleared.
+    /// The block that just completed took the editor's text with it, but only the text it was
+    /// submitted with. Returns what the editor holds beyond that (keys typed after the submit,
+    /// which reached the editor before this completion was handled), or all of it when the
+    /// completed block was not submitted from the editor (#934). `None` when there is nothing
+    /// to keep, which is the case for a plain submit with no later typing.
+    fn take_text_newer_than_completed_submission(
+        &mut self,
+        ctx: &mut ViewContext<Self>,
+    ) -> Option<String> {
+        if !FeatureFlag::TypeaheadHandoff.is_enabled()
+            || self
+                .model
+                .lock()
+                .shared_session_status()
+                .is_sharer_or_viewer()
+        {
+            self.editor_submission = None;
+            return None;
+        }
+        let current = self.editor.as_ref(ctx).buffer_text(ctx);
+        let kept = newer_than_submission(self.editor_submission.take().as_deref(), &current);
+        kept.map(str::to_owned)
+    }
+
     pub fn handle_block_completed_event(
         &mut self,
         block_completed_event: BlockCompletedEvent,
@@ -14018,6 +14064,7 @@ impl Input {
             let input_contents_before_prompt_chip_command =
                 self.input_contents_before_prompt_chip_command.take();
 
+            let newer_text = self.take_text_newer_than_completed_submission(ctx);
             if should_clear_buffer {
                 // We want to reinitialize the buffer whenever a command is completed so that
                 // state does not leak from buffer to buffer (e.g. edit history).
@@ -14026,6 +14073,11 @@ impl Input {
                     self.editor
                         .update(ctx, |editor, ctx| editor.reinitialize_buffer(None, ctx));
                     self.latest_buffer_operations = Vec::new();
+
+                    // Text the user typed after the completed command was submitted belongs to
+                    // the next command; clearing the submission must not take it along (#934).
+                    let input_contents_before_prompt_chip_command =
+                        input_contents_before_prompt_chip_command.or(newer_text);
 
                     // If we have a pending input restore (from a prompt chip command like cd),
                     // restore the input contents instead of leaving the buffer empty.

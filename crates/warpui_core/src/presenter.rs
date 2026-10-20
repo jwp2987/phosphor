@@ -910,6 +910,14 @@ impl PaintContext<'_> {
 }
 
 impl EventContext<'_> {
+    /// Whether `view_id` is itself the window's focused view (not merely an ancestor of it),
+    /// *right now*; `None` when no focus chain is known. Same rationale as `live_focus_of`: the
+    /// snapshot an element took at its last render is stale right after a focus change, and
+    /// keystrokes typed in that gap must go to whoever owns focus now (#934).
+    pub fn live_focus_is_exactly(&self, view_id: EntityId) -> Option<bool> {
+        self.focus_chain.last().map(|leaf| *leaf == view_id)
+    }
+
     /// Whether `view_id` is the window's focused view, or an ancestor of it, *right now*;
     /// `None` when no focus chain is known (nothing focused, or a test context).
     ///
