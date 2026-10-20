@@ -227,3 +227,22 @@ fn winsize_never_zero_and_never_wraps() {
     let win = (&normal).to_winsize();
     assert_eq!((win.ws_row, win.ws_col), (24, 80));
 }
+
+/// #937: the master end reports the slave's mode, and follows `stty raw`/`stty sane`.
+#[test]
+fn the_master_end_of_a_pty_reports_canonical_mode() {
+    let ends = nix::pty::openpty(None, None).expect("openpty");
+    let master = ends.master.as_raw_fd();
+    assert_eq!(fd_is_canonical(master), Some(true), "a fresh pty is cooked");
+
+    let mut raw = termios::tcgetattr(master).expect("tcgetattr");
+    termios::cfmakeraw(&mut raw);
+    termios::tcsetattr(master, SetArg::TCSANOW, &raw).expect("tcsetattr");
+    assert_eq!(fd_is_canonical(master), Some(false));
+
+    let mut cooked = termios::tcgetattr(master).expect("tcgetattr");
+    cooked.local_flags.insert(termios::LocalFlags::ICANON);
+    termios::tcsetattr(master, SetArg::TCSANOW, &cooked).expect("tcsetattr");
+    assert_eq!(fd_is_canonical(master), Some(true));
+    assert_eq!(fd_is_canonical(-1), None);
+}

@@ -710,6 +710,13 @@ impl EventedReadWrite for Pty {
     }
 }
 
+/// Whether the tty behind `fd` (either end of a pty) is in canonical mode.
+fn fd_is_canonical(fd: RawFd) -> Option<bool> {
+    termios::tcgetattr(fd)
+        .ok()
+        .map(|t| t.local_flags.contains(termios::LocalFlags::ICANON))
+}
+
 impl EventedPty for Pty {
     #[inline]
     fn next_child_event(&mut self) -> Option<ChildEvent> {
@@ -732,6 +739,10 @@ impl EventedPty for Pty {
     #[inline]
     fn child_event_token(&self) -> mio::Token {
         self.signals_token
+    }
+
+    fn is_canonical(&self) -> Option<bool> {
+        fd_is_canonical(self.fd.as_raw_fd())
     }
 
     fn on_resize(&mut self, size: &SizeInfo) {

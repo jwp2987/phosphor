@@ -73,7 +73,14 @@ pub struct State {
     write_list: VecDeque<QueuedWrite>,
     writing: Option<Writing>,
     parser: ansi::Processor,
+    /// Whether replies generated while a command runs may be written now. They may not while the
+    /// pty is in canonical mode: nobody can read a reply there (it has no line terminator), so
+    /// it would sit in the tty until the shell's line editor takes it for typed text (#937).
+    reply_gate_open: bool,
 }
+
+/// How often a withheld reply re-checks whether the pty has left canonical mode.
+const REPLY_GATE_POLL: std::time::Duration = std::time::Duration::from_millis(10);
 
 /// A queued pty write. `produced_while_executing` is `Some(block id)` for a reply to a
 /// terminal query (DA, OSC colors, ...) that was generated while that block was
@@ -83,6 +90,15 @@ pub struct State {
 struct QueuedWrite {
     bytes: Cow<'static, [u8]>,
     produced_while_executing: Option<BlockId>,
+    /// A reply to a terminal query, as opposed to user input.
+    is_reply: bool,
+}
+
+impl QueuedWrite {
+    /// Replies generated while a command runs wait for the pty to leave canonical mode.
+    fn is_gated(&self) -> bool {
+        self.is_reply && self.produced_while_executing.is_some()
+    }
 }
 
 impl Default for State {
@@ -91,6 +107,7 @@ impl Default for State {
             write_list: VecDeque::new(),
             parser: ansi::Processor::new(),
             writing: None,
+            reply_gate_open: true,
         }
     }
 }
@@ -105,10 +122,27 @@ impl State {
 
     #[inline]
     fn goto_next(&mut self) {
-        self.writing = self
+        // The first entry that may be written now: a withheld reply is skipped, not waited for,
+        // so user input behind it is never delayed.
+        let open = self.reply_gate_open;
+        let next = self
             .write_list
-            .pop_front()
-            .map(|entry| Writing::new(entry.bytes));
+            .iter()
+            .position(|entry| open || !entry.is_gated())
+            .and_then(|index| self.write_list.remove(index));
+        self.writing = next.map(|entry| Writing::new(entry.bytes));
+    }
+
+    /// Whether any queued write is a reply that the gate may be withholding.
+    #[inline]
+    fn has_gated(&self) -> bool {
+        self.write_list.iter().any(QueuedWrite::is_gated)
+    }
+
+    /// Whether some replies are being withheld right now.
+    #[inline]
+    fn is_withholding(&self) -> bool {
+        !self.reply_gate_open && self.has_gated()
     }
 
     /// Queues user input; never dropped.
@@ -116,6 +150,7 @@ impl State {
         self.write_list.push_back(QueuedWrite {
             bytes,
             produced_while_executing: None,
+            is_reply: false,
         });
     }
 
@@ -127,6 +162,7 @@ impl State {
             self.write_list.push_back(QueuedWrite {
                 bytes: Cow::Owned(bytes),
                 produced_while_executing: executing_block,
+                is_reply: true,
             });
         }
     }
@@ -167,7 +203,11 @@ impl State {
 
     #[inline]
     fn needs_write(&self) -> bool {
-        self.writing.is_some() || !self.write_list.is_empty()
+        self.writing.is_some()
+            || self
+                .write_list
+                .iter()
+                .any(|entry| self.reply_gate_open || !entry.is_gated())
     }
 
     #[inline]
@@ -504,7 +544,14 @@ where
                     // Wait for events, but only up to the remaining timeout for the synchronous output
                     // update (if any).
                     let sync_state_timeout = state.parser.sync_output_remaining_timeout();
-                    if let Err(err) = self.poll.poll(&mut events, sync_state_timeout) {
+                    // While replies are withheld, wake often enough to notice the pty leaving
+                    // canonical mode.
+                    let gate_poll = state.is_withholding().then_some(REPLY_GATE_POLL);
+                    let poll_timeout = match (sync_state_timeout, gate_poll) {
+                        (Some(sync), Some(gate)) => Some(sync.min(gate)),
+                        (sync, gate) => sync.or(gate),
+                    };
+                    if let Err(err) = self.poll.poll(&mut events, poll_timeout) {
                         match err.kind() {
                             ErrorKind::Interrupted => continue,
                             _ => panic!("EventLoop polling error: {err:?}"),
@@ -512,7 +559,10 @@ where
                     }
 
                     // If there were no events but `poll` returned, that means we hit the timeout.
-                    if events.is_empty() {
+                    // (A wake-up for the reply gate alone is not the synchronized-output timeout.)
+                    let woke_for_gate = gate_poll.is_some()
+                        && sync_state_timeout.is_none_or(|sync| REPLY_GATE_POLL < sync);
+                    if events.is_empty() && !woke_for_gate {
                         // Same reasoning as the `parse_bytes` call above: route any
                         // response sequences through `write_list` instead of writing
                         // directly, so a blocked PTY write queues and retries instead
@@ -606,6 +656,9 @@ where
                             }
                         }
                     }
+                    if state.has_gated() {
+                        state.reply_gate_open = self.pty.is_canonical() != Some(true);
+                    }
                     while can_read || (state.needs_write() && can_write) {
                         if can_read {
                             match self.pty_read(&mut state, &mut buf, &mut can_read) {
@@ -632,6 +685,11 @@ where
                             }
                         }
 
+                        if state.has_gated() {
+                            // Open the gate once the pty has left canonical mode (or if that
+                            // cannot be told, as on platforms without termios).
+                            state.reply_gate_open = self.pty.is_canonical() != Some(true);
+                        }
                         if state.needs_write() && can_write {
                             if let Err(err) = self.pty_write(&mut state, &mut can_write) {
                                 error!("Error writing to PTY in event loop: {err}");

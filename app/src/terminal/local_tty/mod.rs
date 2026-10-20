@@ -77,6 +77,15 @@ pub trait EventedPty: EventedReadWrite {
     /// dimensions and line/column counts.
     fn on_resize(&mut self, size: &SizeInfo);
 
+    /// Whether the pty's line discipline is in canonical (cooked) mode, i.e. `ICANON` is set,
+    /// or `None` when that cannot be determined. A program can only read a terminal-query
+    /// reply, which has no line terminator, once it has left canonical mode; a reply written
+    /// while the pty is canonical is read by nobody and is later taken by the shell's line
+    /// editor as typed text (#937).
+    fn is_canonical(&self) -> Option<bool> {
+        None
+    }
+
     /// Terminate the PTY process
     fn kill(self) -> Result<()>;
 }

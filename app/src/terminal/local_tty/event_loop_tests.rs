@@ -3,9 +3,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::*;
-use crate::terminal::model::reply_ledger::ReplyLedger;
 use crate::terminal::SizeInfo;
 use crate::terminal::local_tty::{ChildEvent, EventedReadWrite, mio_channel};
+use crate::terminal::model::reply_ledger::ReplyLedger;
 
 /// A PTY stand-in whose registration can be made to fail, recording whether
 /// the event loop killed it.
@@ -232,15 +232,15 @@ fn every_input_message_is_recorded_in_the_reply_ledger() {
         rx,
     )
     .expect("event loop");
-    event_loop
-        .reply_ledger
-        .lock()
-        .note_replies(b"\x1b[24;1R");
+    event_loop.reply_ledger.lock().note_replies(b"\x1b[24;1R");
     tx.send(Message::Input(Cow::Borrowed(b"R"))).unwrap();
     let mut state = State::default();
     event_loop.drain_recv_channel(&mut state);
     // The "R" the channel carried was written, so the report "R" is that text, not residue.
-    assert_eq!(event_loop.reply_ledger.lock().filter_report("R".into()), "R");
+    assert_eq!(
+        event_loop.reply_ledger.lock().filter_report("R".into()),
+        "R"
+    );
     assert_eq!(drain(&mut state), vec![b"R".to_vec()]);
 }
 
@@ -274,4 +274,73 @@ fn a_dropped_stale_reply_is_returned_so_the_ledger_can_forget_it() {
     ledger.forget_replies(&dropped[0]);
     // The CPR was never written; only the device attributes reply could have left residue.
     assert_eq!(ledger.filter_report("R".into()), "R");
+}
+
+fn closed_gate_state() -> State {
+    let mut state = State::default();
+    state.reply_gate_open = false;
+    state
+}
+
+/// #937: a reply generated while a command runs is not written while the pty is canonical
+/// (nobody can read it there), but user input behind it is never held up.
+#[test]
+fn a_withheld_reply_does_not_delay_user_input() {
+    let mut state = closed_gate_state();
+    state.queue_response(b"\x1b[24;1R".to_vec(), Some(block("cmd")));
+    state.queue_input(Cow::Borrowed(b"ls"));
+    assert!(state.is_withholding());
+    assert!(state.needs_write());
+    assert_eq!(drain(&mut state), vec![b"ls".to_vec()]);
+    assert!(!state.needs_write(), "only the withheld reply is left");
+    assert!(state.is_withholding());
+}
+
+#[test]
+fn a_withheld_reply_is_written_once_the_gate_opens() {
+    let mut state = closed_gate_state();
+    state.queue_input(Cow::Borrowed(b"a"));
+    state.queue_response(b"\x1b[24;1R".to_vec(), Some(block("cmd")));
+    state.queue_input(Cow::Borrowed(b"b"));
+    assert_eq!(drain(&mut state), vec![b"a".to_vec(), b"b".to_vec()]);
+    state.reply_gate_open = true;
+    assert!(state.needs_write());
+    assert_eq!(drain(&mut state), vec![b"\x1b[24;1R".to_vec()]);
+}
+
+#[test]
+fn replies_produced_at_the_prompt_are_never_withheld() {
+    let mut state = closed_gate_state();
+    state.queue_response(b"\x1b[?62;c".to_vec(), None);
+    assert!(!state.is_withholding());
+    assert_eq!(drain(&mut state), vec![b"\x1b[?62;c".to_vec()]);
+}
+
+#[test]
+fn an_open_gate_keeps_the_original_order() {
+    let mut state = State::default();
+    state.queue_input(Cow::Borrowed(b"a"));
+    state.queue_response(b"R".to_vec(), Some(block("cmd")));
+    state.queue_input(Cow::Borrowed(b"b"));
+    assert_eq!(
+        drain(&mut state),
+        vec![b"a".to_vec(), b"R".to_vec(), b"b".to_vec()]
+    );
+}
+
+#[test]
+fn a_withheld_reply_is_dropped_when_its_command_finishes() {
+    let mut state = closed_gate_state();
+    state.queue_response(b"\x1b[24;1R".to_vec(), Some(block("cmd")));
+    let dropped = state.drop_stale_responses(&block("next"), false);
+    assert_eq!(dropped, vec![Cow::<[u8]>::Owned(b"\x1b[24;1R".to_vec())]);
+    assert!(!state.is_withholding());
+    state.reply_gate_open = true;
+    assert!(!state.needs_write());
+}
+
+#[test]
+fn a_pty_that_cannot_tell_its_mode_never_withholds() {
+    let (pty, _) = FakePty::new(None);
+    assert_eq!(local_tty::EventedPty::is_canonical(&pty), None);
 }
