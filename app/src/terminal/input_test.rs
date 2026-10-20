@@ -9660,3 +9660,111 @@ fn test_parse_landing_after_submit_does_not_reclassify_the_mode() {
         });
     });
 }
+
+/// Completes a user block for `input`, as the view does when the model reports it.
+fn complete_user_block(input: &mut Input, command: &str, ctx: &mut ViewContext<Input>) {
+    input.deferred_remote_operations.latest_block_id = BlockId::new();
+    input.handle_block_completed_event(
+        BlockCompletedEvent {
+            block_latency_data: None,
+            block_type: BlockType::User(UserBlockCompleted::new_for_test(
+                BlockIndex::zero(),
+                Arc::new(SerializedBlock::new_for_test(
+                    command.as_bytes().to_vec(),
+                    vec![],
+                )),
+                command.to_owned(),
+                command.to_owned(),
+                String::new(),
+                String::new(),
+                false,
+                None,
+                0,
+                0,
+            )),
+            num_secrets_obfuscated: 0,
+            block_index: BlockIndex::zero(),
+            eviction_stamp: Default::default(),
+            block_id: BlockId::new(),
+            session_id: None,
+            restored_block_was_local: None,
+        },
+        ctx,
+    );
+}
+
+/// #934: the editor is cleared when the block it submitted completes. Keys the user typed after
+/// the submit, which reached the editor before the completion was handled, belong to the next
+/// command and must survive it.
+#[test]
+fn block_completion_keeps_text_typed_after_the_submit() {
+    App::test((), |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.replace_buffer_content("echo 48 >> f", ctx);
+            input.editor_submission = Some("echo 48 >> f".to_owned());
+            // The next command's keys arrive before the completion is handled.
+            input.replace_buffer_content("echo 48 >> fho 49 >> f", ctx);
+            complete_user_block(input, "echo 48 >> f", ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "ho 49 >> f");
+        });
+    });
+}
+
+/// #934: the 12 ms interleaving. A typeahead line the shell ran itself completes after the
+/// editor took keys typed behind it; nothing in the editor belongs to that block.
+#[test]
+fn completion_of_a_shell_run_typeahead_line_leaves_the_editor_alone() {
+    App::test((), |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.editor_submission = None;
+            input.replace_buffer_content("ho 49 >> ~/burst", ctx);
+            complete_user_block(input, "echo 48 >> ~/burst", ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "ho 49 >> ~/burst");
+        });
+    });
+}
+
+/// A plain submit with nothing typed since still clears the editor, as before.
+#[test]
+fn block_completion_clears_exactly_the_submitted_text() {
+    App::test((), |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.replace_buffer_content("ls -la", ctx);
+            input.editor_submission = Some("ls -la".to_owned());
+            complete_user_block(input, "ls -la", ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(input.buffer_text(ctx).is_empty());
+        });
+    });
+}
+
+#[test]
+fn newer_than_submission_rules() {
+    use super::newer_than_submission;
+    assert_eq!(newer_than_submission(Some("ls"), "ls"), None);
+    assert_eq!(newer_than_submission(Some("ls"), "ls "), None);
+    assert_eq!(newer_than_submission(Some("ls"), "lsx"), Some("x"));
+    assert_eq!(newer_than_submission(Some("ls"), "other"), Some("other"));
+    assert_eq!(newer_than_submission(None, "typed"), Some("typed"));
+    assert_eq!(newer_than_submission(None, ""), None);
+}
