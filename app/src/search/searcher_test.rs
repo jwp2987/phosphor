@@ -1,11 +1,10 @@
 use crate::define_search_schema;
 use crate::search::searcher::{
     AsyncSearcher, CustomTokenizer, FullTextSearchDocumentEntry, FullTextSearchFieldValue,
-    MIN_MEMORY_BUDGET, PendingRebuild, QueuedItem, SearchDocumentEntry, SearchSchemaConfig,
+    MIN_MEMORY_BUDGET, PendingRebuild, ProducerState, QueuedItem, SearchDocumentEntry, SearchSchemaConfig,
     SearcherEvent, SearcherProducerState, SimpleFullTextSearcher, merge_with_rebuild,
 };
 use itertools::Itertools;
-use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
 use tantivy::tokenizer::{TextAnalyzer, Token};
@@ -22,7 +21,7 @@ fn async_searcher_without_background_writer<C: SearchSchemaConfig>(
     searcher: SimpleFullTextSearcher<C>,
 ) -> (AsyncSearcher<C>, async_channel::Receiver<QueuedItem>) {
     let (tx, rx) = async_channel::unbounded();
-    let producer_state = Arc::new(Mutex::new(SearcherProducerState {
+    let producer_state = Arc::new(ProducerState::new(SearcherProducerState {
         next_sequence: 0,
         pending_rebuild: None,
     }));
@@ -801,4 +800,87 @@ fn test_searcher_async_rebuild_is_not_delayed_when_its_marker_is_never_sent() {
         "a pending rebuild whose wake-up marker was never sent must still be applied promptly, \
          not delayed until the idle timeout"
     );
+}
+
+/// Deterministic companion for #948: the pending rebuild is published only after the writer has
+/// checked for one and parked, with no marker to wake it. It must be noticed within the poll
+/// tick, not after `SEARCH_IDLE_TIMEOUT`.
+#[test]
+fn test_searcher_async_rebuild_is_not_delayed_when_set_after_writer_parked() {
+    define_search_schema!(
+        schema_name: TEST_SCHEMA,
+        config_name: SchemaConfig,
+        search_doc: SearchDoc,
+        identifying_doc: IdentifyingDoc,
+        search_fields: [name: 1.0],
+        id_fields: [id: u64]
+    );
+
+    let background_executor = Arc::new(Background::default());
+    let searcher_async =
+        TEST_SCHEMA.create_async_searcher(MIN_MEMORY_BUDGET, background_executor.clone());
+
+    // Deterministically force the interleaving: let the writer's first cycle see no pending
+    // rebuild and park in its wait, then publish one with no marker (#948).
+    std::thread::sleep(Duration::from_millis(500));
+    {
+        let mut state = searcher_async.producer_state.lock();
+        let sequence = state.next_sequence;
+        state.next_sequence += 1;
+        state.pending_rebuild = Some(PendingRebuild {
+            sequence,
+            documents: vec![
+                SearchDoc {
+                    name: "stranded rebuild".to_owned(),
+                    id: 1,
+                }
+                .into_document_entry(),
+            ],
+        });
+    }
+
+    let converged = poll_until(Duration::from_secs(2), || {
+        searcher_async
+            .get_all_documents()
+            .is_ok_and(|docs| docs.len() == 1 && docs[0].name == "stranded rebuild")
+    });
+    assert!(
+        converged,
+        "a pending rebuild whose wake-up marker was never sent must still be applied promptly, \
+         not delayed until the idle timeout"
+    );
+}
+
+/// #948: the writer must not wake at all while idle (no polling tick). Nothing is pending for
+/// ~2 s (well under `SEARCH_IDLE_TIMEOUT`), so the count of select wake-ups must stay zero.
+#[test]
+fn test_searcher_async_writer_has_zero_wakeups_while_idle() {
+    define_search_schema!(
+        schema_name: TEST_SCHEMA,
+        config_name: SchemaConfig,
+        search_doc: SearchDoc,
+        identifying_doc: IdentifyingDoc,
+        search_fields: [name: 1.0],
+        id_fields: [id: u64]
+    );
+
+    let background_executor = Arc::new(Background::default());
+    let searcher_async =
+        TEST_SCHEMA.create_async_searcher(MIN_MEMORY_BUDGET, background_executor.clone());
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(
+        searcher_async
+            .producer_state
+            .wakeups
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "an idle writer must not wake"
+    );
+    // Control: a producer-side lock does wake it.
+    drop(searcher_async.producer_state.lock());
+    assert!(poll_until(Duration::from_secs(1), || searcher_async
+        .producer_state
+        .wakeups
+        .load(std::sync::atomic::Ordering::SeqCst)
+        == 1));
 }

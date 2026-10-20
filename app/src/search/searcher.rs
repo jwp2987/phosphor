@@ -1219,6 +1219,78 @@ struct SearcherProducerState {
     pending_rebuild: Option<PendingRebuild>,
 }
 
+/// The producer-side lock plus a wake-up for the background writer. Every producer-side guard
+/// ([`ProducerState::lock`]) signals the writer when it is released, so a change to the state
+/// (notably a pending rebuild) is noticed even when no channel item announces it. The signal is a
+/// permit on a bounded(1) channel: level-triggered, so it cannot be lost between the writer's
+/// check and its park, and it costs nothing while nobody locks (no timers, no polling). The
+/// writer uses [`ProducerState::lock_quiet`], which does not signal.
+struct ProducerState {
+    inner: Mutex<SearcherProducerState>,
+    wake_tx: async_channel::Sender<()>,
+    wake_rx: async_channel::Receiver<()>,
+    #[cfg(test)]
+    wakeups: std::sync::atomic::AtomicUsize,
+}
+
+struct ProducerGuard<'a> {
+    guard: parking_lot::MutexGuard<'a, SearcherProducerState>,
+    wake_tx: &'a async_channel::Sender<()>,
+}
+
+impl ProducerState {
+    fn new(state: SearcherProducerState) -> Self {
+        let (wake_tx, wake_rx) = async_channel::bounded(1);
+        Self {
+            inner: Mutex::new(state),
+            wake_tx,
+            wake_rx,
+            #[cfg(test)]
+            wakeups: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// Producer-side lock: releasing the guard wakes the writer.
+    fn lock(&self) -> ProducerGuard<'_> {
+        ProducerGuard {
+            guard: self.inner.lock(),
+            wake_tx: &self.wake_tx,
+        }
+    }
+
+    /// Writer-side lock: never signals, so the writer cannot wake itself.
+    fn lock_quiet(&self) -> parking_lot::MutexGuard<'_, SearcherProducerState> {
+        self.inner.lock()
+    }
+
+    fn note_wakeup(&self) {
+        #[cfg(test)]
+        self.wakeups
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl std::ops::Deref for ProducerGuard<'_> {
+    type Target = SearcherProducerState;
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
+
+impl std::ops::DerefMut for ProducerGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.guard
+    }
+}
+
+impl Drop for ProducerGuard<'_> {
+    fn drop(&mut self) {
+        // Full means a permit is already queued, which is enough. The state was written before
+        // this drop, and the writer re-reads it under the lock.
+        let _ = self.wake_tx.try_send(());
+    }
+}
+
 const SEARCH_ASYNC_BATCH_INTERVAL: Duration = Duration::from_millis(75);
 const SEARCH_ASYNC_MAX_BATCH_SIZE: usize = 100;
 /// If this amount of time passes without any events, we will join with the
@@ -1282,7 +1354,7 @@ fn merge_with_rebuild(
 
 async fn process_searcher_events(
     rx: async_channel::Receiver<QueuedItem>,
-    producer_state: Arc<Mutex<SearcherProducerState>>,
+    producer_state: Arc<ProducerState>,
     writer_handle: SearcherWriterHandle,
 ) {
     let mut running = true;
@@ -1296,12 +1368,14 @@ async fn process_searcher_events(
         // immediately. Otherwise its wake-up marker could be drained by an *earlier* cycle's
         // post-take drain before this cycle exists to notice it, delaying -- not losing -- the
         // rebuild until the next real event or the idle timeout.
-        if producer_state.lock().pending_rebuild.is_none() {
+        let wake_rx = producer_state.wake_rx.clone();
+        if producer_state.lock_quiet().pending_rebuild.is_none() {
             let mut timer = Timer::never().fuse();
             let mut idle_timer = Timer::at(Instant::now() + SEARCH_IDLE_TIMEOUT).fuse();
             loop {
                 futures::select! {
                     item = rx.recv().fuse() => {
+                        producer_state.note_wakeup();
                         match item {
                             Ok(QueuedItem::Flush(done)) => {
                                 // Commit what we have now rather than waiting out the batch
@@ -1339,9 +1413,20 @@ async fn process_searcher_events(
                         }
                     },
                     _ = timer => {
+                        producer_state.note_wakeup();
                         break;
                     }
+                    _ = wake_rx.recv().fuse() => {
+                        // A producer released the producer lock (see `ProducerState`). The
+                        // permit is level-triggered: if it was sent before this select was
+                        // armed, it is still queued here, so the wake-up cannot be lost.
+                        producer_state.note_wakeup();
+                        if !batch_started && producer_state.lock_quiet().pending_rebuild.is_some() {
+                            break;
+                        }
+                    }
                     _ = idle_timer => {
+                        producer_state.note_wakeup();
                         hit_idle_timeout = true;
                         break;
                     }
@@ -1356,7 +1441,7 @@ async fn process_searcher_events(
         // sequenced after it, which `merge_with_rebuild` places correctly. Reversing the order
         // would reopen that gap: an event already allocated a lower sequence number, but not yet
         // published, could land in this batch and be misapplied after a rebuild it preceded.
-        let rebuild = producer_state.lock().pending_rebuild.take();
+        let rebuild = producer_state.lock_quiet().pending_rebuild.take();
         while let Ok(item) = rx.try_recv() {
             match item {
                 QueuedItem::Event(event) => batch.push(event),
@@ -1396,13 +1481,13 @@ async fn process_searcher_events(
 pub struct AsyncSearcher<C: SearchSchemaConfig> {
     searcher: SimpleFullTextSearcher<C>,
     tx: async_channel::Sender<QueuedItem>,
-    producer_state: Arc<Mutex<SearcherProducerState>>,
+    producer_state: Arc<ProducerState>,
 }
 
 impl<C: SearchSchemaConfig> AsyncSearcher<C> {
     fn new(searcher: SimpleFullTextSearcher<C>, background_executor: Arc<Background>) -> Self {
         let (tx, rx) = async_channel::unbounded();
-        let producer_state = Arc::new(Mutex::new(SearcherProducerState {
+        let producer_state = Arc::new(ProducerState::new(SearcherProducerState {
             next_sequence: 0,
             pending_rebuild: None,
         }));
