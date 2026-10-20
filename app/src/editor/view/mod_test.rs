@@ -3563,6 +3563,57 @@ fn test_autopair_pairs_again_after_quote_closed() {
     assert_eq!(type_autopair("f(\"x\", g[1])"), "f(\"x\", g[1])");
 }
 
+/// Types `keys` (`<` is Backspace, `@` is Left arrow, anything else is typed) one keystroke
+/// per update and returns the buffer.
+fn type_keys_autopair(keys: &str) -> String {
+    let out = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+    let out2 = out.clone();
+    let keys = keys.to_owned();
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let view = autopair_test_editor(&mut app);
+        for c in keys.chars() {
+            match c {
+                '<' => view.update(&mut app, |e, ctx| e.backspace(ctx)),
+                '@' => view.update(&mut app, |e, ctx| e.move_left(false, ctx)),
+                c => view.update(&mut app, |e, ctx| e.user_insert(&c.to_string(), ctx)),
+            }
+        }
+        view.read(&app, |e, ctx| *out2.borrow_mut() = e.buffer_text(ctx));
+    });
+    let s = out.borrow().clone();
+    s
+}
+
+/// Backspace on an opener whose auto-inserted closer is still right after the cursor removes
+/// both; a closer the user typed (or typed over) is never removed (#946 string 13).
+#[test]
+fn test_autopair_backspace_removes_auto_inserted_closer() {
+    // String 13: `echo "$(a`, Backspace twice, then `x"`.
+    assert_eq!(type_keys_autopair("echo \"$(a<<x\""), "echo \"$x\"");
+    // Fresh pair, immediately removed.
+    assert_eq!(type_keys_autopair("(<"), "");
+    // Content deleted first, then the opener: both halves go.
+    assert_eq!(type_keys_autopair("f(a<<"), "f");
+    assert_eq!(type_keys_autopair("f[a<<"), "f");
+    assert_eq!(type_keys_autopair("f{a<<"), "f");
+    assert_eq!(type_keys_autopair("x \"ab<<<"), "x ");
+    assert_eq!(type_keys_autopair("x 'ab<<<"), "x ");
+    // Nested: unwinding from the inside.
+    assert_eq!(type_keys_autopair("f(g[a<<<<"), "f");
+}
+
+#[test]
+fn test_autopair_backspace_keeps_user_typed_closer() {
+    // `(` auto-pairs and the typed `)` overtypes the auto closer, so that `)` is the user's
+    // own: with the cursor between them Backspace removes only the opener.
+    assert_eq!(type_keys_autopair("()@<"), ")");
+    // Inside an open quote `(` does not pair, so the typed `)` is the user's own.
+    assert_eq!(type_keys_autopair("\"a ()@<"), "\"a )\"");
+    // Content in between: only the character before the cursor goes.
+    assert_eq!(type_keys_autopair("(a)@@<"), "a)");
+}
+
 #[test]
 fn test_autopair_backspace_and_overtype_inside_and_outside_quotes() {
     App::test((), |mut app| async move {

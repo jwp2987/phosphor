@@ -475,6 +475,12 @@ pub struct EditorModel {
     /// This increments with each consecutive autocompleted insertion.
     consecutive_autocomplete_insertion_edits_counter: usize,
 
+    /// Anchors just AFTER each auto-inserted closing symbol that the user has not yet typed
+    /// over or edited. Backspace on an opener directly in front of such a closer removes both
+    /// (#946); a closer the user typed themselves is never in this list. Entries are verified
+    /// against the buffer before use, so stale ones are harmless.
+    auto_inserted_closers: Vec<Anchor>,
+
     /// The maximum buffer length for the editor. Any operations that cause the buffer to exceed
     /// this length will be rejected.
     max_buffer_len: Option<usize>,
@@ -601,6 +607,7 @@ impl EditorModel {
             },
             vim_visual_tails: vec![],
             consecutive_autocomplete_insertion_edits_counter: 0,
+            auto_inserted_closers: Vec::new(),
             max_buffer_len,
             valid_input_type,
             last_buffer_text: base_text,
@@ -1117,6 +1124,7 @@ impl EditorModel {
                 ctx,
             )
         {
+            self.forget_auto_inserted_closers_after_cursors(ctx);
             let map = self.display_map(ctx);
 
             // Moves cursor to the right.
@@ -1203,6 +1211,7 @@ impl EditorModel {
                     };
                 });
                 self.consecutive_autocomplete_insertion_edits_counter += 1;
+                self.record_auto_inserted_closers(completion.chars().count(), ctx);
                 return;
             }
         }
@@ -2286,8 +2295,65 @@ impl EditorModel {
         self.display_map(app).max_point(app)
     }
 
+    /// Records the closers just auto-inserted after each cursor (`closer_len` chars each).
+    fn record_auto_inserted_closers(&mut self, closer_len: usize, ctx: &mut ModelContext<Self>) {
+        let cursors = self.selection_to_char_offset_ranges(ctx);
+        let buffer = self.buffer(ctx);
+        let new_anchors: Vec<Anchor> = cursors
+            .iter()
+            .filter_map(|range| {
+                buffer
+                    .anchor_at(range.end + closer_len, AnchorBias::Left)
+                    .ok()
+            })
+            .collect();
+        self.auto_inserted_closers.extend(new_anchors);
+        // Bound the list; the oldest entries are the least likely to still be relevant.
+        let len = self.auto_inserted_closers.len();
+        if len > 64 {
+            self.auto_inserted_closers.drain(..len - 64);
+        }
+    }
+
+    /// Offsets (in chars) of the end of every still-tracked auto-inserted closer.
+    fn auto_closer_end_offsets(&self, ctx: &ModelContext<Self>) -> Vec<CharOffset> {
+        let buffer = self.buffer(ctx);
+        self.auto_inserted_closers
+            .iter()
+            .filter_map(|anchor| anchor.to_char_offset(buffer).ok())
+            .collect()
+    }
+
+    /// The closer directly after each cursor is about to be typed over, so it becomes ordinary
+    /// text: stop treating it as auto-inserted.
+    fn forget_auto_inserted_closers_after_cursors(&mut self, ctx: &mut ModelContext<Self>) {
+        let cursor_ends: Vec<CharOffset> = self
+            .selection_to_char_offset_ranges(ctx)
+            .iter()
+            .map(|range| range.end + 1)
+            .collect();
+        let buffer = self.buffer(ctx);
+        let kept: Vec<Anchor> = self
+            .auto_inserted_closers
+            .iter()
+            .filter(|anchor| {
+                anchor
+                    .to_char_offset(buffer)
+                    .map(|offset| !cursor_ends.contains(&offset))
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+        self.auto_inserted_closers = kept;
+    }
+
     pub fn backspace(&mut self, ctx: &mut ModelContext<Self>) {
         // Only select left for empty selections
+        if self.buffer_len(ctx) == CharOffset::from(0) {
+            self.auto_inserted_closers.clear();
+        }
+        let closer_ends = self.auto_closer_end_offsets(ctx);
+        let mut consumed_closer_ends: Vec<CharOffset> = Vec::new();
         let buffer = self.buffer(ctx);
         let mut new_selections = self.selections(ctx).clone();
         for selection in new_selections.iter_mut() {
@@ -2298,6 +2364,46 @@ impl EditorModel {
                     .head()
                     .to_char_offset(buffer)
                     .expect("Selection head should exist");
+
+                // Backspace on an opener whose auto-inserted, still-untouched closer is
+                // directly after the cursor removes both halves of the pair.
+                let one = CharOffset::from(1);
+                if head >= one && closer_ends.contains(&(head + 1)) {
+                    let before = head
+                        .saturating_sub(&one)
+                        .to_point(buffer)
+                        .ok()
+                        .and_then(|point| buffer.chars_at(point).ok())
+                        .and_then(|mut chars| chars.next());
+                    let after = head
+                        .to_point(buffer)
+                        .ok()
+                        .and_then(|point| buffer.chars_at(point).ok())
+                        .and_then(|mut chars| chars.next());
+                    let is_pair = match (before, after) {
+                        (Some(open), Some(close)) => {
+                            let (open, close) = (open.to_string(), close.to_string());
+                            AUTOCOMPLETE_SYMBOLS.get(open.as_str()) == Some(&close.as_str())
+                        }
+                        _ => false,
+                    };
+                    if is_pair {
+                        if let (Ok(start), Ok(end)) = (
+                            head.saturating_sub(&one)
+                                .to_point(buffer)
+                                .and_then(|point| buffer.anchor_before(point)),
+                            (head + 1)
+                                .to_point(buffer)
+                                .and_then(|point| buffer.anchor_before(point)),
+                        ) {
+                            selection.set_start(start);
+                            selection.set_end(end);
+                            selection.set_reversed(false);
+                            consumed_closer_ends.push(head + 1);
+                            continue;
+                        }
+                    }
+                }
                 let cursor = buffer
                     .anchor_before(
                         head.saturating_sub(&1.into())
@@ -2307,6 +2413,21 @@ impl EditorModel {
                     .expect("Offset should be in range");
                 selection.set_head(buffer, cursor);
             }
+        }
+        if !consumed_closer_ends.is_empty() {
+            let buffer = self.buffer(ctx);
+            let kept: Vec<Anchor> = self
+                .auto_inserted_closers
+                .iter()
+                .filter(|anchor| {
+                    anchor
+                        .to_char_offset(buffer)
+                        .map(|offset| !consumed_closer_ends.contains(&offset))
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect();
+            self.auto_inserted_closers = kept;
         }
 
         ctx.emit_a11y_content(AccessibilityContent::new(

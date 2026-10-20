@@ -35,6 +35,9 @@ use crate::{
     },
 };
 
+/// Keymap context flag set while the modal itself (no descendant) holds focus.
+const SELF_FOCUSED_CONTEXT: &str = "TabConfigParamsModal_SelfFocused";
+
 pub fn init(app: &mut AppContext) {
     app.register_fixed_bindings(vec![
         FixedBinding::new(
@@ -42,10 +45,13 @@ pub fn init(app: &mut AppContext) {
             TabConfigParamsModalAction::Escape,
             id!("TabConfigParamsModal"),
         ),
-        // Enter and Space only fire when no EditorView descendant is focused.
-        // When a text field or picker filter editor has focus, the editor
-        // consumes these keys and the modal handles them via event
-        // subscriptions instead (see handle_editor_event).
+        // Enter and Space-to-toggle-dropdown must not fire while a text field or a
+        // picker's filter editor has focus (see handle_editor_event for Enter). Bindings
+        // are matched against each view's OWN context in the responder chain, so an
+        // `!id!("EditorView")` predicate on the modal's context is always true and the
+        // modal swallowed Space before the focused editor saw it (#951). Space is
+        // therefore gated on `SELF_FOCUSED_CONTEXT`, which `keymap_context` sets only
+        // while the modal itself (not a descendant) is the focused view.
         FixedBinding::new(
             "enter",
             TabConfigParamsModalAction::Submit,
@@ -54,7 +60,7 @@ pub fn init(app: &mut AppContext) {
         FixedBinding::new(
             "space",
             TabConfigParamsModalAction::ToggleDropdown,
-            id!("TabConfigParamsModal") & !id!("EditorView"),
+            id!("TabConfigParamsModal") & id!(SELF_FOCUSED_CONTEXT),
         ),
     ]);
 }
@@ -129,6 +135,8 @@ pub struct TabConfigParamsModal {
     submit_button_disabled: ViewHandle<ActionButton>,
     close_button_mouse_state: MouseStateHandle,
     scroll_state: ClippedScrollStateHandle,
+    view_id: warpui::EntityId,
+    window_id: warpui::WindowId,
 }
 
 pub enum TabConfigParamsModalEvent {
@@ -181,6 +189,8 @@ impl TabConfigParamsModal {
             submit_button_disabled,
             close_button_mouse_state: Default::default(),
             scroll_state: Default::default(),
+            view_id: ctx.view_id(),
+            window_id: ctx.window_id(),
         }
     }
 
@@ -502,6 +512,14 @@ impl Entity for TabConfigParamsModal {
 impl View for TabConfigParamsModal {
     fn ui_name() -> &'static str {
         "TabConfigParamsModal"
+    }
+
+    fn keymap_context(&self, app: &AppContext) -> warpui::keymap::Context {
+        let mut context = Self::default_keymap_context();
+        if app.focused_view_id(self.window_id) == Some(self.view_id) {
+            context.set.insert(SELF_FOCUSED_CONTEXT);
+        }
+        context
     }
 
     fn on_focus(&mut self, focus_ctx: &FocusContext, ctx: &mut ViewContext<Self>) {
