@@ -12721,13 +12721,19 @@ impl Input {
             .is_detection_pending_for(&text, ctx)
     }
 
-    /// #933: an Enter on text that reads as English, whose classification verdict has not landed,
-    /// waits for the verdict instead of submitting on the inherited input type: prose must never
+    /// #933: an Enter on text that reads as English, whose classification verdict has not landed
+    /// and which the Enter-time rules could not decide, waits for the verdict instead of
+    /// submitting on the inherited input type: prose must never
     /// be run by the shell because Enter beat the classifier. Typeahead for a running command
     /// keeps its shell rules; typeahead that began right after a command is classified like
     /// anything typed. If no verdict comes (the classifier cannot answer), the text stays in the
     /// editor unsubmitted, and a second Enter submits it as the rules decide.
     fn defer_enter_for_classification(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        // What the Enter-time rules can decide without a verdict is decided now, exactly as
+        // before: an unambiguous command or a known head settles to Shell at once (#906, #956),
+        // a request to the agent settles to AI. Settling clears the pending verdict, so only
+        // text those rules leave undecided waits below.
+        self.settle_pending_input_detection_for_submit(ctx);
         let text = self.editor.as_ref(ctx).buffer_text(ctx);
         let model = self.ai_input_model.as_ref(ctx);
         let provenance = if model.has_typeahead_provenance() && !model.typeahead_is_young() {
