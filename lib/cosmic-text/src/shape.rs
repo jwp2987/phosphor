@@ -585,13 +585,17 @@ impl ShapeWord {
         // Phosphor (#940): bound the glyphs one word can produce. A multi-megabyte
         // unbroken word (a huge paste) otherwise costs ~330 bytes per glyph across
         // shaping, layout and the layout cache, a transient ~1 GB. Past the cap the
-        // tail of the word is left unshaped (it has no glyphs, as before #864).
+        // tail of the word is not shaped; a single invisible placeholder glyph
+        // stands for the tail's last character so every position derived from the
+        // glyphs (line end, caret, hit test) still reaches the true end of the text.
         let mut word_range = word_range;
+        let mut unshaped_tail_end = None;
         if word_range.len() > MAX_SHAPED_WORD_BYTES {
             let mut end = word_range.start + MAX_SHAPED_WORD_BYTES;
             while !line.is_char_boundary(end) {
                 end -= 1;
             }
+            unshaped_tail_end = Some(word_range.end);
             word_range.end = end;
         }
         let word = &line[word_range.clone()];
@@ -641,6 +645,30 @@ impl ShapeWord {
                 word_range.end,
                 span_rtl,
             );
+        }
+
+        if let (Some(tail_end), Some(last)) = (unshaped_tail_end, glyphs.last()) {
+            let mut placeholder = last.clone();
+            // It covers only the tail's LAST character, so that the editor's
+            // `last_glyph().index + 1` (line end) is the true end of the text.
+            placeholder.start = line[word_range.end..tail_end]
+                .char_indices()
+                .next_back()
+                .map_or(word_range.end, |(i, _)| word_range.end + i);
+            placeholder.end = tail_end;
+            // Practically zero width, but positive so width-gated caret bookkeeping
+            // still records it.
+            placeholder.x_advance = 1e-4;
+            placeholder.x_offset = 0.0;
+            placeholder.y_offset = 0.0;
+            // An invisible glyph: the font's space.
+            if let Some(blank_id) = font_system
+                .get_font(last.font_id)
+                .and_then(|font| font.rustybuzz().glyph_index(' '))
+            {
+                placeholder.glyph_id = blank_id.0;
+            }
+            glyphs.push(placeholder);
         }
 
         Self { blank, glyphs }

@@ -1008,6 +1008,78 @@ fn test_huge_word_is_bounded_but_long_word_is_complete() {
     );
 }
 
+/// Lays out `text` (one style run) wrapped at `width` and returns the frame.
+fn frame_wrapped(text: &str, width: f32) -> crate::text_layout::TextFrame {
+    let (font_db, roboto) = init_fonts();
+    let line_style = LineStyle {
+        font_size: FONT_SIZE,
+        line_height_ratio: DEFAULT_UI_LINE_HEIGHT_RATIO,
+        baseline_ratio: DEFAULT_TOP_BOTTOM_RATIO,
+        fixed_width_tab_size: None,
+    };
+    font_db.text_layout_system().layout_text(
+        text,
+        line_style,
+        &[(
+            0..text.chars().count(),
+            StyleAndFont::new(roboto, Properties::default(), TextStyle::new()),
+        )],
+        width,
+        FRAME_HEIGHT,
+        Default::default(),
+        None,
+    )
+}
+
+/// #940: every position derived from the glyphs of a line whose word was cut at the shaping cap
+/// still maps to the TRUE end of the text: End, click past the end, Down on the last row (the
+/// editor uses `last_glyph().index + 1`) and Home. Rows before the last stay contiguous.
+#[test]
+fn test_capped_word_line_positions_reach_true_text_end() {
+    let n = cosmic_text::MAX_SHAPED_WORD_BYTES + 5_000;
+    let text = "a".repeat(n);
+    let frame = frame_wrapped(&text, 400.);
+    let lines = frame.lines();
+    assert!(lines.len() > 1);
+    for pair in lines.windows(2).take(lines.len().saturating_sub(2)) {
+        assert_eq!(pair[0].end_index(), pair[1].first_index(), "rows must be contiguous");
+    }
+    let last = lines.last().unwrap();
+    assert_eq!(last.end_index(), n, "End on the last row");
+    assert_eq!(last.last_glyph().unwrap().index + 1, n, "Down/clamp column");
+    assert_eq!(last.caret_index_for_x_unbounded(last.width + 50.), n, "click past the end");
+    let home = last.first_index();
+    assert!(home > 0 && home < cosmic_text::MAX_SHAPED_WORD_BYTES, "Home {home}");
+}
+
+/// #940: text after the capped word on the same paragraph keeps true offsets.
+#[test]
+fn test_capped_word_followed_by_words_keeps_true_offsets() {
+    let n = cosmic_text::MAX_SHAPED_WORD_BYTES + 100;
+    let text = format!("{} tail", "a".repeat(n));
+    let total = text.chars().count();
+    let frame = frame_wrapped(&text, 400.);
+    let last = frame.lines().last().unwrap();
+    assert_eq!(last.end_index(), total);
+    assert_eq!(last.last_glyph().unwrap().index + 1, total);
+    assert_eq!(last.caret_index_for_x_unbounded(last.width + 50.), total);
+}
+
+/// #940: a multi-line text whose FIRST line is over the cap: the next line must start at its true
+/// buffer offset (the newline caret was derived from the last glyph).
+#[test]
+fn test_capped_first_line_does_not_shift_following_lines() {
+    let n = cosmic_text::MAX_SHAPED_WORD_BYTES + 300;
+    let text = format!("{}\nsecond", "a".repeat(n));
+    let frame = frame_wrapped(&text, 400.);
+    let lines = frame.lines();
+    let last = lines.last().unwrap();
+    assert_eq!(last.first_index(), n + 1, "second paragraph starts after the newline");
+    assert_eq!(last.end_index(), n + 1 + "second".len());
+    let before = &lines[lines.len() - 2];
+    assert_eq!(before.end_index(), n + 1, "first paragraph's last row ends at the newline");
+}
+
 /// #864: two words over the limit in differently styled spans, a word that crosses a style
 /// boundary, and a long word starting in a non-default style all used to lose glyphs (the
 /// attrs-list-defaults heuristic can only match one span).
