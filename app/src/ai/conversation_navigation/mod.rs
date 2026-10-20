@@ -12,6 +12,39 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 use warpui::{AppContext, EntityId, SingletonEntity, WindowId};
 
+/// Maximum number of chars of a conversation's title / first query kept in navigation data.
+///
+/// The first agent input can be arbitrarily large (multi-MB pastes), and every terminal view's
+/// conversation menu keeps up to 50 `ConversationNavigationData`s; copying the full text into
+/// each one retained hundreds of MB (#947). These fields are display and fuzzy-match data only,
+/// so a display-sized prefix is enough. Consumers needing the full text must read the
+/// conversation itself.
+pub(crate) const MAX_NAVIGATION_TEXT_CHARS: usize = 1024;
+
+/// Keeps at most [`MAX_NAVIGATION_TEXT_CHARS`] chars of `text`, cut on a char boundary, and
+/// drops the original allocation when it had to be cut. Empty stays empty.
+fn bounded_navigation_text(text: String) -> String {
+    match bounded_prefix_len(&text) {
+        None => text,
+        Some(end) => text[..end].to_owned(),
+    }
+}
+
+/// Borrowing variant: copies only the bounded prefix, never the full text.
+fn bounded_navigation_text_ref(text: &str) -> String {
+    text[..bounded_prefix_len(text).unwrap_or(text.len())].to_owned()
+}
+
+/// Byte length of the prefix to keep, or `None` when `text` is already within the cap.
+fn bounded_prefix_len(text: &str) -> Option<usize> {
+    let (mut end, _) = text.char_indices().nth(MAX_NAVIGATION_TEXT_CHARS)?;
+    // Don't leave a dangling joiner / variation selector that would attach to nothing.
+    while let Some(last @ ('\u{200d}' | '\u{fe0f}')) = text[..end].chars().next_back() {
+        end -= last.len_utf8();
+    }
+    Some(end)
+}
+
 /// Result from matching a conversation.
 /// terminal_view_id and window_id are optional because, when we add restored conversations,
 /// these conversations will not have associated windows or terminal views.
@@ -88,10 +121,14 @@ impl ConversationNavigationData {
         is_in_active_pane: bool,
         is_closed: bool,
     ) -> Self {
-        let initial_query = conversation.initial_query();
-        let title = conversation
-            .title()
-            .unwrap_or_else(|| crate::t!("conversation-untitled"));
+        // `initial_query()` / `title()` hand back owned copies of the full first input; bound
+        // them immediately so only a display-sized prefix is retained (#947).
+        let initial_query = conversation.initial_query().map(bounded_navigation_text);
+        let title = bounded_navigation_text(
+            conversation
+                .title()
+                .unwrap_or_else(|| crate::t!("conversation-untitled")),
+        );
         let last_updated = conversation
             .latest_exchange()
             .map(|exchange| exchange.start_time)
@@ -117,8 +154,8 @@ impl ConversationNavigationData {
     pub fn from_historical_conversation_metadata(metadata: &AIConversationMetadata) -> Self {
         Self {
             id: metadata.id,
-            title: metadata.title.clone(),
-            initial_query: Some(metadata.initial_query.clone()),
+            title: bounded_navigation_text_ref(&metadata.title),
+            initial_query: Some(bounded_navigation_text_ref(&metadata.initial_query)),
             last_updated: chrono::Local.from_utc_datetime(&metadata.last_modified_at),
             terminal_view_id: None,
             window_id: None,
@@ -371,3 +408,7 @@ impl ConversationNavigationData {
 #[cfg(test)]
 #[path = "should_list_live_conversation_test.rs"]
 mod should_list_live_conversation_test;
+
+#[cfg(test)]
+#[path = "navigation_text_bound_test.rs"]
+mod navigation_text_bound_test;
