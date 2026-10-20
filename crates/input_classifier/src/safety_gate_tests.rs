@@ -732,3 +732,66 @@ fn test_gate_vetoes_ai_for_doas_wrapped_commands_without_any_session_data() {
         }
     });
 }
+
+#[test]
+fn test_gate_vetoes_ai_for_prefixed_commands_with_request_like_words() {
+    use crate::request_corpus::{REQUEST_LIKE_COMMANDS, TRANSPARENT_PREFIXES};
+    futures::executor::block_on(async move {
+        let gated = SafetyGatedClassifier::new(AlwaysAiClassifier);
+        let mut leaked = Vec::new();
+        for prefix in TRANSPARENT_PREFIXES {
+            for command in REQUEST_LIKE_COMMANDS {
+                let line = format!("{prefix} {command}");
+                // Fresh command data and not-yet-loaded/stale command data alike: the first token
+                // is described, so the line is a command whatever the classifier says.
+                for loaded in [true, false] {
+                    let result = gated
+                        .detect_input_type(snapshot_head_known(&line), &context(loaded))
+                        .await;
+                    if result.input_type != InputType::Shell {
+                        leaked.push(line.clone());
+                    }
+                }
+            }
+        }
+        assert!(
+            leaked.is_empty(),
+            "{} leak to the agent: {leaked:#?}",
+            leaked.len()
+        );
+    });
+}
+
+#[test]
+fn test_gate_vetoes_ai_for_a_bare_prefix_still_being_typed() {
+    // `nice`, `nice -n 5`: the prefix verdicts of a command typed at speed must not leave the
+    // input on AI for the rest of the line (#933).
+    futures::executor::block_on(async move {
+        let gated = SafetyGatedClassifier::new(AlwaysAiClassifier);
+        for line in [
+            "nice",
+            "nice -n 5",
+            "nohup",
+            "env FOO=1",
+            "timeout 5",
+            "ionice -c 3",
+            "time",
+        ] {
+            for loaded in [true, false] {
+                let result = gated
+                    .detect_input_type(snapshot_head_known(line), &context(loaded))
+                    .await;
+                assert_eq!(
+                    result.input_type,
+                    InputType::Shell,
+                    "{line} loaded={loaded}"
+                );
+            }
+        }
+        // Not described (an unknown first word): the classifier's verdict stands.
+        let result = gated
+            .detect_input_type(snapshot_without_descriptions("nice"), &context(false))
+            .await;
+        assert_eq!(result.input_type, InputType::AI);
+    });
+}

@@ -3,7 +3,10 @@ use warp_completer::completer::{Description, SuggestionType, TopLevelCommandCase
 use warp_completer::util::parse_current_commands_and_tokens;
 
 use super::*;
-use crate::request_corpus::{PROSE_WITH_COMMAND_HEADS, REAL_COMMANDS_WITH_ENGLISH_ARGS};
+use crate::request_corpus::{
+    PROSE_WITH_COMMAND_HEADS, REAL_COMMANDS_WITH_ENGLISH_ARGS, REQUEST_LIKE_COMMANDS,
+    TRANSPARENT_PREFIXES,
+};
 use crate::test_utils::CompletionContext;
 
 // The shell-command heuristic tests are paired: a `_for_nld_heuristic_v1`
@@ -1145,4 +1148,23 @@ fn test_reads_as_command_headed_prose_897_known_shell_leaning_edges() {
     ] {
         assert!(!reads_as_request_to_agent(text), "{text:?}");
     }
+}
+
+#[test]
+fn transparent_prefixes_are_looked_through_for_the_effective_head() {
+    for prefix in TRANSPARENT_PREFIXES {
+        for command in REQUEST_LIKE_COMMANDS {
+            let line = format!("{prefix} {command}");
+            let expected = command.split_whitespace().next().unwrap();
+            assert_eq!(
+                effective_head_word(&line).as_deref(),
+                Some(expected),
+                "{line}"
+            );
+            assert!(!reads_as_request_to_agent(&line), "{line}");
+        }
+    }
+    // A bare prefix has no effective head yet (a prefix of a line being typed).
+    assert_eq!(effective_head_word("nice"), None);
+    assert_eq!(effective_head_word("nice -n 5"), None);
 }

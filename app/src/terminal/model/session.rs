@@ -1453,28 +1453,36 @@ impl Session {
     /// has not succeeded yet, or the bootstrap carried no builtin list (every real shell has
     /// some, so an empty set means the data never arrived). A caller must treat `None` as
     /// "do not guess". The bootstrap lists and the `$PATH` scan are one-time snapshots: once a
-    /// command that could have changed them has run ([`Self::note_user_command`]) the answer is
-    /// `None` for the rest of the session, because a tool installed or a function defined since
-    /// would otherwise read as unknown. Each subshell and ssh session is its own `Session`, so this is always
+    /// command that could have changed them has run ([`Self::note_user_command`]) the answer for
+    /// a name the snapshot lacks is `None` for the rest of the session, because a tool installed
+    /// or a function defined since would otherwise read as unknown. A name the snapshot has is
+    /// still `Some(true)`: stale data never un-knows an installed command (#933). Each subshell and ssh session is its own `Session`, so this is always
     /// the answer for the shell the user is typing into.
     pub fn knows_command_word(&self, word: &str) -> Option<bool> {
-        if !self.has_loaded_external_commands()
-            || self.info.builtins.is_empty()
-            || self.command_data_stale.load(Ordering::Acquire)
-        {
+        if !self.has_loaded_external_commands() || self.info.builtins.is_empty() {
             return None;
         }
         let case_insensitive = matches!(
             self.command_case_sensitivity,
             TopLevelCommandCaseSensitivity::CaseInsensitive
         );
-        Some(self.top_level_commands().any(|name| {
+        let known = self.top_level_commands().any(|name| {
             if case_insensitive {
                 name.eq_ignore_ascii_case(word)
             } else {
                 name == word
             }
-        }))
+        });
+        // A name the snapshot has stays known after the snapshot goes stale (a command that
+        // could change the command set only ever adds names the snapshot lacks); stale data only
+        // stops a name it lacks from being called unknown (#933).
+        if known {
+            return Some(true);
+        }
+        if self.command_data_stale.load(Ordering::Acquire) {
+            return None;
+        }
+        Some(false)
     }
 
     /// False once a command that could have changed what the shell recognises has run

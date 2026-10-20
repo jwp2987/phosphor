@@ -547,8 +547,13 @@ fn knows_command_word_goes_stale_after_a_command_that_may_change_the_command_set
             assert_eq!(session.knows_command_word("newtool"), Some(false));
             session.note_user_command(changing);
             assert!(!session.command_data_is_current(), "{changing}");
+            // Stale data stops an unlisted name being called unknown ...
             assert_eq!(session.knows_command_word("newtool"), None, "{changing}");
-            assert_eq!(session.knows_command_word("ll"), None, "{changing}");
+            // ... but never un-knows a name the snapshot has (#933): an installed command, alias,
+            // function or builtin stays known, so `nice grep this the file` after a `make` still
+            // reads as a command.
+            assert_eq!(session.knows_command_word("ll"), Some(true), "{changing}");
+            assert_eq!(session.knows_command_word("git"), Some(true), "{changing}");
         }
     });
 }

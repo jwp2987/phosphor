@@ -143,3 +143,30 @@ pub(crate) const PROSE_WITH_COMMAND_HEADS: &[&str] = &[
     "docker vs podman?",
     "describe the failing test",
 ];
+
+/// #933 follow-up: transparent prefixes that run the command after them.
+pub(crate) const TRANSPARENT_PREFIXES: &[&str] = &[
+    "nice",
+    "nice -n 5",
+    "nohup",
+    "env",
+    "env FOO=1",
+    "time",
+    "command",
+    "sudo",
+    "doas",
+    "timeout 5",
+    "ionice -c 3",
+    "stdbuf -oL",
+    "setsid",
+];
+
+/// Commands with request-like words, to run behind a prefix. Each head is (effective) the first
+/// word.
+pub(crate) const REQUEST_LIKE_COMMANDS: &[&str] = &[
+    "grep this the file",
+    "echo what is this",
+    "rg how it works",
+    "git commit -m fix it for you",
+    "say how are you",
+];

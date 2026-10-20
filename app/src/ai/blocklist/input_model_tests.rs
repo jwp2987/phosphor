@@ -1480,6 +1480,13 @@ fn pending_known_command_line_settles_to_shell_at_submit() {
             "which the thing",
             "nohup grep this the file",
             "ssh host grep the log",
+            "nice grep this the file",
+            "nice -n 5 grep this the file",
+            "nohup echo what is this",
+            "env FOO=1 grep this the file",
+            "time grep this the file",
+            "timeout 5 grep this the file",
+            "sudo grep this the file",
         ] {
             assert_eq!(
                 enter(&mut app, command, true),
