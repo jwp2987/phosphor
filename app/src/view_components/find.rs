@@ -232,6 +232,7 @@ impl<T: FindModel + Entity<Event = FindEvent> + 'static> Find<T> {
             regex_search_enabled: false,
             display_find_within_block: FindWithinBlockState::Disabled,
             last_notified_results_revision: None,
+            avoid_position_id: None,
         }
     }
 
@@ -752,9 +753,7 @@ impl<T: FindModel + Entity<Event = FindEvent> + 'static> View for Find<T> {
         let avoided_height = self
             .avoid_position_id
             .as_ref()
-            .and_then(|id| {
-                app.element_position_by_id_at_last_frame(self.editor.window_id(app), id)
-            })
+            .and_then(|id| app.element_position_by_id_at_last_frame(self.editor.window_id(app), id))
             .map(|rect| rect.height())
             .unwrap_or(0.);
         Align::new(
