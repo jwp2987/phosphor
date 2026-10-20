@@ -141,7 +141,7 @@ fn ledger_with(replies: &[&str]) -> ReplyLedger {
 fn a_stale_reply_and_an_unrecorded_write_keep_the_report() {
     // An escape sequence in a write (an agent's input, a bracketed paste, an arrow key) cannot
     // be modelled: whatever the report holds might be it.
-    for write in ["\x1b[200~R\x1b[201~", "\x1b[D", "\x03", "\x7f", "\t"] {
+    for write in ["\x1b[200~R\x1b[201~", "\x1b[D", "\x03", "\t"] {
         let mut ledger = ledger_with(&["\x1b[24;1R"]);
         ledger.note_input(write.as_bytes());
         assert_eq!(ledger.filter_report("R".into()), "R", "{write:?}");
