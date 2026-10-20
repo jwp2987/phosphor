@@ -2506,6 +2506,7 @@ who sets `setopt errexit` in `.zshrc` therefore does NOT have errexit at the Pho
 (everything else the files set is kept). Reason: errexit left on ends the shell on the first
 failing command, including commands Phosphor runs for itself (generators outside a git repo), and
 on any typo. Reverse only together with auditing every internal command path.
+
 ## A line + Enter typed while a querying command runs executes with the reply's residue (#937) — not fixed
 
 `printf '\e[6n'; sleep 3`, then `echo held` + Enter typed while it sleeps: the shell reads the unread reply, then the
