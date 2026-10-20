@@ -131,6 +131,9 @@ pub struct Find<T: FindModel + Entity<Event = FindEvent> + 'static> {
     /// response to a find event. A `RanFind` whose revision equals this one
     /// carries nothing new to draw and is dropped instead of costing a frame.
     last_notified_results_revision: Option<u64>,
+    /// Position ID of an element drawn at the top of the host view (e.g. a notice banner)
+    /// that the bar must be pushed below rather than drawn over (#918).
+    avoid_position_id: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -171,6 +174,11 @@ pub fn init(app: &mut AppContext) {
 }
 
 impl<T: FindModel + Entity<Event = FindEvent> + 'static> Find<T> {
+    /// Keep the bar below the element saved under `id` (as of the last frame).
+    pub fn set_avoid_position_id(&mut self, id: String) {
+        self.avoid_position_id = Some(id);
+    }
+
     pub fn new(model: ModelHandle<T>, ctx: &mut ViewContext<Self>) -> Self {
         let editor = ctx.add_typed_action_view(|ctx| {
             let appearance = Appearance::as_ref(ctx);
@@ -224,6 +232,7 @@ impl<T: FindModel + Entity<Event = FindEvent> + 'static> Find<T> {
             regex_search_enabled: false,
             display_find_within_block: FindWithinBlockState::Disabled,
             last_notified_results_revision: None,
+            avoid_position_id: None,
         }
     }
 
@@ -739,9 +748,17 @@ impl<T: FindModel + Entity<Event = FindEvent> + 'static> View for Find<T> {
         .with_drop_shadow(DropShadow::default())
         .finish();
 
+        // Applied here, inside the bar's own Align, so no full-size Container (and hit rect) sits
+        // over the content beneath the bar.
+        let avoided_height = self
+            .avoid_position_id
+            .as_ref()
+            .and_then(|id| app.element_position_by_id_at_last_frame(self.editor.window_id(app), id))
+            .map(|rect| rect.height())
+            .unwrap_or(0.);
         Align::new(
             Container::new(find_bar)
-                .with_padding_top(10.)
+                .with_padding_top(10. + avoided_height)
                 .with_padding_right(20.)
                 .finish(),
         )
