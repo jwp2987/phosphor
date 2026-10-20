@@ -29,6 +29,10 @@ use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::{AIAgentAttachment, AIAgentExchangeId, CancellationReason};
 use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::blocklist::agent_view::shortcuts::AgentShortcutViewModel;
+use crate::ai::blocklist::input_model::{EnterProvenance, should_wait_for_verdict_before_submit};
+use crate::terminal::model::typeahead_handoff::{YoungSubmit, young_submit_decision};
+use instant::Instant;
+use warpui::r#async::Timer;
 use crate::ai::blocklist::agent_view::{AgentViewEntryOrigin, EphemeralMessageModel};
 use crate::ai::blocklist::block::cli_controller::CLISubagentController;
 use crate::ai::blocklist::block::status_bar::BlocklistAIStatusBar;
@@ -1789,6 +1793,9 @@ pub struct Input {
     /// Typeahead hand-off: the next Enter runs as a shell command (see
     /// `input_enter_as_shell_command`).
     shell_command_submit_pending: bool,
+    /// The buffer text an Enter gave up waiting for a classification verdict on (#933): pressing
+    /// Enter again submits it as the rules decide.
+    verdict_wait_gave_up_on: Option<String>,
     /// Whether the last Enter submitted a shell command; read by `input_enter_as_shell_command`.
     last_enter_submitted_shell_command: bool,
     /// What the editor held when it last submitted a command. The editor is cleared when that
@@ -3450,6 +3457,7 @@ impl Input {
             cached_slash_menu_disabled: None,
             is_editor_empty_on_last_edit: is_editor_empty,
             shell_command_submit_pending: false,
+            verdict_wait_gave_up_on: None,
             last_enter_submitted_shell_command: false,
             editor_submission: None,
             last_enter_submitted_ai_query: false,
@@ -12364,6 +12372,8 @@ impl Input {
                 self.send_queued_row_immediately(conversation_id, query_id, text, is_command, ctx);
             }
             return;
+        } else if self.defer_enter_for_classification(ctx) {
+            return;
         } else if self.settle_detection_and_maybe_queue_input(ctx)
             || self.maybe_handle_enter_for_slash_command(ctx)
         {
@@ -12709,6 +12719,68 @@ impl Input {
         self.ai_input_model
             .as_ref(ctx)
             .is_detection_pending_for(&text, ctx)
+    }
+
+    /// #933: an Enter on text that reads as English, whose classification verdict has not landed,
+    /// waits for the verdict instead of submitting on the inherited input type: prose must never
+    /// be run by the shell because Enter beat the classifier. Typeahead for a running command
+    /// keeps its shell rules; typeahead that began right after a command is classified like
+    /// anything typed. If no verdict comes (the classifier cannot answer), the text stays in the
+    /// editor unsubmitted, and a second Enter submits it as the rules decide.
+    fn defer_enter_for_classification(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        let text = self.editor.as_ref(ctx).buffer_text(ctx);
+        let model = self.ai_input_model.as_ref(ctx);
+        let provenance = if model.has_typeahead_provenance() && !model.typeahead_is_young() {
+            EnterProvenance::ShellTypeahead
+        } else {
+            EnterProvenance::Classifiable
+        };
+        if !should_wait_for_verdict_before_submit(
+            !input_classifier::util::has_no_prose_evidence(&text),
+            self.buffer_is_slash_command(ctx),
+            model.is_detection_pending_for(&text, ctx),
+            provenance,
+            self.verdict_wait_gave_up_on.as_deref() == Some(text.as_str()),
+        ) {
+            self.verdict_wait_gave_up_on = None;
+            return false;
+        }
+        self.ai_input_model
+            .update(ctx, |model, _| model.clear_typeahead_provenance());
+        self.wait_for_verdict_then_enter(text, Instant::now(), ctx);
+        true
+    }
+
+    fn wait_for_verdict_then_enter(
+        &mut self,
+        text: String,
+        started: Instant,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        // The user edited the text meanwhile (Ctrl-C clears it): the Enter is void.
+        if self.editor.as_ref(ctx).buffer_text(ctx) != text {
+            return;
+        }
+        let pending = self
+            .ai_input_model
+            .as_ref(ctx)
+            .is_detection_pending_for(&text, ctx);
+        match young_submit_decision(true, pending, started.elapsed()) {
+            YoungSubmit::Submit => self.input_enter(ctx),
+            YoungSubmit::Wait => {
+                ctx.spawn(
+                    Timer::after(std::time::Duration::from_millis(10)),
+                    move |me, _, ctx| me.wait_for_verdict_then_enter(text, started, ctx),
+                );
+            }
+            YoungSubmit::KeepInEditor => self.verdict_wait_gave_up_on = Some(text),
+        }
+    }
+
+    /// Marks the typeahead the hand-off just inserted as young (#933).
+    pub(crate) fn mark_typeahead_young(&mut self, ctx: &mut ViewContext<Self>) {
+        self.ai_input_model
+            .update(ctx, |model, _| model.mark_typeahead_young());
     }
 
     /// Whether the buffer is a valid slash command or skill command (`/agent go`), which never
