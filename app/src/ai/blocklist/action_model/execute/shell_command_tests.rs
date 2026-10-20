@@ -520,7 +520,8 @@ fn unresolved_block_write_falls_through_to_the_pty_permission_check() {
         });
 
         let pty_permission = app.read(|ctx| {
-            BlocklistAIPermissions::as_ref(ctx).get_write_to_pty_setting(ctx, Some(terminal_view_id))
+            BlocklistAIPermissions::as_ref(ctx)
+                .get_write_to_pty_setting(ctx, Some(terminal_view_id))
         });
         assert_eq!(
             pty_permission,

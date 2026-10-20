@@ -231,6 +231,17 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         $global:WARP_BOOTSTRAPPED = 1
     }
 
+    # Removes the bootstrap's own lines from the user's history: the line that sourced this file
+    # (this session's exact path), the init script's first line and, in a subshell, the guarded
+    # init line. Anchored to exact generated text, never a loose pattern (#942).
+    function Warp-Clear-BootstrapHistory {
+        foreach ($bootstrapLine in @($global:_warpBootstrapHistoryLines) + 'Microsoft.PowerShell.Core\Remove-Module -Name PSReadline -ErrorAction Ignore*' + 'if (-not $global:WARP_BOOTSTRAPPED) {*') {
+            if ($bootstrapLine) {
+                Microsoft.PowerShell.Core\Clear-History -CommandLine ($(if ($bootstrapLine.EndsWith('*')) { $bootstrapLine } else { [System.Management.Automation.WildcardPattern]::Escape($bootstrapLine) }))
+            }
+        }
+    }
+
     function Warp-Preexec([string]$command) {
         # Phosphor (#935): keep a multi-line command's lines apart in the title.
         $HOST.UI.RawUI.WindowTitle = ($command -replace "\r?\n", ' ; ')
@@ -258,12 +269,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         Microsoft.PowerShell.Core\Clear-History -CommandLine 'Warp-Run-GeneratorCommand*'
         # ... and the agent-command wrapper (agent_shell_wrap.rs HISTORY_MARKER; #942)
         Microsoft.PowerShell.Core\Clear-History -CommandLine ([System.Management.Automation.WildcardPattern]::Escape('. { $__phosphor_ap = @{}; foreach ($__phosphor_ap_v in @(') + '*')
-        # ... and the bootstrap's own lines (they would otherwise be the first entries of the user's history)
-        foreach ($bootstrapLine in @($global:_warpBootstrapHistoryLines) + 'Microsoft.PowerShell.Core\Remove-Module -Name PSReadline -ErrorAction Ignore*') {
-            if ($bootstrapLine) {
-                Microsoft.PowerShell.Core\Clear-History -CommandLine ($(if ($bootstrapLine.EndsWith('*')) { $bootstrapLine } else { [System.Management.Automation.WildcardPattern]::Escape($bootstrapLine) }))
-            }
-        }
+        Warp-Clear-BootstrapHistory
     }
 
     function Warp-Finish-Update([string]$updateId) {
@@ -439,7 +445,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         # Note that this is not going to be 100% accurate, as some cmdlets will fail
         # without setting a $LASTEXITCODE, meaning the $LASTEXITCODE will be stale.
         # Phosphor (#855): the agent-command wrapper leaves its captured status in these.
-        Microsoft.PowerShell.Utility\Remove-Variable __phosphor_ap_ok, __phosphor_ap_ec -Scope Global -ErrorAction SilentlyContinue
+        Microsoft.PowerShell.Utility\Remove-Variable __phosphor_ap_ok, __phosphor_ap_ec -Scope Global -ErrorAction Ignore
         $warpCommandNotFound = $script:commandNotFound
         $script:commandNotFound = $false
 
@@ -913,6 +919,13 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         $status = $?
         $code = $LASTEXITCODE
         $isGeneratorCommand = [bool]($script:generatorCommand -eq $true)
+
+        # The bootstrap's own lines are the last history entries at the first prompt: remove them
+        # before anything (a prompt hook) can see them.
+        if (-not $script:bootstrapHistoryCleared) {
+            $script:bootstrapHistoryCleared = $true
+            Warp-Clear-BootstrapHistory
+        }
 
         if ($script:dontRunPrecmdForPrompt -ne $true) {
             Warp-Precmd -status $status -code $code

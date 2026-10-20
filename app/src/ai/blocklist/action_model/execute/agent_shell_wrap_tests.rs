@@ -1222,6 +1222,33 @@ mod real_shells {
         assert!(out.contains("ec=0"), "{out}");
     }
 
+    /// #950: the real bootstrap and prompt function leave `$Error` alone, also after agent
+    /// commands (the wrapper's leftovers are removed by `Warp-Precmd`).
+    #[test]
+    fn pwsh_bootstrap_and_prompts_add_no_error_records() {
+        let ps1 = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/bundled/bootstrap/pwsh.ps1"
+        );
+        let wrapper = wrap_command(Some(ShellType::PowerShell), "Write-Output hi");
+        let script = format!(
+            "$global:_warpSessionId = [uint64]123; $env:WARP_HONOR_PS1 = '0'\n\
+             . '{ps1}' *> $null\n\
+             $Error.Clear()\n\
+             for ($i = 0; $i -lt 3; $i++) {{ $null = prompt 2>&1; \"after-prompt-$i errors=$($Error.Count)\" }}\n\
+             {wrapper} *> $null\n\
+             $null = prompt 2>&1\n\
+             \"after-agent errors=$($Error.Count)\"\n\
+             $Error | Select-Object -First 3 | ForEach-Object {{ \"ERR: $_\" }}"
+        );
+        let Some((out, _)) = run(ShellType::PowerShell, &script) else {
+            return;
+        };
+        assert!(out.contains("after-prompt-2 errors=0"), "{out}");
+        assert!(out.contains("after-agent errors=0"), "{out}");
+        assert!(!out.contains("ERR:"), "{out}");
+    }
+
     #[test]
     fn false_positives_stay_in_the_users_shell_and_cd_persists() {
         for shell in [ShellType::Bash, ShellType::Zsh, ShellType::Fish] {
