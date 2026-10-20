@@ -848,6 +848,38 @@ fn explicit_toggle_covers_the_buffer_it_was_made_for() {
     });
 }
 
+/// #933: text the typeahead hand-off inserts right after a forced-shell submit falls inside the
+/// 250 ms explicit-write window, where the first detection request is swallowed and the buffer
+/// is never classified. Clearing the explicit write for that text makes the request register.
+#[test]
+fn clearing_the_explicit_write_lets_hand_off_text_be_classified() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, SHELL_UNLOCKED);
+        let text = "make sure it works";
+
+        input_model.update(&mut app, |model, ctx| {
+            // What a forced-shell submit leaves behind.
+            model.set_input_type(InputType::Shell, ctx);
+            model.note_detection_requested(text.to_owned());
+        });
+        input_model.read(&app, |model, ctx| {
+            assert!(
+                !model.is_detection_pending_for(text, ctx),
+                "the request inside the explicit window is swallowed"
+            );
+        });
+
+        input_model.update(&mut app, |model, _| {
+            model.clear_explicit_input_type_set();
+            model.note_detection_requested(text.to_owned());
+        });
+        input_model.read(&app, |model, ctx| {
+            assert!(model.is_detection_pending_for(text, ctx));
+        });
+    });
+}
+
 #[test]
 fn submit_window_does_not_swallow_pasted_text() {
     App::test((), |mut app| async move {
