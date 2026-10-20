@@ -412,6 +412,18 @@ impl ShellCommandExecutor {
                 // `exec <shell>` would leave a second, unhooked interactive shell holding the
                 // terminal (or replace the user's own): the command never ends and ^C is ignored
                 // at its prompt (#899, #900). Refuse it with a result the model can act on.
+                // `kill $$`, `kill $PPID`, `kill -1`: no subshell can contain a command that names the
+                // user's own shell, so it is refused rather than run.
+                if super::agent_shell_wrap::kills_own_shell(
+                    self.active_session.as_ref(ctx).shell_type(ctx),
+                    command,
+                )
+                .is_some()
+                {
+                    return ActionExecution::Sync(AIAgentActionResultType::RequestCommandOutput(
+                        kill_own_shell_refusal(command),
+                    ));
+                }
                 if let Some(shell) = super::agent_shell_wrap::exec_into_shell(
                     self.active_session.as_ref(ctx).shell_type(ctx),
                     command,
@@ -994,6 +1006,22 @@ impl ShellCommandExecutor {
         _ctx: &mut ModelContext<Self>,
     ) -> BoxFuture<'static, ()> {
         futures::future::ready(()).boxed()
+    }
+}
+
+/// The tool result for a refused command that kills the user's own shell (see
+/// [`super::agent_shell_wrap::kills_own_shell`]).
+fn kill_own_shell_refusal(command: &str) -> RequestCommandOutputResult {
+    RequestCommandOutputResult::Completed {
+        block_id: BlockId::new(),
+        command: command.to_owned(),
+        output: "The command was not run. It signals the user's own terminal shell (`$$`, `$PPID`, \
+                 `kill 0` or `kill -1`), which would close their session. Signal the specific \
+                 process you mean by its pid instead."
+            .to_owned(),
+        exit_code: ExitCode::from(1),
+        start_ts: None,
+        completed_ts: None,
     }
 }
 

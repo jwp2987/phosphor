@@ -52,7 +52,7 @@ fn build_powershell_get_childitem_command_single_quotes_patterns_and_path() {
 
     assert_eq!(
         command,
-        r#"Get-ChildItem -File -Recurse -Include '$(New-Item C:\pwn)*.rs','owner''s*.rs' -Path 'C:\repo path' | ForEach-Object { $_.FullName }"#
+        r#"Microsoft.PowerShell.Management\Get-ChildItem -File -Recurse -Include '$(New-Item C:\pwn)*.rs','owner''s*.rs' -Path 'C:\repo path' | Microsoft.PowerShell.Core\ForEach-Object { $_.FullName }"#
     );
 }
 

@@ -294,8 +294,14 @@ fn multiline_trailing_comment_does_not_swallow_closer() {
     let command = "echo start\necho done # trailing comment";
 
     assert!(wrap_command_without_pager(Some(ShellType::Bash), command).ends_with("\n}"));
-    assert!(wrap_command_without_pager(Some(ShellType::Fish), command).ends_with("\nend"));
-    assert!(wrap_command_without_pager(Some(ShellType::PowerShell), command).ends_with("\n}"));
+    assert!(
+        wrap_command_without_pager(Some(ShellType::Fish), command)
+            .contains(&format!("\n{command}\nset -l __phosphor_ap_st"))
+    );
+    assert!(
+        wrap_command_without_pager(Some(ShellType::PowerShell), command)
+            .contains("\n}\n$global:LASTEXITCODE")
+    );
 }
 
 /// A genuinely single-line command ending in a `#` comment is the same failure class
@@ -309,8 +315,14 @@ fn single_line_trailing_comment_does_not_swallow_closer() {
     assert!(!command.contains('\n'));
 
     assert!(wrap_command_without_pager(Some(ShellType::Bash), command).ends_with("\n}"));
-    assert!(wrap_command_without_pager(Some(ShellType::Fish), command).ends_with("\nend"));
-    assert!(wrap_command_without_pager(Some(ShellType::PowerShell), command).ends_with("\n}"));
+    assert!(
+        wrap_command_without_pager(Some(ShellType::Fish), command)
+            .contains(&format!("\n{command}\nset -l __phosphor_ap_st"))
+    );
+    assert!(
+        wrap_command_without_pager(Some(ShellType::PowerShell), command)
+            .contains("\n}\n$global:LASTEXITCODE")
+    );
 }
 
 /// Single-line commands must keep their original single-line shape:

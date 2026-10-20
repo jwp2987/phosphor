@@ -1,16 +1,16 @@
 ﻿# Prevent history from being written to file, among other interactive features.
-Remove-Module -Name PSReadline -ErrorAction Ignore
+Microsoft.PowerShell.Core\Remove-Module -Name PSReadline -ErrorAction Ignore
 
 $global:_warpOriginalPrompt = $function:global:prompt
 
 if ($PSEdition -eq 'Desktop' -or $IsWindows) {
     $EP = [Microsoft.PowerShell.ExecutionPolicy]
     # MachinePolicy and UserPolicy scopes cannot be overridden. If either is Restricted, there's nothing we can do.
-    if ((Get-ExecutionPolicy -Scope MachinePolicy) -eq $EP::Restricted -or (Get-ExecutionPolicy -Scope UserPolicy) -eq $EP::Restricted) {
-        Write-Error 'ExecutionPolicy is Restricted. Unable to Phosphorize this PowerShell session.'
-    } elseif ((Get-ExecutionPolicy) -eq $EP::Restricted -and (Get-ExecutionPolicy -Scope MachinePolicy) -eq $EP::Undefined -and (Get-ExecutionPolicy -Scope UserPolicy) -eq $EP::Undefined) {
-        $global:_warp_PSProcessExecPolicy = $(Get-ExecutionPolicy -Scope Process)
-        Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned -Force
+    if ((Microsoft.PowerShell.Security\Get-ExecutionPolicy -Scope MachinePolicy) -eq $EP::Restricted -or (Microsoft.PowerShell.Security\Get-ExecutionPolicy -Scope UserPolicy) -eq $EP::Restricted) {
+        Microsoft.PowerShell.Utility\Write-Error 'ExecutionPolicy is Restricted. Unable to Phosphorize this PowerShell session.'
+    } elseif ((Microsoft.PowerShell.Security\Get-ExecutionPolicy) -eq $EP::Restricted -and (Microsoft.PowerShell.Security\Get-ExecutionPolicy -Scope MachinePolicy) -eq $EP::Undefined -and (Microsoft.PowerShell.Security\Get-ExecutionPolicy -Scope UserPolicy) -eq $EP::Undefined) {
+        $global:_warp_PSProcessExecPolicy = $(Microsoft.PowerShell.Security\Get-ExecutionPolicy -Scope Process)
+        Microsoft.PowerShell.Security\Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned -Force
     }
 }
 
@@ -22,12 +22,12 @@ function prompt {
     $function:global:prompt = $global:_warpOriginalPrompt
     $username = [Environment]::UserName
     $global:_warpSessionId = [uint64]@@WARP_SESSION_ID@@
-    $msg = ConvertTo-Json -Compress -InputObject @{ hook = 'InitShell'; value = @{ session_id = $_warpSessionId; shell = 'pwsh'; user = $username; hostname = [System.Net.Dns]::GetHostName() } }
+    $msg = Microsoft.PowerShell.Utility\ConvertTo-Json -Compress -InputObject @{ hook = 'InitShell'; value = @{ session_id = $_warpSessionId; shell = 'pwsh'; user = $username; hostname = [System.Net.Dns]::GetHostName() } }
     $encodedMsg = [BitConverter]::ToString([System.Text.Encoding]::UTF8.GetBytes($msg)).Replace('-', '')
     $oscStart = "$([char]0x1b)]9278;"
     $oscEnd = "`a"
     $oscJsonMarker = 'd'
     $oscParameterSeparator = ';'
-    Write-Host "${oscStart}${oscJsonMarker}${oscParameterSeparator}${encodedMsg}${oscEnd}"
+    Microsoft.PowerShell.Utility\Write-Host "${oscStart}${oscJsonMarker}${oscParameterSeparator}${encodedMsg}${oscEnd}"
     return $null
 }

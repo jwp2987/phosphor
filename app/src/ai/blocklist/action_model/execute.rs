@@ -1382,7 +1382,7 @@ async fn read_binary_file_context(
 fn build_is_file_path_command(path: &str, shell_type: ShellType) -> String {
     let escaped_path = shell_quote_arg(path, shell_type);
     if shell_type == ShellType::PowerShell {
-        format!("if (Test-Path -PathType Leaf {escaped_path}) {{ exit 0 }} else {{ exit 1 }}")
+        format!("if (Microsoft.PowerShell.Management\\Test-Path -PathType Leaf {escaped_path}) {{ exit 0 }} else {{ exit 1 }}")
     } else {
         format!("test -f {escaped_path}")
     }

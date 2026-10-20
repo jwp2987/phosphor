@@ -194,6 +194,19 @@ function warp_run_generator_command
     _warp_run_generator_command_internal $argv
 end
 
+# Phosphor (#855): while an agent command runs, `exit` is shadowed by a function (see
+# agent_shell_wrap.rs). If the command is interrupted, put the user's own `exit` back at the next prompt.
+function __phosphor_ap_fish_restore --on-event fish_prompt
+    if set -q __phosphor_ap_guard
+        functions -e exit
+        if functions -q __phosphor_ap_gx
+            functions -c __phosphor_ap_gx exit
+            functions -e __phosphor_ap_gx
+        end
+        set -e __phosphor_ap_guard
+    end
+end
+
 # Run before a command is executed.
 function warp_preexec --on-event fish_preexec
     set -l command (warp_escape_json "$argv")

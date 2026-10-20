@@ -268,7 +268,7 @@ pub fn kubernetes_current_context() -> ShellCommandGenerator {
 /// we take the latest directory of the working copy as the branch/tag name.
 pub fn svn_branch_context() -> ShellCommandGenerator {
     const SH_COMMAND: &str = "basename $(svn info --show-item wc-root)";
-    const PWSH_COMMAND: &str = "svn info --show-item wc-root | Split-Path -Leaf";
+    const PWSH_COMMAND: &str = "svn info --show-item wc-root | Microsoft.PowerShell.Management\\Split-Path -Leaf";
     let command = ShellCommand::shell_specific([
         (ShellType::PowerShell, PWSH_COMMAND.to_string()),
         (ShellType::Bash, SH_COMMAND.to_string()),
@@ -285,8 +285,8 @@ pub fn svn_dirty_items() -> ShellCommandGenerator {
         && (( $count > 0 )) && echo $(( $count ))";
     const FISH_COMMAND: &str = "set count (svn status | wc -l) \
         && test $count -gt 0 && string trim $count";
-    const PWSH_COMMAND: &str = "svn status | Measure-Object -line | \
-        where {$_.Lines -gt 0 } | foreach { $_.Lines }";
+    const PWSH_COMMAND: &str = "svn status | Microsoft.PowerShell.Utility\\Measure-Object -line | \
+        Microsoft.PowerShell.Core\\Where-Object {$_.Lines -gt 0 } | Microsoft.PowerShell.Core\\ForEach-Object { $_.Lines }";
     let command = ShellCommand::shell_specific([
         (ShellType::Bash, SH_COMMAND.to_string()),
         (ShellType::Zsh, SH_COMMAND.to_string()),

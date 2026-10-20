@@ -1,11 +1,15 @@
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseApprovedVerbs', '', Scope = 'Function', Target = 'Warp-*', Justification = 'Warp-* functions are ours')]
 param()
 
+# The exact line(s) this session typed to source this file; Warp-Preexec removes them from the
+# user's history (#942). Anchored to this session's own path, never a pattern.
+$global:_warpBootstrapHistoryLines = if ($PSCommandPath) { @(". $PSCommandPath", ". '$PSCommandPath'", ". `"$PSCommandPath`"") } else { @() }
+
 # Wrap things in a module to avoid cluttering the global scope. We assign it to '$null' to suppress
 # the console output from creating the module.
 # NOTE: If you do need a function to be global and also have access to variables in this scope, add
 # the function name to the 'Export-ModuleMember' call at the end.
-$null = New-Module -Name Warp-Module -ScriptBlock {
+$null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
     # Byte sequence used to signal the start of an OSC for Warp JSON messages.
     $oscStart = "$([char]0x1b)]9278;"
 
@@ -19,14 +23,14 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
 
     # Writes a hex-encoded JSON message to the PTY.
     function Warp-Send-JsonMessage([System.Collections.Hashtable]$table) {
-        $json = ConvertTo-Json -InputObject $table -Compress
+        $json = Microsoft.PowerShell.Utility\ConvertTo-Json -InputObject $table -Compress
         # Sends a message to the controlling terminal as an OSC control sequence.
         # TODO(CORE-2718): Determine if we need to hex encode the payload.
         # Note that because the JSON string may contain characters that we don't control (including
         # unicode), we encode it as hexadecimal string to avoid prematurely calling unhook if
         # one of the bytes in JSON is 9c (ST) or other (CAN, SUB, ESC).
         $encodedMessage = Warp-Encode-HexString $json
-        Write-Host -NoNewline "$oscStart$oscJsonMarker$oscParamSeparator$encodedMessage$oscEnd"
+        Microsoft.PowerShell.Utility\Write-Host -NoNewline "$oscStart$oscJsonMarker$oscParamSeparator$encodedMessage$oscEnd"
     }
 
     # This script block contains commands and constants that are needed in background threads.
@@ -47,14 +51,14 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
         $oscResetGrid = "$([char]0x1b)]9279$oscEnd"
 
         function Warp-Send-ResetGridOSC() {
-            Write-Host -NoNewline $oscResetGrid
+            Microsoft.PowerShell.Utility\Write-Host -NoNewline $oscResetGrid
         }
 
         # Safely attempt to get Node.js version if available. Avoid literal 'node' invocation
         # to satisfy PSUseCompatibleCommands across target platforms.
         function Warp-TryGet-NodeVersion {
             try {
-                $cmd = Get-Command -CommandType Application node 2>$null
+                $cmd = Microsoft.PowerShell.Core\Get-Command -CommandType Application node 2>$null
                 if ($null -eq $cmd) { return '' }
                 $nv = & $cmd.Source --version 2>$null
                 if ($null -ne $nv -and "$nv" -ne '') {
@@ -62,7 +66,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
                 }
             } catch {
                 # Log at verbose level so normal users are not spammed, but the catch is not empty.
-                Write-Verbose "node --version failed: $($_.Exception.Message)"
+                Microsoft.PowerShell.Utility\Write-Verbose "node --version failed: $($_.Exception.Message)"
             }
             return ''
         }
@@ -82,7 +86,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
             $hexEncodedMessage = Warp-Encode-HexString $message
             $byteCount = [System.Text.Encoding]::ASCII.GetByteCount($hexEncodedMessage)
 
-            Write-Host -NoNewline "$oscStartGeneratorOutput$byteCount;$hexEncodedMessage$oscEndGeneratorOutput"
+            Microsoft.PowerShell.Utility\Write-Host -NoNewline "$oscStartGeneratorOutput$byteCount;$hexEncodedMessage$oscEndGeneratorOutput"
             Warp-Send-ResetGridOSC
         }
 
@@ -106,7 +110,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
 
                 # Note: parens are important here. Without them
                 # parsing order gets messed up on the 2>&1
-                $rawOutput = Invoke-Expression -Command "$modifiedCommand" 2>&1
+                $rawOutput = Microsoft.PowerShell.Utility\Invoke-Expression -Command "$modifiedCommand" 2>&1
                 $exitCode = $LASTEXITCODE
 
                 # If the generator command returns multi-line output,
@@ -118,11 +122,11 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
                 # We cannot duplicate our error code logic from Warp-Precmd
                 # b/c Invoke-Expression will swallow the value of $? and always
                 # return true. So we do our best to return a legit error code
-                Write-Output "$commandId;$stringifiedOutput;$exitCode"
+                Microsoft.PowerShell.Utility\Write-Output "$commandId;$stringifiedOutput;$exitCode"
             } catch {
                 # This catches a terminating error (ex: entering a command that does not exist)
                 # In this case, we return an error code of 1
-                Write-Output "$commandId;1;"
+                Microsoft.PowerShell.Utility\Write-Output "$commandId;1;"
             }
         }
     }
@@ -138,13 +142,13 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
         [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', 'WARP_BOOTSTRAPPED', Justification = 'False positive as we are assigning to global')]
         param([decimal]$rcStartTime, [decimal]$rcEndTime)
 
-        $envVarNames = (Get-ChildItem env: | Select-Object -ExpandProperty Name | ForEach-Object { 'env:' + $_ }) + `
-        (Get-Variable | Select-Object -ExpandProperty Name) -join ' '
-        $aliasesRaw = Get-Command -CommandType Alias | Select-Object -ExpandProperty DisplayName
+        $envVarNames = (Microsoft.PowerShell.Management\Get-ChildItem env: | Microsoft.PowerShell.Utility\Select-Object -ExpandProperty Name | Microsoft.PowerShell.Core\ForEach-Object { 'env:' + $_ }) + `
+        (Microsoft.PowerShell.Utility\Get-Variable | Microsoft.PowerShell.Utility\Select-Object -ExpandProperty Name) -join ' '
+        $aliasesRaw = Microsoft.PowerShell.Core\Get-Command -CommandType Alias | Microsoft.PowerShell.Utility\Select-Object -ExpandProperty DisplayName
         $aliases = $aliasesRaw -join [Environment]::NewLine
-        $functionNamesRaw = Get-Command -CommandType Function | Where-Object { -not $_.Name.StartsWith('Warp') } | Select-Object -ExpandProperty Name
+        $functionNamesRaw = Microsoft.PowerShell.Core\Get-Command -CommandType Function | Microsoft.PowerShell.Core\Where-Object { -not $_.Name.StartsWith('Warp') } | Microsoft.PowerShell.Utility\Select-Object -ExpandProperty Name
         $functionNames = $functionNamesRaw -join [Environment]::NewLine
-        $builtinsRaw = Get-Command -CommandType Cmdlet | Select-Object -ExpandProperty Name
+        $builtinsRaw = Microsoft.PowerShell.Core\Get-Command -CommandType Cmdlet | Microsoft.PowerShell.Utility\Select-Object -ExpandProperty Name
         $builtins = $builtinsRaw -join [Environment]::NewLine
         $shellVersion = $PSVersionTable.PSVersion.ToString()
         # PowerShell wasn't cross-platform until version 6. Anything before that is definitely on Windows.
@@ -174,9 +178,9 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
 
         $linuxDistribution = $null
         if ($osCategory -eq 'Linux') {
-            $osReleaseFile = if (Test-Path -Path '/etc/os-release') {
+            $osReleaseFile = if (Microsoft.PowerShell.Management\Test-Path -Path '/etc/os-release') {
                 '/etc/os-release'
-            } elseif (Test-Path -Path '/usr/lib/os-release') {
+            } elseif (Microsoft.PowerShell.Management\Test-Path -Path '/usr/lib/os-release') {
                 '/usr/lib/os-release'
             } else {
                 $null
@@ -201,7 +205,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
             hook = 'Bootstrapped'
             value = @{
                 session_id = $global:_warpSessionId
-                histfile = $(Get-PSReadLineOption).HistorySavePath
+                histfile = $(PSReadLine\Get-PSReadLineOption).HistorySavePath
                 shell = 'pwsh'
                 home_dir = "$HOME"
                 path = $env:PATH
@@ -220,7 +224,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
                 vi_mode_enabled = $(if ($script:viEditModeOverridden) { '1' } else { '' })
                 os_category = $osCategory
                 linux_distribution = "$linuxDistribution"
-                shell_path = (Get-Process -Id $PID).Path
+                shell_path = (Microsoft.PowerShell.Management\Get-Process -Id $PID).Path
             }
         }
         Warp-Send-JsonMessage $bootstrappedMsg
@@ -251,7 +255,15 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
         Warp-Clean-CompletedThread
 
         # Remove any instance of the 'Warp-Run-GeneratorCommand' call from the user's history
-        Clear-History -CommandLine 'Warp-Run-GeneratorCommand*'
+        Microsoft.PowerShell.Core\Clear-History -CommandLine 'Warp-Run-GeneratorCommand*'
+        # ... and the agent-command wrapper (agent_shell_wrap.rs HISTORY_MARKER; #942)
+        Microsoft.PowerShell.Core\Clear-History -CommandLine ([System.Management.Automation.WildcardPattern]::Escape('. { $__phosphor_ap = @{}; foreach ($__phosphor_ap_v in @(') + '*')
+        # ... and the bootstrap's own lines (they would otherwise be the first entries of the user's history)
+        foreach ($bootstrapLine in @($global:_warpBootstrapHistoryLines) + 'Microsoft.PowerShell.Core\Remove-Module -Name PSReadline -ErrorAction Ignore*') {
+            if ($bootstrapLine) {
+                Microsoft.PowerShell.Core\Clear-History -CommandLine ($(if ($bootstrapLine.EndsWith('*')) { $bootstrapLine } else { [System.Management.Automation.WildcardPattern]::Escape($bootstrapLine) }))
+            }
+        }
     }
 
     function Warp-Finish-Update([string]$updateId) {
@@ -269,15 +281,15 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
         [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingInvokeExpression', '', Justification = 'We actually need it')]
         param([string]$sourceFileName)
 
-        $aptConfig = Get-Command -Type Application apt-config | Select-Object -First 1
-        & $aptConfig shell '$aptSourcesDir' 'Dir::Etc::sourceparts/d' | Invoke-Expression
+        $aptConfig = Microsoft.PowerShell.Core\Get-Command -Type Application apt-config | Microsoft.PowerShell.Utility\Select-Object -First 1
+        & $aptConfig shell '$aptSourcesDir' 'Dir::Etc::sourceparts/d' | Microsoft.PowerShell.Utility\Invoke-Expression
 
         $sourceFilePath = "${aptSourcesDir}${sourceFileName}"
 
         if (
-            -not (Test-Path "${sourceFilePath}.list") -and
-            -not (Test-Path "${sourceFilePath}.sources") -and
-            (Test-Path "${sourceFilePath}.list.distUpgrade")
+            -not (Microsoft.PowerShell.Management\Test-Path "${sourceFilePath}.list") -and
+            -not (Microsoft.PowerShell.Management\Test-Path "${sourceFilePath}.sources") -and
+            (Microsoft.PowerShell.Management\Test-Path "${sourceFilePath}.list.distUpgrade")
         ) {
             # DO NOT DO THIS. We should never run a command for user with 'sudo'. The only reason this
             # is safe here is because we insert this function into the input for the user to determine
@@ -301,7 +313,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
         $GIT_OPTIONAL_LOCKS = $env:GIT_OPTIONAL_LOCKS
         $env:GIT_OPTIONAL_LOCKS = 0
         try {
-            &(Get-Command -CommandType Application git | Select-Object -First 1) $args
+            &(Microsoft.PowerShell.Core\Get-Command -CommandType Application git | Microsoft.PowerShell.Utility\Select-Object -First 1) $args
         } finally {
             $env:GIT_OPTIONAL_LOCKS = $GIT_OPTIONAL_LOCKS
         }
@@ -337,19 +349,19 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
     $script:viEditModeOverridden = $false
 
     function Warp-Configure-PSReadLine {
-        if ((Get-PSReadLineOption).EditMode -eq 'Vi') {
+        if ((PSReadLine\Get-PSReadLineOption).EditMode -eq 'Vi') {
             $script:viEditModeOverridden = $true
-            Set-PSReadLineOption -EditMode Emacs
+            PSReadLine\Set-PSReadLineOption -EditMode Emacs
         }
 
         # Set-PSReadLineKeyHandler is the PowerShell equivalent of zsh's bindkey.
-        Set-PSReadLineKeyHandler -Chord 'Alt+2' -Function BackwardDeleteLine
+        PSReadLine\Set-PSReadLineKeyHandler -Chord 'Alt+2' -Function BackwardDeleteLine
 
         # Input reporting. Note that ESC-1 is used instead of ESC-i as for all other shells. This
         # is because PowerShell on Windows does some virtual key code translation which depends on
         # the selected input language. On languages without an "i" on any key, this translation
         # fails and the binding gets dropped.
-        Set-PSReadLineKeyHandler -Chord 'Alt+1' -ScriptBlock {
+        PSReadLine\Set-PSReadLineKeyHandler -Chord 'Alt+1' -ScriptBlock {
             $inputBuffer = $null
             $cursorPosition = $null
             [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$inputBuffer, [ref]$cursorPosition)
@@ -370,27 +382,27 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
             # the contents of the early output handler when we kill the line editor's buffer.
             # However, PowerShell doesn't do this correctly due to cursor position mismatch. So,
             # we do it manually here instead.
-            Write-Host -NoNewline "$([char]0x1b)[2K"
+            Microsoft.PowerShell.Utility\Write-Host -NoNewline "$([char]0x1b)[2K"
         }
 
         # Sets the prompt mode to custom prompt (PS1)
         # Is the equivalent of warp_change_prompt_modes_to_ps1 in other shells
-        Set-PSReadLineKeyHandler -Chord 'Alt+p' -ScriptBlock {
+        PSReadLine\Set-PSReadLineKeyHandler -Chord 'Alt+p' -ScriptBlock {
             $env:WARP_HONOR_PS1 = '1'
             Warp-Redraw-Prompt
         }
 
         # Sets the prompt mode to warp prompt
         # Is the equivalent of warp_change_prompt_modes_to_warp_prompt in other shells
-        Set-PSReadLineKeyHandler -Chord 'Alt+w' -ScriptBlock {
+        PSReadLine\Set-PSReadLineKeyHandler -Chord 'Alt+w' -ScriptBlock {
             $env:WARP_HONOR_PS1 = '0'
             Warp-Redraw-Prompt
         }
 
-        Set-PSReadLineOption -AddToHistoryHandler {
+        PSReadLine\Set-PSReadLineOption -AddToHistoryHandler {
             param([string]$line)
 
-            if ($line -match '^Warp-Run-GeneratorCommand') {
+            if ($line -match '^Warp-Run-GeneratorCommand' -or $line.StartsWith('. { $__phosphor_ap = @{}; foreach ($__phosphor_ap_v in @(', [System.StringComparison]::Ordinal)) {
                 return $false
             }
             return $true
@@ -407,8 +419,8 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
         [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingEmptyCatchBlock', '', Justification = 'Errors expected')]
         param()
         try {
-            Set-PSReadLineOption -PredictionSource None
-            Set-PSReadLineOption -PredictionViewStyle InlineView
+            PSReadLine\Set-PSReadLineOption -PredictionSource None
+            PSReadLine\Set-PSReadLineOption -PredictionViewStyle InlineView
         } catch {
         }
     }
@@ -427,7 +439,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
         # Note that this is not going to be 100% accurate, as some cmdlets will fail
         # without setting a $LASTEXITCODE, meaning the $LASTEXITCODE will be stale.
         # Phosphor (#855): the agent-command wrapper leaves its captured status in these.
-        Remove-Variable __phosphor_ap_ok, __phosphor_ap_ec -Scope Global -ErrorAction SilentlyContinue
+        Microsoft.PowerShell.Utility\Remove-Variable __phosphor_ap_ok, __phosphor_ap_ec -Scope Global -ErrorAction SilentlyContinue
         $warpCommandNotFound = $script:commandNotFound
         $script:commandNotFound = $false
 
@@ -439,6 +451,17 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
             1
         } else {
             $code
+        }
+
+        # Phosphor: the agent wrapper saved the user's $LASTEXITCODE and reset it; the code is
+        # computed, so put the user's value back.
+        if (Microsoft.PowerShell.Management\Test-Path variable:global:__phosphor_ap_lecset) {
+            if ($global:__phosphor_ap_lecset) {
+                $global:LASTEXITCODE = $global:__phosphor_ap_lec
+            } else {
+                Microsoft.PowerShell.Utility\Remove-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore
+            }
+            Microsoft.PowerShell.Utility\Remove-Variable __phosphor_ap_lecset, __phosphor_ap_lec -Scope Global -ErrorAction Ignore
         }
 
         $newTitle = $PWD.Path
@@ -499,13 +522,13 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
             # prompts, and we don't want to invoke 'git' before we've sourced the
             # user's rcfiles and have a fully-populated PATH.
             if ($global:WARP_BOOTSTRAPPED -eq 1) {
-                if (Test-Path env:VIRTUAL_ENV) {
+                if (Microsoft.PowerShell.Management\Test-Path env:VIRTUAL_ENV) {
                     $virtualEnv = $env:VIRTUAL_ENV
                 }
-                if (Test-Path env:CONDA_DEFAULT_ENV) {
+                if (Microsoft.PowerShell.Management\Test-Path env:CONDA_DEFAULT_ENV) {
                     $condaEnv = $env:CONDA_DEFAULT_ENV
                 }
-                if (Test-Path env:KUBECONFIG) {
+                if (Microsoft.PowerShell.Management\Test-Path env:KUBECONFIG) {
                     $kubeConfig = $env:KUBECONFIG
                 }
 
@@ -515,7 +538,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
                 # current location + PATH so we only spawn node when the directory or PATH
                 # changes (PATH changes on version-manager switches like `nvm use`).
                 $nodeChipEnabled = "$env:WARP_PROMPT_NODE_VERSION_ENABLED" -ne '0'
-                $hasNodeCommand = if ($nodeChipEnabled) { Get-Command -CommandType Application node 2>$null } else { $null }
+                $hasNodeCommand = if ($nodeChipEnabled) { Microsoft.PowerShell.Core\Get-Command -CommandType Application node 2>$null } else { $null }
                 if ($hasNodeCommand) {
                     try {
                         $nodeCacheKey = "$($PWD.Path)|$env:PATH"
@@ -523,12 +546,12 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
                             $nodeVersion = $script:warpNodeVersionCacheValue
                         } else {
                             # Walk up from the current directory to find a package.json
-                            $dir = Get-Item -LiteralPath $PWD.Path
+                            $dir = Microsoft.PowerShell.Management\Get-Item -LiteralPath $PWD.Path
                             $foundPackageJson = $false
                             $packageJsonDir = $null
                             while ($null -ne $dir) {
-                                $candidate = Join-Path $dir.FullName 'package.json'
-                                if (Test-Path -LiteralPath $candidate) {
+                                $candidate = Microsoft.PowerShell.Management\Join-Path $dir.FullName 'package.json'
+                                if (Microsoft.PowerShell.Management\Test-Path -LiteralPath $candidate) {
                                     $foundPackageJson = $true
                                     $packageJsonDir = $dir.FullName
                                     break
@@ -538,10 +561,10 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
 
                             if ($foundPackageJson) {
                                 # Verify package.json resides within a Git repository by walking up to find a .git directory
-                                $probe = Get-Item -LiteralPath $packageJsonDir
+                                $probe = Microsoft.PowerShell.Management\Get-Item -LiteralPath $packageJsonDir
                                 $inGitRepo = $false
                                 while ($null -ne $probe) {
-                                    if (Test-Path -LiteralPath (Join-Path $probe.FullName '.git')) {
+                                    if (Microsoft.PowerShell.Management\Test-Path -LiteralPath (Microsoft.PowerShell.Management\Join-Path $probe.FullName '.git')) {
                                         $inGitRepo = $true
                                         break
                                     }
@@ -558,7 +581,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
                         }
                     } catch {
                         # Log at verbose level so the catch block is not empty and diagnostics are available when needed.
-                        Write-Verbose "Failed to compute Node.js context: $($_.Exception.Message)"
+                        Microsoft.PowerShell.Utility\Write-Verbose "Failed to compute Node.js context: $($_.Exception.Message)"
                     }
                 }
 
@@ -566,7 +589,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
                 # in an if statement; it thinks we are trying to do -gt incorrectly.
                 # Since this is a good warning and we do not want to turn off this lint rule,
                 # we do a little indirection here
-                $hasGitCommand = Get-Command -CommandType Application git 2>$null
+                $hasGitCommand = Microsoft.PowerShell.Core\Get-Command -CommandType Application git 2>$null
                 if ($hasGitCommand) {
                     # This is deliberately not using || b/c || only works in Powershell >=7
                     $gitBranchTmp = Warp-Git symbolic-ref --short HEAD 2>$null
@@ -620,7 +643,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
     $script:innerRunspacePool = [runspacefactory]::CreateRunspacePool(10, 20)
     $script:innerRunspacePool.ApartmentState = [System.Threading.ApartmentState]::STA
     $script:innerRunspacePool.ThreadOptions = 'ReuseThread'
-    $script:innerRunspacePool.Open() | Out-Null
+    $script:innerRunspacePool.Open() | Microsoft.PowerShell.Core\Out-Null
 
     # The outer runspace pool maintains a pool of runspaces that
     # share the same host as the user's session. This allows them
@@ -632,7 +655,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
     $script:outerRunspacePool = [runspacefactory]::CreateRunspacePool(5, 10, $Host)
     $script:outerRunspacePool.ApartmentState = [System.Threading.ApartmentState]::STA
     $script:outerRunspacePool.ThreadOptions = 'ReuseThread'
-    $script:outerRunspacePool.Open() | Out-Null
+    $script:outerRunspacePool.Open() | Microsoft.PowerShell.Core\Out-Null
 
     class WarpGeneratorCommand {
         [string]$CommandId
@@ -647,7 +670,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
         $jobNumber = $script:inBandCommandCount++
 
         $batchNumber = 0
-        $jobs = $commands | ForEach-Object {
+        $jobs = $commands | Microsoft.PowerShell.Core\ForEach-Object {
             $commandId = $_.CommandId
             $command = $_.Command
 
@@ -656,12 +679,12 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
             # executes the in-band generator in the current directory
             $ps = [powershell]::Create()
             $ps.RunspacePool = $script:innerRunspacePool
-            $ps.AddScript($warpCommon) | Out-Null
+            $ps.AddScript($warpCommon) | Microsoft.PowerShell.Core\Out-Null
             $ps.AddScript({
                     param([string]$loc, [string]$commandId, [string]$command)
-                    Set-Location $loc
+                    Microsoft.PowerShell.Management\Set-Location $loc
                     Warp-Run-InBandGenerator -commandId $commandId -command "$command"
-                }).AddParameters(@($PWD.Path, $commandId, "$command")) | Out-Null
+                }).AddParameters(@($PWD.Path, $commandId, "$command")) | Microsoft.PowerShell.Core\Out-Null
 
             $script:threadInner["Warp-Inner-$jobNumber-$batchNumber"] = $psInner
             $batchNumber++
@@ -676,11 +699,11 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
         # and then sends the results back to Warp via OSC
         $psOuter = [powershell]::Create()
         $psOuter.RunspacePool = $script:outerRunspacePool
-        $psOuter.AddScript($warpCommon) | Out-Null
+        $psOuter.AddScript($warpCommon) | Microsoft.PowerShell.Core\Out-Null
         $psOuter.AddScript({
                 param([object[]]$jobs)
 
-                $invocations = $jobs | ForEach-Object {
+                $invocations = $jobs | Microsoft.PowerShell.Core\ForEach-Object {
                     @{
                         commandId = $_.commandId
                         ps = $_.ps
@@ -688,7 +711,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
                     }
                 }
 
-                $invocations | ForEach-Object {
+                $invocations | Microsoft.PowerShell.Core\ForEach-Object {
                     $commandId = $_.commandId
                     $ps = $_.ps
                     $async = $_.async
@@ -702,7 +725,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
                     }
                     Warp-Send-GeneratorOutputOsc $output
                 }
-            }).AddParameters(@($jobs)) | Out-Null
+            }).AddParameters(@($jobs)) | Microsoft.PowerShell.Core\Out-Null
 
         # Note: we are beginning the invocation, but are explicitly
         # not stopping it as we do not want to block the main thread.
@@ -712,7 +735,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
     }
 
     function Warp-Stop-ActiveThread {
-        $script:threadInner.values | ForEach-Object {
+        $script:threadInner.values | Microsoft.PowerShell.Core\ForEach-Object {
             $_.Stop()
         }
     }
@@ -721,7 +744,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
         # Powershell instances states > 2 are terminal.
         # See https://learn.microsoft.com/en-us/dotnet/api/system.management.automation.psinvocationstate
         if ($script:threadInner.Count -gt 0) {
-            $script:threadInner.Keys.Clone() | ForEach-Object {
+            $script:threadInner.Keys.Clone() | Microsoft.PowerShell.Core\ForEach-Object {
                 $thread = $script:threadInner[$_]
                 $state = [int]$thread.InvocationStateInfo.State
                 if ($state -gt 2) {
@@ -731,7 +754,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
             }
         }
         if ($script:threadOuter.Count -gt 0) {
-            $script:threadOuter.Keys.Clone() | ForEach-Object {
+            $script:threadOuter.Keys.Clone() | Microsoft.PowerShell.Core\ForEach-Object {
                 $thread = $script:threadOuter[$_]
                 $state = [int]$thread.InvocationStateInfo.State
                 if ($state -gt 2) {
@@ -823,7 +846,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
         if (-not $status) {
             # Set's $? to false for the next function call,
             # so it can be used for computing the prompt
-            Write-Error '' -ErrorAction Ignore
+            Microsoft.PowerShell.Utility\Write-Error '' -ErrorAction Ignore
         }
 
         # Compute prompt and cache it as the last rendered prompt
@@ -900,7 +923,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
         $renderedPrompt = Warp-Render-Prompt -status $status -code $code -isGeneratorCommand $isGeneratorCommand
         $decoratedPrompt = Warp-Decorate-Prompt -basePrompt $renderedPrompt
         $extraLines = ($decoratedPrompt -split "$([char]0x0a)").Length - 1
-        Set-PSReadLineOption -ExtraPromptLineCount $extraLines
+        PSReadLine\Set-PSReadLineOption -ExtraPromptLineCount $extraLines
 
         # NOTE: Because we are in the prompt, we do not need to reset
         # the $? automatic variable (apparently $prompt does not impact it).
@@ -911,9 +934,9 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
         return $decoratedPrompt
     }
 
-    if ((Test-Path env:WARP_INITIAL_WORKING_DIR) -and -not [String]::IsNullOrEmpty($env:WARP_INITIAL_WORKING_DIR)) {
-        Set-Location $env:WARP_INITIAL_WORKING_DIR 2> $null
-        Remove-Item -Path env:WARP_INITIAL_WORKING_DIR
+    if ((Microsoft.PowerShell.Management\Test-Path env:WARP_INITIAL_WORKING_DIR) -and -not [String]::IsNullOrEmpty($env:WARP_INITIAL_WORKING_DIR)) {
+        Microsoft.PowerShell.Management\Set-Location $env:WARP_INITIAL_WORKING_DIR 2> $null
+        Microsoft.PowerShell.Management\Remove-Item -Path env:WARP_INITIAL_WORKING_DIR
     }
 
     # In some cases, the Clear-Host command will not interface properly with the blocklist.
@@ -996,7 +1019,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
 
         # This sets up our wrapper around $function:prompt, which runs the precmd hook
         # and computes the user's custom prompt.
-        $function:global:prompt = (Get-Command Warp-Prompt).ScriptBlock
+        $function:global:prompt = (Microsoft.PowerShell.Core\Get-Command Warp-Prompt).ScriptBlock
         Warp-Bootstrapped -rcStartTime $rcStartTime -rcEndTime $rcEndTime
     }
 
@@ -1010,7 +1033,7 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
 
     # `Warp-Run-GeneratorCommand` must stay in this export list: the Rust app invokes it
     # by name from outside the module. See the MATCHED PAIR note at its definition.
-    Export-ModuleMember -Function clear, Clear-Host, Get-EpochTime, Warp-Finish-Update, Warp-Handle-DistUpgrade, Warp-Run-GeneratorCommand, Warp-Finish-Bootstrap
+    Microsoft.PowerShell.Core\Export-ModuleMember -Function clear, Clear-Host, Get-EpochTime, Warp-Finish-Update, Warp-Handle-DistUpgrade, Warp-Run-GeneratorCommand, Warp-Finish-Bootstrap
 }
 
 # Finally, get ready to source the user's RC files. This must be done in the global scope (not
@@ -1025,8 +1048,8 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
             try {
                 . $file
             } catch {
-                Write-Host -ForegroundColor Red $_.InvocationInfo.PositionMessage
-                Write-Host -ForegroundColor DarkRed $_.Exception
+                Microsoft.PowerShell.Utility\Write-Host -ForegroundColor Red $_.InvocationInfo.PositionMessage
+                Microsoft.PowerShell.Utility\Write-Host -ForegroundColor DarkRed $_.Exception
             }
         }
     }
@@ -1035,20 +1058,20 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
     # This happens after we source RC files in case they reset PATH.
     if (-not [String]::IsNullOrEmpty($env:WARP_PATH_APPEND)) {
         $env:PATH = '{0}{1}{2}' -f $env:PATH, [IO.Path]::PathSeparator, $env:WARP_PATH_APPEND
-        Remove-Item -Path env:WARP_PATH_APPEND
+        Microsoft.PowerShell.Management\Remove-Item -Path env:WARP_PATH_APPEND
     }
 
     # This is a workaround for oh-my-posh's "transient prompt" feature. When enabled, it causes the
     # whole screen to clear on every command execution. It is implemented by overwriting the Enter
     # and ctrl-c key handlers. Resetting those back to default effectively disables it.
     # TODO(CORE-3234) - Find a workaround which allows transient prompt to work.
-    $enterHandler = Get-PSReadLineKeyHandler | Where-Object -Property Key -EQ -Value 'Enter'
+    $enterHandler = PSReadLine\Get-PSReadLineKeyHandler | Microsoft.PowerShell.Core\Where-Object -Property Key -EQ -Value 'Enter'
     if ($enterHandler -ne $null -and $enterHandler.Function -eq 'OhMyPoshEnterKeyHandler') {
-        Set-PSReadLineKeyHandler -Chord Enter -Function AcceptLine
+        PSReadLine\Set-PSReadLineKeyHandler -Chord Enter -Function AcceptLine
     }
-    $ctrlcHandler = Get-PSReadLineKeyHandler | Where-Object -Property Key -EQ -Value 'Control+c'
+    $ctrlcHandler = PSReadLine\Get-PSReadLineKeyHandler | Microsoft.PowerShell.Core\Where-Object -Property Key -EQ -Value 'Control+c'
     if ($ctrlcHandler -ne $null -and $ctrlcHandler.Function -eq 'OhMyPoshCtrlCKeyHandler') {
-        Set-PSReadLineKeyHandler -Chord 'Control+c' -Function CopyOrCancelLine
+        PSReadLine\Set-PSReadLineKeyHandler -Chord 'Control+c' -Function CopyOrCancelLine
     }
 
     $rcEndTime = Get-EpochTime
@@ -1058,10 +1081,10 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
     $global:_warpOriginalPrompt = $function:global:prompt
 
     Warp-Finish-Bootstrap -rcStartTime $rcStartTime -rcEndTime $rcEndTime
-    Remove-Variable -Name enterHandler, ctrlcHandler, rcStartTime, rcEndTime -Scope global -ErrorAction Ignore
+    Microsoft.PowerShell.Utility\Remove-Variable -Name enterHandler, ctrlcHandler, rcStartTime, rcEndTime -Scope global -ErrorAction Ignore
 
     # Restore the process's original execution policy now that the user's RC files have been loaded.
     if ($global:_warp_PSProcessExecPolicy -ne $null) {
-        Set-ExecutionPolicy -Scope Process -ExecutionPolicy $global:_warp_PSProcessExecPolicy
+        Microsoft.PowerShell.Security\Set-ExecutionPolicy -Scope Process -ExecutionPolicy $global:_warp_PSProcessExecPolicy
     }
 }

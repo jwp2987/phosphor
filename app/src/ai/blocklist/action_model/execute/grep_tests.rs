@@ -233,7 +233,7 @@ fn build_select_string_command_single_quotes_powershell_substitution() {
 
     assert_eq!(
         command,
-        r#"Get-ChildItem -Path 'C:\repo path' -Recurse -File | Select-String -NoEmphasis -CaseSensitive -Pattern '$(New-Item C:\pwn); ''literal''' | ForEach-Object { "$($_.Path)`0$($_.LineNumber)`0" }"#
+        r#"Microsoft.PowerShell.Management\Get-ChildItem -Path 'C:\repo path' -Recurse -File | Microsoft.PowerShell.Utility\Select-String -NoEmphasis -CaseSensitive -Pattern '$(New-Item C:\pwn); ''literal''' | Microsoft.PowerShell.Core\ForEach-Object { "$($_.Path)`0$($_.LineNumber)`0" }"#
     );
 }
 

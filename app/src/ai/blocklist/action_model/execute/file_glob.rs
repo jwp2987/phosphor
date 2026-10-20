@@ -431,7 +431,7 @@ fn build_powershell_get_childitem_command(patterns: &[String], target_path: &str
         .map(|pattern| shell_quote_arg(pattern, ShellType::PowerShell))
         .join(",");
     format!(
-        "Get-ChildItem -File -Recurse -Include {pattern_args} -Path {} | ForEach-Object {{ $_.FullName }}",
+        "Microsoft.PowerShell.Management\\Get-ChildItem -File -Recurse -Include {pattern_args} -Path {} | Microsoft.PowerShell.Core\\ForEach-Object {{ $_.FullName }}",
         shell_quote_arg(target_path, ShellType::PowerShell)
     )
 }
