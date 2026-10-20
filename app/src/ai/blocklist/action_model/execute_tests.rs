@@ -261,7 +261,7 @@ mod path_shell_quoting {
 
         assert_eq!(
             command,
-            r#"if (Test-Path -PathType Leaf 'C:\Users\me\file path.rs') { exit 0 } else { exit 1 }"#
+            r#"if (Microsoft.PowerShell.Management\Test-Path -PathType Leaf 'C:\Users\me\file path.rs') { exit 0 } else { exit 1 }"#
         );
     }
 
@@ -274,7 +274,7 @@ mod path_shell_quoting {
 
         assert_eq!(
             command,
-            r#"if (Test-Path -PathType Leaf 'C:\tmp\x$(New-Item C:\poc)$env:USERPROFILE') { exit 0 } else { exit 1 }"#
+            r#"if (Microsoft.PowerShell.Management\Test-Path -PathType Leaf 'C:\tmp\x$(New-Item C:\poc)$env:USERPROFILE') { exit 0 } else { exit 1 }"#
         );
     }
 

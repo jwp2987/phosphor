@@ -295,7 +295,10 @@ fn multiline_trailing_comment_does_not_swallow_closer() {
 
     assert!(wrap_command_without_pager(Some(ShellType::Bash), command).ends_with("\n}"));
     assert!(wrap_command_without_pager(Some(ShellType::Fish), command).ends_with("\nend"));
-    assert!(wrap_command_without_pager(Some(ShellType::PowerShell), command).ends_with("\n}"));
+    assert!(
+        wrap_command_without_pager(Some(ShellType::PowerShell), command)
+            .contains("\n}\n$global:LASTEXITCODE")
+    );
 }
 
 /// A genuinely single-line command ending in a `#` comment is the same failure class
@@ -310,7 +313,10 @@ fn single_line_trailing_comment_does_not_swallow_closer() {
 
     assert!(wrap_command_without_pager(Some(ShellType::Bash), command).ends_with("\n}"));
     assert!(wrap_command_without_pager(Some(ShellType::Fish), command).ends_with("\nend"));
-    assert!(wrap_command_without_pager(Some(ShellType::PowerShell), command).ends_with("\n}"));
+    assert!(
+        wrap_command_without_pager(Some(ShellType::PowerShell), command)
+            .contains("\n}\n$global:LASTEXITCODE")
+    );
 }
 
 /// Single-line commands must keep their original single-line shape:

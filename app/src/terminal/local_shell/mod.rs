@@ -106,7 +106,7 @@ impl LocalShellState {
         let command = match shell_type {
             ShellType::Bash | ShellType::Zsh => "builtin echo $PATH",
             ShellType::Fish => "env | grep PATH",
-            ShellType::PowerShell => "echo $Env:PATH",
+            ShellType::PowerShell => "[Console]::Out.WriteLine($Env:PATH)",
         };
 
         // Execute a command to fetch the user's PATH var, and store it
@@ -305,7 +305,7 @@ async fn capture_interactive_shell_env(
             format!("builtin printf '{PATH_CAPTURE_START}%s{PATH_CAPTURE_END}' (string join : $PATH)")
         }
         ShellType::PowerShell => {
-            format!("Write-Output \"{PATH_CAPTURE_START}$($env:PATH){PATH_CAPTURE_END}\"")
+            format!("Microsoft.PowerShell.Utility\\Write-Output \"{PATH_CAPTURE_START}$($env:PATH){PATH_CAPTURE_END}\"")
         }
     };
 

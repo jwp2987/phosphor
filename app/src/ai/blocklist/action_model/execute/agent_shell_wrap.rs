@@ -158,16 +158,19 @@ fn pwsh_override() -> String {
 /// would otherwise overwrite `$?` and `$LASTEXITCODE` before `Warp-Precmd` reads them. `$?` is
 /// taken first, and `$LASTEXITCODE` is read through `Test-Path` because under `Set-StrictMode` a
 /// bare read throws when no native command has run yet.
-const PWSH_CAPTURE: &str = "$__phosphor_ap_ok = $?; $__phosphor_ap_ec = if (Test-Path variable:global:LASTEXITCODE) { $global:LASTEXITCODE } else { 0 }";
+const PWSH_CAPTURE: &str = "$__phosphor_ap_ok = $?; $__phosphor_ap_ec = if (Microsoft.PowerShell.Management\\Test-Path variable:global:LASTEXITCODE) { $global:LASTEXITCODE } else { 0 }";
 
-/// The last statements of the wrapper: put the captured status back. `$?` can only be made
-/// false by a failing command, so a silent failed lookup stands in for it. The two capture
-/// variables are removed by `Warp-Precmd`.
-const PWSH_RERAISE: &str = "$global:LASTEXITCODE = if (Test-Path variable:__phosphor_ap_ec) { $__phosphor_ap_ec } else { 0 }; if (-not $__phosphor_ap_ok) { Get-Item -LiteralPath 'Variable:\\__phosphor_ap_failed' -ErrorAction SilentlyContinue }";
+/// The statements after the wrapper's block: put the captured status back. They must run at the
+/// top level of the typed line, not inside the `. { ... }` block: `$?` after a dot-sourced block
+/// is always true, whatever failed inside. At the top level a failing lookup does set `$?` to
+/// false, and the path is chosen so the lookup fails exactly when the command did: the
+/// capture variable `__phosphor_ap_ok` exists (and is true) on success, `__phosphor_ap_failed`
+/// never exists (`Out-Null` keeps the success case quiet and leaves `$?` to the lookup). The capture variables are removed by `Warp-Precmd`.
+const PWSH_RERAISE: &str = "$global:LASTEXITCODE = if (Microsoft.PowerShell.Management\\Test-Path variable:__phosphor_ap_ec) { $__phosphor_ap_ec } else { 0 }; Microsoft.PowerShell.Management\\Get-Item -LiteralPath ('Variable:\\__phosphor_ap_' + ('failed', 'ok')[[int][bool]$__phosphor_ap_ok]) -ErrorAction SilentlyContinue | Microsoft.PowerShell.Core\\Out-Null";
 
 /// `$env:` is process-wide, so the restore must be explicit; `finally` also runs on Ctrl-C.
 fn pwsh_restore() -> &'static str {
-    "foreach ($__phosphor_ap_v in @($__phosphor_ap.Keys)) { [Environment]::SetEnvironmentVariable($__phosphor_ap_v, $__phosphor_ap[$__phosphor_ap_v]) }; Remove-Variable __phosphor_ap, __phosphor_ap_v -ErrorAction SilentlyContinue"
+    "foreach ($__phosphor_ap_v in @($__phosphor_ap.Keys)) { [Environment]::SetEnvironmentVariable($__phosphor_ap_v, $__phosphor_ap[$__phosphor_ap_v]) }; Microsoft.PowerShell.Utility\\Remove-Variable __phosphor_ap, __phosphor_ap_v -ErrorAction SilentlyContinue"
 }
 
 /// Whether a single-line form would put the closing token on the command's line in a way
@@ -261,24 +264,68 @@ pub(super) fn wrap_command(shell_type: Option<ShellType>, command: &str) -> Stri
         }
         ShellType::PowerShell => {
             // `.` runs the block in the current scope (variables persist, like the venv
-            // activation the agent may run); `&` is the child-scope fallback for `exit`.
-            let call = if subshell { "&" } else { "." };
+            // activation the agent may run). A command that would end the host (`exit`,
+            // `[Environment]::Exit`, ...) runs in a child pwsh instead (#941).
             let save = pwsh_save();
             let over = pwsh_override();
-            let restore = pwsh_restore();
+            let mut restore = pwsh_restore().to_owned();
             let capture = PWSH_CAPTURE;
             let reraise = PWSH_RERAISE;
+            let child;
+            let command = if subshell {
+                child = pwsh_child_call(command);
+                restore
+                    .push_str("; [Environment]::SetEnvironmentVariable('__PHOSPHOR_AP_CWD',$null)");
+                child.as_str()
+            } else {
+                command
+            };
+            let own_line = own_line && !subshell;
             if own_line {
                 format!(
-                    "{call} {{ {save}; {over}\ntry {{\n{command}\n{capture}\n}} finally {{ {restore} }}\n{reraise}\n}}"
+                    ". {{ {save}; {over}\ntry {{\n{command}\n{capture}\n}} finally {{ {restore} }}\n}}\n{reraise}"
                 )
             } else {
                 format!(
-                    "{call} {{ {save}; {over}; try {{ {command}; {capture} }} finally {{ {restore} }}; {reraise} }}"
+                    ". {{ {save}; {over}; try {{ {command}; {capture} }} finally {{ {restore} }} }}; {reraise}"
                 )
             }
         }
     }
+}
+
+/// Whether a PowerShell command word ends or replaces the host: `exit`, `[Environment]::Exit(n)`,
+/// `$host.SetShouldExit(n)`, `Stop-Process -Id $PID`, or an `Invoke-Expression` of any of them.
+fn pwsh_command_ends_host(name: &str, args: &[String]) -> bool {
+    let lower = name.to_ascii_lowercase();
+    match lower.as_str() {
+        "exit" => true,
+        "invoke-expression" | "iex" => args.iter().any(|a| a.to_ascii_lowercase().contains("exit")),
+        "stop-process" => args
+            .iter()
+            .any(|a| a.eq_ignore_ascii_case("$pid") || a.eq_ignore_ascii_case("$pid)")),
+        _ => lower.ends_with("]::exit") || lower.ends_with(".setshouldexit"),
+    }
+}
+
+/// The statement that runs `command` in a child of the running PowerShell host, with the
+/// environment inherited (the pager overrides are process environment) and the working
+/// directory carried over (`Set-Location` does not move the process directory). The command
+/// travels as `-EncodedCommand` (base64 of UTF-16LE), so no quoting can break it.
+fn pwsh_child_call(command: &str) -> String {
+    use base64::Engine as _;
+    let bytes: Vec<u8> = format!(
+        "Microsoft.PowerShell.Management\\Set-Location -LiteralPath $env:__PHOSPHOR_AP_CWD; {command}"
+    )
+    .encode_utf16()
+    .flat_map(u16::to_le_bytes)
+    .collect();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    format!(
+        "$env:__PHOSPHOR_AP_CWD = (Microsoft.PowerShell.Management\\Get-Location -PSProvider FileSystem).ProviderPath; \
+         & ([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) \
+         -NoProfile -NoLogo -NonInteractive -EncodedCommand {encoded}"
+    )
 }
 
 /// Whether `command` must keep the subshell wrapper because, at its top level, it ends the
@@ -304,7 +351,7 @@ pub(super) fn needs_subshell(shell_type: ShellType, command: &str) -> bool {
             return false;
         };
         match shell_type {
-            ShellType::PowerShell => name.eq_ignore_ascii_case("exit"),
+            ShellType::PowerShell => pwsh_command_ends_host(name, args),
             _ => posix_command_needs_subshell(name, args),
         }
     })
@@ -341,7 +388,7 @@ const INTERACTIVE_SHELL_ARGS: &[&str] = &["-l", "-i", "--login", "--interactive"
 /// treated as a shell, since the only reason to `exec` the login shell is to become it.
 pub(super) fn exec_into_shell(shell_type: Option<ShellType>, command: &str) -> Option<String> {
     if shell_type == Some(ShellType::PowerShell) {
-        return None;
+        return pwsh_interactive_shell(command);
     }
     if exec_of_backtick_substitution(command) {
         return Some("$SHELL".to_owned());
@@ -359,6 +406,36 @@ pub(super) fn exec_into_shell(shell_type: Option<ShellType>, command: &str) -> O
             }
             _ => None,
         }
+    })
+}
+
+/// PowerShell has no `exec`, but `pwsh`, `& pwsh -NoProfile` or `cmd` with nothing to run is the
+/// same trap: a nested interactive shell that never ends on its own and has no Phosphor hooks.
+fn pwsh_interactive_shell(command: &str) -> Option<String> {
+    const SHELLS: &[&str] = &["pwsh", "powershell", "cmd", "bash", "zsh", "fish", "sh"];
+    const INTERACTIVE_ARGS: &[&str] = &[
+        "-nologo",
+        "-noprofile",
+        "-noexit",
+        "-interactive",
+        "-i",
+        "-l",
+        "-login",
+        "-nop",
+        "-nol",
+    ];
+    simple_commands(command).iter().find_map(|words| {
+        let mut words = words.iter().map(String::as_str).peekable();
+        while matches!(words.peek(), Some(&"." | &"&")) {
+            words.next();
+        }
+        let name = words.next()?;
+        let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
+        let base = base.to_ascii_lowercase();
+        let base = base.strip_suffix(".exe").unwrap_or(&base);
+        (SHELLS.contains(&base)
+            && words.all(|a| INTERACTIVE_ARGS.contains(&a.to_ascii_lowercase().as_str())))
+        .then(|| base.to_owned())
     })
 }
 

@@ -83,7 +83,7 @@ fn trailing_background_and_semicolon_use_the_own_line_form() {
         let fish = wrap_command(Some(ShellType::Fish), command);
         assert!(fish.ends_with("\nend"), "{fish}");
         let pwsh = wrap_command(Some(ShellType::PowerShell), command);
-        assert!(pwsh.ends_with("\n}"), "{pwsh}");
+        assert!(pwsh.contains("\n}\n$global:LASTEXITCODE"), "{pwsh}");
     }
 }
 
@@ -106,8 +106,14 @@ fn trailing_comment_cannot_swallow_the_closer() {
     let command = "ls # list";
     for shell in ALL {
         let wrapped = wrap_command(Some(shell), command);
-        let last = wrapped.lines().last().unwrap();
-        assert!(matches!(last, "}" | "end"), "{shell:?}: {wrapped}");
+        // pwsh's last line is the status re-raise, which comes after the closing `}`.
+        let closer = if shell == ShellType::PowerShell {
+            let lines: Vec<&str> = wrapped.lines().collect();
+            lines[lines.len() - 2]
+        } else {
+            wrapped.lines().last().unwrap()
+        };
+        assert!(matches!(closer, "}" | "end"), "{shell:?}: {wrapped}");
     }
 }
 
@@ -136,7 +142,124 @@ fn pwsh_saves_and_restores_process_environment_in_finally() {
         "{wrapped}"
     );
     let exits = wrap_command(Some(ShellType::PowerShell), "exit 3");
-    assert!(exits.starts_with("& { "), "{exits}");
+    assert!(exits.starts_with(". { "), "{exits}");
+    assert!(exits.contains("-EncodedCommand "), "{exits}");
+}
+
+#[test]
+fn pwsh_commands_that_end_the_host_run_in_a_child_pwsh() {
+    use base64::Engine as _;
+    for command in [
+        "exit",
+        "exit 3",
+        "[Environment]::Exit(5)",
+        "[System.Environment]::Exit(2)",
+        "$host.SetShouldExit(4)",
+        "Stop-Process -Id $PID",
+        "Set-Location /tmp; exit 1",
+        "if ($x) { exit 2 }",
+        "Invoke-Expression 'exit 3'",
+        "iex 'exit'",
+    ] {
+        assert!(needs_subshell(ShellType::PowerShell, command), "{command}");
+        let wrapped = wrap_command(Some(ShellType::PowerShell), command);
+        assert!(wrapped.starts_with(". { "), "{wrapped}");
+        assert!(
+            wrapped.contains("-NoProfile -NoLogo -NonInteractive -EncodedCommand "),
+            "{wrapped}"
+        );
+        assert!(wrapped.contains("__phosphor_ap"), "{wrapped}");
+        // The command itself is carried intact, after a Set-Location to the caller's directory.
+        let encoded = wrapped
+            .split("-EncodedCommand ")
+            .nth(1)
+            .and_then(|rest| rest.split(';').next())
+            .unwrap()
+            .trim();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        let units: Vec<u16> = bytes
+            .chunks(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        let decoded = String::from_utf16(&units).unwrap();
+        assert!(decoded.ends_with(command), "{decoded}");
+        assert!(
+            decoded.contains("Set-Location -LiteralPath $env:__PHOSPHOR_AP_CWD"),
+            "{decoded}"
+        );
+    }
+    for command in [
+        "Set-Location /tmp",
+        "$env:FOO = 'bar'",
+        "Write-Output exit",
+        "ls",
+    ] {
+        assert!(!needs_subshell(ShellType::PowerShell, command), "{command}");
+        assert!(!wrap_command(Some(ShellType::PowerShell), command).contains("EncodedCommand"));
+    }
+}
+
+#[test]
+fn pwsh_nested_interactive_shells_are_refused() {
+    for command in [
+        "pwsh",
+        "& pwsh",
+        "pwsh -NoProfile",
+        "powershell.exe -NoLogo -NoExit",
+        "& 'pwsh' -NoExit",
+    ] {
+        assert!(
+            exec_into_shell(Some(ShellType::PowerShell), command).is_some(),
+            "{command}"
+        );
+    }
+    for command in [
+        "pwsh -Command 'echo hi'",
+        "pwsh script.ps1",
+        "ls",
+        "echo pwsh",
+    ] {
+        assert_eq!(
+            exec_into_shell(Some(ShellType::PowerShell), command),
+            None,
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn pwsh_wrapper_calls_are_module_qualified_in_the_bootstrap() {
+    // #944: a user function or alias named like a cmdlet must not be reached.
+    for file in [
+        include_str!("../../../../../assets/bundled/bootstrap/pwsh.ps1"),
+        include_str!("../../../../../assets/bundled/bootstrap/pwsh_init_shell.ps1"),
+        include_str!("../../../../../assets/bundled/bootstrap/pwsh_init_subshell.ps1"),
+    ] {
+        for line in file.lines().filter(|l| !l.trim_start().starts_with('#')) {
+            for bare in [
+                "Write-Output",
+                "Write-Host",
+                "Set-Location",
+                "Get-Location",
+                "Get-Command",
+                "Remove-Module",
+            ] {
+                let mut rest = line;
+                while let Some(i) = rest.find(bare) {
+                    let before = &rest[..i];
+                    let after = &rest[i + bare.len()..];
+                    let qualified = before.ends_with('\\');
+                    let in_name = before.ends_with(|c: char| c.is_alphanumeric() || c == '-')
+                        || after.starts_with(|c: char| c.is_alphanumeric() || c == '-');
+                    let in_string = before.matches('\'').count() % 2 == 1;
+                    assert!(qualified || in_name || in_string, "bare {bare}: {line}");
+                    rest = after;
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -260,19 +383,30 @@ fn pwsh_captures_status_inside_try_and_restores_it_last() {
         assert!(capture < finally, "captured inside the try: {wrapped}");
         let reraise = wrapped.rfind(PWSH_RERAISE).expect("status is put back");
         assert!(reraise > finally, "re-raised after the finally: {wrapped}");
-        assert!(wrapped.ends_with("}"), "{wrapped}");
+        // At the top level of the line, after the block: `$?` after a dot-sourced block is
+        // always true.
+        assert!(wrapped.ends_with(PWSH_RERAISE), "{wrapped}");
         assert!(
-            wrapped[reraise + PWSH_RERAISE.len()..]
-                .trim_start()
-                .starts_with('}')
+            wrapped[..reraise]
+                .trim_end()
+                .trim_end_matches(';')
+                .ends_with('}'),
+            "{wrapped}"
         );
     }
     // `$?` first, then `$LASTEXITCODE` only through `Test-Path`: a bare read throws under
     // `Set-StrictMode` when no native command has run yet.
     assert!(PWSH_CAPTURE.starts_with("$__phosphor_ap_ok = $?;"));
-    assert!(PWSH_CAPTURE.contains("Test-Path variable:global:LASTEXITCODE"));
-    assert!(!PWSH_CAPTURE.replace("$global:LASTEXITCODE", "").contains("$LASTEXITCODE"));
-    assert!(PWSH_RERAISE.contains("$global:LASTEXITCODE = if (Test-Path variable:__phosphor_ap_ec)"));
+    assert!(
+        PWSH_CAPTURE
+            .contains("Microsoft.PowerShell.Management\\Test-Path variable:global:LASTEXITCODE")
+    );
+    assert!(
+        !PWSH_CAPTURE
+            .replace("$global:LASTEXITCODE", "")
+            .contains("$LASTEXITCODE")
+    );
+    assert!(PWSH_RERAISE.contains("$global:LASTEXITCODE = if (Microsoft.PowerShell.Management\\Test-Path variable:__phosphor_ap_ec)"));
 }
 
 #[test]
@@ -391,7 +525,8 @@ fn exec_into_shell_is_detected_at_the_top_level() {
             );
         }
     }
-    // PowerShell has no `exec`.
+    // PowerShell has no `exec`; its nested-shell trap is covered by
+    // `pwsh_nested_interactive_shells_are_refused`.
     assert_eq!(
         exec_into_shell(Some(ShellType::PowerShell), "exec bash"),
         None
@@ -436,7 +571,10 @@ fn fish_commands_that_end_the_shell_run_in_a_child_fish() {
     ] {
         assert!(needs_subshell(ShellType::Fish, command), "{command}");
         let wrapped = wrap_command(Some(ShellType::Fish), command);
-        assert!(wrapped.starts_with(" begin; set -lx PAGER 'cat'"), "{wrapped}");
+        assert!(
+            wrapped.starts_with(" begin; set -lx PAGER 'cat'"),
+            "{wrapped}"
+        );
         assert!(
             wrapped.contains("(status fish-path); $__phosphor_ap_fish -c '"),
             "{wrapped}"
@@ -445,9 +583,18 @@ fn fish_commands_that_end_the_shell_run_in_a_child_fish() {
     }
     // Quotes and backslashes survive the single-quoted -c argument.
     let wrapped = wrap_command(Some(ShellType::Fish), "exit 3 # it's \\ ok");
-    assert!(wrapped.contains("-c 'exit 3 # it\\'s \\\\ ok'"), "{wrapped}");
+    assert!(
+        wrapped.contains("-c 'exit 3 # it\\'s \\\\ ok'"),
+        "{wrapped}"
+    );
     // Everything else keeps running in the user's own fish.
-    for command in ["cd /tmp", "set -gx FOO bar", "source ~/env.fish", "echo exit", "git log"] {
+    for command in [
+        "cd /tmp",
+        "set -gx FOO bar",
+        "source ~/env.fish",
+        "echo exit",
+        "git log",
+    ] {
         assert!(!needs_subshell(ShellType::Fish, command), "{command}");
         assert!(!wrap_command(Some(ShellType::Fish), command).contains("fish-path"));
     }

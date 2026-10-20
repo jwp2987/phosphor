@@ -848,7 +848,7 @@ fn build_select_string_command(queries: &[String], target_path: &str) -> String 
     // `ForEach-Object` reformats each match as `{path}\0{line_number}\0`
     // instead, which `parse_null_delimited_grep_output` expects.
     format!(
-        "Get-ChildItem -Path {} -Recurse -File | Select-String -NoEmphasis -CaseSensitive -Pattern {} | ForEach-Object {{ \"$($_.Path)`0$($_.LineNumber)`0\" }}",
+        "Microsoft.PowerShell.Management\\Get-ChildItem -Path {} -Recurse -File | Microsoft.PowerShell.Utility\\Select-String -NoEmphasis -CaseSensitive -Pattern {} | Microsoft.PowerShell.Core\\ForEach-Object {{ \"$($_.Path)`0$($_.LineNumber)`0\" }}",
         shell_quote_arg(target_path, ShellType::PowerShell),
         queries
             .iter()
