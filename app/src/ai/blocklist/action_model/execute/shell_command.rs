@@ -19,8 +19,7 @@ use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonE
 
 use crate::ai::agent::{
     AIAgentActionId, AIAgentActionType, AIAgentPtyWriteMode, CancellationReason,
-    ReadShellCommandOutputResult,
-    RequestCommandOutputResult, ShellCommandDelay, ShellCommandError,
+    ReadShellCommandOutputResult, RequestCommandOutputResult, ShellCommandDelay, ShellCommandError,
     TransferShellCommandControlToUserResult, WriteToLongRunningShellCommandResult,
 };
 use crate::ai::agent_providers::llm_id;
@@ -1023,10 +1022,11 @@ fn kill_own_shell_refusal(command: &str) -> RequestCommandOutputResult {
     RequestCommandOutputResult::Completed {
         block_id: BlockId::new(),
         command: command.to_owned(),
-        output: "The command was not run. It signals the user's own terminal shell (`$$`, `$PPID`, \
+        output:
+            "The command was not run. It signals the user's own terminal shell (`$$`, `$PPID`, \
                  `kill 0` or `kill -1`), which would close their session. Signal the specific \
                  process you mean by its pid instead."
-            .to_owned(),
+                .to_owned(),
         exit_code: ExitCode::from(1),
         start_ts: None,
         completed_ts: None,
@@ -1037,16 +1037,24 @@ fn kill_own_shell_refusal(command: &str) -> RequestCommandOutputResult {
 /// It is a failed completion rather than a new result kind so it reaches every provider's
 /// tool-result encoding unchanged.
 fn exec_into_shell_refusal(command: &str, shell: &str) -> RequestCommandOutputResult {
+    // The command the agent actually ran (`pwsh`, `& bash -NoProfile`, `exec zsh -l`), one line.
+    let shown: String = command
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(80)
+        .collect();
     RequestCommandOutputResult::Completed {
         block_id: BlockId::new(),
         command: command.to_owned(),
         output: format!(
-            "The command was not run. `exec {shell}` with nothing to run replaces the terminal's \
-             shell with a new interactive one that never exits on its own, so this tool call \
-             could never finish and the user would lose their terminal session. To run \
-             something in a different shell, run it non-interactively instead, for example \
-             `exec {shell} -c '<commands>'` or `{shell} script.sh`, or just run the commands \
-             directly."
+            "The command was not run. `{shown}` with nothing to run would leave an interactive \
+             `{shell}` shell holding the terminal (for `exec`, in place of the user's own), a \
+             shell that never exits on its own, so this tool call could never finish and the \
+             user would lose their terminal session. To run something in a different shell, run \
+             it non-interactively instead, for example `{shell} -c '<commands>'` or \
+             `{shell} script.sh`, or just run the commands directly."
         ),
         exit_code: ExitCode::from(1),
         start_ts: None,
@@ -1654,9 +1662,7 @@ pub enum ShellCommandExecutorEvent {
     },
     /// Interrupt the in-flight agent-requested command for `action_id` (^C to the PTY): the
     /// user stopped the conversation while the agent still held it. Issue #850.
-    CancelExecution {
-        action_id: AIAgentActionId,
-    },
+    CancelExecution { action_id: AIAgentActionId },
     /// Emitted when the agent requests to transfer control of a long-running command to the user.
     TransferControlToUser {
         action_id: AIAgentActionId,

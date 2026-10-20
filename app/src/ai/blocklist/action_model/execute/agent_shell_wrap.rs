@@ -191,7 +191,7 @@ const PWSH_RERAISE: &str = "$global:LASTEXITCODE = if (Microsoft.PowerShell.Mana
 
 /// `$env:` is process-wide, so the restore must be explicit; `finally` also runs on Ctrl-C.
 fn pwsh_restore() -> &'static str {
-    "foreach ($__phosphor_ap_v in @($__phosphor_ap.Keys)) { [Environment]::SetEnvironmentVariable($__phosphor_ap_v, $__phosphor_ap[$__phosphor_ap_v]) }; Microsoft.PowerShell.Utility\\Remove-Variable __phosphor_ap, __phosphor_ap_v -ErrorAction SilentlyContinue"
+    "foreach ($__phosphor_ap_v in @($__phosphor_ap.Keys)) { [Environment]::SetEnvironmentVariable($__phosphor_ap_v, $__phosphor_ap[$__phosphor_ap_v]) }; Microsoft.PowerShell.Utility\\Remove-Variable __phosphor_ap, __phosphor_ap_v -ErrorAction Ignore"
 }
 
 /// Whether a single-line form would put the closing token on the command's line in a way
