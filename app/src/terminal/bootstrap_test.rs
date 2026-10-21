@@ -497,3 +497,27 @@ fn zsh_init_shell_line_fits_macos_max_canon() {
     );
     assert!(!script.contains('\n'), "it must stay a single line");
 }
+
+/// Local zsh/bash and every warpified-remote session receive the main bootstrap script as
+/// raw typed input (`write_bootstrap_script_to_shell`), read line by line while the tty is
+/// canonical. On macOS a canonical line longer than `MAX_CANON` (1024 bytes, newline included)
+/// never completes, so the bootstrap stalls and the pane reports "Bootstrapping failed" (v0.1.13
+/// on macOS: the ssh wrapper's embedded remote-zsh script grew one line to 1070 bytes in zsh,
+/// 1106 in bash and 1105 in fish). Linux allows 4096, so only a Mac could show it.
+#[test]
+fn typed_bootstrap_lines_fit_macos_max_canon() {
+    const MACOS_MAX_CANON: usize = 1024;
+    for shell in [ShellType::Zsh, ShellType::Bash, ShellType::Fish] {
+        let script = script_for_shell(shell, &crate::ASSETS);
+        for (index, line) in script.split(|byte| *byte == b'\n').enumerate() {
+            assert!(
+                line.len() + 1 <= MACOS_MAX_CANON,
+                "{shell:?} bootstrap line {} is {} bytes; macOS drops a canonical input line over \
+                 {MACOS_MAX_CANON} bytes, so the bootstrap never finishes. Split it (a trailing \
+                 backslash continues the line) or shorten it.",
+                index + 1,
+                line.len()
+            );
+        }
+    }
+}
