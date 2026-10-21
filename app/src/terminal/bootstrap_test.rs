@@ -477,3 +477,23 @@ fn powershell_bootstrap_native_calls_redirect_stdin() {
         "expected the git, node and apt-config calls to be piped, saw {piped}"
     );
 }
+
+/// The zsh first-stage script is typed into the pty as ONE line (`enqueue_init_script`) while
+/// the tty is still canonical, before zsh starts its line editor. macOS caps a canonical input
+/// line at `MAX_CANON` = 1024 bytes including the newline; a longer line never completes, so zsh
+/// never runs it and the pane hangs at "Starting shell" (v0.1.13 on macOS: the #879 escaping
+/// loop took the line from 708 to 1054 bytes). Linux allows 4096, so only a Mac ever showed it.
+#[test]
+fn zsh_init_shell_line_fits_macos_max_canon() {
+    const MACOS_MAX_CANON: usize = 1024;
+    let script =
+        init_shell_script_for_shell(ShellType::Zsh, &crate::ASSETS, SessionId::from(u64::MAX));
+    let typed = script.len() + ShellType::Zsh.execute_command_bytes().len();
+    assert!(
+        typed <= MACOS_MAX_CANON,
+        "the zsh init line is {typed} bytes typed; macOS drops a canonical line over \
+         {MACOS_MAX_CANON} bytes and the shell never starts. Shorten zsh_init_shell.sh \
+         (move work into zsh_body.sh)."
+    );
+    assert!(!script.contains('\n'), "it must stay a single line");
+}
