@@ -1057,10 +1057,17 @@ mod real_shells {
     }
 
     /// Runs `script` in a fresh non-interactive `shell` (no rc files); `None` if it is not installed.
+    ///
+    /// The 30 s hang guard lives here rather than in an external `timeout`: on Windows that name
+    /// resolves to `TIMEOUT.EXE` (a sleep command), so pwsh never ran and every pwsh case failed
+    /// with "Default option is not allowed more than '1' time(s)".
     pub fn run(shell: ShellType, script: &str) -> Option<(String, Option<i32>)> {
+        use std::io::Read as _;
+        use std::process::Stdio;
+        use std::time::{Duration, Instant};
+
         let prog = program(shell)?;
-        let mut cmd = Command::new("timeout");
-        cmd.arg("30").arg(&prog);
+        let mut cmd = Command::new(&prog);
         match shell {
             ShellType::Bash => cmd.args(["--norc", "--noprofile", "-c", script]),
             ShellType::Zsh => cmd.args(["-f", "-c", script]),
@@ -1073,13 +1080,41 @@ mod real_shells {
                 script,
             ]),
         };
-        let out = cmd.output().ok()?;
+        let mut child = cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .ok()?;
+        // Drain both pipes on their own threads so a chatty child can never block on a full pipe
+        // while we wait for it.
+        let drain = |mut pipe: Box<dyn std::io::Read + Send>| {
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let _ = pipe.read_to_end(&mut bytes);
+                bytes
+            })
+        };
+        let stdout = drain(Box::new(child.stdout.take()?));
+        let stderr = drain(Box::new(child.stderr.take()?));
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let status = loop {
+            if let Some(status) = child.try_wait().ok()? {
+                break Some(status);
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
         let text = format!(
             "{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
+            String::from_utf8_lossy(&stdout.join().unwrap_or_default()),
+            String::from_utf8_lossy(&stderr.join().unwrap_or_default())
         );
-        Some((text, out.status.code()))
+        Some((text, status.and_then(|status| status.code())))
     }
 
     fn alive_probe(shell: ShellType) -> &'static str {
