@@ -21,6 +21,8 @@
 //!   return count >= usable(input)
 //! }
 //! ```
+use warp_multi_agent_api as api;
+
 use super::consts::COMPACTION_BUFFER;
 use super::CompactionConfig;
 
@@ -90,4 +92,22 @@ pub fn is_overflow(cfg: &CompactionConfig, tokens: TokenCounts, model: ModelLimi
         return false;
     }
     tokens.count() >= usable(cfg, model)
+}
+
+/// Whether the turn that just finished asked for a tool call (any `ToolCall` among the
+/// messages `is_new` accepts), i.e. whether the agent loop is about to continue on its own.
+///
+/// Auto compaction must not run in that state. The controller learns of a finished stream
+/// *before* it queues that stream's tool calls, so a summarize request sent at that moment
+/// cancels the loop: the calls never run (the readiness pass answers them with a synthesized
+/// cancellation result), the summary is generated, and then nothing continues the task. The
+/// next stream that ends without tool calls re-checks the usage, which by then is at least as
+/// large, so deferring loses the compaction only if the loop never stops.
+pub fn turn_has_tool_calls<'a>(
+    messages: impl IntoIterator<Item = &'a api::Message>,
+    is_new: impl Fn(&str) -> bool,
+) -> bool {
+    messages
+        .into_iter()
+        .any(|m| is_new(&m.id) && matches!(m.message, Some(api::message::Message::ToolCall(_))))
 }
