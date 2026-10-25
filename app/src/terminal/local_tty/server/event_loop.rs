@@ -63,8 +63,15 @@ impl std::ops::Drop for Children {
             // sends) so that the shell process can properly clean up
             // foreground jobs.  SIGKILL cannot be ignored or caught, and kills
             // the receiving process immediately.
-            let pid = nix::unistd::Pid::from_raw(child.id() as i32);
-            let _ = nix::sys::signal::kill(pid, nix::sys::signal::SIGHUP);
+            // Target the process group rather than the child PID alone: our PTY
+            // spawner calls setsid() for each shell, creating a new session and
+            // process group. Sending to the group ensures ssh clients, sudo
+            // chains, and other descendants in the same group also receive the
+            // hangup, so remote shells on the other end of SSH tunnels are
+            // properly terminated too. The PGID equals the child's PID because
+            // setsid() makes the child both session leader and group leader.
+            let pgid = nix::unistd::Pid::from_raw(-(child.id() as i32));
+            let _ = nix::sys::signal::kill(pgid, nix::sys::signal::SIGHUP);
             // Ensure we consume the child's exit code to avoid it becoming
             // a zombie.
             // See: https://doc.rust-lang.org/std/process/struct.Child.html#warning
@@ -316,7 +323,18 @@ impl EventLoop {
                 }
                 api::Message::KillChildRequest { pid } => {
                     let result = match self.children.remove(&pid) {
-                        Some(mut child) => child.kill().and_then(|_| child.wait()),
+                        Some(mut child) => {
+                            // Send SIGKILL to the entire process group rather
+                            // than the shell PID alone. Our PTY spawner calls
+                            // setsid(), creating a session where the child PID
+                            // is both the group ID and session ID. Signalling
+                            // the group terminates ssh clients, sudo chains,
+                            // and other descendants so that remote shells on
+                            // the other end of SSH tunnels are cleaned up too.
+                            let pgid = nix::unistd::Pid::from_raw(-(pid as i32));
+                            let _ = nix::sys::signal::kill(pgid, nix::sys::signal::SIGKILL);
+                            child.wait()
+                        }
                         None => {
                             log::info!("Did not find child shell process with pid {pid}; assuming it has already terminated.");
                             Ok(std::process::ExitStatus::default())

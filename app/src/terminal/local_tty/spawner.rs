@@ -15,6 +15,8 @@ use {
     crate::report_error,
     crate::terminal::local_tty::server::TerminalServer,
     anyhow::{bail, Context},
+    nix::sys::signal,
+    nix::unistd::Pid,
     std::process::Child,
 };
 /// A handle that can be used to interact with a pty process.
@@ -52,7 +54,13 @@ impl PtyHandle for DirectPtyHandle {
     }
 
     fn kill(&mut self) -> Result<()> {
-        self.child.kill()?;
+        // Send SIGKILL to the entire process group rather than the shell PID
+        // alone. Our PTY spawner calls setsid(), creating a session where the
+        // child PID equals the group ID. Signalling the group ensures ssh
+        // clients, sudo chains, and other descendants are terminated, so
+        // remote shells on the other end of SSH tunnels are cleaned up too.
+        let pgid = Pid::from_raw(-(self.child.id() as i32));
+        let _ = signal::kill(pgid, signal::SIGKILL);
         match self.child.wait() {
             Ok(_) => Ok(()),
             Err(err) => bail!(err),
