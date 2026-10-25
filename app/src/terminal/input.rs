@@ -6063,6 +6063,26 @@ impl Input {
         is_bootstrapped && (is_history_queryable || model.shared_session_status().is_executor())
     }
 
+    /// Returns `true` if the active session is bootstrapped and has a registration
+    /// with the Sessions model sufficient for completions.
+    ///
+    /// This is a lighter-weight variant of [`can_query_history`]: history
+    /// readiness is NOT required because the warp_completer's command registry
+    /// can suggest completions even before the histfile has been read.
+    /// This matters for remote subshells where reading the remote histfile can lag
+    /// behind bootstrap.
+    fn session_bootstrapped_for_completions(&self, ctx: &AppContext) -> bool {
+        let model = self.model.lock();
+        let Some(session_id) = model.block_list().active_block().session_id() else {
+            return false;
+        };
+
+        let is_bootstrapped = model.block_list().is_bootstrapped();
+        let has_session = self.sessions.as_ref(ctx).get(session_id).is_some();
+
+        is_bootstrapped && has_session
+    }
+
     /// Returns enum indicating if we can execute a command in the active session.
     ///
     /// We can only execute a command if:
@@ -11037,8 +11057,15 @@ impl Input {
                 .active_session(ctx)
                 .is_some_and(|s| matches!(s.session_type(), SessionType::WarpifiedRemote { .. }));
 
-        // If the cursor is in a valid completion position, go into CompletionSuggestions mode
-        if (is_command_grid_active || is_cli_agent_shell_mode) && self.can_query_history(ctx) {
+        // If the cursor is in a valid completion position, go into CompletionSuggestions mode.
+        // We gate on: command grid active (or CLI agent shell mode), session bootstrapped,
+        // and a completion context available. History-ready is NOT required for Tab completions:
+        // the warp_completer uses its own command registry and can suggest commands immediately.
+        // For remote subshells, history initialization (reading the histfile over the remote
+        // PTY) can lag behind bootstrap, and requiring it would block completions entirely.
+        if (is_command_grid_active || is_cli_agent_shell_mode)
+            && self.session_bootstrapped_for_completions(ctx)
+        {
             let matcher = MatchStrategy::Fuzzy;
 
             if let Some(completion_context) = self.completion_session_context(ctx) {
