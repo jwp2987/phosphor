@@ -9429,6 +9429,16 @@ impl TerminalView {
         if !matches!(characters, "\u{3}" | "\u{4}") && self.swallow_input_during_ssh_setup(ctx) {
             return;
         }
+        // During the SSH Warpifying phase, WarpUI's element handlers consume the key before
+        // keybinding resolution, so Cmd-Enter never reaches SetInputModeAgent. The Warpifying
+        // banner advertises "Use agent ⌘↵", so we route Enter to agent mode instead of the
+        // PTY. Ctrl-C/Ctrl-D remain exempt so the user can still abort.
+        if self.warpify_state.should_prevent_input()
+            && matches!(characters, "\n" | "\r" | "\u{2028}")
+        {
+            ctx.dispatch_typed_action(&TerminalAction::SetInputModeAgent);
+            return;
+        }
         if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
             self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
             self.highlighted_link.invalidate();
