@@ -9713,7 +9713,10 @@ impl TerminalView {
         let handoff_route = {
             let mut terminal_model = self.model.lock();
             let active_block = terminal_model.block_list().active_block();
-            if active_block.is_agent_in_control() {
+            // Allow user keystrokes through to the PTY when an interactive full-screen program
+            // (pager, vim, tmux, etc.) is running in the alt-screen, even if the agent is in
+            // control of the underlying command (issue #963).
+            if active_block.is_agent_in_control() && !terminal_model.is_alt_screen_active() {
                 return false;
             }
             if active_block.is_active_and_long_running() && !active_block.has_received_user_input()
@@ -22525,12 +22528,15 @@ impl TerminalView {
             let has_bootstrapped = model.block_list().is_bootstrapping_precmd_done();
 
             let has_active_user_terminal_command = block_list.active_block().is_active_and_long_running()
-                && !block_list.active_block().is_agent_in_control()
+                && (!block_list.active_block().is_agent_in_control()
+                    || model.is_alt_screen_active())
                 // The only case where terminal can take focus _while_ input is visible is
                 // pre-bootstrap, for example when oh-my-zsh prompts you to update -- at this point
                 // the input is visible but you should still be able to click into the block for the
-                // oh-my-zsh prompt and send input directly to the pty.
-                && (!is_input_visible || !has_bootstrapped);
+                // oh-my-zsh prompt and send input directly to the pty. Alt-screen programs like
+                // pagers (less, vim, tmux) also need terminal focus to receive keyboard input
+                // when the agent is driving the underlying command (issue #963).
+                && (!is_input_visible || !has_bootstrapped || model.is_alt_screen_active());
 
             let is_shell_mode = !self.ai_input_model.as_ref(ctx).is_ai_input_enabled();
             let are_blocks_selected = !self.selected_blocks.is_empty();
