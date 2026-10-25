@@ -356,6 +356,24 @@ fn new_command_executor_for_local_tty_session(
                 unreachable!("Unreachable because of match! above. Unfortunately if let guards in rust are still experimental.")
             }
         }
+        BootstrapSessionType::WarpifiedRemote
+            if session_info.shell.shell_type() == ShellType::Fish
+                && !force_use_in_band_generators =>
+        {
+            // For remote WarpifiedRemote fish sessions, in-band generator commands
+            // can leak text into the terminal (phosphor#978: commands concatenated
+            // onto warp_run_generator_command). This is because fish's bracketed
+            // paste handling for the leading-space + inner-command write pattern
+            // can interfere with remote line editor state. Using a no-op executor
+            // disables dynamic generator completions for these sessions, but registry-
+            // based completions and file path fallback still work through the remote
+            // executor.
+            log::info!(
+                "remote fish session {:?}: using no-op executor to avoid in-band generator leak",
+                session_info.session_id
+            );
+            Arc::new(NoOpCommandExecutor::new())
+        }
         _ => {
             if *should_force_disable_in_band_generators {
                 // The user has manually disabled in-band generators via command
