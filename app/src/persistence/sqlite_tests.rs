@@ -2763,3 +2763,186 @@ fn lock_retry_slows_down_instead_of_giving_up() {
         super::LOCK_SLOW_RETRY_INTERVAL
     );
 }
+
+/// A rollback-journal file database whose writer connection `a` has a short busy
+/// timeout, plus `t(x)`; used to make `COMMIT` fail with `SQLITE_BUSY` (a reader
+/// on another connection holds a SHARED lock), which diesel's `transaction()`
+/// reports without ending the transaction (#971).
+fn stray_transaction_fixture() -> (
+    tempfile::TempDir,
+    String,
+    diesel::sqlite::SqliteConnection,
+    diesel::sqlite::SqliteConnection,
+) {
+    use diesel::{Connection as _, connection::SimpleConnection as _, sqlite::SqliteConnection};
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let url = tempdir
+        .path()
+        .join("stray.sqlite")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let mut a = SqliteConnection::establish(&url).expect("writer connects");
+    a.batch_execute(
+        "PRAGMA journal_mode=DELETE; PRAGMA busy_timeout=50; CREATE TABLE t (x INTEGER);",
+    )
+    .expect("schema");
+    let mut reader = SqliteConnection::establish(&url).expect("reader connects");
+    reader
+        .batch_execute("BEGIN; SELECT * FROM t;")
+        .expect("reader holds a SHARED lock");
+    (tempdir, url, a, reader)
+}
+
+fn count_rows_from_fresh_connection(url: &str) -> i64 {
+    use diesel::{Connection as _, RunQueryDsl as _, sql_types::BigInt, sqlite::SqliteConnection};
+
+    #[derive(diesel::QueryableByName)]
+    struct Count {
+        #[diesel(sql_type = BigInt)]
+        n: i64,
+    }
+    let mut fresh = SqliteConnection::establish(url).expect("fresh connection");
+    diesel::sql_query("SELECT COUNT(*) AS n FROM t")
+        .get_result::<Count>(&mut fresh)
+        .expect("count")
+        .n
+}
+
+/// #971: a failed COMMIT left the writer inside an open transaction with diesel
+/// counting depth 1, so every later write was a SAVEPOINT in a transaction that
+/// never committed: "saved" in the log, invisible to every other connection.
+#[test]
+fn blocked_commit_does_not_leave_the_writer_inside_a_transaction() {
+    use diesel::{Connection as _, RunQueryDsl as _, connection::SimpleConnection as _};
+
+    let (_dir, url, mut a, mut reader) = stray_transaction_fixture();
+
+    let result = a.transaction::<_, diesel::result::Error, _>(|conn| {
+        diesel::sql_query("INSERT INTO t VALUES (1)").execute(conn)?;
+        Ok(())
+    });
+    assert!(
+        result.is_err(),
+        "COMMIT must be blocked by the reader's SHARED lock"
+    );
+    assert!(
+        super::in_open_transaction(&mut a),
+        "precondition: diesel's early return leaves SQLite inside the transaction"
+    );
+
+    reader.batch_execute("ROLLBACK;").expect("reader released");
+    assert!(
+        super::settle_stray_transaction(&mut a),
+        "a stray transaction was open"
+    );
+    assert!(
+        !super::in_open_transaction(&mut a),
+        "the writer must be back in autocommit"
+    );
+    assert_eq!(
+        count_rows_from_fresh_connection(&url),
+        1,
+        "the intended write must be committed, not lost"
+    );
+
+    // And later writes commit promptly instead of nesting in the old transaction.
+    a.transaction::<_, diesel::result::Error, _>(|conn| {
+        diesel::sql_query("INSERT INTO t VALUES (2)").execute(conn)?;
+        Ok(())
+    })
+    .expect("a later write commits");
+    assert_eq!(count_rows_from_fresh_connection(&url), 2);
+    assert!(
+        !super::settle_stray_transaction(&mut a),
+        "nothing left to settle"
+    );
+}
+
+/// #971: the lock probe must see a stray transaction as such (not as "no lock"
+/// or "locked"), end it, and leave the connection in autocommit after every call.
+#[test]
+fn write_lock_probe_ends_a_stray_transaction_and_leaves_autocommit() {
+    use diesel::{Connection as _, RunQueryDsl as _, connection::SimpleConnection as _};
+
+    let (_dir, url, mut a, mut reader) = stray_transaction_fixture();
+    let _ = a.transaction::<_, diesel::result::Error, _>(|conn| {
+        diesel::sql_query("INSERT INTO t VALUES (1)").execute(conn)?;
+        Ok(())
+    });
+    assert!(super::in_open_transaction(&mut a));
+    reader.batch_execute("ROLLBACK;").expect("reader released");
+
+    assert!(
+        !super::write_lock_blocked(&mut a),
+        "no lock is held any more"
+    );
+    assert!(
+        !super::in_open_transaction(&mut a),
+        "the probe must leave the connection in autocommit"
+    );
+    assert_eq!(count_rows_from_fresh_connection(&url), 1);
+
+    // Under a real external lock the probe reports blocked and still leaves autocommit.
+    let mut locker = diesel::sqlite::SqliteConnection::establish(&url).expect("locker");
+    locker.batch_execute("BEGIN EXCLUSIVE;").expect("lock");
+    assert!(super::write_lock_blocked(&mut a));
+    assert!(!super::in_open_transaction(&mut a));
+    locker.batch_execute("ROLLBACK;").expect("unlock");
+    assert!(!super::write_lock_blocked(&mut a));
+    assert!(!super::in_open_transaction(&mut a));
+}
+
+/// #971 (real-app Linux report): after a lock episode, a queued event lands, and
+/// events written AFTER the release are visible from a third, fresh connection
+/// within a few seconds, not only when the writer's connection closes.
+#[test]
+fn writes_after_a_lock_episode_are_visible_to_a_fresh_connection() {
+    use diesel::{Connection as _, connection::SimpleConnection as _, sqlite::SqliteConnection};
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let conn = setup_database(&database_path).expect("database should initialize");
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+    let url = database_path.to_str().unwrap().to_owned();
+    let mut locker = SqliteConnection::establish(&url).expect("locker connects");
+    locker.batch_execute("BEGIN EXCLUSIVE;").expect("lock");
+
+    let send = |path: &str| {
+        writer
+            .sender
+            .send(ModelEvent::UpsertCodebaseIndexMetadata {
+                index_metadata: Box::new(test_workspace_metadata(path)),
+            })
+            .expect("event should send");
+    };
+    send("/tmp/episode-during-lock");
+    std::thread::sleep(std::time::Duration::from_millis(3500));
+    locker.batch_execute("ROLLBACK;").expect("lock released");
+    let after: Vec<String> = (0..5).map(|i| format!("/tmp/episode-after-{i}")).collect();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    for path in &after {
+        send(path);
+    }
+
+    let mut third = SqliteConnection::establish(&url).expect("third connection");
+    let started = std::time::Instant::now();
+    let mut seen = 0;
+    while started.elapsed() < std::time::Duration::from_secs(8) {
+        seen = get_all_codebase_index_metadata(&mut third)
+            .expect("metadata")
+            .len();
+        if seen == 6 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    // Checked before Terminate: closing the connection would flush anything stuck.
+    assert_eq!(
+        seen, 6,
+        "all six writes must be visible before the writer shuts down"
+    );
+    writer.sender.send(ModelEvent::Terminate).ok();
+    writer.handle.join().expect("writer should terminate");
+}

@@ -197,6 +197,70 @@ impl RetryQueue {
     }
 }
 
+/// Whether `conn` is inside a transaction that is still open, asked of SQLite
+/// itself (diesel keeps its own depth counter, which can disagree).
+///
+/// A deferred `BEGIN` takes no lock, so this never waits; it fails only when a
+/// transaction is already open.
+fn in_open_transaction(conn: &mut SqliteConnection) -> bool {
+    match conn.batch_execute("BEGIN;") {
+        Ok(()) => {
+            if let Err(err) = conn.batch_execute("ROLLBACK;") {
+                log::warn!("Could not end the open-transaction probe: {err}");
+            }
+            false
+        }
+        Err(err) => err.to_string().contains("within a transaction"),
+    }
+}
+
+/// Leaves `conn` in autocommit mode, returning whether it was not.
+///
+/// diesel's `transaction()` returns early when `COMMIT` fails (a lock held by
+/// another process makes it `SQLITE_BUSY`) without a rollback: SQLite keeps the
+/// transaction open, and diesel keeps counting depth 1. Every later
+/// `transaction()` is then a `SAVEPOINT` inside it, which is released but
+/// never committed: the writer logs success while nothing reaches the file
+/// until the connection closes (#971). The lingering transaction is the intended
+/// write, so it is committed again through diesel (keeping its depth in step);
+/// only if that keeps failing is it rolled back.
+fn settle_stray_transaction(conn: &mut SqliteConnection) -> bool {
+    use diesel::connection::{AnsiTransactionManager, TransactionManager};
+
+    if !in_open_transaction(conn) {
+        return false;
+    }
+    log::error!(
+        "The SQLite writer was left inside an open transaction (a COMMIT was blocked by a \
+         lock); committing it now"
+    );
+    for _ in 0..8 {
+        match AnsiTransactionManager::commit_transaction(conn) {
+            Ok(()) if !in_open_transaction(conn) => return true,
+            Ok(()) => {}
+            // diesel believes nothing is open, SQLite disagrees: nothing to commit through.
+            Err(Error::NotInTransaction) => break,
+            Err(err) => log::warn!("Retrying the blocked COMMIT failed: {err}"),
+        }
+    }
+    for _ in 0..8 {
+        if !in_open_transaction(conn) {
+            return true;
+        }
+        if AnsiTransactionManager::rollback_transaction(conn).is_err() {
+            break;
+        }
+    }
+    if in_open_transaction(conn) {
+        if let Err(err) = conn.batch_execute("ROLLBACK;") {
+            log::error!("Could not roll back the stray transaction: {err}");
+        } else {
+            log::error!("The stray transaction could not be committed and was rolled back");
+        }
+    }
+    true
+}
+
 /// Whether another connection currently blocks writes to the database (waits
 /// out the connection's busy timeout). Checked before an event is consumed.
 ///
@@ -204,7 +268,30 @@ impl RetryQueue {
 /// left no transaction, and a `ROLLBACK` then errors with "cannot rollback - no
 /// transaction is active", which SQLite's log hook printed as an ERROR every
 /// probe (#971). Only a transaction that was actually opened is rolled back.
+///
+/// A `BEGIN` refused because a transaction is already open is not a lock: it
+/// means an earlier write left one behind, which is ended first.
 fn write_lock_blocked(conn: &mut SqliteConnection) -> bool {
+    match conn.batch_execute("BEGIN IMMEDIATE;") {
+        Ok(()) => {
+            if let Err(err) = conn.batch_execute("ROLLBACK;") {
+                log::warn!("Could not end the database write-lock probe: {err}");
+            }
+            false
+        }
+        Err(err) => {
+            let message = err.to_string().to_lowercase();
+            if message.contains("within a transaction") {
+                settle_stray_transaction(conn);
+                return write_lock_blocked_once(conn);
+            }
+            super::database_notice::is_lock_error(&message)
+        }
+    }
+}
+
+/// The probe without the stray-transaction recovery (so it cannot recurse).
+fn write_lock_blocked_once(conn: &mut SqliteConnection) -> bool {
     match conn.batch_execute("BEGIN IMMEDIATE;") {
         Ok(()) => {
             if let Err(err) = conn.batch_execute("ROLLBACK;") {
@@ -1978,7 +2065,9 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                 && !abandoned
                                 && let Some(conn) = current_conn.as_mut()
                             {
-                                match save_app_state(conn, &state) {
+                                let saved = save_app_state(conn, &state);
+                                settle_stray_transaction(conn);
+                                match saved {
                                     Ok(()) => log::info!("Saved the pending app state on shutdown"),
                                     Err(err) => log::warn!(
                                         "Could not save the pending app state on shutdown: {err:#}"
@@ -2060,6 +2149,7 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                     } else {
                                         let result = save_app_state(conn, &state)
                                             .context("error saving app state");
+                                        settle_stray_transaction(conn);
                                         match &result {
                                             Err(err)
                                                 if super::database_notice::is_lock_error(
@@ -2202,6 +2292,16 @@ fn retire_abandoned_connection(conn: SqliteConnection, db_path: &Path) -> bool {
 /// * [`ModelEvent::ReconstructAndResume`]
 /// * [`ModelEvent::Terminate`]
 fn handle_model_event(event: ModelEvent, connection: &mut SqliteConnection) -> anyhow::Result<()> {
+    let result = handle_model_event_unsettled(event, connection);
+    // Whatever the outcome, the next write must start from autocommit (#971).
+    settle_stray_transaction(connection);
+    result
+}
+
+fn handle_model_event_unsettled(
+    event: ModelEvent,
+    connection: &mut SqliteConnection,
+) -> anyhow::Result<()> {
     match event {
         ModelEvent::PauseAndRemoveDatabase
         | ModelEvent::ReconstructAndResume
