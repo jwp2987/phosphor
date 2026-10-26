@@ -9538,7 +9538,11 @@ impl TerminalView {
     fn agent_shortcut_banner_visible(&self, ctx: &AppContext) -> bool {
         self.warpify_state.is_ssh_warpifying()
             || (!self.use_agent_footer_suppressed
-                && self.use_agent_footer.as_ref(ctx).warpify_mode(ctx).is_some())
+                && self
+                    .use_agent_footer
+                    .as_ref(ctx)
+                    .warpify_mode(ctx)
+                    .is_some())
     }
 
     /// The agent shortcut (Cmd-Enter / Ctrl-Shift-Enter) arrived as a key event. While the SSH

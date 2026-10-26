@@ -14648,6 +14648,83 @@ fn long_running_click_on_agent_response_routes_to_read_only_viewer_not_toast() {
     });
 }
 
+/// #992: the read-only viewer never enters the conversation's agent view, so its AI blocks must
+/// not be scoped to it; otherwise the terminal transcript scope hides every one of them and the
+/// pane renders blank.
+#[test]
+fn read_only_view_of_live_conversation_renders_its_ai_blocks() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
+
+        let live = add_window_with_terminal(&mut app, None);
+        let conversation_id = live.update(&mut app, |view, ctx| {
+            let (conversation_id, ..) = append_exchange_and_handle_event(
+                view,
+                AIAgentInput::UserQuery {
+                    query: "earlier question".to_owned(),
+                    context: Default::default(),
+                    static_query_type: None,
+                    referenced_attachments: Default::default(),
+                    user_query_mode: UserQueryMode::Normal,
+                    running_command: None,
+                    intended_agent: None,
+                },
+                ctx,
+            );
+            conversation_id
+        });
+        let snapshot = BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
+            history
+                .conversation(&conversation_id)
+                .expect("live conversation should exist")
+                .clone()
+        });
+
+        let viewer = add_window_with_terminal(&mut app, None);
+        viewer.update(&mut app, |view, ctx| {
+            view.restore_conversations_on_view_creation(
+                ConversationRestorationInNewPaneType::Historical {
+                    conversation: snapshot,
+                    should_use_live_appearance: true,
+                    ambient_agent_task_id: None,
+                    read_only_view_of_live: true,
+                },
+                ctx,
+            );
+        });
+
+        viewer.read(&app, |view, _| {
+            let ai_view_ids: Vec<_> = view
+                .rich_content_views
+                .iter()
+                .filter(|rich_content| {
+                    rich_content
+                        .ai_block_metadata()
+                        .is_some_and(|metadata| metadata.conversation_id == conversation_id)
+                })
+                .map(|rich_content| rich_content.view_id())
+                .collect();
+            assert!(!ai_view_ids.is_empty());
+            let model = view.model.lock();
+            let mut visible = 0;
+            for item in model.block_list().block_heights().cursor::<TotalIndex, ()>() {
+                if let crate::terminal::model::blocks::BlockHeightItem::RichContent(item) = item {
+                    if ai_view_ids.contains(&item.view_id) {
+                        assert!(!item.should_hide, "viewer AI block is hidden");
+                        visible += 1;
+                    }
+                }
+            }
+            assert_eq!(visible, ai_view_ids.len());
+        });
+    });
+}
+
 /// #988: a read-only view of a conversation that is live in another pane must not register a
 /// second live copy, take over liveness, or overwrite the live `AIConversation`.
 #[test]
@@ -14816,9 +14893,7 @@ fn agent_shortcut_enter_diverts_for_subshell_banner() {
             });
         });
         terminal.update(&mut app, |view, ctx| {
-            view.model
-                .lock()
-                .simulate_long_running_block("bash", "");
+            view.model.lock().simulate_long_running_block("bash", "");
             assert!(!view.warpify_state.is_ssh_warpifying());
             assert!(!view.agent_shortcut_banner_visible(ctx));
             view.use_agent_footer.update(ctx, |footer, ctx| {
