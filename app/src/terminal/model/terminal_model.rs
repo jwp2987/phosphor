@@ -550,6 +550,10 @@ pub struct TerminalModel {
     /// This is used to construct a final, populated `SessionInfo` after the session is
     /// bootstrapped.
     pending_session_info: Option<SessionInfo>,
+    /// The pending subshell session that `abandon_stalled_subshell_bootstrap` gave up on. Kept so
+    /// a shell that was only slow (an rc file sleeping before it reads the script) still gets
+    /// its session when the late `Bootstrapped` finally arrives (#1014).
+    abandoned_subshell_session: Option<SessionInfo>,
 
     /// If true, the terminal was bootstrapping but received a ^D from the user. We cannot stop the
     /// shell from sending us bootstrapping messages, but we can ignore them. This value is always
@@ -1226,6 +1230,7 @@ impl TerminalModel {
             pending_shell_launch_data: None,
             active_shell_launch_data: None,
             pending_session_info: None,
+            abandoned_subshell_session: None,
             ignore_bootstrapping_messages: false,
             session_startup_path,
             is_receiving_in_band_command_output: IsReceivingInBandCommandOutput::No,
@@ -1789,7 +1794,7 @@ impl TerminalModel {
             return false;
         }
         log::warn!("Abandoning a subshell bootstrap that never reported Bootstrapped (#1014)");
-        self.pending_session_info = None;
+        self.abandoned_subshell_session = self.pending_session_info.take();
         self.block_list.set_bootstrapped();
         true
     }
@@ -3440,7 +3445,11 @@ impl ansi::Handler for TerminalModel {
     fn bootstrapped(&mut self, value: BootstrappedValue) {
         self.block_list.bootstrapped(value.clone());
 
-        let pending_session_info = match self.pending_session_info.take() {
+        let pending_session_info = match self
+            .pending_session_info
+            .take()
+            .or_else(|| self.abandoned_subshell_session.take())
+        {
             Some(session_info) => session_info,
             None => {
                 // Not being able to read the value should not cause a full-app crash. Instead,
@@ -3524,6 +3533,13 @@ impl ansi::Handler for TerminalModel {
         if self.pending_session_id() == Some(data.session_id) {
             self.pending_session_info = None;
         }
+        if self
+            .abandoned_subshell_session
+            .as_ref()
+            .is_some_and(|info| info.session_id == data.session_id)
+        {
+            self.abandoned_subshell_session = None;
+        }
         self.event_proxy.send_terminal_event(Event::ExitShell {
             session_id: data.session_id,
         });
@@ -3577,6 +3593,8 @@ impl ansi::Handler for TerminalModel {
                 self.block_list().active_block().session_id(),
             );
             self.pending_session_info = Some(pending_session_info.clone());
+            // A newer shell supersedes whatever was abandoned earlier.
+            self.abandoned_subshell_session = None;
 
             if self.block_list().is_bootstrapped() {
                 self.block_list_mut().reinit_shell();
