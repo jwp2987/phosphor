@@ -1533,3 +1533,153 @@ fn ssh_wrapper_only_wraps_interactive_logins() {
         }
     }
 }
+
+/// #1014: the probe and the known-shell stage are typed into a shell whose rc files already ran,
+/// so they must survive hostile settings: `set -euo pipefail` (bash), `ERR_EXIT NO_UNSET
+/// PIPE_FAIL PRINT_EXIT_VALUE` (zsh) and `set -eu` (POSIX sh). The shell must stay alive, print
+/// nothing extra (zsh's PRINT_EXIT_VALUE reports every non-zero line), run the staged script and
+/// get its own options back. The old prelude counted `setopt | grep -c histignorespace`, which
+/// exits 1 when the option is off and killed a zsh with ERR_EXIT.
+#[test]
+#[cfg(unix)]
+fn test_bootstrap_lines_survive_errexit_nounset_pipefail_rc_settings() {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let probe = init_subshell_command_lines(None, &[], SessionId::from(4242u64), ctx);
+            // (shell, args, rc file name, rc text, known-shell stage, extra zsh setting)
+            let cases: [(&str, &[&str], &str, &str, Option<ShellType>); 4] = [
+                ("bash", &["-i"], "rc", "set -euo pipefail\n", Some(ShellType::Bash)),
+                (
+                    "zsh",
+                    &["-i"],
+                    ".zshrc",
+                    "setopt ERR_EXIT NO_UNSET PIPE_FAIL PRINT_EXIT_VALUE\n",
+                    Some(ShellType::Zsh),
+                ),
+                (
+                    "zsh",
+                    &["-i"],
+                    ".zshrc",
+                    "setopt ERR_EXIT NO_UNSET PIPE_FAIL PRINT_EXIT_VALUE HIST_IGNORE_SPACE\n",
+                    Some(ShellType::Zsh),
+                ),
+                ("dash", &["-i"], "rc", "set -eu\n", None),
+            ];
+            for (bin, args, rc_name, rc, known) in cases {
+                let Ok(path) = Command::new("sh")
+                    .args(["-c", &format!("command -v {bin}")])
+                    .output()
+                else {
+                    continue;
+                };
+                let path = String::from_utf8_lossy(&path.stdout).trim().to_owned();
+                if path.is_empty() {
+                    eprintln!("skipping {bin}: not installed");
+                    continue;
+                }
+                let dir = std::env::temp_dir().join(format!(
+                    "phosphor-hostile-{bin}-{}-{}",
+                    std::process::id(),
+                    rc.len()
+                ));
+                std::fs::remove_dir_all(&dir).ok();
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join(rc_name), rc).unwrap();
+                let mut command = Command::new(&path);
+                if bin == "bash" {
+                    // GNU long options must come before `-i`.
+                    command.arg("--rcfile").arg(dir.join(rc_name));
+                }
+                command.args(args);
+                let mut child = command
+                    .env_clear()
+                    .env("PATH", std::env::var("PATH").unwrap_or_default())
+                    .env("HOME", &dir)
+                    .env("ZDOTDIR", &dir)
+                    .env("ENV", dir.join(rc_name))
+                    .env("HISTFILE", dir.join("history"))
+                    .env("TERM", "dumb")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                {
+                    let stdin = child.stdin.as_mut().unwrap();
+                    let mut lines = probe.clone();
+                    if let Some(known) = known {
+                        lines.extend(chunked_eval_lines(known, "echo STAGE2-RAN"));
+                    }
+                    lines.push(" echo ALIVE-AFTER".to_owned());
+                    if bin == "zsh" {
+                        lines.push(
+                            " print -r -- \"OPTS ee=$options[errexit] nu=$options[unset] pf=$options[pipefail] pev=$options[printexitvalue] whi=$options[histignorespace] residue=[${__whi-}${__wpe-}${_wbs-}]\""
+                                .to_owned(),
+                        );
+                    }
+                    if bin == "bash" {
+                        lines.push(" echo \"OPTS $- residue=[${__hc0-}${_wbs-}]\"".to_owned());
+                    }
+                    for line in lines {
+                        stdin.write_all(line.as_bytes()).unwrap();
+                        stdin.write_all(b"\n").unwrap();
+                    }
+                    stdin.write_all(b"exit\n").unwrap();
+                }
+                let out = child.wait_with_output().unwrap();
+                let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+                let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+                let all = format!("{stdout}{stderr}");
+                assert!(
+                    all.contains("ALIVE-AFTER"),
+                    "{bin} ({rc:?}): the shell died during the bootstrap: {all:?}"
+                );
+                assert!(
+                    all.contains("InitSubshell"),
+                    "{bin} ({rc:?}): the probe never reported: {all:?}"
+                );
+                if known.is_some() {
+                    assert!(
+                        all.contains("STAGE2-RAN"),
+                        "{bin} ({rc:?}): the staged script did not run: {all:?}"
+                    );
+                }
+                for noise in ["exit 1", "not found", "unbound", "parameter not set", "invalid"] {
+                    assert!(
+                        !all.contains(noise),
+                        "{bin} ({rc:?}): bootstrap noise ({noise}): {all:?}"
+                    );
+                }
+                if bin == "zsh" {
+                    let hist_ignore_space = rc.contains("HIST_IGNORE_SPACE");
+                    let expect = format!(
+                        "OPTS ee=on nu=off pf=on pev=on whi={} residue=[]",
+                        if hist_ignore_space { "on" } else { "off" }
+                    );
+                    assert!(
+                        stdout.contains(&expect),
+                        "{bin} ({rc:?}): the user's options were not put back: {stdout:?}"
+                    );
+                }
+                if bin == "bash" {
+                    let opts = stdout
+                        .lines()
+                        .find_map(|l| l.strip_prefix("OPTS "))
+                        .unwrap_or_default();
+                    assert!(
+                        stdout.contains("residue=[]")
+                            && opts.split_whitespace().next().is_some_and(|f| {
+                                f.contains('e') && f.contains('u')
+                            }),
+                        "{bin}: the user's options were not put back: {stdout:?}"
+                    );
+                }
+                std::fs::remove_dir_all(&dir).ok();
+            }
+        });
+    });
+}
