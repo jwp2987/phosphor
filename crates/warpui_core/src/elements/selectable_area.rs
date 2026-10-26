@@ -746,6 +746,13 @@ impl Element for SelectableArea {
             } => {
                 let selection_started =
                     self.on_mouse_down(*position, modifiers, *click_count, ctx, app);
+                // #988 diagnostics: did this area's mouse-down start a selection?
+                log::debug!(
+                    "#988 selectable_area down: position={position:?} started={selection_started} \
+                     origin={} size={}",
+                    self.origin.is_some(),
+                    self.size.is_some()
+                );
 
                 // Invoking the selection handler is necessary to notify parent views that we've
                 // cleared the internal selection state of the `SelectableArea`.

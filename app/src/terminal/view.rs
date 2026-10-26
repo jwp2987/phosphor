@@ -26383,6 +26383,11 @@ impl TerminalView {
                     )
                     .on_left_mouse_down(
                         enclose!((position_id, input_position_id) move |ctx, _app, position| {
+                            // #988 diagnostics: does the waterfall overlay take this click?
+                            log::debug!(
+                                "#988 waterfall overlay down: position={position:?} \
+                                 block_list_height_px={block_list_height_px}"
+                            );
                             if offset_position_outside_block(
                                 position,
                                 &position_id,
