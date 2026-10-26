@@ -14485,61 +14485,73 @@ fn subshell_setup_waits_behind_a_password_prompt_until_it_is_answered() {
                 }
             });
         });
-        terminal.update(&mut app, |view, ctx| {
+        // Pty writes are delivered as events after each update, so every check on them is
+        // made after the update that caused them.
+        let written = |writes: &Rc<RefCell<Vec<Vec<u8>>>>| -> Vec<u8> {
+            writes.borrow().iter().flatten().copied().collect()
+        };
+        let since = terminal.update(&mut app, |view, ctx| {
             view.model
                 .lock()
                 .simulate_long_running_block("zsh", "Password: ");
             view.trigger_subshell_bootstrap(Some(ShellType::Zsh), false, ctx);
             assert!(view.subshell_setup_deferred.is_some(), "setup is deferred");
-            assert!(
-                pty_writes.borrow().is_empty(),
-                "no setup text reaches the prompt"
-            );
             assert!(view.subshell_bootstrap_announced.is_none());
+            view.subshell_setup_deferred.as_ref().unwrap().since
+        });
+        assert!(
+            written(&pty_writes).is_empty(),
+            "no setup text reaches the prompt"
+        );
 
-            // Polling without an answer never writes, however long it has been quiet.
-            let since = view.subshell_setup_deferred.as_ref().unwrap().since;
+        // Polling without an answer never writes, however long it has been quiet.
+        terminal.update(&mut app, |view, ctx| {
             if let Some(d) = view.subshell_setup_deferred.as_mut() {
                 d.unchanged_since = Instant::now() - Duration::from_secs(5);
             }
             view.poll_deferred_subshell_setup(since, ctx);
-            assert!(pty_writes.borrow().is_empty());
+        });
+        assert!(
+            written(&pty_writes).is_empty(),
+            "an unanswered prompt still gets nothing"
+        );
 
-            // The user's password goes to the pty untouched and counts as the answer.
-            // Typed as the user types: the text, then Enter. (One "secret\r" chunk would run into
-            // the #933 young-command Enter hold, which the just-created test block is subject to.)
+        // The user's password goes to the pty untouched and counts as the answer. Typed as the
+        // user types: the text, then Enter. (One "secret\r" chunk would run into the #933
+        // young-command Enter hold, which the just-created test block is subject to.)
+        terminal.update(&mut app, |view, ctx| {
             assert!(view.write_user_bytes_to_pty(b"secret".to_vec(), ctx));
-            assert!(
-                pty_writes
-                    .borrow()
-                    .iter()
-                    .flatten()
-                    .copied()
-                    .collect::<Vec<u8>>()
-                    .starts_with(b"secret"),
-                "the answer reaches the pty untouched"
-            );
-            assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
+        });
+        assert_eq!(
+            written(&pty_writes),
+            b"secret",
+            "the answer reaches the pty untouched"
+        );
+        terminal.update(&mut app, |view, ctx| {
+            view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
             assert!(
                 view.subshell_setup_deferred
                     .as_ref()
                     .unwrap()
                     .answered_at
-                    .is_some()
+                    .is_some(),
+                "the Enter answers the prompt"
             );
-            pty_writes.borrow_mut().clear();
+        });
+        pty_writes.borrow_mut().clear();
 
-            // Quiet since the answer: now the setup goes out.
+        // Quiet since the answer: now the setup goes out.
+        terminal.update(&mut app, |view, ctx| {
             if let Some(d) = view.subshell_setup_deferred.as_mut() {
                 d.unchanged_since = Instant::now() - Duration::from_secs(5);
             }
             view.poll_deferred_subshell_setup(since, ctx);
             assert!(view.subshell_setup_deferred.is_none());
-            assert!(
-                !pty_writes.borrow().is_empty(),
-                "setup is written after the answer"
-            );
         });
+        assert!(
+            !written(&pty_writes).is_empty(),
+            "setup is written after the answer"
+        );
     })
 }
 
