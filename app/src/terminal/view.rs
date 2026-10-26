@@ -9433,8 +9433,7 @@ impl TerminalView {
         // keybinding resolution, so Cmd-Enter never reaches SetInputModeAgent. The Warpifying
         // banner advertises "Use agent ⌘↵", so we route Enter to agent mode instead of the
         // PTY. Ctrl-C/Ctrl-D remain exempt so the user can still abort.
-        if self.warpify_state.should_prevent_input()
-            && matches!(characters, "\n" | "\r" | "\u{2028}")
+        if self.warpify_state.is_ssh_warpifying() && matches!(characters, "\n" | "\r" | "\u{2028}")
         {
             ctx.dispatch_typed_action(&TerminalAction::SetInputModeAgent);
             return;
@@ -9720,13 +9719,28 @@ impl TerminalView {
         {
             bytes = Cow::Owned(with_held);
         }
+        // #963: the user typing into an interactive full-screen program (pager, vim, tmux, ...)
+        // the agent is driving is taking the command over. Do it the same way an explicit
+        // take-over does, so the agent stops writing to the same program and the two inputs
+        // cannot interleave. This must happen before the model lock below: the switch locks it.
+        let should_take_over = {
+            let terminal_model = self.model.lock();
+            terminal_model.is_alt_screen_active()
+                && terminal_model
+                    .block_list()
+                    .active_block()
+                    .is_agent_in_control()
+        };
+        if should_take_over {
+            self.cli_subagent_controller.update(ctx, |controller, ctx| {
+                controller.switch_control_to_user(UserTakeOverReason::Manual, ctx);
+            });
+        }
         let handoff_route = {
             let mut terminal_model = self.model.lock();
             let active_block = terminal_model.block_list().active_block();
-            // Allow user keystrokes through to the PTY when an interactive full-screen program
-            // (pager, vim, tmux, etc.) is running in the alt-screen, even if the agent is in
-            // control of the underlying command (issue #963).
-            if active_block.is_agent_in_control() && !terminal_model.is_alt_screen_active() {
+            // If the take-over above did not succeed the agent still owns the command.
+            if active_block.is_agent_in_control() {
                 return false;
             }
             if active_block.is_active_and_long_running() && !active_block.has_received_user_input()

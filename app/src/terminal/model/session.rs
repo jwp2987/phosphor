@@ -1332,6 +1332,21 @@ impl Session {
             let shell = self.info.shell.clone();
             let external_commands = self.external_commands.clone();
             let external_commands_load_finished = self.external_commands_load_finished.clone();
+
+            // #978: on a warpified remote fish session this probe (`complete -C --escape ''`)
+            // is the in-band command that was observed leaking into fish's command line and
+            // history, corrupting every user command typed after it. Skip it here rather than
+            // swapping the whole session executor for a no-op: that also broke history loading
+            // and every other in-band read. Leaving the cell unset reports `Unknown`, not
+            // 'no executables' (see #616 below), so executable-gated chips stay enabled.
+            if shell.shell_type() == ShellType::Fish
+                && matches!(self.session_type(), SessionType::WarpifiedRemote { .. })
+            {
+                log::info!("Skipping external command enumeration for remote fish session (#978)");
+                external_commands_load_finished.store(true, Ordering::Release);
+                return;
+            }
+
             let shell_command_to_get_executables =
                 shell.shell_type().shell_command_to_get_executables();
             let env_vars = self

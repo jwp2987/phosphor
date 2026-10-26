@@ -429,6 +429,16 @@ impl WarpifyState {
         state.should_prevent_input()
     }
 
+    /// Whether an SSH warpification is actively in progress, i.e. the "Use agent ⌘↵" banner is
+    /// showing. Narrower than [`Self::should_prevent_input`], which is also true once the
+    /// attempt has succeeded or failed.
+    pub fn is_ssh_warpifying(&self) -> bool {
+        matches!(
+            self.ssh_block_state(),
+            Some(SshBlockState::Warpifying { .. })
+        )
+    }
+
     /// Called once whenever we get a local block completed, as opposed to a remote ssh block
     /// and we have a Warpify Success block.
     fn on_warpified_session_complete(
