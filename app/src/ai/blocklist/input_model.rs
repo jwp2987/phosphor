@@ -1810,6 +1810,11 @@ fn shell_history_candidates<'a>(
     }
     let buffer_reads_as_prose = input_classifier::util::reads_as_prose(buffer_text);
     entries
+        // The same rule for the entry: a request-shaped line in history (`say hello`) must not pin
+        // its own *prefixes* (`say hell` is 0.94 similar) to the shell while the user types it.
+        // Those pins land before the full line's verdict does and are what an Enter that arrives
+        // first routes on.
+        .filter(|entry| !input_classifier::util::reads_as_request_to_agent(&entry.command))
         .filter(|entry| match entry.exit_code {
             Some(code) if code.was_command_not_found() => false,
             _ if !buffer_reads_as_prose => true,
