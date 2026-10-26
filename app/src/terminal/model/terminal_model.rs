@@ -3699,24 +3699,6 @@ impl ansi::Handler for TerminalModel {
         };
     }
 
-    /// An in-band command's end marker always precedes the shell's next precmd. If a precmd
-    /// arrives while we are still capturing in-band output, the end marker was lost (the
-    /// shell was killed or a nested subshell exited mid-generator). Left open, `input`,
-    /// `goto` and `carriage_return` would keep diverting everything the shell prints into
-    /// the capture buffer, so the prompt and the user's echo would never reach the grid.
-    fn reset_stale_in_band_command_output(&mut self) {
-        if matches!(
-            self.is_receiving_in_band_command_output,
-            IsReceivingInBandCommandOutput::Yes { .. }
-        ) {
-            log::warn!(
-                "Received a precmd while still reading in-band command output; \
-                 discarding the unterminated output."
-            );
-            self.is_receiving_in_band_command_output = IsReceivingInBandCommandOutput::No;
-        }
-    }
-
     #[cfg_attr(not(windows), allow(unused_variables))]
     fn end_in_band_command_output(&mut self, from_osc_sequence: bool) {
         match &mut self.is_receiving_in_band_command_output {
@@ -4289,6 +4271,26 @@ impl ansi::Handler for TerminalModel {
 
     fn query_keyboard_enhancement_flags<W: std::io::Write>(&mut self, writer: &mut W) {
         delegate!(self.query_keyboard_enhancement_flags(writer));
+    }
+}
+
+impl TerminalModel {
+    /// An in-band command's end marker always precedes the shell's next precmd. If a precmd
+    /// arrives while we are still capturing in-band output, the end marker was lost (the
+    /// shell was killed or a nested subshell exited mid-generator). Left open, `input`,
+    /// `goto` and `carriage_return` would keep diverting everything the shell prints into
+    /// the capture buffer, so the prompt and the user's echo would never reach the grid.
+    fn reset_stale_in_band_command_output(&mut self) {
+        if matches!(
+            self.is_receiving_in_band_command_output,
+            IsReceivingInBandCommandOutput::Yes { .. }
+        ) {
+            log::warn!(
+                "Received a precmd while still reading in-band command output; \
+                 discarding the unterminated output."
+            );
+            self.is_receiving_in_band_command_output = IsReceivingInBandCommandOutput::No;
+        }
     }
 }
 
