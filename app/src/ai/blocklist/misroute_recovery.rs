@@ -104,8 +104,10 @@ impl MisrouteMemory {
         });
     }
 
-    /// Notes that a user command finished. Only the remembered shell submit it belongs to (same
-    /// text, no exit code yet) is updated. Returns whether the offer may have changed.
+    /// Notes that a user command finished. The remembered shell submit it belongs to (same text)
+    /// is updated, including when the same text is run again (e.g. from history) and now
+    /// succeeds. A different command finishing after the remembered one already finished makes
+    /// the offer stale, so it is dropped (#1013). Returns whether the offer may have changed.
     pub fn note_command_finished(
         &mut self,
         command: &str,
@@ -113,13 +115,13 @@ impl MisrouteMemory {
         now: Instant,
     ) -> bool {
         match self.last.as_mut() {
-            Some(last)
-                if last.route == SubmitRoute::Shell
-                    && last.exit_code.is_none()
-                    && last.text == command.trim() =>
-            {
+            Some(last) if last.route == SubmitRoute::Shell && last.text == command.trim() => {
                 last.exit_code = Some(exit_code);
                 last.finished_at = Some(now);
+                true
+            }
+            Some(last) if last.route == SubmitRoute::Shell && last.exit_code.is_some() => {
+                self.last = None;
                 true
             }
             _ => false,
