@@ -10609,6 +10609,9 @@ impl TerminalView {
                 None
             };
             if let Some(hold_id) = hold_id {
+                // #1016: keys the editor takes while this Enter waits for the report follow it.
+                self.input
+                    .update(ctx, |input, ctx| input.note_handoff_enter(ctx));
                 ctx.spawn(Timer::after(YOUNG_ENTER_WINDOW), move |me, _, ctx| {
                     me.release_expired_young_hold(hold_id, ctx);
                 });
@@ -10637,6 +10640,8 @@ impl TerminalView {
             .typeahead_handoff_mut()
             .expire_young_hold(hold_id);
         if let Some(bytes) = bytes {
+            self.input
+                .update(ctx, |input, _| input.clear_handoff_enter_mark());
             ctx.emit(Event::WriteHandoffUserBytesToPty {
                 bytes: Cow::Owned(bytes),
             });
@@ -10956,6 +10961,11 @@ impl TerminalView {
             ReportDisposition::InsertThenSubmit | ReportDisposition::InsertThenSubmitYoung => {
                 let young = disposition == ReportDisposition::InsertThenSubmitYoung;
                 self.insert_typeahead_from_handoff(ctx);
+                // #1016: keys that reached the editor after the Enter are not part of the line
+                // it submits; they follow it, ahead of the keys already held.
+                self.input.update(ctx, |input, ctx| {
+                    input.hold_text_typed_after_deferred_enter(ctx)
+                });
                 // #933: text the hand-off inserted was never classified (system edits do not
                 // request detection), so a line typed right after a command that reads as
                 // English is classified now, and its Enter waits for the verdict (bounded).
@@ -11047,6 +11057,8 @@ impl TerminalView {
     /// submit, and the keys held behind the Enter are released as they are after an unsubmitted
     /// Enter.
     fn keep_deferred_enter_text(&mut self, ctx: &mut ViewContext<Self>) {
+        self.input
+            .update(ctx, |input, _| input.clear_handoff_enter_mark());
         let release = self
             .model
             .lock()
@@ -11068,14 +11080,18 @@ impl TerminalView {
     /// shell command.
     fn submit_deferred_enter(&mut self, young: bool, ctx: &mut ViewContext<Self>) -> bool {
         self.input.update(ctx, |input, ctx| {
-            if young
+            // #1016: whatever reached the editor since the report went in follows the Enter.
+            input.hold_text_typed_after_deferred_enter(ctx);
+            let submitted = if young
                 && (input.buffer_is_slash_command(ctx)
                     || !input_classifier::util::has_no_prose_evidence(&input.buffer_text(ctx)))
             {
                 input.input_enter_routed_after_typeahead_report(ctx)
             } else {
                 input.input_enter_as_shell_command(ctx)
-            }
+            };
+            input.clear_handoff_enter_mark();
+            submitted
         })
     }
 

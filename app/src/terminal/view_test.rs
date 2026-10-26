@@ -14741,6 +14741,85 @@ fn typeahead_handoff_releases_held_shell_lines_to_the_pty_when_the_submit_runs_n
     })
 }
 
+/// #1016: keys that reach the editor after an Enter that waits for the shell's report (the
+/// focused editor can take them before the terminal does) are not part of the line that Enter
+/// submits. The submit sees only the text typed before the Enter, and the later keys are written
+/// after it, ahead of the keys already held, in typed order.
+#[test]
+fn typeahead_handoff_keys_the_editor_took_after_a_deferred_enter_do_not_join_its_line() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            awaiting_typeahead_report(view);
+            view.input
+                .update(ctx, |input, ctx| input.replace_buffer_content("true", ctx));
+            view.input.update(ctx, |input, ctx| input.input_enter(ctx));
+            assert!(
+                !view
+                    .model
+                    .lock()
+                    .typeahead_handoff()
+                    .deferred_submit_pending()
+            );
+            // The next keys of the same burst reach the editor before the terminal routes them.
+            view.input
+                .update(ctx, |input, ctx| input.system_insert("ec", ctx));
+            // The rest of the burst, and its Enter, are routed to the hold.
+            view.model
+                .lock()
+                .typeahead_handoff_mut()
+                .on_user_bytes(b"ho 2\r");
+            view.handle_typeahead_report_with_handoff(ctx);
+
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "true",
+                "what was typed after the Enter must not be part of the submitted line"
+            );
+        });
+
+        assert_eq!(*pty_writes.borrow(), vec![b"echo 2\r".to_vec()]);
+    })
+}
+
+/// #1016: a second Enter that reaches the editor while the first is deferred follows the keys
+/// typed before it, in the hold; it never submits the editor.
+#[test]
+fn typeahead_handoff_a_second_editor_enter_is_held_behind_the_deferred_one() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        let executed = count_executed_commands(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            awaiting_typeahead_report(view);
+            view.input
+                .update(ctx, |input, ctx| input.replace_buffer_content("true", ctx));
+            view.input.update(ctx, |input, ctx| input.input_enter(ctx));
+            view.input
+                .update(ctx, |input, ctx| input.system_insert("echo 2", ctx));
+            view.input.update(ctx, |input, ctx| input.input_enter(ctx));
+
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "true");
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::HoldAfterEnter {
+                    held: b"echo 2\r".to_vec(),
+                    released: false,
+                }
+            );
+        });
+        assert_eq!(*executed.borrow(), 0);
+        assert!(pty_writes.borrow().is_empty());
+    })
+}
+
 /// B2: the deferred submit is a shell command in Universal input too (the production default),
 /// where the classic-mode setter does nothing; the lock covers that one submit and the previous
 /// configuration comes back.

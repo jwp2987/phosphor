@@ -7340,6 +7340,63 @@ fn test_enter_waiting_for_verdict_queues_input_typed_behind_it() {
     });
 }
 
+/// #1016: a burst of lines typed with no gaps behind an Enter that waits for its verdict queues
+/// every line and every Enter, in typed order, and the waiting Enter still submits only the first
+/// line.
+#[test]
+fn test_burst_of_lines_behind_a_waiting_enter_keeps_every_line_and_enter_in_order() {
+    use crate::ai::blocklist::InputConfig;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+        initialize_app(&mut app);
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        let line = "is it true";
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false,
+                    },
+                    false,
+                    ctx,
+                );
+            });
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("x", ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(line, ctx);
+        });
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+
+        let mut expected = Vec::new();
+        for n in 0..10 {
+            let command = format!("echo {n}");
+            input.update(&mut app, |input, ctx| input.user_insert(&command, ctx));
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            expected.push(AfterEnterInput::Text(command));
+            expected.push(AfterEnterInput::Enter);
+        }
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), line);
+            let wait = input.verdict_wait.as_ref().expect("still waiting");
+            assert_eq!(wait.text, line);
+            assert_eq!(wait.queued, expected);
+        });
+    });
+}
+
 /// #886: inserting shell typeahead records its provenance in the input model, and the edit
 /// handler drops it when the buffer is emptied or the typeahead is replaced.
 #[test]

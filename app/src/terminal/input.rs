@@ -1194,6 +1194,19 @@ struct VerdictWait {
     queued: Vec<AfterEnterInput>,
 }
 
+/// Where the editor's text ended when an Enter was deferred behind the typeahead hand-off's
+/// report (#1016). Keys that reach the editor after that Enter (before the terminal takes the
+/// keys) are not part of the line it submits; the boundary lets them be split off at submit.
+#[derive(Debug)]
+struct HandoffEnterMark {
+    /// Characters in the buffer when the Enter was pressed.
+    len: usize,
+    /// The last few characters of that buffer, to check the boundary still lines up.
+    tail: String,
+    /// Net change in the buffer's length from the report inserted since (it replaces the front).
+    inserted_delta: isize,
+}
+
 impl VerdictWait {
     /// The text typed behind the Enter, without the Enters (they have nothing to submit).
     fn queued_text(&self) -> String {
@@ -1833,6 +1846,8 @@ pub struct Input {
     verdict_wait_gave_up_on: Option<String>,
     /// The Enter currently waiting for a verdict, with the input typed behind it (#1016).
     verdict_wait: Option<VerdictWait>,
+    /// The editor's text boundary at an Enter deferred behind the typeahead hand-off (#1016).
+    handoff_enter_mark: Option<HandoffEnterMark>,
     /// Input typed after a deferred Enter, held until the terminal view has routed it (#1016).
     /// While it is non-empty or `after_enter_replay_open` is set, every new key appends here
     /// instead of being routed, so nothing overtakes what was typed earlier.
@@ -3507,6 +3522,7 @@ impl Input {
             shell_command_submit_pending: false,
             verdict_wait_gave_up_on: None,
             verdict_wait: None,
+            handoff_enter_mark: None,
             after_enter_replay: Vec::new(),
             after_enter_replay_open: false,
             after_enter_replay_awaits_pty: false,
@@ -7827,6 +7843,7 @@ impl Input {
         typeahead: &str,
         ctx: &mut ViewContext<Self>,
     ) {
+        let len_before = self.buffer_text(ctx).chars().count();
         self.editor.update(ctx, |view, ctx| {
             let cursor_at_end = view.single_cursor_at_buffer_end(false, ctx);
             view.replace_first_n_characters(num_typeahead_chars_inserted, typeahead, ctx);
@@ -7834,6 +7851,12 @@ impl Input {
                 view.move_to_buffer_end(ctx);
             }
         });
+        if self.handoff_enter_mark.is_some() {
+            let len_after = self.buffer_text(ctx).chars().count();
+            if let Some(mark) = self.handoff_enter_mark.as_mut() {
+                mark.inserted_delta += len_after as isize - len_before as isize;
+            }
+        }
         self.note_typeahead_inserted(typeahead, ctx);
     }
 
@@ -13242,11 +13265,97 @@ impl Input {
         if !FeatureFlag::TypeaheadHandoff.is_enabled() {
             return false;
         }
+        // #1016: an Enter has already been deferred and the editor still received this one (keys
+        // can reach the focused editor before the terminal takes them). It follows everything
+        // typed before it: what the editor took joins the held keys, in order, and this Enter
+        // goes behind them. It never submits the buffer, which holds the first line.
+        if self
+            .model
+            .lock()
+            .typeahead_handoff()
+            .holds_keys_behind_deferred_enter()
+        {
+            self.hold_text_typed_after_deferred_enter(ctx);
+            self.model
+                .lock()
+                .typeahead_handoff_mut()
+                .on_user_bytes(b"\r");
+            return true;
+        }
         let deferred = self.model.lock().typeahead_handoff_mut().defer_enter();
         if deferred {
+            self.note_handoff_enter(ctx);
             ctx.emit(Event::TypeaheadHandoffEnterDeferred);
         }
         deferred
+    }
+
+    /// Records where the editor's text ends at an Enter the typeahead hand-off deferred (or held
+    /// as a young Enter), so keys that reach the editor after it never join the line it submits
+    /// (#1016).
+    pub(crate) fn note_handoff_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        let text = self.buffer_text(ctx);
+        let len = text.chars().count();
+        let tail_start = text
+            .char_indices()
+            .rev()
+            .nth(7)
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        self.handoff_enter_mark = Some(HandoffEnterMark {
+            len,
+            tail: text[tail_start..].to_string(),
+            inserted_delta: 0,
+        });
+    }
+
+    /// Forgets the boundary recorded by [`Self::note_handoff_enter`].
+    pub(crate) fn clear_handoff_enter_mark(&mut self) {
+        self.handoff_enter_mark = None;
+    }
+
+    /// Splits off what reached the editor after the Enter the typeahead hand-off deferred
+    /// (#1016): the buffer is cut back to the text the Enter submits (what was typed before it,
+    /// behind the shell's report) and the rest is returned. Does nothing, conservatively, when
+    /// no boundary is recorded or the buffer no longer lines up with it.
+    pub(crate) fn split_off_text_typed_after_handoff_enter(
+        &mut self,
+        ctx: &mut ViewContext<Self>,
+    ) -> Option<String> {
+        let mark = self.handoff_enter_mark.as_ref()?;
+        let boundary = usize::try_from(mark.len as isize + mark.inserted_delta).ok()?;
+        let current = self.buffer_text(ctx);
+        if current.chars().count() <= boundary {
+            return None;
+        }
+        let split_at = current
+            .char_indices()
+            .nth(boundary)
+            .map(|(index, _)| index)?;
+        let (head, rest) = current.split_at(split_at);
+        if !head.ends_with(mark.tail.as_str()) {
+            return None;
+        }
+        let (head, rest) = (head.to_string(), rest.to_string());
+        self.editor
+            .update(ctx, |editor, ctx| editor.set_buffer_text(&head, ctx));
+        Some(rest)
+    }
+
+    /// Moves the text that reached the editor after a deferred Enter to the front of the keys
+    /// held behind that Enter; puts it back if no Enter is deferred after all.
+    pub(crate) fn hold_text_typed_after_deferred_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(text) = self.split_off_text_typed_after_handoff_enter(ctx) else {
+            return;
+        };
+        let held = self
+            .model
+            .lock()
+            .typeahead_handoff_mut()
+            .prepend_held_keys(text.as_bytes());
+        if !held {
+            self.system_insert(&text, ctx);
+        }
     }
 
     /// Submits the rich-input buffer on Ctrl+Enter when `submit_on_ctrl_enter` is enabled;
