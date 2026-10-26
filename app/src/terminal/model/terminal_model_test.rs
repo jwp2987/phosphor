@@ -254,6 +254,110 @@ fn fish_subshell_hook_order_yields_visible_finished_blocks() {
     }
 }
 
+/// #966 (root cause): fish 4.x writes its own `OSC 133;A` right after every Precmd. In a
+/// Phosphorized fish subshell Phosphor's prompt is empty, so there is no `133;B`, and handling the
+/// `A` as a prompt start left the just-started block "receiving prompt chars" forever, hiding the
+/// user's command output. `fish.sh` now tags its Precmd with `ignore_prompt_markers`; the shell's
+/// own markers must then never reach the grids. Not compiled/run when written (no builds).
+#[test]
+fn fish_native_prompt_marker_after_precmd_does_not_hide_blocks() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    command_finished_and_precmd(&mut terminal);
+    command_finished_and_precmd(&mut terminal);
+    terminal.start_command_execution();
+    terminal.preexec(PreexecValue {
+        command: "fish".to_owned(),
+        session_id: None,
+    });
+    terminal.init_shell(InitShellValue {
+        shell: "fish".into(),
+        user: "u".to_owned(),
+        hostname: "h".to_owned(),
+        session_id: 0.into(),
+        is_subshell: true,
+        ..Default::default()
+    });
+    command_finished_and_precmd(&mut terminal);
+    terminal.bootstrapped(BootstrappedValue {
+        shell: String::from("fish"),
+        ..Default::default()
+    });
+    command_finished_and_precmd(&mut terminal);
+
+    for command in ["echo x", "exit"] {
+        terminal.start_command_execution();
+        terminal.preexec(PreexecValue {
+            command: command.to_owned(),
+            session_id: None,
+        });
+        let running_id = terminal.active_block_id().clone();
+
+        // fish.sh's honor-PS1-off Precmd, followed by fish's own `OSC 133;A`.
+        let completion_metadata = CompletionMetadata {
+            exit_code: ExitCode::from(0),
+            next_block_id: BlockId::new(),
+        };
+        terminal.command_finished(CommandFinishedValue {
+            completion_metadata: completion_metadata.clone(),
+            session_id: None,
+        });
+        terminal.precmd_with_completion_metadata(PrecmdValue {
+            completion_metadata,
+            prompt_metadata: PromptMetadata {
+                pwd: Some("/tmp".to_owned()),
+                ignore_prompt_markers: Some(true),
+                ..Default::default()
+            },
+        });
+        terminal.prompt_marker(ansi::PromptMarker::StartPrompt {
+            kind: ansi::PromptKind::Initial,
+        });
+
+        assert!(
+            terminal
+                .block_list()
+                .active_block()
+                .receiving_chars_for_prompt()
+                .is_none(),
+            "the shell's own prompt start must not open a prompt that never ends ({command})"
+        );
+        let finished = terminal
+            .block_list()
+            .block_with_id(&running_id)
+            .expect("the user's command block must exist");
+        assert_eq!(finished.state(), BlockState::DoneWithExecution, "{command}");
+        assert!(!finished.is_hidden(), "{command}");
+    }
+
+    // Without the tag (honor-PS1 on / other shells) Phosphor's own markers still work.
+    let completion_metadata = CompletionMetadata {
+        exit_code: ExitCode::from(0),
+        next_block_id: BlockId::new(),
+    };
+    terminal.command_finished(CommandFinishedValue {
+        completion_metadata: completion_metadata.clone(),
+        session_id: None,
+    });
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata,
+        prompt_metadata: PromptMetadata {
+            ignore_prompt_markers: Some(false),
+            ..Default::default()
+        },
+    });
+    terminal.prompt_marker(ansi::PromptMarker::StartPrompt {
+        kind: ansi::PromptKind::Initial,
+    });
+    assert!(
+        terminal
+            .block_list()
+            .active_block()
+            .receiving_chars_for_prompt()
+            .is_some()
+    );
+}
+
 #[test]
 // An empty block that is restored should have a nonzero height and it should not get deleted.
 pub fn test_restored_empty_command_block() {

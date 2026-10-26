@@ -3264,6 +3264,12 @@ impl ansi::Handler for TerminalModel {
             self.end_completions_output();
         }
 
+        // #966: the shell's own markers are not Phosphor's; neither the grids nor the view should
+        // see them (see `BlockList::prompt_marker`).
+        if self.block_list.ignores_shell_prompt_markers() {
+            return;
+        }
+
         let event = match &marker {
             ansi::PromptMarker::StartPrompt { kind } => match kind {
                 ansi::PromptKind::Initial => HandlerEvent::PromptStart,
