@@ -290,9 +290,9 @@ build-linux-x86_64:
 # through script/agent-cargo (slot/memory governor); `resource_group` serialises
 # them with every other cargo job across pipelines.
 #
-# Heavy suites run automatically only on main and tags. On other branches they are
-# manual (and never block the pipeline): a full nextest build is far too expensive
-# to repeat on every push to a feature branch.
+# Heavy suites run automatically only for release tags. Everywhere else they are manual
+# (and never block the pipeline): a full nextest build is far too expensive to repeat on
+# every push.
 #
 # They share ONE agent-cargo label (`ci-test`) and therefore one target dir, so the
 # test-profile dependency graph is compiled once, not once per job. Per-job labels
@@ -321,7 +321,11 @@ build-linux-x86_64:
 
 .heavy_rules:
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_TAG
+    # Automatic only for release tags. On main and build/* they are manual: a pipeline per
+    # push that rebuilds the whole test graph would monopolise the build box. Flip the first
+    # condition back to `$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_TAG` to gate
+    # every push to main again once the suites are known-good.
+    - if: $CI_COMMIT_TAG
       when: on_success
     - when: manual
       allow_failure: true
