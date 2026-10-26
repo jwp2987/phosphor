@@ -431,7 +431,7 @@ with remotely over a network (the agent/CLI session daemon). AGPL-3.0 §13
 therefore requires that users interacting with it that way be offered the
 Corresponding Source of *this* modified version. That offer is this repository:
 
-**https://github.com/jwp2987/phosphor**
+**https://gitlab.com/winters-phosphor/phosphor**
 
 The complete corresponding source for any distributed build is the commit that
 build was made from, in that repository, under the terms above.

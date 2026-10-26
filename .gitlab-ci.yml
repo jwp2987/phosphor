@@ -1,0 +1,779 @@
+# GitLab CI for Phosphor (migration from .github/workflows/pr-check.yml, issue #989).
+#
+# Runners are selected by tag and both have run_untagged OFF, so every job MUST
+# carry a `tags:` entry or it sits pending forever:
+#   little-thing  linux amd64 (the build box)
+#   Mac           darwin arm64
+#
+# Windows and macOS Intel are intentionally absent (dropped for now; see #989).
+#
+# Port status: every pr-check.yml job is ported except the Windows and macOS Intel
+# ones (dropped for now), plus MANUAL build jobs for the Mac DMG and the Linux
+# AppImage/deb, and the tag-triggered release pipeline (CLI tarballs -> digest pins ->
+# installers -> GitLab release). The release pipeline has never run end to end.
+#
+# `little-thing` is the maintainer's build box, so jobs there must not change its
+# environment: no apt installs, no rustup target additions, no cargo install.
+# Missing prerequisites FAIL the job with a message instead.
+
+workflow:
+  rules:
+    # Branch pipelines only: this repo merges straight to main, no merge requests,
+    # and running both would duplicate every pipeline.
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: never
+    # Both runners are ref_protected, so a pipeline on an UNPROTECTED ref could only sit
+    # pending forever. Protected refs are `main`, `build/*` and `v*` tags (Maintainers
+    # only): push work as `build/<name>` to get CI. Anything else is plain Git.
+    - if: $CI_COMMIT_REF_PROTECTED == "true"
+      when: always
+    - when: never
+
+stages: [test, cli, build, publish]
+
+variables:
+  CARGO_TERM_COLOR: always
+  # The build scripts detect CI through the GitHub Actions variables
+  # (GITHUB_ACTIONS, GITHUB_OUTPUT, GITHUB_PATH, GITHUB_ENV). Rather than fork a
+  # dozen scripts, shim them: GitLab has no equivalent, so the files below are
+  # created in .shim_github_env and a job that cares reads them back.
+  GITHUB_ACTIONS: "true"
+  GITHUB_OUTPUT: "$CI_PROJECT_DIR/.ci/github_output"
+  GITHUB_PATH: "$CI_PROJECT_DIR/.ci/github_path"
+  GITHUB_ENV: "$CI_PROJECT_DIR/.ci/github_env"
+
+.shim_github_env:
+  before_script:
+    - mkdir -p "$CI_PROJECT_DIR/.ci"
+    - touch "$GITHUB_OUTPUT" "$GITHUB_PATH" "$GITHUB_ENV"
+
+# Fork-boundary guards. Pure grep/git, no build, so this should finish in about a
+# minute and give fast feedback ahead of the cargo jobs.
+guards:
+  extends: .shim_github_env
+  stage: test
+  tags: [little-thing]
+  timeout: 10m
+  interruptible: true
+  variables:
+    # The deletion guard diffs against a base commit and the oracle fetch needs
+    # object lookups; a shallow clone has neither.
+    GIT_DEPTH: "0"
+  script:
+    # The stub check compares against the pinned Warp stable release (ORACLE.md).
+    # Fetch just that one commit, by FULL 40-character sha (abbreviations always
+    # fail with "couldn't find remote ref"). Deliberately NOT tolerated if
+    # missing: check_stub_coverage exits 0 when the pin object is absent, which
+    # would silently disarm the guard.
+    - |
+      PIN=$(grep -oE '\*\*Commit \(full\)\*\* \| `[0-9a-f]{40}`' ORACLE.md | grep -oE '[0-9a-f]{40}' | head -1)
+      if [[ -z "$PIN" ]]; then
+        echo "ERROR: ORACLE.md has no 40-char '**Commit (full)**' row; cannot fetch the pin" >&2
+        exit 1
+      fi
+      echo "pin=$PIN"
+      git fetch --depth=1 --no-tags https://github.com/warpdotdev/warp.git "$PIN"
+      git cat-file -e "${PIN}^{commit}" || {
+        echo "ERROR: pin $PIN fetched but not present; stub coverage would silently skip" >&2
+        exit 1
+      }
+    - ./script/check_cloud_boundary
+    - ./script/check_stub_coverage
+    - ./script/check_declined_collisions
+    - ./script/check_dead_links
+    # python3 is checked explicitly: check_brand_strings prints "skipped" and
+    # exits 0 without it, which on a runner would read as a pass.
+    - command -v python3 >/dev/null || { echo "ERROR python3 missing; check_brand_strings would self-skip" >&2; exit 1; }
+    - ./script/check_brand_strings
+    - ./script/check_settings_registry
+    - ./script/check_channel_command_names
+    - ./script/check_no_autoupdate
+    - ./script/check_generator_wrapper_names
+    - ./script/check_sweep_ledger
+    - ./script/check_integration_test_registry
+    # Large deletions. There are no pull requests here, so the base is the
+    # previous tip of this branch (push), or the merge-base with main for a new
+    # branch. The commit message stands in for the PR body: it is where a
+    # `Large-deletion:` trailer or a DECLINED.md citation lives.
+    - |
+      git fetch -q origin main
+      if [[ "$CI_COMMIT_BEFORE_SHA" =~ ^0+$ || -z "$CI_COMMIT_BEFORE_SHA" ]] || ! git cat-file -e "${CI_COMMIT_BEFORE_SHA}^{commit}" 2>/dev/null; then
+        BASE=$(git merge-base HEAD origin/main)
+      else
+        BASE="$CI_COMMIT_BEFORE_SHA"
+      fi
+      echo "deletion base: $BASE"
+      PHOSPHOR_DELETION_BASE="$BASE" PR_TITLE="$CI_COMMIT_TITLE" PR_BODY="$CI_COMMIT_MESSAGE" \
+        ./script/check_large_deletions --require-base
+    - ./script/macos/test_create_warpctrl_wrapper
+    - ./script/test_warpctrl_early_dispatch
+
+# cargo check on the build box. Every cargo call goes through script/agent-cargo,
+# the slot/memory governor: unbounded concurrent compiles OOM-reaped this host
+# before, and `resource_group` additionally serialises the heavy jobs across
+# pipelines. The governor also pins CARGO_TARGET_DIR per agent name, which keeps a
+# warm target dir between runs.
+check-linux:
+  extends: .shim_github_env
+  stage: test
+  tags: [little-thing]
+  needs: [guards]
+  resource_group: little-thing-cargo
+  timeout: 90m
+  interruptible: true
+  variables:
+    # The toolchain lives in the maintainer's home (read access granted to the runner
+    # user by ACL, traverse-only). rustup only needs to READ its toolchains; cargo's
+    # registry cache must be WRITABLE, so CARGO_HOME is the runner user's own.
+    RUSTUP_HOME: /home/winters/.rustup
+    CARGO_HOME: /home/gitlab-runner/.cargo-ci
+    # agent-cargo defaults to /cache/git/..., which does not exist on this box (it
+    # then silently disables slot limiting). Give it a real, writable base.
+    PHOSPHOR_TARGET_ROOT: /home/gitlab-runner/.phosphor-build/targets
+    PHOSPHOR_LOCK_DIR: /home/gitlab-runner/.phosphor-build/locks
+    PHOSPHOR_LOG_DIR: /home/gitlab-runner/.phosphor-build/logs
+  script:
+    # Non-interactive runner shells do not source ~/.bashrc, so cargo/rustup are not on
+    # PATH. The runner user (gitlab-runner) has no toolchain of its own, so the maintainer's
+    # /home/winters/.cargo/bin comes first. agent-cargo adds $HOME/.cargo/bin itself, but the
+    # target check below runs before it.
+    - export PATH="/home/winters/.cargo/bin:$HOME/.cargo/bin:$PATH"
+    # The pinned toolchain must already provide the target; adding one would
+    # modify the box's rustup state.
+    - rustup target list --installed | grep -qx x86_64-unknown-linux-gnu || { echo "ERROR target x86_64-unknown-linux-gnu is not installed on this runner; install it by hand (not done automatically on the build box)" >&2; exit 1; }
+    # The GUI feature is the guardrail after any shared-crate change.
+    - ./script/agent-cargo ci-check-linux check -p warp --features gui --lib --tests
+    # Single-package checks miss feature-unified code (#230): `warp`'s
+    # `integration_tests` feature only turns on when `warp` is checked in the SAME
+    # invocation as `integration`.
+    - ./script/agent-cargo ci-check-linux check -p warp -p warp_completer -p integration -p app-installation-detection -p warp_ripgrep --features gui
+    # The app crate carries the TUI via its own `tui` feature.
+    - ./script/agent-cargo ci-check-linux check -p warp --features tui
+    # warp_tui is not in default-members; check it explicitly.
+    - ./script/agent-cargo ci-check-linux check -p warp_tui
+
+# ---------------------------------------------------------------------------
+# macOS (runner tag `Mac`, darwin arm64). The runner is the maintainer's own
+# laptop, so these jobs are MANUAL: nothing compiles there until someone starts it.
+# ---------------------------------------------------------------------------
+
+# Read-only environment report: what the runner user can see and what is
+# installed. Changes nothing. Start it from the pipeline page (or the API) when the
+# runner's setup needs checking.
+diag-mac:
+  stage: test
+  tags: [Mac]
+  when: manual
+  allow_failure: true
+  timeout: 10m
+  script:
+    - echo "user=$(whoami) home=$HOME shell=$SHELL"
+    - sw_vers; uname -m
+    - df -h / "$HOME" | cat
+    - vm_stat | head -4
+    - pmset -g batt 2>/dev/null | head -2 || true
+    - 'for t in rustc cargo rustup protoc brew clang xcodebuild python3 node cargo-nextest; do printf "%-14s %s\n" "$t" "$(command -v $t || echo MISSING)"; done'
+    - 'xcode-select -p 2>&1 || true'
+    - 'rustc --version 2>&1 || true'
+    - 'ls -d "$HOME/.cargo/bin" "$HOME/.rustup" /opt/homebrew/bin 2>&1 || true'
+    - 'rustup show 2>&1 | head -12 || true'
+    - 'echo "--- running phosphor/caffeinate processes (do not disturb a live test):"; pgrep -lf "phosphor|caffeinate" || echo none'
+    - 'ls -ld "$HOME/phosphor-profile" 2>&1 || true'
+
+# cargo check for the macOS-only code paths (SMAppService login item, dock tile
+# plugin, Launch Services registration). Manual until the runner's toolchain is
+# confirmed with diag-mac. Never installs anything: a missing prerequisite fails
+# with a message.
+check-macos:
+  extends: .shim_github_env
+  stage: test
+  tags: [Mac]
+  when: manual
+  needs: []
+  timeout: 120m
+  interruptible: true
+  script:
+    - export PATH="/opt/homebrew/bin:$HOME/.cargo/bin:$PATH"
+    - for t in cargo rustc protoc; do command -v $t >/dev/null || { echo "ERROR $t is missing on this runner; install it by hand (not done automatically)" >&2; exit 1; }; done
+    - cargo check -p warp --features gui --lib --tests
+    - cargo check -p warp --features tui
+    - cargo check -p warp_tui
+
+# ---------------------------------------------------------------------------
+# Build jobs (manual). Start them from the pipeline page. The Mac runner is
+# `ref_protected`, so the Mac job only runs for pipelines on main or a tag.
+#
+# These are NOT the full release pipeline: no CLI tarballs, so no digest pins are
+# compiled in (remote-server install over ssh fails closed, as designed), no
+# GIT_RELEASE_TAG, and nothing is published to a GitLab release. The output is a
+# job artifact. Tools are installed only into the CI users' own homes
+# (cargo-about / cargo-bundle via the SHA-verified script/install_cargo_binstall,
+# linuxdeploy via script/linux/install_linuxdeploy), never system-wide.
+# ---------------------------------------------------------------------------
+
+# macOS arm64 DMG, ad-hoc signed (--selfsign), exactly as the GitHub release did.
+build-macos-arm64:
+  extends: .shim_github_env
+  stage: build
+  tags: [Mac]
+  when: manual
+  needs: []
+  timeout: 3h
+  variables:
+    CHANNEL: oss
+    # The maintainer's laptop: cap parallelism so the build does not push it into
+    # heavy swap (8 jobs measured: load 20, ~0.1 GB free, 3.5 GB swap).
+    CARGO_BUILD_JOBS: "4"
+  script:
+    - export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+    - for t in cargo rustc protoc hdiutil codesign lipo; do command -v $t >/dev/null || { echo "ERROR $t is missing on this runner; install it by hand (not done automatically)" >&2; exit 1; }; done
+    - xcrun -sdk macosx metal --version >/dev/null || { echo "ERROR the Metal toolchain is missing (xcodebuild -downloadComponent MetalToolchain)" >&2; exit 1; }
+    - ./script/install_cargo_release_deps --no-build-deps
+    - ./script/install_cargo_bundle
+    - script/bundle --channel "$CHANNEL" --arch aarch64 --dmg-name-suffix arm64 --selfsign
+    - |
+      DMG=$(grep '^dmg_path=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
+      [ -f "$DMG" ] || { echo "ERROR no DMG at '$DMG'" >&2; exit 1; }
+      mkdir -p dist && cp "$DMG" dist/
+      (cd dist && shasum -a 256 * | tee SHA256SUMS)
+  artifacts:
+    name: phosphor-macos-arm64
+    paths: [dist/]
+    expire_in: 3 days
+    when: on_success
+
+# Linux x86_64 AppImage + deb on the build box. rpm and the Arch package are left
+# out: rpmbuild and docker are not installed there and this job installs nothing
+# system-wide.
+build-linux-x86_64:
+  extends: .shim_github_env
+  stage: build
+  tags: [little-thing]
+  when: manual
+  needs: []
+  resource_group: little-thing-cargo
+  timeout: 5h
+  variables:
+    CHANNEL: oss
+    RUSTUP_HOME: /home/winters/.rustup
+    CARGO_HOME: /home/gitlab-runner/.cargo-ci
+    CARGO_BUILD_JOBS: "8"
+    APPIMAGE_EXTRACT_AND_RUN: "1"
+  script:
+    - export PATH="$CARGO_HOME/bin:/home/winters/.cargo/bin:$HOME/.local/bin:$PATH"
+    - rustup target list --installed | grep -qx x86_64-unknown-linux-gnu || { echo "ERROR target x86_64-unknown-linux-gnu is not installed on this runner" >&2; exit 1; }
+    - for t in cargo protoc cmake pkg-config dpkg-deb fakeroot strip; do command -v $t >/dev/null || { echo "ERROR $t is missing on this runner; install it by hand (not done automatically)" >&2; exit 1; }; done
+    - ./script/install_cargo_release_deps --no-build-deps
+    - ./script/linux/install_linuxdeploy
+    - script/bundle --channel "$CHANNEL" --arch x86_64 --packages appimage,deb
+    - |
+      PKG=$(grep '^packages_dir=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
+      [ -d "$PKG" ] || { echo "ERROR no packages dir at '$PKG'" >&2; exit 1; }
+      # Launch what we are about to ship: proves the binary loads and reaches argument parsing.
+      APPIMAGE=$(ls "$PKG"/*.AppImage 2>/dev/null | head -1)
+      [ -n "$APPIMAGE" ] || { echo "ERROR no AppImage in $PKG" >&2; exit 1; }
+      chmod +x "$APPIMAGE" && "$APPIMAGE" --appimage-extract-and-run --version
+      # dpkg-deb names files after the internal package name ("zap"); rename to match.
+      mkdir -p dist
+      for f in "$PKG"/*; do
+        b=$(basename "$f"); cp "$f" "dist/$(echo "$b" | sed -E 's/^zap([_-])/phosphor\1/')"
+      done
+      (cd dist && sha256sum * | tee SHA256SUMS)
+  artifacts:
+    name: phosphor-linux-x86_64
+    paths: [dist/]
+    expire_in: 3 days
+    when: on_success
+
+# ---------------------------------------------------------------------------
+# Test jobs (ported from pr-check.yml). All run on the build box and all go
+# through script/agent-cargo (slot/memory governor); `resource_group` serialises
+# them with every other cargo job across pipelines.
+#
+# Heavy suites run automatically only for release tags. Everywhere else they are manual
+# (and never block the pipeline): a full nextest build is far too expensive to repeat on
+# every push.
+#
+# They share ONE agent-cargo label (`ci-test`) and therefore one target dir, so the
+# test-profile dependency graph is compiled once, not once per job. Per-job labels
+# would cost tens of GB each on a box with limited disk.
+# ---------------------------------------------------------------------------
+
+.box_job:
+  extends: .shim_github_env
+  stage: test
+  tags: [little-thing]
+  needs: [guards]
+  resource_group: little-thing-cargo
+  interruptible: true
+  variables:
+    RUSTUP_HOME: /home/winters/.rustup
+    CARGO_HOME: /home/gitlab-runner/.cargo-ci
+    PHOSPHOR_TARGET_ROOT: /home/gitlab-runner/.phosphor-build/targets
+    PHOSPHOR_LOCK_DIR: /home/gitlab-runner/.phosphor-build/locks
+    PHOSPHOR_LOG_DIR: /home/gitlab-runner/.phosphor-build/logs
+    PHOSPHOR_CARGO_LABEL: ci-test
+  before_script:
+    - mkdir -p "$CI_PROJECT_DIR/.ci"
+    - touch "$GITHUB_OUTPUT" "$GITHUB_PATH" "$GITHUB_ENV"
+    - export PATH="$CARGO_HOME/bin:/home/winters/.cargo/bin:$HOME/.local/bin:$PATH"
+    - command -v cargo-nextest >/dev/null || { echo "ERROR cargo-nextest is missing on this runner (expected in /home/winters/.cargo/bin)" >&2; exit 1; }
+
+.heavy_rules:
+  rules:
+    # Automatic only for release tags. On main and build/* they are manual: a pipeline per
+    # push that rebuilds the whole test graph would monopolise the build box. Flip the first
+    # condition back to `$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_TAG` to gate
+    # every push to main again once the suites are known-good.
+    - if: $CI_COMMIT_TAG
+      when: on_success
+    - when: manual
+      allow_failure: true
+
+# Dependency licence gate: deny.toml / about.toml were claimed to be enforced in CI
+# since the fork was created and nothing ran them (see pr-check.yml history).
+# `check sources` is wider than upstream ran: the fork has a personal winit fork
+# upstream never had.
+licenses:
+  extends: .box_job
+  timeout: 30m
+  script:
+    - ./script/install_cargo_binstall
+    - cargo binstall --force -y cargo-deny
+    - cargo deny -L error check licenses sources
+    - ./script/check_license_config_sync
+
+# warp + warp_tui lib tests, gated on CHANGE not on redness
+# (script/check_test_failures + known_test_failures.txt). BOTH crates in ONE
+# invocation, on purpose: a listed failure that did not run counts as "fixed" and
+# fails the gate. nextest, not `cargo test`: the suite was stabilised under its
+# process-per-test isolation.
+test-linux:
+  extends: [.box_job, .heavy_rules]
+  timeout: 3h
+  script:
+    - ./script/check_test_failures -p warp -p warp_tui --lib --features warp/gui
+
+# warpui_core with --features tui. The flag is NOT optional: elements/tui/ is
+# cfg(feature = "tui"), so without it those ~259 tests do not exist, and the run
+# reports a green that says nothing about them.
+test-warpui-core:
+  extends: [.box_job, .heavy_rules]
+  timeout: 90m
+  script:
+    - ./script/check_test_failures -p warpui_core --features tui
+
+# The rest of the workspace: one invocation listing every package, exactly as
+# script/precheck does. Do not split it: check_test_failures treats a known failure
+# that did not run as "fixed", and splitting thrashes the shared target dir.
+# `--workspace` fails on command-signatures-v2 (its build script shells out to yarn,
+# 0 tests), so it is excluded by name.
+test-workspace-rest:
+  extends: [.box_job, .heavy_rules]
+  timeout: 3h
+  script:
+    - |
+      ./script/check_test_failures \
+          -p sum_tree -p string-offset -p fuzzy_match -p handlebars -p syntax_tree \
+          -p languages -p asset_cache -p settings_value -p jsonrpc -p simple_logger \
+          -p warp_logging -p channel_versions -p command -p http_client -p warp_features \
+          -p managed_secrets_wasm -p voice_input -p warp_isolation_platform -p websocket \
+          -p input_classifier -p warp_search_core -p persistence -p settings \
+          -p warp_managed_secrets -p markdown_parser -p warp_util -p warp_core \
+          -p repo_metadata -p warp_terminal -p warp_files -p local_control -p vim \
+          -p warp_completer -p warpui -p warpui_extras -p ai -p remote_server \
+          -p usage_suite -p warp_editor -p warp_cli
+
+# ~300 GUI-driving scenarios (crates/integration) that need a display: xvfb-run
+# supplies one, mesa-vulkan-drivers the software renderer. MANUAL and non-blocking:
+# nobody has a known-good baseline for this suite, so a red run is signal to read, not a
+# gate. `--profile ci` is required (it holds the retries), and the suite is split in
+# three by nextest's deterministic --partition.
+integration-linux:
+  extends: .box_job
+  timeout: 150m
+  when: manual
+  allow_failure: true
+  parallel:
+    matrix:
+      - SHARD: ["1", "2", "3"]
+  script:
+    - command -v xvfb-run >/dev/null || { echo "ERROR xvfb-run is missing on this runner" >&2; exit 1; }
+    - 'echo "nproc: $(nproc)"; free -h; df -h /home'
+    - xvfb-run -a -s "-screen 0 1280x1024x24" ./script/agent-cargo "$PHOSPHOR_CARGO_LABEL" nextest run -p integration --profile ci --partition "count:${SHARD}/3"
+
+# The two scenarios gated on PowerShell (#796). They resolve the shell from the
+# runner's own default, so PHOSPHOR_TEST_SHELL pins pwsh. pwsh is installed into the
+# runner user's own home from the pinned tarball (script/linux/install_pwsh needs sudo
+# and writes to /opt and /usr/bin, which this job must not do).
+integration-linux-pwsh:
+  extends: .box_job
+  timeout: 60m
+  when: manual
+  allow_failure: true
+  variables:
+    PHOSPHOR_TEST_SHELL: pwsh
+  script:
+    - command -v xvfb-run >/dev/null || { echo "ERROR xvfb-run is missing on this runner" >&2; exit 1; }
+    - |
+      if ! command -v pwsh >/dev/null; then
+        V=$(sed -n 's/^PWSH_VERSION="\(.*\)"/\1/p' script/linux/install_pwsh)
+        [ -n "$V" ] || { echo "ERROR could not read PWSH_VERSION from script/linux/install_pwsh" >&2; exit 1; }
+        mkdir -p "$HOME/.local/opt/pwsh" "$HOME/.local/bin"
+        curl -fsSL -o "$HOME/.local/pwsh.tar.gz" "https://github.com/PowerShell/PowerShell/releases/download/v${V}/powershell-${V}-linux-x64.tar.gz"
+        tar zxf "$HOME/.local/pwsh.tar.gz" -C "$HOME/.local/opt/pwsh" && rm -f "$HOME/.local/pwsh.tar.gz"
+        chmod +x "$HOME/.local/opt/pwsh/pwsh"
+        ln -sf "$HOME/.local/opt/pwsh/pwsh" "$HOME/.local/bin/pwsh"
+      fi
+    - pwsh -Version
+    - xvfb-run -a -s "-screen 0 1280x1024x24" ./script/agent-cargo "$PHOSPHOR_CARGO_LABEL" nextest run -p integration --profile ci -E 'test(test_input_reporting_powershell) or test(test_pwsh_vi_edit_mode_does_not_corrupt_commands)'
+
+# Usage/acceptance smoke suite (manual, like the nightly-less original). Linux needs
+# a display (xvfb-run). The Mac runner is a daemon with no WindowServer session, so
+# only the TUI surface can run there.
+usage-test-linux:
+  extends: .box_job
+  timeout: 90m
+  when: manual
+  allow_failure: true
+  script:
+    - command -v xvfb-run >/dev/null || { echo "ERROR xvfb-run is missing on this runner" >&2; exit 1; }
+    - xvfb-run -a -s "-screen 0 1280x1024x24" ./script/usage-test --surface both
+
+usage-test-macos:
+  extends: .shim_github_env
+  stage: test
+  tags: [Mac]
+  when: manual
+  allow_failure: true
+  needs: []
+  timeout: 90m
+  variables:
+    CARGO_BUILD_JOBS: "4"
+  script:
+    - export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+    - command -v cargo-nextest >/dev/null || { echo "ERROR cargo-nextest is missing for this user (cargo binstall cargo-nextest)" >&2; exit 1; }
+    - ./script/usage-test --surface tui
+
+# ===========================================================================
+# Release pipeline (ported from .github/workflows/phosphor_release.yml).
+#
+#   release-meta -> cli-linux / cli-macos -> release-macos-arm64 /
+#   release-linux-x86_64 -> release-publish
+#
+# Runs automatically for a pushed `v*` TAG and as a manual dry run on main (version
+# `dev-<pipeline iid>`; nothing is published as a GitLab release in that case). The
+# tag must be PROTECTED for the Mac jobs to run: the Mac runner is ref_protected.
+#
+# Why the order: the client pins the SHA-256 of every published CLI tarball at
+# COMPILE time (remote_server::setup::expected_sha256, via option_env!), and the
+# remote-server install script verifies against it. So both CLI tarballs must exist
+# before either GUI client is built, and the digests are computed from the exact bytes
+# that get published, never from a rebuild (the build is not bit-reproducible).
+#
+# Scope today: Linux x86_64 and macOS arm64 only. No macOS Intel (digest left unset: an
+# install onto an Intel host fails closed), no Windows, no Linux aarch64 (same), and no
+# rpm/Arch packages (rpmbuild and docker are not installed on the build box).
+#
+# Big files go to the GENERIC PACKAGE REGISTRY (script/ci/upload_package), not job
+# artifacts, and the release links point there. External-URL release links would show
+# GitLab's "you are being redirected" interstitial and break `curl -L` in the remote
+# server install script; package-registry links redirect directly.
+#
+# Known gap: GitLab has no prerelease flag, so a beta release can become
+# `releases/permalink/latest`, which the app falls back to when it has no version tag.
+# ===========================================================================
+
+.release_rules:
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: on_success
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+
+.release_box:
+  extends: [.box_job, .release_rules]
+  needs: [release-meta]
+  variables:
+    RUSTUP_HOME: /home/winters/.rustup
+    CARGO_HOME: /home/gitlab-runner/.cargo-ci
+    PHOSPHOR_TARGET_ROOT: /home/gitlab-runner/.phosphor-build/targets
+    PHOSPHOR_LOCK_DIR: /home/gitlab-runner/.phosphor-build/locks
+    PHOSPHOR_LOG_DIR: /home/gitlab-runner/.phosphor-build/logs
+    CARGO_BUILD_JOBS: "8"
+    GIT_DEPTH: "0"
+
+release-meta:
+  extends: [.shim_github_env, .release_rules]
+  stage: cli
+  tags: [little-thing]
+  needs: []
+  timeout: 20m
+  variables:
+    GIT_DEPTH: "0"
+    RUSTUP_HOME: /home/winters/.rustup
+    CARGO_HOME: /home/gitlab-runner/.cargo-ci
+  script:
+    - export PATH="$CARGO_HOME/bin:/home/winters/.cargo/bin:$PATH"
+    - |
+      set -euo pipefail
+      if [ -n "${CI_COMMIT_TAG:-}" ]; then
+        TAG="$CI_COMMIT_TAG"
+        # The tag must match app/Cargo.toml's version (optionally with a -suffix), unless it
+        # is a legacy dated tag (v2026....).
+        CARGO_VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' app/Cargo.toml | head -n1)
+        [ -n "$CARGO_VERSION" ] || { echo "ERROR could not read the version from app/Cargo.toml" >&2; exit 1; }
+        if [[ "$TAG" =~ ^v[0-9]{4}\. ]]; then
+          echo "legacy dated tag $TAG; skipping the Cargo version check"
+        elif [[ "$TAG" == "v${CARGO_VERSION}" ]] || [[ "$TAG" =~ ^v${CARGO_VERSION//./\\.}-[0-9A-Za-z.]+$ ]]; then
+          echo "tag $TAG matches app/Cargo.toml version $CARGO_VERSION"
+        else
+          echo "ERROR tag '$TAG' does not match app/Cargo.toml version 'v${CARGO_VERSION}' (optionally with a -suffix). Bump the version or fix the tag." >&2
+          exit 1
+        fi
+        PREV=$(git describe --tags --abbrev=0 --match='v*' HEAD^ 2>/dev/null || echo "")
+      else
+        TAG="v0.$(date -u +%Y.%m.%d.%H%M)"
+        PREV=$(git describe --tags --abbrev=0 --match='v*' HEAD 2>/dev/null || echo "")
+      fi
+      if [ -n "${CI_COMMIT_TAG:-}" ]; then VERSION="$TAG"; else VERSION="dev-${CI_PIPELINE_IID}"; fi
+      if [[ "$TAG" =~ [Bb][Ee][Tt][Aa] ]]; then CHANNEL=beta; else CHANNEL=oss; fi
+      # Channel settings (release name, body text, prerelease flag) live in release_configurations.json.
+      CFG=$(jq -c --arg c "$CHANNEL" '.channels[] | select(.channel == $c)' .gitlab/release_configurations.json)
+      [ -n "$CFG" ] || { echo "ERROR no channel '$CHANNEL' in release_configurations.json" >&2; exit 1; }
+      BASE_NAME=$(jq -r .release_base_name <<<"$CFG")
+      BODY_TEXT=$(jq -r .release_body_text <<<"$CFG")
+      IS_PRERELEASE=$(jq -r .is_prerelease <<<"$CFG")
+      # Release notes via git-cliff and the repo's cliff.toml.
+      ./script/install_cargo_binstall
+      command -v git-cliff >/dev/null || cargo binstall --no-confirm git-cliff
+      CLIFF_ARGS=(--config cliff.toml --strip header --tag "$TAG")
+      [ -n "$PREV" ] && CLIFF_ARGS+=("${PREV}..HEAD")
+      git-cliff "${CLIFF_ARGS[@]}" > release-notes.md
+      {
+        echo "$BODY_TEXT"; echo
+        if [ -n "$PREV" ]; then echo "## Changes since \`$PREV\`"; else echo "## Initial release changes"; fi
+        echo; cat release-notes.md
+      } > release-body.md
+      # GitLab limits a release description; keep well under it.
+      if [ "$(wc -c < release-body.md)" -gt 120000 ]; then
+        head -c 120000 release-body.md | head -n -1 > release-body.trimmed.md
+        { echo; echo "---"; echo "_Release notes truncated._"; if [ -n "$PREV" ]; then echo "[Full changelog: \`$PREV...$TAG\`](${CI_PROJECT_URL}/-/compare/${PREV}...${TAG})"; fi; } >> release-body.trimmed.md
+        mv release-body.trimmed.md release-body.md
+      fi
+      {
+        echo "RELEASE_TAG=$TAG"
+        echo "RELEASE_VERSION=$VERSION"
+        echo "CHANNEL=$CHANNEL"
+        echo "IS_PRERELEASE=$IS_PRERELEASE"
+        echo "RELEASE_NAME=$BASE_NAME $TAG"
+      } > meta.env
+      cat meta.env
+  artifacts:
+    reports:
+      dotenv: meta.env
+    paths: [release-body.md]
+    expire_in: 7 days
+
+# CLI + remote-server + TUI tarballs for Linux x86_64: a static musl build through
+# zig, so the artifact has no glibc floor and runs on any Linux x86_64 host (CentOS 7,
+# Alpine, ...). zig and cargo-zigbuild install into the runner user's home only. The musl
+# rust target must already exist in the shared rustup (one-time, by hand).
+cli-linux:
+  extends: .release_box
+  stage: cli
+  timeout: 4h
+  script:
+    - export PATH="$CARGO_HOME/bin:/home/winters/.cargo/bin:$HOME/.local/bin:$PATH"
+    - rustup target list --installed | grep -qx x86_64-unknown-linux-musl || { echo "ERROR the x86_64-unknown-linux-musl rust target is not installed; run 'rustup target add x86_64-unknown-linux-musl' once as the toolchain owner (not done automatically on the build box)" >&2; exit 1; }
+    - ./script/install_cargo_release_deps --no-build-deps
+    - |
+      set -euo pipefail
+      ZIG_VERSION="0.13.0"
+      ZIG_DIR="$HOME/.local/zig-${ZIG_VERSION}"
+      if [ ! -x "${ZIG_DIR}/zig" ]; then
+        mkdir -p "${ZIG_DIR}"
+        curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" | tar -xJ -C "${ZIG_DIR}" --strip-components=1
+      fi
+      export PATH="${ZIG_DIR}:$PATH"
+      command -v cargo-zigbuild >/dev/null || cargo binstall --no-confirm "cargo-zigbuild@^0.19"
+      export USE_ZIGBUILD=true PKG_CONFIG_ALLOW_CROSS=1 GIT_RELEASE_TAG="$RELEASE_TAG"
+      script/bundle --channel "$CHANNEL" --arch x86_64 --artifact cli --packages none --target x86_64-unknown-linux-musl
+      EXE=$(grep '^executable_path=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
+      RES=$(grep '^bundled_resources_dir=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
+      mkdir -p cli-artifacts out
+      cp "$EXE" out/phosphor-oss
+      tar czf cli-artifacts/phosphor-cli-linux-x86_64.tar.gz -C out phosphor-oss -C "$(dirname "$RES")" resources
+      # warp_tui reuses the toolchain and profile already warmed above.
+      cargo zigbuild -p warp_tui --profile release-cli --target x86_64-unknown-linux-musl --bin zap-tui-oss
+      cp target/x86_64-unknown-linux-musl/release-cli/zap-tui-oss out/phosphor-tui
+      tar czf out/phosphor-tui-linux-x86_64.tar.gz -C out phosphor-tui
+      ./script/ci/upload_package "$RELEASE_VERSION" cli-artifacts/phosphor-cli-linux-x86_64.tar.gz out/phosphor-tui-linux-x86_64.tar.gz
+      (cd cli-artifacts && sha256sum phosphor-cli-linux-x86_64.tar.gz > manifest-cli-linux.txt)
+      (cd out && sha256sum phosphor-tui-linux-x86_64.tar.gz >> ../cli-artifacts/manifest-cli-linux.txt)
+  artifacts:
+    paths: [cli-artifacts/, out/phosphor-tui-linux-x86_64.tar.gz]
+    expire_in: 3 days
+
+cli-macos:
+  extends: [.shim_github_env, .release_rules]
+  stage: cli
+  tags: [Mac]
+  needs: [release-meta]
+  timeout: 4h
+  variables:
+    CARGO_BUILD_JOBS: "4"
+    GIT_DEPTH: "0"
+  script:
+    - export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+    - for t in cargo rustc protoc; do command -v $t >/dev/null || { echo "ERROR $t is missing on this runner" >&2; exit 1; }; done
+    - ./script/install_cargo_release_deps --no-build-deps
+    - |
+      set -euo pipefail
+      export GIT_RELEASE_TAG="$RELEASE_TAG"
+      script/bundle --channel "$CHANNEL" --arch aarch64 --artifact cli --nosign
+      BIN=$(grep '^binary_path=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
+      RES=$(grep '^bundled_resources_dir=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
+      mkdir -p cli-artifacts out
+      cp "$BIN" out/phosphor-oss
+      tar czf cli-artifacts/phosphor-cli-macos-aarch64.tar.gz -C out phosphor-oss -C "$(dirname "$RES")" resources
+      cargo build -p warp_tui --profile release-cli --target aarch64-apple-darwin --bin zap-tui-oss
+      cp target/aarch64-apple-darwin/release-cli/zap-tui-oss out/phosphor-tui
+      tar czf out/phosphor-tui-macos-aarch64.tar.gz -C out phosphor-tui
+      ./script/ci/upload_package "$RELEASE_VERSION" cli-artifacts/phosphor-cli-macos-aarch64.tar.gz out/phosphor-tui-macos-aarch64.tar.gz
+      (cd cli-artifacts && shasum -a 256 phosphor-cli-macos-aarch64.tar.gz > manifest-cli-macos.txt)
+      (cd out && shasum -a 256 phosphor-tui-macos-aarch64.tar.gz >> ../cli-artifacts/manifest-cli-macos.txt)
+  artifacts:
+    paths: [cli-artifacts/, out/phosphor-tui-macos-aarch64.tar.gz]
+    expire_in: 3 days
+
+# Digest pinning shared by both GUI jobs. Sourced, not executed: it exports the
+# PHOSPHOR_CLI_SHA256_* variables the client bakes in with option_env!. Unset on
+# purpose: macOS x86_64 and Linux aarch64 (not published), so installs there fail closed.
+.pin_cli_digests: &pin_cli_digests |
+  pin() {
+    local var="$1" file="cli-artifacts/$2"
+    [ -f "$file" ] || { echo "ERROR missing CLI tarball $file; the client would compile with no pinned digest and refuse every remote-server install" >&2; return 1; }
+    local digest
+    if command -v sha256sum >/dev/null 2>&1; then digest=$(sha256sum "$file" | cut -d' ' -f1); else digest=$(shasum -a 256 "$file" | cut -d' ' -f1); fi
+    export "$var=$digest"
+    echo "$var=$digest"
+  }
+  pin PHOSPHOR_CLI_SHA256_LINUX_X86_64 phosphor-cli-linux-x86_64.tar.gz
+  pin PHOSPHOR_CLI_SHA256_MACOS_AARCH64 phosphor-cli-macos-aarch64.tar.gz
+
+release-macos-arm64:
+  extends: [.shim_github_env, .release_rules]
+  stage: build
+  tags: [Mac]
+  needs: [release-meta, cli-linux, cli-macos]
+  timeout: 4h
+  variables:
+    CARGO_BUILD_JOBS: "4"
+    GIT_DEPTH: "0"
+  script:
+    - export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+    - for t in cargo rustc protoc hdiutil codesign lipo; do command -v $t >/dev/null || { echo "ERROR $t is missing on this runner" >&2; exit 1; }; done
+    - xcrun -sdk macosx metal --version >/dev/null || { echo "ERROR the Metal toolchain is missing (xcodebuild -downloadComponent MetalToolchain)" >&2; exit 1; }
+    - ./script/install_cargo_release_deps --no-build-deps
+    - ./script/install_cargo_bundle
+    - *pin_cli_digests
+    # --selfsign = ad-hoc signing: gives the .app a cdhash (required before notifications register)
+    # with hardened runtime and Debug-Entitlements, no Apple Developer certificate needed.
+    # Users still see Gatekeeper's "unidentified developer" dialog on first open.
+    - GIT_RELEASE_TAG="$RELEASE_TAG" script/bundle --channel "$CHANNEL" --arch aarch64 --dmg-name-suffix arm64 --selfsign
+    - |
+      set -euo pipefail
+      DMG=$(grep '^dmg_path=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
+      [ -f "$DMG" ] || { echo "ERROR no DMG at '$DMG'" >&2; exit 1; }
+      mkdir -p dist && cp "$DMG" dist/
+      ./script/ci/upload_package "$RELEASE_VERSION" dist/*
+      (cd dist && shasum -a 256 * > ../manifest-macos.txt)
+  artifacts:
+    # dist/ is here so a dry run (which does not upload) still yields the installer, as a
+    # member-only job artifact.
+    paths: [manifest-macos.txt, dist/]
+    expire_in: 3 days
+
+release-linux-x86_64:
+  extends: .release_box
+  stage: build
+  needs: [release-meta, cli-linux, cli-macos]
+  timeout: 5h
+  variables:
+    APPIMAGE_EXTRACT_AND_RUN: "1"
+  script:
+    - export PATH="$CARGO_HOME/bin:/home/winters/.cargo/bin:$HOME/.local/bin:$PATH"
+    - rustup target list --installed | grep -qx x86_64-unknown-linux-gnu || { echo "ERROR target x86_64-unknown-linux-gnu is not installed on this runner" >&2; exit 1; }
+    - for t in cargo protoc cmake pkg-config dpkg-deb fakeroot strip; do command -v $t >/dev/null || { echo "ERROR $t is missing on this runner" >&2; exit 1; }; done
+    - ./script/install_cargo_release_deps --no-build-deps
+    - ./script/linux/install_linuxdeploy
+    - *pin_cli_digests
+    - GIT_RELEASE_TAG="$RELEASE_TAG" script/bundle --channel "$CHANNEL" --arch x86_64 --packages appimage,deb
+    - |
+      set -euo pipefail
+      PKG=$(grep '^packages_dir=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
+      [ -d "$PKG" ] || { echo "ERROR no packages dir at '$PKG'" >&2; exit 1; }
+      # Launch what is about to ship: proves it loads and reaches argument parsing (a mold
+      # relocation bug once shipped binaries that aborted in ld.so before main).
+      APPIMAGE=$(ls "$PKG"/*.AppImage 2>/dev/null | head -1)
+      [ -n "$APPIMAGE" ] || { echo "ERROR no AppImage in $PKG" >&2; exit 1; }
+      chmod +x "$APPIMAGE" && "$APPIMAGE" --appimage-extract-and-run --version
+      # dpkg-deb names files after the internal package name ("zap"); rename to match.
+      mkdir -p dist
+      for f in "$PKG"/*; do
+        b=$(basename "$f"); cp "$f" "dist/$(echo "$b" | sed -E 's/^zap([_-])/phosphor\1/')"
+      done
+      ./script/ci/upload_package "$RELEASE_VERSION" dist/*
+      (cd dist && sha256sum * > ../manifest-linux.txt)
+  artifacts:
+    paths: [manifest-linux.txt, dist/]
+    expire_in: 3 days
+
+# Creates the GitLab release for a TAG: links to everything uploaded above, each with a
+# direct_asset_path so /-/releases/<tag>/downloads/<file> works. Skipped for dry runs on
+# main. Uses the job token (release creation by job token is allowed).
+release-publish:
+  extends: [.shim_github_env]
+  stage: publish
+  tags: [little-thing]
+  needs: [release-meta, cli-linux, cli-macos, release-macos-arm64, release-linux-x86_64]
+  timeout: 20m
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: on_success
+  script:
+    - |
+      set -euo pipefail
+      python3 - <<'PY'
+      import json, os, glob
+      api = os.environ["CI_API_V4_URL"]; pid = os.environ["CI_PROJECT_ID"]
+      version = os.environ["RELEASE_VERSION"]
+      links = []
+      seen = set()
+      for manifest in sorted(glob.glob("manifest-*.txt") + glob.glob("cli-artifacts/manifest-*.txt")):
+          for line in open(manifest):
+              parts = line.split()
+              if len(parts) < 2: continue
+              name = parts[-1].lstrip("*")
+              if name in seen: continue
+              seen.add(name)
+              links.append({
+                  "name": name,
+                  "url": f"{api}/projects/{pid}/packages/generic/phosphor/{version}/{name}",
+                  "direct_asset_path": f"/{name}",
+                  "link_type": "package",
+              })
+      if not links:
+          raise SystemExit("ERROR no release assets found in the manifests")
+      body = open("release-body.md").read()
+      name = os.environ["RELEASE_NAME"]
+      if os.environ.get("IS_PRERELEASE") == "true":
+          name += " (pre-release)"
+      payload = {"name": name, "tag_name": os.environ["RELEASE_TAG"], "description": body,
+                 "assets": {"links": sorted(links, key=lambda l: l["name"])}}
+      json.dump(payload, open("release.json", "w"))
+      print(f"{len(links)} asset links")
+      PY
+    - 'curl --fail --silent --show-error --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --header "Content-Type: application/json" --data @release.json "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases" | python3 -c "import sys,json; d=json.load(sys.stdin); print(\"created release\", d[\"tag_name\"], d[\"_links\"][\"self\"])"'

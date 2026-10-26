@@ -152,7 +152,7 @@ impl View for AboutPageView {
 /// network to prominently offer them the Corresponding Source. Phosphor is a
 /// modified AGPL program with a network-reachable session daemon, so this offer
 /// has to be visible in the UI, not only in the repository README.
-const SOURCE_CODE_URL: &str = "https://github.com/jwp2987/phosphor";
+const SOURCE_CODE_URL: &str = "https://gitlab.com/winters-phosphor/phosphor";
 
 #[derive(Default)]
 struct AboutPageWidget {

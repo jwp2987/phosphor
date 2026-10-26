@@ -471,7 +471,7 @@ we decided otherwise and wrote the decision down.**
 - **Any deviation requires maintainer sign-off + tracking (hard rule).**
   Deviating from Warp behavior, OR from Warp's test coverage (dropping,
   weakening, or not-porting a Warp test), requires **explicit sign-off from the
-  maintainer (josh)** AND a **GitHub tracking issue** recording exactly what
+  maintainer (josh)** AND a **GitLab tracking issue** recording exactly what
   deviates and why. No silent deviations. No un-tracked coverage gaps. Do not
   drop or weaken a Warp-derived test on your own judgment.
 - **Reference for comparisons: the pinned Warp stable release, NOT `warp/master`.**
@@ -486,7 +486,7 @@ we decided otherwise and wrote the decision down.**
 ### 5.11 Issue → fix → PR → merge workflow (hard rule)
 Every defect, regression, or Warp divergence follows this workflow — no
 exceptions, and nothing merges without it:
-1. **Log it as a GitHub issue first** (`gh issue create` on `jwp2987/phosphor`)
+1. **Log it as a GitLab issue first** (`glab issue create -R winters-phosphor/phosphor`)
    the moment it's found, *before* fixing — so it's never lost. Include the Warp
    comparison / correct behavior where known.
 2. **Fix it on a branch**, together with the Warp-mirrored test(s) that prove

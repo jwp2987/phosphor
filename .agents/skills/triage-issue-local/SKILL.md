@@ -26,7 +26,7 @@ Ask **at most 2 follow-up questions** per triage response. Each question must be
 
 ## Label taxonomy
 
-The label taxonomy for this repository is managed in `.github/issue-triage/config.json`. Prefer labels from that configuration, especially the `area:*`, `os:*`, `repro:*`, `accessibility`, `needs-info`, `duplicate`, and primary issue-type labels. Do not invent new labels unless the prompt explicitly allows it.
+The label taxonomy for this repository is the project's GitLab label set (`glab label list -R winters-phosphor/phosphor`). Prefer labels from it, especially the `area:*`, `os:*`, `repro:*`, `accessibility`, `needs-info`, `duplicate`, and primary issue-type labels. Do not invent new labels unless the prompt explicitly allows it.
 
 Use area labels based on the user's reported surface:
 
@@ -66,4 +66,4 @@ Before asking the reporter for more information, check the issue body, comments,
 
 ## Owner-inference hints
 
-Prefer `.github/STAKEHOLDERS` for owner inference. When no path-level match exists, use the label and issue surface to choose likely owners rather than defaulting to broad app ownership.
+There is no STAKEHOLDERS file in this repo. Use the label and issue surface to choose likely owners rather than defaulting to broad app ownership.

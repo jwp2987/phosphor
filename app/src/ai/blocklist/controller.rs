@@ -4481,7 +4481,31 @@ impl BlocklistAIController {
                 // Zap BYOP local session compaction - auto overflow trigger
                 // (matches opencode `processor.ts:395-403`). Only checked when this
                 // stream isn't the summary itself, to prevent recursion.
-                if summarize_overflow.is_none() {
+                //
+                // Also skipped while the turn that just ended asked for tool calls: they
+                // are queued only after this handler returns, and summarizing now cancels
+                // the loop (calls never run, task halts after the summary, nothing sends a
+                // "continue"). The next tool-free turn end re-checks the usage.
+                let turn_continues_with_tools = summarize_overflow.is_none() && {
+                    let history = BlocklistAIHistoryModel::as_ref(ctx);
+                    history.conversation(&conversation_id).is_some_and(|conversation| {
+                        let new_ids: std::collections::HashSet<MessageId> = conversation
+                            .new_exchange_ids_for_response(stream_id)
+                            .filter_map(|id| conversation.exchange_with_id(id))
+                            .flat_map(|exchange| exchange.added_message_ids.iter().cloned())
+                            .collect();
+                        crate::ai::byop_compaction::turn_has_tool_calls(
+                            conversation.all_tasks().flat_map(|task| task.messages()),
+                            |id| new_ids.contains(&MessageId::new(id.to_owned())),
+                        )
+                    })
+                };
+                if turn_continues_with_tools {
+                    log::debug!(
+                        "[byop-compaction] auto overflow check deferred: the finished turn requested tool calls"
+                    );
+                }
+                if summarize_overflow.is_none() && !turn_continues_with_tools {
                     let aggregate_count = aggregate_token_count;
                     if aggregate_count > 0 {
                         let cfg = crate::ai::byop_compaction::CompactionConfig::from_settings(ctx);

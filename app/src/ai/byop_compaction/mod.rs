@@ -18,7 +18,7 @@ pub mod state;
 pub mod token;
 
 pub use config::CompactionConfig;
-pub use overflow::{is_overflow, usable};
+pub use overflow::{is_overflow, turn_has_tool_calls, usable};
 
 /// Byte-for-byte matches the constants at the top of opencode `compaction.ts` (lines 33-39, overflow.ts:6, util/token.ts:1).
 pub mod consts {

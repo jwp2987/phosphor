@@ -732,3 +732,38 @@ fn warp_message_view_role_treats_invoke_skill_as_user() {
     assert_eq!(views.len(), 1);
     assert_eq!(views[0].role(), Role::User);
 }
+
+fn tool_call(id: &str, task_id: &str, request_id: &str, seconds: i64) -> api::Message {
+    api::Message {
+        id: id.to_string(),
+        task_id: task_id.to_string(),
+        server_message_data: String::new(),
+        citations: vec![],
+        fetched_memories: vec![],
+        message: Some(api::message::Message::ToolCall(api::message::ToolCall {
+            tool_call_id: format!("call-{id}"),
+            tool: None,
+        })),
+        request_id: request_id.to_string(),
+        timestamp: Some(ts(seconds)),
+    }
+}
+
+/// Auto compaction is deferred while the finished turn asked for tool calls (a summarize
+/// request sent then cancels the agent loop); only the turn's own messages count.
+#[test]
+fn turn_has_tool_calls_only_counts_the_new_turn() {
+    use super::overflow::turn_has_tool_calls;
+
+    let msgs = vec![
+        user_query("u1", "root", "r1", 1),
+        tool_call("t-old", "root", "r1", 2),
+        agent_output("a1", "root", "r2", 3),
+        tool_call("t-new", "root", "r2", 4),
+    ];
+    // The finished turn added a tool call.
+    assert!(turn_has_tool_calls(&msgs, |id| id == "a1" || id == "t-new"));
+    // The finished turn is a plain answer; an older turn's tool call must not defer it.
+    assert!(!turn_has_tool_calls(&msgs, |id| id == "a1"));
+    assert!(!turn_has_tool_calls(&msgs, |_| false));
+}

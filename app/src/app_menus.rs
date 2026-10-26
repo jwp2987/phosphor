@@ -883,7 +883,7 @@ fn make_new_help_menu() -> Menu {
     ));
     items.extend(link_menu_item(
         crate::t!("app-menu-github-issues"),
-        links::github_issues_url().into(),
+        links::issues_url().into(),
     ));
     items.extend(link_menu_item(
         crate::t!("app-menu-warp-slack-community"),

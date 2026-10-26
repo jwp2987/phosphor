@@ -31,7 +31,6 @@ input_classifier/models/**/*tokenizer.json linguist-generated=true
 # `git config merge.openwarp-ours.driver true`
 # CI / new clones configure this automatically by running
 # `script/setup-merge-drivers.sh`
-.github/workflows/openwarp_release.yml merge=openwarp-ours
 app/channels/oss/dev.openwarp.OpenWarp.desktop merge=openwarp-ours
 lib/rust-genai/** merge=openwarp-ours
 

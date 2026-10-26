@@ -47,7 +47,8 @@ warp.pty.recording
 **/Dockerfile
 
 # Don't include CI configuration
-.github/
+.gitlab/
+.gitlab-ci.yml
 
 # Don't include the warp-server checkout in SWE-bench runs.
 warp-server/

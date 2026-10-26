@@ -4,11 +4,13 @@ use crate::channel::ChannelState;
 #[path = "links_tests.rs"]
 mod tests;
 
-/// The GitHub repository this fork is published from. Every user-visible link
+/// The GitLab project this fork is published from. Every user-visible link
 /// that points at the project — the issue tracker, the feedback form, the user
 /// manual — is derived from these two constants, so they cannot drift apart.
-/// `autoupdate::github` builds its Releases-API URL from the same pair.
-pub const REPO_OWNER: &str = "jwp2987";
+/// `autoupdate::github` (dormant: the `autoupdate` feature is off in shipped
+/// builds, see `script/check_no_autoupdate`) still builds a GitHub Releases-API
+/// URL from the same pair and would need porting before that feature returned.
+pub const REPO_OWNER: &str = "winters-phosphor";
 pub const REPO_NAME: &str = "phosphor";
 
 /// Branch the in-repo documentation links resolve against.
@@ -31,71 +33,71 @@ pub const MANUAL_MCP: &str = "06-mcp-skills-and-rules.md";
 pub const SLACK_URL: &str = "";
 pub const PRIVACY_POLICY_URL: &str = "";
 
-/// `https://github.com/<owner>/<repo>` — the root every other project link
-/// hangs off.
+/// `https://gitlab.com/<owner>/<repo>` — the root every other project link
+/// hangs off. GitLab puts everything except the repo root under `/-/`.
 pub fn repo_url() -> String {
-    format!("https://github.com/{REPO_OWNER}/{REPO_NAME}")
+    format!("https://gitlab.com/{REPO_OWNER}/{REPO_NAME}")
 }
 
 /// The issue tracker users can actually file against.
-pub fn github_issues_url() -> String {
-    format!("{}/issues", repo_url())
+pub fn issues_url() -> String {
+    format!("{}/-/issues", repo_url())
 }
 
 /// The user manual's directory listing, used as this fork's "Documentation".
 pub fn user_docs_url() -> String {
-    format!("{}/tree/{DOCS_BRANCH}/docs/manual", repo_url())
+    format!("{}/-/tree/{DOCS_BRANCH}/docs/manual", repo_url())
 }
 
-/// A single section of the user manual, rendered on GitHub. `section` is one of
+/// A single section of the user manual, rendered on GitLab. `section` is one of
 /// the `MANUAL_*` file names above.
 pub fn manual_url(section: &str) -> String {
-    format!("{}/blob/{DOCS_BRANCH}/docs/manual/{section}", repo_url())
+    format!("{}/-/blob/{DOCS_BRANCH}/docs/manual/{section}", repo_url())
 }
 
-/// This fork's contribution guide (`CONTRIBUTING.md`, at the repo root), rendered on GitHub.
+/// This fork's contribution guide (`CONTRIBUTING.md`, at the repo root), rendered on GitLab.
 pub fn contributing_url() -> String {
-    format!("{}/blob/{DOCS_BRANCH}/CONTRIBUTING.md", repo_url())
+    format!("{}/-/blob/{DOCS_BRANCH}/CONTRIBUTING.md", repo_url())
 }
 
-/// A specific issue form, by its `.github/ISSUE_TEMPLATE/` file name. The
-/// template declares its own labels, so nothing else needs pinning here.
+/// A specific issue template, by its `.gitlab/issue_templates/` file name (a trailing `.yml`
+/// or `.md` is ignored). The template applies its own labels, so nothing else needs pinning
+/// here. The query string is always present, so callers may append `&key=value` pairs.
 pub fn issue_form_url(template: &str) -> String {
-    format!("{}/issues/new?template={template}", repo_url())
+    let name = template
+        .strip_suffix(".yml")
+        .or_else(|| template.strip_suffix(".md"))
+        .unwrap_or(template);
+    format!("{}/-/issues/new?issuable_template={name}", repo_url())
 }
 
-/// The issue-form chooser, for "file an issue" controls that should not presume
-/// which template the user wants.
+/// The new-issue page, for "file an issue" controls that should not presume
+/// which template the user wants. GitLab has no separate chooser: the form
+/// offers the templates in a dropdown.
 pub fn new_issue_url() -> String {
-    format!("{}/issues/new/choose", repo_url())
+    format!("{}/-/issues/new", repo_url())
 }
 
 /// The latest release, for "download it yourself" paths — the About page's
-/// manual-download link and the autoupdate-failure banner. `autoupdate::github`
-/// polls the API form of this same release off `REPO_OWNER`/`REPO_NAME`.
+/// manual-download link and the autoupdate-failure banner.
 pub fn latest_release_url() -> String {
-    format!("{}/releases/latest", repo_url())
+    format!("{}/-/releases/permalink/latest", repo_url())
 }
 
-/// Name of the version query parameter on the feedback form. Matches the `id:`
-/// of the version field in `.github/ISSUE_TEMPLATE/*.yml`.
-pub const APP_VERSION_QUERY_PARAM: &str = "phosphor-version";
-
-/// The "Send feedback" destination: this repo's issue-form chooser, pre-filling
-/// the version fields.
+/// The "Send feedback" destination: this repo's new-issue page, with the version
+/// and OS pre-filled into the description.
 ///
-/// The query-parameter names are not free-form — GitHub matches them against the
-/// `id:` of a field in `.github/ISSUE_TEMPLATE/*.yml` to pre-fill it, so
-/// renaming one here without renaming the template field silently stops the
-/// pre-fill.
+/// GitLab has no per-field pre-fill (GitHub matched query parameters against issue-form
+/// field ids), only `issue[description]`, so the details go in as text lines.
 pub fn feedback_form_url() -> String {
-    let mut url = url::Url::parse(&new_issue_url()).expect("Should not fail to parse");
+    let mut description = String::new();
     if let Some(version) = ChannelState::app_version() {
-        url.query_pairs_mut()
-            .append_pair(APP_VERSION_QUERY_PARAM, version);
+        description.push_str(&format!("Phosphor version: {version}\n"));
     }
+    description.push_str(&format!("OS version: {}\n", os_info::get().version()));
+    let mut url = url::Url::parse(&new_issue_url()).expect("Should not fail to parse");
     url.query_pairs_mut()
-        .append_pair("os-version", &os_info::get().version().to_string());
+        .append_pair("issue[description]", &description);
     url.to_string()
 }
 
