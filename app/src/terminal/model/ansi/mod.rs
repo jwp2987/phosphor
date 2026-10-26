@@ -402,6 +402,9 @@ struct ProcessorState {
     apc_overflowed: bool,
     tmux_control_mode: Option<TmuxControlMode>, // Present if control mode is active
     sync_output: SyncOutputState,
+    /// Mirror of DEC mode 2027 (grapheme clustering), kept only to answer DECRQM: the real
+    /// `TermMode` lives behind the `Handler`, which the performer cannot query. Cleared on RIS.
+    grapheme_clustering: bool,
 }
 
 /// The processor wraps a [`VteParser`] to ultimately call methods on a Handler.
@@ -420,6 +423,7 @@ impl Default for Processor {
                 apc_overflowed: false,
                 tmux_control_mode: None,
                 sync_output: SyncOutputState::Inactive,
+                grapheme_clustering: false,
             },
             parser: VteParser::new(),
         }
@@ -1521,6 +1525,9 @@ where
                             if mode == Mode::SyncOutput {
                                 self.state.sync_output.activate();
                             }
+                            if mode == Mode::GraphemeClustering {
+                                self.state.grapheme_clustering = true;
+                            }
                         }
                         None => unhandled!(),
                     }
@@ -1564,6 +1571,9 @@ where
                             // We expect to only handle the end of a sync output update
                             // when sync output is active, in which case it would be handled
                             // via [`Performer::stop_sync`].
+                            if mode == Mode::GraphemeClustering {
+                                self.state.grapheme_clustering = false;
+                            }
                             if mode != Mode::SyncOutput {
                                 handler.unset_mode(mode);
                             }
@@ -1605,6 +1615,19 @@ where
                         let response = format!(
                             "\x1b[?2026;{}$y",
                             if self.state.sync_output.is_active() {
+                                "1"
+                            } else {
+                                "2"
+                            }
+                        );
+                        let _ = writer.write_all(response.as_bytes());
+                    }
+                    Some(Mode::GraphemeClustering) => {
+                        // DECRPM: 1 = set, 2 = reset. Answering is what lets apps discover
+                        // support and enable the mode.
+                        let response = format!(
+                            "\x1b[?2027;{}$y",
+                            if self.state.grapheme_clustering {
                                 "1"
                             } else {
                                 "2"
@@ -1735,7 +1758,10 @@ where
                 self.handler.reverse_index();
             }
             (b'Z', []) => self.handler.identify_terminal(self.writer, None),
-            (b'c', []) => self.handler.reset_state(),
+            (b'c', []) => {
+                self.state.grapheme_clustering = false;
+                self.handler.reset_state();
+            }
             (b'0', intermediates) => configure_charset!(
                 StandardCharset::SpecialCharacterAndusizeDrawing,
                 intermediates

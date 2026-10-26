@@ -3454,6 +3454,14 @@ fn emoji_modifier_joins_previous_emoji_in_mode_2027() {
     input_str(&mut g, "a\u{1F3FD}");
     assert_eq!(g.grid_storage()[0][0].c, 'a');
     assert_eq!(g.grid_storage()[0][1].c, '\u{1F3FD}');
+    // Nor after a wide character that is not an emoji modifier base (CJK, a flag).
+    for base in ["\u{4E2D}", "\u{1F1FA}\u{1F1F8}", "\u{1F600}"] {
+        let mut g = grapheme_test_grid(10);
+        g.set_mode(ansi::Mode::GraphemeClustering);
+        input_str(&mut g, &format!("{base}\u{1F3FD}"));
+        assert_eq!(cell_text(&g, 0), base);
+        assert_eq!(g.grid_storage()[0][2].c, '\u{1F3FD}');
+    }
 }
 
 /// A ZWJ followed by a non-emoji must not swallow the next character.
