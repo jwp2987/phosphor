@@ -414,7 +414,11 @@ fn chunked_eval_lines(shell_type: ShellType, raw_script: &str) -> Vec<String> {
             )
         }
         ShellType::Zsh => lines.push(
-            " [ -n \"${__whi-}\" ] || { __whi=0; [[ -o hist_ignore_space ]] && __whi=1; }; setopt hist_ignore_space; [ -n \"${__wpe-}\" ] || { __wpe=0; [[ -o print_exit_value ]] && __wpe=1; }; unsetopt print_exit_value"
+            // Also save and switch off the user's errexit / pipefail / nounset (#1014): the typed
+            // lines and the stage they evaluate must not meet them. The last line puts them back, except
+            // print_exit_value: it stays off until zsh.sh's tail, because the next typed line (`read` at
+            // the end of a heredoc fails by design) would print `zsh: exit 1` under it.
+            " [ -n \"${__whi-}\" ] || { __whi=0; [[ -o hist_ignore_space ]] && __whi=1; }; setopt hist_ignore_space; [ -n \"${__wpe-}\" ] || { __wpe=0; [[ -o print_exit_value ]] && __wpe=1; }; unsetopt print_exit_value; [ -n \"${__wee-}\" ] || { __wee=0; [[ -o err_exit ]] && __wee=1; }; unsetopt err_exit err_return; [ -n \"${__wpf-}\" ] || { __wpf=0; [[ -o pipe_fail ]] && __wpf=1; }; unsetopt pipe_fail; [ -n \"${__wnu-}\" ] || { __wnu=0; [[ -o unset ]] || __wnu=1; }; setopt unset"
                 .to_owned(),
         ),
         _ => {}
@@ -441,7 +445,7 @@ fn chunked_eval_lines(shell_type: ShellType, raw_script: &str) -> Vec<String> {
             " HISTCONTROL=${{__hc0-}}; unset __hc0; if [ -z \"${{WARP_BOOTSTRAPPED-}}\" ]; then if [ \"${{#_wbs}}\" -eq {chars} ] || [ \"${{#_wbs}}\" -eq {bytes} ]; then eval \"$_wbs\"; else {SKIPPED_NOTICE}; fi; fi; unset _wbs"
         ),
         ShellType::Zsh => format!(
-            " if [ \"${{__whi-}}\" = 1 ]; then WARP_HIST_IGNORE_SPACE_USER=1; else unsetopt hist_ignore_space; fi; unset __whi; if [ \"${{__wpe-}}\" = 1 ]; then setopt print_exit_value; fi; unset __wpe; if [ -z \"${{WARP_BOOTSTRAPPED-}}\" ]; then if [ \"${{#_wbs}}\" -eq {chars} ] || [ \"${{#_wbs}}\" -eq {bytes} ]; then eval \"$_wbs\"; else {SKIPPED_NOTICE}; fi; fi; unset _wbs WARP_HIST_IGNORE_SPACE_USER"
+            " if [ \"${{__whi-}}\" = 1 ]; then WARP_HIST_IGNORE_SPACE_USER=1; else unsetopt hist_ignore_space; fi; unset __whi; if [ -z \"${{WARP_BOOTSTRAPPED-}}\" ]; then if [ \"${{#_wbs}}\" -eq {chars} ] || [ \"${{#_wbs}}\" -eq {bytes} ]; then eval \"$_wbs\"; else {SKIPPED_NOTICE}; fi; fi; if [ \"${{__wpf-}}\" = 1 ]; then setopt pipe_fail; fi; if [ \"${{__wnu-}}\" = 1 ]; then unsetopt unset; fi; if [ \"${{__wee-}}\" = 1 ]; then setopt err_exit; fi; [ \"${{__wpe-}}\" != 1 ] || WARP_RESTORE_PRINT_EXIT_VALUE=1; unset __wpe __wpf __wnu __wee _wbs WARP_HIST_IGNORE_SPACE_USER"
         ),
         // fish cannot parse `${...}` and has no nounset, so it keeps the bare expansion.
         _ => format!(
