@@ -14833,11 +14833,11 @@ fn plain_enter_always_reaches_the_pty() {
 
 /// #983 / #976: pure rule for the silent ssh connect phase.
 #[test]
-fn ssh_connect_silence_drops_only_before_any_prompt() {
+fn ssh_connect_silence_drops_only_before_any_output() {
     let young = Some(Duration::from_secs(2));
     // Nothing printed yet, young, not full-screen: drop.
     assert!(ssh_connect_silence_drops_keys(false, false, young));
-    // A prompt is showing (host key, password, 2FA): never drop.
+    // Any output (prompt, banner, program output) has been seen: never drop.
     assert!(!ssh_connect_silence_drops_keys(false, true, young));
     // Full-screen program, unknown age, or a long-running plain session: never drop.
     assert!(!ssh_connect_silence_drops_keys(true, false, young));
@@ -14929,6 +14929,80 @@ fn ssh_silent_connect_drops_typed_runs_whole_then_prompt_gets_keys() {
         assert!(writes.iter().any(|w| w.as_slice() == b"pw"), "{writes:?}");
         assert!(writes.iter().any(|w| w.as_slice() == b"\r"), "{writes:?}");
     })
+}
+
+/// #983: output that does not look like a prompt (a MOTD, a banner ending in a newline) still
+/// ends the silent connect phase for good: later typing, including a bare Enter, reaches the pty.
+#[test]
+fn ssh_gate_never_rearms_after_any_output() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "motd\n");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            view.typed_characters_on_terminal("cat", ctx);
+            view.keydown_on_terminal("\r", ctx);
+        });
+        {
+            let writes = pty_writes.borrow();
+            assert!(writes.iter().any(|w| w.as_slice() == b"cat"), "{writes:?}");
+            assert!(writes.iter().any(|w| w.as_slice() == b"\r"), "{writes:?}");
+        }
+        pty_writes.borrow_mut().clear();
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().process_bytes("Banner\n");
+            view.keydown_on_terminal("\r", ctx);
+        });
+        assert!(pty_writes.borrow().iter().any(|w| w.as_slice() == b"\r"));
+    })
+}
+
+/// #983: while ssh is truly silent a paste is dropped whole like typing; interrupt keys and
+/// control sequences still go through.
+#[test]
+fn ssh_silent_connect_drops_paste_but_not_interrupts() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text("echo pasted\n".to_owned()));
+            view.paste(false, ctx);
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        terminal.update(&mut app, |view, ctx| {
+            view.keydown_on_terminal("\u{1a}", ctx);
+            view.keydown_on_terminal("\u{1c}", ctx);
+            view.control_sequence_on_terminal(b"\x1b[A", ctx);
+            view.control_sequence_on_terminal(b"\x1b", ctx);
+        });
+        let writes = pty_writes.borrow();
+        for expected in [&b"\x1a"[..], b"\x1c", b"\x1b[A", b"\x1b"] {
+            assert!(writes.iter().any(|w| w.as_slice() == expected), "{writes:?}");
+        }
+    })
+}
+
+/// #976: only a choice block of the pending session owns input, wherever it sits in the list.
+#[test]
+fn only_the_pending_sessions_choice_block_owns_input() {
+    let (a, b) = (SessionId::from(1), SessionId::from(2));
+    // Stale block A first, current block B second: B is pending.
+    assert!(choice_block_owns_input([a, b].into_iter(), Some(b)));
+    // Only the stale block exists: nothing owns input.
+    assert!(!choice_block_owns_input([a].into_iter(), Some(b)));
+    assert!(!choice_block_owns_input([a, b].into_iter(), None));
 }
 
 /// #976: without the banner the agent shortcut behaves like the key did before: it reaches the
