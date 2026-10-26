@@ -562,15 +562,23 @@ impl ViewSnapshot {
                     (cur_line_idx == 0).then_some(left_notch_width_px),
                     &text_layout_system,
                 );
-                if true_len > laid_chars {
+                (frame, (true_len > laid_chars).then_some((laid_chars, true_len)))
+            })
+            .collect::<Vec<_>>();
+
+        // Re-attach the unlaid tail of capped rows serially: the font cache's glyph lookup is not
+        // `Sync`, so it can't be used inside the parallel layout above.
+        let layouts = layouts
+            .into_iter()
+            .map(|(frame, capped)| match capped {
+                Some((laid_chars, true_len)) => {
                     Arc::new(frame.with_unlaid_tail(laid_chars, true_len, |font_id| {
                         font_cache
                             .glyph_for_char(font_id, ' ', false)
                             .map(|(glyph_id, _)| glyph_id)
                     }))
-                } else {
-                    frame
                 }
+                None => frame,
             })
             .collect();
 
