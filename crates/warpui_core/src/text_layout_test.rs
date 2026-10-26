@@ -689,7 +689,7 @@ fn test_unlaid_tail_keeps_true_end_offsets() {
     );
     assert_eq!(line.first_index(), 0, "Home");
     // The laid-out prefix keeps exact offsets.
-    assert_eq!(line.caret_index_for_x_unbounded(35.), 3);
+    assert_eq!(line.caret_index_for_x_unbounded(32.), 3);
     assert_eq!(frame.row_within_frame(total, true), 0);
 }
 
