@@ -131,17 +131,23 @@ mod tests {
 
     use super::*;
 
-    /// #964: real binaries that are also Stack Overflow tags must be in the overlap list, so a
-    /// lone `fish` is not scored as one natural-language word.
+    /// #965: `fish`/`ksh` are real binaries but also Stack Overflow tags / English words. They are
+    /// deliberately NOT in the overlap list: a leading one is skipped as a command only when the
+    /// caller says the program is installed (or a known builtin/function/alias), so
+    /// `fish is great` stays prose when fish is absent.
     #[test]
-    fn real_binaries_in_the_stack_overflow_list_are_command_words() {
+    fn leading_binary_name_is_a_command_only_when_installed() {
         for word in ["fish", "ksh"] {
-            assert!(is_word(word, WordDb::Command), "{word}");
-            assert_eq!(
-                natural_language_words_score(vec![Cow::Borrowed(word)], false),
-                0,
-                "{word}"
-            );
+            assert!(!is_word(word, WordDb::Command), "{word}");
+            let line = || {
+                vec![
+                    Cow::Borrowed(word),
+                    Cow::Borrowed("is"),
+                    Cow::Borrowed("great"),
+                ]
+            };
+            assert_eq!(natural_language_words_score(line(), false), 3, "{word}");
+            assert_eq!(natural_language_words_score(line(), true), 2, "{word}");
         }
     }
 
@@ -150,7 +156,7 @@ mod tests {
     fn overlap_list_excludes_sentence_openers() {
         for word in [
             "file", "date", "set", "wait", "return", "history", "cut", "patch", "ruby", "swift",
-            "java",
+            "java", "fish", "ksh",
         ] {
             assert!(!is_word(word, WordDb::Command), "{word}");
         }
