@@ -3098,6 +3098,24 @@ enum BlockMetadataUpdateSource {
     Osc7,
 }
 
+/// What the agent-shortcut Enter (Cmd-Enter on macOS, Ctrl-Enter elsewhere) does (#976).
+#[derive(Debug, PartialEq, Eq)]
+enum AgentShortcutEnterRoute {
+    /// The "Use agent" shortcut the SSH Warpifying banner advertises: switch to agent mode and
+    /// send nothing to the pty.
+    SwitchToAgentMode,
+    /// No banner: the key behaves exactly as it did before the shortcut was intercepted.
+    PassThrough,
+}
+
+fn route_agent_shortcut_enter(is_ssh_warpifying: bool) -> AgentShortcutEnterRoute {
+    if is_ssh_warpifying {
+        AgentShortcutEnterRoute::SwitchToAgentMode
+    } else {
+        AgentShortcutEnterRoute::PassThrough
+    }
+}
+
 impl TerminalView {
     /// Returns the path to the current *local* repository, if any.
     pub fn current_repo_path(&self) -> Option<&PathBuf> {
@@ -9504,20 +9522,33 @@ impl TerminalView {
         });
     }
 
+    /// The agent shortcut (Cmd-Enter / Ctrl-Enter) arrived as a key event. While the SSH
+    /// Warpifying banner shows it switches to agent mode and sends nothing to the pty; a plain
+    /// Enter never gets here and always goes to the pty (it may answer a password, host-key or
+    /// 2FA prompt). Otherwise the key is handled as it was before it was intercepted: as
+    /// `fallback_sequence` if the keystroke had an escape sequence, else as a plain key down.
+    fn agent_shortcut_enter(
+        &mut self,
+        characters: &str,
+        fallback_sequence: Option<&[u8]>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match route_agent_shortcut_enter(self.warpify_state.is_ssh_warpifying()) {
+            AgentShortcutEnterRoute::SwitchToAgentMode => {
+                ctx.dispatch_typed_action(&TerminalAction::SetInputModeAgent);
+            }
+            AgentShortcutEnterRoute::PassThrough => match fallback_sequence {
+                Some(sequence) => self.control_sequence_on_terminal(sequence, ctx),
+                None => self.keydown_on_terminal(characters, ctx),
+            },
+        }
+    }
+
     /// Receiving the warpui::Event::KeyDown event from a child element.
     /// Generally, this should be control characters rather than printable characters.
     fn keydown_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
         // Ctrl-C / Ctrl-D still reach the ssh process so the user can abort.
         if !matches!(characters, "\u{3}" | "\u{4}") && self.swallow_input_during_ssh_setup(ctx) {
-            return;
-        }
-        // During the SSH Warpifying phase, WarpUI's element handlers consume the key before
-        // keybinding resolution, so Cmd-Enter never reaches SetInputModeAgent. The Warpifying
-        // banner advertises "Use agent ⌘↵", so we route Enter to agent mode instead of the
-        // PTY. Ctrl-C/Ctrl-D remain exempt so the user can still abort.
-        if self.warpify_state.is_ssh_warpifying() && matches!(characters, "\n" | "\r" | "\u{2028}")
-        {
-            ctx.dispatch_typed_action(&TerminalAction::SetInputModeAgent);
             return;
         }
         if self.is_long_running()
@@ -9855,6 +9886,28 @@ impl TerminalView {
         data: B,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
+        self.write_user_bytes_to_pty_inner(data, true, ctx)
+    }
+
+    /// Like [`Self::write_user_bytes_to_pty`], but for pointer-driven and synthesized input
+    /// (mouse reports, wheel-to-arrow scrolling, arrow keys routed by `terminal_up`/`terminal_down`)
+    /// which must never take agent control of a command (#963): brushing the mouse over a pager
+    /// the agent is driving is not the user taking it over. While the agent is in control these
+    /// bytes are simply dropped.
+    fn write_passive_input_to_pty<B: Into<Cow<'static, [u8]>>>(
+        &mut self,
+        data: B,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        self.write_user_bytes_to_pty_inner(data, false, ctx)
+    }
+
+    fn write_user_bytes_to_pty_inner<B: Into<Cow<'static, [u8]>>>(
+        &mut self,
+        data: B,
+        takes_over_agent_control: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
         let mut bytes: Cow<'static, [u8]> = data.into();
         // The paced subshell bootstrap is still being written: hold the keystrokes (never drop
         // them) and deliver them after its last line.
@@ -9876,7 +9929,7 @@ impl TerminalView {
         // the agent is driving is taking the command over. Do it the same way an explicit
         // take-over does, so the agent stops writing to the same program and the two inputs
         // cannot interleave. This must happen before the model lock below: the switch locks it.
-        let should_take_over = {
+        let should_take_over = takes_over_agent_control && {
             let terminal_model = self.model.lock();
             terminal_model.is_alt_screen_active()
                 && terminal_model
@@ -10031,7 +10084,7 @@ impl TerminalView {
         self.highlighted_link.invalidate();
 
         let content = self.alt_scroll_sequences(lines_to_scroll);
-        self.write_user_bytes_to_pty(content, ctx);
+        self.write_passive_input_to_pty(content, ctx);
         ctx.notify();
     }
 
@@ -19602,7 +19655,7 @@ impl TerminalView {
         let escape_sequences = mouse_state
             .to_escape_sequence(self.model.lock().deref())
             .unwrap();
-        self.write_user_bytes_to_pty(escape_sequences, ctx);
+        self.write_passive_input_to_pty(escape_sequences, ctx);
     }
 
     fn alt_select(&mut self, arg: &SelectAction<Point>, ctx: &mut ViewContext<Self>) {
@@ -24212,7 +24265,7 @@ impl TerminalView {
             self.on_ssh_warpification_key_event(None, ctx);
             let sequence =
                 EscCodes::build_escape_sequence(self.model.lock().deref(), &[EscCodes::ARROW_UP]);
-            self.write_user_bytes_to_pty(sequence, ctx);
+            self.write_passive_input_to_pty(sequence, ctx);
         }
     }
 
@@ -24369,7 +24422,7 @@ impl TerminalView {
         } else if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
             let sequence =
                 EscCodes::build_escape_sequence(self.model.lock().deref(), &[EscCodes::ARROW_DOWN]);
-            self.write_user_bytes_to_pty(sequence, ctx);
+            self.write_passive_input_to_pty(sequence, ctx);
         }
     }
 
@@ -28584,6 +28637,7 @@ impl TypedActionView for TerminalView {
             | TypedCharacters(_)
             | UserInputSequence(_)
             | ControlSequence(_)
+            | AgentShortcutEnter { .. }
             | TriggerSubshellBootstrap
             | ShowSubshellBanner(_)
             | DismissWarpifyBanner(_)
@@ -28921,6 +28975,10 @@ impl TypedActionView for TerminalView {
             UserInputSequence(bytes) => self.user_input_sequence(bytes, ctx),
             ControlSequence(bytes) => self.control_sequence_on_terminal(bytes, ctx),
             KeyDown(chars) => self.keydown_on_terminal(chars, ctx),
+            AgentShortcutEnter {
+                chars,
+                fallback_sequence,
+            } => self.agent_shortcut_enter(chars, fallback_sequence.as_deref(), ctx),
             TypedCharacters(chars) => self.typed_characters_on_terminal(chars, ctx),
             CtrlD => self.ctrl_d(ctx),
             CtrlC => self.handle_ctrl_c_input_event(0, ctx),

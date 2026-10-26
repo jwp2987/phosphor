@@ -14720,3 +14720,161 @@ fn read_only_view_of_live_conversation_does_not_register_a_second_live_copy() {
         });
     });
 }
+
+/// #976: while the SSH Warpifying banner shows, only the advertised shortcut switches to agent
+/// mode; everything else is passed through as before.
+#[test]
+fn agent_shortcut_enter_routes_by_banner_state() {
+    assert_eq!(
+        route_agent_shortcut_enter(true),
+        AgentShortcutEnterRoute::SwitchToAgentMode
+    );
+    assert_eq!(
+        route_agent_shortcut_enter(false),
+        AgentShortcutEnterRoute::PassThrough
+    );
+}
+
+/// #976: only Cmd-Enter (macOS) / Ctrl-Enter (elsewhere) is the agent shortcut; a plain Enter
+/// never is, so it always reaches the pty.
+#[test]
+fn only_the_modified_enter_is_the_agent_shortcut() {
+    use crate::terminal::block_list_element::is_agent_shortcut_enter as is_shortcut;
+    use warpui::keymap::Keystroke;
+    let key = |ctrl, cmd, shift, alt, name: &str| Keystroke {
+        ctrl,
+        alt,
+        shift,
+        cmd,
+        meta: false,
+        key: name.to_owned(),
+    };
+    assert!(!is_shortcut(&key(false, false, false, false, "enter")));
+    assert!(!is_shortcut(&key(false, false, true, false, "enter")));
+    let shortcut = if cfg!(target_os = "macos") {
+        key(false, true, false, false, "enter")
+    } else {
+        key(true, false, false, false, "enter")
+    };
+    assert!(is_shortcut(&shortcut));
+    let mut other_key = shortcut.clone();
+    other_key.key = "a".to_owned();
+    assert!(!is_shortcut(&other_key));
+}
+
+/// #976: a plain Enter reaches the pty, with nothing typed and after typing, regardless of the
+/// SSH banner (it may answer a password, host-key or 2FA prompt).
+#[test]
+fn plain_enter_always_reaches_the_pty() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh localhost", "Password:");
+            view.keydown_on_terminal("\r", ctx);
+            view.typed_characters_on_terminal("x", ctx);
+            view.keydown_on_terminal("\r", ctx);
+        });
+        let writes = pty_writes.borrow();
+        assert_eq!(
+            writes.iter().filter(|w| w.as_slice() == b"\r").count(),
+            2,
+            "both Enters must reach the pty: {writes:?}"
+        );
+    })
+}
+
+/// #976: without the banner the agent shortcut behaves like the key did before: it reaches the
+/// pty as an Enter.
+#[test]
+fn agent_shortcut_enter_without_banner_is_unchanged() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 100", "");
+            assert!(!view.warpify_state.is_ssh_warpifying());
+            view.agent_shortcut_enter("\r", None, ctx);
+        });
+        assert!(pty_writes.borrow().iter().any(|w| w.as_slice() == b"\r"));
+    })
+}
+
+/// #963: mouse reports and wheel scrolling over an alt-screen program the agent is driving must
+/// not take control away from the agent (and are not forwarded to the pty).
+#[test]
+fn alt_screen_mouse_and_scroll_do_not_take_agent_control() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.simulate_long_running_block("less log.txt", "");
+                let task_id = TaskId::new("test-task".to_owned());
+                model
+                    .block_list_mut()
+                    .active_block_mut()
+                    .set_agent_interaction_mode_for_agent_monitored_command(
+                        &task_id,
+                        AIConversationId::new(),
+                    )
+                    .expect("user-mode block should become agent-monitored");
+                model.set_mode(ansi::Mode::SwapScreen {
+                    save_cursor_and_clear_screen: true,
+                });
+                assert!(model.is_alt_screen_active());
+                assert!(model.block_list().active_block().is_agent_in_control());
+            }
+
+            view.alt_scroll(3, ctx);
+            view.terminal_up(ctx);
+            view.terminal_down(ctx);
+
+            assert!(
+                view.model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_agent_in_control(),
+                "wheel/arrow-routed input must not switch control to the user"
+            );
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "input from the pointer must not reach a pty the agent controls"
+        );
+    })
+}
