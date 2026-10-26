@@ -644,6 +644,69 @@ fn test_permanent_close_stops_every_running_conversation_in_the_pane() {
     });
 }
 
+/// #980: permanently discarding a pane (single pane whose undo-close grace expired) must shut
+/// its pty down; a hidden-for-close pane must not, since it may still be restored.
+#[test]
+fn test_permanent_discard_shuts_down_pty_but_hiding_does_not() {
+    let _undo_closed_panes = FeatureFlag::UndoClosedPanes.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let pane_id = get_newly_created_pane_id(panes, &[]);
+            // A second pane so `close_pane` hides instead of emitting `Exited`.
+            panes.add_pane_with_direction(
+                Direction::Right,
+                NotebookPane::new(new_notebook(ctx), ctx),
+                false,
+                ctx,
+            );
+            let terminal_view = panes
+                .terminal_view_from_pane_id(pane_id, ctx)
+                .expect("pane should have a terminal view");
+
+            panes.close_pane(pane_id, ctx);
+            assert!(panes.is_pane_hidden_for_close(pane_id));
+            assert!(
+                !terminal_view.as_ref(ctx).pty_shutdown_requested(),
+                "a pane hidden for undo-close must keep its pty"
+            );
+
+            assert!(panes.cleanup_closed_pane(pane_id, ctx));
+            assert!(
+                terminal_view.as_ref(ctx).pty_shutdown_requested(),
+                "discarding the pane after the grace must shut its pty down (#980)"
+            );
+        });
+    });
+}
+
+/// #980: the whole-tab discard path (`UndoCloseStack` -> `clean_up_panes`) shuts every
+/// terminal pane's pty down.
+#[test]
+fn test_clean_up_panes_shuts_down_every_terminal_pty() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let pane_id = get_newly_created_pane_id(panes, &[]);
+            let terminal_view = panes
+                .terminal_view_from_pane_id(pane_id, ctx)
+                .expect("pane should have a terminal view");
+            assert!(!terminal_view.as_ref(ctx).pty_shutdown_requested());
+
+            panes.clean_up_panes(ctx);
+
+            assert!(terminal_view.as_ref(ctx).pty_shutdown_requested());
+        });
+    });
+}
+
 #[test]
 fn test_restore_closed_pane_restores_hidden_child_when_parent_is_already_fullscreen() {
     let _agent_view = FeatureFlag::AgentView.override_enabled(true);

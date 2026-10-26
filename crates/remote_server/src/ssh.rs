@@ -45,6 +45,28 @@ pub fn ssh_args(socket_path: &Path) -> Vec<String> {
 /// Fire-and-forget. Errors are logged but not propagated: at teardown
 /// time there is nothing useful to do with them.
 pub async fn stop_control_master(socket_path: &Path) {
+    stop_control_master_inner(socket_path).await;
+    // A master that was SIGKILLed (the pty teardown kills the whole process tree, #975/#980)
+    // never unlinks its socket, and `ssh -O exit` then fails, leaving a stale
+    // `~/.ssh/<session id>` behind. We only get here for a master Phosphor owns, so removing
+    // the leftover is safe.
+    remove_stale_control_socket(socket_path);
+}
+
+/// Removes `socket_path` if it is still there after the master was stopped. Missing is the
+/// normal case (a graceful master unlinks it) and is ignored.
+pub(crate) fn remove_stale_control_socket(socket_path: &Path) {
+    match std::fs::remove_file(socket_path) {
+        Ok(()) => log::info!("removed stale ControlPath socket {}", socket_path.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => log::warn!(
+            "failed to remove ControlPath socket {}: {e}",
+            socket_path.display()
+        ),
+    }
+}
+
+async fn stop_control_master_inner(socket_path: &Path) {
     let args = ssh_args(socket_path);
     let result = async {
         Command::new("ssh")
@@ -195,3 +217,7 @@ pub async fn scp_upload(
     let stderr = String::from_utf8_lossy(&output.stderr);
     Err(anyhow!("SCP upload failed: {stderr}"))
 }
+
+#[cfg(test)]
+#[path = "ssh_tests.rs"]
+mod tests;
