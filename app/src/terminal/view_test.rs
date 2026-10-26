@@ -15067,6 +15067,8 @@ fn ssh_prompt_before_remote_session_receives_enter_and_typed_text() {
 fn ssh_silent_connect_drops_typed_runs_whole_then_prompt_gets_keys() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        // The dropped-typing notice is a toast; the real app always has a toast stack.
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = record_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
@@ -15134,6 +15136,8 @@ fn ssh_gate_never_rearms_after_any_output() {
 fn ssh_silent_connect_drops_paste_but_not_interrupts() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        // The dropped-typing notice is a toast; the real app always has a toast stack.
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = record_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
