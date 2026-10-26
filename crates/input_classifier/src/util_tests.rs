@@ -1193,6 +1193,7 @@ fn test_965_collision_words_read_as_prose_only_as_a_sentence() {
         "what does ls -la do",
         "write a script that counts lines",
         "where is the config",
+        "what is the capital of France",
         "do it",
     ] {
         assert!(reads_as_request_to_agent(text), "{text:?}");
@@ -1203,6 +1204,9 @@ fn test_965_collision_words_read_as_prose_only_as_a_sentence() {
         "what /usr/bin/ls",
         "write user",
         "where git",
+        "where is git",
+        "what is ls",
+        "where is foo.txt",
         "do ls",
         "say",
     ] {

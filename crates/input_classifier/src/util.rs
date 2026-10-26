@@ -1497,6 +1497,14 @@ fn collision_head_reads_as_sentence(head: &str, remaining: &[ShellWord]) -> bool
     {
         return false;
     }
+    // `where is git`, `what is ls`, `where git`: a head plus one word (optionally via `is`) is a
+    // lookup, not a sentence. `do it` is the exception: `do` is never a command by itself.
+    if head != "do"
+        && !head.eq("say")
+        && (remaining.len() == 1 || (remaining.len() == 2 && remaining[0].text == "is"))
+    {
+        return false;
+    }
     if head == "say" {
         return remaining.len() == 1
             && SAY_GREETING_WORDS.contains(

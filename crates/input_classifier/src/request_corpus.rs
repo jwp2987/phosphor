@@ -129,6 +129,9 @@ pub(crate) const REAL_COMMANDS_WITH_ENGLISH_ARGS: &[&str] = &[
     "write user",
     "write user tty1",
     "where git",
+    "where is git",
+    "what is ls",
+    "where is foo.txt",
     "where ./script.sh",
     "do ls",
 ];
