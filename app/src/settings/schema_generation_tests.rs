@@ -1,6 +1,9 @@
 use serde_json::json;
 
-use super::{settings_schema_json, strip_empty_enum_entries, strip_numeric_metadata};
+use super::{
+    active_flags_for_channel, settings_schema_json, strip_empty_enum_entries,
+    strip_numeric_metadata,
+};
 
 #[test]
 fn strips_numeric_metadata_recursively() {
@@ -124,5 +127,17 @@ fn a_feature_gated_setting_is_included_only_when_its_flag_is_enabled() {
         contains_key(&with, gated_entry.storage_key),
         "{} should be present when its flag is enabled",
         gated_entry.storage_key
+    );
+}
+
+/// #993: `--channel oss` is this fork's own channel, not an unknown one. Its schema uses the
+/// flags the running binary enables, not the dev set the unknown-channel fallback picks.
+#[test]
+fn the_oss_channel_uses_the_binarys_own_flags_not_the_dev_fallback() {
+    assert_eq!(active_flags_for_channel("oss"), crate::enabled_features());
+    assert_ne!(
+        active_flags_for_channel("oss"),
+        active_flags_for_channel("dev"),
+        "oss must not fall back to the dev flag set"
     );
 }
