@@ -7,9 +7,10 @@
 #
 # Windows and macOS Intel are intentionally absent (dropped for now; see #989).
 #
-# Port status: guards, check-linux, check-macos, plus MANUAL build jobs for the Mac
-# DMG and the Linux AppImage/deb. licenses, the test jobs and the full release
-# pipeline (CLI tarballs, digest pins, GitLab release) are not ported yet.
+# Port status: every pr-check.yml job is ported except the Windows and macOS Intel
+# ones (dropped for now), plus MANUAL build jobs for the Mac DMG and the Linux
+# AppImage/deb. The full release pipeline (CLI tarballs, digest pins, GitLab
+# release) is not ported yet.
 #
 # `little-thing` is the maintainer's build box, so jobs there must not change its
 # environment: no apt installs, no rustup target additions, no cargo install.
@@ -278,3 +279,169 @@ build-linux-x86_64:
     paths: [dist/]
     expire_in: 3 days
     when: on_success
+
+# ---------------------------------------------------------------------------
+# Test jobs (ported from pr-check.yml). All run on the build box and all go
+# through script/agent-cargo (slot/memory governor); `resource_group` serialises
+# them with every other cargo job across pipelines.
+#
+# Heavy suites run automatically only on main and tags. On other branches they are
+# manual (and never block the pipeline): a full nextest build is far too expensive
+# to repeat on every push to a feature branch.
+#
+# They share ONE agent-cargo label (`ci-test`) and therefore one target dir, so the
+# test-profile dependency graph is compiled once, not once per job. Per-job labels
+# would cost tens of GB each on a box with limited disk.
+# ---------------------------------------------------------------------------
+
+.box_job:
+  extends: .shim_github_env
+  stage: test
+  tags: [little-thing]
+  needs: [guards]
+  resource_group: little-thing-cargo
+  interruptible: true
+  variables:
+    RUSTUP_HOME: /home/winters/.rustup
+    CARGO_HOME: /home/gitlab-runner/.cargo-ci
+    PHOSPHOR_TARGET_ROOT: /home/gitlab-runner/.phosphor-build/targets
+    PHOSPHOR_LOCK_DIR: /home/gitlab-runner/.phosphor-build/locks
+    PHOSPHOR_LOG_DIR: /home/gitlab-runner/.phosphor-build/logs
+    PHOSPHOR_CARGO_LABEL: ci-test
+  before_script:
+    - mkdir -p "$CI_PROJECT_DIR/.ci"
+    - touch "$GITHUB_OUTPUT" "$GITHUB_PATH" "$GITHUB_ENV"
+    - export PATH="$CARGO_HOME/bin:/home/winters/.cargo/bin:$HOME/.local/bin:$PATH"
+    - command -v cargo-nextest >/dev/null || { echo "ERROR cargo-nextest is missing on this runner (expected in /home/winters/.cargo/bin)" >&2; exit 1; }
+
+.heavy_rules:
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_TAG
+      when: on_success
+    - when: manual
+      allow_failure: true
+
+# Dependency licence gate: deny.toml / about.toml were claimed to be enforced in CI
+# since the fork was created and nothing ran them (see pr-check.yml history).
+# `check sources` is wider than upstream ran: the fork has a personal winit fork
+# upstream never had.
+licenses:
+  extends: .box_job
+  timeout: 30m
+  script:
+    - ./script/install_cargo_binstall
+    - cargo binstall --force -y cargo-deny
+    - cargo deny -L error check licenses sources
+    - ./script/check_license_config_sync
+
+# warp + warp_tui lib tests, gated on CHANGE not on redness
+# (script/check_test_failures + known_test_failures.txt). BOTH crates in ONE
+# invocation, on purpose: a listed failure that did not run counts as "fixed" and
+# fails the gate. nextest, not `cargo test`: the suite was stabilised under its
+# process-per-test isolation.
+test-linux:
+  extends: [.box_job, .heavy_rules]
+  timeout: 3h
+  script:
+    - ./script/check_test_failures -p warp -p warp_tui --lib --features warp/gui
+
+# warpui_core with --features tui. The flag is NOT optional: elements/tui/ is
+# cfg(feature = "tui"), so without it those ~259 tests do not exist, and the run
+# reports a green that says nothing about them.
+test-warpui-core:
+  extends: [.box_job, .heavy_rules]
+  timeout: 90m
+  script:
+    - ./script/check_test_failures -p warpui_core --features tui
+
+# The rest of the workspace: one invocation listing every package, exactly as
+# script/precheck does. Do not split it: check_test_failures treats a known failure
+# that did not run as "fixed", and splitting thrashes the shared target dir.
+# `--workspace` fails on command-signatures-v2 (its build script shells out to yarn,
+# 0 tests), so it is excluded by name.
+test-workspace-rest:
+  extends: [.box_job, .heavy_rules]
+  timeout: 3h
+  script:
+    - |
+      ./script/check_test_failures \
+          -p sum_tree -p string-offset -p fuzzy_match -p handlebars -p syntax_tree \
+          -p languages -p asset_cache -p settings_value -p jsonrpc -p simple_logger \
+          -p warp_logging -p channel_versions -p command -p http_client -p warp_features \
+          -p managed_secrets_wasm -p voice_input -p warp_isolation_platform -p websocket \
+          -p input_classifier -p warp_search_core -p persistence -p settings \
+          -p warp_managed_secrets -p markdown_parser -p warp_util -p warp_core \
+          -p repo_metadata -p warp_terminal -p warp_files -p local_control -p vim \
+          -p warp_completer -p warpui -p warpui_extras -p ai -p remote_server \
+          -p usage_suite -p warp_editor -p warp_cli
+
+# ~300 GUI-driving scenarios (crates/integration) that need a display: xvfb-run
+# supplies one, mesa-vulkan-drivers the software renderer. MANUAL and non-blocking:
+# nobody has a known-good baseline for this suite, so a red run is signal to read, not a
+# gate. `--profile ci` is required (it holds the retries), and the suite is split in
+# three by nextest's deterministic --partition.
+integration-linux:
+  extends: .box_job
+  timeout: 150m
+  when: manual
+  allow_failure: true
+  parallel:
+    matrix:
+      - SHARD: ["1", "2", "3"]
+  script:
+    - command -v xvfb-run >/dev/null || { echo "ERROR xvfb-run is missing on this runner" >&2; exit 1; }
+    - 'echo "nproc: $(nproc)"; free -h; df -h /home'
+    - xvfb-run -a -s "-screen 0 1280x1024x24" ./script/agent-cargo "$PHOSPHOR_CARGO_LABEL" nextest run -p integration --profile ci --partition "count:${SHARD}/3"
+
+# The two scenarios gated on PowerShell (#796). They resolve the shell from the
+# runner's own default, so PHOSPHOR_TEST_SHELL pins pwsh. pwsh is installed into the
+# runner user's own home from the pinned tarball (script/linux/install_pwsh needs sudo
+# and writes to /opt and /usr/bin, which this job must not do).
+integration-linux-pwsh:
+  extends: .box_job
+  timeout: 60m
+  when: manual
+  allow_failure: true
+  variables:
+    PHOSPHOR_TEST_SHELL: pwsh
+  script:
+    - command -v xvfb-run >/dev/null || { echo "ERROR xvfb-run is missing on this runner" >&2; exit 1; }
+    - |
+      if ! command -v pwsh >/dev/null; then
+        V=$(sed -n 's/^PWSH_VERSION="\(.*\)"/\1/p' script/linux/install_pwsh)
+        [ -n "$V" ] || { echo "ERROR could not read PWSH_VERSION from script/linux/install_pwsh" >&2; exit 1; }
+        mkdir -p "$HOME/.local/opt/pwsh" "$HOME/.local/bin"
+        curl -fsSL -o "$HOME/.local/pwsh.tar.gz" "https://github.com/PowerShell/PowerShell/releases/download/v${V}/powershell-${V}-linux-x64.tar.gz"
+        tar zxf "$HOME/.local/pwsh.tar.gz" -C "$HOME/.local/opt/pwsh" && rm -f "$HOME/.local/pwsh.tar.gz"
+        chmod +x "$HOME/.local/opt/pwsh/pwsh"
+        ln -sf "$HOME/.local/opt/pwsh/pwsh" "$HOME/.local/bin/pwsh"
+      fi
+    - pwsh -Version
+    - xvfb-run -a -s "-screen 0 1280x1024x24" ./script/agent-cargo "$PHOSPHOR_CARGO_LABEL" nextest run -p integration --profile ci -E 'test(test_input_reporting_powershell) or test(test_pwsh_vi_edit_mode_does_not_corrupt_commands)'
+
+# Usage/acceptance smoke suite (manual, like the nightly-less original). Linux needs
+# a display (xvfb-run). The Mac runner is a daemon with no WindowServer session, so
+# only the TUI surface can run there.
+usage-test-linux:
+  extends: .box_job
+  timeout: 90m
+  when: manual
+  allow_failure: true
+  script:
+    - command -v xvfb-run >/dev/null || { echo "ERROR xvfb-run is missing on this runner" >&2; exit 1; }
+    - xvfb-run -a -s "-screen 0 1280x1024x24" ./script/usage-test --surface both
+
+usage-test-macos:
+  extends: .shim_github_env
+  stage: test
+  tags: [Mac]
+  when: manual
+  allow_failure: true
+  needs: []
+  timeout: 90m
+  variables:
+    CARGO_BUILD_JOBS: "4"
+  script:
+    - export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+    - command -v cargo-nextest >/dev/null || { echo "ERROR cargo-nextest is missing for this user (cargo binstall cargo-nextest)" >&2; exit 1; }
+    - ./script/usage-test --surface tui
