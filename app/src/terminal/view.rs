@@ -9783,6 +9783,8 @@ impl TerminalView {
         if let Some(gate) = self.ssh_connect_gate.as_mut() {
             gate.note_block_completed(Instant::now(), exit_code == 0);
         }
+        // Release a gate that has nothing more to wait for right away, not at the next refresh.
+        self.refresh_ssh_connect_gate();
     }
 
     /// The pre-session half of the gate: true while the user has submitted ssh, nothing visible
@@ -13083,6 +13085,13 @@ impl TerminalView {
         // #983: observe the announced remote session (and its end) as it happens, so the gate
         // does not depend on a keystroke arriving while the session is pending.
         if self.ssh_connect_gate.is_some() {
+            // The ssh hook itself proves a Phosphor-managed remote, even if the pending legacy
+            // session was already consumed by InitShell by the time this event is handled.
+            if matches!(event, ModelEvent::SSH(_)) {
+                if let Some(gate) = self.ssh_connect_gate.as_mut() {
+                    gate.managed = true;
+                }
+            }
             self.refresh_ssh_connect_gate();
         }
         match event {
@@ -13541,6 +13550,11 @@ impl TerminalView {
                             if !self.model.lock().tmux_control_mode_active() {
                                 self.warpify_state
                                     .set_pending_ssh_host(warpify_command.to_string(), ssh_host);
+                                // The block that actually runs ssh is the one preexec fired for.
+                                let running_block_id = self.model.lock().active_block_id().clone();
+                                if let Some(gate) = self.ssh_connect_gate.as_mut() {
+                                    gate.block_id = Some(running_block_id);
+                                }
                                 self.model.lock().start_notify_on_end_of_ssh_login();
                                 ctx.emit(Event::TerminalViewStateChanged);
                                 // A pending SSH target just appeared (host resolved

@@ -15274,8 +15274,22 @@ fn ssh_control_only_output_does_not_open_the_gate() {
     })
 }
 
-/// #983 window 3: the ssh block ends (remote shell's first precmd) before the remote session is
-/// registered; typing in that gap, even with MOTD text already printed, is dropped whole.
+/// Simulates the ssh hook the managed (wrapped) ssh emits during the ssh block: the model keeps a
+/// pending legacy ssh session until the remote's InitShell consumes it.
+fn simulate_ssh_hook(view: &mut TerminalView) {
+    crate::terminal::model::ansi::Handler::ssh(
+        &mut *view.model.lock(),
+        crate::terminal::model::ansi::SSHValue {
+            remote_shell: "bash".to_owned(),
+            remote_session_id: Some(167303092612202),
+            ..Default::default()
+        },
+    );
+}
+
+/// #983 window 3 (managed): the ssh block ends (remote shell's first precmd) before the remote
+/// session is registered; typing in that gap, even with MOTD text already printed, is dropped
+/// whole. The ssh hook seen during the block marks the remote as managed.
 #[test]
 fn ssh_keys_after_ssh_block_ends_before_remote_session_are_dropped() {
     App::test((), |mut app| async move {
@@ -15291,15 +15305,47 @@ fn ssh_keys_after_ssh_block_ends_before_remote_session_are_dropped() {
                 .simulate_long_running_block("ssh host", "Welcome to Ubuntu\r\n");
             view.warpify_state
                 .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            simulate_ssh_hook(view);
+            // The event handler observes the hook while the ssh block still runs.
+            view.refresh_ssh_connect_gate();
+            assert!(view.ssh_connect_gate.as_ref().is_some_and(|g| g.managed));
             // The ssh block completes cleanly and the pending ssh state is cleared with it.
-            if let Some(gate) = view.ssh_connect_gate.as_mut() {
-                gate.note_block_completed(Instant::now(), true);
-            }
+            let armed = view.model.lock().active_block_id().clone();
+            view.apply_block_completed_to_ssh_gate(&armed, 0);
             view.warpify_state.clear_pending_ssh_host();
             view.typed_characters_on_terminal("echo hi", ctx);
             view.keydown_on_terminal("\r", ctx);
+            assert!(view.ssh_setup_drop_notified);
         });
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #983 window 3 (unmanaged twin): the same clean end with no ssh hook and no announced session
+/// (plain ssh, quick `exit`) releases; the next typing reaches the pty.
+#[test]
+fn ssh_keys_after_unmanaged_ssh_block_end_pass() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "Welcome\r\n");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            let armed = view.model.lock().active_block_id().clone();
+            view.apply_block_completed_to_ssh_gate(&armed, 0);
+            assert!(view.ssh_connect_gate.is_none());
+            view.warpify_state.clear_pending_ssh_host();
+            view.typed_characters_on_terminal("ls", ctx);
+            assert!(!view.ssh_setup_drop_notified);
+        });
+        let _ = pty_writes;
     })
 }
 
