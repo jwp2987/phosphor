@@ -10127,10 +10127,11 @@ fn test_waiting_enter_with_keys_typed_behind_it_submits_instead_of_queueing_itse
         input.update(&mut app, |input, ctx| {
             input.clear_buffer_and_reset_undo_stack(ctx);
             input.user_insert("true", ctx);
-            // The Enter is waiting; two characters typed behind it were taken out of the buffer.
+            // The Enter is waiting; two characters typed behind it are still in the buffer, for
+            // the wait's reconcile to take out (it moves them into the queue, never both).
             input.verdict_wait = Some(VerdictWait {
                 text: "true".to_string(),
-                queued: vec![AfterEnterInput::Text("ec".to_string())],
+                queued: Vec::new(),
             });
             input.user_insert("ec", ctx);
             input.wait_for_verdict_then_enter("true".to_string(), Instant::now(), ctx);
