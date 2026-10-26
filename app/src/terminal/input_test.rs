@@ -10112,6 +10112,43 @@ fn test_enter_while_after_enter_replay_pending_queues_in_order() {
     })
 }
 
+/// #1016: the Enter that waited for its verdict runs as the submit of what was typed BEFORE it.
+/// With keys typed behind it, the replay is open ahead of that submit; the submit used to see the
+/// open replay, queue itself behind the text and submit nothing, so the replay then inserted the
+/// text and ran the Enter on 'trueec' (`true` + Enter + `echo ...` typed with no gap).
+#[test]
+fn test_waiting_enter_with_keys_typed_behind_it_submits_instead_of_queueing_itself() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("true", ctx);
+            // The Enter is waiting; two characters typed behind it were taken out of the buffer.
+            input.verdict_wait = Some(VerdictWait {
+                text: "true".to_string(),
+                queued: vec![AfterEnterInput::Text("ec".to_string())],
+            });
+            input.user_insert("ec", ctx);
+            input.wait_for_verdict_then_enter("true".to_string(), Instant::now(), ctx);
+        });
+        input.read(&app, |input, _| {
+            assert!(
+                input.last_enter_submitted_shell_command,
+                "the waiting Enter must submit the line it waited for"
+            );
+            assert_eq!(
+                input.after_enter_replay_for_test(),
+                [AfterEnterInput::Text("ec".to_string())],
+                "only the keys typed behind the Enter replay; the Enter itself already ran"
+            );
+        });
+    })
+}
+
 /// #1017: a quote completion consumes the editor's auto-paired closing quote instead of doubling it.
 #[test]
 fn completion_consumes_auto_paired_closing_quote() {

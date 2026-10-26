@@ -1858,6 +1858,9 @@ pub struct Input {
     /// taken the command and routes keys (before that, routed text lands in the editor and the
     /// shell's typeahead report is later inserted in front of it).
     after_enter_replay_awaits_pty: bool,
+    /// The waiting Enter is being run right now (#1016): its own `input_enter` is the submit, not
+    /// an Enter typed behind a pending replay, so it must not queue itself.
+    running_deferred_enter: bool,
     /// Whether the last Enter submitted a shell command; read by `input_enter_as_shell_command`.
     last_enter_submitted_shell_command: bool,
     /// What the editor held when it last submitted a command. The editor is cleared when that
@@ -3526,6 +3529,7 @@ impl Input {
             after_enter_replay: Vec::new(),
             after_enter_replay_open: false,
             after_enter_replay_awaits_pty: false,
+            running_deferred_enter: false,
             last_enter_submitted_shell_command: false,
             editor_submission: None,
             last_enter_submitted_ai_query: false,
@@ -12692,6 +12696,7 @@ impl Input {
             }
 
             let command = self.get_command(ctx);
+            warpui::input_order::log_submit(&command);
             // Read how this submit is routed before the submit resets the input config (#835).
             let route_reason = self.ai_input_model.as_ref(ctx).submit_route_reason();
             if !self.try_execute_command(&command, ctx) {
@@ -12874,7 +12879,10 @@ impl Input {
             return true;
         }
         // The deferred Enter has run but its replay has not drained: this Enter follows it.
-        if self.after_enter_replay_open {
+        // (Not the deferred Enter's own submit: the replay is open ahead of it so nothing typed
+        // overtakes the queue, and that submit must run, not queue itself behind the text it was
+        // waiting to precede -- which submitted 'trueec' for 'true' + Enter + 'echo ...'.)
+        if self.after_enter_replay_open && !self.running_deferred_enter {
             self.queue_after_enter_replay(AfterEnterInput::Enter);
             return true;
         }
@@ -12985,7 +12993,9 @@ impl Input {
                     self.after_enter_replay_awaits_pty = false;
                 }
                 self.last_enter_submitted_shell_command = false;
+                self.running_deferred_enter = true;
                 self.input_enter(ctx);
+                self.running_deferred_enter = false;
                 if has_queued {
                     self.after_enter_replay_awaits_pty = self.last_enter_submitted_shell_command;
                     ctx.emit(Event::ReplayAfterDeferredEnter);
