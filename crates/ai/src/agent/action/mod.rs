@@ -706,6 +706,15 @@ impl AIAgentPtyWriteMode {
             AIAgentPtyWriteMode::Line => {
                 // Move to beginning of line, clear the rest of it, write input, then submit
                 // (Enter).
+                //
+                // Line mode adds the Enter itself, so one the input already ends with (the model
+                // writing `cmd\n` in Line mode) is dropped: exactly one Enter is sent and shown
+                // (#1029).
+                let bytes = bytes
+                    .strip_suffix(b"\r\n")
+                    .or_else(|| bytes.strip_suffix(b"\n"))
+                    .or_else(|| bytes.strip_suffix(b"\r"))
+                    .unwrap_or(&bytes);
                 let mut v = Vec::with_capacity(bytes.len() + 3);
                 // ^A (SOH) is "beginning of line" for readline/prompt-toolkit style editors.
                 v.push(escape_sequences::C0::SOH);
@@ -715,7 +724,7 @@ impl AIAgentPtyWriteMode {
                 // the agent took over, ran as `echo agent-in-norc-okrun the shell command: ...`
                 // (#979).
                 v.push(escape_sequences::C0::VT);
-                v.extend_from_slice(&bytes);
+                v.extend_from_slice(bytes);
                 // Submit with CR, which is what the Enter key sends on every platform. A
                 // cooked-mode tty maps it to LF (ICRNL), but raw-mode line editors do not:
                 // PSReadLine reads LF as Ctrl+J and leaves the line unsubmitted.
@@ -996,6 +1005,18 @@ mod pty_write_mode_tests {
             assert_eq!(
                 mode.decorate_bytes(line, false),
                 [&[C0::SOH, C0::VT][..], b"echo unmanaged-ok", &[C0::CR]].concat()
+            );
+        }
+    }
+
+    /// #1029: Line mode sends exactly one Enter even when the input already ends with a newline.
+    #[test]
+    fn line_mode_with_a_trailing_newline_sends_a_single_enter() {
+        for input in [&b"echo ok\n"[..], b"echo ok\r", b"echo ok\r\n", b"echo ok"] {
+            assert_eq!(
+                AIAgentPtyWriteMode::Line.decorate_bytes(input.to_vec(), false),
+                [&[C0::SOH, C0::VT][..], b"echo ok", &[C0::CR]].concat(),
+                "{input:?}"
             );
         }
     }
