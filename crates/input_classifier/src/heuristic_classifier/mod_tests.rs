@@ -293,8 +293,8 @@ fn test_prose_opening_with_tool_name_stays_ai_when_not_installed() {
         assert_eq!(
             classifier
                 .detect_input_type(token, &context)
-            .await
-                    .input_type,
+                .await
+                .input_type,
             InputType::Shell,
         );
     });
