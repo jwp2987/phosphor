@@ -690,6 +690,8 @@ const BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(7);
 /// Longest typing is dropped on behalf of one pending ssh bootstrap (#983). A healthy
 /// bootstrap finishes well inside this; a stuck or stale one must not own the keyboard.
 const SSH_BOOTSTRAP_SWALLOW_CEILING: Duration = Duration::from_secs(15);
+/// After this long without a finished subshell bootstrap, input is no longer held back (#960).
+const SUBSHELL_BOOTSTRAP_STALL_CEILING: Duration = Duration::from_secs(20);
 /// Duration before we consider a session invoked from an env vars object to
 /// have failed bootstrapping. The longer duration is meant to account for
 /// a user needing to type in one or many secret manager passwords
@@ -2781,6 +2783,12 @@ pub struct TerminalView {
     /// keystrokes are held in it and delivered, in order, once the last line is out, so they can
     /// never interleave with (or land inside) the bootstrap.
     subshell_bootstrap_in_flight: Option<SubshellBootstrapInFlight>,
+    /// The active block and the time at which this view last typed a subshell bootstrap stage
+    /// into it. Unlike the model's pending subshell session (which only exists once the shell
+    /// answered with `InitShell`), this exists even when the script never ran, so a stalled
+    /// stage still lets Ctrl-C / Ctrl-D through at once and everything after
+    /// `SUBSHELL_BOOTSTRAP_STALL_CEILING` (#960).
+    subshell_bootstrap_announced: Option<(BlockId, Instant)>,
     subshell_bootstrap_generation: u64,
 
     show_snackbar: bool,
@@ -4404,6 +4412,7 @@ impl TerminalView {
             pending_env_var_collection: None,
             env_vars: Vec::new(),
             subshell_bootstrap_in_flight: None,
+            subshell_bootstrap_announced: None,
             subshell_bootstrap_generation: 0,
             show_snackbar: true,
             hover_near_snackbar_area: false,
@@ -9665,10 +9674,31 @@ impl TerminalView {
     /// could type into vim, a password prompt or a remote shell. Other keys stay held so the
     /// user cannot interleave with a healthy-but-slow bootstrap script.
     fn forwards_keys_during_subshell_bootstrap(&self, abort_key: bool) -> bool {
-        subshell_bootstrap_key_forwarded(self.subshell_bootstrap_pending(), abort_key)
+        subshell_bootstrap_key_forwarded(
+            self.subshell_bootstrap_pending(),
+            abort_key,
+            self.subshell_bootstrap_announced_age(),
+        )
+    }
+
+    /// How long ago this view typed a bootstrap stage into the active block, while that block is
+    /// still not bootstrapped. `None` when none was typed, the block has since changed, or the
+    /// session is bootstrapped/read-only. Needs no `InitShell`, so it also covers a script that
+    /// the shell never ran (#960).
+    fn subshell_bootstrap_announced_age(&self) -> Option<Duration> {
+        let (block_id, at) = self.subshell_bootstrap_announced.as_ref()?;
+        let model = self.model.lock();
+        (!model.is_read_only()
+            && !model.is_active_block_bootstrapped()
+            && model.block_list().active_block().id() == block_id)
+            .then(|| at.elapsed())
     }
 
     fn should_write_typed_chars_to_pty(&self, ctx: &mut ViewContext<Self>) -> bool {
+        // Computed before the model lock below (it takes the same lock).
+        let subshell_bootstrap_stalled = self
+            .subshell_bootstrap_announced_age()
+            .is_some_and(|age| age >= SUBSHELL_BOOTSTRAP_STALL_CEILING);
         // Lock the model once and hold it throughout the function
         let model = self.model.lock();
 
@@ -9692,7 +9722,7 @@ impl TerminalView {
             .has_pending_or_bootstrapped_session();
         let is_shared_session_executor = model.shared_session_status().is_executor();
 
-        was_bootstrap_script_echoed || is_shared_session_executor
+        was_bootstrap_script_echoed || is_shared_session_executor || subshell_bootstrap_stalled
     }
     /// Receiving a warpui::Event::TypedCharacters event from a child element.
     /// We can assume `characters` consists of all printable characters, and therefore,
@@ -16289,6 +16319,10 @@ impl TerminalView {
         let Some(first) = lines.next() else {
             return;
         };
+        self.subshell_bootstrap_announced = Some((
+            self.model.lock().block_list().active_block().id().clone(),
+            Instant::now(),
+        ));
         self.clear_line_editor_and_write_to_pty(first.into_bytes(), ctx);
         self.write_to_pty(vec![escape_sequences::C0::CR], ctx);
         let rest: Vec<String> = lines.collect();
@@ -30947,8 +30981,18 @@ fn is_abort_key(bytes: &[u8]) -> bool {
 
 /// Pure routing rule for a pane whose subshell bootstrap is announced but unfinished (#960):
 /// only abort keys are forwarded; everything else stays held.
-fn subshell_bootstrap_key_forwarded(pending: bool, abort_key: bool) -> bool {
-    pending && abort_key
+///
+/// `announced_age` is the time since a bootstrap stage was typed into the block (see
+/// `subshell_bootstrap_announced_age`). It does not need the shell to have answered: a stage
+/// whose script never ran (no `InitShell`, so `pending` stays false) must still never leave the
+/// pane swallowing input -- abort keys pass at once and every key after the ceiling (#960).
+fn subshell_bootstrap_key_forwarded(
+    pending: bool,
+    abort_key: bool,
+    announced_age: Option<Duration>,
+) -> bool {
+    (pending && abort_key)
+        || announced_age.is_some_and(|age| abort_key || age >= SUBSHELL_BOOTSTRAP_STALL_CEILING)
 }
 
 /// Whether typing is still dropped for a pending ssh bootstrap (#983). Pure so the bounds are

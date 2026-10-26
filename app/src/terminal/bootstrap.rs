@@ -356,6 +356,11 @@ fn escape_for_single_quotes(shell_type: ShellType, text: &str) -> String {
     }
 }
 
+/// Printed by the last bootstrap line when the accumulated script is not the length that was sent
+/// (so it is not evaluated). Nothing else tells the user why the pane did not warpify; the app
+/// also stops holding input after a while (#960). It is one `printf` with the count as an argument.
+const SKIPPED_NOTICE: &str = "builtin printf '\\nPhosphor: subshell setup skipped, the script arrived incomplete (%s characters). Type exit to leave this shell.\\n' \"${#_wbs}\"";
+
 /// Splits `raw_script` into lines that rebuild it in `$_wbs` and then evaluate it.
 fn chunked_eval_lines(shell_type: ShellType, raw_script: &str) -> Vec<String> {
     let mut chunks: Vec<String> = Vec::new();
@@ -409,10 +414,10 @@ fn chunked_eval_lines(shell_type: ShellType, raw_script: &str) -> Vec<String> {
         // whose rcfiles already ran, and under their `set -u` / `setopt nounset` the bare
         // expansion aborts the line, so the subshell is never Warpified (#839).
         ShellType::Bash => format!(
-            " HISTCONTROL=$__hc0; unset __hc0; [ -z \"${{WARP_BOOTSTRAPPED-}}\" ] && {{ [ \"${{#_wbs}}\" -eq {chars} ] || [ \"${{#_wbs}}\" -eq {bytes} ]; }} && eval \"$_wbs\"; unset _wbs"
+            " HISTCONTROL=$__hc0; unset __hc0; if [ -z \"${{WARP_BOOTSTRAPPED-}}\" ]; then if [ \"${{#_wbs}}\" -eq {chars} ] || [ \"${{#_wbs}}\" -eq {bytes} ]; then eval \"$_wbs\"; else {SKIPPED_NOTICE}; fi; fi; unset _wbs"
         ),
         ShellType::Zsh => format!(
-            " if [ \"$__whi\" = 1 ]; then WARP_HIST_IGNORE_SPACE_USER=1; else unsetopt hist_ignore_space; fi; unset __whi; [ -z \"${{WARP_BOOTSTRAPPED-}}\" ] && {{ [ \"${{#_wbs}}\" -eq {chars} ] || [ \"${{#_wbs}}\" -eq {bytes} ]; }} && eval \"$_wbs\"; unset _wbs WARP_HIST_IGNORE_SPACE_USER"
+            " if [ \"$__whi\" = 1 ]; then WARP_HIST_IGNORE_SPACE_USER=1; else unsetopt hist_ignore_space; fi; unset __whi; if [ -z \"${{WARP_BOOTSTRAPPED-}}\" ]; then if [ \"${{#_wbs}}\" -eq {chars} ] || [ \"${{#_wbs}}\" -eq {bytes} ]; then eval \"$_wbs\"; else {SKIPPED_NOTICE}; fi; fi; unset _wbs WARP_HIST_IGNORE_SPACE_USER"
         ),
         // fish cannot parse `${...}` and has no nounset, so it keeps the bare expansion.
         _ => format!(
