@@ -9684,7 +9684,7 @@ impl TerminalView {
             // True pre-login phase only: the command has printed nothing at all. Once any output
             // (banner, prompt, program output) is seen the gate never re-arms for this command,
             // so a plain session or a later `cat` / `read` can never lose keys.
-            let output_seen = !block.output_grid().is_empty()
+            let output_seen = block.output_grid().has_received_content()
                 || self.ssh_connect_output_seen.as_ref() == Some(&block_id);
             let age = block
                 .start_ts()

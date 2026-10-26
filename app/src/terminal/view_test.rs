@@ -15017,6 +15017,15 @@ fn record_pty_writes(
     pty_writes
 }
 
+/// Registers the local shell session the way a bootstrapped pane has it. Typed text only goes to
+/// the pty (rather than the input editor) once a session exists, as it does for a real ssh run.
+fn register_local_session_for_ssh_test(view: &TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    view.sessions.update(ctx, |sessions, _| {
+        sessions
+            .register_session_for_test(SessionInfo::new_for_test().with_id(SessionId::from(9001)));
+    });
+}
+
 /// #976: while an ssh command runs with no remote session pending and a prompt (here the
 /// host-key question) is showing, a plain Enter and typed answers reach the pty.
 #[test]
@@ -15026,6 +15035,7 @@ fn ssh_prompt_before_remote_session_receives_enter_and_typed_text() {
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = record_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
             view.model.lock().simulate_long_running_block(
                 "ssh -o StrictHostKeyChecking=ask host",
                 "Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
@@ -15058,6 +15068,7 @@ fn ssh_silent_connect_drops_typed_runs_whole_then_prompt_gets_keys() {
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = record_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
             view.model
                 .lock()
                 .simulate_long_running_block("ssh host", "");
@@ -15092,6 +15103,7 @@ fn ssh_gate_never_rearms_after_any_output() {
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = record_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
             view.model
                 .lock()
                 .simulate_long_running_block("ssh host", "motd\n");
@@ -15123,6 +15135,7 @@ fn ssh_silent_connect_drops_paste_but_not_interrupts() {
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = record_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
             view.model
                 .lock()
                 .simulate_long_running_block("ssh host", "");
@@ -15141,7 +15154,10 @@ fn ssh_silent_connect_drops_paste_but_not_interrupts() {
         });
         let writes = pty_writes.borrow();
         for expected in [&b"\x1a"[..], b"\x1c", b"\x1b[A", b"\x1b"] {
-            assert!(writes.iter().any(|w| w.as_slice() == expected), "{writes:?}");
+            assert!(
+                writes.iter().any(|w| w.as_slice() == expected),
+                "{writes:?}"
+            );
         }
     })
 }
