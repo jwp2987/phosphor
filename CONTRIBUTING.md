@@ -5,27 +5,27 @@ Thanks for helping improve Phosphor! This guide explains how to open issues, pro
 ## TL;DR
 
 - Bug fixes are welcome for any issue. All bugs are marked as `ready-to-implement`.
-- Feature requests must be marked `ready-to-spec` or `ready-to-implement` before PRs are accepted.
+- Feature requests must be marked `ready-to-spec` or `ready-to-implement` before MRs are accepted.
 - Specs are the place where technical and design discussion on larger issues happen.
-- Oz automatically triages incoming issues and reviews open PRs.
+- Oz automatically triages incoming issues and reviews open MRs.
 
 ## How Contributing to Phosphor Works
 
 Phosphor's contribution model is shaped by Oz, an agent that automates parts of triage, spec writing, implementation, and review. Compared with a typical open-source repository, a few things work differently here:
 
-- **Issues are the starting point for everything.** Discussion, scoping, and design happen on the issue before any PR is opened.
+- **Issues are the starting point for everything.** Discussion, scoping, and design happen on the issue before any MR is opened.
 - **Feature requests differ from bug fixes:**
   - Features are gated by readiness labels — `ready-to-spec`, then `ready-to-implement` once the design is settled — that signal when contributors can pick up the work. Discussion alone is not approval to begin work.
-  - Feature work needs a written spec first: feature requests go through a spec PR (a *product spec* + *tech spec* committed under [`specs/`](specs/)) before any code is written.
+  - Feature work needs a written spec first: feature requests go through a spec MR (a *product spec* + *tech spec* committed under [`specs/`](specs/)) before any code is written.
   - Bug fixes skip both steps; they are implicitly `ready-to-implement` once triaged.
-- **Review is largely automated.** When you open a PR, Oz is auto-assigned and produces an initial review. Once Oz approves, it automatically requests a follow-up review from a Phosphor team subject-matter expert — you do not need to assign human reviewers yourself.
+- **Review is largely automated.** When you open a MR, Oz is auto-assigned and produces an initial review. Once Oz approves, it automatically requests a follow-up review from a Phosphor team subject-matter expert — you do not need to assign human reviewers yourself.
 
 ### Readiness labels
 
 The Phosphor team applies one of the following labels when an issue is ready for contribution:
 
-- **`ready-to-spec`** — The problem is understood but the design is open. Open a spec PR with a *product spec* (`product.md`) and a *tech spec* (`tech.md`) under [`specs/`](specs/) — see [Opening a Spec PR](#opening-a-spec-pr) for what goes in each. This label is **reserved for feature requests**.
-- **`ready-to-implement`** — The design is settled. Open a code PR. **All triaged bug reports are implicitly `ready-to-implement`** once accepted — you don't need to wait for an explicit label on a confirmed bug.
+- **`ready-to-spec`** — The problem is understood but the design is open. Open a spec MR with a *product spec* (`product.md`) and a *tech spec* (`tech.md`) under [`specs/`](specs/) — see [Opening a Spec MR](#opening-a-spec-pr) for what goes in each. This label is **reserved for feature requests**.
+- **`ready-to-implement`** — The design is settled. Open a code MR. **All triaged bug reports are implicitly `ready-to-implement`** once accepted — you don't need to wait for an explicit label on a confirmed bug.
 - **`needs-mocks`** — Design mocks are required before implementation can begin. Wait for the Phosphor team to land them.
 
 Anyone can pick up a ready issue — readiness labels are not assignments, and the best implementation wins through normal review. If an issue has been sitting un-triaged or you'd like readiness re-evaluated, mention **@oss-maintainers** in a comment to flag it for the team.
@@ -37,9 +37,9 @@ Steps owned by you (the contributor) are shown in yellow; steps owned by the Pho
 ```mermaid
 flowchart TD
     A[File an issue] --> B{Phosphor team triages}
-    B -- ready-to-spec<br/>(feature requests) --> C[Open spec PR<br/>product.md + tech.md]
+    B -- ready-to-spec<br/>(feature requests) --> C[Open spec MR<br/>product.md + tech.md]
     B -- needs-mocks --> D[Design mocks produced]
-    D --> E[Open code PR]
+    D --> E[Open code MR]
     C -- specs approved --> E
     B -- ready-to-implement<br/>(incl. all triaged bugs) --> E
     E --> F[Oz review → SME review → CI → merge]
@@ -52,9 +52,9 @@ flowchart TD
 
 ## Filing a Good Issue
 
-Search [existing issues](https://github.com/jwp2987/phosphor/issues) before filing to avoid duplicates. Use the issue templates when filing.
+Search [existing issues](https://gitlab.com/winters-phosphor/phosphor/-/issues) before filing to avoid duplicates. Use the issue templates when filing.
 
-If you're already running Phosphor, the fastest way to file is the `/feedback` command — it opens a public GitHub issue with relevant context (logs, environment details) automatically attached.
+If you're already running Phosphor, the fastest way to file is the `/feedback` command — it opens a public GitLab issue with relevant context (logs, environment details) automatically attached.
 
 ### Bug reports
 
@@ -66,7 +66,7 @@ A good bug report includes:
 - Phosphor version and OS (see `Settings → About`).
 - Logs, screenshots, or screen recordings when relevant.
 
-Once an issue is triaged as a bug (by Oz's triage agent or a maintainer), it is implicitly **`ready-to-implement`** — you can pick it up and open a code PR without waiting for a separate label.
+Once an issue is triaged as a bug (by Oz's triage agent or a maintainer), it is implicitly **`ready-to-implement`** — you can pick it up and open a code MR without waiting for a separate label.
 
 ### Feature requests
 
@@ -77,36 +77,36 @@ A good feature request describes the user-facing problem before any proposed imp
 - A sketch of the desired behavior or workflow (a short example or mock is helpful but not required).
 - Any relevant constraints (compatibility, related features, prior art, etc.).
 
-Feature requests are the path that goes through the spec flow: a maintainer applies **`ready-to-spec`** when the problem is understood and the design is open for contributors. From there, the next step is a spec PR — not a code PR.
+Feature requests are the path that goes through the spec flow: a maintainer applies **`ready-to-spec`** when the problem is understood and the design is open for contributors. From there, the next step is a spec MR — not a code MR.
 
 Automated triage may add informational labels (`area:*`, `repro:*`, etc.). Those do not affect readiness.
 
-## Opening a Spec PR
+## Opening a Spec MR
 
 Issues labeled `ready-to-spec` need a spec before code can begin. A spec consists of two short documents committed under [`specs/GH<issue-number>/`](specs/):
 
 - **`product.md`** (the *product spec*) — Defines the desired behavior from the consumer's perspective (the user, an API caller, a CLI user, etc.) and stays out of implementation detail. The core is a numbered list of **testable behavior invariants** covering the happy path, user-visible states, inputs and responses, and edge cases (empty / error / loading, cancellation, offline, permission denied, races, accessibility). Optional sections: problem statement, goals / non-goals, Figma link, open questions.
 - **`tech.md`** (the *tech spec*) — The implementation plan, grounded in this codebase. Required sections: **Context** (the current system and relevant files with line references), **Proposed changes** (modules touched, new types / APIs / state, data flow, tradeoffs), and **Testing and validation** (how each invariant from the product spec will be verified). Optional: end-to-end flow, Mermaid diagrams, risks, parallelization, follow-ups.
 
-To open a spec PR:
+To open a spec MR:
 
 1. Add `specs/GH<issue-number>/product.md` and `specs/GH<issue-number>/tech.md`. See [`specs/GH408/`](specs/GH408/), [`specs/GH1063/`](specs/GH1063/), and [`specs/GH1066/`](specs/GH1066/) for examples of well-structured specs, and browse the rest of [`specs/`](specs/) for more. The [`/write-product-spec`](.agents/skills/write-product-spec/SKILL.md) and [`/write-tech-spec`](.agents/skills/write-tech-spec/SKILL.md) skills are available to scaffold these for you.
-2. Use the PR as the home for product and technical discussion.
-3. Once the specs are approved, implementation generally continues on the same PR. In rarer cases — for example, if a large spec is merged on its own so the implementation can be broken up — it can move to a linked follow-up PR.
+2. Use the MR as the home for product and technical discussion.
+3. Once the specs are approved, implementation generally continues on the same MR. In rarer cases — for example, if a large spec is merged on its own so the implementation can be broken up — it can move to a linked follow-up MR.
 
-## Opening a Code PR
+## Opening a Code MR
 
 For issues labeled `ready-to-implement` (this includes any triaged bug):
 
 1. Branch from `master`.
 2. Implement the change and add tests (see [Testing](#testing)).
 3. Run `./script/presubmit` and fix any failures before pushing.
-4. Open a PR using the [pull request template](.github/pull_request_template.md) and add a changelog entry (`CHANGELOG-NEW-FEATURE`, `CHANGELOG-IMPROVEMENT`, or `CHANGELOG-BUG-FIX`); omit only for docs-only or refactoring-only changes.
-5. Keep the PR focused on a single logical change and merge `master` in before the PR enters review.
+4. Open a MR using the [merge request template](.gitlab/merge_request_templates/Default.md) and add a changelog entry (`CHANGELOG-NEW-FEATURE`, `CHANGELOG-IMPROVEMENT`, or `CHANGELOG-BUG-FIX`); omit only for docs-only or refactoring-only changes.
+5. Keep the MR focused on a single logical change and merge `main` in before the MR enters review.
 
-You **do not need to manually request reviewers**. Oz is auto-assigned to PRs that target a ready issue and produces an initial review. After Oz approves, it automatically requests a follow-up review from the appropriate Phosphor team subject-matter expert.
+You **do not need to manually request reviewers**. Oz is auto-assigned to MRs that target a ready issue and produces an initial review. After Oz approves, it automatically requests a follow-up review from the appropriate Phosphor team subject-matter expert.
 
-After you push changes that address Oz's feedback, comment `/oz-review` on the PR to request a re-review — you can do this up to **three times** per PR. If something looks stuck or you need more reviews than that, mention **@oss-maintainers** on the PR to escalate to the team.
+After you push changes that address Oz's feedback, comment `/oz-review` on the MR to request a re-review — you can do this up to **three times** per MR. If something looks stuck or you need more reviews than that, mention **@oss-maintainers** on the MR to escalate to the team.
 
 ## Using a Coding Agent
 
@@ -116,7 +116,7 @@ If you'd rather have an **Oz cloud agent** implement a ready issue for you, ment
 
 ## Becoming a Collaborator
 
-Contributors with several merged PRs may be invited to become collaborators. Collaborators receive expanded permissions including the ability to:
+Contributors with several merged MRs may be invited to become collaborators. Collaborators receive expanded permissions including the ability to:
 
 - Assign Oz to work on issues by mentioning `@oz` in a comment on any issue that has a readiness label.
 - Use complimentary Oz credits for contributions to this repository.
@@ -163,4 +163,4 @@ See [`SECURITY.md`](SECURITY.md) for our security disclosure policy and private 
 
 ## Getting Help
 
-- Open a [GitHub issue](https://github.com/jwp2987/phosphor/issues) for bugs or feature requests.
+- Open a [GitLab issue](https://gitlab.com/winters-phosphor/phosphor/-/issues) for bugs or feature requests.
