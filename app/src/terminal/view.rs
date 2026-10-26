@@ -10244,13 +10244,12 @@ impl TerminalView {
         // input (a follow-up), never the running command underneath, even when the pty would take
         // them.
         let typed_on_approval_card = self.typed_on_approval_card(ctx);
-        let written_to_pty = !typed_on_approval_card
-            && self.should_write_typed_chars_to_pty(ctx)
-            && {
-            self.highlighted_link.invalidate();
-            self.report_possible_typeahead(characters);
-            self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx)
-        };
+        let written_to_pty =
+            !typed_on_approval_card && self.should_write_typed_chars_to_pty(ctx) && {
+                self.highlighted_link.invalidate();
+                self.report_possible_typeahead(characters);
+                self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx)
+            };
         // The pty refused the bytes (agent in control) and the agent input is hidden: keep the
         // old behaviour and drop them, rather than piling text up in a buffer nobody can see.
         let refused_with_hidden_input = !written_to_pty
