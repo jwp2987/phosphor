@@ -941,10 +941,7 @@ mod pty_write_mode_tests {
     #[test]
     fn line_mode_submits_with_carriage_return() {
         let bytes = AIAgentPtyWriteMode::Line.decorate_bytes(b"'hi'".to_vec(), false);
-        assert_eq!(
-            bytes,
-            [&[C0::SOH, C0::VT][..], b"'hi'", &[C0::CR]].concat()
-        );
+        assert_eq!(bytes, [&[C0::SOH, C0::VT][..], b"'hi'", &[C0::CR]].concat());
     }
 
     /// #979: text already in the line editor (the user's prompt, typed into an unmanaged shell)
