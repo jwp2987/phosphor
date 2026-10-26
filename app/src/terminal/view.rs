@@ -22607,7 +22607,13 @@ impl TerminalView {
     fn selected_text_from_visible_ai_blocks(&self, ctx: &AppContext) -> Option<String> {
         self.rich_content_views.iter().find_map(|rich_content| {
             let ai_metadata = rich_content.ai_block_metadata()?;
-            ai_metadata.ai_block_handle.as_ref(ctx).selected_text(ctx)
+            // An AI block can hold an empty-string selection (a click without a drag). It must not
+            // shadow a real selection in another block, nor short-circuit `copy()` (#988).
+            ai_metadata
+                .ai_block_handle
+                .as_ref(ctx)
+                .selected_text(ctx)
+                .filter(|text| !text.is_empty())
         })
     }
 
@@ -22824,6 +22830,19 @@ impl TerminalView {
     }
 
     fn context_menu_copy_blocks(&mut self, ctx: &mut ViewContext<Self>) {
+        // A highlighted text selection (e.g. inside a running block) wins over the whole
+        // block, matching `copy()`; otherwise right-click -> Copy dumps command + output.
+        let has_text_selection = {
+            let semantic_selection = SemanticSelection::as_ref(ctx);
+            self.model
+                .lock()
+                .selection_to_string(semantic_selection, self.is_inverted_blocklist(ctx), ctx)
+                .is_some_and(|s| !s.is_empty())
+        };
+        if has_text_selection {
+            self.context_menu_copy_selected_text(ctx);
+            return;
+        }
         self.copy_blocks(BlockEntity::CommandAndOutput, ctx);
     }
 

@@ -6074,6 +6074,14 @@ impl TypedActionView for AIBlock {
             AIBlockAction::CopyAIBlockCodeSnippet(text) => {
                 ctx.clipboard()
                     .write(ClipboardContent::plain_text(text.clone()));
+                // Also fill the Linux PRIMARY selection (no-op elsewhere / when disabled) so
+                // middle-click pastes the copied snippet rather than a stale selection (#988).
+                SelectionSettings::handle(ctx).update(ctx, |selection_settings, ctx| {
+                    selection_settings.maybe_write_to_linux_selection_clipboard(
+                        |_| ClipboardContent::plain_text(text.clone()),
+                        ctx,
+                    );
+                });
                 let window_id = ctx.window_id();
                 ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
                     toast_stack.add_ephemeral_toast(

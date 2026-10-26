@@ -937,7 +937,17 @@ impl ansi::Handler for GridHandler {
                 if self.ansi_handler_state.is_alt_screen {
                     self.grid.region_mut(..).each(|cell| *cell = bg.into());
                 } else {
-                    if self.full_grid_clear_behavior == FullGridClearBehavior::Clear {
+                    // #986: with nothing on screen and no history (e.g. `clear` as the first thing
+                    // a running block prints), scrolling would push a screenful of blank rows into
+                    // scrollback and bury the output that follows. Clear in place instead.
+                    let visible_is_empty = self.history_size() == 0
+                        && (0..self.visible_rows()).all(|row| {
+                            (0..self.columns())
+                                .all(|col| self.grid[VisibleRow(row)][col].is_empty())
+                        });
+                    if self.full_grid_clear_behavior == FullGridClearBehavior::Clear
+                        || visible_is_empty
+                    {
                         self.clear_visible_rows_in_place(bg);
                     } else {
                         self.clear_viewport();

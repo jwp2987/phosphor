@@ -71,6 +71,7 @@ use super::blockgrid_renderer::GridRenderParams;
 use super::find::{BlockFindRenderData, TerminalFindModel};
 use super::grid_renderer::CellGlyphCache;
 
+use super::heights_approx_eq;
 use super::meta_shortcuts::handle_keystroke_despite_composing;
 use super::model::ansi::CursorShape;
 use super::model::block::BlockId;
@@ -91,7 +92,6 @@ use super::view::{
 };
 use super::warpify::render::{draw_flag_pole, render_subshell_flag};
 use super::TerminalModel;
-use super::heights_approx_eq;
 use crate::terminal::blockgrid_renderer::BlockGridParams;
 use crate::terminal::model::terminal_model::BlockIndex;
 use crate::terminal::warpify::SubshellSource;
@@ -195,6 +195,23 @@ const CLI_SUBAGENT_MAX_WIDTH_RATIO: f32 = 0.98;
 // Height similarly approaches the full window, but is still constrained by the
 // current block's available height.
 const CLI_SUBAGENT_MAX_HEIGHT_RATIO: f32 = 0.98;
+
+/// Whether a left-button drag selects blocks (as opposed to text). Cmd selects blocks; Shift does
+/// too, unless Shift is being used to take the mouse back from a running program that reports it
+/// (`shift_reclaims_mouse`), where it must select text inside the running block instead.
+fn drag_selects_blocks(
+    modifiers: &ModifiersState,
+    rect_selection_enabled: bool,
+    shift_reclaims_mouse: bool,
+) -> bool {
+    let shift = modifiers.shift && !shift_reclaims_mouse;
+    if rect_selection_enabled {
+        // If cmd and alt are both active, this should be treated as a rect selection.
+        !(modifiers.cmd && modifiers.alt) && (modifiers.cmd || shift)
+    } else {
+        modifiers.cmd || shift
+    }
+}
 
 fn cli_subagent_layout_max_size(
     available_size: Vector2F,
@@ -2589,9 +2606,11 @@ impl BlockListElement {
         ctx: &mut PaintContext,
         app: &AppContext,
     ) {
-        let block_height = block.height(&agent_view_state.transcript_scope()).as_f64() as f32 * cell_size.y();
+        let block_height =
+            block.height(&agent_view_state.transcript_scope()).as_f64() as f32 * cell_size.y();
         if block.is_restored()
-            && (!FeatureFlag::AgentView.is_enabled() || !agent_view_state.transcript_scope().is_conversation())
+            && (!FeatureFlag::AgentView.is_enabled()
+                || !agent_view_state.transcript_scope().is_conversation())
         {
             ctx.scene
                 .draw_rect_with_hit_recording(RectF::new(
@@ -2791,11 +2810,12 @@ impl BlockListElement {
 
         // Update grid_origin and draw command.
         let command_grid_properties = Properties::default();
-        let command_focused_range = find_render_data
-            .as_ref()
-            .and_then(|data: &BlockFindRenderData<'_>| {
-                data.focused_range_for_grid(GridType::PromptAndCommand)
-            });
+        let command_focused_range =
+            find_render_data
+                .as_ref()
+                .and_then(|data: &BlockFindRenderData<'_>| {
+                    data.focused_range_for_grid(GridType::PromptAndCommand)
+                });
         block.prompt_and_command_grid().draw(
             command_origin,
             element_origin,
@@ -2883,9 +2903,12 @@ impl BlockListElement {
 
             let output_grid_properties =
                 Properties::default().weight(block_grid_params.grid_render_params.font_weight);
-            let output_focused_range = find_render_data
-                .as_ref()
-                .and_then(|data: &BlockFindRenderData<'_>| data.focused_range_for_grid(GridType::Output));
+            let output_focused_range =
+                find_render_data
+                    .as_ref()
+                    .and_then(|data: &BlockFindRenderData<'_>| {
+                        data.focused_range_for_grid(GridType::Output)
+                    });
             block.output_grid().draw(
                 *grid_origin,
                 viewport_origin,
@@ -4068,7 +4091,8 @@ impl Element for BlockListElement {
 
                     // TODO(vorporeal): should probably use `Pixels` here
                     let block_pixel_height =
-                        block.height(&agent_view_state.transcript_scope()).as_f64() as f32 * cell_size.y();
+                        block.height(&agent_view_state.transcript_scope()).as_f64() as f32
+                            * cell_size.y();
 
                     let block_bottom_y = grid_origin.y() + block_pixel_height;
                     let selection_bottom_y = snackbar_header
@@ -4954,12 +4978,21 @@ impl Element for BlockListElement {
                 modifiers,
                 ..
             } if !handled || self.is_terminal_selecting => {
-                let is_selecting_blocks = if FeatureFlag::RectSelection.is_enabled() {
-                    // If cmd and alt are both active, this should be treated as a rect selection.
-                    !(modifiers.cmd && modifiers.alt) && (modifiers.cmd || modifiers.shift)
-                } else {
-                    modifiers.cmd || modifiers.shift
+                // Shift also means "take the mouse back from the running program", in which
+                // case the drag is a text selection inside that block, not a block selection.
+                let shift_reclaims_mouse = modifiers.shift && {
+                    let model = self.model.lock();
+                    model
+                        .block_list()
+                        .active_block()
+                        .is_active_and_long_running()
+                        && !should_intercept_mouse(&model, false, app)
                 };
+                let is_selecting_blocks = drag_selects_blocks(
+                    modifiers,
+                    FeatureFlag::RectSelection.is_enabled(),
+                    shift_reclaims_mouse,
+                );
                 self.mouse_dragged(*position, is_selecting_blocks, modifiers, ctx, app)
             }
             Event::MouseMoved { position, .. } => self.mouse_moved(*position, app, ctx),
@@ -5190,6 +5223,37 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #987: Shift-drag over a program that reports the mouse selects text, not blocks.
+    #[test]
+    fn shift_drag_selects_text_when_it_reclaims_the_mouse() {
+        let shift = ModifiersState {
+            shift: true,
+            ..Default::default()
+        };
+        let cmd = ModifiersState {
+            cmd: true,
+            ..Default::default()
+        };
+        for rect in [false, true] {
+            assert!(drag_selects_blocks(&shift, rect, false));
+            assert!(!drag_selects_blocks(&shift, rect, true));
+            // Cmd keeps selecting blocks regardless.
+            assert!(drag_selects_blocks(&cmd, rect, false));
+            assert!(drag_selects_blocks(&cmd, rect, true));
+            assert!(!drag_selects_blocks(
+                &ModifiersState::default(),
+                rect,
+                false
+            ));
+        }
+        let cmd_alt = ModifiersState {
+            cmd: true,
+            alt: true,
+            ..Default::default()
+        };
+        assert!(!drag_selects_blocks(&cmd_alt, true, false));
+    }
 
     /// #934: right after a command from the editor is written, focus moves to the terminal but
     /// the elements still hold the snapshot of the frame before. Keys typed in that gap were
