@@ -55,15 +55,39 @@ pub async fn stop_control_master(socket_path: &Path) {
 
 /// Removes `socket_path` if it is still there after the master was stopped. Missing is the
 /// normal case (a graceful master unlinks it) and is ignored.
+///
+/// The path originates from the shell's DCS hook and so is forgeable by anything that can print
+/// to the pty. Only a real Unix socket is removed: the path is inspected with
+/// `symlink_metadata` (never following symlinks), and regular files, directories and symlinks
+/// are left alone.
 pub(crate) fn remove_stale_control_socket(socket_path: &Path) {
-    match std::fs::remove_file(socket_path) {
-        Ok(()) => log::info!("removed stale ControlPath socket {}", socket_path.display()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => log::warn!(
-            "failed to remove ControlPath socket {}: {e}",
-            socket_path.display()
-        ),
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt as _;
+        match std::fs::symlink_metadata(socket_path) {
+            Ok(meta) if meta.file_type().is_socket() => match std::fs::remove_file(socket_path) {
+                Ok(()) => {
+                    log::info!("removed stale ControlPath socket {}", socket_path.display())
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => log::warn!(
+                    "failed to remove ControlPath socket {}: {e}",
+                    socket_path.display()
+                ),
+            },
+            Ok(_) => log::warn!(
+                "refusing to remove {}: not a Unix socket",
+                socket_path.display()
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => log::warn!(
+                "failed to inspect ControlPath socket {}: {e}",
+                socket_path.display()
+            ),
+        }
     }
+    #[cfg(not(unix))]
+    let _ = socket_path;
 }
 
 async fn stop_control_master_inner(socket_path: &Path) {
