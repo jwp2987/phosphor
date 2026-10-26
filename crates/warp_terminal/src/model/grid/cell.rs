@@ -92,6 +92,55 @@ pub fn is_emoji_modifier(c: char) -> bool {
     matches!(c, '\u{1F3FB}'..='\u{1F3FF}')
 }
 
+/// Whether `c` has the Unicode `Emoji_Modifier_Base` property, i.e. an emoji skin-tone
+/// modifier may follow it (hands, people, gestures, ...). A modifier after anything else
+/// (CJK, a flag, a plain pictograph such as a heart) stays a separate character.
+pub fn is_emoji_modifier_base(c: char) -> bool {
+    matches!(
+        c,
+        '\u{261D}'
+            | '\u{26F9}'
+            | '\u{270A}'..='\u{270D}'
+            | '\u{1F385}'
+            | '\u{1F3C2}'..='\u{1F3C4}'
+            | '\u{1F3C7}'
+            | '\u{1F3CA}'..='\u{1F3CC}'
+            | '\u{1F442}'..='\u{1F443}'
+            | '\u{1F446}'..='\u{1F450}'
+            | '\u{1F466}'..='\u{1F478}'
+            | '\u{1F47C}'
+            | '\u{1F481}'..='\u{1F483}'
+            | '\u{1F485}'..='\u{1F487}'
+            | '\u{1F48F}'
+            | '\u{1F491}'
+            | '\u{1F4AA}'
+            | '\u{1F574}'..='\u{1F575}'
+            | '\u{1F57A}'
+            | '\u{1F590}'
+            | '\u{1F595}'..='\u{1F596}'
+            | '\u{1F645}'..='\u{1F647}'
+            | '\u{1F64B}'..='\u{1F64F}'
+            | '\u{1F6A3}'
+            | '\u{1F6B4}'..='\u{1F6B6}'
+            | '\u{1F6C0}'
+            | '\u{1F6CC}'
+            | '\u{1F90C}'
+            | '\u{1F90F}'
+            | '\u{1F918}'..='\u{1F91F}'
+            | '\u{1F926}'
+            | '\u{1F930}'..='\u{1F939}'
+            | '\u{1F93C}'..='\u{1F93E}'
+            | '\u{1F977}'
+            | '\u{1F9B5}'..='\u{1F9B6}'
+            | '\u{1F9B8}'..='\u{1F9B9}'
+            | '\u{1F9BB}'
+            | '\u{1F9CD}'..='\u{1F9CF}'
+            | '\u{1F9D1}'..='\u{1F9DD}'
+            | '\u{1FAC3}'..='\u{1FAC5}'
+            | '\u{1FAF0}'..='\u{1FAF8}'
+    )
+}
+
 /// Whether `c` can continue an emoji ZWJ sequence after a U+200D: an emoji-presentation
 /// pictograph, or one of the text-default symbols (gender signs, hearts, ...) that appear
 /// in ZWJ sequences with a variation selector.

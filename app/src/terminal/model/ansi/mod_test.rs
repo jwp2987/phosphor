@@ -322,6 +322,25 @@ fn csi_s_dispatches_explicit_scroll_up() {
     assert!(handler.scroll_ups.is_empty());
 }
 
+/// DECRQM for mode 2027 is answered (2 = reset, 1 = set) so apps can discover and enable it.
+#[test]
+fn decrqm_reports_grapheme_clustering_mode() {
+    fn reply(bytes: &[u8]) -> String {
+        let mut parser = Processor::new();
+        let mut handler = MockHandler::default();
+        let mut out = Vec::new();
+        parser.parse_bytes(&mut handler, bytes, &mut out);
+        String::from_utf8(out).unwrap()
+    }
+    assert_eq!(reply(b"\x1b[?2027$p"), "\x1b[?2027;2$y");
+    assert_eq!(reply(b"\x1b[?2027h\x1b[?2027$p"), "\x1b[?2027;1$y");
+    assert_eq!(
+        reply(b"\x1b[?2027h\x1b[?2027l\x1b[?2027$p"),
+        "\x1b[?2027;2$y"
+    );
+    assert_eq!(reply(b"\x1b[?2027h\x1bc\x1b[?2027$p"), "\x1b[?2027;2$y");
+}
+
 fn parse_bytes_with_registered_sessions(
     bytes: &[u8],
     registered_session_ids: impl IntoIterator<Item = SessionId>,

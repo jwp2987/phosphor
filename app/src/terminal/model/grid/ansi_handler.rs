@@ -1690,7 +1690,17 @@ impl GridHandler {
         let joins = match prev.raw_content() {
             CharOrStr::Str(s) if s.ends_with('\u{200D}') => cell::is_zwj_joinable(c),
             _ => false,
-        } || cell::is_emoji_modifier(c);
+        } || (cell::is_emoji_modifier(c)
+            && match prev.raw_content() {
+                // A skin tone only attaches to an Emoji_Modifier_Base (ignoring a trailing
+                // VS16), not to CJK, a flag or any other wide cell.
+                CharOrStr::Char(p) => cell::is_emoji_modifier_base(p),
+                CharOrStr::Str(s) => s
+                    .chars()
+                    .rev()
+                    .find(|&ch| ch != '\u{FE0F}')
+                    .is_some_and(cell::is_emoji_modifier_base),
+            });
         if !joins {
             return false;
         }

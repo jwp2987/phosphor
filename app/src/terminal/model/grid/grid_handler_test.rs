@@ -1335,18 +1335,22 @@ fn emoji_variation_selector_wraps_width_promotion_at_last_column() {
 
     let storage = grid.grid_storage();
     assert_eq!(storage[VisibleRow(0)][3].c, '\0');
-    assert!(storage[VisibleRow(0)][3]
-        .flags
-        .contains(Flags::LEADING_WIDE_CHAR_SPACER));
+    assert!(
+        storage[VisibleRow(0)][3]
+            .flags
+            .contains(Flags::LEADING_WIDE_CHAR_SPACER)
+    );
     assert!(storage[VisibleRow(0)][3].flags.contains(Flags::WRAPLINE));
     assert!(matches!(
         storage[VisibleRow(1)][0].content_for_display(),
         CharOrStr::Str("⚠️")
     ));
     assert!(storage[VisibleRow(1)][0].flags.contains(Flags::WIDE_CHAR));
-    assert!(storage[VisibleRow(1)][1]
-        .flags
-        .contains(Flags::WIDE_CHAR_SPACER));
+    assert!(
+        storage[VisibleRow(1)][1]
+            .flags
+            .contains(Flags::WIDE_CHAR_SPACER)
+    );
     assert_eq!(grid.cursor_point(), Point::new(1, 2));
 }
 
@@ -1366,9 +1370,11 @@ fn emoji_variation_selector_drops_width_promotion_when_line_wrap_is_disabled() {
         storage[VisibleRow(0)][3].content_for_display(),
         CharOrStr::Char('⚠')
     ));
-    assert!(!storage[VisibleRow(0)][3]
-        .flags
-        .intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER));
+    assert!(
+        !storage[VisibleRow(0)][3].flags.intersects(
+            Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER
+        )
+    );
     assert_eq!(grid.cursor_point(), Point::new(0, 3));
 }
 
@@ -1386,13 +1392,17 @@ fn emoji_variation_selector_does_not_advance_already_wide_grapheme() {
         CharOrStr::Str("😀️")
     ));
     assert!(storage[VisibleRow(0)][0].flags.contains(Flags::WIDE_CHAR));
-    assert!(storage[VisibleRow(0)][1]
-        .flags
-        .contains(Flags::WIDE_CHAR_SPACER));
+    assert!(
+        storage[VisibleRow(0)][1]
+            .flags
+            .contains(Flags::WIDE_CHAR_SPACER)
+    );
     assert_eq!(storage[VisibleRow(0)][2].c, 'x');
-    assert!(!storage[VisibleRow(0)][2]
-        .flags
-        .contains(Flags::WIDE_CHAR_SPACER));
+    assert!(
+        !storage[VisibleRow(0)][2]
+            .flags
+            .contains(Flags::WIDE_CHAR_SPACER)
+    );
     assert_eq!(grid.cursor_point(), Point::new(0, 3));
 }
 
@@ -3393,6 +3403,14 @@ fn emoji_modifier_joins_previous_emoji_in_mode_2027() {
     input_str(&mut g, "a\u{1F3FD}");
     assert_eq!(g.grid_storage()[0][0].c, 'a');
     assert_eq!(g.grid_storage()[0][1].c, '\u{1F3FD}');
+    // Nor after a wide character that is not an emoji modifier base (CJK, a flag).
+    for base in ["\u{4E2D}", "\u{1F1FA}\u{1F1F8}", "\u{1F600}"] {
+        let mut g = grapheme_test_grid(10);
+        g.set_mode(ansi::Mode::GraphemeClustering);
+        input_str(&mut g, &format!("{base}\u{1F3FD}"));
+        assert_eq!(cell_text(&g, 0), base);
+        assert_eq!(g.grid_storage()[0][2].c, '\u{1F3FD}');
+    }
 }
 
 /// A ZWJ followed by a non-emoji must not swallow the next character.
