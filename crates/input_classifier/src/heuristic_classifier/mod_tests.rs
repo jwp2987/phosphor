@@ -291,9 +291,9 @@ fn test_prose_opening_with_tool_name_stays_ai_when_not_installed() {
         }
         let token = mock_parsed_input_token_without_descriptions("fish");
         assert_eq!(
-        classifier
+            classifier
                 .detect_input_type(token, &context)
-                .await
+            .await
                     .input_type,
             InputType::Shell,
         );
