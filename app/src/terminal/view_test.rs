@@ -14405,3 +14405,58 @@ fn user_takeover_overrides_ai_block_focus_guard() {
     assert!(ai_block_focus_permits_terminal_reset(true, true));
     assert!(ai_block_focus_permits_terminal_reset(true, false));
 }
+
+/// #983: typing is dropped while an ssh bootstrap is pending, but only within bounds. A stale
+/// pending session (failed su/sudo -i) whose failure timer fired, or one that has swallowed past
+/// the ceiling, must let typed characters reach the pty again.
+#[test]
+fn ssh_bootstrap_swallow_is_bounded() {
+    let sid = SessionId::from(4242);
+    let other = SessionId::from(4343);
+    let t0 = Instant::now();
+    let mut started = None;
+
+    // No pending session: never swallows, and forgets any tracking.
+    assert!(!ssh_bootstrap_swallow_active(None, None, &mut started, t0));
+    assert!(started.is_none());
+
+    // Fresh pending session: swallows.
+    assert!(ssh_bootstrap_swallow_active(
+        Some(sid),
+        None,
+        &mut started,
+        t0
+    ));
+    assert!(ssh_bootstrap_swallow_active(
+        Some(sid),
+        None,
+        &mut started,
+        t0 + Duration::from_secs(5)
+    ));
+
+    // Ceiling elapsed: keys reach the pty although the session is still pending.
+    assert!(!ssh_bootstrap_swallow_active(
+        Some(sid),
+        None,
+        &mut started,
+        t0 + SSH_BOOTSTRAP_SWALLOW_CEILING
+    ));
+
+    // Failure timer fired for this stale session: no swallowing at all, even on first sight.
+    let mut fresh = None;
+    assert!(!ssh_bootstrap_swallow_active(
+        Some(sid),
+        Some(sid),
+        &mut fresh,
+        t0
+    ));
+
+    // A different (new) pending session is not covered by the old failure mark and restarts
+    // its own window.
+    assert!(ssh_bootstrap_swallow_active(
+        Some(other),
+        Some(sid),
+        &mut started,
+        t0 + Duration::from_secs(60)
+    ));
+}
