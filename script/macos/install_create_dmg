@@ -8,9 +8,15 @@ VERSION=1.2.2
 SHA256=18e8dd7db06c9d6fb590c7877e1714b79b709f17d1d138bd65e4910cc82391bc
 DEST="$HOME/.local/create-dmg-$VERSION"
 
-if command -v create-dmg >/dev/null 2>&1; then
-  echo "create-dmg already on PATH: $(command -v create-dmg)"
-  exit 0
+if existing=$(command -v create-dmg 2>/dev/null); then
+  # The npm package of the same name (sindresorhus/create-dmg) is a Node CLI with different
+  # arguments; it makes the bundle fail with "Could not find `500`" (#1002).
+  if head -n 1 "$existing" | grep -q node; then
+    echo "ignoring $existing: it is the npm create-dmg, not github.com/create-dmg/create-dmg"
+  else
+    echo "create-dmg already on PATH: $existing"
+    exit 0
+  fi
 fi
 
 if [ ! -x "$DEST/create-dmg" ]; then
