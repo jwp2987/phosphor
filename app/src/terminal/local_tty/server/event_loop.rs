@@ -63,9 +63,9 @@ impl std::ops::Drop for Children {
             // sends) so that the shell process can properly clean up
             // foreground jobs.  SIGKILL cannot be ignored or caught, and kills
             // the receiving process immediately.
-            // Hang up the whole tree, not just the shell: the shell's descendants (ssh clients,
-            // `sudo` chains) sit in job-control process groups of their own, so they would
-            // otherwise outlive the session (#975). Skipped for a shell that has already been
+            // Hang up the foreground program too, not just the shell: ssh clients and `sudo`
+            // chains sit in a job-control process group of their own, so they would otherwise
+            // outlive the session (#975). Background jobs are left alone. Skipped for a shell that has already been
             // reaped, since its pid -- and so its group id -- may have been recycled.
             if matches!(child.try_wait(), Ok(None)) {
                 local_tty::process_tree::signal_shell_tree(child.id(), libc::SIGHUP);
@@ -326,7 +326,7 @@ impl EventLoop {
                             // shell itself directly so it dies even if the group signal failed
                             // and `wait` below cannot block forever.
                             if matches!(child.try_wait(), Ok(None)) {
-                                local_tty::process_tree::signal_shell_tree(pid, libc::SIGKILL);
+                                local_tty::process_tree::terminate_shell_tree(pid);
                             }
                             child.kill().and_then(|_| child.wait())
                         }

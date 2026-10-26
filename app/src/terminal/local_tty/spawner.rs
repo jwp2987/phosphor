@@ -56,7 +56,7 @@ impl PtyHandle for DirectPtyHandle {
         // the session (#975); see `process_tree`. Skipped once the shell has been reaped, as its
         // pid may have been recycled. `Child::kill` then hits the shell itself regardless.
         if matches!(self.child.try_wait(), Ok(None)) {
-            local_tty::process_tree::signal_shell_tree(self.child.id(), libc::SIGKILL);
+            local_tty::process_tree::terminate_shell_tree(self.child.id());
         }
         self.child.kill()?;
         match self.child.wait() {
