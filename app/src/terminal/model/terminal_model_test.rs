@@ -201,6 +201,59 @@ fn ssh_bootstraps_if_blocklist_empty_and_reconciles_parent_return() {
     );
 }
 
+/// #966: the exact hook order a fish subshell emits (`fish.sh`): InitShell (is_subshell), then
+/// the explicit `warp_precmd` (CommandFinished + Precmd, same id), `Bootstrapped`, the first
+/// `fish_prompt` precmd (CommandFinished + Precmd), then per user command Preexec, and at the
+/// next prompt CommandFinished + Precmd. The user's commands must produce finished, visible
+/// blocks. Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn fish_subshell_hook_order_yields_visible_finished_blocks() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    command_finished_and_precmd(&mut terminal);
+    command_finished_and_precmd(&mut terminal);
+    // The parent shell's long-running `fish` block.
+    terminal.start_command_execution();
+    terminal.preexec(PreexecValue {
+        command: "fish".to_owned(),
+        session_id: None,
+    });
+
+    terminal.init_shell(InitShellValue {
+        shell: "fish".into(),
+        user: "u".to_owned(),
+        hostname: "h".to_owned(),
+        session_id: 0.into(),
+        is_subshell: true,
+        ..Default::default()
+    });
+    command_finished_and_precmd(&mut terminal);
+    terminal.bootstrapped(BootstrappedValue {
+        shell: String::from("fish"),
+        ..Default::default()
+    });
+    command_finished_and_precmd(&mut terminal);
+    assert!(terminal.is_active_block_bootstrapped());
+
+    for command in ["echo x", "exit"] {
+        let before = terminal.block_list().blocks().len();
+        terminal.start_command_execution();
+        terminal.preexec(PreexecValue {
+            command: command.to_owned(),
+            session_id: None,
+        });
+        let running_id = terminal.active_block_id().clone();
+        command_finished_and_precmd(&mut terminal);
+        let finished = terminal
+            .block_list()
+            .block_with_id(&running_id)
+            .expect("the user's command block must exist");
+        assert_eq!(finished.state(), BlockState::DoneWithExecution, "{command}");
+        assert!(!finished.is_hidden(), "{command}");
+        assert!(terminal.block_list().blocks().len() > before, "{command}");
+    }
+}
+
 #[test]
 // An empty block that is restored should have a nonzero height and it should not get deleted.
 pub fn test_restored_empty_command_block() {
