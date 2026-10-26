@@ -801,13 +801,23 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
             end
         end
 
+        # #985: pin both IPQoS classes to the interactive one (the remote-server-proxy channel
+        # would otherwise mark the connection "bulk"), but ONLY when `ssh -G` reports exactly
+        # OpenSSH's current default (`af21 cs1`): a user-configured IPQoS is never overridden,
+        # and an older OpenSSH is left alone.
+        set -l warp_ipqos_args
+        set -l warp_ipqos_default (command ssh -G $argv 2>/dev/null | command sed -n 's/^ipqos //p')
+        if test "$warp_ipqos_default" = "af21 cs1"
+            set warp_ipqos_args -o "IPQoS=af21 af21"
+        end
+
         # Note that in this command, we're passing a string to the remote shell. Any variable expansions need to be
         # escaped with "''" to avoid the local shell from expanding them before they're passed to the remote shell.
         # We check the SHELL env var and use shell string manipulation to get the contents after the last slash to
         # determine what shell is the login shell on the remote machine.  We perform a preliminary check to see if
         # the remote shell is the Bourne shell to avoid asking it to parse later lines that use syntax it doesn't
         # support.
-        command ssh -o IPQoS="af21 af21" -o ControlMaster=$control_master_mode -o ControlPath="$control_path" \
+        command ssh $warp_ipqos_args -o ControlMaster=$control_master_mode -o ControlPath="$control_path" \
         -t $argv \
 "
 export TERM_PROGRAM='WarpTerminal'

@@ -1156,6 +1156,17 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
               esac
           fi
 
+          # #985: the remote-server-proxy channel makes OpenSSH mark the connection "bulk"
+          # (IPQoS second class `cs1`), which delays keystrokes on some networks. Pin both
+          # classes to the interactive one, but ONLY when `ssh -G` reports exactly OpenSSH's
+          # current default (`af21 cs1`): a user-configured IPQoS is never overridden, and an
+          # older OpenSSH (different default / no two-value form) is left alone.
+          local -a warp_ipqos_args
+          warp_ipqos_args=()
+          if [[ "$(command ssh -G "${@:1}" 2>/dev/null | command -p sed -n 's/^ipqos //p')" == "af21 cs1" ]]; then
+              warp_ipqos_args=(-o "IPQoS=af21 af21")
+          fi
+
           # Keep remote commands up-to-date with shell.rs & bash.sh.
           # Note that in this command, we're passing a string to the remote shell. Any variable expansions need to be
           # escaped with "''" to avoid the local shell from expanding them before they're passed to the remote shell.
@@ -1163,7 +1174,7 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
           # determine what shell is the login shell on the remote machine.  We perform a preliminary check to see if
           # the remote shell is the Bourne shell to avoid asking it to parse later lines that use syntax it doesn't
           # support.
-          command ssh -o IPQoS="af21 af21" -o ControlMaster=$control_master_mode -o ControlPath="$control_path" \
+          command ssh "${warp_ipqos_args[@]}" -o ControlMaster=$control_master_mode -o ControlPath="$control_path" \
           -t "${@:1}" \
 "
 export TERM_PROGRAM='WarpTerminal'

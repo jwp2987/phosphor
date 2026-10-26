@@ -3406,6 +3406,11 @@ impl ansi::Handler for TerminalModel {
             "Received ExitShell hook from shell for session_id: {:?}",
             data.session_id
         );
+        // A pending session that exits before bootstrapping must not linger (#983): it would
+        // make later input handling believe a bootstrap is still in flight.
+        if self.pending_session_id() == Some(data.session_id) {
+            self.pending_session_info = None;
+        }
         self.event_proxy.send_terminal_event(Event::ExitShell {
             session_id: data.session_id,
         });

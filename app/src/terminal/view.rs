@@ -687,6 +687,9 @@ const BRACKETED_PASTE_SUFFIX: &str = "\x1b[201~";
 
 /// Duration before we consider a session to have failed bootstrapping.
 const BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(7);
+/// Longest typing is dropped on behalf of one pending ssh bootstrap (#983). A healthy
+/// bootstrap finishes well inside this; a stuck or stale one must not own the keyboard.
+const SSH_BOOTSTRAP_SWALLOW_CEILING: Duration = Duration::from_secs(15);
 /// Duration before we consider a session invoked from an env vars object to
 /// have failed bootstrapping. The longer duration is meant to account for
 /// a user needing to type in one or many secret manager passwords
@@ -2708,6 +2711,12 @@ pub struct TerminalView {
     /// Whether the "typing is ignored while connecting" notice (#983) was shown for the current
     /// ssh setup window. Reset once input is accepted again.
     ssh_setup_drop_notified: bool,
+    /// The pending session whose bootstrap-failed timer already fired (#983): input is never
+    /// swallowed on behalf of a bootstrap that is known to be stuck.
+    ssh_bootstrap_failed_session: Option<SessionId>,
+    /// First time input was swallowed for a pending ssh session, to bound the swallow window
+    /// by `SSH_BOOTSTRAP_SWALLOW_CEILING` even if no failure timer ever fires for it.
+    ssh_bootstrap_swallow_started: Option<(SessionId, Instant)>,
 
     /// The [`EntityId`] for this terminal view.
     view_id: EntityId,
@@ -4354,6 +4363,8 @@ impl TerminalView {
             tips_completed: resources.tips_completed.clone(),
             was_ever_visible: false,
             ssh_setup_drop_notified: false,
+            ssh_bootstrap_failed_session: None,
+            ssh_bootstrap_swallow_started: None,
             view_id: ctx.view_id(),
             current_state: TerminalViewStateChange::default(),
             did_notify_long_running: false,
@@ -9529,6 +9540,11 @@ impl TerminalView {
         }
     }
 
+    /// Control sequences (arrows, Tab, Esc, ...) are deliberately NOT swallowed here, unlike
+    /// printable characters: Ctrl-C/Ctrl-D must always reach ssh (to abort a hung connect), the
+    /// control path cannot form a command line, and dropping them would also eat the keys the
+    /// setup dialog itself consumes. Only printable runs are dropped (#983).
+    ///
     /// True while the SSH remote-server setup owns the session: the
     /// install/continue dialog is up, or the check/install/connect is in
     /// flight. The remote shell is not bootstrapped yet, and the bootstrap
@@ -9559,8 +9575,21 @@ impl TerminalView {
         // so a typed command was cut in two (head lost or in the local shell, tail in the remote
         // shell). Drop the whole run instead. Passwords and host-key prompts happen before the
         // pending session exists, so they are unaffected.
-        let ssh_bootstrapping = self.has_pending_ssh_command()
-            && self.model.lock().pending_session_id().is_some();
+        //
+        // Bounded: a pending session that already hit its bootstrap-failed timer, or has been
+        // swallowing for `SSH_BOOTSTRAP_SWALLOW_CEILING`, no longer swallows (a stale pending
+        // session left by a failed su/sudo -i must not eat a later plain ssh's typing).
+        let pending_sid = if self.has_pending_ssh_command() {
+            self.model.lock().pending_session_id()
+        } else {
+            None
+        };
+        let ssh_bootstrapping = ssh_bootstrap_swallow_active(
+            pending_sid,
+            self.ssh_bootstrap_failed_session,
+            &mut self.ssh_bootstrap_swallow_started,
+            Instant::now(),
+        );
         if !(dialog_up || setup_in_flight || ssh_bootstrapping) {
             self.ssh_setup_drop_notified = false;
             return false;
@@ -9573,7 +9602,11 @@ impl TerminalView {
             let window_id = ctx.window_id();
             ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
                 let toast = DismissibleToast::new(
-                    "Typing is ignored while the SSH session connects".to_string(),
+                    if dialog_up {
+                        "Typing is ignored while the SSH setup prompt is open".to_string()
+                    } else {
+                        "Typing is ignored while the SSH session connects".to_string()
+                    },
                     ToastFlavor::Default,
                 );
                 toast_stack.add_ephemeral_toast(toast, window_id, ctx);
@@ -17413,6 +17446,9 @@ impl TerminalView {
         };
 
         log::warn!("Bootstrapping failed for shell {shell:?} on ssh {is_ssh}");
+
+        // #983: this pending session is stuck; stop swallowing typing on its behalf.
+        self.ssh_bootstrap_failed_session = self.model.lock().pending_session_id();
 
         // Unhide the long-running block that was hidden at the start of
         // subshell bootstrap so the user can see the session output again.
@@ -30825,6 +30861,32 @@ fn is_abort_key(bytes: &[u8]) -> bool {
 /// only abort keys are forwarded; everything else stays held.
 fn subshell_bootstrap_key_forwarded(pending: bool, abort_key: bool) -> bool {
     pending && abort_key
+}
+
+/// Whether typing is still dropped for a pending ssh bootstrap (#983). Pure so the bounds are
+/// testable: no pending session, a session whose failure timer fired, or one that has already
+/// swallowed for `SSH_BOOTSTRAP_SWALLOW_CEILING`, all let keys through.
+fn ssh_bootstrap_swallow_active(
+    pending: Option<SessionId>,
+    failed: Option<SessionId>,
+    started: &mut Option<(SessionId, Instant)>,
+    now: Instant,
+) -> bool {
+    let Some(sid) = pending else {
+        *started = None;
+        return false;
+    };
+    if failed == Some(sid) {
+        return false;
+    }
+    let first = match *started {
+        Some((tracked, at)) if tracked == sid => at,
+        _ => {
+            *started = Some((sid, now));
+            now
+        }
+    };
+    now.duration_since(first) < SSH_BOOTSTRAP_SWALLOW_CEILING
 }
 
 fn command_first_word_and_suffix(command: &str) -> Option<(&str, &str)> {
