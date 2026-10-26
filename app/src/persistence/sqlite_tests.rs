@@ -355,16 +355,28 @@ fn reconstruct_after_pause_keeps_the_new_databases_wal() {
     assert!(wal.exists(), "the new database's WAL must still exist");
 
     let mut reader = setup_database(&database_path).expect("a fresh connection should open");
+    // The writer has just rebuilt the database, so the reader can briefly see it before its
+    // schema exists; since #1010 that surfaces as an error instead of an empty read. Wait it out
+    // like an empty read, and fail with the last error if the row never becomes readable.
     let mut restored = Vec::new();
+    let mut last_error = None;
     for _ in 0..100 {
-        restored =
-            get_all_codebase_index_metadata(&mut reader).expect("row should be readable");
-        if !restored.is_empty() {
-            break;
+        match get_all_codebase_index_metadata(&mut reader) {
+            Ok(rows) => {
+                restored = rows;
+                if !restored.is_empty() {
+                    break;
+                }
+            }
+            Err(error) => last_error = Some(error),
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    assert_eq!(restored.len(), 1);
+    assert_eq!(
+        restored.len(),
+        1,
+        "row should be readable (last error: {last_error:?})"
+    );
     assert_eq!(restored[0].path, metadata.path);
     assert!(wal.exists(), "the WAL must still exist after the read");
 

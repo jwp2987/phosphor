@@ -15324,6 +15324,17 @@ fn ssh_keys_before_pending_state_is_set_are_dropped_whole() {
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = record_pty_writes(&mut app, &terminal);
+        // Before login a Ctrl-C reaches ssh as SIGINT to the pty's foreground group (#1001), not
+        // as a written byte; the other interrupt keys are still written.
+        let sigints = Rc::new(RefCell::new(0usize));
+        let counter = sigints.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if matches!(event, Event::SigintForegroundToPty) {
+                    *counter.borrow_mut() += 1;
+                }
+            });
+        });
         terminal.update(&mut app, |view, ctx| {
             register_local_session_for_ssh_test(view, ctx);
             submit_command(view, "ssh host", ctx);
@@ -15354,7 +15365,11 @@ fn ssh_keys_before_pending_state_is_set_are_dropped_whole() {
                 || w.as_slice() == b"\r"),
             "typed text must not reach the tty: {writes:?}"
         );
-        for key in [&b"\x03"[..], b"\x04", b"\x1a", b"\x1c"] {
+        assert!(
+            *sigints.borrow() == 1 || writes.iter().any(|w| w.as_slice() == b"\x03"),
+            "Ctrl-C must reach ssh while armed (as SIGINT or the byte): {writes:?}"
+        );
+        for key in [&b"\x04"[..], b"\x1a", b"\x1c"] {
             assert!(
                 writes.iter().any(|w| w.as_slice() == key),
                 "interrupt key {key:?} must reach the pty while armed: {writes:?}"
