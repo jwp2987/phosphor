@@ -2602,3 +2602,32 @@ fn display_command_controls_are_shown_not_executed() {
         "a\u{241b}]0;x\u{2407}b\u{2409}c\nd\u{240d}e\u{2421}\u{fffd}"
     );
 }
+
+/// #952: a tab config pane's rewritten startup command is shown as the configured command.
+#[test]
+fn command_display_override_replaces_the_echoed_wrapper_at_preexec() {
+    let wrapped = "& (Microsoft.PowerShell.Core\\Get-Command -CommandType Cmdlet,Application,ExternalScript -TotalCount 1 Write-Output) hi";
+    let mut size = block_size();
+    size.size = crate::terminal::SizeInfo::new_without_font_metrics(40, 200);
+    let mut model = TerminalModel::new_for_test(
+        size,
+        crate::terminal::color::List::from(&crate::terminal::color::Colors::default()),
+        crate::terminal::event_listener::ChannelEventListener::new_for_test(),
+        std::sync::Arc::new(warpui::r#async::executor::Background::default()),
+        false,
+        None,
+        false,
+        false,
+        None,
+    );
+    model.block_list_mut().active_block_mut().start();
+    model.set_command_display_override(wrapped.to_owned(), "echo hi".to_owned());
+    model.process_bytes(format!("{wrapped}\r\n").as_str());
+    model.preexec(PreexecValue {
+        command: wrapped.to_owned(),
+        session_id: None,
+    });
+    let shown = model.block_list().active_block().command_to_string();
+    assert_eq!(shown, "echo hi");
+    assert!(!shown.contains("Get-Command"));
+}

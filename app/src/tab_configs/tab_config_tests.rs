@@ -2385,3 +2385,33 @@ fn test_builtin_prefix_forms_run_in_real_bash_and_zsh() {
         );
     }
 }
+
+/// #952: the alias-bypass prefix is internal; the command to show is the one configured.
+#[test]
+fn test_render_tab_config_keeps_configured_command_for_display() {
+    let config: TabConfig = toml::from_str(
+        r#"
+name = "Plain Tab"
+
+[[panes]]
+id = "main"
+type = "terminal"
+shell = "pwsh"
+commands = ["echo hi", "git status"]
+"#,
+    )
+    .unwrap();
+    let (_, pane_template) = render_tab_config(&config, &HashMap::new(), None);
+    let crate::launch_configs::launch_config::PaneTemplateType::PaneTemplate { commands, .. } =
+        pane_template
+    else {
+        panic!("Expected PaneTemplate variant");
+    };
+    assert_eq!(commands.len(), 2);
+    for (command, shown) in commands.iter().zip(["echo hi", "git status"]) {
+        assert_ne!(command.exec, shown, "the exec form should be prefixed");
+        assert!(command.exec.contains("Get-Command"));
+        assert_eq!(command.display.as_deref(), Some(shown));
+        assert!(!command.display.as_deref().unwrap().contains("Get-Command"));
+    }
+}

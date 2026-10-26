@@ -1372,7 +1372,12 @@ impl PaneGroup {
                 // Runs saved commands on start (terminal and agent modes only).
                 if !commands.is_empty() && !matches!(pane_mode, PaneMode::Cloud) {
                     let exec = commands.iter().map(|cmd| &cmd.exec).join(" && ");
+                    let display = commands
+                        .iter()
+                        .map(|cmd| cmd.display.as_ref().unwrap_or(&cmd.exec))
+                        .join(" && ");
                     view.update(ctx, |terminal, ctx| {
+                        terminal.set_command_display_override(&exec, &display);
                         terminal.set_pending_command(exec.as_str(), ctx);
                     });
                 }

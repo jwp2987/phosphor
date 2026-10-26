@@ -2016,7 +2016,10 @@ fn resolve_pane_node(
         let command_values = command_values_for_pane(context, directory.as_deref());
         let shell = RenderShell::for_pane(node.shell.as_deref());
         let mut scanned: Vec<(String, bool)> = Vec::new();
-        let commands: Vec<CommandTemplate> = node
+        // The command as configured, with placeholders filled but no alias-bypass prefix, per
+        // command (#952).
+        let mut displays: Vec<String> = Vec::new();
+        let mut commands: Vec<CommandTemplate> = node
             .commands
             .as_deref()
             .unwrap_or_default()
@@ -2026,14 +2029,23 @@ fn resolve_pane_node(
                     .and_then(|cmd| {
                         let exec = render_command(&cmd, &command_values, Some(shell))?;
                         scanned.push((cmd.to_string(), exec != *cmd));
+                        displays.push(render_command(&cmd, &command_values, None)?);
                         Ok(exec)
                     })
-                    .map(|exec| CommandTemplate { exec })
+                    .map(|exec| CommandTemplate {
+                        exec,
+                        display: None,
+                    })
                     .map_err(|err| {
                         ResolveError::UnsafeCommand(format!("pane '{}': {err}", node.id))
                     })
             })
             .collect::<Result<_, _>>()?;
+        for (command, display) in commands.iter_mut().zip(displays) {
+            if display != command.exec {
+                command.display = Some(display);
+            }
+        }
         if let Some(what) = defined_then_used_with_placeholder(&scanned) {
             return Err(ResolveError::UnsafeCommand(format!(
                 "pane '{}': the commands substitute a placeholder but also use {what}; \
