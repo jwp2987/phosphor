@@ -1288,9 +1288,11 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             # determine what shell is the login shell on the remote machine.  We perform a preliminary check to see if
             # the remote shell is the Bourne shell to avoid asking it to parse later lines that use syntax it doesn't
             # support.
-            command ssh ${warp_ipqos_args[@]+"${warp_ipqos_args[@]}"} -o ControlMaster=$control_master_mode -o ControlPath="$control_path" \
-            -t "${@:1}" \
-"
+            # The remote script goes through a variable, not the ssh argument list: the job text
+            # the shell prints for a stopped ssh (Ctrl-Z while connecting) is the command as written,
+            # and the whole script in it was dumped into the scrollback (#995).
+            local warp_remote_bootstrap
+            warp_remote_bootstrap="
 export TERM_PROGRAM='WarpTerminal'
 # Mark the remote side of a Warp-managed SSH session so the bootstrap
 # body can distinguish it from local shells. Used to gate the ExitShell
@@ -1363,6 +1365,8 @@ TMPPREFIX="'$HOME/.zshtmp-'" WARP_SSH_RCFILES="'${ZDOTDIR:-$HOME}'" ZDOTDIR="'$W
       ;;
 esac
 "
+            command ssh ${warp_ipqos_args[@]+"${warp_ipqos_args[@]}"} -o ControlMaster=$control_master_mode -o ControlPath="$control_path" \
+            -t "${@:1}" "$warp_remote_bootstrap"
         }
 
         function __warp_ssh_impl() {

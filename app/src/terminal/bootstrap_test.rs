@@ -919,10 +919,32 @@ fn test_unknown_shell_probe_stays_out_of_history_and_restores_the_options() {
                         stdin.write_all(line.as_bytes()).unwrap();
                         stdin.write_all(b"\n").unwrap();
                     }
+                    // A bash or zsh the probe names is followed by the known-shell stage, whose
+                    // last line puts the options back (the probe keeps them on until then so that
+                    // stage's first line is not recorded either).
+                    let known = match bin {
+                        "bash" => Some(ShellType::Bash),
+                        "zsh" => Some(ShellType::Zsh),
+                        _ => None,
+                    };
+                    if let Some(known) = known {
+                        for line in chunked_eval_lines(known, "echo STAGE2-RAN") {
+                            stdin.write_all(line.as_bytes()).unwrap();
+                            stdin.write_all(b"\n").unwrap();
+                        }
+                    }
                     // `HISTCONTROL` must be back to the user's value after the probe.
                     stdin
-                        .write_all(b" echo \"hc-after=[$HISTCONTROL]\"\nexit\n")
+                        .write_all(b" echo \"hc-after=[$HISTCONTROL]\"\n")
                         .unwrap();
+                    if bin == "zsh" {
+                        stdin
+                            .write_all(
+                                b" [[ -o hist_ignore_space ]] && echo whi-after=on || echo whi-after=off\n",
+                            )
+                            .unwrap();
+                    }
+                    stdin.write_all(b"exit\n").unwrap();
                 }
                 let out = child.wait_with_output().unwrap();
                 let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -935,6 +957,12 @@ fn test_unknown_shell_probe_stays_out_of_history_and_restores_the_options() {
                     assert!(
                         stdout.contains("hc-after=[ignoredups]"),
                         "{bin}: HISTCONTROL was not restored: {stdout:?}"
+                    );
+                }
+                if bin == "zsh" {
+                    assert!(
+                        stdout.contains("STAGE2-RAN") && stdout.contains("whi-after=off"),
+                        "{bin}: hist_ignore_space was not restored: {stdout:?}"
                     );
                 }
                 for noise in ["not a valid", "nknown command", "syntax error", "unbound"] {
@@ -958,6 +986,167 @@ fn test_unknown_shell_probe_stays_out_of_history_and_restores_the_options() {
                     !history.contains("WARP_BOOTSTRAPPED") && !history.contains("InitSubshell"),
                     "{bin}: the probe line reached the history file: {history:?}"
                 );
+                std::fs::remove_dir_all(&dir).ok();
+            }
+        });
+    });
+}
+
+/// #967: the real probe-then-known-shell line stream, typed into real interactive bash and zsh
+/// under every history setting that matters, leaves at most ONE Phosphor line in the history file
+/// (the prelude that switches ignore-space on: a shell records a line before it runs it, so no
+/// line can keep itself out of history) and none when the shell already ignored space. The user's
+/// own entries survive byte for byte and the settings are exactly as they were afterwards.
+#[test]
+#[cfg(unix)]
+fn test_probe_and_known_stage_leave_at_most_the_prelude_in_history() {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let probe = init_subshell_command_lines(None, &[], SessionId::from(4242u64), ctx);
+            // (shell, shell type, env HISTCONTROL / zshrc lines, ignores space already)
+            let mut cases: Vec<(&str, ShellType, String, bool)> = Vec::new();
+            for hc in ["", "ignoredups", "ignorespace", "ignoreboth", "erasedups"] {
+                cases.push((
+                    "bash",
+                    ShellType::Bash,
+                    hc.to_owned(),
+                    hc.contains("ignorespace") || hc.contains("ignoreboth"),
+                ));
+            }
+            for (rc, ignores) in [
+                ("", false),
+                ("setopt hist_ignore_space", true),
+                ("setopt inc_append_history", false),
+                ("setopt share_history", false),
+            ] {
+                cases.push(("zsh", ShellType::Zsh, rc.to_owned(), ignores));
+            }
+            for (bin, shell_type, setting, ignores_space) in cases {
+                let Ok(path) = Command::new("sh")
+                    .args(["-c", &format!("command -v {bin}")])
+                    .output()
+                else {
+                    continue;
+                };
+                let path = String::from_utf8_lossy(&path.stdout).trim().to_owned();
+                if path.is_empty() {
+                    eprintln!("skipping {bin}: not installed");
+                    continue;
+                }
+                let dir = std::env::temp_dir().join(format!(
+                    "phosphor-prelude-{bin}-{}-{}",
+                    std::process::id(),
+                    setting.replace(' ', "_")
+                ));
+                std::fs::remove_dir_all(&dir).ok();
+                std::fs::create_dir_all(&dir).unwrap();
+                let histfile = dir.join("history");
+                std::fs::write(&histfile, "keep1\nkeep2\n").unwrap();
+                std::fs::write(
+                    dir.join(".zshrc"),
+                    format!("HISTSIZE=1000\nSAVEHIST=1000\n{setting}\n"),
+                )
+                .unwrap();
+                let mut command = Command::new(&path);
+                command
+                    .args(if bin == "bash" {
+                        &["--norc", "-i"][..]
+                    } else {
+                        &["-i"][..]
+                    })
+                    .env_clear()
+                    .env("PATH", std::env::var("PATH").unwrap_or_default())
+                    .env("HOME", &dir)
+                    .env("ZDOTDIR", &dir)
+                    .env("HISTFILE", &histfile)
+                    .env("HISTSIZE", "1000")
+                    .env("TERM", "dumb");
+                if bin == "bash" && !setting.is_empty() {
+                    command.env("HISTCONTROL", &setting);
+                }
+                let mut child = command
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                {
+                    let stdin = child.stdin.as_mut().unwrap();
+                    let mut stream = vec!["echo user1".to_owned()];
+                    stream.extend(probe.iter().cloned());
+                    stream.extend(chunked_eval_lines(shell_type, "echo STAGE2-RAN"));
+                    stream.push("echo user2".to_owned());
+                    stream.push(if bin == "bash" {
+                        "echo \"hc-after=[$HISTCONTROL] set=${HISTCONTROL+y}\"".to_owned()
+                    } else {
+                        "[[ -o hist_ignore_space ]] && echo whi-after=on || echo whi-after=off"
+                            .to_owned()
+                    });
+                    stream.push("exit".to_owned());
+                    for line in stream {
+                        stdin.write_all(line.as_bytes()).unwrap();
+                        stdin.write_all(b"\n").unwrap();
+                    }
+                }
+                let out = child.wait_with_output().unwrap();
+                let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+                let why = format!("{bin} [{setting}]");
+                assert!(
+                    stdout.contains("STAGE2-RAN"),
+                    "{why}: stage two did not run: {stdout:?}"
+                );
+                if bin == "bash" {
+                    // Unset stays "set but empty" (the stage cannot tell the two apart); a set
+                    // value comes back exactly.
+                    assert!(
+                        stdout.contains(&format!("hc-after=[{setting}]")),
+                        "{why}: HISTCONTROL not restored: {stdout:?}"
+                    );
+                } else {
+                    let expect = if ignores_space {
+                        "whi-after=on"
+                    } else {
+                        "whi-after=off"
+                    };
+                    assert!(
+                        stdout.contains(expect),
+                        "{why}: option not restored: {stdout:?}"
+                    );
+                }
+                let history = std::fs::read_to_string(&histfile).unwrap_or_default();
+                for kept in ["keep1", "keep2", "echo user1", "echo user2"] {
+                    assert!(history.contains(kept), "{why}: lost {kept}: {history:?}");
+                }
+                let bootstrap_lines: Vec<&str> = history
+                    .lines()
+                    .filter(|l| {
+                        l.contains("__hc0")
+                            || l.contains("__whi")
+                            || l.contains("_wbs")
+                            || l.contains("WARP_")
+                            || l.contains("InitSubshell")
+                            || l.contains("STAGE2")
+                    })
+                    .collect();
+                if ignores_space {
+                    assert!(
+                        bootstrap_lines.is_empty(),
+                        "{why}: bootstrap lines recorded: {bootstrap_lines:?}"
+                    );
+                } else {
+                    assert!(
+                        bootstrap_lines.len() <= 1
+                            && bootstrap_lines
+                                .iter()
+                                .all(|l| l.trim_start()
+                                    == UNKNOWN_SHELL_HISTORY_PRELUDE.trim_start()),
+                        "{why}: more than the one prelude line recorded: {bootstrap_lines:?}"
+                    );
+                }
                 std::fs::remove_dir_all(&dir).ok();
             }
         });
@@ -1024,6 +1213,119 @@ fn test_init_subshell_never_deletes_or_rewrites_history() {
             assert!(!regex.is_match("Get-ChildItem .tmpAbC123.ps1"));
         });
     });
+}
+
+/// #995: the ssh wrapper hands the remote bootstrap to ssh through a variable, so the job text a
+/// shell prints for a stopped ssh (Ctrl-Z during connect) is a short command line, not the whole
+/// embedded script. The remote command itself is unchanged: a stub `ssh` on PATH receives it.
+#[test]
+#[cfg(unix)]
+fn ssh_wrapper_job_text_is_short_and_remote_script_still_arrives() {
+    use std::process::Command;
+
+    for (name, source, fish) in [
+        (
+            "bash",
+            include_str!("../../assets/bundled/bootstrap/bash_body.sh"),
+            false,
+        ),
+        (
+            "fish",
+            include_str!("../../assets/bundled/bootstrap/fish.sh"),
+            true,
+        ),
+    ] {
+        // The statement that runs `command ssh ... -t <args>` with the remote script.
+        let start = source
+            .find(if fish {
+                "command ssh $warp_ipqos_args -o ControlMaster"
+            } else {
+                "command ssh ${warp_ipqos_args[@]+"
+            })
+            .unwrap_or_else(|| panic!("{name}: the wrapper's ssh invocation moved"));
+        let statement: String = source[start..]
+            .lines()
+            .take(2)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            statement.len() < 400 && !statement.contains("TERM_PROGRAM"),
+            "{name}: the ssh invocation must not carry the script inline (#995): {statement}"
+        );
+        assert!(
+            statement.contains("warp_remote_bootstrap"),
+            "{name}: {statement}"
+        );
+
+        // Run the real helper with a stub ssh: the last argument must still be the whole script.
+        let have = Command::new(name).arg("--version").output().is_ok();
+        if !have {
+            eprintln!("skipping {name}: not installed");
+            continue;
+        }
+        let dir =
+            std::env::temp_dir().join(format!("phosphor-ssh-stub-{name}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let stub = dir.join("ssh");
+        std::fs::write(
+            &stub,
+            "#!/bin/sh\ncase \"$1\" in -G|-O) exit 1;; esac\nfor a in \"$@\"; do last=\"$a\"; done\nprintf '%s' \"$last\" > \"$OUT\"\n",
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let (open, close) = if fish {
+            ("    function warp_ssh_helper", "\n    end\n")
+        } else {
+            (
+                "        function warp_ssh_helper() {",
+                "\n        function __warp_ssh_impl",
+            )
+        };
+        let from = source.find(open).unwrap();
+        let to = from + source[from..].find(close).unwrap() + close.len();
+        let function = if fish {
+            source[from..to].to_owned()
+        } else {
+            source[from..to - "\n        function __warp_ssh_impl".len()].to_owned()
+        };
+        let out_file = dir.join("out");
+        let prelude = if fish {
+            "function warp_init_shell; echo init-$argv; end; function warp_send_json_message; end; set -g SSH_SOCKET_DIR /tmp/s; set -g WARP_SESSION_ID 77; set -g WARP_HONOR_PS1 1;"
+        } else {
+            "init_shell_hook(){ echo hook-$1; }; warp_send_json_message(){ :; }; SSH_SOCKET_DIR=/tmp/s; WARP_SESSION_ID=77; WARP_HONOR_PS1=1;"
+        };
+        let script = format!("{prelude}\n{function}\nwarp_ssh_helper -p 22 user@host");
+        let mut command = Command::new(name);
+        if fish {
+            command.args(["--no-config", "-c", &script]);
+        } else {
+            command.args(["-c", &script]);
+        }
+        let status = command
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    dir.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env("OUT", &out_file)
+            .status()
+            .unwrap();
+        assert!(status.success(), "{name}: helper failed");
+        let remote = std::fs::read_to_string(&out_file).unwrap_or_default();
+        assert!(
+            remote.contains("export TERM_PROGRAM='WarpTerminal'")
+                && remote.contains("exec -l zsh -g"),
+            "{name}: the remote script did not reach ssh intact: {remote:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
 
 /// #960: `trap <fn> EXIT HUP` replaced bash's default hang-up handling, so a remote shell
