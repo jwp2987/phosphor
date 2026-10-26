@@ -8498,8 +8498,9 @@ impl TerminalView {
     ///
     /// Deregisters the remote-server session first so the owned ControlMaster gets
     /// `ssh -O exit` and its socket file is removed (an external, user-owned master carries no
-    /// `control_path` and is left alone), then shuts the pty down, which kills the shell's whole
-    /// process tree (#975).
+    /// `control_path` and is left alone). Only the active block's session is deregistered
+    /// (nested ssh sessions are not tracked); the pty shutdown that follows in
+    /// `on_view_detached` kills the shell's whole process group (#975), reaping the rest.
     pub fn shutdown_for_discard(&mut self, ctx: &mut ViewContext<Self>) {
         #[cfg(not(target_family = "wasm"))]
         if FeatureFlag::SshRemoteServer.is_enabled() {
@@ -8514,9 +8515,10 @@ impl TerminalView {
                 );
             }
         }
-        if !self.manual_pty_shutdown_requested {
-            self.shutdown_pty(ctx);
-        }
+        // The pty itself is stopped synchronously by `TerminalManagerTrait::on_view_detached`
+        // (`DetachType::Closed`); an emitted `Event::ShutdownPty` could be dropped along with
+        // the pane's handles. Only the telemetry attribution flag is set here.
+        self.manual_pty_shutdown_requested = true;
     }
 
     /// The conversation whose agent-requested command Escape should stop, if any (issue #850).

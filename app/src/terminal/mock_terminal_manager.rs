@@ -1,4 +1,5 @@
 use std::any::Any;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use parking_lot::FairMutex;
@@ -21,9 +22,17 @@ pub struct MockTerminalManager {
     /// Retained to keep the terminal surface alive for the manager's lifetime.
     #[allow(dead_code)]
     view: ViewHandle<TerminalView>,
+    /// Set when `on_view_detached` is called with `DetachType::Closed` (#980: the real manager
+    /// shuts its pty down on that detach).
+    closed_detach_seen: Arc<AtomicBool>,
 }
 
 impl MockTerminalManager {
+    /// Whether this manager was told its pane was permanently closed.
+    pub fn closed_detach_seen(&self) -> bool {
+        self.closed_detach_seen.load(Ordering::SeqCst)
+    }
+
     pub fn create_model(
         shell_state: ShellLaunchState,
         resources: TerminalViewResources,
@@ -96,7 +105,11 @@ impl MockTerminalManager {
         });
 
         let terminal_view = view.clone();
-        let terminal_manager = Self { model, view };
+        let terminal_manager = Self {
+            model,
+            view,
+            closed_detach_seen: Arc::new(AtomicBool::new(false)),
+        };
         let manager_model = ctx.add_model(|_ctx| {
             let manager: Box<dyn crate::terminal::TerminalManager> = Box::new(terminal_manager);
             manager
@@ -113,9 +126,12 @@ impl TerminalManager for MockTerminalManager {
 
     fn on_view_detached(
         &self,
-        _detach_type: crate::pane_group::pane::DetachType,
+        detach_type: crate::pane_group::pane::DetachType,
         _app: &mut AppContext,
     ) {
+        if matches!(detach_type, crate::pane_group::pane::DetachType::Closed) {
+            self.closed_detach_seen.store(true, Ordering::SeqCst);
+        }
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

@@ -1245,12 +1245,22 @@ impl TerminalManagerTrait for TerminalManager<TerminalView> {
 
     fn on_view_detached(
         &self,
-        // The detach type is intentionally ignored: a sharer always stops sharing immediately,
-        // even on a reversible `HiddenForClose` detach. This is desirable for security — a sharer
-        // should not continue accepting commands from viewers while the session is not visible.
-        _detach_type: crate::pane_group::pane::DetachType,
+        // The detach type is ignored for the sharer check below: a sharer always stops sharing
+        // immediately, even on a reversible `HiddenForClose` detach. This is desirable for
+        // security — a sharer should not continue accepting commands from viewers while the
+        // session is not visible.
+        detach_type: crate::pane_group::pane::DetachType,
         app: &mut AppContext,
     ) {
+        // #980: a permanently discarded pane must stop its pty (and with it the shell's whole
+        // process tree, incl. an ssh client / ControlMaster). Done synchronously here rather
+        // than via `Event::ShutdownPty`: that is a queued effect delivered through a weak-handle
+        // subscription, and the pane drops its handles in the same update, so it can be lost.
+        if matches!(detach_type, crate::pane_group::pane::DetachType::Closed) {
+            self.pty_controller.update(app, |pty_controller, ctx| {
+                pty_controller.shutdown_pty(ctx);
+            });
+        }
         let shared_session_status = self.model.lock().shared_session_status().clone();
         if shared_session_status.is_sharer() {
             cleanup_shared_session(&self.view, self.model.clone(), app);

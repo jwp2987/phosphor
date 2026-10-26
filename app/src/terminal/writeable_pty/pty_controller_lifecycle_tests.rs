@@ -158,3 +158,38 @@ fn rejected_queued_in_band_start_is_cancelled_without_writing_bytes() {
         drop(model_events_tx);
     });
 }
+
+/// #980: `shutdown_pty` (called synchronously by the terminal manager when its pane is
+/// permanently discarded) must put `Message::Shutdown` on the event loop channel.
+#[test]
+fn shutdown_pty_sends_shutdown_to_event_loop() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (_model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model,
+                ctx,
+            )
+        });
+
+        controller.update(&mut app, |controller, ctx| controller.shutdown_pty(ctx));
+
+        assert!(matches!(
+            sender.messages.lock().as_slice(),
+            [Message::Shutdown]
+        ));
+    });
+}

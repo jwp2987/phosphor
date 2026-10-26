@@ -644,8 +644,25 @@ fn test_permanent_close_stops_every_running_conversation_in_the_pane() {
     });
 }
 
-/// #980: permanently discarding a pane (single pane whose undo-close grace expired) must shut
-/// its pty down; a hidden-for-close pane must not, since it may still be restored.
+/// Reads whether the pane's terminal manager saw a permanent (`Closed`) detach. The manager is
+/// held by model handle only, so the terminal *view* can be dropped, as in production where the
+/// pane's handles die in the same update as the detach (#980).
+fn manager_saw_closed_detach(
+    manager: &warpui::ModelHandle<Box<dyn crate::terminal::TerminalManager>>,
+    app: &App,
+) -> bool {
+    manager.read(app, |manager, _| {
+        manager
+            .as_any()
+            .downcast_ref::<crate::terminal::MockTerminalManager>()
+            .expect("mock manager")
+            .closed_detach_seen()
+    })
+}
+
+/// #980: permanently discarding a pane (single pane whose undo-close grace expired) must tell the
+/// terminal manager (which shuts the pty down synchronously, not via a droppable queued event);
+/// a hidden-for-close pane must not, since it may still be restored.
 #[test]
 fn test_permanent_discard_shuts_down_pty_but_hiding_does_not() {
     let _undo_closed_panes = FeatureFlag::UndoClosedPanes.override_enabled(true);
@@ -655,7 +672,8 @@ fn test_permanent_discard_shuts_down_pty_but_hiding_does_not() {
         crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
 
-        pane_group.update(&mut app, |panes, ctx| {
+        // Capture the manager, then drop every external view handle before the discard.
+        let (pane_id, manager) = pane_group.update(&mut app, |panes, ctx| {
             let pane_id = get_newly_created_pane_id(panes, &[]);
             // A second pane so `close_pane` hides instead of emitting `Exited`.
             panes.add_pane_with_direction(
@@ -664,28 +682,34 @@ fn test_permanent_discard_shuts_down_pty_but_hiding_does_not() {
                 false,
                 ctx,
             );
-            let terminal_view = panes
-                .terminal_view_from_pane_id(pane_id, ctx)
-                .expect("pane should have a terminal view");
+            let manager = panes
+                .terminal_session_by_id(pane_id)
+                .expect("terminal pane")
+                .terminal_manager(ctx);
+            (pane_id, manager)
+        });
 
+        pane_group.update(&mut app, |panes, ctx| {
             panes.close_pane(pane_id, ctx);
             assert!(panes.is_pane_hidden_for_close(pane_id));
-            assert!(
-                !terminal_view.as_ref(ctx).pty_shutdown_requested(),
-                "a pane hidden for undo-close must keep its pty"
-            );
-
-            assert!(panes.cleanup_closed_pane(pane_id, ctx));
-            assert!(
-                terminal_view.as_ref(ctx).pty_shutdown_requested(),
-                "discarding the pane after the grace must shut its pty down (#980)"
-            );
         });
+        assert!(
+            !manager_saw_closed_detach(&manager, &app),
+            "a pane hidden for undo-close must keep its pty"
+        );
+
+        pane_group.update(&mut app, |panes, ctx| {
+            assert!(panes.cleanup_closed_pane(pane_id, ctx));
+        });
+        assert!(
+            manager_saw_closed_detach(&manager, &app),
+            "discarding the pane after the grace must shut its pty down (#980)"
+        );
     });
 }
 
-/// #980: the whole-tab discard path (`UndoCloseStack` -> `clean_up_panes`) shuts every
-/// terminal pane's pty down.
+/// #980: the whole-tab discard path (`UndoCloseStack` -> `clean_up_panes`) detaches every
+/// terminal pane as `Closed`.
 #[test]
 fn test_clean_up_panes_shuts_down_every_terminal_pty() {
     App::test((), |mut app| async move {
@@ -693,17 +717,18 @@ fn test_clean_up_panes_shuts_down_every_terminal_pty() {
         crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
 
-        pane_group.update(&mut app, |panes, ctx| {
+        let manager = pane_group.update(&mut app, |panes, ctx| {
             let pane_id = get_newly_created_pane_id(panes, &[]);
-            let terminal_view = panes
-                .terminal_view_from_pane_id(pane_id, ctx)
-                .expect("pane should have a terminal view");
-            assert!(!terminal_view.as_ref(ctx).pty_shutdown_requested());
-
-            panes.clean_up_panes(ctx);
-
-            assert!(terminal_view.as_ref(ctx).pty_shutdown_requested());
+            panes
+                .terminal_session_by_id(pane_id)
+                .expect("terminal pane")
+                .terminal_manager(ctx)
         });
+        assert!(!manager_saw_closed_detach(&manager, &app));
+
+        pane_group.update(&mut app, |panes, ctx| panes.clean_up_panes(ctx));
+
+        assert!(manager_saw_closed_detach(&manager, &app));
     });
 }
 
