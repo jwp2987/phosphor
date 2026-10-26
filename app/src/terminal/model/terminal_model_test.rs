@@ -3006,3 +3006,71 @@ fn stalled_subshell_bootstrap_can_be_abandoned_once() {
         "nothing left to abandon"
     );
 }
+
+/// #1014: a shell whose rc file sleeps only *looks* stalled; when it finally reads the script the
+/// `Bootstrapped` hook arrives after the ceiling abandoned the pending session. The late hook must
+/// still produce the session (a `Bootstrapped` event), not be dropped as "no pending session".
+/// Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn late_bootstrapped_after_abandon_still_completes_the_session() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    command_finished_and_precmd(&mut terminal);
+    command_finished_and_precmd(&mut terminal);
+    terminal.start_command_execution();
+    terminal.preexec(PreexecValue {
+        command: "zsh".to_owned(),
+        session_id: None,
+    });
+    terminal.init_shell(InitShellValue {
+        shell: "zsh".into(),
+        user: "u".to_owned(),
+        hostname: "h".to_owned(),
+        session_id: 0.into(),
+        is_subshell: true,
+        ..Default::default()
+    });
+    assert!(terminal.abandon_stalled_subshell_bootstrap());
+    assert!(terminal.pending_session_id().is_none());
+
+    terminal.bootstrapped(BootstrappedValue {
+        shell: "zsh".to_string(),
+        ..Default::default()
+    });
+    assert!(
+        terminal.abandoned_subshell_session.is_none(),
+        "the abandoned session was consumed by the late Bootstrapped"
+    );
+    assert!(terminal.block_list().is_bootstrapped());
+}
+
+/// #1014: a late `InitShell` after an abandon (the slow shell finally ran the first stage) starts
+/// a fresh pending session as usual and supersedes the abandoned one.
+/// Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn late_init_shell_after_abandon_starts_a_fresh_pending_session() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    command_finished_and_precmd(&mut terminal);
+    command_finished_and_precmd(&mut terminal);
+    terminal.start_command_execution();
+    terminal.preexec(PreexecValue {
+        command: "zsh".to_owned(),
+        session_id: None,
+    });
+    let init = || InitShellValue {
+        shell: "zsh".into(),
+        user: "u".to_owned(),
+        hostname: "h".to_owned(),
+        session_id: 0.into(),
+        is_subshell: true,
+        ..Default::default()
+    };
+    terminal.init_shell(init());
+    assert!(terminal.abandon_stalled_subshell_bootstrap());
+    assert!(terminal.abandoned_subshell_session.is_some());
+
+    terminal.init_shell(init());
+    assert!(terminal.pending_subshell_session().is_some());
+    assert!(terminal.abandoned_subshell_session.is_none());
+}

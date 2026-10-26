@@ -16910,6 +16910,17 @@ impl TerminalView {
         ));
         self.clear_line_editor_and_write_to_pty(first.into_bytes(), ctx);
         self.write_to_pty(vec![escape_sequences::C0::CR], ctx);
+        // The lines sit in the tty (and are echoed by it) until the shell reads them, which an rc
+        // file that sleeps delays. Once the ceiling passes with setup still unfinished, say so
+        // instead of leaving raw script text unexplained in the pane (#1014).
+        let announced_at = self
+            .subshell_bootstrap_announced
+            .as_ref()
+            .map(|(_, at)| *at);
+        ctx.spawn(
+            Timer::after(SUBSHELL_BOOTSTRAP_STALL_CEILING),
+            move |me, _, ctx| me.note_subshell_setup_waiting(announced_at, ctx),
+        );
         let rest: Vec<String> = lines.collect();
         if rest.is_empty() {
             return;
@@ -16928,6 +16939,35 @@ impl TerminalView {
                 move |me, _, ctx| me.write_subshell_bootstrap_line(generation, line, ctx),
             );
         }
+    }
+
+    /// Tells the user, once per bootstrap, that setup is still waiting for the shell after the
+    /// stall ceiling. Keys typed from now on are delivered in order but sit behind the setup
+    /// script in the tty, so they run once the shell gets to it; the shell is never aborted.
+    fn note_subshell_setup_waiting(
+        &mut self,
+        announced_at: Option<Instant>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let still_waiting = announced_at.is_some()
+            && self
+                .subshell_bootstrap_announced
+                .as_ref()
+                .is_some_and(|(_, at)| Some(*at) == announced_at)
+            && self.subshell_bootstrap_announced_age().is_some();
+        if !still_waiting {
+            return;
+        }
+        let window_id = ctx.window_id();
+        ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+            let toast = DismissibleToast::new(
+                "Phosphor setup is waiting for the shell to finish starting. Your input will run \
+                 after it (Ctrl-C skips setup)."
+                    .to_string(),
+                ToastFlavor::Default,
+            );
+            toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+        });
     }
 
     /// Writes one paced bootstrap line, unless the bootstrap it belongs to was superseded or the
