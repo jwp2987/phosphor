@@ -1847,6 +1847,35 @@ fn test_clear_lines() -> Result<()> {
     })
 }
 
+/// #988: the input of a read-only live-conversation viewer is a Disabled editor that still holds
+/// keyboard focus, so Cmd-C lands on its copy binding. It must hand the copy to the parent (which
+/// copies the AI block selection) instead of dropping it.
+#[test]
+fn test_copy_from_disabled_editor_is_delegated_to_parent() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("hello", Default::default(), ctx)
+        });
+        let copies = std::rc::Rc::new(std::cell::Cell::new(0));
+        let copies_in_handler = copies.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&view, move |_, event: &Event, _| {
+                if matches!(event, Event::Copy) {
+                    copies_in_handler.set(copies_in_handler.get() + 1);
+                }
+            });
+        });
+
+        view.update(&mut app, |view, ctx| {
+            view.set_interaction_state(InteractionState::Disabled, ctx);
+            view.copy(ctx);
+        });
+        assert_eq!(copies.get(), 1);
+    });
+}
+
 #[test]
 fn test_clear_and_copy_lines() -> Result<()> {
     App::test((), |mut app| async move {

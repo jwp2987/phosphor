@@ -4312,6 +4312,13 @@ impl EditorView {
             } else {
                 ctx.clipboard().write(ClipboardContent::plain_text(text));
             }
+        } else {
+            // A disabled editor (e.g. the input of a read-only live-conversation viewer, #988)
+            // still holds keyboard focus, and its `EditorView` copy binding shadows the
+            // terminal's. It has nothing to copy itself, so hand the copy to the parent, which
+            // copies the selection made in an AI block; dropping it silently left the clipboard
+            // unchanged.
+            ctx.emit(Event::Copy);
         }
     }
 

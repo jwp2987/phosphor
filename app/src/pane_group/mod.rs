@@ -5777,6 +5777,10 @@ impl PaneGroup {
 
         let _ = ambient_agent_task_id;
 
+        // The viewer status and the transcript-viewer mark above change how the view renders but
+        // were set after it was built; without a notify the first frame stays blank (#988).
+        terminal_view.update(ctx, |_, ctx| ctx.notify());
+
         (terminal_view, terminal_manager)
     }
 
