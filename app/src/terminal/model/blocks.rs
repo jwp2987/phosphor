@@ -3972,8 +3972,14 @@ impl BlockList {
     /// This is the costly-per-block path: the fast `complete_active_block_and_advance` shows the
     /// finished block immediately, and this runs afterwards on the following prompt.
     pub(super) fn apply_precmd_to_active(&mut self, data: PromptMetadata) {
+        // The setting belongs to the shell that sent the Precmd. A populated Precmd that omits the
+        // field (zsh, bash, pwsh, ...) means "do not ignore", so it clears a flag left behind by a
+        // fish subshell that has since exited; otherwise the parent's prompt markers stay ignored
+        // and its editor never returns. Unpopulated (in-band) Precmds carry no information.
         if let Some(ignore) = data.ignore_prompt_markers {
             self.ignore_shell_prompt_markers = ignore;
+        } else if !data.was_sent_after_in_band_command() {
+            self.ignore_shell_prompt_markers = false;
         }
         let latest_block_finished_time = self.latest_block_finished_time.take();
         // We don't need to log this delay during the bootstrapping process, since these

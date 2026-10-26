@@ -358,6 +358,60 @@ fn fish_native_prompt_marker_after_precmd_does_not_hide_blocks() {
     );
 }
 
+/// Exiting a Phosphorized fish subshell must hand the parent shell back a working prompt: fish's
+/// Precmd sets `ignore_prompt_markers`, and the parent zsh's Precmd (which omits the field) must
+/// clear it so zsh's own prompt markers are honoured again. Not compiled/run when written.
+#[test]
+fn fish_subshell_exit_restores_parent_prompt_markers() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    command_finished_and_precmd(&mut terminal);
+    command_finished_and_precmd(&mut terminal);
+
+    let finish_with = |terminal: &mut TerminalModel, ignore: Option<bool>| {
+        terminal.start_command_execution();
+        terminal.preexec(PreexecValue {
+            command: "x".to_owned(),
+            session_id: None,
+        });
+        let completion_metadata = CompletionMetadata {
+            exit_code: ExitCode::from(0),
+            next_block_id: BlockId::new(),
+        };
+        terminal.command_finished(CommandFinishedValue {
+            completion_metadata: completion_metadata.clone(),
+            session_id: None,
+        });
+        terminal.precmd_with_completion_metadata(PrecmdValue {
+            completion_metadata,
+            prompt_metadata: PromptMetadata {
+                pwd: Some("/tmp".to_owned()),
+                ignore_prompt_markers: ignore,
+                ..Default::default()
+            },
+        });
+    };
+
+    // fish subshell Precmd, then `exit` returns to zsh whose Precmd has no such field.
+    finish_with(&mut terminal, Some(true));
+    assert!(terminal.block_list().ignores_shell_prompt_markers());
+    finish_with(&mut terminal, None);
+    assert!(
+        !terminal.block_list().ignores_shell_prompt_markers(),
+        "the parent shell's populated Precmd must clear the fish subshell's setting"
+    );
+    terminal.prompt_marker(ansi::PromptMarker::StartPrompt {
+        kind: ansi::PromptKind::Initial,
+    });
+    assert!(
+        terminal
+            .block_list()
+            .active_block()
+            .receiving_chars_for_prompt()
+            .is_some()
+    );
+}
+
 #[test]
 // An empty block that is restored should have a nonzero height and it should not get deleted.
 pub fn test_restored_empty_command_block() {
