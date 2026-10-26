@@ -266,7 +266,9 @@ fn consuming_the_toggle_clears_an_explicit_on_but_not_the_queue_default() {
             m.consume_queue_next_prompt_toggle(conv, ctx)
         });
         assert!(cleared);
-        model.read(&app, |m, _| assert!(!m.is_queue_next_prompt_toggle_enabled(conv)));
+        model.read(&app, |m, _| {
+            assert!(!m.is_queue_next_prompt_toggle_enabled(conv))
+        });
         assert_eq!(events.borrow().len(), events_before + 1, "the UI is told");
 
         // Nothing explicit left to consume.
