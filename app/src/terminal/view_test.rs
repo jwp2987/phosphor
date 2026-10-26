@@ -14434,12 +14434,8 @@ fn only_the_modified_enter_is_the_agent_shortcut() {
         meta: false,
         key: name.to_owned(),
     };
-    assert!(!is_shortcut(&key(
-        false, false, false, false, "enter"
-    )));
-    assert!(!is_shortcut(&key(
-        false, false, true, false, "enter"
-    )));
+    assert!(!is_shortcut(&key(false, false, false, false, "enter")));
+    assert!(!is_shortcut(&key(false, false, true, false, "enter")));
     let shortcut = if cfg!(target_os = "macos") {
         key(false, true, false, false, "enter")
     } else {
