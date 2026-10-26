@@ -224,12 +224,15 @@ build-macos-arm64:
     # The maintainer's laptop: cap parallelism so the build does not push it into
     # heavy swap (8 jobs measured: load 20, ~0.1 GB free, 3.5 GB swap).
     CARGO_BUILD_JOBS: "4"
+    PHOSPHOR_DMG_SKIP_JENKINS: "1"
   script:
-    - export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+    - export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
     - for t in cargo rustc protoc hdiutil codesign lipo; do command -v $t >/dev/null || { echo "ERROR $t is missing on this runner; install it by hand (not done automatically)" >&2; exit 1; }; done
     - xcrun -sdk macosx metal --version >/dev/null || { echo "ERROR the Metal toolchain is missing (xcodebuild -downloadComponent MetalToolchain)" >&2; exit 1; }
     - ./script/install_cargo_release_deps --no-build-deps
     - ./script/install_cargo_bundle
+    - ./script/macos/install_create_dmg
+    - export GIT_RELEASE_TAG="v$(sed -n 's/^version = "\(.*\)"/\1/p' app/Cargo.toml | head -1)-dev"
     - script/bundle --channel "$CHANNEL" --arch aarch64 --dmg-name-suffix arm64 --selfsign
     - |
       DMG=$(grep '^dmg_path=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
@@ -265,6 +268,8 @@ build-linux-x86_64:
     - for t in cargo protoc cmake pkg-config dpkg-deb fakeroot strip; do command -v $t >/dev/null || { echo "ERROR $t is missing on this runner; install it by hand (not done automatically)" >&2; exit 1; }; done
     - ./script/install_cargo_release_deps --no-build-deps
     - ./script/linux/install_linuxdeploy
+    # Package scripts name the version after GIT_RELEASE_TAG, which only tag pipelines have.
+    - export GIT_RELEASE_TAG="v$(sed -n 's/^version = "\(.*\)"/\1/p' app/Cargo.toml | head -1)-dev"
     - script/bundle --channel "$CHANNEL" --arch x86_64 --packages appimage,deb
     - |
       PKG=$(grep '^packages_dir=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
