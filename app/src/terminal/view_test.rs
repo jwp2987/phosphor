@@ -14387,6 +14387,45 @@ fn text_typed_during_a_stalled_subshell_setup_is_held_then_delivered_in_order() 
     })
 }
 
+/// #1014: the typed-input hold must not swallow an answer to a prompt the shell is showing. With
+/// `Password: ` as the last visible output, typing reaches the pty at once; with silent output it
+/// is held. Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn typed_input_during_stalled_setup_passes_through_to_a_visible_prompt() {
+    for (output, expect_written) in [("Password: ", true), ("", false)] {
+        App::test((), |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+            let writes = pty_writes.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::WriteBytesToPty { bytes } = event {
+                        writes.borrow_mut().push(bytes.to_vec());
+                    }
+                });
+            });
+            terminal.update(&mut app, |view, ctx| {
+                view.model
+                    .lock()
+                    .simulate_long_running_block("su -", output);
+                let block_id = view.model.lock().block_list().active_block().id().clone();
+                view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+                assert!(view.write_user_bytes_to_pty(b"secret".to_vec(), ctx));
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            if expect_written {
+                assert_eq!(written, b"secret".to_vec(), "answer to a visible prompt");
+            } else {
+                assert!(written.is_empty(), "silent shell: typing is held");
+                terminal.read(&app, |view, _| {
+                    assert_eq!(view.subshell_setup_held_bytes, vec![b"secret".to_vec()]);
+                });
+            }
+        })
+    }
+}
+
 /// #1014: the setup-waiting notice and the typed-input hold key off the announcement, which must
 /// stay armed while the announced block is still the active one even though that block (the
 /// parent shell's command) is bootstrapped; once the block changed it needs a pending subshell

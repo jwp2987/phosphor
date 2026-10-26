@@ -10533,10 +10533,15 @@ impl TerminalView {
             }
             return written;
         }
+        // Not while the shell is asking for something: a visible unterminated line (`Password:`,
+        // a passphrase or `read -p` prompt) means typing is the answer to it, and held text would
+        // arrive late at the wrong place. Bytes already held stay held (they were typed for the
+        // command line).
         if subshell_setup_should_hold_typed_bytes(
             self.subshell_bootstrap_announced_age(),
             is_abort_key(&bytes),
-        ) {
+        ) && !self.active_output_ends_in_unterminated_text()
+        {
             self.subshell_setup_held_bytes.push(bytes.into_owned());
             return true;
         }
