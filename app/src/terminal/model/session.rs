@@ -964,6 +964,8 @@ pub struct Session {
     /// `export PATH`, `alias`, `cd`...) has completed since the bootstrap snapshot and `$PATH`
     /// scan, which are never refreshed (#833). See [`Self::knows_command_word`].
     command_data_stale: AtomicBool,
+    /// Executables found on `$PATH` after the bootstrap scan, for words the user typed (#1019).
+    late_commands: LateCommands,
     load_all_function_names_future: OnceCell<Shared<BoxFuture<'static, ()>>>,
     load_all_builtins_future: OnceCell<Shared<BoxFuture<'static, ()>>>,
     command_case_sensitivity: TopLevelCommandCaseSensitivity,
@@ -996,6 +998,7 @@ impl Session {
             load_external_commands_future: Default::default(),
             external_commands_load_finished: Arc::new(AtomicBool::new(false)),
             command_data_stale: AtomicBool::new(false),
+            late_commands: Default::default(),
             load_all_function_names_future: Default::default(),
             load_all_builtins_future: Default::default(),
             command_case_sensitivity,
@@ -1460,6 +1463,83 @@ impl Session {
             .chain(self.additional_builtin_names.get().into_iter().flatten())
             .chain(&self.info.keywords)
             .map(Deref::deref)
+            .chain(self.late_commands.found.lock().clone())
+    }
+
+    /// #1019: the bootstrap `$PATH` scan is a one-time snapshot, so a program installed after it
+    /// (or put in a new `$PATH` directory) was never a known command and a line led by it, such as
+    /// `mytool is great`, kept routing as prose. Looks `word` up on the session's `$PATH` and, if
+    /// it is an executable there, adds it to [`Self::top_level_commands`] for the rest of the
+    /// session.
+    ///
+    /// Cheap and bounded: only local Unix sessions (a remote or WSL `$PATH` is not ours to stat),
+    /// only a bare command-name word (never a path or arbitrary typed text, #1007), only once the
+    /// bootstrap scan has landed and only if the word is not already known. The probe is a
+    /// `stat` per `$PATH` directory, and a miss is remembered for [`LATE_COMMAND_MISS_TTL`], so
+    /// re-typing the same unknown word costs nothing.
+    pub fn discover_command_word(&self, word: &str) {
+        if !cfg!(unix)
+            || !self.is_local()
+            || self.is_wsl()
+            || !self.has_loaded_external_commands()
+            || !is_bare_command_name(word)
+        {
+            return;
+        }
+        let case_insensitive = matches!(
+            self.command_case_sensitivity,
+            TopLevelCommandCaseSensitivity::CaseInsensitive
+        );
+        if self.top_level_commands().any(|name| {
+            if case_insensitive {
+                name.eq_ignore_ascii_case(word)
+            } else {
+                name == word
+            }
+        }) {
+            return;
+        }
+        let now = Instant::now();
+        {
+            let mut missing = self.late_commands.missing.lock();
+            if missing
+                .get(word)
+                .is_some_and(|at| now.duration_since(*at) < LATE_COMMAND_MISS_TTL)
+            {
+                return;
+            }
+            if missing.len() >= MAX_MISSING_COMMAND_WORDS {
+                missing.clear();
+            }
+            missing.insert(word.to_owned(), now);
+        }
+        let mut dirs: Vec<PathBuf> = self
+            .info
+            .path
+            .as_deref()
+            .map(|path| std::env::split_paths(path).collect())
+            .unwrap_or_default();
+        dirs.extend(self.late_commands.extra_dirs.lock().iter().cloned());
+        if !dirs.iter().any(|dir| is_executable_file(&dir.join(word))) {
+            return;
+        }
+        let mut found = self.late_commands.found.lock();
+        if found.len() < MAX_LATE_COMMANDS && !found.iter().any(|known| *known == word) {
+            // Leaked so `top_level_commands` can hand out `&str`s without holding a lock. Bounded
+            // by `MAX_LATE_COMMANDS` entries per session, each a short command name.
+            found.push(Box::leak(word.to_owned().into_boxed_str()));
+        }
+        self.late_commands.missing.lock().remove(word);
+    }
+
+    /// [`Self::discover_command_word`] for the first word of a buffer the user is typing. Only a
+    /// word that has been finished (followed by whitespace) is looked up, so typing `zorkle` does
+    /// not stat once per prefix.
+    pub fn discover_command_word_in_buffer(&self, buffer: &str) {
+        let trimmed = buffer.trim_start();
+        if let Some(end) = trimmed.find(char::is_whitespace) {
+            self.discover_command_word(&trimmed[..end]);
+        }
     }
 
     /// Whether this session's shell would recognise `word` as the head of a command: an alias,
@@ -1517,6 +1597,20 @@ impl Session {
     pub fn note_user_command(&self, command: &str) {
         if command_may_change_known_commands(command) {
             self.command_data_stale.store(true, Ordering::Release);
+            // #1019: words recently found missing on `$PATH` may exist now; look again.
+            self.late_commands.missing.lock().clear();
+        }
+        // #1019: remember directories the user added to `$PATH`, so a tool put there is found.
+        if self.is_local() && command.contains("PATH=") {
+            let home = std::env::var("HOME").ok();
+            let mut extra = self.late_commands.extra_dirs.lock();
+            for dir in path_dirs_assigned_in(command, home.as_deref()) {
+                if extra.len() < MAX_EXTRA_PATH_DIRS && !extra.contains(&dir) {
+                    extra.push(dir);
+                }
+            }
+            // A new directory may now hold a word recently reported missing.
+            self.late_commands.missing.lock().clear();
         }
     }
 
@@ -2038,6 +2132,7 @@ pub mod testing {
                 load_external_commands_future: Default::default(),
                 external_commands_load_finished: Arc::new(AtomicBool::new(false)),
             command_data_stale: AtomicBool::new(false),
+                late_commands: Default::default(),
                 command_case_sensitivity: TopLevelCommandCaseSensitivity::CaseSensitive,
                 session_type: Mutex::new(session_type),
                 additional_function_names: Default::default(),
@@ -2059,6 +2154,7 @@ pub mod testing {
                 load_external_commands_future: Default::default(),
                 external_commands_load_finished: Arc::new(AtomicBool::new(false)),
             command_data_stale: AtomicBool::new(false),
+                late_commands: Default::default(),
                 command_case_sensitivity: TopLevelCommandCaseSensitivity::CaseSensitive,
                 session_type: Mutex::new(session_type),
                 additional_function_names: Default::default(),
@@ -2124,6 +2220,93 @@ const COMMAND_SET_CHANGING_WORDS: &[&str] = &[
     "nix-shell", "make", "install", "curl", "wget", "tar", "unzip", "ln", "cp", "mv", "chmod",
     "docker", "podman", "sudo", "su", "bash", "zsh", "fish", "sh", "exec",
 ];
+
+/// How long a word found on no `$PATH` directory is remembered as missing (#1019).
+const LATE_COMMAND_MISS_TTL: std::time::Duration = std::time::Duration::from_secs(3);
+const MAX_LATE_COMMANDS: usize = 64;
+const MAX_MISSING_COMMAND_WORDS: usize = 128;
+const MAX_EXTRA_PATH_DIRS: usize = 16;
+
+/// Commands found on `$PATH` after the bootstrap scan, and the bookkeeping to find them cheaply
+/// (#1019). See [`Session::discover_command_word`].
+#[derive(Default)]
+struct LateCommands {
+    found: Mutex<Vec<&'static str>>,
+    /// Words not found on `$PATH`, with when that was checked.
+    missing: Mutex<HashMap<String, Instant>>,
+    /// Directories the user has put on `$PATH` since the bootstrap, parsed from `PATH=` commands.
+    extra_dirs: Mutex<Vec<PathBuf>>,
+}
+
+/// True iff `word` is only a command name: no path separator, quoting, expansion or leading dash.
+/// Only such a word is ever joined to a `$PATH` directory and stat'd (#1007).
+fn is_bare_command_name(word: &str) -> bool {
+    !word.is_empty()
+        && word.len() <= 64
+        && !word.starts_with(['-', '.'])
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '+' | '-'))
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+/// Absolute directories named by every `PATH=` assignment in `command` (`export PATH=$HOME/bin:$PATH`,
+/// `PATH="/opt/x:$PATH" tool`). Elements that are not literal after expanding a leading `~` /
+/// `$HOME` / `${HOME}` (a `$PATH` self-reference, other variables, command substitution) are
+/// skipped.
+fn path_dirs_assigned_in(command: &str, home: Option<&str>) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    for (index, _) in command.match_indices("PATH=") {
+        // `MANPATH=`, `GOPATH=` and the like are different variables.
+        if command[..index]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            continue;
+        }
+        let value = &command[index + "PATH=".len()..];
+        let value = value
+            .split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|'))
+            .next()
+            .unwrap_or("");
+        let value = value.trim_matches(|c| c == '"' || c == '\'');
+        for element in value.split(':') {
+            let expanded = if let Some(rest) = element
+                .strip_prefix("$HOME")
+                .or_else(|| element.strip_prefix("${HOME}"))
+                .or_else(|| element.strip_prefix('~'))
+            {
+                if !(rest.is_empty() || rest.starts_with('/')) {
+                    continue;
+                }
+                match home {
+                    Some(home) => format!("{home}{rest}"),
+                    None => continue,
+                }
+            } else {
+                element.to_owned()
+            };
+            if expanded.starts_with('/') && !expanded.contains(['$', '`', '(', '*']) {
+                dirs.push(PathBuf::from(expanded));
+            }
+        }
+    }
+    dirs
+}
 
 fn command_may_change_known_commands(command: &str) -> bool {
     command.contains("PATH=")

@@ -12226,6 +12226,16 @@ impl Input {
                     .active_block()
                     .is_active_and_long_running()
         };
+        // #1019: look the head up on `$PATH` first, so a program installed since the bootstrap
+        // scan is not reported unknown.
+        if prompt_session_is_the_target {
+            if let (Some(word), Some(session)) = (
+                snapshot.buffer_text.split_whitespace().next(),
+                self.active_session(ctx),
+            ) {
+                session.discover_command_word(word);
+            }
+        }
         let head_unknown_to_shell = prompt_session_is_the_target
             && snapshot
                 .buffer_text
@@ -14053,6 +14063,9 @@ impl Input {
 
                 ctx.spawn(
                     async move {
+                        completion_context
+                            .session
+                            .discover_command_word_in_buffer(&buffer_text);
                         (
                             parse_current_commands_and_tokens(buffer_text, &completion_context)
                                 .await,
