@@ -676,10 +676,17 @@ impl AIAgentPtyWriteMode {
         match self {
             AIAgentPtyWriteMode::Raw => bytes,
             AIAgentPtyWriteMode::Line => {
-                // Move to beginning of line, write input, then submit (Enter).
-                let mut v = Vec::with_capacity(bytes.len() + 2);
+                // Move to beginning of line, clear the rest of it, write input, then submit
+                // (Enter).
+                let mut v = Vec::with_capacity(bytes.len() + 3);
                 // ^A (SOH) is "beginning of line" for readline/prompt-toolkit style editors.
                 v.push(escape_sequences::C0::SOH);
+                // ^K (VT) kills to the end of the line. Without it the input lands in front of
+                // whatever is already in the editor's buffer, and Enter submits both: in an
+                // unmanaged `bash --norc` the user's own prompt text, typed into the shell before
+                // the agent took over, ran as `echo agent-in-norc-okrun the shell command: ...`
+                // (#979).
+                v.push(escape_sequences::C0::VT);
                 v.extend_from_slice(&bytes);
                 // Submit with CR, which is what the Enter key sends on every platform. A
                 // cooked-mode tty maps it to LF (ICRNL), but raw-mode line editors do not:
@@ -934,7 +941,19 @@ mod pty_write_mode_tests {
     #[test]
     fn line_mode_submits_with_carriage_return() {
         let bytes = AIAgentPtyWriteMode::Line.decorate_bytes(b"'hi'".to_vec(), false);
-        assert_eq!(bytes, [&[C0::SOH][..], b"'hi'", &[C0::CR]].concat());
+        assert_eq!(
+            bytes,
+            [&[C0::SOH, C0::VT][..], b"'hi'", &[C0::CR]].concat()
+        );
+    }
+
+    /// #979: text already in the line editor (the user's prompt, typed into an unmanaged shell)
+    /// is cleared before the input, so exactly the approved command is what Enter submits.
+    #[test]
+    fn line_mode_clears_the_rest_of_the_line_after_moving_to_its_start() {
+        let bytes = AIAgentPtyWriteMode::Line.decorate_bytes(b"echo ok ".to_vec(), false);
+        assert_eq!(&bytes[..2], &[C0::SOH, C0::VT]);
+        assert_eq!(bytes.last(), Some(&C0::CR));
     }
 
     #[test]
