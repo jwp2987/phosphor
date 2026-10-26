@@ -2631,3 +2631,45 @@ fn command_display_override_replaces_the_echoed_wrapper_at_preexec() {
     assert_eq!(shown, "echo hi");
     assert!(!shown.contains("Get-Command"));
 }
+
+/// #952: overrides are keyed trimmed, expire when their command never ran, and the table evicts
+/// the oldest entry instead of forgetting every pending override.
+#[test]
+fn command_display_overrides_are_trimmed_expiring_and_bounded() {
+    let mut size = block_size();
+    size.size = crate::terminal::SizeInfo::new_without_font_metrics(40, 200);
+    let mut model = TerminalModel::new_for_test(
+        size,
+        crate::terminal::color::List::from(&crate::terminal::color::Colors::default()),
+        crate::terminal::event_listener::ChannelEventListener::new_for_test(),
+        std::sync::Arc::new(warpui::r#async::executor::Background::default()),
+        false,
+        None,
+        false,
+        false,
+        None,
+    );
+    let t0 = std::time::Instant::now();
+    model.set_command_display_override_at("  wrapped one \n".to_owned(), "one".to_owned(), t0);
+    assert!(model.command_display_overrides.contains_key("wrapped one"));
+
+    // Filling past the bound evicts only the oldest.
+    for i in 0..super::MAX_COMMAND_DISPLAY_OVERRIDES {
+        model.set_command_display_override_at(
+            format!("w{i}"),
+            format!("d{i}"),
+            t0 + std::time::Duration::from_secs(1 + i as u64),
+        );
+    }
+    assert!(model.command_display_overrides.len() <= super::MAX_COMMAND_DISPLAY_OVERRIDES);
+    assert!(!model.command_display_overrides.contains_key("wrapped one"));
+    assert!(model.command_display_overrides.contains_key("w1"));
+
+    // A stale entry whose command never ran is dropped on the next registration.
+    model.set_command_display_override_at(
+        "later".to_owned(),
+        "l".to_owned(),
+        t0 + super::COMMAND_DISPLAY_OVERRIDE_TTL + std::time::Duration::from_secs(1000),
+    );
+    assert_eq!(model.command_display_overrides.len(), 1);
+}
