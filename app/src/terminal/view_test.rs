@@ -15148,7 +15148,14 @@ fn ssh_connect_gate_transitions() {
     assert!(!gate.should_release(t0, false));
     gate.output_seen = true;
     assert!(!gate.drops_keys(false), "a prompt must get its answers");
-    // A clean block end re-holds (the remote bootstrap is coming) even after visible output.
+    // A clean block end of an unmanaged / short session (no remote ever announced) releases.
+    let mut unmanaged = SshConnectGate::new(t0);
+    unmanaged.note_block_completed(t0, true);
+    assert!(!unmanaged.drops_keys(false));
+    assert!(unmanaged.should_release(t0, false));
+    // A clean block end of a managed remote re-holds (the bootstrap is coming) even after
+    // visible output.
+    gate.managed = true;
     gate.note_block_completed(t0, true);
     assert!(gate.drops_keys(false));
     assert!(!gate.should_release(t0 + Duration::from_secs(1), false));
@@ -15206,7 +15213,21 @@ fn ssh_keys_before_pending_state_is_set_are_dropped_whole() {
             view.typed_characters_on_terminal("echo typed-", ctx);
             view.typed_characters_on_terminal("during-connect", ctx);
             view.keydown_on_terminal("\r", ctx);
-            view.keydown_on_terminal("\u{3}", ctx);
+            assert!(
+                view.ssh_setup_drop_notified,
+                "the drop notice must be raised"
+            );
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "",
+                "dropped text must not land in the editor either"
+            );
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            for key in ["\u{3}", "\u{4}", "\u{1a}", "\u{1c}"] {
+                view.keydown_on_terminal(key, ctx);
+            }
         });
         let writes = pty_writes.borrow();
         assert!(
@@ -15215,6 +15236,12 @@ fn ssh_keys_before_pending_state_is_set_are_dropped_whole() {
                 || w.as_slice() == b"\r"),
             "typed text must not reach the tty: {writes:?}"
         );
+        for key in [&b"\x03"[..], b"\x04", b"\x1a", b"\x1c"] {
+            assert!(
+                writes.iter().any(|w| w.as_slice() == key),
+                "interrupt key {key:?} must reach the pty while armed: {writes:?}"
+            );
+        }
     })
 }
 
@@ -15290,8 +15317,88 @@ fn ssh_paste_after_enter_is_dropped_whole() {
             ctx.clipboard()
                 .write(ClipboardContent::plain_text("echo pasted\n".to_owned()));
             view.paste(false, ctx);
+            assert!(
+                view.ssh_setup_drop_notified,
+                "the drop notice must be raised"
+            );
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
         });
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #983: a clean ssh block end with no remote ever announced (quick `exit`, `-f`, `-O check`)
+/// releases the gate: the next typing reaches the local prompt, not a 5 s drop.
+#[test]
+fn ssh_clean_end_without_remote_releases_typing() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            let armed = view.model.lock().active_block_id().clone();
+            view.apply_block_completed_to_ssh_gate(&armed, 0);
+            assert!(
+                !view.refresh_ssh_connect_gate(),
+                "no managed remote: released"
+            );
+            view.typed_characters_on_terminal("ls", ctx);
+            assert!(!view.ssh_setup_drop_notified, "ls must not be dropped");
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+        });
+    })
+}
+
+/// #983: a failed ssh block (exit 255) releases; a stale gate never eats a later command.
+#[test]
+fn ssh_gate_cleared_by_non_ssh_command_and_failure() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            assert!(view.ssh_connect_gate.is_some());
+            submit_command(view, "ls", ctx);
+            assert!(
+                view.ssh_connect_gate.is_none(),
+                "a non-ssh command clears the gate"
+            );
+
+            submit_command(view, "ssh host", ctx);
+            let armed = view.model.lock().active_block_id().clone();
+            view.apply_block_completed_to_ssh_gate(&armed, 255);
+            assert!(view.ssh_connect_gate.is_none(), "failure releases");
+        });
+    })
+}
+
+/// #983: only the armed block's completion applies to the gate; a failure (exit 255) applied
+/// through the completion handler's path releases it.
+#[test]
+fn ssh_gate_completion_applies_only_to_the_armed_block() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.apply_block_completed_to_ssh_gate(&BlockId::new(), 255);
+            assert!(
+                view.ssh_connect_gate.is_some(),
+                "another block's end is ignored"
+            );
+            let armed = view.model.lock().active_block_id().clone();
+            view.apply_block_completed_to_ssh_gate(&armed, 255);
+            assert!(
+                view.ssh_connect_gate.is_none(),
+                "the armed block failed: released"
+            );
+        });
     })
 }
 

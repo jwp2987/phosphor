@@ -9718,7 +9718,13 @@ impl TerminalView {
     /// the 50 ms before the block counts as long running) is covered too.
     fn note_command_submitted_for_ssh_gate(&mut self, command: &str) {
         if parse_interactive_ssh_command(command).is_some() {
-            self.ssh_connect_gate = Some(SshConnectGate::new(Instant::now()));
+            let block_id = self.model.lock().active_block_id().clone();
+            let mut gate = SshConnectGate::new(Instant::now());
+            gate.block_id = Some(block_id);
+            self.ssh_connect_gate = Some(gate);
+        } else {
+            // A different command now owns the pty: a stale gate must not eat its typing.
+            self.ssh_connect_gate = None;
         }
     }
 
@@ -9726,11 +9732,13 @@ impl TerminalView {
     /// from the warpify pending-ssh state (preexec saw ssh) for a command that started after the
     /// last release, releases it when it ran its course, and records a completed ssh block.
     fn refresh_ssh_connect_gate(&mut self) -> bool {
-        let (pending, block_start) = {
+        let (pending, managed_ssh, block_start, active_block_id) = {
             let model = self.model.lock();
             (
                 model.pending_session_id().is_some(),
+                model.has_pending_ssh_session(),
                 model.block_list().active_block().start_ts().copied(),
+                model.active_block_id().clone(),
             )
         };
         if self.ssh_connect_gate.is_none() && self.has_pending_ssh_command() {
@@ -9743,18 +9751,38 @@ impl TerminalView {
             if started_after_release && age.is_some_and(|age| age < SSH_CONNECT_SILENCE_CEILING) {
                 let now = Instant::now();
                 let armed_at = now.checked_sub(age.unwrap_or_default()).unwrap_or(now);
-                self.ssh_connect_gate = Some(SshConnectGate::new(armed_at));
+                let mut gate = SshConnectGate::new(armed_at);
+                gate.block_id = Some(active_block_id);
+                self.ssh_connect_gate = Some(gate);
             }
         }
         let Some(gate) = self.ssh_connect_gate.as_mut() else {
             return false;
         };
+        // The ssh hook (printed by the remote command) marks a Phosphor-managed remote.
+        if managed_ssh {
+            gate.managed = true;
+        }
         if gate.should_release(Instant::now(), pending) {
             self.ssh_connect_gate = None;
             self.ssh_connect_gate_released_at = Some(Local::now());
             return false;
         }
         true
+    }
+
+    /// Applies a finished user block to the gate (#983). Only the armed block's completion
+    /// counts; the observation of the announced remote runs first so a managed remote is known.
+    fn apply_block_completed_to_ssh_gate(&mut self, block_id: &BlockId, exit_code: i32) {
+        let applies =
+            |gate: &SshConnectGate| gate.block_id.as_ref().is_none_or(|id| id == block_id);
+        if !self.ssh_connect_gate.as_ref().is_some_and(applies) {
+            return;
+        }
+        self.refresh_ssh_connect_gate();
+        if let Some(gate) = self.ssh_connect_gate.as_mut() {
+            gate.note_block_completed(Instant::now(), exit_code == 0);
+        }
     }
 
     /// The pre-session half of the gate: true while the user has submitted ssh, nothing visible
@@ -13282,9 +13310,10 @@ impl TerminalView {
                                 compute(model.block_list())
                             })
                             .exit_code;
-                        if let Some(gate) = self.ssh_connect_gate.as_mut() {
-                            gate.note_block_completed(Instant::now(), exit_code.value() == 0);
-                        }
+                        self.apply_block_completed_to_ssh_gate(
+                            &block_completed_event.block_id,
+                            exit_code.value(),
+                        );
                     }
 
                     // #856: an ssh command that ends after a warpification script was typed
@@ -13520,6 +13549,10 @@ impl TerminalView {
                                 self.recompute_window_footer_bar_color(ctx);
                             }
                         } else {
+                            // A non-ssh command started: an unmanaged ssh gate is stale (#983).
+                            if self.ssh_connect_gate.as_ref().is_some_and(|g| !g.managed) {
+                                self.ssh_connect_gate = None;
+                            }
                             self.warpify_state.clear_pending_ssh_host();
                             self.recompute_window_footer_bar_color(ctx);
 
@@ -31207,11 +31240,17 @@ struct SshConnectGate {
     saw_pending: bool,
     /// Visible text (not escape sequences) has been printed: the user is being asked something.
     output_seen: bool,
-    /// The ssh block ended cleanly; the remote bootstrap is expected to follow.
+    /// The ssh block ended cleanly on a managed remote; the bootstrap is expected to follow.
     block_done: bool,
     block_done_at: Option<Instant>,
-    /// The ssh block ended with a failure: nothing more is coming.
+    /// The ssh block ended and nothing more is coming (failure, or a clean end of an
+    /// unmanaged / short session such as `-f`, `-O check`, a quick `exit`).
     failed: bool,
+    /// The remote is plausibly Phosphor-managed: a remote session was announced, or the ssh hook
+    /// was seen. Only then does a clean block end keep the gate holding for the bootstrap.
+    managed: bool,
+    /// The block the armed command runs in; only its completion applies to the gate.
+    block_id: Option<BlockId>,
 }
 
 impl SshConnectGate {
@@ -31223,11 +31262,13 @@ impl SshConnectGate {
             block_done: false,
             block_done_at: None,
             failed: false,
+            managed: false,
+            block_id: None,
         }
     }
 
     fn note_block_completed(&mut self, now: Instant, success: bool) {
-        if success {
+        if success && (self.managed || self.saw_pending) {
             self.block_done = true;
             self.block_done_at = Some(now);
         } else {
@@ -31239,6 +31280,7 @@ impl SshConnectGate {
     fn should_release(&mut self, now: Instant, pending: bool) -> bool {
         if pending {
             self.saw_pending = true;
+            self.managed = true;
         }
         if self.failed
             || now.saturating_duration_since(self.armed_at) >= SSH_CONNECT_SILENCE_CEILING
@@ -31259,7 +31301,7 @@ impl SshConnectGate {
     /// The no-session half: hold keys until something visible was printed, or for the whole
     /// post-block bootstrap wait. Full-screen programs never hold.
     fn drops_keys(&self, alt_screen: bool) -> bool {
-        !alt_screen && (self.block_done || !self.output_seen)
+        !alt_screen && !self.failed && (self.block_done || !self.output_seen)
     }
 }
 
