@@ -513,7 +513,9 @@ use crate::terminal::ShellHost;
 use crate::terminal::{
     block_list_element::BlockHoverAction,
     // find::{Event as FindEvent, Find, FindDirection},
-    input::{Event as InputEvent, Input, INPUT_A11Y_HELPER_KEY, INPUT_A11Y_LABEL_KEY},
+    input::{
+        AfterEnterInput, Event as InputEvent, INPUT_A11Y_HELPER_KEY, INPUT_A11Y_LABEL_KEY, Input,
+    },
     model::block::SerializedBlock,
     shell::ShellType,
     terminal_size_element::TerminalSizeElement,
@@ -10179,6 +10181,33 @@ impl TerminalView {
                 // Keys that arrive before the card's replacement settles keep going to the
                 // input, so focus has to follow them there.
                 self.place_focus_after_card_resolved(ctx);
+            }
+        }
+    }
+
+    /// Routes what the user typed behind an Enter that waited for its classification verdict
+    /// (#1016), in order, once that Enter has run: the same way keys typed right after any
+    /// submitted Enter are routed. An Enter goes where the text before it went: to the pty when
+    /// the pty takes the typed characters, otherwise it submits the editor.
+    fn replay_after_deferred_enter(
+        &mut self,
+        queued: &[AfterEnterInput],
+        ctx: &mut ViewContext<Self>,
+    ) {
+        for input in queued {
+            match input {
+                AfterEnterInput::Text(text) => self.typed_characters_on_terminal(text, ctx),
+                AfterEnterInput::Enter => {
+                    if self.should_write_typed_chars_to_pty(ctx)
+                        || self.is_long_running()
+                        || self.typeahead_handoff_routes_keys_to_pty()
+                    {
+                        self.report_possible_typeahead("\r");
+                        self.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+                    } else {
+                        self.input.update(ctx, |input, ctx| input.input_enter(ctx));
+                    }
+                }
             }
         }
     }
@@ -24220,6 +24249,9 @@ impl TerminalView {
                 if ctx.is_self_or_child_focused() {
                     self.focus_terminal(ctx);
                 }
+            }
+            InputEvent::ReplayAfterDeferredEnter(queued) => {
+                self.replay_after_deferred_enter(queued, ctx);
             }
             #[cfg(not(target_family = "wasm"))]
             InputEvent::OpenPluginInstructionsPane(agent, kind) => {
