@@ -17,7 +17,9 @@ use crate::signatures::testing::{
 use crate::signatures::CommandRegistry;
 
 use super::CompleterOptions;
-use super::{suggestions, CompletionsFallbackStrategy, SuggestionResults, SuggestionType};
+use super::{
+    open_quote, suggestions, CompletionsFallbackStrategy, SuggestionResults, SuggestionType,
+};
 
 cfg_if::cfg_if! {
     if #[cfg(not(feature = "v2"))] {
