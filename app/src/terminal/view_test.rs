@@ -15655,6 +15655,30 @@ fn ssh_bootstrap_interrupt_route_holds_then_forwards() {
     );
 }
 
+/// #1001: between the SSH hook and the remote InitShell the local tty is raw, so a Ctrl-C byte
+/// would be forwarded to the far side; it is sent as ssh's `~.` escape instead. Outside that
+/// window (before the hook the tty is cooked; after InitShell the bootstrap hold applies) it is
+/// a plain ^C.
+#[test]
+fn ssh_pre_init_ctrl_c_aborts_with_the_escape() {
+    assert_eq!(ssh_pre_init_abort_bytes(true, false), Some(b"~.".to_vec()));
+    assert_eq!(ssh_pre_init_abort_bytes(false, false), None);
+    assert_eq!(ssh_pre_init_abort_bytes(true, true), None);
+    assert_eq!(ssh_pre_init_abort_bytes(false, true), None);
+}
+
+/// #1001: no SSH hook seen means the plain ^C (ETX) is what a ctrl-c writes to the pty.
+#[test]
+fn ssh_pre_init_abort_bytes_is_none_on_a_plain_pane() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, _| {
+            assert_eq!(view.ssh_pre_init_abort_bytes(), None);
+        });
+    })
+}
+
 /// #1001: with no pending remote bootstrap the route is `None`, so Ctrl-C behaves as before.
 #[test]
 fn ssh_bootstrap_interrupt_route_is_none_without_pending_session() {
