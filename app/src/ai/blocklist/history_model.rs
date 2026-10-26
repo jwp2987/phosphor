@@ -2299,6 +2299,14 @@ impl BlocklistAIHistoryModel {
             .insert(terminal_view_id);
     }
 
+    /// The terminal view that currently owns `conversation_id` as one of its live conversations.
+    pub fn live_owner_terminal_view(&self, conversation_id: AIConversationId) -> Option<EntityId> {
+        self.live_conversation_ids_for_terminal_view
+            .iter()
+            .find(|(_, ids)| ids.contains(&conversation_id))
+            .map(|(terminal_view_id, _)| *terminal_view_id)
+    }
+
     pub fn mark_terminal_view_as_conversation_transcript_viewer(
         &mut self,
         terminal_view_id: EntityId,

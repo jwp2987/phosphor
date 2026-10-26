@@ -1,3 +1,4 @@
+use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::AIAgentActionId;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::blocklist::SerializedBlockListItem;
@@ -113,6 +114,10 @@ pub enum ConversationTranscriptViewerStatus {
     ViewingLocalConversation,
     /// Viewing an ambient agent conversation with the associated task ID.
     ViewingAmbientConversation(AmbientAgentTaskId),
+    /// A read-only view of a conversation that is still live in another terminal view
+    /// (opened while a command runs there, #988). The viewer renders from the shared in-memory
+    /// conversation: it never registers a second live copy of it.
+    ViewingLiveConversationReadOnly(AIConversationId),
 }
 
 #[derive(Debug, Clone, Default)]

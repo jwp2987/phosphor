@@ -71,7 +71,6 @@ use super::blockgrid_renderer::GridRenderParams;
 use super::find::{BlockFindRenderData, TerminalFindModel};
 use super::grid_renderer::CellGlyphCache;
 
-use super::heights_approx_eq;
 use super::meta_shortcuts::handle_keystroke_despite_composing;
 use super::model::ansi::CursorShape;
 use super::model::block::BlockId;
@@ -92,6 +91,7 @@ use super::view::{
 };
 use super::warpify::render::{draw_flag_pole, render_subshell_flag};
 use super::TerminalModel;
+use super::heights_approx_eq;
 use crate::terminal::blockgrid_renderer::BlockGridParams;
 use crate::terminal::model::terminal_model::BlockIndex;
 use crate::terminal::warpify::SubshellSource;
@@ -2606,11 +2606,9 @@ impl BlockListElement {
         ctx: &mut PaintContext,
         app: &AppContext,
     ) {
-        let block_height =
-            block.height(&agent_view_state.transcript_scope()).as_f64() as f32 * cell_size.y();
+        let block_height = block.height(&agent_view_state.transcript_scope()).as_f64() as f32 * cell_size.y();
         if block.is_restored()
-            && (!FeatureFlag::AgentView.is_enabled()
-                || !agent_view_state.transcript_scope().is_conversation())
+            && (!FeatureFlag::AgentView.is_enabled() || !agent_view_state.transcript_scope().is_conversation())
         {
             ctx.scene
                 .draw_rect_with_hit_recording(RectF::new(
@@ -2810,12 +2808,11 @@ impl BlockListElement {
 
         // Update grid_origin and draw command.
         let command_grid_properties = Properties::default();
-        let command_focused_range =
-            find_render_data
-                .as_ref()
-                .and_then(|data: &BlockFindRenderData<'_>| {
-                    data.focused_range_for_grid(GridType::PromptAndCommand)
-                });
+        let command_focused_range = find_render_data
+            .as_ref()
+            .and_then(|data: &BlockFindRenderData<'_>| {
+                data.focused_range_for_grid(GridType::PromptAndCommand)
+            });
         block.prompt_and_command_grid().draw(
             command_origin,
             element_origin,
@@ -2903,12 +2900,9 @@ impl BlockListElement {
 
             let output_grid_properties =
                 Properties::default().weight(block_grid_params.grid_render_params.font_weight);
-            let output_focused_range =
-                find_render_data
-                    .as_ref()
-                    .and_then(|data: &BlockFindRenderData<'_>| {
-                        data.focused_range_for_grid(GridType::Output)
-                    });
+            let output_focused_range = find_render_data
+                .as_ref()
+                .and_then(|data: &BlockFindRenderData<'_>| data.focused_range_for_grid(GridType::Output));
             block.output_grid().draw(
                 *grid_origin,
                 viewport_origin,
@@ -4091,8 +4085,7 @@ impl Element for BlockListElement {
 
                     // TODO(vorporeal): should probably use `Pixels` here
                     let block_pixel_height =
-                        block.height(&agent_view_state.transcript_scope()).as_f64() as f32
-                            * cell_size.y();
+                        block.height(&agent_view_state.transcript_scope()).as_f64() as f32 * cell_size.y();
 
                     let block_bottom_y = grid_origin.y() + block_pixel_height;
                     let selection_bottom_y = snackbar_header

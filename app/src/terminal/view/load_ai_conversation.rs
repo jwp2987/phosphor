@@ -98,6 +98,11 @@ pub enum ConversationRestorationInNewPaneType {
         /// The ambient agent task ID, if this is an ambient agent conversation.
         /// Used to display the session ended tombstone.
         ambient_agent_task_id: Option<crate::ai::ambient_agents::AmbientAgentTaskId>,
+        /// True when the conversation is still live in another terminal view and this pane is
+        /// only a read-only window onto it (#988). Restoration then renders from the shared
+        /// in-memory conversation and does NOT register it (or make it active) for this view,
+        /// so the live conversation is neither duplicated nor overwritten.
+        read_only_view_of_live: bool,
     },
 
     /// Fork an existing conversation into this new pane.
@@ -127,6 +132,17 @@ impl ConversationRestorationInNewPaneType {
 
     pub fn is_startup(&self) -> bool {
         matches!(self, Self::Startup { .. })
+    }
+
+    /// See [`Self::Historical::read_only_view_of_live`].
+    pub fn is_read_only_view_of_live(&self) -> bool {
+        matches!(
+            self,
+            Self::Historical {
+                read_only_view_of_live: true,
+                ..
+            }
+        )
     }
 
     /// Whether restore-context hinting should run for this restoration mode.
@@ -495,6 +511,7 @@ impl TerminalView {
         ai_block_params: Vec<AIBlockCreationParams>,
         restored_conversations: Vec<RestoredAIConversation>,
         entry_behavior: RestoreConversationEntryBehavior,
+        register_in_history_model: bool,
         ctx: &mut ViewContext<Self>,
     ) -> usize {
         let conversations: Vec<AIConversation> = restored_conversations
@@ -522,19 +539,29 @@ impl TerminalView {
             .last()
             .is_some_and(|params| params.is_restoring_on_startup);
 
-        // Store conversations in the history model (with correct cancellation statuses)
-        BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
-            history_model.restore_conversations(self.view_id, conversations, ctx);
-            if let Some(active_conversation_id) = active_conversation_id {
-                history_model.set_active_conversation_id(active_conversation_id, self.view_id, ctx);
-            }
-        });
+        // Store conversations in the history model (with correct cancellation statuses). A
+        // read-only view of a conversation that is live elsewhere skips this entirely:
+        // `restore_conversations` would overwrite the live `AIConversation` and
+        // `set_active_conversation_id` would move its liveness to this view (#988).
+        if register_in_history_model {
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
+                history_model.restore_conversations(self.view_id, conversations, ctx);
+                if let Some(active_conversation_id) = active_conversation_id {
+                    history_model.set_active_conversation_id(
+                        active_conversation_id,
+                        self.view_id,
+                        ctx,
+                    );
+                }
+            });
+        }
 
         // If `AgentView` is enabled and we're restoring conversations on startup (as opposed to
         // loading a conversation due to selection from the command palette), then we don't eagerly
         // set the pending query state (which is equivalent to _entering_ the agent view when the
         // FeatureFlag is enabled).
-        if entry_behavior == RestoreConversationEntryBehavior::EnterRestoredConversation
+        if register_in_history_model
+            && entry_behavior == RestoreConversationEntryBehavior::EnterRestoredConversation
             && (!FeatureFlag::AgentView.is_enabled() || !is_restoring_on_startup)
         {
             // Set agent pending state for follow-up if we have an active conversation
@@ -878,6 +905,7 @@ impl TerminalView {
             all_ai_block_params,
             vec![restored],
             entry_behavior,
+            true,
             ctx,
         );
         self.restore_cli_subagent_views_for_conversation(
@@ -909,6 +937,7 @@ impl TerminalView {
         let use_live_appearance = conversation_restoration.should_use_live_appearance();
         let is_fork_conversation_in_new_pane = conversation_restoration.is_forked();
         let is_startup = conversation_restoration.is_startup();
+        let is_read_only_view_of_live = conversation_restoration.is_read_only_view_of_live();
         let should_show_restore_context_hint =
             conversation_restoration.should_show_restore_context_hint();
 
@@ -1028,6 +1057,7 @@ impl TerminalView {
             all_ai_block_params,
             restored_conversations,
             RestoreConversationEntryBehavior::EnterRestoredConversation,
+            !is_read_only_view_of_live,
             ctx,
         );
         for conversation in &conversations_for_cli_subagent_restore {

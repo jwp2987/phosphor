@@ -26,11 +26,26 @@ use crate::{
         TerminalView,
     },
     view_components::DismissibleToast,
-    workspace::ToastStack,
+    workspace::{ToastStack, WorkspaceAction},
     TelemetryEvent,
 };
 
 pub const ENTER_AGAIN_TO_SEND_MESSAGE_ID: &str = "enter_again_to_send";
+
+/// What to do when clicking an earlier agent response is refused because a command is running
+/// (#988). The pane's PTY and keyboard belong to that program, so the conversation is NOT
+/// entered in-pane; instead it opens in a separate read-only viewer (no PTY, no input, no second
+/// live copy of the conversation). Only the user's click on an existing agent entry card
+/// qualifies; every other error or origin keeps its toast so nothing is silently redirected.
+pub(super) fn long_running_entry_viewer_action(
+    error: EnterAgentViewError,
+    origin: AgentViewEntryOrigin,
+    conversation_id: AIConversationId,
+) -> Option<WorkspaceAction> {
+    (error == EnterAgentViewError::LongRunningCommand
+        && matches!(origin, AgentViewEntryOrigin::AgentViewBlock))
+    .then_some(WorkspaceAction::OpenLiveConversationReadOnlyViewer { conversation_id })
+}
 
 impl TerminalView {
     pub fn enter_agent_view(
@@ -124,6 +139,11 @@ impl TerminalView {
                 Some(conversation_id),
                 ctx,
             ) {
+                if let Some(action) = long_running_entry_viewer_action(e, origin, conversation_id) {
+                    // The running pane (focus, keyboard routing, PTY) is left untouched.
+                    ctx.dispatch_typed_action_deferred(action);
+                    return;
+                }
                 log::error!(
                     "Failed to enter agent view for existing conversation ({:?}) from origin {:?}: {:?}",
                     conversation_id,

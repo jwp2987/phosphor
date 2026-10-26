@@ -1335,18 +1335,22 @@ fn emoji_variation_selector_wraps_width_promotion_at_last_column() {
 
     let storage = grid.grid_storage();
     assert_eq!(storage[VisibleRow(0)][3].c, '\0');
-    assert!(storage[VisibleRow(0)][3]
-        .flags
-        .contains(Flags::LEADING_WIDE_CHAR_SPACER));
+    assert!(
+        storage[VisibleRow(0)][3]
+            .flags
+            .contains(Flags::LEADING_WIDE_CHAR_SPACER)
+    );
     assert!(storage[VisibleRow(0)][3].flags.contains(Flags::WRAPLINE));
     assert!(matches!(
         storage[VisibleRow(1)][0].content_for_display(),
         CharOrStr::Str("⚠️")
     ));
     assert!(storage[VisibleRow(1)][0].flags.contains(Flags::WIDE_CHAR));
-    assert!(storage[VisibleRow(1)][1]
-        .flags
-        .contains(Flags::WIDE_CHAR_SPACER));
+    assert!(
+        storage[VisibleRow(1)][1]
+            .flags
+            .contains(Flags::WIDE_CHAR_SPACER)
+    );
     assert_eq!(grid.cursor_point(), Point::new(1, 2));
 }
 
@@ -1366,9 +1370,11 @@ fn emoji_variation_selector_drops_width_promotion_when_line_wrap_is_disabled() {
         storage[VisibleRow(0)][3].content_for_display(),
         CharOrStr::Char('⚠')
     ));
-    assert!(!storage[VisibleRow(0)][3]
-        .flags
-        .intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER));
+    assert!(
+        !storage[VisibleRow(0)][3].flags.intersects(
+            Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER
+        )
+    );
     assert_eq!(grid.cursor_point(), Point::new(0, 3));
 }
 
@@ -1386,13 +1392,17 @@ fn emoji_variation_selector_does_not_advance_already_wide_grapheme() {
         CharOrStr::Str("😀️")
     ));
     assert!(storage[VisibleRow(0)][0].flags.contains(Flags::WIDE_CHAR));
-    assert!(storage[VisibleRow(0)][1]
-        .flags
-        .contains(Flags::WIDE_CHAR_SPACER));
+    assert!(
+        storage[VisibleRow(0)][1]
+            .flags
+            .contains(Flags::WIDE_CHAR_SPACER)
+    );
     assert_eq!(storage[VisibleRow(0)][2].c, 'x');
-    assert!(!storage[VisibleRow(0)][2]
-        .flags
-        .contains(Flags::WIDE_CHAR_SPACER));
+    assert!(
+        !storage[VisibleRow(0)][2]
+            .flags
+            .contains(Flags::WIDE_CHAR_SPACER)
+    );
     assert_eq!(grid.cursor_point(), Point::new(0, 3));
 }
 
@@ -2667,6 +2677,32 @@ fn test_clear_screen_all_on_empty_primary_grid_adds_no_history() {
     grid.clear_screen(ansi::ClearMode::Saved);
 
     assert_eq!(grid.history_size(), 0);
+    assert_visible_grid_blank(&grid);
+}
+
+/// #986: only blank lines on screen (cursor moved, no cell written) still counts as "nothing to
+/// preserve", so `clear` must not push blank rows into scrollback.
+#[test]
+fn test_clear_screen_all_after_only_blank_lines_adds_no_history() {
+    let mut grid = GridHandler::new_for_test_with_scroll_limit(3, 5, MAX_SCROLL_LIMIT);
+    grid.linefeed();
+    grid.linefeed();
+
+    grid.clear_screen(ansi::ClearMode::All);
+
+    assert_eq!(grid.history_size(), 0);
+    assert_visible_grid_blank(&grid);
+}
+
+/// #986 guard: the empty-grid shortcut must not drop real content. After output, `clear` still
+/// pushes it into scrollback.
+#[test]
+fn test_clear_screen_all_after_real_content_still_pushes_to_history() {
+    let mut grid = GridHandler::new_for_test_with_scroll_limit(3, 5, MAX_SCROLL_LIMIT);
+    write_two_visible_rows(&mut grid);
+
+    grid.clear_screen(ansi::ClearMode::All);
+    assert!(grid.history_size() > 0);
     assert_visible_grid_blank(&grid);
 }
 

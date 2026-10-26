@@ -7512,3 +7512,113 @@ fn test_move_pane_to_own_tab_uses_source_tab_not_active_tab() {
         });
     });
 }
+// ── #988: read-only viewer for a conversation live in a pane running a command ──
+
+#[test]
+fn live_conversation_read_only_viewer_opens_once_and_never_duplicates_the_conversation() {
+    let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        let running_pane = workspace.read(&app, |workspace, ctx| {
+            workspace
+                .active_tab_pane_group()
+                .as_ref(ctx)
+                .focused_session_view(ctx)
+                .expect("workspace should start with a terminal view")
+        });
+        let running_view_id = running_pane.read(&app, |view, _| view.view_id());
+        let conversation_id = BlocklistAIHistoryModel::handle(&app)
+            .update(&mut app, |history, ctx| {
+                history.start_new_conversation(running_view_id, false, false, ctx)
+            });
+        running_pane.update(&mut app, |view, _| {
+            view.model
+                .lock()
+                .simulate_long_running_block("ksu", "running");
+        });
+
+        let open = |app: &mut App| {
+            workspace.update(app, |workspace, ctx| {
+                workspace.handle_action(
+                    &WorkspaceAction::OpenLiveConversationReadOnlyViewer { conversation_id },
+                    ctx,
+                );
+            });
+        };
+
+        // First click opens exactly one new tab holding a read-only viewer.
+        open(&mut app);
+        workspace.read(&app, |workspace, ctx| {
+            assert_eq!(workspace.tab_count(), 2);
+            assert_eq!(workspace.active_tab_index(), 1);
+            let viewer_group = workspace.tabs[1].pane_group.as_ref(ctx);
+            assert_eq!(
+                viewer_group.read_only_live_viewer_conversation_id(ctx),
+                Some(conversation_id)
+            );
+            let viewer = viewer_group
+                .focused_session_view(ctx)
+                .expect("viewer tab should have a terminal view");
+            let model = viewer.as_ref(ctx).model.lock();
+            assert!(model.is_read_only(), "the viewer must be read-only");
+            assert!(model.is_conversation_transcript_viewer());
+        });
+
+        // Going back to the running pane and clicking again focuses the existing viewer.
+        workspace.update(&mut app, |workspace, ctx| workspace.activate_tab(0, ctx));
+        open(&mut app);
+        workspace.read(&app, |workspace, _| {
+            assert_eq!(
+                workspace.tab_count(),
+                2,
+                "repeated clicks must not open duplicates"
+            );
+            assert_eq!(
+                workspace.active_tab_index(),
+                1,
+                "the existing viewer is focused"
+            );
+        });
+
+        // The live conversation was neither duplicated nor taken over, and the running pane's
+        // command and state are untouched.
+        let viewer_view_id = workspace.read(&app, |workspace, ctx| {
+            workspace.tabs[1]
+                .pane_group
+                .as_ref(ctx)
+                .focused_session_view(ctx)
+                .expect("viewer tab should have a terminal view")
+                .as_ref(ctx)
+                .view_id()
+        });
+        BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
+            assert_eq!(
+                history.live_owner_terminal_view(conversation_id),
+                Some(running_view_id)
+            );
+            let live_registrations: usize = [running_view_id, viewer_view_id]
+                .into_iter()
+                .map(|view_id| {
+                    history
+                        .all_live_conversations_for_terminal_view(view_id)
+                        .filter(|conversation| conversation.id() == conversation_id)
+                        .count()
+                })
+                .sum();
+            assert_eq!(live_registrations, 1, "exactly one live registration");
+        });
+        running_pane.read(&app, |view, ctx| {
+            assert_eq!(view.active_conversation_id(ctx), Some(conversation_id));
+            assert!(
+                view.model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_active_and_long_running()
+            );
+        });
+    });
+}

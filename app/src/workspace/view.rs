@@ -13374,6 +13374,68 @@ impl Workspace {
         });
     }
 
+    /// Index of the tab already holding a read-only viewer for `conversation_id`, if any.
+    fn find_tab_with_live_conversation_read_only_viewer(
+        &self,
+        conversation_id: AIConversationId,
+        ctx: &AppContext,
+    ) -> Option<usize> {
+        self.tabs.iter().position(|tab| {
+            tab.pane_group
+                .as_ref(ctx)
+                .read_only_live_viewer_conversation_id(ctx)
+                == Some(conversation_id)
+        })
+    }
+
+    /// Opens (or focuses) a read-only viewer for a conversation that is live in another pane
+    /// (#988). The viewer is a mock-terminal pane with no PTY and no input: nothing can be sent
+    /// from it, and it renders from the shared in-memory conversation instead of registering a
+    /// second live copy. The pane that is running the command is not touched.
+    fn open_live_conversation_read_only_viewer(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if let Some(tab_index) =
+            self.find_tab_with_live_conversation_read_only_viewer(conversation_id, ctx)
+        {
+            self.activate_tab(tab_index, ctx);
+            return;
+        }
+
+        let Some(conversation) = BlocklistAIHistoryModel::as_ref(ctx)
+            .conversation(&conversation_id)
+            .cloned()
+        else {
+            log::warn!(
+                "Cannot open read-only viewer: conversation {conversation_id} not in memory"
+            );
+            return;
+        };
+
+        let new_pane_group = ctx.add_typed_action_view(|ctx| {
+            PaneGroup::new_for_live_conversation_read_only_viewer(
+                conversation,
+                self.tips_completed.clone(),
+                self.user_default_shell_unsupported_banner_model_handle
+                    .clone(),
+                self.model_event_sender.clone(),
+                ctx,
+            )
+        });
+
+        ctx.subscribe_to_view(&new_pane_group, move |me, pane_group, event, ctx| {
+            me.handle_file_tree_event(pane_group, event, ctx)
+        });
+
+        self.tabs.push(TabData::new(new_pane_group.clone()));
+        let new_tab_index = self.tab_count() - 1;
+        self.tab_mru_order
+            .push(self.tabs[new_tab_index].pane_group.id());
+        self.activate_tab_internal(new_tab_index, ctx);
+    }
+
     /// Restores a conversation in a new tab.
     /// Creates a new tab with a loading pane immediately, then replaces it with the real terminal with the conversation once data loads.
     /// We have to do this instead of loading the data into the same terminal pane to avoid problems with
@@ -23447,6 +23509,9 @@ impl TypedActionView for Workspace {
                     }
                 }
                 self.open_cloud_conversation_from_server_token(conversation_id.clone(), ctx);
+            }
+            OpenLiveConversationReadOnlyViewer { conversation_id } => {
+                self.open_live_conversation_read_only_viewer(*conversation_id, ctx);
             }
             ForkAIConversation {
                 conversation_id,

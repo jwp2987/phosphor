@@ -18296,6 +18296,28 @@ impl TerminalView {
                         .into_item(),
                 ];
 
+                // A highlighted text selection inside the running block: "Copy" above copies the
+                // selected block(s), so offer the selection explicitly (#988).
+                if is_active_block_selected
+                    && is_active_block_running
+                    && model
+                        .selection_to_string(
+                            SemanticSelection::as_ref(ctx),
+                            self.is_inverted_blocklist(ctx),
+                            ctx,
+                        )
+                        .is_some_and(|text| !text.is_empty())
+                {
+                    items.insert(
+                        1,
+                        MenuItemFields::new(crate::t!("menu-block-copy-selected-text"))
+                            .with_on_select_action(TerminalAction::ContextMenu(
+                                ContextMenuAction::CopySelectedText,
+                            ))
+                            .into_item(),
+                    );
+                }
+
                 if WarpDriveSettings::is_warp_drive_enabled(ctx) {
                     items.push(MenuItem::Separator);
                     items.push(
@@ -22935,7 +22957,13 @@ impl TerminalView {
     fn context_menu_copy_blocks(&mut self, ctx: &mut ViewContext<Self>) {
         // A highlighted text selection (e.g. inside a running block) wins over the whole
         // block, matching `copy()`; otherwise right-click -> Copy dumps command + output.
-        let has_text_selection = {
+        // Only when no blocks are selected, though: a lingering text selection must not
+        // hijack a copy of explicitly selected blocks.
+        let no_blocks_selected = matches!(
+            self.selected_blocks.cardinality(),
+            BlockSelectionCardinality::None
+        );
+        let has_text_selection = no_blocks_selected && {
             let semantic_selection = SemanticSelection::as_ref(ctx);
             self.model
                 .lock()
