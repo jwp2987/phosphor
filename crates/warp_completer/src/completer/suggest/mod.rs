@@ -661,7 +661,80 @@ pub async fn suggestions<T: CompletionContext>(
     if line.trim().is_empty() {
         return None;
     }
-    suggestions_internal(line, session_env_vars, &options, ctx).await
+    let results = suggestions_internal(line, session_env_vars, &options, ctx).await;
+    if options.parse_quotes_as_literals {
+        return results;
+    }
+    results.map(|results| adjust_for_open_quote(line, results))
+}
+
+/// The quote character if `token` starts an unterminated quoted string (`'wi`, `"wi`), i.e. the
+/// user is completing the inside of a quote that is still open.
+fn open_quote(token: &str) -> Option<char> {
+    let mut chars = token.chars();
+    let quote = chars.next().filter(|c| matches!(c, '\'' | '"'))?;
+    if quote == '\'' {
+        return (!chars.any(|c| c == '\'')).then_some(quote);
+    }
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                chars.next();
+            }
+            '"' => return None,
+            _ => {}
+        }
+    }
+    Some(quote)
+}
+
+/// Re-spells a shell-escaped path replacement (`foo\ bar/`) for the inside of an open `quote`
+/// (`foo bar/`), appending the closing quote for files so the argument is complete. Returns
+/// `None` when the escaping is not plain backslash escaping (so the caller leaves it alone).
+fn requote_path_replacement(replacement: &str, quote: char, is_file: bool) -> Option<String> {
+    if replacement.contains(['\'', '"', '`']) {
+        return None;
+    }
+    let mut out = String::with_capacity(replacement.len() + 1);
+    let mut chars = replacement.chars();
+    while let Some(c) = chars.next() {
+        let c = if c == '\\' { chars.next()? } else { c };
+        if quote == '"' && matches!(c, '\\' | '$') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    if is_file {
+        out.push(quote);
+    }
+    Some(out)
+}
+
+/// Completing inside an open quote (`ls 'wi<Tab>`): the span the parser reports starts at the
+/// quote, so the typed prefix would be `'wi` and match nothing. Exclude the quote from the
+/// replacement span and spell path replacements for the quoted context instead of the
+/// unquoted one (#1017).
+fn adjust_for_open_quote(line: &str, mut results: SuggestionResults) -> SuggestionResults {
+    let Some(quote) = open_quote(results.replacement_span.slice(line)) else {
+        return results;
+    };
+    // The quote is one byte, so the span moves by one.
+    results.replacement_span = Span::new(
+        results.replacement_span.start() + 1,
+        results.replacement_span.end(),
+    );
+    for matched in &mut results.suggestions {
+        let suggestion = &mut matched.suggestion;
+        if let Some(file_type) = suggestion.file_type {
+            let is_file = !matches!(file_type, EngineFileType::Directory);
+            if let Some(requoted) =
+                requote_path_replacement(&suggestion.replacement, quote, is_file)
+            {
+                suggestion.replacement = requoted.into();
+            }
+        }
+    }
+    results
 }
 
 /// Produces `SuggestionResults` with the `replacement_span` if specified. If not specified,

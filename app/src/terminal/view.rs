@@ -20243,7 +20243,8 @@ impl TerminalView {
             self.maybe_copy_selection_to_clipboard(ctx);
             ctx.notify();
         } else {
-            log::error!("end_selection dispatched with no pending selection");
+            // Expected: mouse-up always dispatches End (see #1012).
+            log::debug!("end_selection dispatched with no pending selection");
         }
     }
 
@@ -20279,7 +20280,8 @@ impl TerminalView {
 
             ctx.notify();
         } else {
-            log::error!("end_selection dispatched with no pending selection");
+            // Expected: mouse-up always dispatches End (see #1012).
+            log::debug!("end_selection dispatched with no pending selection");
         }
     }
 

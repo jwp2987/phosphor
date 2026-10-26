@@ -2503,6 +2503,93 @@ fn test_alt_screen_select_with_sgr_mouse() {
     })
 }
 
+// #1012: a double-click's mouse-up can arrive before the element is re-rendered, so the
+// element's `is_terminal_selecting` snapshot is still false. The selection must still be ended
+// (and copied) -- previously only drags, which re-render in between, honoured copy-on-select.
+#[test]
+fn test_alt_screen_double_click_honours_copy_on_select() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let (window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
+
+        let mut updated = HashSet::new();
+        updated.insert(app.root_view_id(window_id).unwrap());
+        let invalidation = WindowInvalidation {
+            updated,
+            ..Default::default()
+        };
+        let presenter = Rc::new(RefCell::new(Presenter::new(window_id)));
+
+        let size_info = terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.set_mode(ansi::Mode::SwapScreen {
+                    save_cursor_and_clear_screen: true,
+                });
+                assert!(model.is_alt_screen_active());
+                for c in "hello world".chars() {
+                    model.alt_screen_mut().input(c);
+                }
+            }
+            assert!(SelectionSettings::as_ref(ctx).copy_on_select_enabled());
+            *view.size_info
+        });
+
+        app.update(enclose!((presenter, invalidation) move |ctx| {
+            presenter.borrow_mut().invalidate(invalidation, ctx);
+            presenter.borrow_mut().build_scene(
+                vec2f(size_info.pane_width_px, size_info.pane_height_px),
+                1.,
+                None,
+                ctx,
+            );
+        }));
+
+        // Row 0, inside "hello"; shift so the alt screen takes the selection itself.
+        let position = vec2f(
+            2.5 * size_info.cell_width_px.as_f32(),
+            0.5 * size_info.cell_height_px.as_f32(),
+        );
+        let modifiers = ModifiersState {
+            shift: true,
+            ..Default::default()
+        };
+        // Down and Up with NO re-render in between.
+        app.update(enclose!((presenter) move |ctx| {
+            ctx.simulate_window_event(
+                warpui::Event::LeftMouseDown {
+                    position,
+                    modifiers,
+                    click_count: 2,
+                    is_first_mouse: false,
+                },
+                window_id,
+                presenter.clone(),
+            );
+        }));
+        app.update(enclose!((presenter) move |ctx| {
+            ctx.simulate_window_event(
+                warpui::Event::LeftMouseUp { position, modifiers },
+                window_id,
+                presenter.clone(),
+            );
+        }));
+
+        terminal.update(&mut app, |view, ctx| {
+            let selected = {
+                let semantic_selection = SemanticSelection::as_ref(ctx);
+                view.model
+                    .lock()
+                    .selection_to_string(semantic_selection, false, ctx)
+            };
+            let selected = selected.expect("double-click should select a word");
+            assert!(!selected.is_empty());
+            assert_eq!(selected, read_from_clipboard(ctx));
+        });
+    })
+}
+
 // Regression test for WAR-3433 on find bar selection crash.
 #[test]
 fn test_find_bar_select() {

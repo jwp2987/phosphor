@@ -9849,3 +9849,11 @@ fn newer_than_submission_rules() {
     assert_eq!(newer_than_submission(None, "typed"), Some("typed"));
     assert_eq!(newer_than_submission(None, ""), None);
 }
+
+// #1013: the completer must not produce a ghost suggestion (e.g. `-E`) for a multi-line paste.
+#[test]
+fn completer_autosuggestion_is_skipped_for_multi_line_buffers() {
+    assert!(super::completer_autosuggestion_allowed("grep -"));
+    assert!(!super::completer_autosuggestion_allowed("echo a\ngrep -"));
+    assert!(!super::completer_autosuggestion_allowed("echo a\n"));
+}

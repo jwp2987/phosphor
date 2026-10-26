@@ -8561,6 +8561,14 @@ impl Input {
                     }
 
                     // If we have no command anywhere in history with a matching prefix, fallback to the first completer result.
+                    // The completer parses one command line, so on a multi-line buffer (e.g. a paste)
+                    // it yields a ghost fragment such as `-E` for the last line (#1013).
+                    if !completer_autosuggestion_allowed(&buffer_text) {
+                        return AutoSuggestionResult {
+                            buffer_text,
+                            autosuggestion_result: None,
+                        };
+                    }
                     let Some(completion_context) = completion_context else {
                         return AutoSuggestionResult {
                             buffer_text,
@@ -15599,6 +15607,12 @@ impl View for Input {
             self.render_classic_input(app)
         }
     }
+}
+
+/// Whether the completer may be asked for an autosuggestion for `buffer_text`. It is not for a
+/// multi-line buffer: the completer tokenizes a single command line (#1013).
+pub(crate) fn completer_autosuggestion_allowed(buffer_text: &str) -> bool {
+    !buffer_text.contains('\n')
 }
 
 impl Autosuggester for Input {

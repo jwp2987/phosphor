@@ -401,9 +401,9 @@ impl AltScreenElement {
             modifiers: *mouse_state.modifiers(),
         });
 
-        if self.is_terminal_selecting {
-            ctx.dispatch_typed_action(TerminalAction::AltSelect(SelectAction::End));
-        }
+        // Always dispatch: `is_terminal_selecting` is a render-time snapshot and is stale for a
+        // quick double/triple-click (#1012); the view ignores End when nothing is pending.
+        ctx.dispatch_typed_action(TerminalAction::AltSelect(SelectAction::End));
 
         if !should_intercept_mouse(&self.model.lock(), mouse_state.modifiers().shift, app) {
             ctx.dispatch_typed_action(TerminalAction::AltMouseAction(mouse_state.set_point(point)));

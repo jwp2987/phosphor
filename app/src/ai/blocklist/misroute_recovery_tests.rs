@@ -254,3 +254,29 @@ fn multi_line_text_is_never_offered_to_the_agent_either() {
     memory.note_command_finished("gradle one\ngradle two", ExitCode::from(127), now);
     assert_eq!(memory.offer(now), None);
 }
+
+#[test]
+fn a_different_command_finishing_drops_a_stale_offer() {
+    // #1013: the hint must not outlive the failed command once something else has run.
+    let now = Instant::now();
+    let mut memory = memory_with(
+        "what is a monad",
+        SubmitRoute::Shell,
+        RouteReason::Autodetected,
+        now,
+    );
+    memory.note_command_finished("what is a monad", ExitCode::from(127), now);
+    assert!(memory.offer(now).is_some());
+    assert!(memory.note_command_finished("ls", ExitCode::from(0), now));
+    assert_eq!(memory.offer(now), None);
+}
+
+#[test]
+fn rerunning_the_same_text_successfully_drops_the_offer() {
+    let now = Instant::now();
+    let mut memory = memory_with("foo", SubmitRoute::Shell, RouteReason::Autodetected, now);
+    memory.note_command_finished("foo", ExitCode::from(127), now);
+    assert!(memory.offer(now).is_some());
+    assert!(memory.note_command_finished("foo", ExitCode::from(0), now));
+    assert_eq!(memory.offer(now), None);
+}
