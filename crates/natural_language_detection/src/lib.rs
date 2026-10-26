@@ -124,3 +124,37 @@ fn token_preprocessing(token: &str) -> String {
 
     token
 }
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+
+    use super::*;
+
+    /// #964: real binaries that are also Stack Overflow tags must be in the overlap list, so a
+    /// lone `fish` is not scored as one natural-language word.
+    #[test]
+    fn real_binaries_in_the_stack_overflow_list_are_command_words() {
+        for word in [
+            "fish", "ansible", "cmake", "emacs", "gcc", "java", "perl", "php", "ruby", "mysql",
+            "ksh",
+        ] {
+            assert!(is_word(word, WordDb::Command), "{word}");
+            assert_eq!(
+                natural_language_words_score(vec![Cow::Borrowed(word)], false),
+                0,
+                "{word}"
+            );
+        }
+    }
+
+    /// Prose words must stay out of the overlap list (a first-word hit is skipped when scoring).
+    #[test]
+    fn overlap_list_excludes_sentence_openers() {
+        for word in [
+            "file", "date", "set", "wait", "return", "history", "cut", "patch",
+        ] {
+            assert!(!is_word(word, WordDb::Command), "{word}");
+        }
+    }
+}

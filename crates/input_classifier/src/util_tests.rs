@@ -1168,3 +1168,43 @@ fn transparent_prefixes_are_looked_through_for_the_effective_head() {
     assert_eq!(effective_head_word("nice"), None);
     assert_eq!(effective_head_word("nice -n 5"), None);
 }
+
+#[test]
+fn test_964_pronoun_arguments_do_not_make_a_request() {
+    for text in [
+        "ls this that it",
+        "ls that is it",
+        "cat this that",
+        "cp it that",
+        "rm this that it",
+    ] {
+        assert!(!reads_as_request_to_agent(text), "{text:?}");
+    }
+    // Two request words joined by a word that addresses someone still read as a request.
+    assert!(reads_as_request_to_agent("tell me how to deploy"));
+    assert!(reads_as_request_to_agent("could you fix this"));
+}
+
+#[test]
+fn test_965_collision_words_read_as_prose_only_as_a_sentence() {
+    for text in [
+        "say hello",
+        "what does ls -la do",
+        "write a script that counts lines",
+        "where is the config",
+        "do it",
+    ] {
+        assert!(reads_as_request_to_agent(text), "{text:?}");
+    }
+    for text in [
+        "say \"build done\"",
+        "say how are you",
+        "what /usr/bin/ls",
+        "write user",
+        "where git",
+        "do ls",
+        "say",
+    ] {
+        assert!(!reads_as_request_to_agent(text), "{text:?}");
+    }
+}
