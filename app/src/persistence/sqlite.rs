@@ -141,6 +141,16 @@ diesel::define_sql_function! {
 // Choose a power of 2 that seems to be a reasonable upper bound for how many
 // events to queue.
 const CHANNEL_SIZE: usize = 1024;
+
+/// How often the writer retries a snapshot that failed on a lock held by
+/// another process (#971).
+const LOCK_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+/// Retries of one blocked snapshot before giving up (about a minute); a newer
+/// snapshot starts over.
+const MAX_SNAPSHOT_LOCK_RETRIES: u32 = 30;
+/// Consecutive lock failures (each already waited out the busy timeout) before
+/// the user is told saves are blocked.
+const LOCK_NOTICE_THRESHOLD: u32 = 3;
 const COMMANDS_COUNT_LIMIT: i64 = 10000;
 
 use crate::persistence::cloud_objects::{upsert_stored_object, StoredObjectId};
@@ -1659,8 +1669,43 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
             // `retire_abandoned_connection`).
             let mut abandoned = false;
             let mut suppressed_errors: u32 = 0;
+            // #971: a snapshot that failed on a lock held by another process is
+            // kept and retried (off the UI thread) until it lands, a newer
+            // snapshot supersedes it, or the retry budget runs out.
+            let mut pending_snapshot: Option<AppState> = None;
+            let mut snapshot_retries: u32 = 0;
+            // Consecutive writes that failed on a lock; the user is told only
+            // once this passes `LOCK_NOTICE_THRESHOLD`, so a lock that clears in
+            // a few seconds stays silent.
+            let mut lock_failures: u32 = 0;
             loop {
-                let events = match rx.recv() {
+                let received = if pending_snapshot.is_some() {
+                    match rx.recv_timeout(LOCK_RETRY_INTERVAL) {
+                        Ok(event) => Ok(event),
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            snapshot_retries += 1;
+                            match pending_snapshot.take() {
+                                Some(state) if snapshot_retries <= MAX_SNAPSHOT_LOCK_RETRIES => {
+                                    Ok(ModelEvent::Snapshot(state))
+                                }
+                                _ => {
+                                    log::warn!(
+                                        "Giving up retrying the app state save after \
+                                         {MAX_SNAPSHOT_LOCK_RETRIES} attempts; the next \
+                                         snapshot will try again"
+                                    );
+                                    continue;
+                                }
+                            }
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            Err(std::sync::mpsc::RecvError)
+                        }
+                    }
+                } else {
+                    rx.recv()
+                };
+                let events = match received {
                     Ok(event) => {
                         // Wait for there to be at least one event, but collect any other pending
                         // events too. This way, we can start dropping redundant events if the
@@ -1776,12 +1821,48 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                 );
                                 continue;
                             }
-                            match handle_model_event(event, conn) {
+                            let result = match event {
+                                ModelEvent::Snapshot(state) => {
+                                    let result = save_app_state(conn, &state)
+                                        .context("error saving app state");
+                                    match &result {
+                                        Err(err)
+                                            if super::database_notice::is_lock_error(
+                                                &underlying_error_message(err),
+                                            ) =>
+                                        {
+                                            pending_snapshot = Some(state);
+                                        }
+                                        Ok(()) => {
+                                            pending_snapshot = None;
+                                            snapshot_retries = 0;
+                                        }
+                                        Err(_) => pending_snapshot = None,
+                                    }
+                                    result
+                                }
+                                event => handle_model_event(event, conn),
+                            };
+                            match result {
                                 Ok(()) => {
+                                    lock_failures = 0;
                                     suppressed_errors = 0;
                                     super::database_notice::record_write_outcome(
                                         &database_path,
                                         None,
+                                    );
+                                }
+                                Err(err)
+                                    if super::database_notice::is_lock_error(
+                                        &underlying_error_message(&err),
+                                    ) && {
+                                        lock_failures += 1;
+                                        lock_failures < LOCK_NOTICE_THRESHOLD
+                                    } =>
+                                {
+                                    log::info!(
+                                        "SQLite write blocked by a lock held elsewhere \
+                                         (failure {lock_failures}); will retry"
                                     );
                                 }
                                 Err(err) => {

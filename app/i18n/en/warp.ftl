@@ -3842,6 +3842,7 @@ workspace-database-unavailable-toast = Phosphor couldn't open its saved-state da
 workspace-database-write-failing-toast = Phosphor can't save to its saved-state database at { $path }: { $reason } Recent changes won't be restored after a restart.
 workspace-database-reason-read-only = the file or its folder is read-only.
 workspace-database-reason-disk-full = the disk is full.
+workspace-database-reason-locked = another program is holding the database locked. Phosphor keeps retrying and will save once it is released.
 workspace-database-reason-other = { $detail }.
 workspace-database-reason-corrupt = the file is damaged.
 workspace-database-reason-replaced = the file was deleted or replaced while Phosphor was running. Phosphor left it alone and stopped saving until you restart.

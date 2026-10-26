@@ -5454,3 +5454,60 @@ fn test_forget_terminal_view_drops_per_view_maps_and_keeps_conversations() {
         });
     });
 }
+
+/// #972: a title delivered by `UpdateTaskDescription` (e.g. generated after the
+/// response finished) must be written to the SQLite writer immediately, not
+/// only with the next exchange or on clean shutdown.
+#[test]
+fn update_task_description_action_persists_title_immediately() {
+    use crate::ai::agent::conversation::AIConversation;
+    use warp_multi_agent_api::client_action::{Action, UpdateTaskDescription};
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        let (sender, receiver) = std::sync::mpsc::sync_channel(8);
+        let mut global_resource_handles = GlobalResourceHandles::mock(&mut app);
+        global_resource_handles.model_event_sender = Some(sender);
+        app.add_singleton_model(|_| GlobalResourceHandlesProvider::new(global_resource_handles));
+
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let terminal_view_id = EntityId::new();
+        let conversation_id = AIConversationId::new();
+        let conversation: AIConversation =
+            restored_conversation_with_title(conversation_id, "say hello");
+        history_model.update(&mut app, |model, ctx| {
+            model.restore_conversations(terminal_view_id, vec![conversation], ctx);
+        });
+        while receiver.try_recv().is_ok() {}
+
+        history_model.update(&mut app, |model, ctx| {
+            model
+                .apply_client_actions(
+                    &ResponseStreamId::new_for_test(),
+                    vec![api::ClientAction {
+                        action: Some(Action::UpdateTaskDescription(UpdateTaskDescription {
+                            task_id: "root-task".to_string(),
+                            description: "Greeting".to_string(),
+                        })),
+                    }],
+                    conversation_id,
+                    terminal_view_id,
+                    &ai::skills::SkillPathOrigin::Local,
+                    ctx,
+                )
+                .expect("title action applies");
+        });
+
+        let event = receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the new title must be persisted right away");
+        let ModelEvent::UpdateMultiAgentConversation { updated_tasks, .. } = event else {
+            panic!("expected UpdateMultiAgentConversation event");
+        };
+        assert!(
+            updated_tasks.iter().any(|t| t.description == "Greeting"),
+            "persisted root task must carry the generated title"
+        );
+    });
+}

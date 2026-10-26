@@ -2868,6 +2868,10 @@ impl AIConversation {
                 self.task_store
                     .modify_task(&task_id, |task| task.update_description(description))
                     .ok_or(UpdateConversationError::TaskNotFound)?;
+                // #972: a (generated) title often arrives after the response has been
+                // persisted; nothing else would write it before the next exchange, so a
+                // SIGKILL in between reverted it to the raw prompt. Persist it now.
+                self.write_updated_conversation_state(ctx);
             }
             Action::AddMessagesToTask(AddMessagesToTask { task_id, messages }) => {
                 for message in messages.iter() {
