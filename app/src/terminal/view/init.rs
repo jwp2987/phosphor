@@ -1063,6 +1063,19 @@ pub fn init(app: &mut AppContext) {
     .with_context_predicate(id!("Workspace") & id!(flags::IS_ANY_AI_ENABLED))]);
 }
 
+/// Matches while the agent is driving a long-running command and the user has not taken it back:
+/// the state the footer's "Take over" button is shown in. `AGENT_MODE_INPUT` is set by the Input
+/// view's keymap context, so with the terminal focused it is never set and Ctrl-I / Cmd-I did
+/// nothing while the button worked (#1020). Once the user has taken over, the key must still
+/// reach the pty, hence the `USER_TOOK_OVER` exclusion.
+fn take_over_agent_control_predicate(base_context: ContextPredicate) -> ContextPredicate {
+    use warpui::keymap::macros::*;
+
+    base_context
+        & id!(LONG_RUNNING_AGENT_REQUESTED_COMMAND_CONTEXT_KEY)
+        & !id!(LONG_RUNNING_AGENT_REQUESTED_COMMAND_USER_TOOK_OVER_CONTEXT_KEY)
+}
+
 /// Registers bindings related to input modes.
 fn register_input_mode_bindings(app: &mut AppContext) {
     use warpui::keymap::macros::*;
@@ -1115,12 +1128,13 @@ fn register_input_mode_bindings(app: &mut AppContext) {
     // - AgentView feature is disabled, OR
     // - In an active agent view, OR
     // - Input is unlocked (autodetected) (implying the input is autodetected as AI in terminal mode)
-    let terminal_mode_predicate = base_context.clone()
+    let terminal_mode_predicate = (base_context.clone()
         & id!(flags::AGENT_MODE_INPUT)
         & (!id!(flags::AGENT_VIEW_ENABLED)
             | id!(flags::ACTIVE_AGENT_VIEW)
             | id!(flags::ACTIVE_INLINE_AGENT_VIEW)
-            | !id!(flags::LOCKED_INPUT));
+            | !id!(flags::LOCKED_INPUT)))
+        | take_over_agent_control_predicate(base_context.clone());
 
     app.register_fixed_bindings([
         // No long-running command: cmd-enter starts a new agent conversation.
@@ -1175,4 +1189,51 @@ fn register_input_mode_bindings(app: &mut AppContext) {
             id!(flags::IS_ANY_AI_ENABLED) & !id!(LONG_RUNNING_AGENT_REQUESTED_COMMAND_CONTEXT_KEY),
         ),
     ]);
+}
+
+#[cfg(test)]
+mod take_over_binding_tests {
+    use super::*;
+    use warpui::keymap::{Context, macros::*};
+
+    fn ctx_with(keys: &[&'static str]) -> Context {
+        let mut context = Context::default();
+        for key in keys {
+            context.set.insert(*key);
+        }
+        context
+    }
+
+    fn predicate() -> ContextPredicate {
+        take_over_agent_control_predicate(id!(flags::IS_ANY_AI_ENABLED) & id!("Terminal"))
+    }
+
+    /// #1020: the terminal is focused (no Input context, so no `AGENT_MODE_INPUT`) while the agent
+    /// drives the running command: Ctrl-I / Cmd-I must be live, like the "Take over" button.
+    #[test]
+    fn take_over_key_is_live_while_the_agent_drives_a_command() {
+        let context = ctx_with(&[
+            flags::IS_ANY_AI_ENABLED,
+            "Terminal",
+            "LongRunningCommand",
+            LONG_RUNNING_AGENT_REQUESTED_COMMAND_CONTEXT_KEY,
+        ]);
+        assert!(predicate().eval(&context));
+    }
+
+    /// Once the user owns the command the key belongs to the pty (Ctrl-I is Tab), and without an
+    /// agent-run command there is nothing to take over.
+    #[test]
+    fn take_over_key_passes_through_when_the_user_owns_the_command_or_no_agent_runs_it() {
+        let user_owns = ctx_with(&[
+            flags::IS_ANY_AI_ENABLED,
+            "Terminal",
+            "LongRunningCommand",
+            LONG_RUNNING_AGENT_REQUESTED_COMMAND_CONTEXT_KEY,
+            LONG_RUNNING_AGENT_REQUESTED_COMMAND_USER_TOOK_OVER_CONTEXT_KEY,
+        ]);
+        assert!(!predicate().eval(&user_owns));
+        let plain_command = ctx_with(&[flags::IS_ANY_AI_ENABLED, "Terminal", "LongRunningCommand"]);
+        assert!(!predicate().eval(&plain_command));
+    }
 }
