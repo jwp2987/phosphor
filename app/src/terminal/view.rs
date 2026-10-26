@@ -22465,7 +22465,13 @@ impl TerminalView {
     fn selected_text_from_visible_ai_blocks(&self, ctx: &AppContext) -> Option<String> {
         self.rich_content_views.iter().find_map(|rich_content| {
             let ai_metadata = rich_content.ai_block_metadata()?;
-            ai_metadata.ai_block_handle.as_ref(ctx).selected_text(ctx)
+            // An AI block can hold an empty-string selection (a click without a drag). It must not
+            // shadow a real selection in another block, nor short-circuit `copy()` (#988).
+            ai_metadata
+                .ai_block_handle
+                .as_ref(ctx)
+                .selected_text(ctx)
+                .filter(|text| !text.is_empty())
         })
     }
 
