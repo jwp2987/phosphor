@@ -996,10 +996,10 @@ fn test_reads_as_command_headed_prose_leaves_shell_alone() {
         "ls the -la",
         "npm install fails with EACCES",
         "install docker and run it",
-        // `do` as a compound head keeps its body (`do` + a command), unlike #965's `do it`.
+        // Compound heads keep their body (`then`/`if` + a command). (`do ls the` is NOT here:
+        // `do` is a #965 collision head, and `do` plus a prose function word reads as a request.)
         "then ls",
         "if ls the",
-        "do ls the",
     ] {
         assert!(!reads_as_command_headed_prose(text), "{text:?}");
     }

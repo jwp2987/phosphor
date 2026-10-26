@@ -155,4 +155,22 @@ mod tests {
             assert!(!is_word(word, WordDb::Command), "{word}");
         }
     }
+
+    /// #964: `swift vs kotlin?` is prose; `vs` must score as an ordinary word so a three-word
+    /// comparison of tool names is not left one point short (thresholds are 1.0 up to 3 tokens).
+    #[test]
+    fn vs_is_an_ordinary_word() {
+        assert!(is_word("vs", WordDb::English));
+        assert_eq!(
+            natural_language_words_score(
+                vec![
+                    Cow::Borrowed("swift"),
+                    Cow::Borrowed("vs"),
+                    Cow::Borrowed("kotlin")
+                ],
+                false
+            ),
+            3
+        );
+    }
 }
