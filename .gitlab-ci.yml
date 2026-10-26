@@ -142,3 +142,50 @@ check-linux:
     - ./script/agent-cargo ci-check-linux check -p warp --features tui
     # warp_tui is not in default-members; check it explicitly.
     - ./script/agent-cargo ci-check-linux check -p warp_tui
+
+# ---------------------------------------------------------------------------
+# macOS (runner tag `Mac`, darwin arm64). The runner is the maintainer's own
+# laptop, so these jobs are MANUAL: nothing compiles there until someone starts it.
+# ---------------------------------------------------------------------------
+
+# Read-only environment report: what the runner user can see and what is
+# installed. Changes nothing. Start it from the pipeline page (or the API) when the
+# runner's setup needs checking.
+diag-mac:
+  stage: test
+  tags: [Mac]
+  when: manual
+  allow_failure: true
+  timeout: 10m
+  script:
+    - echo "user=$(whoami) home=$HOME shell=$SHELL"
+    - sw_vers; uname -m
+    - df -h / "$HOME" | cat
+    - vm_stat | head -4
+    - pmset -g batt 2>/dev/null | head -2 || true
+    - 'for t in rustc cargo rustup protoc brew clang xcodebuild python3 node cargo-nextest; do printf "%-14s %s\n" "$t" "$(command -v $t || echo MISSING)"; done'
+    - 'xcode-select -p 2>&1 || true'
+    - 'rustc --version 2>&1 || true'
+    - 'ls -d "$HOME/.cargo/bin" "$HOME/.rustup" /opt/homebrew/bin 2>&1 || true'
+    - 'rustup show 2>&1 | head -12 || true'
+    - 'echo "--- running phosphor/caffeinate processes (do not disturb a live test):"; pgrep -lf "phosphor|caffeinate" || echo none'
+    - 'ls -ld "$HOME/phosphor-profile" 2>&1 || true'
+
+# cargo check for the macOS-only code paths (SMAppService login item, dock tile
+# plugin, Launch Services registration). Manual until the runner's toolchain is
+# confirmed with diag-mac. Never installs anything: a missing prerequisite fails
+# with a message.
+check-macos:
+  extends: .shim_github_env
+  stage: test
+  tags: [Mac]
+  when: manual
+  needs: []
+  timeout: 120m
+  interruptible: true
+  script:
+    - export PATH="/opt/homebrew/bin:$HOME/.cargo/bin:$PATH"
+    - for t in cargo rustc protoc; do command -v $t >/dev/null || { echo "ERROR $t is missing on this runner; install it by hand (not done automatically)" >&2; exit 1; }; done
+    - cargo check -p warp --features gui --lib --tests
+    - cargo check -p warp --features tui
+    - cargo check -p warp_tui
