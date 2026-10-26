@@ -57,6 +57,10 @@ bitflags! {
         /// that want both the semantic key information and the resulting text.
         const KEYBOARD_REPORT_ASSOCIATED_TEXT  = 0b0100_0000_0000_0000_0000_0000;
 
+        /// DEC private mode 2027: ZWJ emoji sequences and emoji modifiers are stored in a single
+        /// wide cell. Off by default because shells size the prompt with per-codepoint `wcwidth`.
+        const GRAPHEME_CLUSTERING              = 0b1000_0000_0000_0000_0000_0000;
+
         const KEYBOARD_PROTOCOL = Self::KEYBOARD_DISAMBIGUATE_ESCAPE.bits()
             | Self::KEYBOARD_REPORT_EVENT_TYPES.bits()
             | Self::KEYBOARD_REPORT_ALTERNATE_KEYS.bits()

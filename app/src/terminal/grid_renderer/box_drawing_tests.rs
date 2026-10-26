@@ -175,3 +175,40 @@ fn supported_glyphs_have_rects() {
         );
     }
 }
+
+/// Verifies that every light/heavy corner is drawn (#973: `┐` reported missing or clipped).
+/// Each corner must reach exactly its two cell edges and the joint, and nothing else.
+#[test]
+fn corners_reach_their_two_edges_and_only_those() {
+    let cx = CELL_WIDTH / 2.0;
+    let cy = CELL_HEIGHT / 2.0;
+    // (glyph, up, down, left, right)
+    for (c, up, down, left, right) in [
+        ('┌', false, true, false, true),
+        ('┐', false, true, true, false),
+        ('└', true, false, false, true),
+        ('┘', true, false, true, false),
+        ('┓', false, true, true, false),
+    ] {
+        let rects = standard_rects(c);
+        assert!(!rects.is_empty(), "{c:?} produced no geometry");
+        assert!(covers_point(&rects, cx, cy), "{c:?} must cover its joint");
+        assert_eq!(covers_point(&rects, cx, 0.0), up, "{c:?} up arm");
+        assert_eq!(
+            covers_point(&rects, cx, CELL_HEIGHT - 0.01),
+            down,
+            "{c:?} down arm"
+        );
+        assert_eq!(covers_point(&rects, 0.0, cy), left, "{c:?} left arm");
+        assert_eq!(
+            covers_point(&rects, CELL_WIDTH - 0.01, cy),
+            right,
+            "{c:?} right arm"
+        );
+        for rect in &rects {
+            let o = rect.origin();
+            assert!(o.x() >= 0.0 && o.y() >= 0.0);
+            assert!(o.x() + rect.width() <= CELL_WIDTH && o.y() + rect.height() <= CELL_HEIGHT);
+        }
+    }
+}

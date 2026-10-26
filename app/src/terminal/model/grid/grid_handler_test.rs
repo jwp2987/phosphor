@@ -1335,22 +1335,18 @@ fn emoji_variation_selector_wraps_width_promotion_at_last_column() {
 
     let storage = grid.grid_storage();
     assert_eq!(storage[VisibleRow(0)][3].c, '\0');
-    assert!(
-        storage[VisibleRow(0)][3]
-            .flags
-            .contains(Flags::LEADING_WIDE_CHAR_SPACER)
-    );
+    assert!(storage[VisibleRow(0)][3]
+        .flags
+        .contains(Flags::LEADING_WIDE_CHAR_SPACER));
     assert!(storage[VisibleRow(0)][3].flags.contains(Flags::WRAPLINE));
     assert!(matches!(
         storage[VisibleRow(1)][0].content_for_display(),
         CharOrStr::Str("⚠️")
     ));
     assert!(storage[VisibleRow(1)][0].flags.contains(Flags::WIDE_CHAR));
-    assert!(
-        storage[VisibleRow(1)][1]
-            .flags
-            .contains(Flags::WIDE_CHAR_SPACER)
-    );
+    assert!(storage[VisibleRow(1)][1]
+        .flags
+        .contains(Flags::WIDE_CHAR_SPACER));
     assert_eq!(grid.cursor_point(), Point::new(1, 2));
 }
 
@@ -1370,11 +1366,9 @@ fn emoji_variation_selector_drops_width_promotion_when_line_wrap_is_disabled() {
         storage[VisibleRow(0)][3].content_for_display(),
         CharOrStr::Char('⚠')
     ));
-    assert!(
-        !storage[VisibleRow(0)][3].flags.intersects(
-            Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER
-        )
-    );
+    assert!(!storage[VisibleRow(0)][3]
+        .flags
+        .intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER));
     assert_eq!(grid.cursor_point(), Point::new(0, 3));
 }
 
@@ -1392,17 +1386,13 @@ fn emoji_variation_selector_does_not_advance_already_wide_grapheme() {
         CharOrStr::Str("😀️")
     ));
     assert!(storage[VisibleRow(0)][0].flags.contains(Flags::WIDE_CHAR));
-    assert!(
-        storage[VisibleRow(0)][1]
-            .flags
-            .contains(Flags::WIDE_CHAR_SPACER)
-    );
+    assert!(storage[VisibleRow(0)][1]
+        .flags
+        .contains(Flags::WIDE_CHAR_SPACER));
     assert_eq!(storage[VisibleRow(0)][2].c, 'x');
-    assert!(
-        !storage[VisibleRow(0)][2]
-            .flags
-            .contains(Flags::WIDE_CHAR_SPACER)
-    );
+    assert!(!storage[VisibleRow(0)][2]
+        .flags
+        .contains(Flags::WIDE_CHAR_SPACER));
     assert_eq!(grid.cursor_point(), Point::new(0, 3));
 }
 
@@ -3289,4 +3279,139 @@ fn test_kitty_huge_rows_are_capped_at_max_image_cell_height() {
             "r={rows}: height_cells={height_cells}"
         );
     }
+}
+
+fn grapheme_test_grid(cols: usize) -> BlockGrid {
+    let mut blockgrid = BlockGrid::new(
+        SizeInfo::new_without_font_metrics(2, cols),
+        MAX_SCROLL_LIMIT,
+        ChannelEventListener::new_for_test(),
+        ObfuscateSecrets::No,
+        PerformResetGridChecks::default(),
+    );
+    blockgrid.start();
+    blockgrid
+}
+
+fn input_str(blockgrid: &mut BlockGrid, s: &str) {
+    for c in s.chars() {
+        blockgrid.input(c);
+    }
+}
+
+fn cell_text(blockgrid: &BlockGrid, col: usize) -> String {
+    match blockgrid.grid_storage()[0][col].content_for_display() {
+        CharOrStr::Char(c) => c.to_string(),
+        CharOrStr::Str(s) => s.to_string(),
+    }
+}
+
+const FAMILY: &str = "\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
+
+/// #973: a flag is two regional indicators (wcwidth 1 each) and must become one 2-column cell.
+#[test]
+fn regional_indicator_pair_is_one_wide_cell() {
+    let mut g = grapheme_test_grid(10);
+    input_str(&mut g, "a\u{1F1EF}\u{1F1F5}b");
+    let grid = g.grid_storage();
+    assert_eq!(cell_text(&g, 1), "\u{1F1EF}\u{1F1F5}");
+    assert!(grid[0][1].flags.contains(Flags::WIDE_CHAR));
+    assert!(grid[0][2].flags.contains(Flags::WIDE_CHAR_SPACER));
+    // Same two columns a shell computes from per-codepoint wcwidth.
+    assert_eq!(grid[0][3].c, 'b');
+    assert_eq!(g.grid_handler().cursor_point().col, 4);
+}
+
+/// Three indicators: the first two pair, the third stays alone; four give two flags.
+#[test]
+fn regional_indicators_pair_left_to_right() {
+    let mut g = grapheme_test_grid(10);
+    input_str(&mut g, "\u{1F1EF}\u{1F1F5}\u{1F1FA}");
+    assert_eq!(cell_text(&g, 0), "\u{1F1EF}\u{1F1F5}");
+    assert_eq!(cell_text(&g, 2), "\u{1F1FA}");
+    assert!(!g.grid_storage()[0][2].flags.contains(Flags::WIDE_CHAR));
+    input_str(&mut g, "\u{1F1F8}");
+    assert_eq!(cell_text(&g, 2), "\u{1F1FA}\u{1F1F8}");
+    assert_eq!(g.grid_handler().cursor_point().col, 4);
+
+    let mut g = grapheme_test_grid(10);
+    input_str(&mut g, "\u{1F1EF}\u{1F1F5}\u{1F1FA}\u{1F1F8}");
+    assert_eq!(cell_text(&g, 0), "\u{1F1EF}\u{1F1F5}");
+    assert_eq!(cell_text(&g, 2), "\u{1F1FA}\u{1F1F8}");
+}
+
+/// An indicator in the last column cannot be widened in place; it must stay a lone cell.
+#[test]
+fn regional_indicator_in_last_column_does_not_pair() {
+    let mut g = grapheme_test_grid(3);
+    input_str(&mut g, "ab\u{1F1EF}");
+    input_str(&mut g, "\u{1F1F5}");
+    let grid = g.grid_storage();
+    assert!(!grid[0][2].flags.contains(Flags::WIDE_CHAR));
+    assert!(!grid[0][0].flags.contains(Flags::WIDE_CHAR));
+}
+
+/// Without mode 2027 a ZWJ sequence keeps the per-codepoint wcwidth layout shells expect.
+#[test]
+fn zwj_sequence_is_not_clustered_without_mode_2027() {
+    let mut g = grapheme_test_grid(20);
+    input_str(&mut g, FAMILY);
+    // 4 wide emoji = 8 columns, as wcwidth sums them.
+    assert_eq!(g.grid_handler().cursor_point().col, 8);
+}
+
+/// With DEC mode 2027 a ZWJ family is one 2-column cell holding the whole sequence.
+#[test]
+fn zwj_sequence_is_one_wide_cell_in_mode_2027() {
+    let mut g = grapheme_test_grid(20);
+    g.set_mode(ansi::Mode::GraphemeClustering);
+    input_str(&mut g, FAMILY);
+    input_str(&mut g, "x");
+    let grid = g.grid_storage();
+    assert_eq!(cell_text(&g, 0), FAMILY);
+    assert!(grid[0][0].flags.contains(Flags::WIDE_CHAR));
+    assert!(grid[0][1].flags.contains(Flags::WIDE_CHAR_SPACER));
+    assert_eq!(grid[0][2].c, 'x');
+    assert_eq!(g.grid_handler().cursor_point().col, 3);
+
+    g.unset_mode(ansi::Mode::GraphemeClustering);
+    input_str(&mut g, "\u{1F469}\u{200D}\u{1F469}");
+    assert_eq!(g.grid_handler().cursor_point().col, 3 + 4);
+}
+
+/// Skin-tone modifiers attach to the preceding emoji in mode 2027 only.
+#[test]
+fn emoji_modifier_joins_previous_emoji_in_mode_2027() {
+    let mut g = grapheme_test_grid(10);
+    g.set_mode(ansi::Mode::GraphemeClustering);
+    input_str(&mut g, "\u{1F44D}\u{1F3FD}y");
+    assert_eq!(cell_text(&g, 0), "\u{1F44D}\u{1F3FD}");
+    assert_eq!(g.grid_storage()[0][2].c, 'y');
+    // A lone modifier after a narrow character is not joined.
+    let mut g = grapheme_test_grid(10);
+    g.set_mode(ansi::Mode::GraphemeClustering);
+    input_str(&mut g, "a\u{1F3FD}");
+    assert_eq!(g.grid_storage()[0][0].c, 'a');
+    assert_eq!(g.grid_storage()[0][1].c, '\u{1F3FD}');
+}
+
+/// A ZWJ followed by a non-emoji must not swallow the next character.
+#[test]
+fn zwj_followed_by_text_does_not_swallow_it_in_mode_2027() {
+    let mut g = grapheme_test_grid(10);
+    g.set_mode(ansi::Mode::GraphemeClustering);
+    input_str(&mut g, "\u{1F469}\u{200D}b");
+    assert_eq!(g.grid_storage()[0][2].c, 'b');
+}
+
+/// Combining marks (strike overlay, zalgo) are stored on the base cell, not dropped, and do
+/// not change the column count.
+#[test]
+fn combining_marks_are_stored_on_base_cell() {
+    let mut g = grapheme_test_grid(10);
+    input_str(&mut g, "Z\u{0336}\u{0337}e\u{0301}\u{0489}\u{0315}q");
+    assert_eq!(cell_text(&g, 0), "Z\u{0336}\u{0337}");
+    assert_eq!(cell_text(&g, 1), "e\u{0301}\u{0489}\u{0315}");
+    assert_eq!(g.grid_storage()[0][2].c, 'q');
+    assert_eq!(g.grid_handler().cursor_point().col, 3);
 }
