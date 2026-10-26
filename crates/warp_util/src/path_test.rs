@@ -1351,6 +1351,9 @@ fn nu_dialect_quotes_instead_of_backslash_escaping() {
     assert_eq!(ShellDialect::Nu.escape("src/main.rs"), "src/main.rs");
     assert_eq!(ShellDialect::Nu.shell_escape("~/src"), "~/src");
     assert_eq!(ShellDialect::Nu.escape(""), "\"\"");
+    // `..` would make a bare word a nushell range.
+    assert_eq!(ShellDialect::Nu.escape("a..b"), "\"a..b\"");
+    assert_eq!(ShellDialect::Nu.escape("../up"), "\"../up\"");
     // Metacharacters that would otherwise be nu syntax.
     assert_eq!(ShellDialect::Nu.escape("a(b)"), "\"a(b)\"");
     assert_eq!(ShellDialect::Nu.escape("a$b"), "\"a$b\"");
