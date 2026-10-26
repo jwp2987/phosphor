@@ -698,11 +698,21 @@ fn test_unlaid_tail_without_blank_glyph_still_extends_carets() {
     let frame = TextFrame::mock_with_positions("abc", 10.).with_unlaid_tail(3, 50, |_| None);
     let line = frame.lines().last().unwrap();
     assert_eq!(line.end_index(), 50);
+    let last = line.last_glyph().unwrap();
     assert_eq!(
-        line.last_glyph().unwrap().index,
-        2,
-        "no stray visible glyph added"
+        last.index + 1,
+        50,
+        "zero-width fallback glyph agrees with the caret end"
     );
+    assert_eq!(last.width, 0.);
+}
+
+#[test]
+fn test_unlaid_tail_width_for_last_laid_char() {
+    let frame = TextFrame::mock_with_positions("abc", 10.).with_unlaid_tail(3, 50, |_| Some(7));
+    let line = frame.lines().last().unwrap();
+    assert_eq!(line.width_for_index(2), Some(10.));
+    assert_eq!(line.width_for_index(0), Some(10.));
 }
 
 #[test]

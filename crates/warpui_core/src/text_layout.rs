@@ -727,14 +727,14 @@ impl TextFrame {
         let line = frame.lines.last_mut();
         let end_x = line.width;
         if let Some(last_run) = line.runs.last_mut() {
-            // The placeholder must be invisible (the font's blank glyph); without one the
-            // glyph is omitted rather than painting a stray character.
-            if let (Some(last_glyph), Some(blank)) = (
-                last_run.glyphs.last().cloned(),
-                blank_glyph_for(last_run.font_id),
-            ) {
+            // The placeholder must be invisible: the font's blank glyph, or, when the font has
+            // none, a zero-width clone of the last laid glyph (it advances nothing). Always
+            // pushing one keeps `glyph.index + 1` callers in agreement with the caret
+            // `last_offset`.
+            if let Some(last_glyph) = last_run.glyphs.last().cloned() {
+                let id = blank_glyph_for(last_run.font_id).unwrap_or(last_glyph.id);
                 last_run.glyphs.push(Glyph {
-                    id: blank,
+                    id,
                     index: tail_last,
                     position_along_baseline: vec2f(end_x, last_glyph.position_along_baseline.y()),
                     width: 0.,
@@ -1101,6 +1101,13 @@ impl Line {
         for run in &self.runs {
             for glyph in &run.glyphs {
                 if glyph.index == index + 1 {
+                    return Some(
+                        glyph.position_along_baseline.x() - prev_glyph.position_along_baseline.x(),
+                    );
+                }
+                // The zero-width placeholder of an unlaid tail (`TextFrame::with_unlaid_tail`)
+                // sits at the tail's last index, so the last laid char is followed by a gap.
+                if glyph.width == 0. && glyph.index > index + 1 && prev_glyph.index == index {
                     return Some(
                         glyph.position_along_baseline.x() - prev_glyph.position_along_baseline.x(),
                     );

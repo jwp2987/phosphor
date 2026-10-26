@@ -1542,10 +1542,10 @@ fn typeahead_is_young_only_while_the_provenance_lasts() {
     });
 }
 
-/// #968: a huge paste is never autodetected as an agent prompt, even when it reads as prose
-/// and the input was last in AI mode.
+/// #968: a huge paste never changes the input type in either direction. Forcing Shell would
+/// run pasted prose/logs on Enter; forcing AI would send them to the model.
 #[test]
-fn huge_buffer_is_never_autodetected_as_agent_prompt() {
+fn huge_buffer_never_changes_input_type() {
     assert!(!exceeds_autodetect_limit(
         &"a".repeat(MAX_AUTODETECT_BUFFER_BYTES)
     ));
@@ -1553,15 +1553,24 @@ fn huge_buffer_is_never_autodetected_as_agent_prompt() {
         &"a".repeat(MAX_AUTODETECT_BUFFER_BYTES + 1)
     ));
 
-    App::test((), |mut app| async move {
-        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
-        let input_model = build_autodetecting_input_model(&mut app, AI_UNLOCKED);
-        let prose = "please explain why the build fails on my machine today. ".repeat(1000);
-        assert!(exceeds_autodetect_limit(&prose));
-        request_detection(&mut app, &input_model, snapshot_without_parse(&prose));
-        input_model.read(&app, |model, ctx| {
-            assert_eq!(model.input_type(), InputType::Shell);
-            assert!(!model.is_detection_pending_for(&prose, ctx));
+    let prose = "please explain why the build fails on my machine today. ".repeat(1000);
+    // The attack: shell metacharacters in a big paste while in AI mode must stay AI.
+    let attack = "rm -rf ~/x ; echo hi\n".repeat(1000);
+    for (start, text, expected) in [
+        (AI_UNLOCKED, prose.clone(), InputType::AI),
+        (SHELL_UNLOCKED, prose, InputType::Shell),
+        (AI_UNLOCKED, attack.clone(), InputType::AI),
+        (SHELL_UNLOCKED, attack, InputType::Shell),
+    ] {
+        App::test((), |mut app| async move {
+            let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+            let input_model = build_autodetecting_input_model(&mut app, start);
+            assert!(exceeds_autodetect_limit(&text));
+            request_detection(&mut app, &input_model, snapshot_without_parse(&text));
+            input_model.read(&app, |model, ctx| {
+                assert_eq!(model.input_type(), expected);
+                assert!(!model.is_detection_pending_for(&text, ctx));
+            });
         });
-    });
+    }
 }
