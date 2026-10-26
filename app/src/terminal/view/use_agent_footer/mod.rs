@@ -498,9 +498,11 @@ impl TerminalView {
             .set_is_agent_tagged_in(true);
 
         if !self.model.lock().is_alt_screen_active() {
-            self.use_agent_footer.update(ctx, |footer, ctx| {
-                footer.clear_warpify_mode(ctx);
-            });
+            // Only hide the footer. The warpify mode (the "Phosphorize subshell" chip) is
+            // deliberately kept: clearing it here meant that after tagging the agent out the
+            // banner came back as a plain "Use agent" footer and the subshell could no longer
+            // be Phosphorized from it (#1004). It is cleared when the subshell is
+            // Phosphorized (`dismiss_warpify_banner`) or its block completes.
             self.suppress_use_agent_footer(ctx);
         }
 
