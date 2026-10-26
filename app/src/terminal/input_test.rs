@@ -9993,3 +9993,29 @@ fn test_enter_while_after_enter_replay_pending_queues_in_order() {
         });
     })
 }
+
+/// #1017: a quote completion consumes the editor's auto-paired closing quote instead of doubling it.
+#[test]
+fn completion_consumes_auto_paired_closing_quote() {
+    use super::end_past_auto_paired_closing_quote as end;
+    // `cat "wild|"` (auto-paired): the file completion closes the quote itself.
+    for q in ['"', '\''] {
+        let buffer = format!("cat {q}wild{q}");
+        let completion = format!("wild thing.txt{q}");
+        assert_eq!(end(&completion, &buffer, 9), 10, "auto-paired {q}");
+        // No auto-pairing: cursor at the end of the buffer, nothing to consume.
+        let buffer = format!("cat {q}wild");
+        assert_eq!(end(&completion, &buffer, 9), 9, "unpaired {q}");
+        // A different quote after the cursor is not the closer.
+        let other = if q == '"' { '\'' } else { '"' };
+        let buffer = format!("cat {q}wild{other}");
+        assert_eq!(end(&completion, &buffer, 9), 9, "mismatched {q}");
+        // A directory completion keeps the quote open; the auto-paired closer stays.
+        let buffer = format!("cat {q}wild{q}");
+        assert_eq!(end("wild dir/", &buffer, 9), 9, "directory {q}");
+    }
+    // An escaped quote at the end of the completion is part of the name, not a closer.
+    assert_eq!(end("foo\\\"", "cat foo\"", 7), 7);
+    // Out-of-range / non-boundary offsets never panic.
+    assert_eq!(end("a\"", "a", 5), 5);
+}

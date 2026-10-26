@@ -11617,6 +11617,11 @@ impl Input {
     ) {
         self.editor.update(ctx, |input, ctx| {
             let cursor_end_offset = input.end_byte_index_of_last_selection(ctx);
+            let cursor_end_offset = ByteOffset::from(end_past_auto_paired_closing_quote(
+                completion_prefix,
+                &input.buffer_text(ctx),
+                cursor_end_offset.as_usize(),
+            ));
             input.select_and_replace(
                 completion_prefix,
                 [ByteOffset::from(replacement_start)..cursor_end_offset],
@@ -11637,6 +11642,13 @@ impl Input {
         let is_completions_as_you_type_enabled = self.is_completions_while_typing_turned_on(ctx);
         self.editor.update(ctx, |input, ctx| {
             let cursor_end_offset = input.end_byte_index_of_last_selection(ctx);
+            // #1017: the editor auto-pairs `"`/`'`, so completing inside `cat "wild|"` leaves the
+            // closing quote after the cursor while the completion already ends with its own.
+            let cursor_end_offset = ByteOffset::from(end_past_auto_paired_closing_quote(
+                completion_result,
+                &input.buffer_text(ctx),
+                cursor_end_offset.as_usize(),
+            ));
 
             // Add a space to the end if the end of the selection/replacement
             // is at the end of the buffer and the completion result doesn't end with a slash.
@@ -15709,6 +15721,33 @@ impl View for Input {
         } else {
             self.render_classic_input(app)
         }
+    }
+}
+
+/// Where a completion's replacement range should end. The editor auto-pairs quotes, so
+/// completing `cat "wild<Tab>` leaves the buffer `cat "wild"` with the cursor before the
+/// auto-inserted closing quote, while the completer closes the quote itself for a file
+/// (`wild thing.txt"`). When `completion` ends with a quote and that same quote is the next
+/// character after the cursor (`cursor_end`, a byte offset), the replacement consumes it so the
+/// quote is not doubled (#1017). A quote escaped inside the completion (`\"`) is not a closer.
+pub(crate) fn end_past_auto_paired_closing_quote(
+    completion: &str,
+    buffer_text: &str,
+    cursor_end: usize,
+) -> usize {
+    let Some(quote) = completion
+        .chars()
+        .last()
+        .filter(|c| matches!(c, '"' | '\''))
+    else {
+        return cursor_end;
+    };
+    if completion[..completion.len() - 1].ends_with('\\') {
+        return cursor_end;
+    }
+    match buffer_text.get(cursor_end..) {
+        Some(rest) if rest.starts_with(quote) => cursor_end + 1,
+        _ => cursor_end,
     }
 }
 
