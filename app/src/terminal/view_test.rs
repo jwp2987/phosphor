@@ -14831,6 +14831,106 @@ fn plain_enter_always_reaches_the_pty() {
     })
 }
 
+/// #983 / #976: pure rule for the silent ssh connect phase.
+#[test]
+fn ssh_connect_silence_drops_only_before_any_prompt() {
+    let young = Some(Duration::from_secs(2));
+    // Nothing printed yet, young, not full-screen: drop.
+    assert!(ssh_connect_silence_drops_keys(false, false, young));
+    // A prompt is showing (host key, password, 2FA): never drop.
+    assert!(!ssh_connect_silence_drops_keys(false, true, young));
+    // Full-screen program, unknown age, or a long-running plain session: never drop.
+    assert!(!ssh_connect_silence_drops_keys(true, false, young));
+    assert!(!ssh_connect_silence_drops_keys(false, false, None));
+    assert!(!ssh_connect_silence_drops_keys(
+        false,
+        false,
+        Some(SSH_CONNECT_SILENCE_CEILING)
+    ));
+}
+
+fn record_pty_writes(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+) -> Rc<RefCell<Vec<Vec<u8>>>> {
+    let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+    let writes = pty_writes.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(terminal, move |_, event, _| {
+            if let Event::WriteBytesToPty { bytes } = event {
+                writes.borrow_mut().push(bytes.to_vec());
+            }
+        });
+    });
+    pty_writes
+}
+
+/// #976: while an ssh command runs with no remote session pending and a prompt (here the
+/// host-key question) is showing, a plain Enter and typed answers reach the pty.
+#[test]
+fn ssh_prompt_before_remote_session_receives_enter_and_typed_text() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block(
+                "ssh -o StrictHostKeyChecking=ask host",
+                "Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
+            );
+            view.warpify_state.set_pending_ssh_host(
+                "ssh -o StrictHostKeyChecking=ask host".to_owned(),
+                Some("host".to_owned()),
+            );
+            assert!(view.has_pending_ssh_command());
+            view.keydown_on_terminal("\r", ctx);
+            view.typed_characters_on_terminal("yes", ctx);
+            view.keydown_on_terminal("\r", ctx);
+        });
+        let writes = pty_writes.borrow();
+        assert_eq!(
+            writes.iter().filter(|w| w.as_slice() == b"\r").count(),
+            2,
+            "both Enters must reach ssh: {writes:?}"
+        );
+        assert!(writes.iter().any(|w| w.as_slice() == b"yes"), "{writes:?}");
+    })
+}
+
+/// #983: text typed while ssh is still silently connecting is dropped whole (never partly
+/// written to the tty), and keys flow again as soon as ssh prints a prompt.
+#[test]
+fn ssh_silent_connect_drops_typed_runs_whole_then_prompt_gets_keys() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            view.typed_characters_on_terminal("echo typed-", ctx);
+            view.typed_characters_on_terminal("during-connect", ctx);
+            view.keydown_on_terminal("\r", ctx);
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "nothing of the typed run may reach the tty: {:?}",
+            pty_writes.borrow()
+        );
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().process_bytes("host's password: ");
+            view.typed_characters_on_terminal("pw", ctx);
+            view.keydown_on_terminal("\r", ctx);
+        });
+        let writes = pty_writes.borrow();
+        assert!(writes.iter().any(|w| w.as_slice() == b"pw"), "{writes:?}");
+        assert!(writes.iter().any(|w| w.as_slice() == b"\r"), "{writes:?}");
+    })
+}
+
 /// #976: without the banner the agent shortcut behaves like the key did before: it reaches the
 /// pty as an Enter.
 #[test]

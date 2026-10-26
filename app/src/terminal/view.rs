@@ -476,7 +476,9 @@ use crate::terminal::keys::TerminalKeybindings;
 use crate::terminal::model::block::{AgentInteractionMetadata, BlockMetadata};
 use crate::terminal::model::block::{Block, BlockId};
 #[cfg(unix)]
-use crate::terminal::model::block::{InteractivePromptCandidate, interactive_prompt_candidate};
+use crate::terminal::model::block::{
+    InteractivePromptCandidate, interactive_prompt_candidate, text_before_cursor_on_cursor_line,
+};
 use crate::terminal::model::blocks::{BlockFilter, BlockList, EvictedBlocks};
 use crate::terminal::model::blocks::{
     AgentTranscriptNavigableItem, BlockHeight, BlockHeightItem, BlockHeightSummary, Gap,
@@ -690,6 +692,11 @@ const BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(7);
 /// Longest typing is dropped on behalf of one pending ssh bootstrap (#983). A healthy
 /// bootstrap finishes well inside this; a stuck or stale one must not own the keyboard.
 const SSH_BOOTSTRAP_SWALLOW_CEILING: Duration = Duration::from_secs(15);
+/// How long after an ssh command starts the silent connect phase (nothing printed yet, so no
+/// prompt can be waiting) drops typing instead of writing it to the tty, where it would be
+/// split between ssh, the remote tty and the injected bootstrap (#983). Later than this the
+/// command is a plain interactive session and every key goes to the pty.
+const SSH_CONNECT_SILENCE_CEILING: Duration = Duration::from_secs(15);
 /// After this long without a finished subshell bootstrap, input is no longer held back (#960).
 const SUBSHELL_BOOTSTRAP_STALL_CEILING: Duration = Duration::from_secs(20);
 /// Duration before we consider a session invoked from an env vars object to
@@ -9599,7 +9606,13 @@ impl TerminalView {
     /// exactly the corruption being avoided -- and focus is handed back to
     /// the dialog so the next key drives it.
     fn swallow_input_during_ssh_setup(&mut self, ctx: &mut ViewContext<Self>) -> bool {
-        let dialog_up = self.active_ssh_remote_server_choice_block().is_some();
+        // The dialog only owns input while it belongs to the pending session. A choice block left
+        // behind by an earlier, abandoned connect must not swallow the keys of a later ssh
+        // command (host-key / password prompts) (#976).
+        let pending_now = self.model.lock().pending_session_id();
+        let dialog_up = self
+            .active_ssh_remote_server_choice_block()
+            .is_some_and(|handle| Some(handle.as_ref(ctx).session_id()) == pending_now);
         let setup_in_flight = FeatureFlag::SshRemoteServer.is_enabled()
             && self
                 .model
@@ -9632,7 +9645,24 @@ impl TerminalView {
             &mut self.ssh_bootstrap_swallow_started,
             Instant::now(),
         );
-        if !(dialog_up || setup_in_flight || ssh_bootstrapping) {
+        // #983 / #976: before the remote shell announces itself there is no pending session, and
+        // the ssh process owns the pty. While it has printed no prompt (nothing before the
+        // cursor) it is still connecting and anything typed would reach the tty ahead of the
+        // bootstrap and be split from the rest of the line. Drop the whole run. A prompt
+        // (host key, password, 2FA) always leaves text before the cursor, so its answers --
+        // including a bare Enter -- are never held here.
+        let ssh_connecting_silently = pending_now.is_none() && self.has_pending_ssh_command() && {
+            let model = self.model.lock();
+            let block = model.block_list().active_block();
+            let prompt_visible =
+                text_before_cursor_on_cursor_line(block.output_grid().grid_handler())
+                    .is_some_and(|text| !text.trim().is_empty());
+            let age = block
+                .start_ts()
+                .and_then(|start| Local::now().signed_duration_since(*start).to_std().ok());
+            ssh_connect_silence_drops_keys(model.is_alt_screen_active(), prompt_visible, age)
+        };
+        if !(dialog_up || setup_in_flight || ssh_bootstrapping || ssh_connecting_silently) {
             self.ssh_setup_drop_notified = false;
             return false;
         }
@@ -30993,6 +31023,19 @@ fn subshell_bootstrap_key_forwarded(
 ) -> bool {
     (pending && abort_key)
         || announced_age.is_some_and(|age| abort_key || age >= SUBSHELL_BOOTSTRAP_STALL_CEILING)
+}
+
+/// Whether typing is dropped because an ssh command is still silently connecting (#983): it has
+/// run for less than `SSH_CONNECT_SILENCE_CEILING`, is not full-screen, and shows no prompt.
+/// Any text before the cursor means ssh (or the remote) is asking something, and the user's
+/// keys, a bare Enter included, must reach it (#976). `age` is `None` when unknown, which never
+/// drops.
+fn ssh_connect_silence_drops_keys(
+    alt_screen: bool,
+    prompt_visible: bool,
+    age: Option<Duration>,
+) -> bool {
+    !alt_screen && !prompt_visible && age.is_some_and(|age| age < SSH_CONNECT_SILENCE_CEILING)
 }
 
 /// Whether typing is still dropped for a pending ssh bootstrap (#983). Pure so the bounds are
