@@ -664,6 +664,34 @@ pub enum AIAgentPtyWriteMode {
 }
 
 impl AIAgentPtyWriteMode {
+    /// For a write whose target is an interactive shell's own prompt (`bash --norc`, a
+    /// non-warpified `zsh`/`fish`): a `Raw` write that is exactly one printable line plus its
+    /// terminating Enter is rewritten as a [`Self::Line`] write of that line. The model picks
+    /// the mode, and `Raw` leaves whatever the user had typed on the shell's line in front of the
+    /// command, so Enter submits both (`echo unmanaged-okecho unmanaged-ok`, #979). Line mode
+    /// clears the editor line first. Writes that are not a single plain line (control bytes,
+    /// escape sequences, several lines, no Enter) and the other modes are returned unchanged.
+    pub fn normalized_for_shell_prompt(self, input: &[u8]) -> (Vec<u8>, Self) {
+        if self != AIAgentPtyWriteMode::Raw {
+            return (input.to_vec(), self);
+        }
+        let line = input
+            .strip_suffix(b"\r\n")
+            .or_else(|| input.strip_suffix(b"\n"))
+            .or_else(|| input.strip_suffix(b"\r"));
+        match line {
+            Some(line)
+                if !line.is_empty()
+                    && line
+                        .iter()
+                        .all(|&byte| byte == b'\t' || (byte >= 0x20 && byte != 0x7f)) =>
+            {
+                (line.to_vec(), AIAgentPtyWriteMode::Line)
+            }
+            _ => (input.to_vec(), self),
+        }
+    }
+
     /// Decorates input bytes according to the write mode.
     pub fn decorate_bytes(
         self,
@@ -951,6 +979,51 @@ mod pty_write_mode_tests {
         let bytes = AIAgentPtyWriteMode::Line.decorate_bytes(b"echo ok ".to_vec(), false);
         assert_eq!(&bytes[..2], &[C0::SOH, C0::VT]);
         assert_eq!(bytes.last(), Some(&C0::CR));
+    }
+
+    /// #979: a model-chosen `Raw` write of one command line plus Enter, aimed at a shell prompt,
+    /// becomes a Line write, so the editor line is cleared first and the approval card shows it.
+    #[test]
+    fn a_raw_single_line_write_to_a_shell_prompt_becomes_a_line_write() {
+        for input in [
+            &b"echo unmanaged-ok\n"[..],
+            b"echo unmanaged-ok\r",
+            b"echo unmanaged-ok\r\n",
+        ] {
+            let (line, mode) = AIAgentPtyWriteMode::Raw.normalized_for_shell_prompt(input);
+            assert_eq!(mode, AIAgentPtyWriteMode::Line);
+            assert_eq!(line, b"echo unmanaged-ok");
+            assert_eq!(
+                mode.decorate_bytes(line, false),
+                [&[C0::SOH, C0::VT][..], b"echo unmanaged-ok", &[C0::CR]].concat()
+            );
+        }
+    }
+
+    /// Anything that is not one plain line is left exactly as the model wrote it.
+    #[test]
+    fn other_shell_prompt_writes_are_left_alone() {
+        for input in [
+            &b"echo no-enter"[..],
+            b"\n",
+            b"",
+            b"a\nb\n",
+            b"\x03",
+            b"q\x1b[A\n",
+            b"\x01echo x\n",
+        ] {
+            assert_eq!(
+                AIAgentPtyWriteMode::Raw.normalized_for_shell_prompt(input),
+                (input.to_vec(), AIAgentPtyWriteMode::Raw),
+                "{input:?}"
+            );
+        }
+        for mode in [AIAgentPtyWriteMode::Line, AIAgentPtyWriteMode::Block] {
+            assert_eq!(
+                mode.normalized_for_shell_prompt(b"echo x\n"),
+                (b"echo x\n".to_vec(), mode)
+            );
+        }
     }
 
     #[test]

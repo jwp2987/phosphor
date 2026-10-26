@@ -276,6 +276,20 @@ fn buffer_has_prose_colon_shape(buffer_text: &str) -> bool {
     words.any(|word| word.ends_with(':'))
 }
 
+/// Shell program names that are not dictionary words (`ksh`, `tcsh`, `xonsh`...), so
+/// [`is_ordinary_english_word`] cannot recognise them. They still open sentences ("ksh is great")
+/// and, like `fish`, count as a command only when the program is installed (#965, #1018); the
+/// ordinary-English gate in [`first_token_forces_ai_override`] would otherwise let the model's
+/// Shell verdict stand for them when they are known-absent.
+fn is_non_english_shell_name(word: &str) -> bool {
+    const NAMES: [&str; 12] = [
+        "ksh", "mksh", "pdksh", "tcsh", "csh", "zsh", "pwsh", "xonsh", "elvish", "nu", "nushell",
+        "yash",
+    ];
+    let lower = word.to_ascii_lowercase();
+    NAMES.contains(&lower.as_str())
+}
+
 /// Returns true iff a Shell classification should be overridden back to AI for this buffer.
 ///
 /// This is intentionally narrow: it only fires when the buffer's *effective* first token (the
@@ -325,7 +339,9 @@ pub fn first_token_forces_ai_override(
         return false;
     }
 
-    if !is_ordinary_english_word(token.token.as_str()) {
+    if !is_ordinary_english_word(token.token.as_str())
+        && !is_non_english_shell_name(token.token.as_str())
+    {
         return false;
     }
 

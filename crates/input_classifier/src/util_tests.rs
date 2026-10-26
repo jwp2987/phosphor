@@ -328,6 +328,43 @@ async fn first_token_forces_ai_override_for(buffer: &str, commands_fully_loaded:
     first_token_forces_ai_override(&token, commands_fully_loaded)
 }
 
+// #1018: a shell name that is not a dictionary word (`ksh`, `tcsh`, `xonsh`...) is a command only
+// when installed, like `fish` (#965). With no command evidence and a complete command index, a
+// model's Shell verdict for a sentence opened by one must be overridden back to AI.
+#[test]
+fn test_first_token_forces_ai_override_for_absent_non_english_shell_names() {
+    futures::executor::block_on(async move {
+        for buffer in [
+            "ksh is great",
+            "ksh is old",
+            "tcsh vs csh?",
+            "zsh is great",
+            "xonsh is fun",
+            "elvish is great",
+            "nu is great",
+            "KSH is great",
+        ] {
+            assert!(
+                first_token_forces_ai_override_for(buffer, true).await,
+                "{buffer:?}"
+            );
+            assert!(
+                !first_token_forces_ai_override_for(buffer, false).await,
+                "index not loaded: {buffer:?}"
+            );
+        }
+        // Installed (a description is present): no override.
+        let mut installed = mock_parsed_input_token("ksh is great".to_string()).await;
+        clear_all_token_descriptions(&mut installed);
+        installed.parsed_tokens[0].token_description = Some(Description {
+            token: installed.parsed_tokens[0].token.clone(),
+            description_text: Some("installed program".to_string()),
+            suggestion_type: SuggestionType::Command(TopLevelCommandCaseSensitivity::CaseSensitive),
+        });
+        assert!(!first_token_forces_ai_override(&installed, true));
+    });
+}
+
 #[test]
 fn test_first_token_forces_ai_override_for_english_words_when_commands_fully_loaded() {
     futures::executor::block_on(async move {

@@ -29,6 +29,7 @@ pub(crate) use execute::FileReadResult;
 pub(crate) use execute::MalformedFinalLineProxyEvent;
 pub(crate) use execute::apply_edits;
 pub(crate) use execute::coerce_integer_args;
+pub(crate) use execute::pty_write_for_target_command;
 pub use execute::{
     EditAcceptAndContinueClickedEvent, EditAcceptClickedEvent, EditResolvedEvent, EditStats,
     NewConversationDecision, PromptSuggestionExecutor, PromptSuggestionExecutorEvent,

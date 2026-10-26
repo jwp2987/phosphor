@@ -298,6 +298,10 @@ impl Input {
 
                 self.decorations_future_handle = Some(ctx.spawn_abortable(
                     async move {
+                        // #1019: a program installed since the bootstrap scan is a command.
+                        completion_context
+                            .session
+                            .discover_command_word_in_buffer(&buffer_text);
                         (
                             parse_current_commands_and_tokens(buffer_text, &completion_context)
                                 .await,

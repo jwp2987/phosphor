@@ -42,6 +42,7 @@ pub use request_file_edits::{
 };
 pub use send_message::SendMessageToAgentExecutor;
 use serde::{Deserialize, Serialize};
+pub(crate) use shell_command::pty_write_for_target_command;
 pub use shell_command::{ShellCommandExecutor, ShellCommandExecutorEvent};
 pub use start_agent::{
     StartAgentExecutor, StartAgentExecutorEvent, StartAgentOutcome, StartAgentRequest,

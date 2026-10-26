@@ -45,6 +45,7 @@ use warpui::{
 };
 
 use crate::ai::agent::{AIAgentPtyWriteMode, CancellationReason};
+use crate::ai::blocklist::pty_write_for_target_command;
 use crate::ai::blocklist::block::view_impl::common::{
     render_query_text, UserQueryProps, BLOCKED_ACTION_MESSAGE_FOR_GREP_OR_FILE_GLOB,
     BLOCKED_ACTION_MESSAGE_FOR_READING_FILES,
@@ -2004,16 +2005,32 @@ impl View for CLISubagentView {
                 if let Some(rendered_action) =
                     blocked_action.and_then(|action| match action.action {
                         AIAgentActionType::WriteToLongRunningShellCommand {
-                            input, mode, ..
+                            block_id,
+                            input,
+                            mode,
                         } => Some(render_blocked_action(
                             BlockedActionProps {
                                 header:
                                     BLOCKED_ACTION_MESSAGE_FOR_WRITE_TO_LONG_RUNNING_SHELL_COMMAND
                                         .to_string(),
                                 description: Some(render_write_to_pty_input(
-                                    WriteToPtyInputProps {
-                                        input: input.clone(),
-                                        mode,
+                                    {
+                                        // The keys shown are the keys sent: for a shell prompt
+                                        // that includes the clear-line prefix (#979).
+                                        let target_command = self
+                                            .terminal_model
+                                            .lock()
+                                            .block_list()
+                                            .block_with_id(&block_id)
+                                            .map(|block| {
+                                                block.command_with_secrets_unobfuscated(false)
+                                            });
+                                        let (input, mode) = pty_write_for_target_command(
+                                            target_command.as_deref(),
+                                            &input,
+                                            mode,
+                                        );
+                                        WriteToPtyInputProps { input, mode }
                                     },
                                     app,
                                 )),

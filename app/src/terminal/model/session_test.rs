@@ -557,3 +557,148 @@ fn knows_command_word_goes_stale_after_a_command_that_may_change_the_command_set
         }
     });
 }
+
+// #1019: the bootstrap `$PATH` scan is a one-time snapshot; a program installed afterwards must
+// still become a known command once the user types it.
+#[cfg(unix)]
+mod late_commands {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn session_with_path(path: &std::path::Path) -> Arc<Session> {
+        let info = SessionInfo::new_for_test()
+            .with_shell_type(ShellType::Bash)
+            .with_builtins(names(&["cd", "echo"]))
+            .with_path(Some(path.display().to_string()));
+        let session = Arc::new(Session::new(info, RecordingCommandExecutor::failing()));
+        session.set_external_commands(["git"]);
+        session
+    }
+
+    fn install(dir: &std::path::Path, name: &str, mode: u32) {
+        let file = dir.join(name);
+        std::fs::write(&file, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[test]
+    fn an_executable_installed_after_bootstrap_becomes_a_known_command() {
+        App::test((), |_app| async move {
+            let dir = tempfile::tempdir().unwrap();
+            let session = session_with_path(dir.path());
+            session.discover_command_word("zorkle");
+            assert_eq!(session.knows_command_word("zorkle"), Some(false));
+            assert!(!session.top_level_commands().any(|c| c == "zorkle"));
+
+            install(dir.path(), "zorkle", 0o755);
+            // The earlier miss is remembered for a few seconds ...
+            session.discover_command_word("zorkle");
+            assert_eq!(session.knows_command_word("zorkle"), Some(false));
+            // ... until a command that may have installed something runs.
+            session.note_user_command("chmod +x ~/bin/zorkle");
+            session.discover_command_word("zorkle");
+            assert_eq!(session.knows_command_word("zorkle"), Some(true));
+            assert!(session.top_level_commands().any(|c| c == "zorkle"));
+            // Bootstrap-known names are untouched.
+            assert_eq!(session.knows_command_word("git"), Some(true));
+        });
+    }
+
+    #[test]
+    fn only_executable_files_named_by_a_bare_word_are_found() {
+        App::test((), |_app| async move {
+            let dir = tempfile::tempdir().unwrap();
+            install(dir.path(), "plainfile", 0o644);
+            std::fs::create_dir(dir.path().join("adir")).unwrap();
+            install(dir.path(), "real", 0o755);
+            let session = session_with_path(dir.path());
+            let outside = dir.path().join("real").display().to_string();
+            for word in [
+                "plainfile",
+                "adir",
+                "./real",
+                "../real",
+                outside.as_str(),
+                "re/al",
+                "-real",
+                "",
+                "$(real)",
+            ] {
+                session.discover_command_word(word);
+            }
+            assert!(
+                !session
+                    .top_level_commands()
+                    .any(|c| c == "real" || c == outside)
+            );
+            assert_eq!(session.knows_command_word("plainfile"), Some(false));
+            session.discover_command_word("real");
+            assert_eq!(session.knows_command_word("real"), Some(true));
+        });
+    }
+
+    #[test]
+    fn the_buffer_form_looks_up_a_finished_first_word_only() {
+        App::test((), |_app| async move {
+            let dir = tempfile::tempdir().unwrap();
+            install(dir.path(), "zorkle", 0o755);
+            let session = session_with_path(dir.path());
+            session.discover_command_word_in_buffer("zorkle");
+            session.discover_command_word_in_buffer("zork");
+            assert_eq!(session.knows_command_word("zorkle"), Some(false));
+            session.discover_command_word_in_buffer("  zorkle is great");
+            assert_eq!(session.knows_command_word("zorkle"), Some(true));
+        });
+    }
+
+    #[test]
+    fn a_directory_added_to_path_in_the_session_is_searched() {
+        App::test((), |_app| async move {
+            let bootstrap_dir = tempfile::tempdir().unwrap();
+            let new_dir = tempfile::tempdir().unwrap();
+            install(new_dir.path(), "zorkle2", 0o755);
+            let session = session_with_path(bootstrap_dir.path());
+            session.discover_command_word("zorkle2");
+            assert_eq!(session.knows_command_word("zorkle2"), Some(false));
+            session.note_user_command(&format!("export PATH={}:$PATH", new_dir.path().display()));
+            session.discover_command_word("zorkle2");
+            assert_eq!(session.knows_command_word("zorkle2"), Some(true));
+        });
+    }
+
+    #[test]
+    fn remote_sessions_are_never_probed_locally() {
+        App::test((), |_app| async move {
+            let dir = tempfile::tempdir().unwrap();
+            install(dir.path(), "zorkle", 0o755);
+            let info = SessionInfo::new_for_test()
+                .with_session_type(BootstrapSessionType::WarpifiedRemote)
+                .with_shell_type(ShellType::Bash)
+                .with_builtins(names(&["cd"]))
+                .with_path(Some(dir.path().display().to_string()));
+            let session = Arc::new(Session::new(info, RecordingCommandExecutor::failing()));
+            session.set_external_commands(["git"]);
+            session.discover_command_word("zorkle");
+            assert!(!session.top_level_commands().any(|c| c == "zorkle"));
+        });
+    }
+
+    #[test]
+    fn path_assignments_yield_only_literal_absolute_directories() {
+        let dirs = |command: &str| super::super::path_dirs_assigned_in(command, Some("/home/u"));
+        let p = std::path::PathBuf::from;
+        assert_eq!(
+            dirs("export PATH=$HOME/bin:/opt/x:$PATH"),
+            vec![p("/home/u/bin"), p("/opt/x")]
+        );
+        assert_eq!(
+            dirs("PATH=\"~/.local/bin:/usr/bin\" tool"),
+            vec![p("/home/u/.local/bin"), p("/usr/bin")]
+        );
+        assert_eq!(dirs("export PATH=${HOME}/b; ls"), vec![p("/home/u/b")]);
+        // Relative, expanded-by-the-shell and other variables are not literal.
+        assert!(dirs("export PATH=bin:$(pwd)/x:$HOMEX/y:$OTHER/z").is_empty());
+        assert!(dirs("export MANPATH=/m GOPATH=/g").is_empty());
+        assert!(super::super::path_dirs_assigned_in("export PATH=~/b", None).is_empty());
+    }
+}

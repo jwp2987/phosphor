@@ -552,6 +552,9 @@ impl ShellCommandExecutor {
                         ),
                     );
                 }
+                let target_command = block.command_with_secrets_unobfuscated(false);
+                let (input, mode) =
+                    pty_write_for_target_command(Some(&target_command), input, *mode);
                 // Drop immutable borrow.
                 drop(model);
 
@@ -561,10 +564,7 @@ impl ShellCommandExecutor {
                 }
                 drop(model);
 
-                ctx.emit(ShellCommandExecutorEvent::WriteToPty {
-                    input: input.clone(),
-                    mode: *mode,
-                });
+                ctx.emit(ShellCommandExecutorEvent::WriteToPty { input, mode });
 
                 let block_selector = BlockSelector::Id(block_id.clone());
                 ActionExecution::new_async(
@@ -1309,6 +1309,24 @@ fn command_starts_non_terminating_session(command: &str) -> bool {
             )
         })
         || is_interactive_shell_invocation(command)
+}
+
+/// The bytes and mode an agent write to a running command actually uses. When the command is a
+/// shell sitting at its prompt (an unmanaged `bash --norc`, #979), a model-chosen `Raw` one-line
+/// write is made a Line write, which clears whatever the user had already typed on that line
+/// before the input and Enter. The executor and the approval card both call this, so the card
+/// shows the keys that will be sent.
+pub(crate) fn pty_write_for_target_command(
+    target_command: Option<&str>,
+    input: &Bytes,
+    mode: AIAgentPtyWriteMode,
+) -> (Bytes, AIAgentPtyWriteMode) {
+    if target_command.is_some_and(is_interactive_shell_invocation) {
+        let (bytes, mode) = mode.normalized_for_shell_prompt(input);
+        (Bytes::from(bytes), mode)
+    } else {
+        (input.clone(), mode)
+    }
 }
 
 /// Shell binaries that sit at a prompt forever when started without a command or script.

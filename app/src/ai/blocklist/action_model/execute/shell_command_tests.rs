@@ -14,6 +14,51 @@ use crate::terminal::model::session::Sessions;
 use crate::terminal::model::terminal_model::BlockIndex;
 use crate::test_util::terminal::initialize_app_for_terminal_view;
 
+// #979: an agent write into an unmanaged interactive shell must clear the user's pending line
+// first, whichever mode the model picked, and the approval card must show it.
+#[test]
+fn a_one_line_write_to_an_interactive_shell_clears_the_pending_line() {
+    let input = Bytes::from_static(b"echo unmanaged-ok\n");
+    for command in [
+        "bash --norc",
+        "bash",
+        "env HISTFILE=/dev/null zsh -f",
+        "exec fish",
+    ] {
+        let (bytes, mode) =
+            pty_write_for_target_command(Some(command), &input, AIAgentPtyWriteMode::Raw);
+        assert_eq!(mode, AIAgentPtyWriteMode::Line, "{command}");
+        assert_eq!(
+            mode.decorate_bytes(bytes.to_vec(), false),
+            b"\x01\x0becho unmanaged-ok\r",
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn writes_to_other_targets_keep_the_model_chosen_bytes() {
+    let input = Bytes::from_static(b"echo unmanaged-ok\n");
+    for command in [
+        Some("python3"),
+        Some("bash -c 'sleep 9'"),
+        Some("vim x"),
+        None,
+    ] {
+        let (bytes, mode) = pty_write_for_target_command(command, &input, AIAgentPtyWriteMode::Raw);
+        assert_eq!(
+            (bytes, mode),
+            (input.clone(), AIAgentPtyWriteMode::Raw),
+            "{command:?}"
+        );
+    }
+    // A shell prompt target, but not a plain one-line submit: untouched.
+    let ctrl_c = Bytes::from_static(b"\x03");
+    let (bytes, mode) =
+        pty_write_for_target_command(Some("bash --norc"), &ctrl_c, AIAgentPtyWriteMode::Raw);
+    assert_eq!((bytes, mode), (ctrl_c, AIAgentPtyWriteMode::Raw));
+}
+
 #[test]
 fn detects_interactive_session_commands_across_platforms() {
     for command in [
