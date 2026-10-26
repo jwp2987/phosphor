@@ -20746,7 +20746,11 @@ impl TerminalView {
             }
         }
 
-        if should_redetermine_focus {
+        // #1028: a click on the pending approval card (text, code, icon) ends in this mouse-up.
+        // The card already holds focus, so re-deriving focus here would hand it to the input and
+        // Enter would no longer reach the card's Run binding. Typing still moves focus to the
+        // input (`typed_characters_on_terminal`).
+        if should_redetermine_focus && !self.typed_on_approval_card(ctx) {
             self.redetermine_global_focus(ctx);
         }
     }

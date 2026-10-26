@@ -7829,6 +7829,91 @@ fn typing_while_an_approval_card_is_focused_goes_to_the_input_and_never_approves
     })
 }
 
+/// #1028 side effect: clicking the pending approval card (mouse-up over the block list) keeps
+/// focus on the card, so a following Enter still reaches its Run binding; typing afterwards still
+/// moves focus to the input.
+#[test]
+fn clicking_the_approval_card_keeps_focus_on_the_card() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(crate::notebooks::editor::keys::NotebookKeybindings::new);
+        let (window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
+        let (card, action_id, conversation_id, _pty_writes) =
+            setup_requested_command_card(&mut app, &terminal);
+        let terminal_view_id = terminal.read(&app, |view, _| view.view_id);
+        BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
+            history.set_active_conversation_id(conversation_id, terminal_view_id, ctx);
+        });
+        let action_model = terminal.read(&app, |view, _| view.ai_action_model.clone());
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model.queue_action_for_test(
+                crate::ai::agent::AIAgentAction {
+                    id: action_id.clone(),
+                    task_id: TaskId::new("task".to_owned()),
+                    action: crate::ai::agent::AIAgentActionType::RequestCommandOutput {
+                        command: "sleep 100000".to_owned(),
+                        is_read_only: None,
+                        is_risky: None,
+                        rationale: None,
+                        uses_pager: None,
+                        wait_until_completion: true,
+                        citations: vec![],
+                    },
+                    requires_result: false,
+                },
+                conversation_id,
+                ctx,
+            );
+        });
+        for _ in 0..64 {
+            let is_blocked = action_model.read(&app, |action_model, _| {
+                action_model
+                    .get_action_status(&action_id)
+                    .is_some_and(|status| status.is_blocked())
+            });
+            if is_blocked {
+                break;
+            }
+            futures_lite::future::yield_now().await;
+        }
+
+        terminal.update(&mut app, |_, ctx| ctx.focus(&card));
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.approval_card_view_id(ctx),
+                Some(card.id()),
+                "precondition: the card is the pending approval card"
+            );
+        });
+
+        // The mouse-up a click on a rich-content (AI) block ends with.
+        terminal.update(&mut app, |view, ctx| {
+            view.block_select(
+                &BlockSelectAction::MouseUp {
+                    block_index: BlockIndex::zero(),
+                    is_ctrl_down: false,
+                    is_cmd_down: false,
+                    is_shift_down: false,
+                },
+                true,
+                ctx,
+            );
+        });
+        assert_eq!(
+            app.focused_view_id(window_id),
+            Some(card.id()),
+            "a click on the approval card must leave focus on the card"
+        );
+
+        // Typing afterwards still moves to the input.
+        terminal.update(&mut app, |view, ctx| view.typed_characters_on_terminal("x", ctx));
+        assert_ne!(app.focused_view_id(window_id), Some(card.id()));
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input().as_ref(ctx).buffer_text(ctx), "x");
+        });
+    })
+}
+
 /// #850, end to end through the keymap: a real ctrl-c keystroke dispatched with focus on a
 /// running command's card (responder chain terminal -> AI block -> card, where approving with
 /// Enter leaves focus) is not claimed by the card's Reject binding and reaches the terminal's
