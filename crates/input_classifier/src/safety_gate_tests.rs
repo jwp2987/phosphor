@@ -808,6 +808,8 @@ fn test_965_described_collision_heads_follow_the_owner_rules() {
             "say hello",
             "say hey",
             "say hi",
+            "say hello world",
+            "say how are you",
             "Say hello",
             "where is the config",
             "what does ls -la do",
@@ -816,6 +818,8 @@ fn test_965_described_collision_heads_follow_the_owner_rules() {
         let to_shell = [
             "say \"build done\"",
             "say -v Alex hi",
+            "say -v Alex hello world",
+            "say hello $(whoami)",
             "where is git",
             "what is ls",
             "what /usr/bin/ls",
