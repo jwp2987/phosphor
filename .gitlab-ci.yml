@@ -22,7 +22,12 @@ workflow:
     # and running both would duplicate every pipeline.
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
       when: never
-    - when: always
+    # Both runners are ref_protected, so a pipeline on an UNPROTECTED ref could only sit
+    # pending forever. Protected refs are `main`, `build/*` and `v*` tags (Maintainers
+    # only): push work as `build/<name>` to get CI. Anything else is plain Git.
+    - if: $CI_COMMIT_REF_PROTECTED == "true"
+      when: always
+    - when: never
 
 stages: [test, cli, build, publish]
 
@@ -604,8 +609,8 @@ cli-linux:
       (cd cli-artifacts && sha256sum phosphor-cli-linux-x86_64.tar.gz > manifest-cli-linux.txt)
       (cd out && sha256sum phosphor-tui-linux-x86_64.tar.gz >> ../cli-artifacts/manifest-cli-linux.txt)
   artifacts:
-    paths: [cli-artifacts/]
-    expire_in: 7 days
+    paths: [cli-artifacts/, out/phosphor-tui-linux-x86_64.tar.gz]
+    expire_in: 3 days
 
 cli-macos:
   extends: [.shim_github_env, .release_rules]
@@ -636,8 +641,8 @@ cli-macos:
       (cd cli-artifacts && shasum -a 256 phosphor-cli-macos-aarch64.tar.gz > manifest-cli-macos.txt)
       (cd out && shasum -a 256 phosphor-tui-macos-aarch64.tar.gz >> ../cli-artifacts/manifest-cli-macos.txt)
   artifacts:
-    paths: [cli-artifacts/]
-    expire_in: 7 days
+    paths: [cli-artifacts/, out/phosphor-tui-macos-aarch64.tar.gz]
+    expire_in: 3 days
 
 # Digest pinning shared by both GUI jobs. Sourced, not executed: it exports the
 # PHOSPHOR_CLI_SHA256_* variables the client bakes in with option_env!. Unset on
@@ -682,8 +687,10 @@ release-macos-arm64:
       ./script/ci/upload_package "$RELEASE_VERSION" dist/*
       (cd dist && shasum -a 256 * > ../manifest-macos.txt)
   artifacts:
-    paths: [manifest-macos.txt]
-    expire_in: 7 days
+    # dist/ is here so a dry run (which does not upload) still yields the installer, as a
+    # member-only job artifact.
+    paths: [manifest-macos.txt, dist/]
+    expire_in: 3 days
 
 release-linux-x86_64:
   extends: .release_box
@@ -717,8 +724,8 @@ release-linux-x86_64:
       ./script/ci/upload_package "$RELEASE_VERSION" dist/*
       (cd dist && sha256sum * > ../manifest-linux.txt)
   artifacts:
-    paths: [manifest-linux.txt]
-    expire_in: 7 days
+    paths: [manifest-linux.txt, dist/]
+    expire_in: 3 days
 
 # Creates the GitLab release for a TAG: links to everything uploaded above, each with a
 # direct_asset_path so /-/releases/<tag>/downloads/<file> works. Skipped for dry runs on
