@@ -7745,6 +7745,83 @@ fn requested_command_card_is_rejectable_only_while_a_decision_is_pending() {
     })
 }
 
+/// #1028: printable keys typed while a pending approval card holds focus are not swallowed and
+/// do not leave focus on the card: they land in the agent input and focus moves there, so a
+/// following Enter submits the follow-up instead of reaching the card's Enter -> Run binding.
+/// The action stays blocked (nothing was approved).
+#[test]
+fn typing_while_an_approval_card_is_focused_goes_to_the_input_and_never_approves() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(crate::notebooks::editor::keys::NotebookKeybindings::new);
+        let (window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
+        let (card, action_id, conversation_id, _pty_writes) =
+            setup_requested_command_card(&mut app, &terminal);
+        let action_model = terminal.read(&app, |view, _| view.ai_action_model.clone());
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model.queue_action_for_test(
+                crate::ai::agent::AIAgentAction {
+                    id: action_id.clone(),
+                    task_id: TaskId::new("task".to_owned()),
+                    action: crate::ai::agent::AIAgentActionType::RequestCommandOutput {
+                        command: "sleep 100000".to_owned(),
+                        is_read_only: None,
+                        is_risky: None,
+                        rationale: None,
+                        uses_pager: None,
+                        wait_until_completion: true,
+                        citations: vec![],
+                    },
+                    requires_result: false,
+                },
+                conversation_id,
+                ctx,
+            );
+        });
+        for _ in 0..64 {
+            let is_blocked = action_model.read(&app, |action_model, _| {
+                action_model
+                    .get_action_status(&action_id)
+                    .is_some_and(|status| status.is_blocked())
+            });
+            if is_blocked {
+                break;
+            }
+            futures_lite::future::yield_now().await;
+        }
+
+        // Focus is on the card, as it is when the approval card first appears.
+        terminal.update(&mut app, |_, ctx| ctx.focus(&card));
+        assert_eq!(app.focused_view_id(window_id), Some(card.id()));
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.approval_card_view_id(ctx),
+                Some(card.id()),
+                "precondition: the card is the pending approval card"
+            );
+        });
+
+        terminal.update(&mut app, |view, ctx| view.typed_characters_on_terminal("x", ctx));
+
+        assert_ne!(
+            app.focused_view_id(window_id),
+            Some(card.id()),
+            "typing must move focus off the approval card"
+        );
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input().as_ref(ctx).buffer_text(ctx), "x");
+        });
+        action_model.read(&app, |action_model, _| {
+            assert!(
+                action_model
+                    .get_action_status(&action_id)
+                    .is_some_and(|status| status.is_blocked()),
+                "typing must never approve the command"
+            );
+        });
+    })
+}
+
 /// #850, end to end through the keymap: a real ctrl-c keystroke dispatched with focus on a
 /// running command's card (responder chain terminal -> AI block -> card, where approving with
 /// Enter leaves focus) is not claimed by the card's Reject binding and reaches the terminal's
@@ -16348,4 +16425,25 @@ fn test_after_enter_replay_drains_in_typed_order() {
             assert_eq!(input.buffer_text(ctx), "echo X");
         });
     })
+}
+
+/// #1026: every cancel/error restore of a queued prompt names what happened and why.
+#[test]
+fn queue_restore_notice_says_it_was_put_back_and_why() {
+    use crate::ai::blocklist::block::FinishReason;
+    for reason in [
+        FinishReason::Error,
+        FinishReason::Cancelled,
+        FinishReason::CancelledDuringRequestedCommandExecution,
+    ] {
+        let prompt = queue_restore_notice(reason, false);
+        assert!(prompt.contains("queued prompt"), "{prompt}");
+        assert!(prompt.contains("put back in the input"), "{prompt}");
+    }
+    assert!(queue_restore_notice(FinishReason::Error, true).contains("queued command"));
+    assert_ne!(
+        queue_restore_notice(FinishReason::Error, false),
+        queue_restore_notice(FinishReason::Cancelled, false),
+        "the reason must differ between a failure and a stop"
+    );
 }

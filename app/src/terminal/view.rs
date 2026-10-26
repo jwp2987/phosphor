@@ -2252,6 +2252,9 @@ pub struct TerminalViewRenderContext {
     pub highlighted_url: Option<GridHighlightedLink>,
     pub link_tool_tip: Option<GridHighlightedLink>,
     pub is_terminal_focused: bool,
+    /// The pending command-approval card whose focus should hand printable keys to the agent
+    /// input (#1028).
+    pub approval_card_view_id: Option<EntityId>,
     pub is_terminal_selecting: bool,
     pub is_context_menu_open: bool,
     pub is_waterfall_gap_mode: bool,
@@ -5713,6 +5716,11 @@ impl TerminalView {
                                 model.remove_fired_row(conversation_id, query_id, ctx);
                             });
                         } else if self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
+                            self.notify_queue_notice(
+                                "A queued command could not start; it was put back in the input."
+                                    .to_owned(),
+                                ctx,
+                            );
                             self.input.update(ctx, |input, ctx| {
                                 input.replace_buffer_content(&command, ctx);
                                 input.set_input_mode_terminal(/* steal_focus */ false, ctx);
@@ -5749,6 +5757,12 @@ impl TerminalView {
                             .commit_live_queued_prompt_edit(conversation_id, query_id, ctx)
                             .unwrap_or(text);
                         if self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
+                            self.notify_queue_notice(
+                                "The queued prompt you were editing was put back in the input \
+                                 instead of being sent."
+                                    .to_owned(),
+                                ctx,
+                            );
                             self.input.update(ctx, |input, ctx| {
                                 input.replace_buffer_content(&text, ctx);
                                 if is_command {
@@ -5825,6 +5839,10 @@ impl TerminalView {
                     .update(ctx, |model, ctx| model.pop_front(conversation_id, ctx));
                 if let Some(query) = popped {
                     let is_command = query.is_command();
+                    self.notify_queue_notice(
+                        queue_restore_notice(finish_reason, is_command),
+                        ctx,
+                    );
                     self.input.update(ctx, |input, ctx| {
                         input.replace_buffer_content(query.text(), ctx);
                         if is_command {
@@ -9310,6 +9328,19 @@ impl TerminalView {
         }
     }
 
+    /// Whether the window's focus is exactly on the pending approval card (#1028).
+    fn typed_on_approval_card(&self, ctx: &mut ViewContext<Self>) -> bool {
+        self.approval_card_view_id(ctx)
+            .is_some_and(|card| ctx.focused_view_id(ctx.window_id()) == Some(card))
+    }
+
+    /// The pending command-approval card (not in edit mode) of the active AI block, if any.
+    fn approval_card_view_id(&self, app: &AppContext) -> Option<EntityId> {
+        self.active_ai_block(app)?
+            .as_ref(app)
+            .pending_command_card_view_id(app)
+    }
+
     /// Returns `true` if focus is inside any AI block (e.g. the user is arrowing
     /// through a code diff's hunks).
     /// Upstream `edf83549f5` (#12107); see `focus_ai_block_if_self_focused`.
@@ -10242,6 +10273,12 @@ impl TerminalView {
             }
 
             self.update_scroll_position_locking(ScrollPositionUpdate::AfterTypedCharacters, ctx);
+            // #1028: keys typed while the approval card holds focus move focus to the input
+            // with them, so a following Enter submits the follow-up instead of reaching the
+            // card's Enter -> Run binding.
+            if self.typed_on_approval_card(ctx) {
+                self.focus_input_box(ctx);
+            }
             self.input
                 .update(ctx, |input, ctx| input.system_insert(characters, ctx));
             if self.focus_reclaim_active() {
@@ -23439,7 +23476,13 @@ impl TerminalView {
     /// Shows a queue notice toast when the toast stack exists (it is absent in some test apps).
     fn notify_queue_notice(&self, text: String, ctx: &mut ViewContext<Self>) {
         if ToastStack::try_as_ref(ctx).is_some() {
-            self.show_error_toast(text, ctx);
+            // Persistent, not the 4 s ephemeral toast: a restored or still-queued prompt is the
+            // user's own text, and a notice that vanishes before they look up reads as the prompt
+            // having silently disappeared (#1026). Dismissed by the user.
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                toast_stack.add_persistent_toast(DismissibleToast::error(text), window_id, ctx);
+            });
         }
     }
 
@@ -26004,6 +26047,7 @@ impl TerminalView {
                 .upgrade(app)
                 .expect("terminal should upgrade")
                 .is_focused(app),
+            approval_card_view_id: self.approval_card_view_id(app),
             is_terminal_selecting: self.is_selecting(),
             rich_content_drag_selecting: self.rich_content_drag_selecting.clone(),
             is_context_menu_open: self.is_context_menu_open(),
@@ -32152,6 +32196,25 @@ fn project_rules_path_for_dir(dir: &Path) -> PathBuf {
 /// before this issue.
 fn should_hide_input_for_blocked_ai_block(has_expanded_running_commands: bool) -> bool {
     has_expanded_running_commands
+}
+
+/// The notice shown when a queued prompt or command is put back in the input because the turn
+/// it was waiting on ended without completing (#1026): says that it was put back and why.
+fn queue_restore_notice(finish_reason: FinishReason, is_command: bool) -> String {
+    let what = if is_command {
+        "queued command"
+    } else {
+        "queued prompt"
+    };
+    let why = match finish_reason {
+        FinishReason::Error => "the agent run failed",
+        FinishReason::Complete => "the agent run ended",
+        FinishReason::Cancelled => "the agent run was stopped or a command was rejected",
+        FinishReason::CancelledDuringRequestedCommandExecution => {
+            "the agent's running command was cancelled"
+        }
+    };
+    format!("Your {what} was not sent: {why}. It was put back in the input.")
 }
 
 /// `index` shifted down after the `count` oldest blocks were evicted, or `None` if it referred to

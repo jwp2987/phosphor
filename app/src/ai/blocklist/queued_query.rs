@@ -505,6 +505,30 @@ impl QueuedQueryModel {
         ctx.emit(QueuedQueryEvent::QueueNextPromptToggled { conversation_id });
     }
 
+    /// Makes the "queue next prompt" toggle one-shot (#1030): once a prompt has been queued
+    /// because the toggle was on, the toggle turns itself off again. Only an explicit "on" is
+    /// consumed, and only when the default submission mode is not `Queue`: with the persistent
+    /// setting on, queueing is the standing mode, not a one-time choice, and is left alone.
+    /// Returns whether the toggle was cleared.
+    pub fn consume_queue_next_prompt_toggle(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        if self.default_mode == PromptSubmissionMode::Queue {
+            return false;
+        }
+        let Some(state) = self.queues.get_mut(&conversation_id) else {
+            return false;
+        };
+        if state.queue_next_prompt_override != Some(true) {
+            return false;
+        }
+        state.queue_next_prompt_override = None;
+        ctx.emit(QueuedQueryEvent::QueueNextPromptToggled { conversation_id });
+        true
+    }
+
     /// Toggles the auto-queue state for the duration of the eligible long-running command.
     pub fn toggle_queue_next_prompt_during_lrc(
         &mut self,

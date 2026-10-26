@@ -3264,6 +3264,51 @@ fn test_cmd_enter_enters_agent_view_and_sends_typed_text_when_input_is_focused()
     });
 }
 
+/// #1022: on the real Mac key path `EditorAction::CmdEnter` finds `/agent` bound to cmd-enter
+/// and runs it as a keybinding-triggered slash command with the typed buffer as its argument.
+/// That path must send the text too, not just pre-fill the agent input.
+#[test]
+fn test_agent_slash_command_via_keybinding_sends_typed_text() {
+    App::test((), |mut app| async move {
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+        initialize_app(&mut app);
+
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        let command = COMMAND_REGISTRY
+            .get_command_with_name(commands::AGENT.name)
+            .expect("/agent command should exist");
+        let argument = "draft".to_owned();
+        input.update(&mut app, |input, ctx| {
+            let handled = input.execute_slash_command(
+                command,
+                Some(&argument),
+                SlashCommandTrigger::keybinding(),
+                /*is_queued_prompt*/ false,
+                /*queued_conversation_id*/ None,
+                /*queued_query_id*/ None,
+                ctx,
+            );
+            assert!(handled);
+        });
+
+        let conversation_id = terminal.read(&app, |view, ctx| {
+            view.agent_view_controller()
+                .as_ref(ctx)
+                .agent_view_state()
+                .active_conversation_id()
+                .expect("agent view should be active")
+        });
+        let is_non_empty = BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
+            history
+                .conversation(&conversation_id)
+                .is_some_and(|conversation| !conversation.is_empty())
+        });
+        assert!(is_non_empty, "keybinding-triggered /agent with text must send it");
+    });
+}
+
 /// Empty-buffer Cmd-Enter is unchanged: enters the agent view without sending anything.
 #[test]
 fn test_cmd_enter_with_empty_buffer_enters_agent_view_without_sending() {
@@ -8373,6 +8418,22 @@ fn prompt_submission_while_agent_replies_steers_by_default_and_queues_only_when_
             let queue = model.queue(conversation_id);
             assert_eq!(queue.len(), 1);
             assert_eq!(queue[0].text(), "queue me");
+            // #1030: the toggle is one-shot; it cleared when that prompt was queued.
+            assert!(!model.is_queue_next_prompt_toggle_enabled(conversation_id));
+        });
+
+        // So the prompt after it steers again instead of queueing.
+        input.update(&mut app, |input, ctx| {
+            input.set_input_mode_agent(/* ensure_input_is_focused */ false, ctx);
+            input.replace_buffer_content("steer again", ctx);
+            input.input_enter(ctx);
+        });
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert_eq!(
+                model.queue(conversation_id).len(),
+                1,
+                "the prompt after a one-shot queued prompt must not queue"
+            );
         });
     });
 }

@@ -13896,8 +13896,14 @@ impl Input {
             });
             QueuedQuery::new_with_attachments(prompt, origin, attachments)
         };
-        QueuedQueryModel::handle(ctx)
-            .update(ctx, |model, ctx| model.append(conversation_id, query, ctx));
+        let queued_by_toggle = queue_enabled && origin == QueuedQueryOrigin::AutoQueueToggle;
+        QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+            model.append(conversation_id, query, ctx);
+            // #1030: "queue next prompt" is one-shot; this was that prompt.
+            if queued_by_toggle {
+                model.consume_queue_next_prompt_toggle(conversation_id, ctx);
+            }
+        });
 
         true
     }

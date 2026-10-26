@@ -565,10 +565,23 @@ impl Input {
                     }
                 });
 
+                // #1022 (owner decision 2026-10-26): `/agent` is bound to Cmd-Enter /
+                // Ctrl-Shift-Enter, and that keybinding lands here (via `input_cmd_enter`'s
+                // slash-command-binding lookup) rather than in its own fall-through. With text
+                // already typed it must SEND the text; the plain keybinding origin would only
+                // pre-fill the agent input.
+                let origin = if prompt.is_some()
+                    && trigger.is_keybinding()
+                    && command.name == commands::AGENT.name
+                {
+                    AgentViewEntryOrigin::CmdEnterSend
+                } else {
+                    AgentViewEntryOrigin::SlashCommand { trigger }
+                };
                 ctx.emit(Event::EnterAgentView {
                     initial_prompt: prompt,
                     conversation_id: None,
-                    origin: AgentViewEntryOrigin::SlashCommand { trigger },
+                    origin,
                 });
             }
             create_docker_sandbox if command.name == commands::CREATE_DOCKER_SANDBOX.name => {
