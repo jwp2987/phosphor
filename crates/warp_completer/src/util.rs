@@ -1,9 +1,37 @@
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::atomic::{AtomicBool, Ordering},
+    task::{Context, Poll},
+};
+
 use crate::{
     completer::{describe_given_token, CompletionContext},
     meta::{HasSpan as _, Span, SpannedItem},
     parsers::{simple::all_parsed_commands, LiteCommand},
     ParsedCommandsSnapshot, ParsedTokenData, ParsedTokensSnapshot,
 };
+
+/// How many tokens are described between cooperative yield points.
+const TOKENS_PER_YIELD: usize = 8;
+
+/// Returns `Pending` exactly once (waking itself), so an enclosing `Abortable` or
+/// executor gets a chance to act between units of CPU-bound work.
+struct YieldNow(bool);
+
+impl Future for YieldNow {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.0 {
+            Poll::Ready(())
+        } else {
+            self.0 = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }
+}
 
 /// Parse the current commands in the editor's buffer and get descriptions
 /// for tokens within the commands. Note that this can be somewhat expensive,
@@ -12,23 +40,49 @@ pub async fn parse_current_commands_and_tokens<T: CompletionContext>(
     buffer_text: String,
     completion_context: &T,
 ) -> ParsedTokensSnapshot {
+    let never_cancelled = AtomicBool::new(false);
+    parse_current_commands_and_tokens_cancellable(buffer_text, completion_context, &never_cancelled)
+        .await
+        .expect("a parse that is never cancelled always completes")
+}
+
+/// Like [`parse_current_commands_and_tokens`], but checks `cancel` between commands and
+/// between tokens and returns `None` as soon as it is set. Aborting the enclosing future
+/// cannot stop this work by itself: the per-token work is CPU-bound and may never return
+/// `Pending`, so `Abortable` only notices the abort once the whole parse is done (#1031).
+/// The function also yields to the executor every few tokens so an abort is observed
+/// promptly even by callers that only abort and never set `cancel`.
+pub async fn parse_current_commands_and_tokens_cancellable<T: CompletionContext>(
+    buffer_text: String,
+    completion_context: &T,
+    cancel: &AtomicBool,
+) -> Option<ParsedTokensSnapshot> {
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
     // Parse commands
     let all_commands_iterator =
         all_parsed_commands(buffer_text.as_str(), completion_context.escape_char());
     // Note that we must collect the iterator into a vector to avoid referencing local data i.e. buffer_text within the future's output.
-    let all_commands_vec: Vec<LiteCommand> = all_commands_iterator.collect();
+    let mut all_commands_vec: Vec<LiteCommand> = Vec::new();
+    for command in all_commands_iterator {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        all_commands_vec.push(command);
+    }
     let parsed_commands_snapshot = ParsedCommandsSnapshot {
         buffer_text: buffer_text.clone(),
         parsed_commands: all_commands_vec,
         completion_context,
     };
     // Get descriptions for tokens within commands.
-    let parsed_tokens = get_token_descriptions(parsed_commands_snapshot).await;
+    let parsed_tokens = get_token_descriptions(parsed_commands_snapshot, cancel).await?;
 
-    ParsedTokensSnapshot {
+    Some(ParsedTokensSnapshot {
         buffer_text,
         parsed_tokens,
-    }
+    })
 }
 
 /// Expands aliases in the provided snapshot iteratively until no aliases are found.
@@ -81,15 +135,28 @@ pub async fn expand_aliases<T: CompletionContext>(
 /// note that this is meant to run asynchronously.
 async fn get_token_descriptions<'a, T: CompletionContext>(
     parsed_commands_snapshot: ParsedCommandsSnapshot<'a, T>,
-) -> Vec<ParsedTokenData> {
+    cancel: &AtomicBool,
+) -> Option<Vec<ParsedTokenData>> {
     let buffer_text = parsed_commands_snapshot.buffer_text.as_str();
     let completion_context = parsed_commands_snapshot.completion_context;
     let mut parsed_token_data = Vec::new();
+    let mut tokens_since_yield = 0usize;
 
     for parsed_command in parsed_commands_snapshot.parsed_commands {
         let current_command_span = parsed_command.span();
 
         for (token_index, token) in parsed_command.parts.into_iter().enumerate() {
+            if cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            tokens_since_yield += 1;
+            if tokens_since_yield >= TOKENS_PER_YIELD {
+                tokens_since_yield = 0;
+                YieldNow(false).await;
+                if cancel.load(Ordering::Relaxed) {
+                    return None;
+                }
+            }
             // Split --flag=value tokens into separate flag-name and value entries so that each
             // part gets its own syntax highlighting color and description.
             let eq_split = token
@@ -154,5 +221,77 @@ async fn get_token_descriptions<'a, T: CompletionContext>(
         }
     }
 
-    parsed_token_data
+    Some(parsed_token_data)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        pin::pin,
+        sync::atomic::{AtomicBool, Ordering},
+        task::{Context, Poll},
+    };
+
+    use futures::task::noop_waker_ref;
+
+    use super::*;
+    use crate::{completer::testing::FakeCompletionContext, signatures::CommandRegistry};
+
+    fn context() -> FakeCompletionContext {
+        FakeCompletionContext::new(CommandRegistry::default()).with_top_level_commands(vec!["echo"])
+    }
+
+    fn many_words(n: usize) -> String {
+        format!("echo {}", vec!["word"; n].join(" "))
+    }
+
+    #[test]
+    fn already_cancelled_parse_does_no_work() {
+        let ctx = context();
+        let cancel = AtomicBool::new(true);
+        let result = warpui::r#async::block_on(parse_current_commands_and_tokens_cancellable(
+            many_words(200),
+            &ctx,
+            &cancel,
+        ));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn uncancelled_parse_describes_every_token() {
+        let ctx = context();
+        let cancel = AtomicBool::new(false);
+        let snapshot = warpui::r#async::block_on(parse_current_commands_and_tokens_cancellable(
+            many_words(40),
+            &ctx,
+            &cancel,
+        ))
+        .expect("not cancelled");
+        assert_eq!(snapshot.parsed_tokens.len(), 41);
+    }
+
+    /// A superseded job stops at its next yield point instead of describing every token:
+    /// the future yields (`Pending`) every few tokens, so after `cancel` is set the very
+    /// next poll resolves to `None` rather than finishing the remaining ~1000 tokens.
+    #[test]
+    fn cancelling_mid_parse_stops_at_next_yield() {
+        let ctx = context();
+        let cancel = AtomicBool::new(false);
+        let mut future = pin!(parse_current_commands_and_tokens_cancellable(
+            many_words(1000),
+            &ctx,
+            &cancel,
+        ));
+        let mut cx = Context::from_waker(noop_waker_ref());
+
+        assert!(
+            future.as_mut().poll(&mut cx).is_pending(),
+            "a large parse must yield instead of running to completion in one poll"
+        );
+        cancel.store(true, Ordering::Relaxed);
+        assert!(
+            matches!(future.as_mut().poll(&mut cx), Poll::Ready(None)),
+            "the cancelled parse must resolve to None at its next yield"
+        );
+    }
 }
