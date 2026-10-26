@@ -9,7 +9,6 @@ use crate::util::links;
 use markdown_parser::FormattedText;
 use markdown_parser::FormattedTextFragment;
 use markdown_parser::FormattedTextLine;
-use warp_core::channel::ChannelState;
 use warp_core::ui::theme::WarpTheme;
 use warpui::elements::HighlightedHyperlink;
 use warpui::elements::Hoverable;
@@ -48,18 +47,13 @@ const TMUX_INSTALL_FAILED_ERROR: &str =
 const SSH_ISSUE_TEMPLATE: &str = "03_ssh_tmux.yml";
 
 fn get_ssh_github_issue_url(title: &str) -> String {
-    let base = links::issue_form_url(SSH_ISSUE_TEMPLATE);
-    let url = if let Some(version) = ChannelState::app_version() {
-        // The parameter name must match the template field's `id:` for GitHub
-        // to pre-fill it.
-        format!("{base}&{}={version}", links::APP_VERSION_QUERY_PARAM)
-    } else {
-        base
-    };
+    // `issue_form_url` already carries a query string, so pairs append with `&`.
+    // GitLab has no per-field pre-fill; the template itself asks for the version.
+    let url = links::issue_form_url(SSH_ISSUE_TEMPLATE);
     // prepend the title with "SSH tmux bug report: " and uri encode it
     let title = format!("SSH tmux bug report: {title:?}");
     let title = urlencoding::encode(&title);
-    format!("{url}&title={title}")
+    format!("{url}&issue%5Btitle%5D={title}")
 }
 
 impl WarpificationUnavailableReason {

@@ -2,7 +2,7 @@
 # Installs the Zap CLI binary on the remote host, used by remote-server-proxy.
 #
 # setup.rs replaces these placeholders at runtime:
-#   {download_base_url}     - e.g. https://github.com/jwp2987/phosphor/releases/latest/download
+#   {download_base_url}     - e.g. https://gitlab.com/winters-phosphor/phosphor/-/releases/permalink/latest/downloads
 #   {install_dir}           - e.g. ~/.phosphor/remote-server
 #   {binary_name}           - e.g. phosphor-oss (the channel COMMAND name)
 #   {release_asset_prefix}  - e.g. phosphor-cli (the published ASSET name --

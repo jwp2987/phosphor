@@ -26,10 +26,10 @@ body = """
 {% endfor %}
 {% endfor %}
 {%- macro compare_url(prev, curr) -%}
-https://github.com/jwp2987/phosphor/compare/{{ prev }}...{{ curr }}
+https://gitlab.com/winters-phosphor/phosphor/-/compare/{{ prev }}...{{ curr }}
 {%- endmacro -%}
 {%- macro commit_url(sha) -%}
-https://github.com/jwp2987/phosphor/commit/{{ sha }}
+https://gitlab.com/winters-phosphor/phosphor/-/commit/{{ sha }}
 {%- endmacro -%}
 """
 

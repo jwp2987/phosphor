@@ -593,15 +593,15 @@ pub fn install_script(staging_tarball_path: Option<&str>) -> String {
 /// This is the integrity root for remote-server installs, and the reason it is a compile-time
 /// constant rather than something fetched at install time is the whole point:
 ///
-/// The install script runs on the remote host and pulls the tarball from GitHub over plain
+/// The install script runs on the remote host and pulls the tarball from GitLab over plain
 /// HTTPS. Before this existed, whatever bytes came back were `chmod +x`'d and executed --
-/// GitHub's TLS and release storage were the entire trust model, and a tampered or
+/// the host's TLS and release storage were the entire trust model, and a tampered or
 /// mis-published release would install and run on every host the user SSHes into, silently.
 ///
 /// A checksum published *alongside* the release would not fix that: anyone able to replace the
 /// tarball can replace a checksum file next to it. A digest compiled into the client instead
 /// reaches the remote host down the user's already-authenticated **SSH channel**, as part of
-/// the script text itself. That takes GitHub out of the integrity path entirely -- the release
+/// the script text itself. That takes the release host out of the integrity path entirely -- the release
 /// can only install if it matches what this client was built expecting.
 ///
 /// Empty when the corresponding `PHOSPHOR_CLI_SHA256_*` env var was not set at compile time
@@ -630,7 +630,7 @@ fn expected_sha256(os: &str, arch: &str) -> &'static str {
 /// project's* binary. Combined with the asset prefix below, the URL 404'd for
 /// every user of this fork, so remote-server setup over SSH could not succeed
 /// at all.
-const RELEASE_REPO: &str = "jwp2987/phosphor";
+const RELEASE_REPO: &str = "winters-phosphor/phosphor";
 
 /// Filename prefix of the published CLI tarball, e.g.
 /// `phosphor-cli-linux-x86_64.tar.gz`.
@@ -650,10 +650,10 @@ const RELEASE_ASSET_PREFIX: &str = "phosphor-cli";
 /// non-prerelease, not to change this code.
 fn download_url() -> String {
     let release_path = match ChannelState::app_version() {
-        Some(tag) => format!("download/{tag}"),
-        None => "latest/download".to_string(),
+        Some(tag) => tag.to_string(),
+        None => "permalink/latest".to_string(),
     };
-    format!("https://github.com/{RELEASE_REPO}/releases/{release_path}")
+    format!("https://gitlab.com/{RELEASE_REPO}/-/releases/{release_path}/downloads")
 }
 
 fn version_suffix() -> String {
@@ -683,7 +683,7 @@ pub fn download_tarball_url(platform: &RemotePlatform) -> String {
 }
 
 /// Zap fork: in dev mode (DEBUG source build, no release tag), the SSH
-/// transport no longer downloads a stale release from GitHub — it instead
+/// transport no longer downloads a stale release from the release host — it instead
 /// cross-compiles the current `warp` binary locally and uploads it. The
 /// constants below centrally describe this cross-compiled artifact, kept
 /// consistent with `script/deploy_remote_server` (same profile / same

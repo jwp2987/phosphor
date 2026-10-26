@@ -247,7 +247,7 @@ fn oss_binary_name_matches_phosphor_cli() {
 }
 
 #[test]
-fn oss_download_tarball_url_uses_github_release_asset() {
+fn oss_download_tarball_url_uses_gitlab_release_asset() {
     let platform = RemotePlatform {
         os: RemoteOs::Linux,
         arch: RemoteArch::X86_64,
@@ -257,7 +257,7 @@ fn oss_download_tarball_url_uses_github_release_asset() {
 
     assert_eq!(
         url,
-        "https://github.com/jwp2987/phosphor/releases/latest/download/phosphor-cli-linux-x86_64.tar.gz"
+        "https://gitlab.com/winters-phosphor/phosphor/-/releases/permalink/latest/downloads/phosphor-cli-linux-x86_64.tar.gz"
     );
     assert!(!url.contains("app.warp.dev"));
     assert!(!url.contains("/download/cli"));
@@ -748,10 +748,10 @@ fn run_install_with_tarball(with_resources: bool) -> (tempfile::TempDir, String,
 // ---------------------------------------------------------------------------
 // Remote-server tarball integrity verification
 //
-// The install script runs on a remote host and fetches the CLI tarball from GitHub over the
+// The install script runs on a remote host and fetches the CLI tarball from GitLab over the
 // public internet. The digest it checks against is compiled into this client and delivered
 // inside the script text over the user's authenticated SSH connection, so a tampered release
-// cannot install even if GitHub's copy is replaced. These tests cover the three outcomes that
+// cannot install even if the hosted copy is replaced. These tests cover the three outcomes that
 // matter: the digest reaches the script, a good artifact installs, and a bad one does not.
 // ---------------------------------------------------------------------------
 
