@@ -33,8 +33,6 @@ pub(crate) const REAL_COMMANDS_WITH_ENGLISH_ARGS: &[&str] = &[
     "man the ls",
     "apropos what is",
     "apropos the file",
-    "say this is it",
-    "say how are you",
     "espeak what the",
     "notify-send the build finished",
     "notify-send why it failed",
@@ -123,7 +121,6 @@ pub(crate) const REAL_COMMANDS_WITH_ENGLISH_ARGS: &[&str] = &[
     "ls -la this that it",
     // #965: real uses of the macOS / zsh collision words.
     "say \"build done\"",
-    "say hello world",
     "what /usr/bin/ls",
     "what ls",
     "write user",
@@ -165,8 +162,12 @@ pub(crate) const PROSE_WITH_COMMAND_HEADS: &[&str] = &[
     "why is the build slow?",
     "docker vs podman?",
     "describe the failing test",
-    // #965: sentences opened by a macOS / zsh collision word.
+    // #965: sentences opened by a macOS / zsh collision word. Owner decision 2026-10-26: `say`
+    // followed by prose goes to the agent, so these moved here from the real-command corpus.
     "say hello",
+    "say hello world",
+    "say how are you",
+    "say this is it",
     "what does ls -la do",
     "write a script that counts lines",
     "where is the config",
