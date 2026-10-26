@@ -2696,6 +2696,9 @@ pub struct TerminalView {
 
     /// Whether or not this terminal session was ever active.
     was_ever_visible: bool,
+    /// Whether the "typing is ignored while connecting" notice (#983) was shown for the current
+    /// ssh setup window. Reset once input is accepted again.
+    ssh_setup_drop_notified: bool,
 
     /// The [`EntityId`] for this terminal view.
     view_id: EntityId,
@@ -4337,6 +4340,7 @@ impl TerminalView {
             reclaim_focus_placed: false,
             tips_completed: resources.tips_completed.clone(),
             was_ever_visible: false,
+            ssh_setup_drop_notified: false,
             view_id: ctx.view_id(),
             current_state: TerminalViewStateChange::default(),
             did_notify_long_running: false,
@@ -9500,11 +9504,31 @@ impl TerminalView {
                         .remote_server_setup_state(sid)
                         .is_some_and(|state| state.is_in_progress())
                 });
-        if !(dialog_up || setup_in_flight) {
+        // #983: the window between the remote shell announcing itself (pending session) and its
+        // bootstrap finishing is the same hazard as the setup itself. Without this, keys typed
+        // during connect were dropped while setup was in flight but delivered once it resolved,
+        // so a typed command was cut in two (head lost or in the local shell, tail in the remote
+        // shell). Drop the whole run instead. Passwords and host-key prompts happen before the
+        // pending session exists, so they are unaffected.
+        let ssh_bootstrapping = self.has_pending_ssh_command()
+            && self.model.lock().pending_session_id().is_some();
+        if !(dialog_up || setup_in_flight || ssh_bootstrapping) {
+            self.ssh_setup_drop_notified = false;
             return false;
         }
         if dialog_up {
             self.redetermine_global_focus(ctx);
+        }
+        if !self.ssh_setup_drop_notified {
+            self.ssh_setup_drop_notified = true;
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                let toast = DismissibleToast::new(
+                    "Typing is ignored while the SSH session connects".to_string(),
+                    ToastFlavor::Default,
+                );
+                toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+            });
         }
         true
     }
