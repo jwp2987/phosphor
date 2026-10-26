@@ -97,7 +97,7 @@ identity instead of pasting a literal:
 
     links::new_issue_url()                    // the issue-form chooser
     links::issue_form_url("01_bug_report.yml")// a specific form
-    links::github_issues_url()                // the tracker
+    links::issues_url()                       // the tracker
     links::feedback_form_url()                // "Send feedback"
     links::manual_url(links::MANUAL_*)        // a chapter of docs/manual/
 

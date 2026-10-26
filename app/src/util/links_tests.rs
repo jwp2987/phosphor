@@ -14,11 +14,11 @@ use super::*;
 fn every_project_link_is_derived_from_the_repo_constants() {
     assert_eq!(
         repo_url(),
-        format!("https://github.com/{REPO_OWNER}/{REPO_NAME}")
+        format!("https://gitlab.com/{REPO_OWNER}/{REPO_NAME}")
     );
 
     for url in [
-        github_issues_url(),
+        issues_url(),
         user_docs_url(),
         manual_url(MANUAL_TROUBLESHOOTING),
         contributing_url(),
@@ -35,13 +35,13 @@ fn every_project_link_is_derived_from_the_repo_constants() {
 }
 
 #[test]
-fn feedback_form_opens_this_repos_issue_chooser() {
+fn feedback_form_opens_this_repos_new_issue_page() {
     let url = feedback_form_url();
     assert!(
         url.starts_with(&format!(
-            "https://github.com/{REPO_OWNER}/{REPO_NAME}/issues/new/choose"
+            "https://gitlab.com/{REPO_OWNER}/{REPO_NAME}/-/issues/new"
         )),
-        "feedback form does not open this repo's issue chooser: {url}"
+        "feedback form does not open this repo's new-issue page: {url}"
     );
 }
 
@@ -53,7 +53,7 @@ fn feedback_form_opens_this_repos_issue_chooser() {
 fn no_link_points_at_the_dead_ancestor() {
     for url in [
         repo_url(),
-        github_issues_url(),
+        issues_url(),
         user_docs_url(),
         manual_url(MANUAL_SHELL_INTEGRATION),
         feedback_form_url(),
@@ -69,42 +69,54 @@ fn no_link_points_at_the_dead_ancestor() {
     }
 }
 
-/// GitHub pre-fills an issue-form field by matching a query parameter against
-/// the field's `id:`. Renaming either side alone silently breaks the pre-fill,
-/// so the templates are checked against the constant the URL is built from.
+/// `issue_form_url` names a template file under `.gitlab/issue_templates/`; GitLab silently shows
+/// an empty form for a name it cannot find. `include_str!` fails to compile if one is renamed or
+/// deleted, and the stem passed to the URL is checked against the file it must resolve to.
 #[test]
-fn version_query_parameter_matches_the_issue_form_field_id() {
+fn issue_templates_referenced_by_urls_exist() {
     const TEMPLATES: &[(&str, &str)] = &[
         (
-            "01_bug_report.yml",
-            include_str!("../../../.github/ISSUE_TEMPLATE/01_bug_report.yml"),
+            "01_bug_report",
+            include_str!("../../../.gitlab/issue_templates/01_bug_report.md"),
         ),
         (
-            "03_ssh_tmux.yml",
-            include_str!("../../../.github/ISSUE_TEMPLATE/03_ssh_tmux.yml"),
+            "03_ssh_tmux",
+            include_str!("../../../.gitlab/issue_templates/03_ssh_tmux.md"),
         ),
         (
-            "04_ssh_legacy.yml",
-            include_str!("../../../.github/ISSUE_TEMPLATE/04_ssh_legacy.yml"),
+            "04_ssh_legacy",
+            include_str!("../../../.gitlab/issue_templates/04_ssh_legacy.md"),
         ),
     ];
 
-    for (name, contents) in TEMPLATES {
-        assert!(
-            contents.contains(&format!("id: \"{APP_VERSION_QUERY_PARAM}\"")),
-            "{name} has no field with id \"{APP_VERSION_QUERY_PARAM}\", so the version pre-fill is dead"
-        );
-        assert!(
-            !contents.contains("zap-version"),
-            "{name} still carries the pre-rename field id"
-        );
+    for (stem, contents) in TEMPLATES {
+        assert!(!contents.is_empty(), "{stem} template is empty");
+        for form in [
+            format!("{stem}.yml"),
+            format!("{stem}.md"),
+            stem.to_string(),
+        ] {
+            assert!(
+                issue_form_url(&form).ends_with(&format!("?issuable_template={stem}")),
+                "{form} does not resolve to the {stem} template"
+            );
+        }
     }
+}
 
+/// The feedback form pre-fills the OS (and version, when known) through
+/// `issue[description]`, the only pre-fill GitLab supports.
+#[test]
+fn feedback_form_prefills_the_description() {
     let url = url::Url::parse(&feedback_form_url()).expect("feedback URL should parse");
-    let params: Vec<_> = url.query_pairs().map(|(k, _)| k.into_owned()).collect();
+    let description = url
+        .query_pairs()
+        .find(|(key, _)| key == "issue[description]")
+        .map(|(_, value)| value.into_owned())
+        .expect("issue[description] pre-fill was dropped");
     assert!(
-        params.contains(&"os-version".to_owned()),
-        "os-version pre-fill was dropped: {params:?}"
+        description.contains("OS version:"),
+        "OS pre-fill missing from: {description:?}"
     );
 }
 
