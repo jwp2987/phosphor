@@ -71,6 +71,11 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
                     controller.write_bytes(&[escape_sequences::C0::ETX][..], ctx);
                 });
             }
+            PtyIntent::SigintForeground => {
+                controller.update(ctx, |controller, ctx| {
+                    controller.sigint_foreground_or_write_etx(ctx);
+                });
+            }
             PtyIntent::ShutdownPty => {
                 controller.update(ctx, |controller, ctx| {
                     controller.shutdown_pty(ctx);

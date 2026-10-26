@@ -967,6 +967,11 @@ fn on_shell_determined<S: TerminalSurface>(
         );
 
         manager.terminal_attributes_poller = Some(terminal_attributes_poller);
+        manager.pty_controller.update(ctx, |controller, _| {
+            controller.set_foreground_sigint(Arc::new(move || {
+                super::terminal_attributes::sigint_foreground_group(fd)
+            }));
+        });
     }
 }
 

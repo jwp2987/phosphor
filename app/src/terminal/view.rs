@@ -1735,6 +1735,9 @@ pub enum Event {
     WriteBytesToPty {
         bytes: Cow<'static, [u8]>,
     },
+    /// SIGINT to the pty's foreground process group instead of a ^C byte (#1001): ends an ssh
+    /// client that is connecting even when it has already put the tty in raw mode.
+    SigintForegroundToPty,
     /// User bytes the typeahead hand-off routed to the pty; in flight until the PTY controller
     /// processes them (`FeatureFlag::TypeaheadHandoff`).
     WriteHandoffUserBytesToPty {
@@ -9019,6 +9022,10 @@ impl TerminalView {
     }
 
     fn user_write_ctrl_c_to_pty(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.ssh_pre_init_abort_bytes().is_none() && self.ssh_connect_sigint_applies() {
+            ctx.emit(Event::SigintForegroundToPty);
+            return;
+        }
         let bytes = self
             .ssh_pre_init_abort_bytes()
             .unwrap_or_else(|| vec![escape_sequences::C0::ETX]);
@@ -9673,7 +9680,9 @@ impl TerminalView {
             let abort = (characters == "\u{3}")
                 .then(|| self.ssh_pre_init_abort_bytes())
                 .flatten();
-            if let Some(abort) = abort {
+            if characters == "\u{3}" && abort.is_none() && self.ssh_connect_sigint_applies() {
+                ctx.emit(Event::SigintForegroundToPty);
+            } else if let Some(abort) = abort {
                 self.write_user_bytes_to_pty(abort, ctx);
             } else {
                 self.report_possible_typeahead(characters);
@@ -9903,12 +9912,26 @@ impl TerminalView {
     /// #1001: whether an interrupt falls into the connect window before the remote session is
     /// announced, where it can neither be a safe local SIGINT nor be forwarded: the ssh block has
     /// already ended and the remote session is about to be bootstrapped (the old code let the ^C
-    /// vanish into the hidden input), or ssh has printed nothing and no ssh hook was seen yet,
-    /// so the local tty may already be raw and a ^C would be forwarded into the remote startup.
-    /// After the hook (and before InitShell) the `~.` abort applies instead; once the remote
-    /// session is pending [`Self::ssh_bootstrap_interrupt_route`] decides. Bounded by the gate's
-    /// own ceiling, after which the interrupt is forwarded as usual.
+    /// vanish into the hidden input). Before that (still connecting) an interrupt aborts, see
+    /// [`Self::ssh_connect_sigint_applies`]; after the hook the `~.` abort applies; once the
+    /// remote session is pending [`Self::ssh_bootstrap_interrupt_route`] decides. Bounded by the
+    /// gate's own ceiling, after which the interrupt is forwarded as usual.
     fn ssh_gate_holds_interrupt(&mut self) -> bool {
+        let pending = self.model.lock().pending_session_id().is_some();
+        if pending || !self.refresh_ssh_connect_gate() {
+            return false;
+        }
+        // Only the remote-setup window holds. Before login (DNS, a dead host, a password
+        // prompt, the silent stretch before the ssh hook) the interrupt must abort: it is
+        // delivered as SIGINT, see `ssh_connect_sigint_applies`.
+        self.ssh_connect_gate.as_ref().is_some_and(|g| g.block_done)
+    }
+
+    /// #1001: a Ctrl-C while an ssh command is still connecting (gate armed, no remote session
+    /// pending, no ssh hook yet) is delivered as SIGINT to the pty's foreground group. The local
+    /// tty may already be raw after authentication, where a written ^C byte is forwarded to the
+    /// remote startup instead of stopping the client; the signal ends it in cooked and raw mode.
+    fn ssh_connect_sigint_applies(&mut self) -> bool {
         let (hook_seen, pending) = {
             let model = self.model.lock();
             (
@@ -9916,13 +9939,13 @@ impl TerminalView {
                 model.pending_session_id().is_some(),
             )
         };
-        if pending || !self.refresh_ssh_connect_gate() {
-            return false;
-        }
-        if self.ssh_connect_gate.as_ref().is_some_and(|g| g.block_done) {
-            return true;
-        }
-        !hook_seen && self.ssh_connect_gate_drops_keys()
+        !hook_seen
+            && !pending
+            && self.refresh_ssh_connect_gate()
+            && self
+                .ssh_connect_gate
+                .as_ref()
+                .is_some_and(|g| !g.block_done)
     }
 
     /// Tells the user (once per pending remote session) that an interrupt was held (#1001).
@@ -28629,6 +28652,7 @@ impl PtyIntentEvent for Event {
             Event::DiscardPendingCommandWrites => Some(PtyIntent::DiscardPendingCommandWrites),
             Event::DiscardHeldTypeaheadCommand => Some(PtyIntent::DiscardHeldTypeaheadCommand),
             Event::WriteBytesToPty { bytes } => Some(PtyIntent::WriteBytes(bytes.clone())),
+            Event::SigintForegroundToPty => Some(PtyIntent::SigintForeground),
             Event::WriteHandoffUserBytesToPty { bytes } => {
                 Some(PtyIntent::WriteHandoffUserBytes(bytes.clone()))
             }

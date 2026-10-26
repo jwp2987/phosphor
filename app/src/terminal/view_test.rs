@@ -15742,15 +15742,25 @@ fn ssh_ctrl_c_after_the_ssh_block_ended_is_held_with_a_notice() {
     })
 }
 
-/// #1001 (macOS): ssh has printed nothing and no ssh hook was seen, so the tty may be raw and a
-/// ^C would be forwarded into the remote startup: held with the notice, not written.
+/// #1001 (macOS): before login (ssh silent, no ssh hook, no remote session) a Ctrl-C must
+/// ABORT, never be held: it is delivered as SIGINT to the pty's foreground group, because the
+/// tty may already be raw and a written ^C byte would be forwarded to the remote startup.
 #[test]
-fn ssh_ctrl_c_while_silently_connecting_is_held_with_a_notice() {
+fn ssh_ctrl_c_while_silently_connecting_aborts_with_sigint() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = record_pty_writes(&mut app, &terminal);
+        let sigints = Rc::new(RefCell::new(0usize));
+        let counter = sigints.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if matches!(event, Event::SigintForegroundToPty) {
+                    *counter.borrow_mut() += 1;
+                }
+            });
+        });
         terminal.update(&mut app, |view, ctx| {
             register_local_session_for_ssh_test(view, ctx);
             submit_command(view, "ssh host", ctx);
@@ -15758,8 +15768,9 @@ fn ssh_ctrl_c_while_silently_connecting_is_held_with_a_notice() {
                 .lock()
                 .simulate_long_running_block("ssh host", "");
             view.keydown_on_terminal("\u{3}", ctx);
-            assert!(view.ssh_interrupt_held_gate_notified);
+            assert!(!view.ssh_interrupt_held_gate_notified, "not held");
         });
+        assert_eq!(*sigints.borrow(), 1, "SIGINT route chosen");
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     })
 }

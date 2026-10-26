@@ -92,6 +92,21 @@ pub fn foreground_process_names(fd: RawFd) -> Option<Vec<String>> {
     process_group_names(pgid)
 }
 
+/// Delivers SIGINT to the pty's foreground process group (what the tty driver does for a ^C
+/// byte in cooked mode), regardless of the line discipline. A client that put the tty in raw
+/// mode (ssh, once connected) receives a ^C byte as DATA and forwards it to the far side, but
+/// still exits on the signal. Returns whether a signal was sent; never signals our own group.
+pub fn sigint_foreground_group(fd: RawFd) -> bool {
+    // SAFETY: `tcgetpgrp` only reads the terminal's foreground group id.
+    let pgid = unsafe { libc::tcgetpgrp(fd) };
+    // SAFETY: `getpgrp` has no preconditions.
+    if pgid <= 1 || pgid == unsafe { libc::getpgrp() } {
+        return false;
+    }
+    // SAFETY: plain signal delivery to a foreground group that is not ours.
+    unsafe { libc::killpg(pgid, libc::SIGINT) == 0 }
+}
+
 /// Parses the `comm` and process group out of `/proc/<pid>/stat`: `pid (comm) S ppid pgrp
 /// ...`. `comm` may itself contain spaces and parentheses, so it is delimited by the first
 /// `(` and the LAST `)`.

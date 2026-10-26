@@ -163,6 +163,9 @@ pub struct PtyController<T: EventLoopSender> {
     /// the life of the shell -- the un-phosphorized shell that causes this answers no Tab, ever,
     /// and a toast on every keystroke would be worse than the silence it replaces.
     has_reported_native_completions_unavailable: bool,
+    /// Delivers SIGINT to the pty's foreground process group (local ptys on Unix only); `None`
+    /// where that is unavailable, in which case the ^C byte is written instead (#1001).
+    foreground_sigint: Option<std::sync::Arc<dyn Fn() -> bool>>,
     /// When the current unbroken stretch of the PTY write gate being shut *with writes queued*
     /// began, if we are in one. Diagnostic-only bookkeeping for the still-unexplained field lockup
     /// in TODO.md ("The shell lockup"): the watchdog above only ever fires for the (currently
@@ -406,6 +409,7 @@ impl<T: EventLoopSender> PtyController<T> {
             in_flight_native_completions_state: None,
             native_completions_generation: 0,
             has_reported_native_completions_unavailable: false,
+            foreground_sigint: None,
             pty_write_gate_blocked_since: None,
             has_logged_current_pty_write_stall: false,
             handoff_command_pending: false,
@@ -1466,6 +1470,19 @@ impl<T: EventLoopSender> PtyController<T> {
             },
             ctx,
         );
+    }
+
+    pub fn set_foreground_sigint(&mut self, f: std::sync::Arc<dyn Fn() -> bool>) {
+        self.foreground_sigint = Some(f);
+    }
+
+    /// Interrupts the pty's foreground program with SIGINT rather than a ^C byte, which a raw
+    /// tty would hand to the program as data (#1001). Falls back to the byte.
+    pub fn sigint_foreground_or_write_etx(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.foreground_sigint.as_ref().is_some_and(|f| f()) {
+            return;
+        }
+        self.write_bytes(&[escape_sequences::C0::ETX][..], ctx);
     }
 
     /// Test-only: whether `shutdown_pty` has been called.
