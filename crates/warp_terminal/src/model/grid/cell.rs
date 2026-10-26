@@ -82,6 +82,30 @@ pub fn keycap_sequence_width(grapheme: &str) -> Option<usize> {
     Some(2)
 }
 
+/// Whether `c` is a regional indicator symbol (U+1F1E6..=U+1F1FF); two in a row form a flag.
+pub fn is_regional_indicator(c: char) -> bool {
+    matches!(c, '\u{1F1E6}'..='\u{1F1FF}')
+}
+
+/// Whether `c` is an emoji skin-tone modifier (Fitzpatrick types 1-6).
+pub fn is_emoji_modifier(c: char) -> bool {
+    matches!(c, '\u{1F3FB}'..='\u{1F3FF}')
+}
+
+/// Whether `c` can continue an emoji ZWJ sequence after a U+200D: an emoji-presentation
+/// pictograph, or one of the text-default symbols (gender signs, hearts, ...) that appear
+/// in ZWJ sequences with a variation selector.
+pub fn is_zwj_joinable(c: char) -> bool {
+    matches!(
+        c,
+        '\u{1F000}'..='\u{1FAFF}'
+            | '\u{2600}'..='\u{27BF}'
+            | '\u{2300}'..='\u{23FF}'
+            | '\u{2B00}'..='\u{2BFF}'
+            | '\u{2640}' | '\u{2642}' | '\u{2695}' | '\u{2696}' | '\u{2708}' | '\u{2764}'
+    )
+}
+
 bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq)]
     pub struct Flags: u16 {

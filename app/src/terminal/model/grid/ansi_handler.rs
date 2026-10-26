@@ -306,6 +306,11 @@ impl ansi::Handler for GridHandler {
             return;
         }
 
+        // Multi-codepoint grapheme clusters that should share one cell.
+        if self.try_join_grapheme_cluster(c) {
+            return;
+        }
+
         // Move cursor to next line.
         if self.grid.cursor().input_needs_wrap {
             self.wrapline();
@@ -1117,6 +1122,10 @@ impl ansi::Handler for GridHandler {
                 .ansi_handler_state
                 .mode
                 .insert(TermMode::BRACKETED_PASTE),
+            ansi::Mode::GraphemeClustering => self
+                .ansi_handler_state
+                .mode
+                .insert(TermMode::GRAPHEME_CLUSTERING),
             // Mouse encodings are mutually exclusive.
             ansi::Mode::SgrMouse => {
                 self.ansi_handler_state.mode.remove(TermMode::UTF8_MOUSE);
@@ -1185,6 +1194,10 @@ impl ansi::Handler for GridHandler {
                 .ansi_handler_state
                 .mode
                 .remove(TermMode::BRACKETED_PASTE),
+            ansi::Mode::GraphemeClustering => self
+                .ansi_handler_state
+                .mode
+                .remove(TermMode::GRAPHEME_CLUSTERING),
             ansi::Mode::SgrMouse => self.ansi_handler_state.mode.remove(TermMode::SGR_MOUSE),
             ansi::Mode::Utf8Mouse => self.ansi_handler_state.mode.remove(TermMode::UTF8_MOUSE),
             ansi::Mode::AlternateScroll => self
@@ -1605,6 +1618,94 @@ impl GridHandler {
                 cursor.input_needs_wrap = true;
             }
         });
+    }
+
+    /// Column of the cell holding the grapheme most recently written, resolving a wide
+    /// character's spacer back to its head. `None` at the very start of a row.
+    fn previous_grapheme_col(&self) -> Option<usize> {
+        let cursor = self.grid.cursor();
+        let row = self.grid.cursor_point().row;
+        let mut col = if cursor.input_needs_wrap {
+            cursor.point.col
+        } else {
+            cursor.point.col.checked_sub(1)?
+        };
+        if self.grid[row][col].flags.contains(Flags::WIDE_CHAR_SPACER) {
+            col = col.checked_sub(1)?;
+        }
+        Some(col)
+    }
+
+    /// Joins `c` onto the previously written cell when the two form one grapheme cluster that
+    /// must be drawn as a single glyph. Returns whether `c` was consumed.
+    ///
+    /// * Regional-indicator pairs (flags) are always joined: each indicator is one column wide
+    ///   under `wcwidth`, so the two-column flag cell consumes exactly the columns a shell
+    ///   already accounts for.
+    /// * ZWJ sequences and emoji modifiers are joined only under DEC mode 2027, because the
+    ///   cluster is narrower than the sum of its codepoints' `wcwidth`, which would desync
+    ///   shells that size their prompt per codepoint.
+    fn try_join_grapheme_cluster(&mut self, c: char) -> bool {
+        let row = self.grid.cursor_point().row;
+        let num_cols = self.columns();
+
+        if cell::is_regional_indicator(c) {
+            if self.ansi_handler_state.mode.contains(TermMode::INSERT)
+                || self.grid.cursor().input_needs_wrap
+            {
+                return false;
+            }
+            let Some(col) = self.grid.cursor().point.col.checked_sub(1) else {
+                return false;
+            };
+            let prev = &self.grid[row][col];
+            let is_lone_indicator = !prev
+                .flags
+                .intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER)
+                && matches!(prev.raw_content(), CharOrStr::Char(p) if cell::is_regional_indicator(p));
+            // The pair needs two columns: the indicator's own and the cursor's.
+            if !is_lone_indicator || col + 1 >= num_cols {
+                return false;
+            }
+            let mut wide_cell = mem::take(&mut self.grid[row][col]);
+            if !wide_cell.push_zerowidth(c, /* log_long_grapheme_warnings */ true) {
+                self.grid[row][col] = wide_cell;
+                return false;
+            }
+            wide_cell.flags.remove(
+                Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER | Flags::WRAPLINE,
+            );
+            let base_char = wide_cell.c;
+            self.update_cursor(|cursor| {
+                cursor.point.col = col;
+            });
+            self.write_wide_char(base_char, |cell| *cell = wide_cell);
+            return true;
+        }
+
+        if !self
+            .ansi_handler_state
+            .mode
+            .contains(TermMode::GRAPHEME_CLUSTERING)
+        {
+            return false;
+        }
+        let Some(col) = self.previous_grapheme_col() else {
+            return false;
+        };
+        let prev = &self.grid[row][col];
+        if !prev.flags.contains(Flags::WIDE_CHAR) {
+            return false;
+        }
+        let joins = match prev.raw_content() {
+            CharOrStr::Str(s) if s.ends_with('\u{200D}') => cell::is_zwj_joinable(c),
+            _ => false,
+        } || cell::is_emoji_modifier(c);
+        if !joins {
+            return false;
+        }
+        self.grid[row][col].push_zerowidth(c, /* log_long_grapheme_warnings */ true);
+        true
     }
 
     /// Writes the wide character `c` at the cursor followed by its
