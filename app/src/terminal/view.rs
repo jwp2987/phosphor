@@ -5716,6 +5716,11 @@ impl TerminalView {
                                 model.remove_fired_row(conversation_id, query_id, ctx);
                             });
                         } else if self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
+                            self.notify_queue_notice(
+                                "A queued command could not start; it was put back in the input."
+                                    .to_owned(),
+                                ctx,
+                            );
                             self.input.update(ctx, |input, ctx| {
                                 input.replace_buffer_content(&command, ctx);
                                 input.set_input_mode_terminal(/* steal_focus */ false, ctx);
@@ -5752,6 +5757,12 @@ impl TerminalView {
                             .commit_live_queued_prompt_edit(conversation_id, query_id, ctx)
                             .unwrap_or(text);
                         if self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
+                            self.notify_queue_notice(
+                                "The queued prompt you were editing was put back in the input \
+                                 instead of being sent."
+                                    .to_owned(),
+                                ctx,
+                            );
                             self.input.update(ctx, |input, ctx| {
                                 input.replace_buffer_content(&text, ctx);
                                 if is_command {
@@ -5828,6 +5839,10 @@ impl TerminalView {
                     .update(ctx, |model, ctx| model.pop_front(conversation_id, ctx));
                 if let Some(query) = popped {
                     let is_command = query.is_command();
+                    self.notify_queue_notice(
+                        queue_restore_notice(finish_reason, is_command),
+                        ctx,
+                    );
                     self.input.update(ctx, |input, ctx| {
                         input.replace_buffer_content(query.text(), ctx);
                         if is_command {
@@ -23421,7 +23436,13 @@ impl TerminalView {
     /// Shows a queue notice toast when the toast stack exists (it is absent in some test apps).
     fn notify_queue_notice(&self, text: String, ctx: &mut ViewContext<Self>) {
         if ToastStack::try_as_ref(ctx).is_some() {
-            self.show_error_toast(text, ctx);
+            // Persistent, not the 4 s ephemeral toast: a restored or still-queued prompt is the
+            // user's own text, and a notice that vanishes before they look up reads as the prompt
+            // having silently disappeared (#1026). Dismissed by the user.
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                toast_stack.add_persistent_toast(DismissibleToast::error(text), window_id, ctx);
+            });
         }
     }
 
@@ -32135,6 +32156,25 @@ fn project_rules_path_for_dir(dir: &Path) -> PathBuf {
 /// before this issue.
 fn should_hide_input_for_blocked_ai_block(has_expanded_running_commands: bool) -> bool {
     has_expanded_running_commands
+}
+
+/// The notice shown when a queued prompt or command is put back in the input because the turn
+/// it was waiting on ended without completing (#1026): says that it was put back and why.
+fn queue_restore_notice(finish_reason: FinishReason, is_command: bool) -> String {
+    let what = if is_command {
+        "queued command"
+    } else {
+        "queued prompt"
+    };
+    let why = match finish_reason {
+        FinishReason::Error => "the agent run failed",
+        FinishReason::Complete => "the agent run ended",
+        FinishReason::Cancelled => "the agent run was stopped or a command was rejected",
+        FinishReason::CancelledDuringRequestedCommandExecution => {
+            "the agent's running command was cancelled"
+        }
+    };
+    format!("Your {what} was not sent: {why}. It was put back in the input.")
 }
 
 /// `index` shifted down after the `count` oldest blocks were evicted, or `None` if it referred to

@@ -16386,3 +16386,24 @@ fn test_after_enter_replay_drains_in_typed_order() {
         });
     })
 }
+
+/// #1026: every cancel/error restore of a queued prompt names what happened and why.
+#[test]
+fn queue_restore_notice_says_it_was_put_back_and_why() {
+    use crate::ai::blocklist::block::FinishReason;
+    for reason in [
+        FinishReason::Error,
+        FinishReason::Cancelled,
+        FinishReason::CancelledDuringRequestedCommandExecution,
+    ] {
+        let prompt = queue_restore_notice(reason, false);
+        assert!(prompt.contains("queued prompt"), "{prompt}");
+        assert!(prompt.contains("put back in the input"), "{prompt}");
+    }
+    assert!(queue_restore_notice(FinishReason::Error, true).contains("queued command"));
+    assert_ne!(
+        queue_restore_notice(FinishReason::Error, false),
+        queue_restore_notice(FinishReason::Cancelled, false),
+        "the reason must differ between a failure and a stop"
+    );
+}
