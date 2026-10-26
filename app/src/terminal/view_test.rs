@@ -14798,6 +14798,47 @@ fn only_the_displayed_use_agent_keystroke_is_the_agent_shortcut() {
     assert!(!is_shortcut(&extra_modifier));
 }
 
+/// #976: the local "Phosphorize subshell | Use agent" banner (warpify footer, not the SSH
+/// Warpifying block state) also diverts the shortcut to agent mode and sends nothing to the pty;
+/// plain Enter still reaches it.
+#[test]
+fn agent_shortcut_enter_diverts_for_subshell_banner() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("bash", "");
+            assert!(!view.warpify_state.is_ssh_warpifying());
+            assert!(!view.agent_shortcut_banner_visible(ctx));
+            view.use_agent_footer.update(ctx, |footer, ctx| {
+                footer.set_warpify_mode(WarpificationMode::subshell("bash".to_owned()), ctx);
+            });
+            assert!(view.agent_shortcut_banner_visible(ctx));
+            view.agent_shortcut_enter("\r", Some(b"\r"), ctx);
+        });
+        assert!(
+            !pty_writes.borrow().iter().any(|w| w.as_slice() == b"\r"),
+            "the shortcut must not reach the pty: {:?}",
+            pty_writes.borrow()
+        );
+        terminal.update(&mut app, |view, ctx| {
+            view.keydown_on_terminal("\r", ctx);
+        });
+        assert!(pty_writes.borrow().iter().any(|w| w.as_slice() == b"\r"));
+    })
+}
+
 /// #976: a plain Enter reaches the pty, with nothing typed and after typing, regardless of the
 /// SSH banner (it may answer a password, host-key or 2FA prompt).
 #[test]
