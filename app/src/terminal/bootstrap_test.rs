@@ -264,7 +264,7 @@ fn test_init_subshell_command_guard_is_nounset_safe_for_bash_and_zsh_only() {
                     init_subshell_command_lines(Some(shell_type), &[], SessionId::from(1u64), ctx);
                 let last = lines.last().unwrap();
                 assert!(
-                    last.contains(r#" [ -z "${WARP_BOOTSTRAPPED-}" ] && "#)
+                    last.contains(r#"[ -z "${WARP_BOOTSTRAPPED-}" ]"#)
                         && last.contains(r#"eval "$_wbs""#)
                         && last.contains(r#""${#_wbs}" -eq "#),
                     "expected a nounset-safe, length-checked guard for {shell_type:?}: {last}"
@@ -288,6 +288,96 @@ fn test_init_subshell_command_guard_is_nounset_safe_for_bash_and_zsh_only() {
             );
         });
     });
+}
+
+/// Feeds the bash subshell bootstrap lines to a real bash on stdin under `locale`, optionally
+/// dropping one accumulated chunk (a paced line lost on the way), and returns its stdout.
+/// `extra` is a non-ASCII environment value so that characters and bytes differ.
+fn run_bash_subshell_bootstrap(locale: &str, drop_a_chunk: bool) -> Option<String> {
+    use crate::env_vars::{EnvVar, EnvVarValue};
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    // The test only needs a bash; a machine without one skips it.
+    Command::new("bash").arg("--version").output().ok()?;
+    let collected = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = collected.clone();
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let vars = [EnvVar {
+                name: "PHOSPHOR_TEST_NON_ASCII".to_owned(),
+                value: EnvVarValue::Constant("caf\u{e9} \u{2603}".to_owned()),
+                description: None,
+            }];
+            *sink.lock().unwrap() = init_subshell_command_lines(
+                Some(ShellType::Bash),
+                &vars,
+                SessionId::from(7u64),
+                ctx,
+            );
+        });
+    });
+    let mut lines = collected.lock().unwrap().clone();
+    if drop_a_chunk {
+        // Line 0 is the history prelude, the last is the guarded eval; drop the second chunk.
+        lines.remove(2);
+    }
+    let mut child = Command::new("bash")
+        .args(["--norc", "--noprofile"])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", "/nonexistent")
+        .env("LC_ALL", locale)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdin = child.stdin.take()?;
+    for line in &lines {
+        writeln!(stdin, "{line}").ok()?;
+    }
+    // A shell whose eval was skipped must still come back to its prompt and run this.
+    writeln!(stdin, "echo PROMPT-REACHED").ok()?;
+    drop(stdin);
+    let output = child.wait_with_output().ok()?;
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// #960: the length check on the last line compares `${#_wbs}` with the script's character count
+/// or byte count, so it must pass whichever one the shell's locale counts: C counts bytes, a
+/// UTF-8 locale counts characters. The script here has non-ASCII text so the two differ.
+#[test]
+fn bash_subshell_bootstrap_runs_under_c_and_utf8_locales() {
+    for locale in ["C", "C.UTF-8", "POSIX"] {
+        let Some(out) = run_bash_subshell_bootstrap(locale, false) else {
+            return;
+        };
+        assert!(
+            out.contains("\u{1b}P$d") && out.contains("PROMPT-REACHED"),
+            "LC_ALL={locale}: the InitShell hook was not emitted: {out:?}"
+        );
+    }
+}
+
+/// #960: when a line was lost the script is not evaluated, but the shell is not left hanging: it
+/// says why and returns to the prompt (the app also stops holding input, see view.rs).
+#[test]
+fn bash_subshell_bootstrap_with_a_lost_chunk_reports_and_does_not_hang() {
+    for locale in ["C", "C.UTF-8"] {
+        let Some(out) = run_bash_subshell_bootstrap(locale, true) else {
+            return;
+        };
+        assert!(
+            !out.contains("\u{1b}P$d"),
+            "LC_ALL={locale}: an incomplete script must not be evaluated: {out:?}"
+        );
+        assert!(
+            out.contains("subshell setup skipped") && out.contains("PROMPT-REACHED"),
+            "LC_ALL={locale}: no notice / the shell never returned: {out:?}"
+        );
+    }
 }
 
 /// #962: the subshell bootstrap is written while the new shell's tty may still be canonical,

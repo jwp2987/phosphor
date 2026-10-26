@@ -14456,14 +14456,29 @@ fn user_takeover_overrides_ai_block_focus_guard() {
     assert!(ai_block_focus_permits_terminal_reset(true, false));
 }
 
-/// #960: Ctrl-C / Ctrl-D always reach the pty while a subshell bootstrap is pending; every
-/// other key stays held (no timer-driven forwarding or automatic abort exists any more).
+/// #960: Ctrl-C / Ctrl-D always reach the pty while a subshell bootstrap is pending or has been
+/// typed (even when the shell never answered, so nothing is pending); every other key stays held
+/// until the stall ceiling, after which nothing is held (no automatic abort is ever written).
 #[test]
 fn pending_subshell_bootstrap_forwards_only_abort_keys() {
-    assert!(!subshell_bootstrap_key_forwarded(false, true));
-    assert!(!subshell_bootstrap_key_forwarded(false, false));
-    assert!(!subshell_bootstrap_key_forwarded(true, false));
-    assert!(subshell_bootstrap_key_forwarded(true, true));
+    let young = Some(Duration::from_secs(1));
+    assert!(!subshell_bootstrap_key_forwarded(false, true, None));
+    assert!(!subshell_bootstrap_key_forwarded(false, false, None));
+    assert!(!subshell_bootstrap_key_forwarded(true, false, None));
+    assert!(subshell_bootstrap_key_forwarded(true, true, None));
+    // Typed but the shell never ran it: abort keys pass, others are still held.
+    assert!(subshell_bootstrap_key_forwarded(false, true, young));
+    assert!(!subshell_bootstrap_key_forwarded(false, false, young));
+    assert!(!subshell_bootstrap_key_forwarded(true, false, young));
+}
+
+#[test]
+fn stalled_subshell_bootstrap_stops_holding_input() {
+    let stalled = Some(SUBSHELL_BOOTSTRAP_STALL_CEILING);
+    assert!(subshell_bootstrap_key_forwarded(false, false, stalled));
+    assert!(subshell_bootstrap_key_forwarded(true, false, stalled));
+    let almost = Some(SUBSHELL_BOOTSTRAP_STALL_CEILING - Duration::from_millis(1));
+    assert!(!subshell_bootstrap_key_forwarded(false, false, almost));
 }
 
 #[test]
