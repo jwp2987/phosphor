@@ -3375,6 +3375,11 @@ fn render_collapsible_block(
     ))
 }
 
+/// Reasoning/summarization text lives inside the same `SelectableArea` as the answer text, so it
+/// must opt in to selection like the answer does; `false` made it impossible to drag-select or
+/// copy (#1011).
+const COLLAPSIBLE_TEXT_BLOCK_SELECTABLE: bool = true;
+
 /// Renders a collapsible text block (reasoning or summarization) with header, markdown-parsed sections, and scroll-pinning.
 #[allow(clippy::too_many_arguments)]
 fn render_collapsible_text_block_section(
@@ -3392,7 +3397,7 @@ fn render_collapsible_text_block_section(
     let appearance = Appearance::as_ref(app);
     let theme = appearance.theme();
     let text_color = blended_colors::text_disabled(theme, theme.surface_2());
-    let selectable = false;
+    let selectable = COLLAPSIBLE_TEXT_BLOCK_SELECTABLE;
     let is_streaming = props.model.status(app).is_streaming();
 
     let mut container = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
