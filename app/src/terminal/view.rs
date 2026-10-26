@@ -8502,6 +8502,40 @@ impl TerminalView {
         ctx.emit(Event::ShutdownPty);
     }
 
+    /// Whether [`Self::shutdown_pty`] has been requested for this view.
+    pub fn pty_shutdown_requested(&self) -> bool {
+        self.manual_pty_shutdown_requested
+    }
+
+    /// Tears the session down for good when its pane is permanently discarded (the undo-close
+    /// grace expired, or the tab/pane was closed without undo). #980: nothing on that path
+    /// stopped the pty, so a closed ssh tab kept its local shell and `ssh -o ControlMaster=yes`
+    /// client alive (and its ControlPath socket in place) until the app quit. `ExitShell`
+    /// only fires when the shell exits on its own.
+    ///
+    /// Deregisters the remote-server session first so the owned ControlMaster gets
+    /// `ssh -O exit` and its socket file is removed (an external, user-owned master carries no
+    /// `control_path` and is left alone), then shuts the pty down, which kills the shell's whole
+    /// process tree (#975).
+    pub fn shutdown_for_discard(&mut self, ctx: &mut ViewContext<Self>) {
+        #[cfg(not(target_family = "wasm"))]
+        if FeatureFlag::SshRemoteServer.is_enabled() {
+            let session_id = self.model.lock().block_list().active_block().session_id();
+            if let Some(session_id) = session_id {
+                use crate::remote_server::manager::RemoteServerManager;
+                RemoteServerManager::handle(ctx).update(
+                    ctx,
+                    |mgr: &mut RemoteServerManager, ctx| {
+                        mgr.deregister_session(session_id, ctx);
+                    },
+                );
+            }
+        }
+        if !self.manual_pty_shutdown_requested {
+            self.shutdown_pty(ctx);
+        }
+    }
+
     /// The conversation whose agent-requested command Escape should stop, if any (issue #850).
     ///
     /// Deliberately narrow: only a `wait_until_completion` command (the agent's tool call is

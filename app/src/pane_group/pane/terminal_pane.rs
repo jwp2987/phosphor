@@ -363,6 +363,20 @@ impl PaneContent for TerminalPane {
                     .clear_conversations_in_terminal_view(self.terminal_view(ctx).id(), ctx);
             });
             self.delete_blocks(ctx);
+            // Stop the pty and its process tree (local shell, ssh client/ControlMaster). The
+            // pane is gone for good, so nothing may keep running behind it (#980).
+            let views = self
+                .view
+                .as_ref(ctx)
+                .pane_stack()
+                .as_ref(ctx)
+                .entries()
+                .iter()
+                .map(|(_, view)| view.clone())
+                .collect::<Vec<_>>();
+            for view in views {
+                view.update(ctx, |view, ctx| view.shutdown_for_discard(ctx));
+            }
         }
 
         // Unsubscribe from all views in the pane stack.
