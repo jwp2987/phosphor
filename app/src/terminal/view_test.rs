@@ -2192,6 +2192,56 @@ fn test_insert_into_input() {
     });
 }
 
+/// #988: a lingering text selection in block A must not hijack right-click -> Copy when block B
+/// is the selected block; the explicitly selected block is what gets copied.
+#[test]
+fn context_menu_copy_blocks_prefers_selected_blocks_over_lingering_text_selection() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |terminal_view, ctx| {
+            let block_b_index = {
+                let mut terminal_model = terminal_view.model.lock();
+                let blocks = terminal_model.block_list_mut();
+                let block_a_index = insert_block(blocks, "cmd_a\n", "output_a\n");
+                let block_b_index = insert_block(blocks, "cmd_b\n", "output_b\n");
+                let block_a = blocks
+                    .block_at(block_a_index)
+                    .expect("block a should exist");
+                let columns = block_a.prompt_and_command_grid().grid_handler().columns();
+                let command_grid_offset = block_a.command_grid_offset();
+                blocks.start_selection(
+                    BlockListPoint::new(command_grid_offset, 0),
+                    SelectionType::Simple,
+                    Side::Left,
+                );
+                blocks.update_selection(
+                    BlockListPoint::new(command_grid_offset, columns),
+                    Side::Right,
+                );
+                assert!(blocks.selection().is_some());
+                block_b_index
+            };
+            terminal_view.selected_blocks.reset_to_single(block_b_index);
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text("sentinel".to_owned()));
+
+            terminal_view.context_menu_copy_blocks(ctx);
+
+            let copied = ctx.clipboard().read().plain_text;
+            assert!(
+                copied.contains("output_b"),
+                "expected the selected block B to be copied, got {copied:?}"
+            );
+            assert!(
+                !copied.contains("cmd_a"),
+                "the lingering text selection in block A must not be copied, got {copied:?}"
+            );
+        });
+    });
+}
+
 #[test]
 fn test_copy_on_select() {
     App::test((), |mut app| async move {

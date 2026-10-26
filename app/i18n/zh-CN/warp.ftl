@@ -2302,6 +2302,7 @@ menu-block-scroll-to-bottom-of-blocks = 滚动到块底部
 menu-block-save-as-workflow = 另存为工作流
 menu-block-ask-warp-ai = 询问 Phosphor AI
 menu-block-copy-output = 复制输出
+menu-block-copy-selected-text = 复制所选文本
 menu-block-copy-filtered-output = 复制过滤后的输出
 menu-block-toggle-block-filter = 切换块过滤器
 menu-block-toggle-bookmark = 切换收藏

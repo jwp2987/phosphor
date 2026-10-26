@@ -2563,6 +2563,7 @@ menu-block-scroll-to-bottom-of-blocks = Scroll to bottom of blocks
 menu-block-save-as-workflow = Save as workflow
 menu-block-ask-warp-ai = Ask Phosphor AI
 menu-block-copy-output = Copy output
+menu-block-copy-selected-text = Copy selected text
 menu-block-copy-filtered-output = Copy filtered output
 menu-block-toggle-block-filter = Toggle block filter
 menu-block-toggle-bookmark = Toggle bookmark
