@@ -2401,7 +2401,7 @@ fn insert_command_under_the_cap_does_not_trim() {
 /// the snapshot: the writer keeps it and retries until the lock is released.
 #[test]
 fn writer_retries_snapshot_blocked_by_external_exclusive_lock() {
-    use diesel::{Connection as _, sqlite::SqliteConnection};
+    use diesel::{Connection as _, connection::SimpleConnection as _, sqlite::SqliteConnection};
 
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let database_path = tempdir.path().join("warp.sqlite");
