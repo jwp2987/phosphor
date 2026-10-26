@@ -654,9 +654,6 @@ pub const WAKEUP_THROTTLE_PERIOD: Duration =
 
 pub const EXECUTE_PENDING_COMMAND_DELAY: Duration = Duration::from_millis(100);
 
-/// How long the agent's command gets to react to an interrupt (^C) before the stop is escalated:
-/// the conversation is cancelled, the command handed to the user and the agent view left
-/// (#899, #900). Long enough for an ordinary process to run its signal handlers and exit.
 /// How long after a notice banner opens/closes the find bar is redrawn so it picks up the
 /// banner's freshly saved position (#958). Must be longer than one frame.
 const FIND_BAR_BANNER_RELAYOUT_DELAY: Duration = Duration::from_millis(50);
@@ -667,6 +664,9 @@ fn find_bar_banner_relayout_delay(find_bar_open: bool) -> Option<Duration> {
     find_bar_open.then_some(FIND_BAR_BANNER_RELAYOUT_DELAY)
 }
 
+/// How long the agent's command gets to react to an interrupt (^C) before the stop is escalated:
+/// the conversation is cancelled, the command handed to the user and the agent view left
+/// (#899, #900). Long enough for an ordinary process to run its signal handlers and exit.
 const AGENT_INTERRUPT_GRACE: Duration = Duration::from_secs(3);
 
 pub const WARP_PROMPT_HEIGHT_LINES: f32 = 0.9;

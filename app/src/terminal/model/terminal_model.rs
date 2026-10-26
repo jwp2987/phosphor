@@ -463,6 +463,11 @@ impl TmuxControlModeContext {
     }
 }
 
+/// How long a command display override (#952) waits for its command to run before it is dropped.
+const COMMAND_DISPLAY_OVERRIDE_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+/// Upper bound on pending command display overrides.
+const MAX_COMMAND_DISPLAY_OVERRIDES: usize = 32;
+
 pub struct TerminalModel {
     /// For fullscreen programs like vim.
     alt_screen: AltScreen,
@@ -488,7 +493,7 @@ pub struct TerminalModel {
     agent_display_commands: HashMap<AIAgentActionId, String>,
     /// Wrapped command text typed into the shell -> the command to show for it (tab config
     /// panes, #952). Consumed at preexec.
-    command_display_overrides: HashMap<String, String>,
+    command_display_overrides: HashMap<String, (String, std::time::Instant)>,
     /// Whether the blocklist has been cleared in the lifetime of this terminal model.
     pub blocklist_has_been_cleared: bool,
 
@@ -2767,14 +2772,44 @@ impl TerminalModel {
     /// Records that the command `wrapped`, typed into the shell by the app (a tab config pane's
     /// startup command rewritten to bypass aliases, #884), is shown as `display` in the block
     /// header, tab title and history instead (#952).
+    ///
+    /// This only changes what Phosphor shows: the shell's own history file (`~/.zsh_history`,
+    /// PowerShell's PSReadLine file, ...) still records the wrapper text that was actually typed.
+    ///
+    /// An override is consumed at preexec. One whose command never ran (the pending input was
+    /// edited or cleared) expires after [`COMMAND_DISPLAY_OVERRIDE_TTL`]; the table is also
+    /// bounded, evicting the oldest entry rather than dropping every pending override.
     pub fn set_command_display_override(&mut self, wrapped: String, display: String) {
+        self.set_command_display_override_at(wrapped, display, std::time::Instant::now());
+    }
+
+    fn set_command_display_override_at(
+        &mut self,
+        wrapped: String,
+        display: String,
+        now: std::time::Instant,
+    ) {
+        // Keyed trimmed, because preexec looks the typed command up trimmed.
+        let wrapped = wrapped.trim().to_owned();
         if wrapped == display {
             return;
         }
-        if self.command_display_overrides.len() >= 32 {
-            self.command_display_overrides.clear();
+        self.command_display_overrides.retain(|_, (_, set_at)| {
+            now.saturating_duration_since(*set_at) < COMMAND_DISPLAY_OVERRIDE_TTL
+        });
+        while self.command_display_overrides.len() >= MAX_COMMAND_DISPLAY_OVERRIDES {
+            let Some(oldest) = self
+                .command_display_overrides
+                .iter()
+                .min_by_key(|(_, (_, set_at))| *set_at)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            self.command_display_overrides.remove(&oldest);
         }
-        self.command_display_overrides.insert(wrapped, display);
+        self.command_display_overrides
+            .insert(wrapped, (display, now));
     }
 
     fn apply_preexec(&mut self, mut data: PreexecValue) {
@@ -2783,7 +2818,11 @@ impl TerminalModel {
             .active_block()
             .requested_command_action_id()
             .and_then(|action_id| self.agent_display_commands.remove(action_id))
-            .or_else(|| self.command_display_overrides.remove(data.command.trim()));
+            .or_else(|| {
+                self.command_display_overrides
+                    .remove(data.command.trim())
+                    .map(|(display, _)| display)
+            });
         if let Some(display_command) = display_command {
             self.block_list
                 .active_block_mut()
