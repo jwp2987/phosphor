@@ -363,6 +363,7 @@ impl ShellDialect {
             Self::Posix => ansi_c_quote(input),
             Self::Fish => fish_escape(input),
             Self::PowerShell => powershell_double_quote(input),
+            Self::Nu => unreachable!("handled above"),
         })
     }
 
