@@ -15668,6 +15668,102 @@ fn ssh_drop_through_resets_on_new_command() {
     })
 }
 
+/// #983 (macOS, 0abe39e6f): the ssh block ENDS (cleanly, at the remote shell's first precmd)
+/// before the remote session is registered, and the input editor takes over. The tail of a line
+/// whose head was dropped must still be dropped through its Enter -- from the terminal path and
+/// from the editor's own submit -- instead of running as a command of its own.
+#[test]
+fn ssh_dropped_head_survives_the_ssh_block_ending_and_the_editor_taking_over() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::ExecuteCommand(e) = event {
+                    sink.borrow_mut().push(e.command.clone());
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            let armed = view.model.lock().active_block_id().clone();
+            view.typed_characters_on_terminal("echo E_", ctx);
+            assert!(view.ssh_drop_line_through_enter);
+            // The ssh block ends cleanly before any remote session or hook was observed.
+            view.apply_block_completed_to_ssh_gate(&armed, 0);
+            assert!(
+                view.ssh_drop_line_through_enter,
+                "a clean end of the ssh block must not end the drop-through"
+            );
+            // The remote session's own first block starts (a non-ssh command start).
+            view.typed_characters_on_terminal("x > ~/tmp/E_x", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            // The editor submits the line (it has focus now): vetoed, not executed.
+            submit_command(view, "x > ~/tmp/E_x", ctx);
+            assert!(!view.ssh_drop_line_through_enter, "the Enter ends the drop");
+            // The next line passes.
+            view.typed_characters_on_terminal("ls", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+        });
+        assert_eq!(executed.borrow().as_slice(), ["ssh host".to_owned()]);
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #1001 (macOS): a Ctrl-C after the ssh block ended and before the remote session is announced
+/// used to vanish silently; it is held with the notice (owner decision), and does not end a
+/// drop-through in progress.
+#[test]
+fn ssh_ctrl_c_after_the_ssh_block_ended_is_held_with_a_notice() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            let armed = view.model.lock().active_block_id().clone();
+            view.typed_characters_on_terminal("abc", ctx);
+            view.ssh_connect_gate.as_mut().unwrap().managed = true;
+            view.apply_block_completed_to_ssh_gate(&armed, 0);
+            assert!(view.ssh_connect_gate.is_some(), "the bootstrap wait holds");
+            view.keydown_on_terminal("\u{3}", ctx);
+            assert!(view.ssh_interrupt_held_gate_notified, "notice shown");
+            assert!(view.ssh_drop_line_through_enter, "a held ^C ends nothing");
+            view.ctrl_c(ctx);
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #1001 (macOS): ssh has printed nothing and no ssh hook was seen, so the tty may be raw and a
+/// ^C would be forwarded into the remote startup: held with the notice, not written.
+#[test]
+fn ssh_ctrl_c_while_silently_connecting_is_held_with_a_notice() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.keydown_on_terminal("\u{3}", ctx);
+            assert!(view.ssh_interrupt_held_gate_notified);
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
 /// #1001: an interrupt during the remote bootstrap is held (it would cut the script mid-feed and
 /// wedge the pane on "Starting shell..."), then forwarded once the bootstrap is stuck so the
 /// user can leave.
