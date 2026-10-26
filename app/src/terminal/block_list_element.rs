@@ -196,6 +196,23 @@ const CLI_SUBAGENT_MAX_WIDTH_RATIO: f32 = 0.98;
 // current block's available height.
 const CLI_SUBAGENT_MAX_HEIGHT_RATIO: f32 = 0.98;
 
+/// Whether a left-button drag selects blocks (as opposed to text). Cmd selects blocks; Shift does
+/// too, unless Shift is being used to take the mouse back from a running program that reports it
+/// (`shift_reclaims_mouse`), where it must select text inside the running block instead.
+fn drag_selects_blocks(
+    modifiers: &ModifiersState,
+    rect_selection_enabled: bool,
+    shift_reclaims_mouse: bool,
+) -> bool {
+    let shift = modifiers.shift && !shift_reclaims_mouse;
+    if rect_selection_enabled {
+        // If cmd and alt are both active, this should be treated as a rect selection.
+        !(modifiers.cmd && modifiers.alt) && (modifiers.cmd || shift)
+    } else {
+        modifiers.cmd || shift
+    }
+}
+
 fn cli_subagent_layout_max_size(
     available_size: Vector2F,
     block_height: f32,
@@ -4954,12 +4971,18 @@ impl Element for BlockListElement {
                 modifiers,
                 ..
             } if !handled || self.is_terminal_selecting => {
-                let is_selecting_blocks = if FeatureFlag::RectSelection.is_enabled() {
-                    // If cmd and alt are both active, this should be treated as a rect selection.
-                    !(modifiers.cmd && modifiers.alt) && (modifiers.cmd || modifiers.shift)
-                } else {
-                    modifiers.cmd || modifiers.shift
+                // Shift also means "take the mouse back from the running program", in which
+                // case the drag is a text selection inside that block, not a block selection.
+                let shift_reclaims_mouse = modifiers.shift && {
+                    let model = self.model.lock();
+                    model.block_list().active_block().is_active_and_long_running()
+                        && !should_intercept_mouse(&model, false, app)
                 };
+                let is_selecting_blocks = drag_selects_blocks(
+                    modifiers,
+                    FeatureFlag::RectSelection.is_enabled(),
+                    shift_reclaims_mouse,
+                );
                 self.mouse_dragged(*position, is_selecting_blocks, modifiers, ctx, app)
             }
             Event::MouseMoved { position, .. } => self.mouse_moved(*position, app, ctx),
@@ -5190,6 +5213,33 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #987: Shift-drag over a program that reports the mouse selects text, not blocks.
+    #[test]
+    fn shift_drag_selects_text_when_it_reclaims_the_mouse() {
+        let shift = ModifiersState {
+            shift: true,
+            ..Default::default()
+        };
+        let cmd = ModifiersState {
+            cmd: true,
+            ..Default::default()
+        };
+        for rect in [false, true] {
+            assert!(drag_selects_blocks(&shift, rect, false));
+            assert!(!drag_selects_blocks(&shift, rect, true));
+            // Cmd keeps selecting blocks regardless.
+            assert!(drag_selects_blocks(&cmd, rect, false));
+            assert!(drag_selects_blocks(&cmd, rect, true));
+            assert!(!drag_selects_blocks(&ModifiersState::default(), rect, false));
+        }
+        let cmd_alt = ModifiersState {
+            cmd: true,
+            alt: true,
+            ..Default::default()
+        };
+        assert!(!drag_selects_blocks(&cmd_alt, true, false));
+    }
 
     /// #934: right after a command from the editor is written, focus moves to the terminal but
     /// the elements still hold the snapshot of the frame before. Keys typed in that gap were

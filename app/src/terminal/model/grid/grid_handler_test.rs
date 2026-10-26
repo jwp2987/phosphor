@@ -2667,6 +2667,31 @@ fn test_clear_screen_all_primary_preserves_visible_rows_in_history_by_default() 
     assert_visible_grid_blank(&grid);
 }
 
+/// #986: `clear` sent at the very start of a running block (nothing on screen yet) must not push
+/// a screenful of blank rows into scrollback, which would bury the output that follows.
+#[test]
+fn test_clear_screen_all_on_empty_primary_grid_adds_no_history() {
+    let mut grid = GridHandler::new_for_test_with_scroll_limit(3, 5, MAX_SCROLL_LIMIT);
+
+    grid.clear_screen(ansi::ClearMode::All);
+    grid.clear_screen(ansi::ClearMode::Saved);
+
+    assert_eq!(grid.history_size(), 0);
+    assert_visible_grid_blank(&grid);
+}
+
+/// #986: output written after a `clear` that started the block stays at the top of the block.
+#[test]
+fn test_output_after_clear_on_empty_primary_grid_is_not_buried_in_history() {
+    let mut grid = GridHandler::new_for_test_with_scroll_limit(3, 5, MAX_SCROLL_LIMIT);
+
+    grid.clear_screen(ansi::ClearMode::All);
+    grid.input_at_cursor("abc");
+
+    assert_eq!(grid.history_size(), 0);
+    assert_eq!(grid.grid_storage()[VisibleRow(0)][0].c, 'a');
+}
+
 #[test]
 fn test_clear_screen_all_primary_with_full_grid_clear_behavior_clears_in_place() {
     let mut grid = GridHandler::new_for_test_with_scroll_limit(3, 5, MAX_SCROLL_LIMIT);
