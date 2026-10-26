@@ -943,8 +943,14 @@ where
             && params.len() == 1
             && params.iter().next() == Some(&[1000])
         {
-            debug!("Entering tmux control mode, pending pane information.");
-            self.state.tmux_control_mode = Some(TmuxControlMode::new());
+            // Only honour the DCS when Phosphor or the user started tmux control mode; output
+            // from an arbitrary program must not make us type tmux commands into the shell (#996).
+            if self.handler.allows_tmux_control_mode() {
+                debug!("Entering tmux control mode, pending pane information.");
+                self.state.tmux_control_mode = Some(TmuxControlMode::new());
+            } else {
+                log::warn!("Ignoring tmux control mode DCS: not initiated by Phosphor or the user");
+            }
         }
         self.state.dcs_data.on_hook(intermediates, c);
     }
