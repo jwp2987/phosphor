@@ -13448,6 +13448,11 @@ impl Workspace {
         self.tab_mru_order
             .push(self.tabs[new_tab_index].pane_group.id());
         self.activate_tab_internal(new_tab_index, ctx);
+        // The viewer's content is built synchronously inside the pane group's constructor,
+        // before the tab is part of the workspace, and nothing re-renders afterwards: the pane
+        // stayed blank until the next input event invalidated the window (#988).
+        new_pane_group.update(ctx, |_, ctx| ctx.notify());
+        ctx.notify();
     }
 
     /// Restores a conversation in a new tab.

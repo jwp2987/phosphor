@@ -48,6 +48,16 @@ pub(super) fn long_running_entry_viewer_action(
 }
 
 impl TerminalView {
+    /// Mirrors the long-running check in `AgentViewController::try_enter_agent_view`.
+    fn is_long_running_command_blocking_agent_view_entry(&self) -> bool {
+        let model = self.model.lock();
+        model
+            .block_list()
+            .active_block()
+            .is_active_and_long_running()
+            && !model.is_conversation_transcript_viewer()
+    }
+
     pub fn enter_agent_view(
         &mut self,
         initial_prompt: Option<String>,
@@ -125,6 +135,19 @@ impl TerminalView {
         conversation_id: AIConversationId,
         ctx: &mut ViewContext<Self>,
     ) {
+        // A click on an earlier agent response while a command runs always opens the read-only
+        // viewer. Decide that up front: otherwise a conversation that is not live in this pane
+        // is first restored into it, and that restore's own attempt to enter agent view fails
+        // with the long-running error (logged at ERROR) before the viewer finally opens (#988).
+        if origin == AgentViewEntryOrigin::AgentViewBlock
+            && self.is_long_running_command_blocking_agent_view_entry()
+        {
+            ctx.dispatch_typed_action_deferred(
+                WorkspaceAction::OpenLiveConversationReadOnlyViewer { conversation_id },
+            );
+            return;
+        }
+
         let history_model = BlocklistAIHistoryModel::handle(ctx).as_ref(ctx);
 
         let is_conversation_in_memory = history_model.conversation(&conversation_id).is_some();
