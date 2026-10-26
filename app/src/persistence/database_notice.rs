@@ -28,6 +28,10 @@ pub enum DatabaseProblem {
     /// missing table, or tabs whose rows do not read back. `skipped_tabs` is
     /// 0 when the whole read failed.
     PartialRestore { skipped_tabs: usize },
+    /// Another process (or connection) holds a lock on the database that did not
+    /// clear while the writer retried (#971). Nothing is damaged; the writer keeps
+    /// retrying the latest snapshot and saves once the lock is released.
+    Locked,
     /// Anything else; carries SQLite's or the OS's message.
     Other(String),
 }
@@ -95,6 +99,17 @@ fn location_rejects_writes(db_path: &Path) -> bool {
     }
 }
 
+/// Whether a lowercased SQLite error message means another connection holds a
+/// lock past the busy timeout (`SQLITE_BUSY` / `SQLITE_LOCKED`).
+pub fn is_lock_error(message: &str) -> bool {
+    const LOCKED: &[&str] = &[
+        "database is locked",
+        "database table is locked",
+        "database schema is locked",
+    ];
+    LOCKED.iter().any(|needle| message.contains(needle))
+}
+
 /// Classifies a lowercased SQLite or OS error message about the database at
 /// `db_path`.
 pub fn classify_database_problem(message: &str, db_path: &Path) -> DatabaseProblem {
@@ -113,6 +128,8 @@ pub fn classify_database_problem(message: &str, db_path: &Path) -> DatabaseProbl
     ];
     if READ_ONLY.iter().any(|needle| message.contains(needle)) {
         DatabaseProblem::ReadOnly
+    } else if is_lock_error(message) {
+        DatabaseProblem::Locked
     } else if FULL.iter().any(|needle| message.contains(needle)) {
         DatabaseProblem::DiskFull
     } else if CORRUPT.iter().any(|needle| message.contains(needle)) {

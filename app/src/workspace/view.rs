@@ -2836,6 +2836,9 @@ impl Workspace {
                 crate::persistence::DatabaseProblem::DiskFull => {
                     crate::t!("workspace-database-reason-disk-full")
                 }
+                crate::persistence::DatabaseProblem::Locked => {
+                    crate::t!("workspace-database-reason-locked")
+                }
                 crate::persistence::DatabaseProblem::Other(detail) => {
                     crate::t!("workspace-database-reason-other", detail = detail.clone())
                 }

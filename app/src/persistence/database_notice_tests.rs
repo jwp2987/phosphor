@@ -300,3 +300,23 @@ fn reset_rearms_the_damage_notice() {
     assert_eq!(take_database_problem_notice().unwrap().problem, DatabaseProblem::Corrupt);
 }
 
+
+/// #971: a lock held elsewhere is its own problem, so it gets a notice that
+/// says to wait rather than "Other" with a raw SQLite string.
+#[test]
+fn locked_database_messages_are_classified_as_locked() {
+    let path = Path::new("/nonexistent/dir/warp.sqlite");
+    for message in [
+        "database is locked",
+        "error saving app state: database is locked",
+        "database table is locked",
+    ] {
+        assert!(is_lock_error(message), "{message}");
+        assert_eq!(
+            classify_database_problem(message, path),
+            DatabaseProblem::Locked,
+            "{message}"
+        );
+    }
+    assert!(!is_lock_error("attempt to write a readonly database"));
+}

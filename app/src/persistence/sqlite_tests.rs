@@ -2396,3 +2396,48 @@ fn insert_command_under_the_cap_does_not_trim() {
     super::insert_command(&mut small, started_command("new")).expect("insert");
     assert_eq!(command_stats(&mut small), (6, 1, 6));
 }
+
+/// #971: a lock held by another process past the busy timeout must not lose
+/// the snapshot: the writer keeps it and retries until the lock is released.
+#[test]
+fn writer_retries_snapshot_blocked_by_external_exclusive_lock() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let conn = setup_database(&database_path).expect("database should initialize");
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+
+    // Another "process" takes the exclusive lock.
+    let mut locker =
+        SqliteConnection::establish(database_path.to_str().unwrap()).expect("locker connects");
+    locker
+        .batch_execute("BEGIN EXCLUSIVE;")
+        .expect("exclusive lock should be taken");
+
+    writer
+        .sender
+        .send(ModelEvent::Snapshot(AppState {
+            windows: vec![test_terminal_window_snapshot(false)],
+            active_window_index: Some(0),
+            block_lists: Default::default(),
+            running_mcp_servers: Default::default(),
+        }))
+        .expect("snapshot should send");
+
+    // Long enough for the first attempt to fail on the 1 s busy timeout.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    locker.batch_execute("COMMIT;").expect("lock released");
+
+    let mut reader = SqliteConnection::establish(database_path.to_str().unwrap()).unwrap();
+    let mut landed = false;
+    for _ in 0..100 {
+        let restored = read_sqlite_data(&mut reader, None).expect("data should load");
+        if restored.app_state.windows.len() == 1 {
+            landed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    writer.sender.send(ModelEvent::Terminate).ok();
+    writer.handle.join().expect("writer should terminate");
+    assert!(landed, "the blocked snapshot must be saved after the lock is released");
+}
