@@ -2722,6 +2722,13 @@ pub struct TerminalView {
     /// command (before the shell's preexec hook can say anything) and held until the remote
     /// session is ready, the connect shows the user a prompt, or the ceiling passes.
     ssh_connect_gate: Option<SshConnectGate>,
+    /// Line-atomic dropping (#983): set once the gate dropped any printable key or paste of the
+    /// current line. While set, every further typed key is dropped through and including the
+    /// next Enter even after the gate released, so a line typed across the release is never
+    /// split (head dropped, tail run on the remote). Ends at: the Enter that is dropped, a
+    /// Ctrl-C/D/Z or Ctrl-U, visible prompt text arriving (a prompt is a new line context, so
+    /// a typed `yes` + Enter answer is not eaten), a failed ssh block, and any new command.
+    ssh_drop_line_through_enter: bool,
     /// When the last gate was released. A command that started before this never re-arms the
     /// gate lazily from the warpify pending-ssh state.
     ssh_connect_gate_released_at: Option<DateTime<Local>>,
@@ -4402,6 +4409,7 @@ impl TerminalView {
             was_ever_visible: false,
             ssh_setup_drop_notified: false,
             ssh_connect_gate: None,
+            ssh_drop_line_through_enter: false,
             ssh_connect_gate_released_at: None,
             ssh_bootstrap_failed_session: None,
             ssh_bootstrap_swallow_started: None,
@@ -9589,7 +9597,9 @@ impl TerminalView {
     /// Generally, this should be control characters rather than printable characters.
     fn keydown_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
         // Ctrl-C / Ctrl-D still reach the ssh process so the user can abort.
-        if !is_ssh_interrupt_key(characters) && self.swallow_input_during_ssh_setup(ctx) {
+        if is_ssh_interrupt_key(characters) {
+            self.ssh_drop_line_through_enter = false;
+        } else if self.swallow_input_during_ssh_setup(Some(characters), ctx) {
             return;
         }
         if self.is_long_running()
@@ -9632,7 +9642,11 @@ impl TerminalView {
     /// queued -- replaying a queued Enter into a half-bootstrapped shell is
     /// exactly the corruption being avoided -- and focus is handed back to
     /// the dialog so the next key drives it.
-    fn swallow_input_during_ssh_setup(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+    fn swallow_input_during_ssh_setup(
+        &mut self,
+        characters: Option<&str>,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
         // The dialog only owns input while it belongs to the pending session. A choice block left
         // behind by an earlier, abandoned connect must not swallow the keys of a later ssh
         // command (host-key / password prompts) (#976).
@@ -9688,9 +9702,40 @@ impl TerminalView {
         // from the rest of the line. Drop the whole run. Every prompt (host key, password, 2FA)
         // is output, so its answers -- including a bare Enter -- are never held here.
         let ssh_connecting_silently = pending_now.is_none() && self.ssh_connect_gate_drops_keys();
-        if !(dialog_up || setup_in_flight || ssh_bootstrapping || ssh_connecting_silently) {
+        let gate_drops =
+            dialog_up || setup_in_flight || ssh_bootstrapping || ssh_connecting_silently;
+        // Line-atomic dropping (#983). `characters` is None for a paste. Enter ends a line;
+        // anything printable (or a paste) belongs to it.
+        let is_enter = matches!(characters, Some("\r" | "\n" | "\r\n"));
+        let is_printable = characters.is_none_or(|c| c.chars().any(|ch| !ch.is_control()));
+        if !gate_drops && self.ssh_drop_line_through_enter {
+            // Visible prompt text (host key, password) arrived and the gate opened because of
+            // it: that is a new line context, so the user's answer must not be eaten by a line
+            // that was dropped blind before the prompt existed. Ctrl-U clears the line.
+            let prompt_arrived = self
+                .ssh_connect_gate
+                .as_ref()
+                .is_some_and(|g| g.output_seen && !g.block_done);
+            if prompt_arrived || characters == Some("\u{15}") {
+                self.ssh_drop_line_through_enter = false;
+            }
+        }
+        if !gate_drops && self.ssh_drop_line_through_enter {
+            if is_enter {
+                self.ssh_drop_line_through_enter = false;
+                self.ssh_setup_drop_notified = false;
+            }
+            return true;
+        }
+        if !gate_drops {
             self.ssh_setup_drop_notified = false;
             return false;
+        }
+        if is_enter {
+            // The dropped Enter ends the line: what is typed next is a new one.
+            self.ssh_drop_line_through_enter = false;
+        } else if is_printable {
+            self.ssh_drop_line_through_enter = true;
         }
         if dialog_up {
             self.redetermine_global_focus(ctx);
@@ -9717,6 +9762,7 @@ impl TerminalView {
     /// submitted (#983). Runs at submission, so the window before the shell's preexec hook (and
     /// the 50 ms before the block counts as long running) is covered too.
     fn note_command_submitted_for_ssh_gate(&mut self, command: &str) {
+        self.ssh_drop_line_through_enter = false;
         if parse_interactive_ssh_command(command).is_some() {
             let block_id = self.model.lock().active_block_id().clone();
             let mut gate = SshConnectGate::new(Instant::now());
@@ -9782,6 +9828,10 @@ impl TerminalView {
         self.refresh_ssh_connect_gate();
         if let Some(gate) = self.ssh_connect_gate.as_mut() {
             gate.note_block_completed(Instant::now(), exit_code == 0);
+            if gate.failed {
+                // The local prompt is back with an empty line: nothing is left to complete.
+                self.ssh_drop_line_through_enter = false;
+            }
         }
         // Release a gate that has nothing more to wait for right away, not at the next refresh.
         self.refresh_ssh_connect_gate();
@@ -9888,7 +9938,9 @@ impl TerminalView {
     /// We can assume `characters` consists of all printable characters, and therefore,
     /// can go into the input box.
     fn typed_characters_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
-        if !is_ssh_interrupt_key(characters) && self.swallow_input_during_ssh_setup(ctx) {
+        if is_ssh_interrupt_key(characters) {
+            self.ssh_drop_line_through_enter = false;
+        } else if self.swallow_input_during_ssh_setup(Some(characters), ctx) {
             return;
         }
         self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
@@ -13567,6 +13619,8 @@ impl TerminalView {
                             if self.ssh_connect_gate.as_ref().is_some_and(|g| !g.managed) {
                                 self.ssh_connect_gate = None;
                             }
+                            // Nothing dropped for an earlier command may leak into this one.
+                            self.ssh_drop_line_through_enter = false;
                             self.warpify_state.clear_pending_ssh_host();
                             self.recompute_window_footer_bar_color(ctx);
 
@@ -18169,7 +18223,7 @@ impl TerminalView {
 
     fn paste(&mut self, middle_click: bool, ctx: &mut ViewContext<Self>) {
         // A paste is typed text: the whole paste is dropped exactly when typing would be (#983).
-        if self.swallow_input_during_ssh_setup(ctx) {
+        if self.swallow_input_during_ssh_setup(None, ctx) {
             return;
         }
         let (should_paste_in_input, needs_bracketed_paste) = {

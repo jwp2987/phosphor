@@ -15448,6 +15448,137 @@ fn ssh_gate_completion_applies_only_to_the_armed_block() {
     })
 }
 
+/// Releases the connect gate the way the gate does when its window ends (#983).
+fn release_ssh_gate_for_test(view: &mut TerminalView) {
+    view.ssh_connect_gate = None;
+    view.ssh_connect_gate_released_at = Some(chrono::Local::now());
+}
+
+/// #983 straddle: typing that crosses the gate release is dropped WHOLE. The head is dropped
+/// while the gate holds; the tail and its Enter must not reach the pty or the editor, and the
+/// next line passes.
+#[test]
+fn ssh_line_typed_across_gate_release_is_dropped_whole() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo QW", ctx);
+            assert!(view.ssh_setup_drop_notified);
+            release_ssh_gate_for_test(view);
+            view.typed_characters_on_terminal("ERTY && x", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            view.keydown_on_terminal("\r", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert!(!view.ssh_drop_line_through_enter, "Enter ends the drop");
+            // The next line passes.
+            view.typed_characters_on_terminal("ls", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #983: a paste after a dropped head is dropped too (and a paste alone arms the drop-through).
+#[test]
+fn ssh_paste_across_gate_release_is_dropped_whole() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo QW", ctx);
+            release_ssh_gate_for_test(view);
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text("ERTY".to_owned()));
+            view.paste(false, ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #983: visible prompt text arriving ends the drop-through, so a `yes` + Enter answer typed at
+/// a host-key prompt is delivered even though the user typed blind before the prompt existed.
+#[test]
+fn ssh_prompt_arrival_ends_drop_through() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            view.typed_characters_on_terminal("blind", ctx);
+            assert!(view.ssh_drop_line_through_enter);
+            view.model
+                .lock()
+                .process_bytes("Are you sure you want to continue connecting (yes/no)? ");
+            view.keydown_on_terminal("\r", ctx);
+            assert!(!view.ssh_drop_line_through_enter);
+        });
+        assert!(
+            pty_writes.borrow().iter().any(|w| w.as_slice() == b"\r"),
+            "the answer must reach ssh: {:?}",
+            pty_writes.borrow()
+        );
+    })
+}
+
+/// #983: Ctrl-C passes and ends the drop-through; the next typing is not dropped.
+#[test]
+fn ssh_ctrl_c_ends_drop_through() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("abc", ctx);
+            release_ssh_gate_for_test(view);
+            view.keydown_on_terminal("\u{3}", ctx);
+            assert!(!view.ssh_drop_line_through_enter);
+            view.typed_characters_on_terminal("ls", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+        });
+    })
+}
+
+/// #983: the drop-through can never leak to a later command.
+#[test]
+fn ssh_drop_through_resets_on_new_command() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("abc", ctx);
+            release_ssh_gate_for_test(view);
+            assert!(view.ssh_drop_line_through_enter);
+            submit_command(view, "ls", ctx);
+            assert!(!view.ssh_drop_line_through_enter);
+            view.typed_characters_on_terminal("pwd", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "pwd");
+        });
+    })
+}
+
 fn record_pty_writes(
     app: &mut App,
     terminal: &ViewHandle<TerminalView>,
