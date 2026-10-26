@@ -9984,13 +9984,9 @@ impl TerminalView {
         self.refresh_ssh_connect_gate();
         if let Some(gate) = self.ssh_connect_gate.as_mut() {
             gate.note_block_completed(Instant::now(), exit_code == 0);
-            if gate.failed && exit_code != 0 {
-                // ssh failed: the local prompt is back with an empty line, nothing is left to
-                // complete. A CLEAN end is not that: the ssh block ends at the remote shell's
-                // first precmd, before its session is registered, and the typed line must still
-                // be dropped through its Enter (#983, seen on macOS).
-                self.ssh_drop_line_through_enter = false;
-            }
+            // Deliberately no change to `ssh_drop_line_through_enter`, whatever ssh did: a line
+            // with a dropped head is dropped through its Enter, also at the local prompt a
+            // failed ssh leaves behind (#983).
         }
         // Release a gate that has nothing more to wait for right away, not at the next refresh.
         self.refresh_ssh_connect_gate();

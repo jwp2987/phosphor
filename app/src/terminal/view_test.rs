@@ -15668,6 +15668,56 @@ fn ssh_drop_through_resets_on_new_command() {
     })
 }
 
+/// #983: a FAILING ssh (exit 255) hands the local prompt back; the tail of a line whose head was
+/// dropped while the gate was armed must still be dropped through its Enter -- never run locally.
+#[test]
+fn ssh_failing_connect_keeps_the_dropped_line_dropped_through_enter() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::ExecuteCommand(e) = event {
+                    sink.borrow_mut().push(e.command.clone());
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh nosuch.invalid", ctx);
+            let armed = view.model.lock().active_block_id().clone();
+            view.typed_characters_on_terminal("echo L", ctx);
+            assert!(view.ssh_setup_drop_notified, "the drop is announced once");
+            view.apply_block_completed_to_ssh_gate(&armed, 255);
+            assert!(view.ssh_connect_gate.is_none(), "failure releases the gate");
+            assert!(
+                view.ssh_drop_line_through_enter,
+                "the failure must not end the drop-through"
+            );
+            view.typed_characters_on_terminal("OCAL-OK-42", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            view.keydown_on_terminal("\r", ctx);
+            assert!(!view.ssh_drop_line_through_enter, "the Enter ends the drop");
+            // A tail that reached the editor is vetoed at submit too.
+            view.typed_characters_on_terminal("x", ctx);
+            view.ssh_drop_line_through_enter = true;
+            submit_command(view, "x", ctx);
+            // The next line passes.
+            view.typed_characters_on_terminal("ls", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+        });
+        assert_eq!(
+            executed.borrow().as_slice(),
+            ["ssh nosuch.invalid".to_owned()]
+        );
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
 /// #983 (macOS, 0abe39e6f): the ssh block ENDS (cleanly, at the remote shell's first precmd)
 /// before the remote session is registered, and the input editor takes over. The tail of a line
 /// whose head was dropped must still be dropped through its Enter -- from the terminal path and
