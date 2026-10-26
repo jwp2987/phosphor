@@ -671,6 +671,7 @@ fn parse_dcs_precmd_classifies_payload_with_completion_metadata() {
                     kube_config: None,
                     session_id: Some(167303092612201),
                     ps1_is_encoded: None,
+                    ignore_prompt_markers: None,
                     is_after_in_band_command: false,
                 },
             })

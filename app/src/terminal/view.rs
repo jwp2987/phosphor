@@ -9752,10 +9752,13 @@ impl TerminalView {
     fn subshell_bootstrap_announced_age(&self) -> Option<Duration> {
         let (block_id, at) = self.subshell_bootstrap_announced.as_ref()?;
         let model = self.model.lock();
-        (!model.is_read_only()
-            && !model.is_active_block_bootstrapped()
-            && model.block_list().active_block().id() == block_id)
-            .then(|| at.elapsed())
+        subshell_bootstrap_announcement_applies(
+            model.is_read_only(),
+            model.is_active_block_bootstrapped(),
+            model.block_list().active_block().id() == block_id,
+            model.pending_subshell_session().is_some(),
+        )
+        .then(|| at.elapsed())
     }
 
     fn should_write_typed_chars_to_pty(&self, ctx: &mut ViewContext<Self>) -> bool {
@@ -31060,6 +31063,22 @@ pub fn cell_size_and_padding(
         padding_x_px: padding_x_px.into_pixels(),
         padding_y_px: padding_y_px.into_pixels(),
     }
+}
+
+/// Whether an announced subshell bootstrap (`subshell_bootstrap_announced`) still governs input.
+///
+/// The announcement records the block that was active when the first stage was typed, but the
+/// shell's `InitShell` hook finishes that block and starts another, so a stall *after* `InitShell`
+/// (the common wedge: #960) must keep the fail-safe armed while the subshell session is still
+/// pending, even though the block has changed. Once the session is bootstrapped, or the pane is
+/// read-only, nothing is held.
+fn subshell_bootstrap_announcement_applies(
+    read_only: bool,
+    active_block_bootstrapped: bool,
+    block_unchanged: bool,
+    subshell_session_pending: bool,
+) -> bool {
+    !read_only && !active_block_bootstrapped && (block_unchanged || subshell_session_pending)
 }
 
 /// Ctrl-C and Ctrl-D: the keys that must always reach a shell whose subshell bootstrap is stuck.

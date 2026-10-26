@@ -774,6 +774,13 @@ pub struct PromptMetadata {
 
     pub honor_ps1: Option<bool>,
 
+    /// Set by a shell whose own OSC 133 prompt markers must not be trusted while Phosphor's hooks
+    /// drive the session (#966: fish 4.x writes `133;A` after every Precmd, but with Phosphor's
+    /// empty prompt there is never a matching `133;B`, so the unterminated prompt swallows the
+    /// output of the next command). `None` keeps the previous value (in-band Precmds omit it).
+    #[serde(default)]
+    pub ignore_prompt_markers: Option<bool>,
+
     #[serde(deserialize_with = "empty_string_is_none", default)]
     pub rprompt: Option<String>,
 
@@ -821,6 +828,7 @@ impl Default for PromptMetadata {
             // By default, we assume that we are using hex-encoding.
             ps1_is_encoded: Some(true),
             honor_ps1: Default::default(),
+            ignore_prompt_markers: Default::default(),
             rprompt: Default::default(),
             git_head: Default::default(),
             git_branch: Default::default(),
