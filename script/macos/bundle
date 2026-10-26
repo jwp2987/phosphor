@@ -829,7 +829,9 @@ if [[ "$ARTIFACT" = app ]]; then
 
     # Skip running an AppleScript to format the DMG contents if running in Namespace - this consistently times out.
     # See https://github.com/create-dmg/create-dmg/issues/72
-    if [[ "${RUNNER_NAME:-}" == nsc-* ]]; then
+    # Also skipped when PHOSPHOR_DMG_SKIP_JENKINS is set: a CI runner started as a
+    # LaunchDaemon has no GUI session, so the Finder AppleScript cannot run.
+    if [[ "${RUNNER_NAME:-}" == nsc-* || -n "${PHOSPHOR_DMG_SKIP_JENKINS:-}" ]]; then
       args+=(--skip-jenkins)
     fi
 

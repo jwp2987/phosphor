@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Installs create-dmg into the invoking user's home (no brew, no sudo). The release is
+# pinned by SHA-256. create-dmg finds its `support/` directory relative to itself, so the
+# whole tree is kept and only the entry point is symlinked into ~/.local/bin.
+set -euo pipefail
+
+VERSION=1.2.2
+SHA256=18e8dd7db06c9d6fb590c7877e1714b79b709f17d1d138bd65e4910cc82391bc
+DEST="$HOME/.local/create-dmg-$VERSION"
+
+if command -v create-dmg >/dev/null 2>&1; then
+  echo "create-dmg already on PATH: $(command -v create-dmg)"
+  exit 0
+fi
+
+if [ ! -x "$DEST/create-dmg" ]; then
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+  curl -fsSL -o "$tmp/create-dmg.tar.gz" "https://github.com/create-dmg/create-dmg/archive/refs/tags/v$VERSION.tar.gz"
+  echo "$SHA256  $tmp/create-dmg.tar.gz" | shasum -a 256 -c -
+  mkdir -p "$DEST"
+  tar -xzf "$tmp/create-dmg.tar.gz" -C "$DEST" --strip-components=1
+fi
+
+mkdir -p "$HOME/.local/bin"
+ln -sf "$DEST/create-dmg" "$HOME/.local/bin/create-dmg"
+echo "installed create-dmg $VERSION to $HOME/.local/bin"
