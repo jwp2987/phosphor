@@ -1684,6 +1684,8 @@ pub struct Input {
     /// syntax highlighting and autosuggestions features (all which use the completer).
     completions_abort_handle: Option<AbortHandle>,
     decorations_future_handle: Option<SpawnedFutureHandle>,
+    /// Cooperative cancel flag of the in-flight decoration/detection job (#1031).
+    decorations_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Whether decorations were already cleared because the buffer is over
     /// `decorations::MAX_BACKGROUND_JOB_BUFFER_CHARS` (#868), so later edits of the same
     /// oversized buffer skip the full-buffer clear.
@@ -3450,6 +3452,7 @@ impl Input {
             has_pending_command: false,
             last_word_insertion,
             decorations_future_handle: None,
+            decorations_cancel: None,
             decorations_cleared_for_oversized_buffer: false,
             autosuggestions_abort_handle: None,
             completions_abort_handle: None,
@@ -14665,9 +14668,7 @@ impl Input {
         }
         self.abort_latest_autosuggestion_future();
 
-        if let Some(future_handle) = self.decorations_future_handle.take() {
-            future_handle.abort_handle().abort();
-        }
+        self.cancel_decorations_job();
 
         let session_id = self
             .active_block_session_id()
