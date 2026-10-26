@@ -109,6 +109,21 @@ pub(crate) fn should_list_live_conversation(
         && (is_selected || blocklist_filter::conversation_would_render_in_blocklist(conversation))
 }
 
+/// The directory a live conversation is listed under: where it was started, else its own
+/// last known cwd. The pane's *current* cwd is only a last resort, and only for the selected
+/// conversation -- using it for every conversation in the pane made them all show wherever
+/// the shell happened to be (#969).
+pub(crate) fn listing_working_directory(
+    initial: Option<String>,
+    latest: Option<String>,
+    is_selected: bool,
+    pane_pwd: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    initial
+        .or(latest)
+        .or_else(|| if is_selected { pane_pwd() } else { None })
+}
+
 impl ConversationNavigationData {
     #[allow(clippy::too_many_arguments)]
     pub fn from_ai_conversation(
@@ -289,9 +304,12 @@ impl ConversationNavigationData {
                                     Some(terminal_view_id),
                                     Some(window_id),
                                     Some(pane_view_locator),
-                                    conversation
-                                        .initial_working_directory()
-                                        .or_else(|| terminal_view.as_ref(app).pwd()),
+                                    listing_working_directory(
+                                        conversation.initial_working_directory(),
+                                        conversation.current_working_directory(),
+                                        is_selected,
+                                        || terminal_view.as_ref(app).pwd(),
+                                    ),
                                     is_selected,
                                     // Check if the conversation is in the active pane, tab, and window
                                     // to determine if its pane is currently focused.
@@ -412,3 +430,7 @@ mod should_list_live_conversation_test;
 #[cfg(test)]
 #[path = "navigation_text_bound_test.rs"]
 mod navigation_text_bound_test;
+
+#[cfg(test)]
+#[path = "listing_working_directory_test.rs"]
+mod listing_working_directory_test;

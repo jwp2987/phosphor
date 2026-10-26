@@ -1190,6 +1190,9 @@ fn command_words_to_prefix(
 fn syntax_words(dialect: ShellDialect) -> &'static [&'static str] {
     match dialect {
         ShellDialect::Posix => &["for", "in", "done", "fi", "esac", "[[", "(("],
+        ShellDialect::Nu => &[
+            "for", "in", "while", "loop", "if", "else", "match", "try", "catch",
+        ],
         ShellDialect::Fish => &["for", "in", "end"],
         ShellDialect::PowerShell => &[
             "for", "foreach", "in", "while", "do", "until", "try", "catch", "finally", "elseif",
@@ -1204,6 +1207,7 @@ fn pattern_statements(dialect: ShellDialect) -> &'static [&'static str] {
         ShellDialect::Posix => &["case", "select", "foreach"],
         ShellDialect::Fish => &["switch", "case"],
         ShellDialect::PowerShell => &["switch"],
+        ShellDialect::Nu => &["match"],
     }
 }
 
@@ -1320,6 +1324,8 @@ fn command_prefix(shell: RenderShell, word: &str) -> Result<String, &'static str
                 format!("command {word}")
             })
         }
+        // Tab configs never select nushell (`dialect_for_shell_name` cannot return it).
+        ShellDialect::Nu => Err("nushell command prefixing is not supported"),
         ShellDialect::PowerShell => {
             let lower = word.to_ascii_lowercase();
             let target = POWERSHELL_ALIASES
