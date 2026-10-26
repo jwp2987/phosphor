@@ -1354,6 +1354,15 @@ esac
   # switched off here; every other option the files set is kept.
   unsetopt errexit
 
+  # Phosphor (#974): `setopt PRINT_EXIT_VALUE` (the user's rc, or the shell we were typed into)
+  # prints `zsh: exit N` for every top-level statement of this eval'd script that fails, none of
+  # which is the user's. Turn it off for the rest of the bootstrap; zsh.sh turns it back on after
+  # the eval if it was on here, so the user keeps their setting.
+  if [[ -o print_exit_value ]]; then
+    WARP_RESTORE_PRINT_EXIT_VALUE=1
+    unsetopt print_exit_value
+  fi
+
   local rcfiles_end_time="$(LC_ALL="C"; builtin echo $EPOCHREALTIME)"
 
   # If the user is running powerlevel10k and they selected "sparse" for the "Prompt Spacing"
@@ -1487,7 +1496,9 @@ esac
   # `: ${X:?}`) zsh abandons the precmd stage before reaching it, and _warp_repair_hooks emits
   # the owed Precmd from zle-line-init even at the very first prompt.
   _WARP_PRECMD_PENDING=1
-  preexec_functions+=(warp_preexec)
+  # First, not last (#974): a user preexec's output must come after our Preexec hook, or the app
+  # draws it inside the command header.
+  preexec_functions=(warp_preexec $preexec_functions)
   _WARP_HOOKS_INSTALLED=1
 
   # Phosphor (#828): assigning the hook arrays at the prompt
@@ -1556,7 +1567,7 @@ esac
     if (( ${#warp_missing_precmd} )); then
       precmd_functions=(${precmd_functions:#warp_update_prompt_vars} ${warp_missing_precmd:#warp_update_prompt_vars} warp_update_prompt_vars)
     fi
-    preexec_functions+=($warp_missing_preexec)
+    preexec_functions=($warp_missing_preexec $preexec_functions)
 
     # Emit the precmd only if a Preexec is still waiting for it. zsh runs the
     # precmd stage over a copy of the array, so a precmd function that removes

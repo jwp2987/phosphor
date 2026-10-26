@@ -251,7 +251,8 @@ fn test_init_subshell_command_powershell_uses_powershell_guard_not_posix() {
 /// #839: the subshell guard is typed into a shell whose rcfiles already ran. Under bash
 /// `set -u` / zsh `setopt nounset` a bare `$WARP_BOOTSTRAPPED` aborts the whole line, so bash
 /// and zsh must use the nounset-safe `${WARP_BOOTSTRAPPED-}` -- and fish, which cannot parse
-/// `${...}`, must keep the bare form.
+/// `${...}`, must keep the bare form. (#962: the guard is on the last, short line, which evals
+/// the script the earlier lines accumulated.)
 #[test]
 fn test_init_subshell_command_guard_is_nounset_safe_for_bash_and_zsh_only() {
     App::test((), |mut app| async move {
@@ -259,26 +260,126 @@ fn test_init_subshell_command_guard_is_nounset_safe_for_bash_and_zsh_only() {
 
         app.read(|ctx| {
             for shell_type in [ShellType::Bash, ShellType::Zsh] {
-                let command =
-                    init_subshell_command(Some(shell_type), &[], SessionId::from(1u64), ctx);
+                let lines =
+                    init_subshell_command_lines(Some(shell_type), &[], SessionId::from(1u64), ctx);
+                let last = lines.last().unwrap();
                 assert!(
-                    command.starts_with(r#" [ -z "${WARP_BOOTSTRAPPED-}" ] && eval '"#),
-                    "expected a nounset-safe guard for {shell_type:?}: {command}"
+                    last.starts_with(r#" [ -z "${WARP_BOOTSTRAPPED-}" ] && eval "$_wbs""#),
+                    "expected a nounset-safe guard for {shell_type:?}: {last}"
                 );
             }
 
-            let command =
-                init_subshell_command(Some(ShellType::Fish), &[], SessionId::from(1u64), ctx);
+            let lines =
+                init_subshell_command_lines(Some(ShellType::Fish), &[], SessionId::from(1u64), ctx);
+            let last = lines.last().unwrap();
             assert!(
-                command.starts_with(" [ -z $WARP_BOOTSTRAPPED ] && eval '"),
-                "fish cannot parse `${{...}}`, so its guard must stay bare: {command}"
+                last.starts_with(" [ -z $WARP_BOOTSTRAPPED ] && eval $_wbs"),
+                "fish cannot parse `${{...}}`, so its guard must stay bare: {last}"
             );
             assert!(
-                !command.contains("${"),
-                "fish cannot parse `${{...}}`: {command}"
+                !lines.iter().any(|l| l.contains("${")),
+                "fish cannot parse `${{...}}`: {lines:?}"
             );
         });
     });
+}
+
+/// #962: the subshell bootstrap is written while the new shell's tty may still be canonical,
+/// where a line over MAX_CANON (1024 bytes on macOS) is truncated and the shell is left at a
+/// continuation prompt. Every line written -- for every shell, with and without a large
+/// environment, and for the shell-agnostic probe -- must stay under that limit, and must start
+/// with a space so it is kept out of history (#967).
+#[test]
+fn test_init_subshell_lines_fit_in_a_canonical_tty_line_and_start_with_a_space() {
+    use crate::env_vars::{EnvVar, EnvVarValue};
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        app.read(|ctx| {
+            let many_vars: Vec<EnvVar> = (0..30)
+                .map(|i| EnvVar {
+                    name: format!("PHOSPHOR_TEST_VAR_{i}"),
+                    value: EnvVarValue::Constant(format!("it's a value with 'quotes' {i}")),
+                    description: None,
+                })
+                .collect();
+            let shells = [
+                Some(ShellType::Bash),
+                Some(ShellType::Zsh),
+                Some(ShellType::Fish),
+                Some(ShellType::PowerShell),
+                None,
+            ];
+            for shell_type in shells {
+                for vars in [&[][..], &many_vars[..]] {
+                    // The generated session id is 20 digits at most; use one.
+                    let id = SessionId::from(u64::MAX);
+                    let lines = init_subshell_command_lines(shell_type, vars, id, ctx);
+                    assert!(!lines.is_empty());
+                    // PowerShell's PSReadLine line editor is not a canonical tty; it is the
+                    // one shell exempt from the line limit when the user adds variables.
+                    let limit_applies = shell_type != Some(ShellType::PowerShell) || vars.is_empty();
+                    for line in &lines {
+                        assert!(
+                            line.starts_with(' '),
+                            "{shell_type:?}: a line without the leading space lands in history: {line}"
+                        );
+                        assert!(
+                            !line.contains('\n') && !line.contains('\r'),
+                            "{shell_type:?}: a line must not embed line breaks: {line}"
+                        );
+                        if limit_applies {
+                            assert!(
+                                line.len() < MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES,
+                                "{shell_type:?}: {} byte line exceeds the canonical-mode limit: {line}",
+                                line.len()
+                            );
+                        }
+                    }
+                }
+            }
+        });
+    });
+}
+
+/// Splitting must not change the script: concatenating the quoted chunks (as the shell does)
+/// and undoing the quoting gives back exactly the raw script, for every character that needs
+/// escaping, including a single quote or backslash landing on a chunk boundary.
+#[test]
+fn test_chunked_eval_lines_round_trip() {
+    let mut raw = String::new();
+    for i in 0..400 {
+        raw.push_str(&format!("echo '{i}' \\ \"q\" é;"));
+    }
+    for shell_type in [ShellType::Bash, ShellType::Zsh, ShellType::Fish] {
+        let lines = chunked_eval_lines(shell_type, &raw);
+        let mut rebuilt = String::new();
+        for line in &lines {
+            let Some(start) = line.find('\'') else {
+                continue;
+            };
+            if !line.contains("_wbs") || line.contains("eval") {
+                continue;
+            }
+            let end = match shell_type {
+                ShellType::Bash => line.rfind("'; history").unwrap(),
+                _ => line.len() - 1,
+            };
+            let quoted = &line[start + 1..end];
+            // Undo the shell's quoting: `'"'"'` is a literal quote; for fish `\\` is a backslash.
+            let mut un = quoted.replace(r#"'"'"'"#, "'");
+            if shell_type == ShellType::Fish {
+                un = un.replace(r"\\", r"\");
+            }
+            rebuilt.push_str(&un);
+        }
+        assert_eq!(rebuilt, raw, "{shell_type:?}");
+        assert!(
+            lines
+                .iter()
+                .all(|l| l.len() < MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES)
+        );
+    }
 }
 
 fn bundled_script(path: &str) -> String {
@@ -520,4 +621,107 @@ fn typed_bootstrap_lines_fit_macos_max_canon() {
             );
         }
     }
+}
+
+/// Runs the real lines in a real interactive shell (stdin is a pipe, so no tty, but readline-less
+/// `-i` shells still keep history) and checks the InitShell hook arrives and that nothing from the
+/// bootstrap reaches the history file (#967). Skipped for a shell that is not installed.
+#[test]
+#[cfg(unix)]
+fn test_init_subshell_lines_run_in_real_shells_and_stay_out_of_history() {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let cases: [(ShellType, &str, &[&str]); 3] = [
+                (ShellType::Bash, "bash", &["--norc", "-i"]),
+                (ShellType::Zsh, "zsh", &["-f", "-i"]),
+                (ShellType::Fish, "fish", &["--no-config", "-i"]),
+            ];
+            for (shell_type, bin, args) in cases {
+                let Ok(path) = Command::new("sh")
+                    .args(["-c", &format!("command -v {bin}")])
+                    .output()
+                else {
+                    continue;
+                };
+                let path = String::from_utf8_lossy(&path.stdout).trim().to_owned();
+                if path.is_empty() {
+                    eprintln!("skipping {bin}: not installed");
+                    continue;
+                }
+                let dir = std::env::temp_dir()
+                    .join(format!("phosphor-subshell-{bin}-{}", std::process::id()));
+                std::fs::create_dir_all(&dir).unwrap();
+                let histfile = dir.join("history");
+                let lines = init_subshell_command_lines(
+                    Some(shell_type),
+                    &[],
+                    SessionId::from(4242u64),
+                    ctx,
+                );
+                let mut child = Command::new(&path)
+                    .args(args)
+                    .env_clear()
+                    .env("PATH", std::env::var("PATH").unwrap_or_default())
+                    .env("HOME", &dir)
+                    .env("HISTFILE", &histfile)
+                    .env("HISTSIZE", "1000")
+                    .env("SAVEHIST", "1000")
+                    .env("XDG_DATA_HOME", dir.join("data"))
+                    .env("XDG_CONFIG_HOME", dir.join("cfg"))
+                    .env("TERM", "dumb")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap();
+                {
+                    let stdin = child.stdin.as_mut().unwrap();
+                    for line in &lines {
+                        stdin.write_all(line.as_bytes()).unwrap();
+                        stdin.write_all(b"\n").unwrap();
+                    }
+                    stdin.write_all(b" echo done-marker\nexit\n").unwrap();
+                }
+                let out = child.wait_with_output().unwrap();
+                let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+                assert!(
+                    stdout.contains("\u{1b}P$d"),
+                    "{bin}: no DCS hook in the output: {stdout:?}"
+                );
+                let hex: String = stdout
+                    .split("\u{1b}P$d")
+                    .nth(1)
+                    .unwrap()
+                    .chars()
+                    .take_while(|c| c.is_ascii_hexdigit())
+                    .collect();
+                let payload: Vec<u8> = (0..hex.len() / 2)
+                    .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap())
+                    .collect();
+                let payload = String::from_utf8(payload).unwrap();
+                assert!(
+                    payload.contains("InitShell") && payload.contains("\"is_subshell\": true"),
+                    "{bin}: {payload}"
+                );
+                assert!(
+                    payload.contains("4242"),
+                    "{bin}: wrong session id in {payload}"
+                );
+                let mut history = std::fs::read_to_string(&histfile).unwrap_or_default();
+                history.push_str(
+                    &std::fs::read_to_string(dir.join("data/fish/fish_history"))
+                        .unwrap_or_default(),
+                );
+                assert!(
+                    !history.contains("_wbs") && !history.contains("WARP_"),
+                    "{bin}: bootstrap lines reached the history file: {history:?}"
+                );
+                std::fs::remove_dir_all(&dir).ok();
+            }
+        });
+    });
 }
