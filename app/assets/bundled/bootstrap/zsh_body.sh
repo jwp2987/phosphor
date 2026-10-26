@@ -64,7 +64,11 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
   # our bootstrap script into the user's history. At this point, we unset this
   # option to avoid turning on this behavior and potentially confusing the user.
   # If they set it in their config files, their value will be respected.
-  unsetopt hist_ignore_space
+  # The subshell bootstrap turns it on temporarily too, remembers whether the user had it on and
+  # tells us through WARP_HIST_IGNORE_SPACE_USER; then it is the user's setting and stays.
+  if [[ -z ${WARP_HIST_IGNORE_SPACE_USER-} ]]; then
+    unsetopt hist_ignore_space
+  fi
 
   # The temporary files used to track generator PIDs.  We'll fill these in later,
   # if we execute any generator commands.

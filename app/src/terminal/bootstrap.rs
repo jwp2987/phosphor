@@ -278,7 +278,7 @@ pub fn init_shell_script_for_shell(
 pub(crate) const MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES: usize = 900;
 
 /// Budget for the quoted payload of one chunk line (after single-quote escaping). The fixed text
-/// around it (the assignment and the history cleanup) is under 100 bytes.
+/// around it (the assignment) is well under 100 bytes.
 const SUBSHELL_CHUNK_PAYLOAD_BYTES: usize = 700;
 
 /// Returns the command to be used to emit the InitShell hook for a new subshell session, as a
@@ -304,7 +304,7 @@ pub fn init_subshell_command(
 /// For bash, zsh and fish the script is longer than a canonical tty line may be (#962), so it is
 /// accumulated in a shell variable over several short lines and evaluated by the last one. Every
 /// line is below [`MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES`], starts with a space (so histignorespace
-/// and fish skip it) and, in bash, deletes itself from the history list (#967).
+/// and fish skip it) and none of them ever deletes a history entry (#967).
 pub fn init_subshell_command_lines(
     shell_type: Option<ShellType>,
     vars: &[EnvVar],
@@ -325,9 +325,14 @@ pub fn init_subshell_command_lines(
             // see its `$global:WARP_BOOTSTRAPPED = 1`) is PowerShell's equivalent guard
             // variable, and the subshell script is raw PowerShell source rather than a
             // single-quoted `eval` argument, so no escaping is needed here.
-            vec![format!(
-                " if (-not $global:WARP_BOOTSTRAPPED) {{ {subshell_script} }}"
-            )]
+            // PSReadLine appends every accepted line to the history file before it runs, so the
+            // big line below would be saved. A short first line installs an AddToHistoryHandler
+            // (chained to any the user had) that refuses the bootstrap line; nothing rewrites the
+            // user's history file.
+            vec![
+                " if (-not $global:WARP_BOOTSTRAPPED) { $global:_warpPrevHistoryHandler = (PSReadLine\\Get-PSReadLineOption).AddToHistoryHandler; PSReadLine\\Set-PSReadLineOption -AddToHistoryHandler { param([string]$l) if ($l.TrimStart().StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal)) { return $false }; if ($global:_warpPrevHistoryHandler) { return (& $global:_warpPrevHistoryHandler $l) }; return $true } }".to_owned(),
+                format!(" if (-not $global:WARP_BOOTSTRAPPED) {{ {subshell_script} }}"),
+            ]
         }
         Some(shell_type @ (ShellType::Bash | ShellType::Zsh | ShellType::Fish)) => {
             let raw_script =
@@ -366,30 +371,49 @@ fn chunked_eval_lines(shell_type: ShellType, raw_script: &str) -> Vec<String> {
         chunks.push(current);
     }
 
-    // bash keeps a line in `~/.bash_history` unless HISTCONTROL has ignorespace, so each line
-    // removes its own entry from the in-memory list (a silenced error when the line was never
-    // added). zsh needs `hist_ignore_space` set before the first long line; fish skips any line
-    // that starts with a space.
-    let (assign, cleanup) = match shell_type {
-        ShellType::Bash => ("_wbs=${_wbs-}", "; history -d $HISTCMD 2>/dev/null || :"),
-        ShellType::Zsh => ("_wbs=${_wbs-}", ""),
-        _ => ("set -g _wbs \"$_wbs\"", ""),
-    };
+    // Nothing here ever deletes a history entry. Every line starts with a space; bash and zsh
+    // only honour that when HISTCONTROL has ignorespace / hist_ignore_space is set, so a short
+    // first line turns that on (saving the prior state) and the last line puts it back. The first
+    // line carries no bootstrap text, so it is the only thing a shell without the option on can
+    // record. fish skips space-led lines on its own.
     let mut lines = Vec::with_capacity(chunks.len() + 2);
-    if shell_type == ShellType::Zsh {
-        lines.push(" setopt hist_ignore_space".to_owned());
+    match shell_type {
+        ShellType::Bash => {
+            lines.push(" __hc0=${HISTCONTROL-}; HISTCONTROL=ignorespace:$__hc0".to_owned())
+        }
+        ShellType::Zsh => lines.push(
+            " __whi=0; [[ -o hist_ignore_space ]] && __whi=1; setopt hist_ignore_space".to_owned(),
+        ),
+        _ => {}
     }
-    for chunk in chunks {
-        lines.push(format!(" {assign}'{chunk}'{cleanup}"));
+    for (index, chunk) in chunks.iter().enumerate() {
+        // The first chunk assigns (so a stale `$_wbs` is never prepended); the rest append.
+        let assign = match (shell_type, index) {
+            (ShellType::Fish, 0) => "set -g _wbs ".to_owned(),
+            (ShellType::Fish, _) => "set -g _wbs \"$_wbs\"".to_owned(),
+            (_, 0) => "_wbs=".to_owned(),
+            (_, _) => "_wbs=$_wbs".to_owned(),
+        };
+        lines.push(format!(" {assign}'{chunk}'"));
     }
+    // The script is only evaluated when it arrived whole: its length (in characters or bytes,
+    // whichever the shell's locale counts) must match.
+    let chars = raw_script.chars().count();
+    let bytes = raw_script.len();
     lines.push(match shell_type {
         // `${WARP_BOOTSTRAPPED-}`, not a bare `$WARP_BOOTSTRAPPED`: this is typed into a shell
         // whose rcfiles already ran, and under their `set -u` / `setopt nounset` the bare
         // expansion aborts the line, so the subshell is never Warpified (#839).
-        ShellType::Bash => " [ -z \"${WARP_BOOTSTRAPPED-}\" ] && eval \"$_wbs\"; unset _wbs; history -d $HISTCMD 2>/dev/null || :".to_owned(),
-        ShellType::Zsh => " [ -z \"${WARP_BOOTSTRAPPED-}\" ] && eval \"$_wbs\"; unset _wbs".to_owned(),
+        ShellType::Bash => format!(
+            " HISTCONTROL=$__hc0; unset __hc0; [ -z \"${{WARP_BOOTSTRAPPED-}}\" ] && {{ [ \"${{#_wbs}}\" -eq {chars} ] || [ \"${{#_wbs}}\" -eq {bytes} ]; }} && eval \"$_wbs\"; unset _wbs"
+        ),
+        ShellType::Zsh => format!(
+            " if [ \"$__whi\" = 1 ]; then WARP_HIST_IGNORE_SPACE_USER=1; else unsetopt hist_ignore_space; fi; unset __whi; [ -z \"${{WARP_BOOTSTRAPPED-}}\" ] && {{ [ \"${{#_wbs}}\" -eq {chars} ] || [ \"${{#_wbs}}\" -eq {bytes} ]; }} && eval \"$_wbs\"; unset _wbs WARP_HIST_IGNORE_SPACE_USER"
+        ),
         // fish cannot parse `${...}` and has no nounset, so it keeps the bare expansion.
-        _ => " [ -z $WARP_BOOTSTRAPPED ] && eval $_wbs; set -e _wbs".to_owned(),
+        _ => format!(
+            " [ -z $WARP_BOOTSTRAPPED ] && contains -- (string length -- $_wbs) {chars} {bytes} && eval $_wbs; set -e _wbs"
+        ),
     });
     lines
 }
@@ -489,13 +513,14 @@ fn init_subshell_script_for_unknown_shell(
     session_id: SessionId,
 ) -> String {
     // Load and escape the shell-specific init script
-    // The leading space keeps the probe out of the user's history in zsh (hist_ignore_space) and
-    // fish, and in bash when HISTCONTROL has ignorespace; otherwise bash drops its own entry
-    // (#967). Guarded on $BASH_VERSION because `history -d` means something else in zsh and fish.
+    // The leading space keeps the probe out of fish's history and out of bash/zsh when
+    // HISTCONTROL has ignorespace / hist_ignore_space is set. It is one shell-agnostic line, so
+    // it cannot first turn that on; it never deletes a history entry (an entry deleted by
+    // number could be the user's own).
     let script = load_and_escape_script("bundled/bootstrap/unknown_init_subshell.sh", assets)
         .replace("HOOK_NAME", "InitSubshell")
         .replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string());
-    format!(" {script}; [ -n \"$BASH_VERSION\" ] && history -d $HISTCMD 2>/dev/null || :")
+    format!(" {script}")
 }
 
 /// Returns the raw init shell script for the given `shell_type`, without
