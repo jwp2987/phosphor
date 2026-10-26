@@ -15020,6 +15020,8 @@ fn record_pty_writes(
 /// Registers the local shell session the way a bootstrapped pane has it. Typed text only goes to
 /// the pty (rather than the input editor) once a session exists, as it does for a real ssh run.
 fn register_local_session_for_ssh_test(view: &TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    use crate::terminal::model::session::SessionInfo;
+
     view.sessions.update(ctx, |sessions, _| {
         sessions
             .register_session_for_test(SessionInfo::new_for_test().with_id(SessionId::from(9001)));
