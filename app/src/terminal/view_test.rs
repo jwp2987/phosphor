@@ -14481,6 +14481,42 @@ fn stalled_subshell_bootstrap_stops_holding_input() {
     assert!(!subshell_bootstrap_key_forwarded(false, false, almost));
 }
 
+/// #960: `InitShell` finishes the block the first stage was typed into, so a stall after it has
+/// a different active block. The fail-safe (abort keys always pass, typing released after the
+/// ceiling) must stay armed for as long as the subshell session is pending, and disarm once the
+/// session is bootstrapped, the pane is read-only, or the pending session is gone with the block.
+#[test]
+fn subshell_bootstrap_announcement_survives_the_initshell_block_change() {
+    // Same block, nothing pending yet: armed (script typed, shell never answered).
+    assert!(subshell_bootstrap_announcement_applies(
+        false, false, true, false
+    ));
+    // Block changed by InitShell, subshell session pending: still armed (the old code lost it).
+    assert!(subshell_bootstrap_announcement_applies(
+        false, false, false, true
+    ));
+    // Block changed and no pending subshell session: the shell it was for is gone.
+    assert!(!subshell_bootstrap_announcement_applies(
+        false, false, false, false
+    ));
+    // Bootstrapped or read-only: never holds.
+    assert!(!subshell_bootstrap_announcement_applies(
+        false, true, true, true
+    ));
+    assert!(!subshell_bootstrap_announcement_applies(
+        true, false, true, true
+    ));
+    // Composed with the key rule: after the ceiling, typing flows even with a changed block.
+    let applies = subshell_bootstrap_announcement_applies(false, false, false, true);
+    let age = applies.then_some(SUBSHELL_BOOTSTRAP_STALL_CEILING);
+    assert!(subshell_bootstrap_key_forwarded(true, false, age));
+    assert!(subshell_bootstrap_key_forwarded(
+        true,
+        true,
+        Some(Duration::from_secs(1))
+    ));
+}
+
 #[test]
 fn abort_keys_are_exactly_ctrl_c_and_ctrl_d() {
     assert!(is_abort_key(&[0x03]));

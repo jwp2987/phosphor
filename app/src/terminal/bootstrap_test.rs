@@ -1043,3 +1043,72 @@ fn bash_body_does_not_trap_sighup() {
         );
     }
 }
+
+/// #960: a literal XOFF (0x13) or XON (0x11) in anything typed at a shell would, on a tty with
+/// `IXON` set (the default on the pty `sudo -i` allocates), be eaten by the line discipline and
+/// stop the shell's output. Nothing the app types may contain either byte, for any shell: the
+/// scripts, the init-shell scripts and the paced subshell lines.
+#[test]
+fn typed_bootstrap_never_contains_xoff_or_xon_bytes() {
+    fn assert_clean(what: &str, bytes: &[u8]) {
+        for (index, byte) in bytes.iter().enumerate() {
+            assert!(
+                *byte != 0x13 && *byte != 0x11,
+                "{what} contains flow-control byte {byte:#04x} at offset {index}"
+            );
+        }
+    }
+    for shell in [
+        ShellType::Zsh,
+        ShellType::Bash,
+        ShellType::Fish,
+        ShellType::PowerShell,
+    ] {
+        assert_clean(
+            &format!("{shell:?} bootstrap script"),
+            &script_for_shell(shell, &crate::ASSETS),
+        );
+        assert_clean(
+            &format!("{shell:?} init-shell script"),
+            init_shell_script_for_shell(shell, &crate::ASSETS, SessionId::from(1u64)).as_bytes(),
+        );
+    }
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            for shell_type in [
+                Some(ShellType::Bash),
+                Some(ShellType::Zsh),
+                Some(ShellType::Fish),
+                Some(ShellType::PowerShell),
+                None,
+            ] {
+                for line in
+                    init_subshell_command_lines(shell_type, &[], SessionId::from(u64::MAX), ctx)
+                {
+                    assert_clean(&format!("{shell_type:?} subshell line"), line.as_bytes());
+                }
+            }
+        });
+    });
+}
+
+/// #960: the full script reaches a subshell in writes small enough that a blocking user-space
+/// pty relay (`sudo -i`) never has more pending than the inner tty can queue, and pacing never
+/// reorders or drops a byte.
+#[test]
+fn subshell_bootstrap_chunks_are_small_and_lossless() {
+    for shell in [ShellType::Zsh, ShellType::Bash, ShellType::Fish] {
+        let script = script_for_shell(shell, &crate::ASSETS);
+        let chunks = subshell_bootstrap_chunks(&script);
+        assert!(chunks.len() > 1, "{shell:?}: the script should need pacing");
+        assert!(SUBSHELL_BOOTSTRAP_CHUNK_SIZE < 4095);
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.len() <= SUBSHELL_BOOTSTRAP_CHUNK_SIZE)
+        );
+        assert_eq!(chunks.concat(), script.to_vec(), "{shell:?}");
+    }
+    assert!(subshell_bootstrap_chunks(b"").is_empty());
+}

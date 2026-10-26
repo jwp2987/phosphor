@@ -1041,6 +1041,31 @@ impl<T: EventLoopSender> PtyController<T> {
                     move |me, _, ctx| me.write_bytes(chunk, ctx),
                 );
             }
+        } else if pending_session_info.subshell_info.is_some() {
+            // #960: a subshell started through a user-space pty relay (`sudo -i`, `sudo su -`,
+            // `script`, ...) deadlocks when ~120KB of script is flooded at it in one burst. The
+            // relay blocks writing the input into the inner pty (its 4KB input queue is full)
+            // while the inner shell, which echoes every byte it reads, blocks writing that echo
+            // because the relay is not reading the output -- observed as the root bash stuck in
+            // `n_tty_write`/`wait_woken` and `sudo` stuck in a 4097-byte `write`. Reproduced with a
+            // blocking relay (`scratchpad/relay_repro.py`): an unpaced flood hangs forever, the same
+            // bytes paced in 2KB writes finish in about a second. Pacing keeps the relay's pending
+            // write below what the inner tty can queue. No bracketed paste here: the shell is a
+            // line-editing bash/zsh that already receives this script raw.
+            const SUBSHELL_BOOTSTRAP_CHUNK_DELAY: Duration = Duration::from_millis(25);
+            for (index, chunk) in bootstrap::subshell_bootstrap_chunks(&bootstrap)
+                .into_iter()
+                .enumerate()
+            {
+                if index == 0 {
+                    self.write_bytes(chunk, ctx);
+                    continue;
+                }
+                ctx.spawn(
+                    Timer::after(SUBSHELL_BOOTSTRAP_CHUNK_DELAY * index as u32),
+                    move |me, _, ctx| me.write_bytes(chunk, ctx),
+                );
+            }
         } else {
             self.write_bytes(bootstrap, ctx);
         }

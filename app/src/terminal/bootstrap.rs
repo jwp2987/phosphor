@@ -277,6 +277,20 @@ pub fn init_shell_script_for_shell(
 /// the smaller limit.
 pub(crate) const MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES: usize = 900;
 
+/// Size of one write when the full bootstrap script is typed into a subshell (#960). Well under
+/// the 4095 bytes a tty input queue holds, so a user-space pty relay such as `sudo -i` is never
+/// asked to push more than the inner shell can accept while it is itself not reading the shell's
+/// echo.
+pub(crate) const SUBSHELL_BOOTSTRAP_CHUNK_SIZE: usize = 2048;
+
+/// Splits `script` into the paced writes of [`SUBSHELL_BOOTSTRAP_CHUNK_SIZE`] bytes each.
+pub(crate) fn subshell_bootstrap_chunks(script: &[u8]) -> Vec<Vec<u8>> {
+    script
+        .chunks(SUBSHELL_BOOTSTRAP_CHUNK_SIZE)
+        .map(<[u8]>::to_vec)
+        .collect()
+}
+
 /// Budget for the quoted payload of one chunk line (after single-quote escaping). The fixed text
 /// around it (the assignment) is well under 100 bytes.
 const SUBSHELL_CHUNK_PAYLOAD_BYTES: usize = 700;
