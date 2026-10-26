@@ -1599,6 +1599,11 @@ impl RequestedCommandView {
         ctx.notify();
     }
 
+    /// Whether the command's edit mode is open (its editor, not the card, then takes keys).
+    pub fn is_editing(&self) -> bool {
+        self.is_editing
+    }
+
     pub fn command_text(&self) -> &str {
         &self.command_text
     }

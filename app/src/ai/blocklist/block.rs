@@ -4198,6 +4198,17 @@ impl AIBlock {
             .any(|status| status.is_blocked())
     }
 
+    /// The view id of the pending approval card for a requested command when the card itself
+    /// (not its edit-mode editor) is what would receive printable keys (#1028).
+    ///
+    /// Typed characters aimed at such a card have nowhere to go, and the card's Enter binding is
+    /// Run; the terminal reroutes them to the agent input instead.
+    pub fn pending_command_card_view_id(&self, app: &AppContext) -> Option<EntityId> {
+        let pending_id = self.action_model.as_ref(app).get_pending_action(app)?.id.clone();
+        let command = self.requested_commands.get(&pending_id)?;
+        (!command.view.as_ref(app).is_editing()).then(|| command.view.id())
+    }
+
     /// Returns the server output ID for this AI block, if available.
     pub fn server_output_id(&self, app: &AppContext) -> Option<ServerOutputId> {
         self.model.server_output_id(app)

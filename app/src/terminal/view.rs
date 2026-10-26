@@ -2252,6 +2252,9 @@ pub struct TerminalViewRenderContext {
     pub highlighted_url: Option<GridHighlightedLink>,
     pub link_tool_tip: Option<GridHighlightedLink>,
     pub is_terminal_focused: bool,
+    /// The pending command-approval card whose focus should hand printable keys to the agent
+    /// input (#1028).
+    pub approval_card_view_id: Option<EntityId>,
     pub is_terminal_selecting: bool,
     pub is_context_menu_open: bool,
     pub is_waterfall_gap_mode: bool,
@@ -9310,6 +9313,19 @@ impl TerminalView {
         }
     }
 
+    /// Whether the window's focus is exactly on the pending approval card (#1028).
+    fn typed_on_approval_card(&self, ctx: &mut ViewContext<Self>) -> bool {
+        self.approval_card_view_id(ctx)
+            .is_some_and(|card| ctx.focused_view_id(ctx.window_id()) == Some(card))
+    }
+
+    /// The pending command-approval card (not in edit mode) of the active AI block, if any.
+    fn approval_card_view_id(&self, app: &AppContext) -> Option<EntityId> {
+        self.active_ai_block(app)?
+            .as_ref(app)
+            .pending_command_card_view_id(app)
+    }
+
     /// Returns `true` if focus is inside any AI block (e.g. the user is arrowing
     /// through a code diff's hunks).
     /// Upstream `edf83549f5` (#12107); see `focus_ai_block_if_self_focused`.
@@ -10242,6 +10258,12 @@ impl TerminalView {
             }
 
             self.update_scroll_position_locking(ScrollPositionUpdate::AfterTypedCharacters, ctx);
+            // #1028: keys typed while the approval card holds focus move focus to the input
+            // with them, so a following Enter submits the follow-up instead of reaching the
+            // card's Enter -> Run binding.
+            if self.typed_on_approval_card(ctx) {
+                self.focus_input_box(ctx);
+            }
             self.input
                 .update(ctx, |input, ctx| input.system_insert(characters, ctx));
             if self.focus_reclaim_active() {
@@ -25964,6 +25986,7 @@ impl TerminalView {
                 .upgrade(app)
                 .expect("terminal should upgrade")
                 .is_focused(app),
+            approval_card_view_id: self.approval_card_view_id(app),
             is_terminal_selecting: self.is_selecting(),
             rich_content_drag_selecting: self.rich_content_drag_selecting.clone(),
             is_context_menu_open: self.is_context_menu_open(),

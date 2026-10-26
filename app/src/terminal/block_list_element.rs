@@ -716,6 +716,8 @@ pub struct BlockListElement {
     input_mode: InputMode,
     scroll_position: ScrollPosition,
     is_terminal_focused: bool,
+    /// See `TerminalViewRenderContext::approval_card_view_id` (#1028).
+    approval_card_view_id: Option<EntityId>,
     is_terminal_selecting: bool,
     /// See `TerminalViewRenderContext::rich_content_drag_selecting` (#890).
     rich_content_drag_selecting: Arc<AtomicBool>,
@@ -1078,6 +1080,7 @@ impl BlockListElement {
             size_info: terminal_view_render_context.size_info,
             scroll_position: terminal_view_render_context.scroll_position,
             is_terminal_focused: terminal_view_render_context.is_terminal_focused,
+            approval_card_view_id: terminal_view_render_context.approval_card_view_id,
             is_terminal_selecting: terminal_view_render_context.is_terminal_selecting,
             rich_content_drag_selecting: terminal_view_render_context.rich_content_drag_selecting,
             subshell_sessions: terminal_view_render_context.spawning_command_for_subshell_sessions,
@@ -1488,7 +1491,12 @@ impl BlockListElement {
     }
 
     fn typed_characters(&mut self, chars: &str, ctx: &mut EventContext) -> bool {
-        if self.terminal_focused_now(ctx) && !chars.is_empty() {
+        // #1028: with focus on a pending approval card, printable keys are meant for the agent
+        // input (the card has no use for them), not the void.
+        let on_approval_card = self
+            .approval_card_view_id
+            .is_some_and(|card| ctx.live_focus_is_exactly(card) == Some(true));
+        if (self.terminal_focused_now(ctx) || on_approval_card) && !chars.is_empty() {
             ctx.dispatch_typed_action(TerminalAction::TypedCharacters(chars.to_string()));
         }
         true
