@@ -26,11 +26,60 @@ use crate::{
         TerminalView,
     },
     view_components::DismissibleToast,
-    workspace::ToastStack,
+    workspace::{RestoreConversationLayout, ToastStack, WorkspaceAction},
     TelemetryEvent,
 };
 
 pub const ENTER_AGAIN_TO_SEND_MESSAGE_ID: &str = "enter_again_to_send";
+
+/// Whether a failed attempt to enter the agent view for an existing conversation should fall
+/// back to opening that conversation in a new tab (#988). Only the "a command is running" refusal
+/// from a user-initiated "open this conversation" origin qualifies; every other error (and
+/// every non-user origin) keeps its toast so nothing is silently redirected.
+pub(super) fn long_running_entry_opens_read_only_tab(
+    error: EnterAgentViewError,
+    origin: AgentViewEntryOrigin,
+) -> bool {
+    error == EnterAgentViewError::LongRunningCommand
+        && matches!(
+            origin,
+            AgentViewEntryOrigin::AgentViewBlock
+                | AgentViewEntryOrigin::ConversationSelector
+                | AgentViewEntryOrigin::InlineHistoryMenu
+                | AgentViewEntryOrigin::InlineConversationMenu
+                | AgentViewEntryOrigin::ConversationListView
+        )
+}
+
+#[cfg(test)]
+mod long_running_entry_tests {
+    use super::*;
+
+    #[test]
+    fn long_running_click_on_entry_card_opens_tab_instead_of_toast() {
+        assert!(long_running_entry_opens_read_only_tab(
+            EnterAgentViewError::LongRunningCommand,
+            AgentViewEntryOrigin::AgentViewBlock,
+        ));
+    }
+
+    #[test]
+    fn other_errors_and_origins_keep_the_toast() {
+        assert!(!long_running_entry_opens_read_only_tab(
+            EnterAgentViewError::AlreadyInAgentView,
+            AgentViewEntryOrigin::AgentViewBlock,
+        ));
+        // Programmatic origins must never open tabs behind the user's back.
+        assert!(!long_running_entry_opens_read_only_tab(
+            EnterAgentViewError::LongRunningCommand,
+            AgentViewEntryOrigin::AutoFollowUp,
+        ));
+        assert!(!long_running_entry_opens_read_only_tab(
+            EnterAgentViewError::LongRunningCommand,
+            AgentViewEntryOrigin::Keybinding,
+        ));
+    }
+}
 
 impl TerminalView {
     pub fn enter_agent_view(
@@ -124,6 +173,23 @@ impl TerminalView {
                 Some(conversation_id),
                 ctx,
             ) {
+                if long_running_entry_opens_read_only_tab(e, origin) {
+                    // #988: a running command (e.g. `ksu`) owns this pane's PTY and keyboard,
+                    // so the conversation cannot be shown in-pane without risking keystrokes
+                    // reaching the agent prompt instead of the program. Show it in a separate
+                    // new-tab view of the conversation instead; this pane, its input routing
+                    // and the running command are not touched.
+                    ctx.dispatch_typed_action_deferred(
+                        WorkspaceAction::RestoreOrNavigateToConversation {
+                            pane_view_locator: None,
+                            window_id: None,
+                            conversation_id,
+                            terminal_view_id: None,
+                            restore_layout: Some(RestoreConversationLayout::NewTab),
+                        },
+                    );
+                    return;
+                }
                 log::error!(
                     "Failed to enter agent view for existing conversation ({:?}) from origin {:?}: {:?}",
                     conversation_id,
