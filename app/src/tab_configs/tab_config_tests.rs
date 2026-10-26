@@ -2386,7 +2386,9 @@ fn test_builtin_prefix_forms_run_in_real_bash_and_zsh() {
     }
 }
 
-/// #952: the alias-bypass prefix is internal; the command to show is the one configured.
+/// #952: the alias-bypass prefix is internal; the command to show is the one configured. The
+/// prefix is only written when a placeholder is substituted (a command without one is run as
+/// written, so the user's own aliases still apply and there is nothing to display differently).
 #[test]
 fn test_render_tab_config_keeps_configured_command_for_display() {
     let config: TabConfig = toml::from_str(
@@ -2397,21 +2399,25 @@ name = "Plain Tab"
 id = "main"
 type = "terminal"
 shell = "pwsh"
-commands = ["echo hi", "git status"]
+commands = ["echo {{x}}", "git status {{x}}", "echo hi"]
 "#,
     )
     .unwrap();
-    let (_, pane_template) = render_tab_config(&config, &HashMap::new(), None);
+    let params = HashMap::from([("x".to_string(), "main".to_string())]);
+    let (_, pane_template) = render_tab_config(&config, &params, None);
     let crate::launch_configs::launch_config::PaneTemplateType::PaneTemplate { commands, .. } =
         pane_template
     else {
         panic!("Expected PaneTemplate variant");
     };
-    assert_eq!(commands.len(), 2);
-    for (command, shown) in commands.iter().zip(["echo hi", "git status"]) {
+    assert_eq!(commands.len(), 3);
+    for (command, shown) in commands.iter().zip(["echo main", "git status main"]) {
         assert_ne!(command.exec, shown, "the exec form should be prefixed");
         assert!(command.exec.contains("Get-Command"));
         assert_eq!(command.display.as_deref(), Some(shown));
         assert!(!command.display.as_deref().unwrap().contains("Get-Command"));
     }
+    // No placeholder: run as written, nothing to display separately.
+    assert_eq!(commands[2].exec, "echo hi");
+    assert_eq!(commands[2].display, None);
 }
