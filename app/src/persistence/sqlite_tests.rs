@@ -3011,3 +3011,132 @@ fn lone_conversation_write_is_visible_to_a_fresh_connection_promptly() {
     writer.sender.send(ModelEvent::Terminate).ok();
     writer.handle.join().expect("writer should terminate");
 }
+
+#[derive(diesel::QueryableByName)]
+struct SingleInt {
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    value: i64,
+}
+
+/// A database with an intact header whose later pages (everything after the
+/// schema's own root pages, i.e. the row data) are damaged. Returns the path.
+fn database_with_damaged_data_pages(dir: &std::path::Path) -> std::path::PathBuf {
+    use diesel::{connection::SimpleConnection, RunQueryDsl};
+    use std::io::{Seek, SeekFrom, Write};
+
+    let database_path = dir.join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+    conn.batch_execute(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 4000) \
+         INSERT INTO commands (command) \
+         SELECT 'echo ' || i || ' ' || hex(randomblob(100)) FROM n;",
+    )
+    .expect("commands should insert");
+    conn.batch_execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        .expect("checkpoint");
+    let page_size = diesel::sql_query("SELECT page_size AS value FROM pragma_page_size")
+        .get_result::<SingleInt>(&mut conn)
+        .expect("page size")
+        .value as u64;
+    let max_root = diesel::sql_query("SELECT max(rootpage) AS value FROM sqlite_master")
+        .get_result::<SingleInt>(&mut conn)
+        .expect("max root page")
+        .value as u64;
+    drop(conn);
+
+    let length = std::fs::metadata(&database_path).expect("metadata").len();
+    let pages = length / page_size;
+    assert!(
+        pages > max_root + 20,
+        "the inserted rows must span data pages past the schema ({pages} pages, root {max_root})"
+    );
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&database_path)
+        .expect("open");
+    let mut seed: u32 = 0x1234_5678;
+    for page in (max_root + 1)..pages {
+        // 2 KB of pseudo-random bytes at the start of the page, the first one
+        // not a valid b-tree page type, so SQLite reports SQLITE_CORRUPT as
+        // soon as it initialises the page.
+        let mut garbage = vec![0u8; 2048];
+        for byte in garbage.iter_mut() {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *byte = (seed >> 24) as u8;
+        }
+        garbage[0] = 0xFF;
+        file.seek(SeekFrom::Start(page * page_size)).expect("seek");
+        file.write_all(&garbage).expect("write");
+    }
+    file.sync_all().expect("sync");
+    database_path
+}
+
+/// #1010: a database with an intact header but damaged data pages passes
+/// `setup_database` and used to hang the startup read forever (a
+/// `filter_map(Result::ok)` over a `load_iter` whose step keeps failing,
+/// allocating an error each time). The read must now stop on the first
+/// SQLite error, report it as an unusable database, and recovery must leave a
+/// readable fresh database plus a quarantined copy.
+#[test]
+fn damaged_interior_pages_end_the_startup_read_and_are_quarantined() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = database_with_damaged_data_pages(tempdir.path());
+    assert_eq!(
+        super::has_valid_sqlite_header(&database_path),
+        Some(true),
+        "the header must be intact for this scenario"
+    );
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let path_for_thread = database_path.clone();
+    std::thread::spawn(move || {
+        let outcome = (|| -> Result<String, String> {
+            let mut conn = setup_database(&path_for_thread)
+                .map_err(|err| format!("setup failed: {err:#}"))?;
+            match read_sqlite_data(&mut conn, None) {
+                Ok(_) => Ok(String::new()),
+                Err(err) => Ok(super::diesel_database_error_message(&err)),
+            }
+        })();
+        let _ = tx.send(outcome);
+    });
+    let message = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the startup read must return promptly, not spin on a damaged page")
+        .expect("setup of a database with an intact header succeeds");
+    assert!(
+        super::error_means_unusable_database(&message),
+        "the read must fail with an error that leads to quarantine, got: {message:?}"
+    );
+
+    // The recovery `initialize` performs on that error.
+    let moved_to = super::quarantine_unusable_database(&database_path)
+        .expect("a damaged database is moved aside");
+    assert!(moved_to.exists());
+    let mut fresh = setup_database(&database_path).expect("a fresh database is created");
+    read_sqlite_data(&mut fresh, None).expect("the fresh database reads back");
+    assert_eq!(corrupt_copies(tempdir.path()).len(), 1);
+}
+
+/// The row-collecting helper stops at a SQLite error instead of retrying it.
+#[test]
+fn collect_rows_stops_at_the_first_sqlite_error() {
+    use diesel::result::{DatabaseErrorKind, Error};
+    let mut yielded = 0;
+    let rows = std::iter::from_fn(|| {
+        yielded += 1;
+        // Like a statement that keeps failing: never ends on its own.
+        Some(if yielded == 1 {
+            Ok(1)
+        } else {
+            Err(Error::DatabaseError(
+                DatabaseErrorKind::Unknown,
+                Box::new("database disk image is malformed".to_string()),
+            ))
+        })
+    });
+    let result = super::collect_rows(rows);
+    assert!(result.is_err());
+    assert_eq!(yielded, 2, "no further rows are pulled after the error");
+}
