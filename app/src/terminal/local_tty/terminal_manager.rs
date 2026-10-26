@@ -172,6 +172,12 @@ impl<S> Drop for TerminalManager<S> {
 }
 
 impl TerminalManager<TerminalView> {
+    /// Test-only: whether this manager's pty controller was asked to shut the pty down (#980).
+    #[cfg(test)]
+    pub fn pty_shutdown_requested(&self, app: &AppContext) -> bool {
+        self.pty_controller.as_ref(app).shutdown_requested()
+    }
+
     /// Creates a terminal manager model for the GUI `TerminalView` surface, and
     /// returns the view alongside the boxed, view-agnostic manager handle.
     ///

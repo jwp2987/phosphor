@@ -644,19 +644,21 @@ fn test_permanent_close_stops_every_running_conversation_in_the_pane() {
     });
 }
 
-/// Reads whether the pane's terminal manager saw a permanent (`Closed`) detach. The manager is
-/// held by model handle only, so the terminal *view* can be dropped, as in production where the
-/// pane's handles die in the same update as the detach (#980).
+/// Reads whether the pane's terminal manager shut its pty down. The manager is held by model
+/// handle only, so the terminal *view* can be dropped, as in production where the pane's handles
+/// die in the same update as the detach (#980). Panes in this harness use the real local-tty
+/// manager (no event loop running), whose pty controller records the shutdown request.
 fn manager_saw_closed_detach(
     manager: &warpui::ModelHandle<Box<dyn crate::terminal::TerminalManager>>,
     app: &App,
 ) -> bool {
-    manager.read(app, |manager, _| {
+    app.read(|ctx| {
         manager
+            .as_ref(ctx)
             .as_any()
-            .downcast_ref::<crate::terminal::MockTerminalManager>()
-            .expect("mock manager")
-            .closed_detach_seen()
+            .downcast_ref::<crate::terminal::local_tty::TerminalManager<crate::terminal::TerminalView>>()
+            .expect("local tty manager")
+            .pty_shutdown_requested(ctx)
     })
 }
 

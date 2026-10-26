@@ -188,6 +188,10 @@ pub struct PtyController<T: EventLoopSender> {
     /// Typeahead hand-off: a command from the editor was written or queued while one was held,
     /// so `is_user_command_executing` belongs to it and dropping the held one must leave it.
     handoff_command_written_since_hold: bool,
+    /// Test-only: whether `shutdown_pty` was called (#980 tests; the real event loop is not
+    /// running under test, so the sent `Message::Shutdown` is otherwise unobservable).
+    #[cfg(test)]
+    shutdown_requested: bool,
 }
 
 impl<T: EventLoopSender> PtyController<T> {
@@ -409,6 +413,8 @@ impl<T: EventLoopSender> PtyController<T> {
             handoff_request_waiting: false,
             handoff_held_command_pending: false,
             handoff_command_written_since_hold: false,
+            #[cfg(test)]
+            shutdown_requested: false,
         }
     }
 
@@ -1437,8 +1443,18 @@ impl<T: EventLoopSender> PtyController<T> {
         );
     }
 
+    /// Test-only: whether `shutdown_pty` has been called.
+    #[cfg(test)]
+    pub fn shutdown_requested(&self) -> bool {
+        self.shutdown_requested
+    }
+
     /// Shuts down the pty and event loop.
     pub fn shutdown_pty(&mut self, ctx: &mut ModelContext<Self>) {
+        #[cfg(test)]
+        {
+            self.shutdown_requested = true;
+        }
         self.send_message_to_event_loop(Message::Shutdown, ctx);
     }
 
