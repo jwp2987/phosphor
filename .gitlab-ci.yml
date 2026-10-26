@@ -7,8 +7,9 @@
 #
 # Windows and macOS Intel are intentionally absent (dropped for now; see #989).
 #
-# Port status: guards, check-linux. licenses, the test jobs and the release
-# pipeline follow once these are green.
+# Port status: guards, check-linux, check-macos, plus MANUAL build jobs for the Mac
+# DMG and the Linux AppImage/deb. licenses, the test jobs and the full release
+# pipeline (CLI tarballs, digest pins, GitLab release) are not ported yet.
 #
 # `little-thing` is the maintainer's build box, so jobs there must not change its
 # environment: no apt installs, no rustup target additions, no cargo install.
@@ -21,6 +22,8 @@ workflow:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
       when: never
     - when: always
+
+stages: [test, build]
 
 variables:
   CARGO_TERM_COLOR: always
@@ -189,3 +192,89 @@ check-macos:
     - cargo check -p warp --features gui --lib --tests
     - cargo check -p warp --features tui
     - cargo check -p warp_tui
+
+# ---------------------------------------------------------------------------
+# Build jobs (manual). Start them from the pipeline page. The Mac runner is
+# `ref_protected`, so the Mac job only runs for pipelines on main or a tag.
+#
+# These are NOT the full release pipeline: no CLI tarballs, so no digest pins are
+# compiled in (remote-server install over ssh fails closed, as designed), no
+# GIT_RELEASE_TAG, and nothing is published to a GitLab release. The output is a
+# job artifact. Tools are installed only into the CI users' own homes
+# (cargo-about / cargo-bundle via the SHA-verified script/install_cargo_binstall,
+# linuxdeploy via script/linux/install_linuxdeploy), never system-wide.
+# ---------------------------------------------------------------------------
+
+# macOS arm64 DMG, ad-hoc signed (--selfsign), exactly as the GitHub release did.
+build-macos-arm64:
+  extends: .shim_github_env
+  stage: build
+  tags: [Mac]
+  when: manual
+  needs: []
+  timeout: 3h
+  variables:
+    CHANNEL: oss
+    # The maintainer's laptop: cap parallelism so the build does not push it into
+    # heavy swap (8 jobs measured: load 20, ~0.1 GB free, 3.5 GB swap).
+    CARGO_BUILD_JOBS: "4"
+  script:
+    - export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+    - for t in cargo rustc protoc hdiutil codesign lipo; do command -v $t >/dev/null || { echo "ERROR $t is missing on this runner; install it by hand (not done automatically)" >&2; exit 1; }; done
+    - xcrun -sdk macosx metal --version >/dev/null || { echo "ERROR the Metal toolchain is missing (xcodebuild -downloadComponent MetalToolchain)" >&2; exit 1; }
+    - ./script/install_cargo_release_deps --no-build-deps
+    - ./script/install_cargo_bundle
+    - script/bundle --channel "$CHANNEL" --arch aarch64 --dmg-name-suffix arm64 --selfsign
+    - |
+      DMG=$(grep '^dmg_path=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
+      [ -f "$DMG" ] || { echo "ERROR no DMG at '$DMG'" >&2; exit 1; }
+      mkdir -p dist && cp "$DMG" dist/
+      (cd dist && shasum -a 256 * | tee SHA256SUMS)
+  artifacts:
+    name: phosphor-macos-arm64
+    paths: [dist/]
+    expire_in: 3 days
+    when: on_success
+
+# Linux x86_64 AppImage + deb on the build box. rpm and the Arch package are left
+# out: rpmbuild and docker are not installed there and this job installs nothing
+# system-wide.
+build-linux-x86_64:
+  extends: .shim_github_env
+  stage: build
+  tags: [little-thing]
+  when: manual
+  needs: []
+  resource_group: little-thing-cargo
+  timeout: 5h
+  variables:
+    CHANNEL: oss
+    RUSTUP_HOME: /home/winters/.rustup
+    CARGO_HOME: /home/gitlab-runner/.cargo-ci
+    CARGO_BUILD_JOBS: "8"
+    APPIMAGE_EXTRACT_AND_RUN: "1"
+  script:
+    - export PATH="$CARGO_HOME/bin:/home/winters/.cargo/bin:$HOME/.local/bin:$PATH"
+    - rustup target list --installed | grep -qx x86_64-unknown-linux-gnu || { echo "ERROR target x86_64-unknown-linux-gnu is not installed on this runner" >&2; exit 1; }
+    - for t in cargo protoc cmake pkg-config dpkg-deb fakeroot strip; do command -v $t >/dev/null || { echo "ERROR $t is missing on this runner; install it by hand (not done automatically)" >&2; exit 1; }; done
+    - ./script/install_cargo_release_deps --no-build-deps
+    - ./script/linux/install_linuxdeploy
+    - script/bundle --channel "$CHANNEL" --arch x86_64 --packages appimage,deb
+    - |
+      PKG=$(grep '^packages_dir=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
+      [ -d "$PKG" ] || { echo "ERROR no packages dir at '$PKG'" >&2; exit 1; }
+      # Launch what we are about to ship: proves the binary loads and reaches argument parsing.
+      APPIMAGE=$(ls "$PKG"/*.AppImage 2>/dev/null | head -1)
+      [ -n "$APPIMAGE" ] || { echo "ERROR no AppImage in $PKG" >&2; exit 1; }
+      chmod +x "$APPIMAGE" && "$APPIMAGE" --appimage-extract-and-run --version
+      # dpkg-deb names files after the internal package name ("zap"); rename to match.
+      mkdir -p dist
+      for f in "$PKG"/*; do
+        b=$(basename "$f"); cp "$f" "dist/$(echo "$b" | sed -E 's/^zap([_-])/phosphor\1/')"
+      done
+      (cd dist && sha256sum * | tee SHA256SUMS)
+  artifacts:
+    name: phosphor-linux-x86_64
+    paths: [dist/]
+    expire_in: 3 days
+    when: on_success
