@@ -339,10 +339,10 @@ pub fn init_subshell_command_lines(
                 init_subshell_raw_script(shell_type, &crate::ASSETS, vars, session_id, ctx);
             chunked_eval_lines(shell_type, &raw_script)
         }
-        None => vec![init_subshell_script_for_unknown_shell(
-            &crate::ASSETS,
-            session_id,
-        )],
+        None => vec![
+            UNKNOWN_SHELL_HISTORY_PRELUDE.to_owned(),
+            init_subshell_script_for_unknown_shell(&crate::ASSETS, session_id),
+        ],
     }
 }
 
@@ -379,10 +379,14 @@ fn chunked_eval_lines(shell_type: ShellType, raw_script: &str) -> Vec<String> {
     let mut lines = Vec::with_capacity(chunks.len() + 2);
     match shell_type {
         ShellType::Bash => {
-            lines.push(" __hc0=${HISTCONTROL-}; HISTCONTROL=ignorespace:$__hc0".to_owned())
+            lines.push(
+                // `__hc0` may already hold the state from before the probe's prelude.
+                " __hc0=${__hc0-${HISTCONTROL-}}; HISTCONTROL=ignorespace:${HISTCONTROL-}".to_owned(),
+            )
         }
         ShellType::Zsh => lines.push(
-            " __whi=0; [[ -o hist_ignore_space ]] && __whi=1; setopt hist_ignore_space".to_owned(),
+            " [ -n \"${__whi-}\" ] || { __whi=0; [[ -o hist_ignore_space ]] && __whi=1; }; setopt hist_ignore_space"
+                .to_owned(),
         ),
         _ => {}
     }
@@ -520,9 +524,21 @@ fn init_subshell_script_for_unknown_shell(
     let script = load_and_escape_script("bundled/bootstrap/unknown_init_subshell.sh", assets)
         .replace("HOOK_NAME", "InitSubshell")
         .replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string());
-    format!(" {script}")
+    format!(" {script}; {UNKNOWN_SHELL_HISTORY_RESTORE}")
 }
 
+/// First line of the shell-agnostic probe (#967): a short line that turns history-ignores-space on
+/// in bash (`HISTCONTROL`) and zsh (`hist_ignore_space`) so the long probe line after it is not
+/// recorded. A shell records a line as it reads it, before running it, so this one line can still
+/// land in history when the option was off; nothing is ever deleted, and the line carries no
+/// bootstrap text. The prior state goes in `__hc0` / `__whi`, which the known-shell stage reuses
+/// and [`UNKNOWN_SHELL_HISTORY_RESTORE`] puts back. Every `${}` sits inside a single-quoted `eval`
+/// that only bash (`shopt` exists) or zsh (`setopt` exists) reaches, so fish and POSIX sh parse
+/// the line without running any of it, and a bash with `set -u` does not trip on an unset name.
+const UNKNOWN_SHELL_HISTORY_PRELUDE: &str = " command -v shopt >/dev/null 2>&1 && eval '__hc0=${HISTCONTROL-}; HISTCONTROL=ignorespace:${HISTCONTROL-}'; command -v setopt >/dev/null 2>&1 && eval '__whi=$(setopt | command grep -c histignorespace); setopt hist_ignore_space'";
+/// Tail of the probe line: puts back what [`UNKNOWN_SHELL_HISTORY_PRELUDE`] changed. The
+/// known-shell stage that follows a successful probe turns the options on again for its own lines.
+const UNKNOWN_SHELL_HISTORY_RESTORE: &str = "command -v shopt >/dev/null 2>&1 && eval 'HISTCONTROL=${__hc0-}; unset __hc0'; command -v setopt >/dev/null 2>&1 && eval '[ \"${__whi-}\" = 1 ] || unsetopt hist_ignore_space; unset __whi'";
 /// Returns the raw init shell script for the given `shell_type`, without
 /// single-quote escaping. Suitable for passing as an environment variable
 /// where the caller controls the eval context (e.g. Docker sandbox init).

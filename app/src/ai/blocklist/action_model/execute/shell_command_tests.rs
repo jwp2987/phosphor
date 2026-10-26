@@ -44,6 +44,55 @@ fn detects_interactive_session_commands_across_platforms() {
     }
 }
 
+/// #979: the agent's `read_shell_command_output` on an unmanaged interactive shell (`bash
+/// --norc` typed by the user) waited the whole 120 s for an exit that never comes, with nothing on
+/// screen. A shell left at its prompt is a never-ending session like ssh.
+#[test]
+fn detects_a_shell_left_at_its_prompt_as_a_non_terminating_session() {
+    for command in [
+        "bash",
+        "bash --norc",
+        "HISTFILE=/dev/null bash --norc",
+        "zsh -f",
+        "/bin/zsh",
+        "exec fish",
+        "env FOO=1 sh",
+        "bash --rcfile /tmp/rc",
+        "bash --noprofile --norc -i",
+        "-bash",
+        "command bash",
+    ] {
+        assert!(command_starts_non_terminating_session(command), "{command}");
+        assert_eq!(
+            effective_read_shell_command_delay(command, Some(ShellCommandDelay::OnCompletion)),
+            ActionResultDelay::OnCompletion {
+                timeout: ShellCommandExecutor::MAX_WAIT_DURATION
+            },
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn a_shell_that_runs_something_and_exits_is_not_a_non_terminating_session() {
+    for command in [
+        "bash -c 'sleep 30'",
+        "bash -lc 'make'",
+        "sh ./build.sh",
+        "bash script.sh",
+        "zsh -f -c ls",
+        "bash --version",
+        "echo bash",
+        "bashful",
+        "bash 'unterminated",
+    ] {
+        assert!(
+            !command_starts_non_terminating_session(command),
+            "{command}"
+        );
+    }
+}
+
 #[test]
 fn does_not_detect_unrelated_or_non_interactive_ssh_commands() {
     for command in [

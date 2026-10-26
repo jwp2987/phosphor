@@ -765,6 +765,113 @@ fn test_init_subshell_lines_run_in_real_shells_and_stay_out_of_history() {
     });
 }
 
+/// #967: the shell-agnostic probe is typed into a shell nobody knows yet. Its first line turns
+/// history-ignores-space on in bash and zsh (the one short line a shell can still record), so the
+/// long probe line is not recorded, and the probe's tail puts the option back. Nothing in the
+/// user's history file is lost, and fish and POSIX sh parse the lines without noise.
+#[test]
+#[cfg(unix)]
+fn test_unknown_shell_probe_stays_out_of_history_and_restores_the_options() {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let cases: [(&str, &[&str]); 4] = [
+                ("bash", &["--norc", "-i"]),
+                ("zsh", &["-f", "-i"]),
+                ("fish", &["--no-config", "-i"]),
+                ("dash", &["-i"]),
+            ];
+            for (bin, args) in cases {
+                let Ok(path) = Command::new("sh")
+                    .args(["-c", &format!("command -v {bin}")])
+                    .output()
+                else {
+                    continue;
+                };
+                let path = String::from_utf8_lossy(&path.stdout).trim().to_owned();
+                if path.is_empty() {
+                    eprintln!("skipping {bin}: not installed");
+                    continue;
+                }
+                let lines = init_subshell_command_lines(None, &[], SessionId::from(4242u64), ctx);
+                assert_eq!(lines.len(), 2, "a history prelude, then the probe");
+                let dir = std::env::temp_dir()
+                    .join(format!("phosphor-probe-{bin}-{}", std::process::id()));
+                std::fs::remove_dir_all(&dir).ok();
+                std::fs::create_dir_all(dir.join("data/fish")).unwrap();
+                let histfile = dir.join("history");
+                std::fs::write(&histfile, "keep1\nkeep2\n").unwrap();
+                let mut child = Command::new(&path)
+                    .args(args)
+                    .env_clear()
+                    .env("PATH", std::env::var("PATH").unwrap_or_default())
+                    .env("HOME", &dir)
+                    .env("HISTFILE", &histfile)
+                    .env("HISTSIZE", "1000")
+                    .env("SAVEHIST", "1000")
+                    .env("HISTCONTROL", "ignoredups")
+                    .env("XDG_DATA_HOME", dir.join("data"))
+                    .env("XDG_CONFIG_HOME", dir.join("cfg"))
+                    .env("TERM", "dumb")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                {
+                    let stdin = child.stdin.as_mut().unwrap();
+                    for line in &lines {
+                        stdin.write_all(line.as_bytes()).unwrap();
+                        stdin.write_all(b"\n").unwrap();
+                    }
+                    // `HISTCONTROL` must be back to the user's value after the probe.
+                    stdin
+                        .write_all(b" echo \"hc-after=[$HISTCONTROL]\"\nexit\n")
+                        .unwrap();
+                }
+                let out = child.wait_with_output().unwrap();
+                let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+                let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+                assert!(
+                    stdout.contains("\u{1b}]9278;f;") && stdout.contains("InitSubshell"),
+                    "{bin}: no probe hook in the output: {stdout:?}"
+                );
+                if bin == "bash" {
+                    assert!(
+                        stdout.contains("hc-after=[ignoredups]"),
+                        "{bin}: HISTCONTROL was not restored: {stdout:?}"
+                    );
+                }
+                for noise in ["not a valid", "nknown command", "syntax error", "unbound"] {
+                    assert!(
+                        !stderr.contains(noise) && !stdout.contains(noise),
+                        "{bin}: the probe printed an error ({noise}): {stderr:?}"
+                    );
+                }
+                let mut history = std::fs::read_to_string(&histfile).unwrap_or_default();
+                history.push_str(
+                    &std::fs::read_to_string(dir.join("data/fish/fish_history"))
+                        .unwrap_or_default(),
+                );
+                if bin == "bash" {
+                    assert!(
+                        history.contains("keep1") && history.contains("keep2"),
+                        "{bin}: the user's history entries were lost: {history:?}"
+                    );
+                }
+                assert!(
+                    !history.contains("WARP_BOOTSTRAPPED") && !history.contains("InitSubshell"),
+                    "{bin}: the probe line reached the history file: {history:?}"
+                );
+                std::fs::remove_dir_all(&dir).ok();
+            }
+        });
+    });
+}
+
 /// #967: no bootstrap line deletes a history entry by number (the entry could be the user's own
 /// when the shell never recorded our space-led line), and PowerShell keeps the big line out of
 /// PSReadLine's history with a chained AddToHistoryHandler instead of rewriting the history file.

@@ -228,6 +228,37 @@ fn mis_run_prose_in_history_does_not_force_shell() {
 }
 
 #[test]
+fn request_lines_that_ran_in_the_shell_do_not_force_shell_965() {
+    // macOS `say hello` succeeds (exit 0) and `say` is an installed, described command; the
+    // owner's rule is that a lone greeting goes to the agent, so neither the exact line nor a
+    // near-variant may be pinned to the shell by history.
+    let history = [
+        history_entry("say hello", Some(0)),
+        history_entry("say hello", None),
+        history_entry("where is the config", Some(0)),
+    ];
+    for buffer in ["say hello", "say hello!", "where is the config"] {
+        assert_eq!(
+            command_history_verdict(&history, buffer),
+            None,
+            "{buffer:?} must be left to the classifier and the gate",
+        );
+    }
+    // The shell-ward lines keep matching history.
+    let history = [
+        history_entry("say \"build done\"", Some(0)),
+        history_entry("where is git", Some(0)),
+    ];
+    for buffer in ["say \"build done\"", "where is git"] {
+        assert_eq!(
+            command_history_verdict(&history, buffer),
+            Some(InputType::Shell),
+            "{buffer:?}",
+        );
+    }
+}
+
+#[test]
 fn prose_from_the_history_file_or_interrupted_does_not_force_shell() {
     // No exit code: a line read from `.bash_history` that this app never ran. That is how one
     // mistake persists across restarts, so it is not evidence of a command either.

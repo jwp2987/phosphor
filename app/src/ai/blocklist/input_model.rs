@@ -1800,6 +1800,14 @@ fn shell_history_candidates<'a>(
     entries: impl Iterator<Item = &'a HistoryEntry>,
     buffer_text: &str,
 ) -> Vec<(String, Option<DateTime<Local>>)> {
+    // #965: a line the safety gate reads as a request to the agent (`say hello`, `where is the
+    // config`, `watch the logs for errors`) is the agent's whatever the history holds. An entry
+    // that ran it in the shell once (macOS speaks `say hello` and exits 0) must not pin the line
+    // and its near-variants to the shell from then on: the gate would send the classifier verdict
+    // to the agent, but a history match returns before the classifier is ever consulted.
+    if input_classifier::util::reads_as_request_to_agent(buffer_text) {
+        return Vec::new();
+    }
     let buffer_reads_as_prose = input_classifier::util::reads_as_prose(buffer_text);
     entries
         .filter(|entry| match entry.exit_code {
