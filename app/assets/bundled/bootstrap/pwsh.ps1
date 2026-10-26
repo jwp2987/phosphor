@@ -240,31 +240,6 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
                 Microsoft.PowerShell.Core\Clear-History -CommandLine ($(if ($bootstrapLine.EndsWith('*')) { $bootstrapLine } else { [System.Management.Automation.WildcardPattern]::Escape($bootstrapLine) }))
             }
         }
-        # Clear-History only empties this session's list. PSReadLine has already appended the
-        # lines to its history file (SaveIncrementally), so drop them from the file as well, once
-        # (#967). Exact generated text only, as above.
-        if (-not $script:warpHistoryFileScrubbed) {
-            $script:warpHistoryFileScrubbed = $true
-            try {
-                $psrlOption = PSReadLine\Get-PSReadLineOption
-                $historyFile = $psrlOption.HistorySavePath
-                if ($historyFile -and $psrlOption.HistorySaveStyle -eq 'SaveIncrementally' -and [System.IO.File]::Exists($historyFile)) {
-                    $exactLines = @($global:_warpBootstrapHistoryLines | ForEach-Object { $_.Trim() })
-                    $historyLines = [System.IO.File]::ReadAllLines($historyFile)
-                    $keptLines = @($historyLines | Where-Object {
-                        $trimmed = $_.Trim()
-                        -not ($exactLines -contains $trimmed -or
-                            $trimmed.StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal) -or
-                            $trimmed.StartsWith('Microsoft.PowerShell.Core\Remove-Module -Name PSReadline -ErrorAction Ignore', [System.StringComparison]::Ordinal))
-                    })
-                    if ($keptLines.Count -ne $historyLines.Count) {
-                        [System.IO.File]::WriteAllLines($historyFile, [string[]]$keptLines, (New-Object System.Text.UTF8Encoding($false)))
-                    }
-                }
-            } catch {
-                # History hygiene must never break the session.
-            }
-        }
     }
 
     function Warp-Preexec([string]$command) {

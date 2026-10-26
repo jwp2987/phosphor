@@ -264,8 +264,14 @@ fn test_init_subshell_command_guard_is_nounset_safe_for_bash_and_zsh_only() {
                     init_subshell_command_lines(Some(shell_type), &[], SessionId::from(1u64), ctx);
                 let last = lines.last().unwrap();
                 assert!(
-                    last.starts_with(r#" [ -z "${WARP_BOOTSTRAPPED-}" ] && eval "$_wbs""#),
-                    "expected a nounset-safe guard for {shell_type:?}: {last}"
+                    last.contains(r#" [ -z "${WARP_BOOTSTRAPPED-}" ] && "#)
+                        && last.contains(r#"eval "$_wbs""#)
+                        && last.contains(r#""${#_wbs}" -eq "#),
+                    "expected a nounset-safe, length-checked guard for {shell_type:?}: {last}"
+                );
+                assert!(
+                    !lines.iter().any(|l| l.contains("history -d")),
+                    "{shell_type:?}: a numbered history deletion can remove the user's entry"
                 );
             }
 
@@ -273,7 +279,7 @@ fn test_init_subshell_command_guard_is_nounset_safe_for_bash_and_zsh_only() {
                 init_subshell_command_lines(Some(ShellType::Fish), &[], SessionId::from(1u64), ctx);
             let last = lines.last().unwrap();
             assert!(
-                last.starts_with(" [ -z $WARP_BOOTSTRAPPED ] && eval $_wbs"),
+                last.starts_with(" [ -z $WARP_BOOTSTRAPPED ] && ") && last.contains("eval $_wbs"),
                 "fish cannot parse `${{...}}`, so its guard must stay bare: {last}"
             );
             assert!(
@@ -361,10 +367,7 @@ fn test_chunked_eval_lines_round_trip() {
             if !line.contains("_wbs") || line.contains("eval") {
                 continue;
             }
-            let end = match shell_type {
-                ShellType::Bash => line.rfind("'; history").unwrap(),
-                _ => line.len() - 1,
-            };
+            let end = line.len() - 1;
             let quoted = &line[start + 1..end];
             // Undo the shell's quoting: `'"'"'` is a literal quote; for fish `\\` is a backslash.
             let mut un = quoted.replace(r#"'"'"'"#, "'");
@@ -374,6 +377,22 @@ fn test_chunked_eval_lines_round_trip() {
             rebuilt.push_str(&un);
         }
         assert_eq!(rebuilt, raw, "{shell_type:?}");
+        // The first chunk assigns (a stale $_wbs must never be prepended), the others append.
+        let chunk_lines: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.contains("_wbs") && !l.contains("eval"))
+            .collect();
+        assert!(
+            chunk_lines[0].starts_with(" _wbs='") || chunk_lines[0].starts_with(" set -g _wbs '"),
+            "{shell_type:?}: {}",
+            chunk_lines[0]
+        );
+        assert!(chunk_lines[1..].iter().all(|l| l.contains("$_wbs")));
+        let last = lines.last().unwrap();
+        assert!(
+            last.contains(&raw.len().to_string()),
+            "{shell_type:?}: the final line must check the script length: {last}"
+        );
         assert!(
             lines
                 .iter()
@@ -652,76 +671,136 @@ fn test_init_subshell_lines_run_in_real_shells_and_stay_out_of_history() {
                     eprintln!("skipping {bin}: not installed");
                     continue;
                 }
-                let dir = std::env::temp_dir()
-                    .join(format!("phosphor-subshell-{bin}-{}", std::process::id()));
-                std::fs::create_dir_all(&dir).unwrap();
-                let histfile = dir.join("history");
-                let lines = init_subshell_command_lines(
-                    Some(shell_type),
-                    &[],
-                    SessionId::from(4242u64),
-                    ctx,
-                );
-                let mut child = Command::new(&path)
-                    .args(args)
-                    .env_clear()
-                    .env("PATH", std::env::var("PATH").unwrap_or_default())
-                    .env("HOME", &dir)
-                    .env("HISTFILE", &histfile)
-                    .env("HISTSIZE", "1000")
-                    .env("SAVEHIST", "1000")
-                    .env("XDG_DATA_HOME", dir.join("data"))
-                    .env("XDG_CONFIG_HOME", dir.join("cfg"))
-                    .env("TERM", "dumb")
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::null())
-                    .spawn()
+                for hc in [None, Some("ignorespace"), Some("ignoreboth")] {
+                    let dir = std::env::temp_dir().join(format!(
+                        "phosphor-subshell-{bin}-{}-{}",
+                        std::process::id(),
+                        hc.unwrap_or("unset")
+                    ));
+                    std::fs::remove_dir_all(&dir).ok();
+                    std::fs::create_dir_all(dir.join("data/fish")).unwrap();
+                    let histfile = dir.join("history");
+                    // The user's own history must survive byte for byte, whatever HISTCONTROL says.
+                    std::fs::write(&histfile, "keep1\nkeep2\n").unwrap();
+                    std::fs::write(
+                        dir.join("data/fish/fish_history"),
+                        "- cmd: keep1\n  when: 1\n- cmd: keep2\n  when: 2\n",
+                    )
                     .unwrap();
-                {
-                    let stdin = child.stdin.as_mut().unwrap();
-                    for line in &lines {
-                        stdin.write_all(line.as_bytes()).unwrap();
-                        stdin.write_all(b"\n").unwrap();
+                    let lines = init_subshell_command_lines(
+                        Some(shell_type),
+                        &[],
+                        SessionId::from(4242u64),
+                        ctx,
+                    );
+                    let mut command = Command::new(&path);
+                    command.args(args).env_clear();
+                    if let Some(hc) = hc {
+                        command.env("HISTCONTROL", hc);
                     }
-                    stdin.write_all(b" echo done-marker\nexit\n").unwrap();
+                    let mut child = command
+                        .env("PATH", std::env::var("PATH").unwrap_or_default())
+                        .env("HOME", &dir)
+                        .env("HISTFILE", &histfile)
+                        .env("HISTSIZE", "1000")
+                        .env("SAVEHIST", "1000")
+                        .env("XDG_DATA_HOME", dir.join("data"))
+                        .env("XDG_CONFIG_HOME", dir.join("cfg"))
+                        .env("TERM", "dumb")
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::null())
+                        .spawn()
+                        .unwrap();
+                    {
+                        let stdin = child.stdin.as_mut().unwrap();
+                        for line in &lines {
+                            stdin.write_all(line.as_bytes()).unwrap();
+                            stdin.write_all(b"\n").unwrap();
+                        }
+                        stdin.write_all(b" echo done-marker\nexit\n").unwrap();
+                    }
+                    let out = child.wait_with_output().unwrap();
+                    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+                    assert!(
+                        stdout.contains("\u{1b}P$d"),
+                        "{bin}: no DCS hook in the output: {stdout:?}"
+                    );
+                    let hex: String = stdout
+                        .split("\u{1b}P$d")
+                        .nth(1)
+                        .unwrap()
+                        .chars()
+                        .take_while(|c| c.is_ascii_hexdigit())
+                        .collect();
+                    let payload: Vec<u8> = (0..hex.len() / 2)
+                        .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap())
+                        .collect();
+                    let payload = String::from_utf8(payload).unwrap();
+                    assert!(
+                        payload.contains("InitShell") && payload.contains("\"is_subshell\": true"),
+                        "{bin}: {payload}"
+                    );
+                    assert!(
+                        payload.contains("4242"),
+                        "{bin}: wrong session id in {payload}"
+                    );
+                    let mut history = std::fs::read_to_string(&histfile).unwrap_or_default();
+                    history.push_str(
+                        &std::fs::read_to_string(dir.join("data/fish/fish_history"))
+                            .unwrap_or_default(),
+                    );
+                    assert!(
+                        history.contains("keep1") && history.contains("keep2"),
+                        "{bin} (HISTCONTROL={hc:?}): the user's history entries were lost: {history:?}"
+                    );
+                    assert!(
+                        !history.contains("_wbs") && !history.contains("WARP_"),
+                        "{bin} (HISTCONTROL={hc:?}): bootstrap lines reached the history file: {history:?}"
+                    );
+                    std::fs::remove_dir_all(&dir).ok();
                 }
-                let out = child.wait_with_output().unwrap();
-                let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-                assert!(
-                    stdout.contains("\u{1b}P$d"),
-                    "{bin}: no DCS hook in the output: {stdout:?}"
-                );
-                let hex: String = stdout
-                    .split("\u{1b}P$d")
-                    .nth(1)
-                    .unwrap()
-                    .chars()
-                    .take_while(|c| c.is_ascii_hexdigit())
-                    .collect();
-                let payload: Vec<u8> = (0..hex.len() / 2)
-                    .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap())
-                    .collect();
-                let payload = String::from_utf8(payload).unwrap();
-                assert!(
-                    payload.contains("InitShell") && payload.contains("\"is_subshell\": true"),
-                    "{bin}: {payload}"
-                );
-                assert!(
-                    payload.contains("4242"),
-                    "{bin}: wrong session id in {payload}"
-                );
-                let mut history = std::fs::read_to_string(&histfile).unwrap_or_default();
-                history.push_str(
-                    &std::fs::read_to_string(dir.join("data/fish/fish_history"))
-                        .unwrap_or_default(),
-                );
-                assert!(
-                    !history.contains("_wbs") && !history.contains("WARP_"),
-                    "{bin}: bootstrap lines reached the history file: {history:?}"
-                );
-                std::fs::remove_dir_all(&dir).ok();
             }
+        });
+    });
+}
+
+/// #967: no bootstrap line deletes a history entry by number (the entry could be the user's own
+/// when the shell never recorded our space-led line), and PowerShell keeps the big line out of
+/// PSReadLine's history with a chained AddToHistoryHandler instead of rewriting the history file.
+#[test]
+fn test_init_subshell_never_deletes_or_rewrites_history() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            for shell_type in [
+                Some(ShellType::Bash),
+                Some(ShellType::Zsh),
+                Some(ShellType::Fish),
+                Some(ShellType::PowerShell),
+                None,
+            ] {
+                let lines =
+                    init_subshell_command_lines(shell_type, &[], SessionId::from(1u64), ctx);
+                for line in &lines {
+                    assert!(
+                        !line.contains("history -d") && !line.contains("HISTCMD"),
+                        "{shell_type:?}: {line}"
+                    );
+                    assert!(
+                        !line.contains("BASH_VERSION"),
+                        "{shell_type:?}: the unknown-shell probe must not use a bare $BASH_VERSION: {line}"
+                    );
+                }
+            }
+            let lines = init_subshell_command_lines(
+                Some(ShellType::PowerShell),
+                &[],
+                SessionId::from(1u64),
+                ctx,
+            );
+            assert!(lines.len() >= 2 && lines[0].contains("-AddToHistoryHandler"));
+            assert!(lines[0].contains("_warpPrevHistoryHandler"), "must chain: {}", lines[0]);
         });
     });
 }

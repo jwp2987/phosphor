@@ -2472,6 +2472,17 @@ struct LocalSessionCanonicalPwdCache {
     canonical: CanonicalizedPath,
 }
 
+/// Bookkeeping for the paced subshell bootstrap write (see
+/// `TerminalView::write_init_subshell_bytes_to_pty`).
+struct SubshellBootstrapInFlight {
+    generation: u64,
+    /// The block the bootstrap was typed into; if another block is active when a later line is
+    /// due, the shell it was meant for is gone and the remaining lines are dropped.
+    block_id: BlockId,
+    remaining_lines: usize,
+    held_user_bytes: Vec<Vec<u8>>,
+}
+
 pub struct TerminalView {
     /// Image ids this view handed to the asset cache for off-thread decoding and has not yet
     /// been told finished (#880).
@@ -2744,6 +2755,11 @@ pub struct TerminalView {
     /// terminal model event. Will only be `Some` with a [`ShellType`] we can bootstrap.
     pending_auto_bootstrap_shell_type: Option<ShellType>,
     env_vars: Vec<EnvVar>,
+    /// The paced subshell bootstrap lines still to be written (#962). While this is `Some`, user
+    /// keystrokes are held in it and delivered, in order, once the last line is out, so they can
+    /// never interleave with (or land inside) the bootstrap.
+    subshell_bootstrap_in_flight: Option<SubshellBootstrapInFlight>,
+    subshell_bootstrap_generation: u64,
 
     show_snackbar: bool,
     hover_near_snackbar_area: bool,
@@ -4344,6 +4360,8 @@ impl TerminalView {
             pending_auto_bootstrap_shell_type: None,
             pending_env_var_collection: None,
             env_vars: Vec::new(),
+            subshell_bootstrap_in_flight: None,
+            subshell_bootstrap_generation: 0,
             show_snackbar: true,
             hover_near_snackbar_area: false,
             ai_controller,
@@ -9709,6 +9727,12 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) -> bool {
         let mut bytes: Cow<'static, [u8]> = data.into();
+        // The paced subshell bootstrap is still being written: hold the keystrokes (never drop
+        // them) and deliver them after its last line.
+        if let Some(in_flight) = self.subshell_bootstrap_in_flight.as_mut() {
+            in_flight.held_user_bytes.push(bytes.into_owned());
+            return true;
+        }
         // #933: an EOF does not flush typeahead, so Enters held behind the young window go first.
         if FeatureFlag::TypeaheadHandoff.is_enabled()
             && let Some(with_held) = self
@@ -16071,18 +16095,70 @@ impl TerminalView {
         const SUBSHELL_BOOTSTRAP_LINE_DELAY: Duration = Duration::from_millis(30);
         let mut lines =
             init_subshell_command_lines(shell_type, &self.env_vars, session_id, ctx).into_iter();
-        if let Some(first) = lines.next() {
-            self.clear_line_editor_and_write_to_pty(first.into_bytes(), ctx);
-            self.write_to_pty(vec![escape_sequences::C0::CR], ctx);
+        // A bootstrap still in flight belongs to an older shell: release what it held first.
+        self.finish_subshell_bootstrap(ctx);
+        let Some(first) = lines.next() else {
+            return;
+        };
+        self.clear_line_editor_and_write_to_pty(first.into_bytes(), ctx);
+        self.write_to_pty(vec![escape_sequences::C0::CR], ctx);
+        let rest: Vec<String> = lines.collect();
+        if rest.is_empty() {
+            return;
         }
-        for (index, line) in lines.enumerate() {
+        self.subshell_bootstrap_generation += 1;
+        let generation = self.subshell_bootstrap_generation;
+        self.subshell_bootstrap_in_flight = Some(SubshellBootstrapInFlight {
+            generation,
+            block_id: self.model.lock().block_list().active_block().id().clone(),
+            remaining_lines: rest.len(),
+            held_user_bytes: Vec::new(),
+        });
+        for (index, line) in rest.into_iter().enumerate() {
             ctx.spawn(
                 Timer::after(SUBSHELL_BOOTSTRAP_LINE_DELAY * (index as u32 + 1)),
-                move |me, _, ctx| {
-                    me.write_to_pty(line.into_bytes(), ctx);
-                    me.write_to_pty(vec![escape_sequences::C0::CR], ctx);
-                },
+                move |me, _, ctx| me.write_subshell_bootstrap_line(generation, line, ctx),
             );
+        }
+    }
+
+    /// Writes one paced bootstrap line, unless the bootstrap it belongs to was superseded or the
+    /// active block changed (the shell it was meant for exited), in which case the remaining lines
+    /// are abandoned so they can never reach the parent shell.
+    fn write_subshell_bootstrap_line(
+        &mut self,
+        generation: u64,
+        line: String,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(in_flight) = self.subshell_bootstrap_in_flight.as_ref() else {
+            return;
+        };
+        if in_flight.generation != generation {
+            return;
+        }
+        let block_unchanged =
+            self.model.lock().block_list().active_block().id() == &in_flight.block_id;
+        if !block_unchanged {
+            self.finish_subshell_bootstrap(ctx);
+            return;
+        }
+        self.write_to_pty(line.into_bytes(), ctx);
+        self.write_to_pty(vec![escape_sequences::C0::CR], ctx);
+        if let Some(in_flight) = self.subshell_bootstrap_in_flight.as_mut() {
+            in_flight.remaining_lines -= 1;
+            if in_flight.remaining_lines == 0 {
+                self.finish_subshell_bootstrap(ctx);
+            }
+        }
+    }
+
+    /// Ends the in-flight subshell bootstrap and delivers the keystrokes held behind it.
+    fn finish_subshell_bootstrap(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Some(in_flight) = self.subshell_bootstrap_in_flight.take() {
+            for bytes in in_flight.held_user_bytes {
+                self.write_user_bytes_to_pty(bytes, ctx);
+            }
         }
     }
 
