@@ -2844,6 +2844,20 @@ impl TerminalModel {
                 .active_block_mut()
                 .replace_command_text(&display_command);
             data.command = display_command;
+        } else if !data.command.trim().is_empty()
+            && self
+                .block_list
+                .active_block()
+                .command_to_string()
+                .trim()
+                .is_empty()
+        {
+            // The command grid is filled from the shell's echo, so a tty with echo off (e.g.
+            // `stty -echo; cat` leaving it off for the next command) yields a blank header.
+            // The preexec payload carries the submitted command: show that instead (#998).
+            self.block_list
+                .active_block_mut()
+                .replace_command_text(&data.command);
         }
         if FeatureFlag::TypeaheadHandoff.is_enabled() {
             // A block nobody started is a line the shell read from the tty itself: typeahead.

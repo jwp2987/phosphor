@@ -2789,6 +2789,37 @@ fn command_display_override_replaces_the_echoed_wrapper_at_preexec() {
     assert!(!shown.contains("Get-Command"));
 }
 
+/// #998: with tty echo off (`stty -echo; cat`), nothing is echoed into the command grid, but the
+/// block header must still show the command preexec reports.
+#[test]
+fn preexec_command_fills_a_blank_echoed_command() {
+    let mut model = TerminalModel::mock(None, None);
+    model.block_list_mut().active_block_mut().start();
+    // No echo at all: the shell printed nothing for the submitted line.
+    assert_eq!(model.block_list().active_block().command_to_string(), "");
+    model.preexec(PreexecValue {
+        command: "ls".to_owned(),
+        session_id: None,
+    });
+    assert_eq!(model.block_list().active_block().command_to_string(), "ls");
+}
+
+/// #998: an echoed command is never overwritten by the preexec payload.
+#[test]
+fn preexec_command_does_not_replace_echoed_command() {
+    let mut model = TerminalModel::mock(None, None);
+    model.block_list_mut().active_block_mut().start();
+    model.simulate_cmd("ls -la\r\n");
+    model.preexec(PreexecValue {
+        command: "something else".to_owned(),
+        session_id: None,
+    });
+    assert_eq!(
+        model.block_list().active_block().command_to_string(),
+        "ls -la"
+    );
+}
+
 /// #952: overrides are keyed trimmed, expire when their command never ran, and the table evicts
 /// the oldest entry instead of forgetting every pending override.
 #[test]
