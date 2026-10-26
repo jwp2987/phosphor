@@ -14406,17 +14406,14 @@ fn user_takeover_overrides_ai_block_focus_guard() {
     assert!(ai_block_focus_permits_terminal_reset(true, false));
 }
 
-/// #960: a pane whose subshell bootstrap is announced but unfinished held every key, so a
-/// bootstrap that never completed (a root shell behind su/sudo) swallowed Tab, paste, typing and
-/// Ctrl-C. Ctrl-C / Ctrl-D must always get through; everything else once the bootstrap stalls.
+/// #960: Ctrl-C / Ctrl-D always reach the pty while a subshell bootstrap is pending; every
+/// other key stays held (no timer-driven forwarding or automatic abort exists any more).
 #[test]
-fn stalled_subshell_bootstrap_never_swallows_input() {
-    assert!(!subshell_bootstrap_key_forwarded(false, false, true));
-    assert!(!subshell_bootstrap_key_forwarded(false, true, false));
-    assert!(!subshell_bootstrap_key_forwarded(true, false, false));
-    assert!(subshell_bootstrap_key_forwarded(true, false, true));
-    assert!(subshell_bootstrap_key_forwarded(true, true, false));
-    assert!(subshell_bootstrap_key_forwarded(true, true, true));
+fn pending_subshell_bootstrap_forwards_only_abort_keys() {
+    assert!(!subshell_bootstrap_key_forwarded(false, true));
+    assert!(!subshell_bootstrap_key_forwarded(false, false));
+    assert!(!subshell_bootstrap_key_forwarded(true, false));
+    assert!(subshell_bootstrap_key_forwarded(true, true));
 }
 
 #[test]
