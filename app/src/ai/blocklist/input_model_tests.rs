@@ -244,6 +244,11 @@ fn request_lines_that_ran_in_the_shell_do_not_force_shell_965() {
             "{buffer:?} must be left to the classifier and the gate",
         );
     }
+    // While the line is being typed, its prefixes are not pinned to the shell by the finished
+    // line's history entry either.
+    for buffer in ["say hell", "say hel", "where is the confi"] {
+        assert_eq!(command_history_verdict(&history, buffer), None, "{buffer:?}");
+    }
     // The shell-ward lines keep matching history.
     let history = [
         history_entry("say \"build done\"", Some(0)),

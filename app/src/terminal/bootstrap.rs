@@ -327,10 +327,10 @@ pub fn init_subshell_command_lines(
             // single-quoted `eval` argument, so no escaping is needed here.
             // PSReadLine appends every accepted line to the history file before it runs, so the
             // big line below would be saved. A short first line installs an AddToHistoryHandler
-            // (chained to any the user had) that refuses the bootstrap line; nothing rewrites the
-            // user's history file.
+            // (chained to any the user had) that refuses the bootstrap line and the line that
+            // later sources the temp bootstrap file; nothing rewrites the user's history file.
             vec![
-                " if (-not $global:WARP_BOOTSTRAPPED) { $global:_warpPrevHistoryHandler = (PSReadLine\\Get-PSReadLineOption).AddToHistoryHandler; PSReadLine\\Set-PSReadLineOption -AddToHistoryHandler { param([string]$l) if ($l.TrimStart().StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal)) { return $false }; if ($global:_warpPrevHistoryHandler) { return (& $global:_warpPrevHistoryHandler $l) }; return $true } }".to_owned(),
+                POWERSHELL_HISTORY_HANDLER_LINE.to_owned(),
                 format!(" if (-not $global:WARP_BOOTSTRAPPED) {{ {subshell_script} }}"),
             ]
         }
@@ -345,6 +345,16 @@ pub fn init_subshell_command_lines(
         ],
     }
 }
+
+/// First line of the PowerShell subshell bootstrap (#967): installs an `AddToHistoryHandler`,
+/// chained to the user's own, that refuses the guarded init line and the ` . <tmp>.ps1` line the
+/// app types afterwards to source the bootstrap file (`.tmp` plus six characters, then `.ps1`:
+/// the shape `tempfile` gives the file). The handler cannot cover the line that installs it, so
+/// that line ends in a comment word PSReadLine's default handler keeps out of the history *file*
+/// (`apikey`: lines matching its sensitive pattern are saved to memory only on PSReadLine 2.2 and
+/// later). A user-replaced handler or an older PSReadLine still saves this one short line; nothing
+/// ever rewrites or deletes history.
+const POWERSHELL_HISTORY_HANDLER_LINE: &str = r#" if (-not $global:WARP_BOOTSTRAPPED) { $global:_warpPrevHistoryHandler = (PSReadLine\Get-PSReadLineOption).AddToHistoryHandler; PSReadLine\Set-PSReadLineOption -AddToHistoryHandler { param([string]$l) $t = $l.TrimStart(); if ($t.StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal) -or $t -match '^\.\s+[^\r\n]*[\\/]\.tmp[A-Za-z0-9]{6}\.ps1\s*$') { return $false }; if ($global:_warpPrevHistoryHandler) { return (& $global:_warpPrevHistoryHandler $l) }; return $true } } # apikey"#;
 
 /// Single-quote escapes `text` for embedding in a single-quoted word of `shell_type`.
 fn escape_for_single_quotes(shell_type: ShellType, text: &str) -> String {
