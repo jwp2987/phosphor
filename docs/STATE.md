@@ -27,7 +27,7 @@ any individual test.
 | | count |
 |---|---:|
 | Pin tests | 11655 |
-| Fork tests | 13352 |
+| Fork tests | 13360 |
 | Shared | 8699 |
 | Absent from fork | 2956 |
 
