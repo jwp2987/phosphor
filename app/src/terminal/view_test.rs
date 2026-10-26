@@ -14506,7 +14506,9 @@ fn subshell_setup_waits_behind_a_password_prompt_until_it_is_answered() {
             assert!(pty_writes.borrow().is_empty());
 
             // The user's password goes to the pty untouched and counts as the answer.
-            assert!(view.write_user_bytes_to_pty(b"secret\r".to_vec(), ctx));
+            // Typed as the user types: the text, then Enter. (One "secret\r" chunk would run into
+            // the #933 young-command Enter hold, which the just-created test block is subject to.)
+            assert!(view.write_user_bytes_to_pty(b"secret".to_vec(), ctx));
             assert!(
                 pty_writes
                     .borrow()
@@ -14517,6 +14519,7 @@ fn subshell_setup_waits_behind_a_password_prompt_until_it_is_answered() {
                     .starts_with(b"secret"),
                 "the answer reaches the pty untouched"
             );
+            assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
             assert!(
                 view.subshell_setup_deferred
                     .as_ref()
