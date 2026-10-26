@@ -126,7 +126,7 @@ trap 'cleanup_dmg_files "$DMG_DIR"; cleanup_codesign_keychain' EXIT
 
 # Define a helper function that uses Python to compute a relative path.
 function relpath() {
-  python -c "import os,sys;print(os.path.relpath(*(sys.argv[1:])))" "$@";
+  python3 -c "import os,sys;print(os.path.relpath(*(sys.argv[1:])))" "$@";
 }
 
 # Defaults for command-line flags.
