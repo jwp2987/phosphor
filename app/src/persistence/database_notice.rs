@@ -30,8 +30,8 @@ pub enum DatabaseProblem {
     PartialRestore { skipped_tabs: usize },
     /// Another process (or connection) holds a lock on the database (#971).
     /// Nothing is damaged. At startup persistence is disabled for the session;
-    /// while running, the writer keeps retrying the latest snapshot (other
-    /// events that hit the lock are not retried).
+    /// while running, the writer keeps the latest snapshot and the other
+    /// events that hit the lock (bounded queue) and retries them in order.
     Locked,
     /// Anything else; carries SQLite's or the OS's message.
     Other(String),
