@@ -5773,6 +5773,12 @@ impl PaneGroup {
 
         BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, _ctx| {
             history_model.mark_terminal_view_as_conversation_transcript_viewer(terminal_view.id());
+            if read_only_view_of_live {
+                history_model.mark_terminal_view_as_read_only_live_viewer(
+                    terminal_view.id(),
+                    conversation_id,
+                );
+            }
         });
 
         let _ = ambient_agent_task_id;

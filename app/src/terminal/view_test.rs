@@ -14839,6 +14839,16 @@ fn read_only_view_of_live_conversation_ai_blocks_are_not_hidden_by_the_ai_block_
                 ),
             ));
         });
+        // `is_hidden` reads the history model, not the (lock-holding) terminal model.
+        let viewer_id = viewer.id();
+        BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, _| {
+            history.mark_terminal_view_as_read_only_live_viewer(viewer_id, conversation_id);
+        });
+        // Regression: callers hold the terminal model lock while asking; this must not deadlock.
+        viewer.update(&mut app, |view, ctx| {
+            let _model_guard = view.model.lock();
+            assert!(!handle.as_ref(ctx).is_hidden(ctx));
+        });
         handle.read(&app, |block, ctx| {
             assert!(
                 !block.is_hidden(ctx),
@@ -14853,6 +14863,9 @@ fn read_only_view_of_live_conversation_ai_blocks_are_not_hidden_by_the_ai_block_
                     AIConversationId::new(),
                 ),
             ));
+        });
+        BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, _| {
+            history.mark_terminal_view_as_read_only_live_viewer(viewer_id, AIConversationId::new());
         });
         handle.read(&app, |block, ctx| {
             assert!(block.is_hidden(ctx));
@@ -15059,14 +15072,16 @@ fn agent_shortcut_enter_action_reaches_the_set_input_mode_agent_handler() {
         let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
         let terminal = add_window_with_terminal(&mut app, None);
         terminal.update(&mut app, |view, ctx| {
+            // The banner only exists over a long-running (sub)shell; there `SetInputModeAgent`
+            // tags the agent in, entering the inline agent view. (Outside a long-running command
+            // the GUI refuses to lock the input to AI without an agent view, so the input type
+            // is not a valid probe for "the handler ran".)
+            view.model.lock().simulate_long_running_block("bash", "");
             view.use_agent_footer.update(ctx, |footer, ctx| {
                 footer.set_warpify_mode(WarpificationMode::subshell("bash".to_owned()), ctx);
             });
             assert!(view.agent_shortcut_banner_visible(ctx));
-            view.input.update(ctx, |input, ctx| {
-                input.set_input_mode_terminal(true, ctx);
-            });
-            assert_eq!(view.input.as_ref(ctx).input_type(ctx), InputType::Shell);
+            assert!(!view.agent_view_controller().as_ref(ctx).is_inline());
         });
         let view_id = terminal.id();
         let window_id = app.read(|ctx| terminal.window_id(ctx));
@@ -15081,10 +15096,9 @@ fn agent_shortcut_enter_action_reaches_the_set_input_mode_agent_handler() {
             );
         });
         terminal.read(&app, |view, ctx| {
-            assert_eq!(
-                view.input.as_ref(ctx).input_type(ctx),
-                InputType::AI,
-                "the shortcut must switch to agent mode, like the Use agent button"
+            assert!(
+                view.agent_view_controller().as_ref(ctx).is_inline(),
+                "the shortcut must run the SetInputModeAgent handler, like the Use agent button"
             );
         });
     })

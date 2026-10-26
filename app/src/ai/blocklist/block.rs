@@ -2723,10 +2723,9 @@ impl AIBlock {
         // A read-only view of a live conversation never enters an agent view, so without this
         // every one of its blocks counted as "no active agent view, not passive" and rendered
         // as an empty zero-height element: a blank pane (#992).
-        if self
-            .terminal_model
-            .lock()
-            .read_only_live_viewer_conversation_id()
+        // Read from the history model, never the terminal model: callers hold the model lock.
+        if BlocklistAIHistoryModel::as_ref(app)
+            .read_only_live_viewer_conversation_id(self.terminal_view_id)
             == Some(self.client_ids.conversation_id)
         {
             return false;

@@ -240,6 +240,12 @@ pub struct BlocklistAIHistoryModel {
     /// conversations out of local history and navigation.
     conversation_transcript_viewer_terminal_view_ids: HashSet<EntityId>,
 
+    /// Terminal views that are read-only windows onto a conversation that is live in another
+    /// view, and the conversation each one shows (#988/#992). `AIBlock::is_hidden` reads this
+    /// instead of the terminal model: it runs while callers already hold the (non-reentrant)
+    /// model lock, so locking the model there self-deadlocks.
+    read_only_live_viewer_conversations: HashMap<EntityId, AIConversationId>,
+
     /// AI queries that were read from the SQLite DB. These exchanges do not contain as much
     /// information as the other exchanges we store because they are only used for display in
     /// history.
@@ -2315,6 +2321,30 @@ impl BlocklistAIHistoryModel {
             .insert(terminal_view_id);
     }
 
+    pub fn mark_terminal_view_as_read_only_live_viewer(
+        &mut self,
+        terminal_view_id: EntityId,
+        conversation_id: AIConversationId,
+    ) {
+        self.read_only_live_viewer_conversations
+            .insert(terminal_view_id, conversation_id);
+    }
+
+    pub fn unmark_terminal_view_as_read_only_live_viewer(&mut self, terminal_view_id: EntityId) {
+        self.read_only_live_viewer_conversations
+            .remove(&terminal_view_id);
+    }
+
+    /// The conversation `terminal_view_id` is a read-only window onto, if it is one.
+    pub fn read_only_live_viewer_conversation_id(
+        &self,
+        terminal_view_id: EntityId,
+    ) -> Option<AIConversationId> {
+        self.read_only_live_viewer_conversations
+            .get(&terminal_view_id)
+            .copied()
+    }
+
     pub fn is_terminal_view_conversation_transcript_viewer(
         &self,
         terminal_view_id: EntityId,
@@ -2714,6 +2744,7 @@ impl BlocklistAIHistoryModel {
         self.ambient_agent_terminal_view_ids.clear();
         self.conversation_transcript_viewer_terminal_view_ids
             .clear();
+        self.read_only_live_viewer_conversations.clear();
         self.persisted_queries.clear();
         self.all_conversations_metadata.clear();
         self.agent_id_to_conversation_id.clear();
