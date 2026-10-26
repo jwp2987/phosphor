@@ -1215,6 +1215,119 @@ fn test_init_subshell_never_deletes_or_rewrites_history() {
     });
 }
 
+/// #995: the ssh wrapper hands the remote bootstrap to ssh through a variable, so the job text a
+/// shell prints for a stopped ssh (Ctrl-Z during connect) is a short command line, not the whole
+/// embedded script. The remote command itself is unchanged: a stub `ssh` on PATH receives it.
+#[test]
+#[cfg(unix)]
+fn ssh_wrapper_job_text_is_short_and_remote_script_still_arrives() {
+    use std::process::Command;
+
+    for (name, source, fish) in [
+        (
+            "bash",
+            include_str!("../../assets/bundled/bootstrap/bash_body.sh"),
+            false,
+        ),
+        (
+            "fish",
+            include_str!("../../assets/bundled/bootstrap/fish.sh"),
+            true,
+        ),
+    ] {
+        // The statement that runs `command ssh ... -t <args>` with the remote script.
+        let start = source
+            .find(if fish {
+                "command ssh $warp_ipqos_args -o ControlMaster"
+            } else {
+                "command ssh ${warp_ipqos_args[@]+"
+            })
+            .unwrap_or_else(|| panic!("{name}: the wrapper's ssh invocation moved"));
+        let statement: String = source[start..]
+            .lines()
+            .take(2)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            statement.len() < 400 && !statement.contains("TERM_PROGRAM"),
+            "{name}: the ssh invocation must not carry the script inline (#995): {statement}"
+        );
+        assert!(
+            statement.contains("warp_remote_bootstrap"),
+            "{name}: {statement}"
+        );
+
+        // Run the real helper with a stub ssh: the last argument must still be the whole script.
+        let have = Command::new(name).arg("--version").output().is_ok();
+        if !have {
+            eprintln!("skipping {name}: not installed");
+            continue;
+        }
+        let dir =
+            std::env::temp_dir().join(format!("phosphor-ssh-stub-{name}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let stub = dir.join("ssh");
+        std::fs::write(
+            &stub,
+            "#!/bin/sh\ncase \"$1\" in -G|-O) exit 1;; esac\nfor a in \"$@\"; do last=\"$a\"; done\nprintf '%s' \"$last\" > \"$OUT\"\n",
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let (open, close) = if fish {
+            ("    function warp_ssh_helper", "\n    end\n")
+        } else {
+            (
+                "        function warp_ssh_helper() {",
+                "\n        function __warp_ssh_impl",
+            )
+        };
+        let from = source.find(open).unwrap();
+        let to = from + source[from..].find(close).unwrap() + close.len();
+        let function = if fish {
+            source[from..to].to_owned()
+        } else {
+            source[from..to - "\n        function __warp_ssh_impl".len()].to_owned()
+        };
+        let out_file = dir.join("out");
+        let prelude = if fish {
+            "function warp_init_shell; echo init-$argv; end; function warp_send_json_message; end; set -g SSH_SOCKET_DIR /tmp/s; set -g WARP_SESSION_ID 77; set -g WARP_HONOR_PS1 1;"
+        } else {
+            "init_shell_hook(){ echo hook-$1; }; warp_send_json_message(){ :; }; SSH_SOCKET_DIR=/tmp/s; WARP_SESSION_ID=77; WARP_HONOR_PS1=1;"
+        };
+        let script = format!("{prelude}\n{function}\nwarp_ssh_helper -p 22 user@host");
+        let mut command = Command::new(name);
+        if fish {
+            command.args(["--no-config", "-c", &script]);
+        } else {
+            command.args(["-c", &script]);
+        }
+        let status = command
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    dir.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env("OUT", &out_file)
+            .status()
+            .unwrap();
+        assert!(status.success(), "{name}: helper failed");
+        let remote = std::fs::read_to_string(&out_file).unwrap_or_default();
+        assert!(
+            remote.contains("export TERM_PROGRAM='WarpTerminal'")
+                && remote.contains("exec -l zsh -g"),
+            "{name}: the remote script did not reach ssh intact: {remote:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
 /// #960: `trap <fn> EXIT HUP` replaced bash's default hang-up handling, so a remote shell
 /// neither exited on SIGHUP nor, while a foreground child such as `sudo` ran, ever did --
 /// closing the tab left orphaned shells (and root shells under them). EXIT alone already runs
