@@ -2524,6 +2524,122 @@ fn writer_replays_non_snapshot_events_in_order_after_lock_release() {
     );
 }
 
+/// #971: the lock probe must never issue `ROLLBACK` for a `BEGIN` that failed
+/// (SQLite logged "cannot rollback - no transaction is active" as an ERROR on
+/// every probe), and must report a held lock as blocked.
+#[test]
+fn write_lock_probe_never_rolls_back_without_a_transaction() {
+    use diesel::{
+        Connection as _,
+        connection::{InstrumentationEvent, SimpleConnection as _},
+        sqlite::SqliteConnection,
+    };
+    use std::sync::{Arc, Mutex};
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+    let mut locker =
+        SqliteConnection::establish(database_path.to_str().unwrap()).expect("locker connects");
+    locker
+        .batch_execute("BEGIN EXCLUSIVE;")
+        .expect("exclusive lock should be taken");
+
+    let errors: Arc<Mutex<Vec<String>>> = Arc::default();
+    let sink = errors.clone();
+    conn.set_instrumentation(move |event: InstrumentationEvent<'_>| {
+        if let InstrumentationEvent::FinishQuery {
+            error: Some(error), ..
+        } = event
+        {
+            sink.lock().unwrap().push(error.to_string());
+        }
+    });
+
+    assert!(
+        super::write_lock_blocked(&mut conn),
+        "a held exclusive lock must read as blocked"
+    );
+    let errors_while_locked = errors.lock().unwrap().clone();
+    assert!(
+        errors_while_locked
+            .iter()
+            .all(|message| !message.contains("no transaction")),
+        "ROLLBACK was issued without a transaction: {errors_while_locked:?}"
+    );
+
+    locker.batch_execute("COMMIT;").expect("lock released");
+    errors.lock().unwrap().clear();
+    assert!(
+        !super::write_lock_blocked(&mut conn),
+        "a released lock must read as free"
+    );
+    assert!(
+        errors.lock().unwrap().is_empty(),
+        "the probe must leave no failed statement and no open transaction: {:?}",
+        errors.lock().unwrap()
+    );
+    // No transaction may be left open by the probe.
+    conn.batch_execute("BEGIN IMMEDIATE; ROLLBACK;")
+        .expect("no transaction is left open");
+}
+
+/// #971: after a lock that outlasts the busy timeout several times over is
+/// released, both a queued non-snapshot event and the snapshot land within a
+/// few seconds (the fast retry interval), not only at the next quit.
+#[test]
+fn queued_event_and_snapshot_land_promptly_after_a_long_lock_is_released() {
+    use diesel::{Connection as _, connection::SimpleConnection as _, sqlite::SqliteConnection};
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let conn = setup_database(&database_path).expect("database should initialize");
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+    let mut locker =
+        SqliteConnection::establish(database_path.to_str().unwrap()).expect("locker connects");
+    locker.batch_execute("BEGIN EXCLUSIVE;").expect("lock");
+
+    let kept = test_workspace_metadata("/tmp/long-lock-repo");
+    writer
+        .sender
+        .send(ModelEvent::UpsertCodebaseIndexMetadata {
+            index_metadata: Box::new(kept.clone()),
+        })
+        .expect("event should send");
+    writer
+        .sender
+        .send(ModelEvent::Snapshot(AppState {
+            windows: vec![test_terminal_window_snapshot(false)],
+            active_window_index: Some(0),
+            block_lists: Default::default(),
+            running_mcp_servers: Default::default(),
+        }))
+        .expect("snapshot should send");
+
+    // Several failed probe/retry rounds, as in a real minute-long lock.
+    std::thread::sleep(std::time::Duration::from_secs(7));
+    locker.batch_execute("COMMIT;").expect("lock released");
+    let released_at = std::time::Instant::now();
+
+    let mut reader = SqliteConnection::establish(database_path.to_str().unwrap()).unwrap();
+    let mut landed_after = None;
+    while released_at.elapsed() < std::time::Duration::from_secs(8) {
+        let metadata = get_all_codebase_index_metadata(&mut reader).expect("metadata");
+        let snapshot = read_sqlite_data(&mut reader, None).expect("data should load");
+        if metadata.len() == 1 && snapshot.app_state.windows.len() == 1 {
+            landed_after = Some(released_at.elapsed());
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    writer.sender.send(ModelEvent::Terminate).ok();
+    writer.handle.join().expect("writer should terminate");
+    assert!(
+        landed_after.is_some(),
+        "the queued event and the snapshot must land within 8 s of the release, without a quit"
+    );
+}
+
 /// #971: the lock is still held when the app quits; Terminate makes one last
 /// attempt, which succeeds if the lock was released in the meantime.
 #[test]

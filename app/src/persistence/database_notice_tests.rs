@@ -344,3 +344,27 @@ fn startup_lock_wording_does_not_claim_a_retry() {
     // contradicts the retry promise.
     assert!(!message("workspace-database-write-locked-toast").contains("won't be restored"));
 }
+
+/// #971: the "can't save: database is locked" toast is withdrawn once writes
+/// work again, but only when the lock notice was the one raised.
+#[test]
+fn a_lock_notice_ends_only_when_writes_recover_from_it() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let active = AtomicBool::new(true);
+    assert!(
+        !lock_notice_ended(&active, false),
+        "writes were not failing: nothing to end"
+    );
+    assert!(active.load(Ordering::Relaxed));
+    assert!(
+        lock_notice_ended(&active, true),
+        "the first success ends it"
+    );
+    assert!(
+        !lock_notice_ended(&active, true),
+        "ended once, not on every later success"
+    );
+    // A failure that was not the lock notice (disk full, damage) never ends it.
+    let not_a_lock = AtomicBool::new(false);
+    assert!(!lock_notice_ended(&not_a_lock, true));
+}

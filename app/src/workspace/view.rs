@@ -2787,6 +2787,12 @@ impl Workspace {
             )
             .to_string()
         };
+        // Writes work again after a lock: the "can't save" toast is stale (#971).
+        if crate::persistence::take_database_lock_recovered() {
+            toast_stack.update(ctx, |toast_stack, ctx| {
+                toast_stack.dismiss_older_toasts("workspace-database-write-locked-toast", ctx);
+            });
+        }
         let mut toasts = Vec::new();
         if let Some(moved_to) = crate::persistence::take_database_recovery_notice() {
             toasts.push(
