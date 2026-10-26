@@ -14761,6 +14761,105 @@ fn read_only_view_of_live_conversation_renders_its_ai_blocks() {
     });
 }
 
+/// #992: the AI block view itself hides when there is no active agent view and it is not a
+/// passive suggestion (`AIBlock::is_hidden`). A read-only view of a live conversation never
+/// enters an agent view, so its blocks rendered as empty zero-height elements and the pane was
+/// blank even though the blocks were in the block list and not scoped away. They must render.
+#[test]
+fn read_only_view_of_live_conversation_ai_blocks_are_not_hidden_by_the_ai_block_view() {
+    use crate::terminal::model::terminal_model::ConversationTranscriptViewerStatus;
+
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
+
+        let live = add_window_with_terminal(&mut app, None);
+        let conversation_id = live.update(&mut app, |view, ctx| {
+            let (conversation_id, ..) = append_exchange_and_handle_event(
+                view,
+                AIAgentInput::UserQuery {
+                    query: "earlier question".to_owned(),
+                    context: Default::default(),
+                    static_query_type: None,
+                    referenced_attachments: Default::default(),
+                    user_query_mode: UserQueryMode::Normal,
+                    running_command: None,
+                    intended_agent: None,
+                },
+                ctx,
+            );
+            conversation_id
+        });
+        let snapshot = BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
+            history
+                .conversation(&conversation_id)
+                .expect("live conversation should exist")
+                .clone()
+        });
+
+        let viewer = add_window_with_terminal(&mut app, None);
+        viewer.update(&mut app, |view, ctx| {
+            view.restore_conversations_on_view_creation(
+                ConversationRestorationInNewPaneType::Historical {
+                    conversation: snapshot,
+                    should_use_live_appearance: true,
+                    ambient_agent_task_id: None,
+                    read_only_view_of_live: true,
+                },
+                ctx,
+            );
+        });
+        let ai_block = |view: &TerminalView| {
+            view.rich_content_views
+                .iter()
+                .find_map(|rich_content| {
+                    rich_content
+                        .ai_block_metadata()
+                        .filter(|metadata| metadata.conversation_id == conversation_id)
+                        .map(|metadata| metadata.ai_block_handle.clone())
+                })
+                .expect("the viewer restored an AI block")
+        };
+
+        // Control: the same pane without the viewer status is an ordinary terminal with no active
+        // agent view, where the block view hides itself.
+        let handle = viewer.read(&app, |view, _| ai_block(view));
+        handle.read(&app, |block, ctx| {
+            assert!(block.is_hidden(ctx), "control: no agent view, not passive");
+        });
+
+        viewer.update(&mut app, |view, _| {
+            view.model.lock().set_conversation_transcript_viewer_status(Some(
+                ConversationTranscriptViewerStatus::ViewingLiveConversationReadOnly(
+                    conversation_id,
+                ),
+            ));
+        });
+        handle.read(&app, |block, ctx| {
+            assert!(
+                !block.is_hidden(ctx),
+                "the read-only viewer's AI block must render"
+            );
+        });
+
+        // A viewer of a different conversation does not unhide this one.
+        viewer.update(&mut app, |view, _| {
+            view.model.lock().set_conversation_transcript_viewer_status(Some(
+                ConversationTranscriptViewerStatus::ViewingLiveConversationReadOnly(
+                    AIConversationId::new(),
+                ),
+            ));
+        });
+        handle.read(&app, |block, ctx| {
+            assert!(block.is_hidden(ctx));
+        });
+    });
+}
+
 /// #988: a read-only view of a conversation that is live in another pane must not register a
 /// second live copy, take over liveness, or overwrite the live `AIConversation`.
 #[test]
@@ -14947,6 +15046,47 @@ fn agent_shortcut_enter_diverts_for_subshell_banner() {
             view.keydown_on_terminal("\r", ctx);
         });
         assert!(pty_writes.borrow().iter().any(|w| w.as_slice() == b"\r"));
+    })
+}
+
+/// #976: the shortcut, arriving the way the key event delivers it (a dispatched
+/// `TerminalAction::AgentShortcutEnter`), must reach the `SetInputModeAgent` handler. It used to
+/// dispatch it from inside its own dispatch, where no handlers are registered, and did nothing.
+#[test]
+fn agent_shortcut_enter_action_reaches_the_set_input_mode_agent_handler() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.use_agent_footer.update(ctx, |footer, ctx| {
+                footer.set_warpify_mode(WarpificationMode::subshell("bash".to_owned()), ctx);
+            });
+            assert!(view.agent_shortcut_banner_visible(ctx));
+            view.input.update(ctx, |input, ctx| {
+                input.set_input_mode_terminal(true, ctx);
+            });
+            assert_eq!(view.input.as_ref(ctx).input_type(ctx), InputType::Shell);
+        });
+        let view_id = terminal.id();
+        let window_id = app.read(|ctx| terminal.window_id(ctx));
+        app.update(|ctx| {
+            ctx.dispatch_typed_action_for_view(
+                window_id,
+                view_id,
+                &TerminalAction::AgentShortcutEnter {
+                    chars: "\r".to_owned(),
+                    fallback_sequence: Some(b"\r".to_vec()),
+                },
+            );
+        });
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.input.as_ref(ctx).input_type(ctx),
+                InputType::AI,
+                "the shortcut must switch to agent mode, like the Use agent button"
+            );
+        });
     })
 }
 

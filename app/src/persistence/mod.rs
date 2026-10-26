@@ -121,6 +121,12 @@ pub fn take_database_problem_notice() -> Option<DatabaseProblemNotice> {
     database_notice::take_database_problem_notice()
 }
 
+/// Whether writes succeeded again after a "database is locked" notice was
+/// raised -- once -- so the UI can withdraw that toast (#971).
+pub fn take_database_lock_recovered() -> bool {
+    database_notice::take_lock_recovered()
+}
+
 /// Returns, once, a receiver that gets a message whenever a database notice is
 /// recorded, so the UI can show it without waiting for a window change (#860).
 pub fn take_database_notice_wake_receiver() -> Option<async_channel::Receiver<()>> {

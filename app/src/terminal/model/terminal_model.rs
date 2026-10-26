@@ -1625,6 +1625,17 @@ impl TerminalModel {
         self.conversation_transcript_viewer_status.is_some()
     }
 
+    /// The conversation this model is a read-only window onto, when it is a read-only view of a
+    /// conversation that is live in another terminal view (#988).
+    pub fn read_only_live_viewer_conversation_id(&self) -> Option<AIConversationId> {
+        match self.conversation_transcript_viewer_status {
+            Some(ConversationTranscriptViewerStatus::ViewingLiveConversationReadOnly(id)) => {
+                Some(id)
+            }
+            _ => None,
+        }
+    }
+
     pub fn is_loading_conversation_transcript(&self) -> bool {
         matches!(
             self.conversation_transcript_viewer_status,

@@ -199,13 +199,20 @@ impl RetryQueue {
 
 /// Whether another connection currently blocks writes to the database (waits
 /// out the connection's busy timeout). Checked before an event is consumed.
+///
+/// `BEGIN IMMEDIATE` and `ROLLBACK` are separate statements: a failed `BEGIN`
+/// left no transaction, and a `ROLLBACK` then errors with "cannot rollback - no
+/// transaction is active", which SQLite's log hook printed as an ERROR every
+/// probe (#971). Only a transaction that was actually opened is rolled back.
 fn write_lock_blocked(conn: &mut SqliteConnection) -> bool {
-    match conn.batch_execute("BEGIN IMMEDIATE; ROLLBACK;") {
-        Ok(()) => false,
-        Err(err) => {
-            let _ = conn.batch_execute("ROLLBACK;");
-            super::database_notice::is_lock_error(&err.to_string().to_lowercase())
+    match conn.batch_execute("BEGIN IMMEDIATE;") {
+        Ok(()) => {
+            if let Err(err) = conn.batch_execute("ROLLBACK;") {
+                log::warn!("Could not end the database write-lock probe: {err}");
+            }
+            false
         }
+        Err(err) => super::database_notice::is_lock_error(&err.to_string().to_lowercase()),
     }
 }
 

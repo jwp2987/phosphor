@@ -2720,6 +2720,18 @@ impl AIBlock {
             return false;
         }
 
+        // A read-only view of a live conversation never enters an agent view, so without this
+        // every one of its blocks counted as "no active agent view, not passive" and rendered
+        // as an empty zero-height element: a blank pane (#992).
+        if self
+            .terminal_model
+            .lock()
+            .read_only_live_viewer_conversation_id()
+            == Some(self.client_ids.conversation_id)
+        {
+            return false;
+        }
+
         if let Some(active_conversation_id) = self
             .agent_view_controller
             .as_ref(app)

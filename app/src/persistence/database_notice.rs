@@ -164,9 +164,35 @@ fn set_notice(notice: DatabaseProblemNotice) {
     if let Ok(mut pending) = PROBLEM_NOTICE.lock() {
         pending.push(notice);
     }
-    if let Ok(wake) = NOTICE_WAKE.lock() && let Some(tx) = wake.as_ref() {
+    wake_ui();
+}
+
+fn wake_ui() {
+    if let Ok(wake) = NOTICE_WAKE.lock()
+        && let Some(tx) = wake.as_ref()
+    {
         let _ = tx.try_send(());
     }
+}
+
+/// Set while the "can't save, the database is locked" notice is outstanding, so
+/// the UI can withdraw it once writes succeed again (#971). Only the lock
+/// notice is withdrawn: damage does not heal, and other failures keep their
+/// existing behaviour.
+static LOCK_NOTICE_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Set when a write succeeded after [`LOCK_NOTICE_ACTIVE`] was raised.
+static LOCK_RECOVERED: AtomicBool = AtomicBool::new(false);
+
+/// Whether a success ends an outstanding lock notice: writes were failing and
+/// the lock notice was the one raised.
+fn lock_notice_ended(lock_notice_active: &AtomicBool, writes_were_failing: bool) -> bool {
+    writes_were_failing && lock_notice_active.swap(false, Ordering::Relaxed)
+}
+
+/// Returns (once) whether writes recovered after a lock notice was raised, so
+/// the UI can dismiss the toast.
+pub fn take_lock_recovered() -> bool {
+    LOCK_RECOVERED.swap(false, Ordering::Relaxed)
 }
 
 /// Whether startup could not open the database, so this session runs without
@@ -206,7 +232,11 @@ pub enum WriteFailureLog {
 /// write errors are bugs for the log, not something the user can act on.
 pub fn record_write_outcome(db_path: &Path, failure_message: Option<&str>) -> WriteFailureLog {
     let Some(message) = failure_message else {
-        WRITES_FAILING.store(false, Ordering::Relaxed);
+        let was_failing = WRITES_FAILING.swap(false, Ordering::Relaxed);
+        if lock_notice_ended(&LOCK_NOTICE_ACTIVE, was_failing) {
+            LOCK_RECOVERED.store(true, Ordering::Relaxed);
+            wake_ui();
+        }
         return WriteFailureLog::Always;
     };
     record_write_problem(db_path, classify_database_problem(message, db_path))
@@ -222,6 +252,10 @@ pub fn record_write_problem(db_path: &Path, problem: DatabaseProblem) -> WriteFa
     }
     if WRITES_FAILING.swap(true, Ordering::Relaxed) && problem != DatabaseProblem::Corrupt {
         return WriteFailureLog::Repeat;
+    }
+    if problem == DatabaseProblem::Locked {
+        LOCK_NOTICE_ACTIVE.store(true, Ordering::Relaxed);
+        LOCK_RECOVERED.store(false, Ordering::Relaxed);
     }
     set_notice(DatabaseProblemNotice {
         path: db_path.to_path_buf(),
