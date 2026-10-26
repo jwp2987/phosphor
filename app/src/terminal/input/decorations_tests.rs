@@ -157,6 +157,19 @@ fn test_oversized_buffer_skips_background_jobs() {
             assert!(!input.decorations_cleared_for_oversized_buffer);
 
             // An oversized one is not.
+            assert_eq!(MAX_BACKGROUND_JOB_BUFFER_CHARS, 150_000);
+            // Boundary (#1009): 149_999 and exactly 150_000 chars are parsed, 150_001 is not.
+            for (len, parsed) in [(149_999, true), (150_000, true), (150_001, false)] {
+                let text = format!("echo {}", "x".repeat(len - 5));
+                input.clear_buffer_and_reset_undo_stack(ctx);
+                input.user_insert(&text, ctx);
+                input.run_input_background_jobs(decorate, ctx);
+                assert_eq!(
+                    input.decorations_future_handle.is_some(),
+                    parsed,
+                    "{len} chars"
+                );
+            }
             let huge = format!("echo {}", "x".repeat(MAX_BACKGROUND_JOB_BUFFER_CHARS));
             input.clear_buffer_and_reset_undo_stack(ctx);
             input.user_insert(&huge, ctx);

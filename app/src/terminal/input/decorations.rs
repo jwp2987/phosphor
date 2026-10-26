@@ -24,8 +24,10 @@ pub use warp_completer::{
 };
 
 /// Input buffers with more chars than this get no background parse: no syntax
-/// highlighting, error underlining or input-type detection (#868).
-pub(super) const MAX_BACKGROUND_JOB_BUFFER_CHARS: usize = 1024 * 1024;
+/// highlighting, error underlining or input-type detection (#868). Lowered from 1 MiB to
+/// 150_000 (#1009): a ~786 KB paste was still under the old cap and re-parsed the whole
+/// buffer on every keystroke. This is the only thing that keys off the constant.
+pub(super) const MAX_BACKGROUND_JOB_BUFFER_CHARS: usize = 150_000;
 
 /// Options to enable/disable command decoration and/or AI input background tasks spawned on input
 /// edits.
