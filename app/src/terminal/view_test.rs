@@ -16606,6 +16606,29 @@ fn test_after_enter_replay_drains_in_typed_order() {
 }
 
 /// #1026: every cancel/error restore of a queued prompt names what happened and why.
+/// #1026: the toast stack is window-wide, so a queue notice names the conversation or tab it is
+/// about instead of reading as belonging to whichever tab is in view.
+#[test]
+fn queue_notice_names_the_conversation_it_belongs_to() {
+    let notice = scoped_queue_notice(Some("Fix the build"), "It was put back.".to_owned());
+    assert_eq!(notice, "In \"Fix the build\": It was put back.");
+    assert_eq!(
+        scoped_queue_notice(None, "It was put back.".to_owned()),
+        "It was put back."
+    );
+    assert_eq!(
+        scoped_queue_notice(Some("  "), "It was put back.".to_owned()),
+        "It was put back."
+    );
+    let long = "x".repeat(100);
+    assert!(
+        scoped_queue_notice(Some(&long), String::new())
+            .chars()
+            .count()
+            < 60
+    );
+}
+
 #[test]
 fn queue_restore_notice_says_it_was_put_back_and_why() {
     use crate::ai::blocklist::block::FinishReason;

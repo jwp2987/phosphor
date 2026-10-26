@@ -5726,6 +5726,7 @@ impl TerminalView {
                             });
                         } else if self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
                             self.notify_queue_notice(
+                                Some(conversation_id),
                                 "A queued command could not start; it was put back in the input."
                                     .to_owned(),
                                 ctx,
@@ -5742,6 +5743,7 @@ impl TerminalView {
                             // the row stays queued with no further trigger (#1026). Never leave
                             // that silent: say where it is and how to send it.
                             self.notify_queue_notice(
+                                Some(conversation_id),
                                 format!(
                                     "Queued command `{}` could not start and is still queued. \
                                      Send it from the queue panel, or remove it.",
@@ -5767,6 +5769,7 @@ impl TerminalView {
                             .unwrap_or(text);
                         if self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
                             self.notify_queue_notice(
+                                Some(conversation_id),
                                 "The queued prompt you were editing was put back in the input \
                                  instead of being sent."
                                     .to_owned(),
@@ -5849,6 +5852,7 @@ impl TerminalView {
                 if let Some(query) = popped {
                     let is_command = query.is_command();
                     self.notify_queue_notice(
+                        Some(conversation_id),
                         queue_restore_notice(finish_reason, is_command),
                         ctx,
                     );
@@ -23543,7 +23547,26 @@ impl TerminalView {
     }
 
     /// Shows a queue notice toast when the toast stack exists (it is absent in some test apps).
-    fn notify_queue_notice(&self, text: String, ctx: &mut ViewContext<Self>) {
+    ///
+    /// The toast stack is window-wide, so the text names the conversation (or, when it has no
+    /// title, this tab) the notice is about; otherwise it also appears in other tabs where it
+    /// means nothing (#1026).
+    fn notify_queue_notice(
+        &self,
+        conversation_id: Option<AIConversationId>,
+        text: String,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let conversation_title = conversation_id.and_then(|id| {
+            BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&id)
+                .and_then(|conversation| conversation.title())
+        });
+        let scope = conversation_title.or_else(|| {
+            let model = self.model.lock();
+            model.custom_title().or_else(|| model.terminal_title())
+        });
+        let text = scoped_queue_notice(scope.as_deref(), text);
         // `try_as_ref` still panics when the singleton was never registered; ask first.
         if ctx.has_singleton_model::<ToastStack>() {
             // Persistent, not the 4 s ephemeral toast: a restored or still-queued prompt is the
@@ -23582,6 +23605,7 @@ impl TerminalView {
             });
         }
         self.notify_queue_notice(
+            None,
             format!(
                 "The conversation was removed with {} unsent queued prompt(s); \
                  their text is back in the input.",
@@ -32285,6 +32309,15 @@ fn project_rules_path_for_dir(dir: &Path) -> PathBuf {
 /// before this issue.
 fn should_hide_input_for_blocked_ai_block(has_expanded_running_commands: bool) -> bool {
     has_expanded_running_commands
+}
+
+/// Prefixes a queue notice with the conversation or tab it is about (#1026). The toast system is
+/// window-wide, so without this the notice reads as belonging to whichever tab is in view.
+fn scoped_queue_notice(scope: Option<&str>, text: String) -> String {
+    match scope.map(str::trim).filter(|scope| !scope.is_empty()) {
+        Some(scope) => format!("In \"{}\": {text}", truncate_from_end(scope, 40)),
+        None => text,
+    }
 }
 
 /// The notice shown when a queued prompt or command is put back in the input because the turn
