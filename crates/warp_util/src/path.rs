@@ -419,7 +419,8 @@ fn nu_bare_char(c: char) -> bool {
 /// nushell quoting: bare when every character is safe, otherwise a double-quoted string.
 fn nu_quote(input: &str) -> Cow<'_, str> {
     use std::fmt::Write as _;
-    if !input.is_empty() && input.chars().all(nu_bare_char) {
+    // `..` makes a bare word a nushell range (`a..b`), so it must be quoted.
+    if !input.is_empty() && !input.contains("..") && input.chars().all(nu_bare_char) {
         return Cow::Borrowed(input);
     }
     let mut out = String::with_capacity(input.len() + 2);
