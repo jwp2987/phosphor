@@ -9960,3 +9960,36 @@ fn completer_autosuggestion_is_skipped_for_multi_line_buffers() {
     assert!(!super::completer_autosuggestion_allowed("echo a\ngrep -"));
     assert!(!super::completer_autosuggestion_allowed("echo a\n"));
 }
+
+/// #1016: an Enter pressed while the replay of input typed behind a deferred Enter is pending
+/// queues behind that input; it never submits the editor ahead of it.
+#[test]
+fn test_enter_while_after_enter_replay_pending_queues_in_order() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.open_after_enter_replay_for_test(
+                vec![AfterEnterInput::Text("echo X".to_string())],
+                true,
+            );
+            input.input_enter(ctx);
+            input.queue_after_enter_replay(AfterEnterInput::Text("ls".to_string()));
+            input.input_enter(ctx);
+        });
+        input.read(&app, |input, _| {
+            assert_eq!(
+                input.after_enter_replay_for_test(),
+                [
+                    AfterEnterInput::Text("echo X".to_string()),
+                    AfterEnterInput::Enter,
+                    AfterEnterInput::Text("ls".to_string()),
+                    AfterEnterInput::Enter,
+                ]
+            );
+        });
+    })
+}
