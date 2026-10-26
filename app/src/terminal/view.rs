@@ -9567,7 +9567,11 @@ impl TerminalView {
     ) {
         match route_agent_shortcut_enter(self.agent_shortcut_banner_visible(ctx)) {
             AgentShortcutEnterRoute::SwitchToAgentMode => {
-                ctx.dispatch_typed_action(&TerminalAction::SetInputModeAgent);
+                // Not `dispatch_typed_action`: this runs inside the dispatch of
+                // `TerminalAction::AgentShortcutEnter`, which holds the handlers for every
+                // `TerminalAction` while it runs, so a nested dispatch found none ("Dispatched
+                // action has no handlers: SetInputModeAgent") and did nothing (#976).
+                self.handle_action(&TerminalAction::SetInputModeAgent, ctx);
             }
             AgentShortcutEnterRoute::PassThrough => match fallback_sequence {
                 Some(sequence) => self.control_sequence_on_terminal(sequence, ctx),

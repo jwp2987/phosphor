@@ -14950,6 +14950,47 @@ fn agent_shortcut_enter_diverts_for_subshell_banner() {
     })
 }
 
+/// #976: the shortcut, arriving the way the key event delivers it (a dispatched
+/// `TerminalAction::AgentShortcutEnter`), must reach the `SetInputModeAgent` handler. It used to
+/// dispatch it from inside its own dispatch, where no handlers are registered, and did nothing.
+#[test]
+fn agent_shortcut_enter_action_reaches_the_set_input_mode_agent_handler() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.use_agent_footer.update(ctx, |footer, ctx| {
+                footer.set_warpify_mode(WarpificationMode::subshell("bash".to_owned()), ctx);
+            });
+            assert!(view.agent_shortcut_banner_visible(ctx));
+            view.input.update(ctx, |input, ctx| {
+                input.set_input_mode_terminal(true, ctx);
+            });
+            assert_eq!(view.input.as_ref(ctx).input_type(ctx), InputType::Shell);
+        });
+        let view_id = terminal.id();
+        let window_id = app.read(|ctx| terminal.window_id(ctx));
+        app.update(|ctx| {
+            ctx.dispatch_typed_action_for_view(
+                window_id,
+                view_id,
+                &TerminalAction::AgentShortcutEnter {
+                    chars: "\r".to_owned(),
+                    fallback_sequence: Some(b"\r".to_vec()),
+                },
+            );
+        });
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.input.as_ref(ctx).input_type(ctx),
+                InputType::AI,
+                "the shortcut must switch to agent mode, like the Use agent button"
+            );
+        });
+    })
+}
+
 /// #976: a plain Enter reaches the pty, with nothing typed and after typing, regardless of the
 /// SSH banner (it may answer a password, host-key or 2FA prompt).
 #[test]
