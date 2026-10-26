@@ -15538,6 +15538,64 @@ fn ssh_prompt_arrival_ends_drop_through() {
     })
 }
 
+/// #983: a newline-terminated banner / MOTD is visible text but not a prompt: the drop-through
+/// keeps dropping (through the Enter) even though the gate itself opened on the banner.
+#[test]
+fn ssh_banner_does_not_end_drop_through() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            view.typed_characters_on_terminal("echo QW", ctx);
+            assert!(view.ssh_drop_line_through_enter);
+            view.model.lock().process_bytes("Welcome to Ubuntu\r\n");
+            view.typed_characters_on_terminal("ERTY", ctx);
+            view.keydown_on_terminal("\r", ctx);
+            assert!(!view.ssh_drop_line_through_enter, "the Enter ends it");
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #983: password and host-key prompts (unterminated lines) end the drop-through.
+#[test]
+fn ssh_password_and_hostkey_prompts_end_drop_through() {
+    for prompt in [
+        "winters@box's password: ",
+        "Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
+    ] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh host", ctx);
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh host", "");
+                view.warpify_state
+                    .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+                view.typed_characters_on_terminal("blind", ctx);
+                assert!(view.ssh_drop_line_through_enter);
+                view.model.lock().process_bytes("banner\r\n");
+                view.model.lock().process_bytes(prompt);
+                view.typed_characters_on_terminal("x", ctx);
+                assert!(!view.ssh_drop_line_through_enter, "{prompt:?}");
+            });
+        })
+    }
+}
+
 /// #983: Ctrl-C passes and ends the drop-through; the next typing is not dropped.
 #[test]
 fn ssh_ctrl_c_ends_drop_through() {
