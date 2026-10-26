@@ -2174,6 +2174,8 @@ fn returning_to_a_stopped_conversation_restores_the_prompt_left_in_its_queue() {
 fn queued_prompts_of_a_removed_conversation_come_back_into_the_input() {
     // Removing, deleting or clearing a conversation dropped its queue without a word.
     App::test((), |mut app| async move {
+        // The view only listens for dropped rows (and the model exists) under this flag.
+        let _queue_flag = FeatureFlag::QueueSlashCommand.override_enabled(true);
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
         let terminal_view_id = terminal.read(&app, |view, _| view.view_id);
