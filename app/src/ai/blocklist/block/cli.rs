@@ -2326,6 +2326,13 @@ impl TypedActionView for CLISubagentView {
                         report_error!(e);
                     }
                 });
+                // #979: an explicit toggle is the only thing that dismisses the speedbump
+                // (approval no longer does), so it does not show forever.
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let _ = settings
+                        .should_show_agent_mode_write_to_pty_speedbump
+                        .set_value(false, ctx);
+                });
                 ctx.notify();
             }
             CLISubagentAction::ToggleAlwaysAllowReadFiles => {
