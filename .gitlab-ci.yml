@@ -1,0 +1,96 @@
+# GitLab CI for Phosphor (migration from .github/workflows/pr-check.yml, issue #989).
+#
+# Runners are selected by tag and both have run_untagged OFF, so every job MUST
+# carry a `tags:` entry or it sits pending forever:
+#   little-thing  linux amd64 (the build box)
+#   Mac           darwin arm64
+#
+# Windows and macOS Intel are intentionally absent (dropped for now; see #989).
+#
+# Port status: only `guards` so far. check-linux, licenses, the test jobs and the
+# release pipeline follow once this stage is green.
+
+workflow:
+  rules:
+    # Branch pipelines only: this repo merges straight to main, no merge requests,
+    # and running both would duplicate every pipeline.
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: never
+    - when: always
+
+variables:
+  CARGO_TERM_COLOR: always
+  # The build scripts detect CI through the GitHub Actions variables
+  # (GITHUB_ACTIONS, GITHUB_OUTPUT, GITHUB_PATH, GITHUB_ENV). Rather than fork a
+  # dozen scripts, shim them: GitLab has no equivalent, so the files below are
+  # created in .shim_github_env and a job that cares reads them back.
+  GITHUB_ACTIONS: "true"
+  GITHUB_OUTPUT: "$CI_PROJECT_DIR/.ci/github_output"
+  GITHUB_PATH: "$CI_PROJECT_DIR/.ci/github_path"
+  GITHUB_ENV: "$CI_PROJECT_DIR/.ci/github_env"
+
+.shim_github_env:
+  before_script:
+    - mkdir -p "$CI_PROJECT_DIR/.ci"
+    - touch "$GITHUB_OUTPUT" "$GITHUB_PATH" "$GITHUB_ENV"
+
+# Fork-boundary guards. Pure grep/git, no build, so this should finish in about a
+# minute and give fast feedback ahead of the cargo jobs.
+guards:
+  extends: .shim_github_env
+  stage: test
+  tags: [little-thing]
+  timeout: 10m
+  interruptible: true
+  variables:
+    # The deletion guard diffs against a base commit and the oracle fetch needs
+    # object lookups; a shallow clone has neither.
+    GIT_DEPTH: "0"
+  script:
+    # The stub check compares against the pinned Warp stable release (ORACLE.md).
+    # Fetch just that one commit, by FULL 40-character sha (abbreviations always
+    # fail with "couldn't find remote ref"). Deliberately NOT tolerated if
+    # missing: check_stub_coverage exits 0 when the pin object is absent, which
+    # would silently disarm the guard.
+    - |
+      PIN=$(grep -oE '\*\*Commit \(full\)\*\* \| `[0-9a-f]{40}`' ORACLE.md | grep -oE '[0-9a-f]{40}' | head -1)
+      if [[ -z "$PIN" ]]; then
+        echo "ERROR: ORACLE.md has no 40-char '**Commit (full)**' row; cannot fetch the pin" >&2
+        exit 1
+      fi
+      echo "pin=$PIN"
+      git fetch --depth=1 --no-tags https://github.com/warpdotdev/warp.git "$PIN"
+      git cat-file -e "${PIN}^{commit}" || {
+        echo "ERROR: pin $PIN fetched but not present; stub coverage would silently skip" >&2
+        exit 1
+      }
+    - ./script/check_cloud_boundary
+    - ./script/check_stub_coverage
+    - ./script/check_declined_collisions
+    - ./script/check_dead_links
+    # python3 is checked explicitly: check_brand_strings prints "skipped" and
+    # exits 0 without it, which on a runner would read as a pass.
+    - command -v python3 >/dev/null || { echo "ERROR python3 missing; check_brand_strings would self-skip" >&2; exit 1; }
+    - ./script/check_brand_strings
+    - ./script/check_settings_registry
+    - ./script/check_channel_command_names
+    - ./script/check_no_autoupdate
+    - ./script/check_generator_wrapper_names
+    - ./script/check_sweep_ledger
+    - ./script/check_integration_test_registry
+    # Large deletions. There are no pull requests here, so the base is the
+    # previous tip of this branch (push), or the merge-base with main for a new
+    # branch. The commit message stands in for the PR body: it is where a
+    # `Large-deletion:` trailer or a DECLINED.md citation lives.
+    - |
+      git fetch -q origin main
+      if [[ "$CI_COMMIT_BEFORE_SHA" =~ ^0+$ || -z "$CI_COMMIT_BEFORE_SHA" ]] || ! git cat-file -e "${CI_COMMIT_BEFORE_SHA}^{commit}" 2>/dev/null; then
+        BASE=$(git merge-base HEAD origin/main)
+      else
+        BASE="$CI_COMMIT_BEFORE_SHA"
+      fi
+      echo "deletion base: $BASE"
+      PHOSPHOR_DELETION_BASE="$BASE" PR_TITLE="$CI_COMMIT_TITLE" PR_BODY="$CI_COMMIT_MESSAGE" \
+        ./script/check_large_deletions --require-base
+    - ./script/macos/test_create_warpctrl_wrapper
+    - ./script/test_warpctrl_early_dispatch
