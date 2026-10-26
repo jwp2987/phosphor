@@ -1942,9 +1942,11 @@ impl BlockListElement {
         ctx: &mut EventContext,
         app: &AppContext,
     ) -> bool {
-        if self.is_terminal_selecting {
-            ctx.dispatch_typed_action(TerminalAction::BlockTextSelect(BlockTextSelectAction::End));
-        }
+        // Always dispatch: `is_terminal_selecting` is a snapshot from the last render, so a quick
+        // double/triple-click whose mouse-up lands before a re-render would otherwise never end
+        // its selection (and so never honour copy-on-select, #1012). The view knows whether a
+        // selection is really pending and ignores the action otherwise.
+        ctx.dispatch_typed_action(TerminalAction::BlockTextSelect(BlockTextSelectAction::End));
 
         let handled = if self.is_mouse_position_within_bounds(position) {
             if let Some(point) = self.coord_to_point(
