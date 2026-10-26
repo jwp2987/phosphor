@@ -10240,7 +10240,13 @@ impl TerminalView {
 
         // The pty refuses user bytes while the agent controls the running command. Typing is
         // then meant for the agent's input, not the void (#901): fall through to the input.
-        let written_to_pty = self.should_write_typed_chars_to_pty(ctx) && {
+        // #1028: while the pending approval card holds focus, printable keys are for the agent
+        // input (a follow-up), never the running command underneath, even when the pty would take
+        // them.
+        let typed_on_approval_card = self.typed_on_approval_card(ctx);
+        let written_to_pty = !typed_on_approval_card
+            && self.should_write_typed_chars_to_pty(ctx)
+            && {
             self.highlighted_link.invalidate();
             self.report_possible_typeahead(characters);
             self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx)
@@ -10248,6 +10254,7 @@ impl TerminalView {
         // The pty refused the bytes (agent in control) and the agent input is hidden: keep the
         // old behaviour and drop them, rather than piling text up in a buffer nobody can see.
         let refused_with_hidden_input = !written_to_pty
+            && !typed_on_approval_card
             && self.should_write_typed_chars_to_pty(ctx)
             && !{
                 let model = self.model.lock();
@@ -10276,7 +10283,7 @@ impl TerminalView {
             // #1028: keys typed while the approval card holds focus move focus to the input
             // with them, so a following Enter submits the follow-up instead of reaching the
             // card's Enter -> Run binding.
-            if self.typed_on_approval_card(ctx) {
+            if typed_on_approval_card {
                 self.focus_input_box(ctx);
             }
             self.input
