@@ -15655,7 +15655,11 @@ pub(crate) fn end_past_auto_paired_closing_quote(
     buffer_text: &str,
     cursor_end: usize,
 ) -> usize {
-    let Some(quote) = completion.chars().last().filter(|c| matches!(c, '"' | '\'')) else {
+    let Some(quote) = completion
+        .chars()
+        .last()
+        .filter(|c| matches!(c, '"' | '\''))
+    else {
         return cursor_end;
     };
     if completion[..completion.len() - 1].ends_with('\\') {
