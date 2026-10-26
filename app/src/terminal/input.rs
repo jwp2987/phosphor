@@ -1172,6 +1172,38 @@ pub enum Event {
     /// Enter was deferred until the shell's typeahead report arrives; keys typed meanwhile must
     /// reach the terminal so they are held behind the command (`FeatureFlag::TypeaheadHandoff`).
     TypeaheadHandoffEnterDeferred,
+    /// Input the user typed after an Enter that waited for its classification verdict (#1016).
+    /// The Enter has now run; the terminal view routes these, in order, as if typed after it.
+    ReplayAfterDeferredEnter(Vec<AfterEnterInput>),
+}
+
+/// One piece of input the user typed after an Enter that is waiting for a classification verdict
+/// (#1016): it follows that Enter, never joins the text it submits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AfterEnterInput {
+    Text(String),
+    Enter,
+}
+
+/// An Enter waiting for the classification verdict of `text` (#933), and what was typed behind
+/// it (#1016).
+#[derive(Debug)]
+struct VerdictWait {
+    text: String,
+    queued: Vec<AfterEnterInput>,
+}
+
+impl VerdictWait {
+    /// The text typed behind the Enter, without the Enters (they have nothing to submit).
+    fn queued_text(&self) -> String {
+        self.queued
+            .iter()
+            .filter_map(|input| match input {
+                AfterEnterInput::Text(text) => Some(text.as_str()),
+                AfterEnterInput::Enter => None,
+            })
+            .collect()
+    }
 }
 
 pub enum InputState {
@@ -1796,6 +1828,8 @@ pub struct Input {
     /// The buffer text an Enter gave up waiting for a classification verdict on (#933): pressing
     /// Enter again submits it as the rules decide.
     verdict_wait_gave_up_on: Option<String>,
+    /// The Enter currently waiting for a verdict, with the input typed behind it (#1016).
+    verdict_wait: Option<VerdictWait>,
     /// Whether the last Enter submitted a shell command; read by `input_enter_as_shell_command`.
     last_enter_submitted_shell_command: bool,
     /// What the editor held when it last submitted a command. The editor is cleared when that
@@ -3458,6 +3492,7 @@ impl Input {
             is_editor_empty_on_last_edit: is_editor_empty,
             shell_command_submit_pending: false,
             verdict_wait_gave_up_on: None,
+            verdict_wait: None,
             last_enter_submitted_shell_command: false,
             editor_submission: None,
             last_enter_submitted_ai_query: false,
@@ -12759,6 +12794,15 @@ impl Input {
     /// anything typed. If no verdict comes (the classifier cannot answer), the text stays in the
     /// editor unsubmitted, and a second Enter submits it as the rules decide.
     fn defer_enter_for_classification(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        // #1016: an Enter is already waiting. This one belongs to the line typed after it: it
+        // queues behind that Enter (after the text typed before it), and never submits the
+        // buffer, which still holds the first line.
+        if self.verdict_wait.is_some() && self.reconcile_verdict_wait(ctx) {
+            if let Some(wait) = self.verdict_wait.as_mut() {
+                wait.queued.push(AfterEnterInput::Enter);
+            }
+            return true;
+        }
         // What the Enter-time rules can decide without a verdict is decided now, exactly as
         // before: an unambiguous command or a known head settles to Shell at once (#906, #956),
         // a request to the agent settles to AI. Settling clears the pending verdict, so only
@@ -12783,8 +12827,55 @@ impl Input {
         }
         self.ai_input_model
             .update(ctx, |model, _| model.clear_typeahead_provenance());
+        self.verdict_wait = Some(VerdictWait {
+            text: text.clone(),
+            queued: Vec::new(),
+        });
         self.wait_for_verdict_then_enter(text, Instant::now(), ctx);
         true
+    }
+
+    /// Moves what was typed behind the waiting Enter out of the buffer (#1016). The Enter
+    /// submits exactly the text typed before it; text typed after it is queued, in order, and
+    /// replayed once the Enter has run. Returns whether the waiting Enter is still valid; if the
+    /// user edited the text itself (Ctrl-C, Backspace) it is void, as before, and what was typed
+    /// behind it stays in the buffer.
+    fn reconcile_verdict_wait(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        let Some(wait) = self.verdict_wait.as_ref() else {
+            return false;
+        };
+        let current = self.editor.as_ref(ctx).buffer_text(ctx);
+        if current == wait.text {
+            return true;
+        }
+        match current.strip_prefix(wait.text.as_str()) {
+            Some(suffix) if !suffix.is_empty() => {
+                let suffix = suffix.to_string();
+                let text = wait.text.clone();
+                if let Some(wait) = self.verdict_wait.as_mut() {
+                    match wait.queued.last_mut() {
+                        Some(AfterEnterInput::Text(queued)) => queued.push_str(&suffix),
+                        _ => wait.queued.push(AfterEnterInput::Text(suffix)),
+                    }
+                }
+                self.editor
+                    .update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
+                true
+            }
+            _ => {
+                // The user edited the waiting text itself: the Enter is void. Keep what was
+                // typed behind it in the editor rather than losing it.
+                let rest = self
+                    .verdict_wait
+                    .take()
+                    .map(|wait| wait.queued_text())
+                    .unwrap_or_default();
+                if !rest.is_empty() {
+                    self.system_insert(&rest, ctx);
+                }
+                false
+            }
+        }
     }
 
     fn wait_for_verdict_then_enter(
@@ -12793,8 +12884,10 @@ impl Input {
         started: Instant,
         ctx: &mut ViewContext<Self>,
     ) {
-        // The user edited the text meanwhile (Ctrl-C clears it): the Enter is void.
-        if self.editor.as_ref(ctx).buffer_text(ctx) != text {
+        // The user edited the text meanwhile (Ctrl-C clears it): the Enter is void. Text typed
+        // behind the Enter is moved out of the buffer first (#1016).
+        if !self.reconcile_verdict_wait(ctx) {
+            self.verdict_wait = None;
             return;
         }
         let pending = self
@@ -12802,14 +12895,36 @@ impl Input {
             .as_ref(ctx)
             .is_detection_pending_for(&text, ctx);
         match young_submit_decision(true, pending, started.elapsed()) {
-            YoungSubmit::Submit => self.input_enter(ctx),
+            YoungSubmit::Submit => {
+                let queued = self
+                    .verdict_wait
+                    .take()
+                    .map(|wait| wait.queued)
+                    .unwrap_or_default();
+                self.input_enter(ctx);
+                if !queued.is_empty() {
+                    ctx.emit(Event::ReplayAfterDeferredEnter(queued));
+                }
+            }
             YoungSubmit::Wait => {
                 ctx.spawn(
                     Timer::after(std::time::Duration::from_millis(10)),
                     move |me, _, ctx| me.wait_for_verdict_then_enter(text, started, ctx),
                 );
             }
-            YoungSubmit::KeepInEditor => self.verdict_wait_gave_up_on = Some(text),
+            YoungSubmit::KeepInEditor => {
+                // Everything typed behind the Enter that gave up stays in the editor, in order
+                // (a queued Enter has nothing to submit yet).
+                let rest = self
+                    .verdict_wait
+                    .take()
+                    .map(|wait| wait.queued_text())
+                    .unwrap_or_default();
+                self.verdict_wait_gave_up_on = Some(format!("{text}{rest}"));
+                if !rest.is_empty() {
+                    self.system_insert(&rest, ctx);
+                }
+            }
         }
     }
 

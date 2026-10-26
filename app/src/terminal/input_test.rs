@@ -7173,6 +7173,87 @@ fn test_enter_settles_pending_unambiguous_command_as_shell() {
     });
 }
 
+/// #1016: text typed behind an Enter that waits for its verdict must not join the text that
+/// Enter submits, and a second Enter must not be dropped or submit the joined line. Both queue,
+/// in order, behind the waiting Enter.
+#[test]
+fn test_enter_waiting_for_verdict_queues_input_typed_behind_it() {
+    use crate::ai::blocklist::InputConfig;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+
+        initialize_app(&mut app);
+
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        let line = "is it true";
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false,
+                    },
+                    false, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("x", ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(line, ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(
+                input
+                    .ai_input_model()
+                    .as_ref(ctx)
+                    .is_detection_pending_for(line, ctx),
+                "precondition: the line's own verdict has not landed"
+            );
+        });
+
+        // The first Enter waits for the verdict.
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        input.read(&app, |input, ctx| {
+            assert!(input.verdict_wait.is_some(), "the Enter must be waiting");
+            assert_eq!(input.buffer_text(ctx), line);
+        });
+
+        // Typed straight after it, with no gap, then a second Enter.
+        input.update(&mut app, |input, ctx| input.user_insert("echo hi", ctx));
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                line,
+                "what was typed after the Enter must not join the line it submits"
+            );
+            let wait = input.verdict_wait.as_ref().expect("still waiting");
+            assert_eq!(wait.text, line);
+            assert_eq!(
+                wait.queued,
+                vec![
+                    AfterEnterInput::Text("echo hi".to_string()),
+                    AfterEnterInput::Enter
+                ]
+            );
+        });
+    });
+}
+
 /// #886: inserting shell typeahead records its provenance in the input model, and the edit
 /// handler drops it when the buffer is emptied or the typeahead is replaced.
 #[test]
