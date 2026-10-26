@@ -633,10 +633,12 @@ fn bash_warp_title_joins_multiline_commands_with_a_separator() {
 #[test]
 fn powershell_bootstrap_native_calls_redirect_stdin() {
     // Callees that are PowerShell script blocks, not native processes: the user's own prompt
-    // and the PSConsoleHostReadLine wrapper. A user's prompt that runs native commands is theirs.
-    const NOT_NATIVE: [&str; 2] = [
+    // the PSConsoleHostReadLine wrapper, and the user's previous AddToHistoryHandler script block
+    // (#967). A user's prompt that runs native commands is theirs.
+    const NOT_NATIVE: [&str; 3] = [
         "& $global:_warpOriginalPrompt",
         "& $script:oldPSConsoleHostReadLine",
+        "& $global:_warpPrevHistoryHandler",
     ];
     // Generator commands arrive as text and run through Invoke-Expression; they are not a
     // fixed call site, so they cannot take a pipe here.
