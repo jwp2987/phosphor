@@ -54,6 +54,7 @@ use crate::ai::blocklist::block::view_impl::common::{
 };
 use crate::ai::blocklist::permissions::is_agent_mode_autonomy_allowed;
 use crate::ai::control_code_parser::{parse_control_codes_from_bytes, ParsedControlCodeOutput};
+use crate::ai::execution_profiles::WriteToPtyPermission;
 use crate::code::editor::view::{CodeEditorEvent, CodeEditorRenderOptions};
 use crate::menu::MenuItemFields;
 use crate::send_telemetry_from_ctx;
@@ -672,15 +673,16 @@ impl CLISubagentView {
             MenuEvent::ItemSelected | MenuEvent::ItemHovered => {}
         });
 
-        // We want to default the checkbox to true when rendering the speedbump for the first time.
-        // Otherwise, update it when the permission changes.
-        let always_allow_write_to_pty_checked = if should_show_write_to_pty_speedbump(ctx) {
-            true
-        } else {
-            BlocklistAIPermissions::as_ref(ctx)
-                .can_write_to_pty(&conversation_id, Some(ctx.view_id()), ctx)
-                .is_always_allow()
-        };
+        // #979: the checkbox reflects the CURRENT permission and is never pre-ticked. It used to
+        // default to true on first show, and `maybe_update_speedbump` committed that default on
+        // any approval -- so pressing Enter on a card silently turned write-to-PTY into
+        // AlwaysAllow. Only an explicit toggle (`ToggleAlwaysAllowWriteToPty`) changes it now.
+        let always_allow_write_to_pty_checked =
+            write_to_pty_checkbox_checked(BlocklistAIPermissions::as_ref(ctx).can_write_to_pty(
+                &conversation_id,
+                Some(ctx.view_id()),
+                ctx,
+            ));
 
         let always_allow_read_files_checked = if should_show_read_files_speedbump(ctx) {
             true
@@ -1151,26 +1153,9 @@ impl CLISubagentView {
     // This is called on any user action instead of on render time to ensure the state is updated correctly.
     fn maybe_update_speedbump(&mut self, action: &AIAgentActionType, ctx: &mut ViewContext<Self>) {
         match action {
-            AIAgentActionType::WriteToLongRunningShellCommand { .. }
-                if should_show_write_to_pty_speedbump(ctx) =>
-            {
-                AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                    let _ = settings
-                        .should_show_agent_mode_write_to_pty_speedbump
-                        .set_value(false, ctx);
-                });
-
-                BlocklistAIPermissions::handle(ctx).update(ctx, |permissions, ctx| {
-                    if let Err(e) = permissions.set_always_allow_write_to_pty(
-                        self.always_allow_write_to_pty_checked,
-                        self.terminal_view_id,
-                        ctx,
-                    ) {
-                        report_error!(e);
-                    }
-                });
-                ctx.notify();
-            }
+            // #979: approving a write must not dismiss the write-to-PTY speedbump or touch the
+            // permission. The checkbox persists its own toggles immediately.
+            AIAgentActionType::WriteToLongRunningShellCommand { .. } => {}
             AIAgentActionType::ReadFiles(_)
             | AIAgentActionType::Grep { .. }
             | AIAgentActionType::FileGlobV2 { .. } => {
@@ -2402,6 +2387,13 @@ impl TypedActionView for CLISubagentView {
     }
 }
 
+/// Whether the "always allow" checkbox on a write-to-PTY card starts ticked. Only an existing
+/// AlwaysAllow permission ticks it; the speedbump being shown for the first time must not
+/// (#979: it used to default to true and any approval then persisted AlwaysAllow).
+fn write_to_pty_checkbox_checked(permission: WriteToPtyPermission) -> bool {
+    permission.is_always_allow()
+}
+
 fn should_show_write_to_pty_speedbump(app: &AppContext) -> bool {
     is_agent_mode_autonomy_allowed(app)
         && *AISettings::as_ref(app).should_show_agent_mode_write_to_pty_speedbump
@@ -3025,6 +3017,19 @@ mod tests {
         AIAgentTextSection::PlainText {
             text: AgentOutputText::from(text.to_string()),
         }
+    }
+
+    #[test]
+    fn write_to_pty_checkbox_is_never_preticked() {
+        assert!(!write_to_pty_checkbox_checked(
+            WriteToPtyPermission::AlwaysAsk
+        ));
+        assert!(!write_to_pty_checkbox_checked(
+            WriteToPtyPermission::AskOnFirstWrite
+        ));
+        assert!(write_to_pty_checkbox_checked(
+            WriteToPtyPermission::AlwaysAllow
+        ));
     }
 
     #[test]

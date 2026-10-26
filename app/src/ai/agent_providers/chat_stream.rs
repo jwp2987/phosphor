@@ -4543,6 +4543,34 @@ fn plan_mode_blocks_tool(plan_mode: bool, tool_name: &str) -> bool {
 /// instead of the redirect. A tool absent from the list cannot produce either.
 const NO_FILE_ROUTE_BLOCKED_TOOLS: &[&str] = &["read_files", "apply_file_diffs", "read_skill"];
 
+/// Withdrawn-from-the-tools-array tools that are not covered by a more specific dispatch
+/// gate (computer use, Plan Mode). #979: in an unmanaged shell (a command is running, so
+/// `run_shell_command` is stripped from the list) the model called `run_shell_command`
+/// anyway; `parse_incoming_tool_call` resolves against the full REGISTRY, so the call became
+/// a card the user could approve and nothing happened -- the agent hung at "waiting for
+/// instructions". Returns the reason the tool is not on offer, so the call can be answered
+/// with a visible error result instead. Must stay in step with the filters in
+/// `available_tool_names` / `build_tools_array`.
+fn tool_withdrawn_reason(params: &RequestParams, tool_name: &str) -> Option<&'static str> {
+    if params.lrc_command_id.is_some() && tool_name == "run_shell_command" {
+        return Some(
+            "A command is already running in this terminal, so `run_shell_command` is not \
+             available. Interact with the running command using \
+             `write_to_long_running_shell_command` / `read_shell_command_output`, or ask the \
+             user.",
+        );
+    }
+    if params.session_context.is_remote_without_file_tools()
+        && NO_FILE_ROUTE_BLOCKED_TOOLS.contains(&tool_name)
+    {
+        return Some(
+            "This tool cannot reach the remote host's filesystem in this session. Use \
+             `run_shell_command` (cat, sed, grep, heredocs) instead.",
+        );
+    }
+    None
+}
+
 /// Whether `name` is one of the two computer-use descriptors.
 ///
 /// Both are gated on `RequestParams::computer_use_enabled`, which `ai/agent/api.rs` already
@@ -7590,6 +7618,45 @@ pub async fn generate_byop_output(
                                 result. Finish investigating with the read-only tools and \
                                 present a plan; the user runs it by re-sending without \
                                 `/plan`.",
+                });
+                let error_content = serde_json::to_string(&error_payload)
+                    .unwrap_or_else(|_| r#"{"status":"error"}"#.to_owned());
+                final_messages.push(make_tool_call_carrier_message(
+                    &current_task_id,
+                    &request_id,
+                    &call.call_id,
+                    &call.fn_name,
+                    &args_str,
+                ));
+                final_messages.push(make_tool_call_result_message(
+                    &current_task_id,
+                    &request_id,
+                    call.call_id.clone(),
+                    error_content,
+                ));
+                continue;
+            }
+
+            // #979: tool withdrawn from this request's tools array (running-command strip of
+            // `run_shell_command`, remote-without-file-route tools), re-checked at dispatch.
+            if let Some(reason) = tool_withdrawn_reason(params, &call.fn_name) {
+                let args_str = if call.fn_arguments.is_string() {
+                    call.fn_arguments.as_str().unwrap_or("").to_owned()
+                } else {
+                    call.fn_arguments.to_string()
+                };
+                log::warn!(
+                    "[byop] tool call rejected at dispatch (not offered): tool={} call_id={}",
+                    tool_name_for_log(&call.fn_name),
+                    call.call_id
+                );
+                let error_payload = serde_json::json!({
+                    "status": "error",
+                    "error": "tool_not_offered",
+                    "tool": call.fn_name,
+                    "received_args": &args_str,
+                    "executed": false,
+                    "message": format!("NOTHING RAN. {reason}"),
                 });
                 let error_content = serde_json::to_string(&error_payload)
                     .unwrap_or_else(|_| r#"{"status":"error"}"#.to_owned());
@@ -13933,6 +14000,22 @@ mod plan_mode_round_trip_tests {
         assert!(
             !plan_mode_blocks_tool(plan_mode, "read_files"),
             "read-only tools must stay callable under Plan Mode"
+        );
+    }
+
+    /// #979: a running command (unmanaged shell) strips `run_shell_command` from the tools
+    /// array; the dispatch site must refuse the call by name rather than let it become an
+    /// approvable card that does nothing.
+    #[test]
+    fn running_command_refuses_run_shell_command_at_dispatch() {
+        let mut params = tool_result_round_trip(false);
+        assert!(tool_withdrawn_reason(&params, SHELL).is_none());
+        params.lrc_command_id = Some("cmd-1".to_owned());
+        assert!(tool_withdrawn_reason(&params, SHELL).is_some());
+        assert!(tool_withdrawn_reason(&params, "write_to_long_running_shell_command").is_none());
+        assert!(
+            !available_tool_names(&params).iter().any(|n| n == SHELL),
+            "the dispatch gate and the advertised list must agree"
         );
     }
 
