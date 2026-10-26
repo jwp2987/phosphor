@@ -23959,8 +23959,13 @@ impl TerminalView {
                 self.create_and_push_docker_sandbox(ctx);
             }
             InputEvent::ExitAmbientAgentAndStartLocalAgent { initial_prompt } => {
-                let origin = AgentViewEntryOrigin::Input {
-                    was_prompt_autodetected: false,
+                // Only Cmd-Enter emits this; typed text is sent on entry (#1022).
+                let origin = if initial_prompt.is_some() {
+                    AgentViewEntryOrigin::CmdEnterSend
+                } else {
+                    AgentViewEntryOrigin::Input {
+                        was_prompt_autodetected: false,
+                    }
                 };
                 let initial_prompt = initial_prompt.clone();
 

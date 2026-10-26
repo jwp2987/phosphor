@@ -1094,9 +1094,11 @@ impl From<AgentViewEntryOrigin> for TelemetryAgentViewEntryOrigin {
             AgentViewEntryOrigin::AmbientAgent => Self::AmbientAgent,
             AgentViewEntryOrigin::ExternalAmbientAgent => Self::ThirdPartyAmbientAgent,
             AgentViewEntryOrigin::Cli => Self::Cli,
-            AgentViewEntryOrigin::MisrouteRecovery => Self::Input {
-                was_prompt_autodetected: false,
-            },
+            AgentViewEntryOrigin::MisrouteRecovery | AgentViewEntryOrigin::CmdEnterSend => {
+                Self::Input {
+                    was_prompt_autodetected: false,
+                }
+            }
             AgentViewEntryOrigin::ImageAdded => Self::ImageAdded,
             AgentViewEntryOrigin::SlashCommand { .. } => Self::SlashCommand,
             AgentViewEntryOrigin::CodeReviewContext => Self::CodeReviewContext,

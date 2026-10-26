@@ -3226,8 +3226,11 @@ fn test_new_conversation_keybinding_requires_double_press_in_non_empty_agent_vie
     });
 }
 
+/// #1022 (owner decision 2026-10-26): Cmd-Enter / Ctrl-Shift-Enter with text already typed in a
+/// plain terminal input enters the agent view AND sends the text. This test previously asserted
+/// the old pre-fill-without-send behaviour (buffer still "draft"); the spec changed.
 #[test]
-fn test_cmd_enter_enters_agent_view_when_input_is_focused() {
+fn test_cmd_enter_enters_agent_view_and_sends_typed_text_when_input_is_focused() {
     App::test((), |mut app| async move {
         let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
         initialize_app(&mut app);
@@ -3240,16 +3243,54 @@ fn test_cmd_enter_enters_agent_view_when_input_is_focused() {
             input.handle_editor_event(&EditorEvent::CmdEnter, ctx);
         });
 
-        terminal.read(&app, |view, ctx| {
-            assert!(view
-                .agent_view_controller()
-                .as_ref(ctx)
-                .agent_view_state()
-                .is_fullscreen());
+        let conversation_id = terminal.read(&app, |view, ctx| {
+            let state = view.agent_view_controller().as_ref(ctx).agent_view_state();
+            assert!(state.is_fullscreen());
+            state
+                .active_conversation_id()
+                .expect("agent view should be active")
         });
+        // The prompt was sent: the conversation holds an exchange and nothing is left to
+        // re-send in the input.
+        let is_non_empty = BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
+            history
+                .conversation(&conversation_id)
+                .is_some_and(|conversation| !conversation.is_empty())
+        });
+        assert!(is_non_empty, "Cmd-Enter with typed text must send it");
         input.read(&app, |input, ctx| {
-            assert_eq!(input.buffer_text(ctx), "draft");
+            assert_eq!(input.buffer_text(ctx), "");
         });
+    });
+}
+
+/// Empty-buffer Cmd-Enter is unchanged: enters the agent view without sending anything.
+#[test]
+fn test_cmd_enter_with_empty_buffer_enters_agent_view_without_sending() {
+    App::test((), |mut app| async move {
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+        initialize_app(&mut app);
+
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.handle_editor_event(&EditorEvent::CmdEnter, ctx);
+        });
+
+        let conversation_id = terminal.read(&app, |view, ctx| {
+            let state = view.agent_view_controller().as_ref(ctx).agent_view_state();
+            assert!(state.is_fullscreen());
+            state
+                .active_conversation_id()
+                .expect("agent view should be active")
+        });
+        let is_empty = BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
+            history
+                .conversation(&conversation_id)
+                .is_none_or(|conversation| conversation.is_empty())
+        });
+        assert!(is_empty);
     });
 }
 
