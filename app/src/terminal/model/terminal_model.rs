@@ -3362,6 +3362,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn precmd_with_completion_metadata(&mut self, data: PrecmdValue) {
+        self.reset_stale_in_band_command_output();
         let disposition = self
             .block_list
             .classify_next_block_id(&data.completion_metadata.next_block_id);
@@ -3388,6 +3389,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn prompt_only_precmd(&mut self, data: PromptMetadata) {
+        self.reset_stale_in_band_command_output();
         let transition = self.plan_lifecycle_transition(
             LifecycleInput::PromptOnlyPrecmd,
             None,
@@ -3697,6 +3699,24 @@ impl ansi::Handler for TerminalModel {
         };
     }
 
+    /// An in-band command's end marker always precedes the shell's next precmd. If a precmd
+    /// arrives while we are still capturing in-band output, the end marker was lost (the
+    /// shell was killed or a nested subshell exited mid-generator). Left open, `input`,
+    /// `goto` and `carriage_return` would keep diverting everything the shell prints into
+    /// the capture buffer, so the prompt and the user's echo would never reach the grid.
+    fn reset_stale_in_band_command_output(&mut self) {
+        if matches!(
+            self.is_receiving_in_band_command_output,
+            IsReceivingInBandCommandOutput::Yes { .. }
+        ) {
+            log::warn!(
+                "Received a precmd while still reading in-band command output; \
+                 discarding the unterminated output."
+            );
+            self.is_receiving_in_band_command_output = IsReceivingInBandCommandOutput::No;
+        }
+    }
+
     #[cfg_attr(not(windows), allow(unused_variables))]
     fn end_in_band_command_output(&mut self, from_osc_sequence: bool) {
         match &mut self.is_receiving_in_band_command_output {
@@ -3724,7 +3744,14 @@ impl ansi::Handler for TerminalModel {
                 self.is_receiving_in_band_command_output = IsReceivingInBandCommandOutput::No;
             }
             IsReceivingInBandCommandOutput::No => {
-                log::warn!("Received 'end_in_band_command_output' while not expecting to read in-band command output.");
+                // The pty controller calls this with `from_osc_sequence == false` before
+                // every command it writes, purely to make sure nothing is left open, so
+                // "not receiving" is the normal case there and not worth a warning.
+                if from_osc_sequence {
+                    log::warn!("Received 'end_in_band_command_output' while not expecting to read in-band command output.");
+                } else {
+                    log::debug!("No in-band command output was open when a command was written.");
+                }
             }
         }
 

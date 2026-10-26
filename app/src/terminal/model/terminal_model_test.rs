@@ -2877,3 +2877,29 @@ fn remote_session_unbootstrapped_rule() {
     // Nothing pending.
     assert!(!remote_session_unbootstrapped(false, false, true, false));
 }
+
+/// #997: an in-band command whose end marker never arrives (shell killed, nested subshell
+/// exited mid-generator) must not keep diverting pty output away from the grid once the
+/// shell draws its next prompt.
+#[test]
+fn precmd_discards_unterminated_in_band_command_output() {
+    let mut terminal = TerminalModel::mock(None, None);
+    normal_command_finished_and_precmd(&mut terminal, PromptMetadata::default());
+
+    terminal.start_in_band_command_output();
+    assert!(terminal.is_receiving_in_band_command_output());
+
+    let completion_metadata = CompletionMetadata {
+        exit_code: ExitCode::from(0),
+        next_block_id: BlockId::new(),
+    };
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata,
+        prompt_metadata: PromptMetadata::default(),
+    });
+    assert!(!terminal.is_receiving_in_band_command_output());
+
+    terminal.start_in_band_command_output();
+    terminal.prompt_only_precmd(PromptMetadata::default());
+    assert!(!terminal.is_receiving_in_band_command_output());
+}

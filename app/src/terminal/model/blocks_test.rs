@@ -3348,3 +3348,60 @@ fn test_retained_lines_counts_flat_storage_history() {
     assert!(block_list.block_with_id(&seq_id).is_none());
     assert_block_indices_consistent(&block_list);
 }
+
+/// #992: restoring a conversation into a pane that is already running (clicking an earlier
+/// agent response whose conversation is not live in the pane) inserts the conversation's
+/// serialized command blocks into the existing block list. That must never drop, reorder or
+/// hide the pane's own terminal blocks, in the terminal transcript scope the user returns
+/// to on Esc.
+#[test]
+fn restoring_conversation_blocks_into_running_pane_keeps_existing_terminal_blocks_visible() {
+    let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+    let mut block_list =
+        new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+    let first = insert_block(&mut block_list, "echo one", "one");
+    let second = insert_block(&mut block_list, "echo two", "two");
+    let existing_ids = vec![
+        block_list.block_at(first).unwrap().id().clone(),
+        block_list.block_at(second).unwrap().id().clone(),
+    ];
+
+    let conversation_id = AIConversationId::new();
+    let mut serialized_block =
+        SerializedBlock::new_for_test(b"echo agent".to_vec(), b"agent\r\n".to_vec());
+    serialized_block.agent_view_visibility =
+        Some(AgentViewVisibility::new_from_conversation(conversation_id).into());
+    let restored_id = serialized_block.id.clone();
+    block_list.insert_restored_block(&serialized_block);
+
+    // Entering and leaving the conversation's agent view must not change the terminal blocks.
+    for scope in [
+        TranscriptScope::Conversation(conversation_id),
+        TranscriptScope::Terminal,
+    ] {
+        block_list.set_transcript_scope(scope);
+    }
+
+    let scope = TranscriptScope::Terminal;
+    for id in &existing_ids {
+        let block = block_list
+            .block_with_id(id)
+            .expect("an existing terminal block must survive a conversation restore");
+        assert!(
+            block.is_visible(&scope),
+            "existing terminal block {id:?} must stay visible in the terminal scope"
+        );
+    }
+    let positions: Vec<_> = existing_ids
+        .iter()
+        .map(|id| block_list.block_with_id(id).unwrap().index())
+        .collect();
+    assert!(positions[0] < positions[1]);
+    assert!(
+        !block_list
+            .block_with_id(&restored_id)
+            .unwrap()
+            .is_visible(&scope),
+        "the agent-owned restored block belongs to the conversation, not the terminal scope"
+    );
+}

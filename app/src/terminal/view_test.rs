@@ -15104,6 +15104,37 @@ fn agent_shortcut_enter_action_reaches_the_set_input_mode_agent_handler() {
     })
 }
 
+/// #1004: tagging the agent in over a subshell that shows the "Phosphorize subshell | Use agent"
+/// banner and tagging it out again must bring the same banner back, with its Phosphorize chip.
+#[test]
+fn subshell_banner_keeps_its_phosphorize_chip_after_tagging_the_agent_in_and_out() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("bash", "");
+            view.use_agent_footer.update(ctx, |footer, ctx| {
+                footer.set_warpify_mode(WarpificationMode::subshell("bash".to_owned()), ctx);
+            });
+            assert!(view.agent_shortcut_banner_visible(ctx));
+
+            view.tag_in_agent_for_user_long_running_command(ctx);
+            assert!(
+                !view.agent_shortcut_banner_visible(ctx),
+                "the banner is hidden while the agent is tagged in"
+            );
+
+            view.tag_out_agent_for_user_long_running_command(ctx);
+            assert!(
+                view.use_agent_footer.as_ref(ctx).warpify_mode(ctx).is_some(),
+                "tagging the agent in must not discard the subshell's warpify mode"
+            );
+            assert!(view.agent_shortcut_banner_visible(ctx));
+        });
+    })
+}
+
 /// #976: a plain Enter reaches the pty, with nothing typed and after typing, regardless of the
 /// SSH banner (it may answer a password, host-key or 2FA prompt).
 #[test]
