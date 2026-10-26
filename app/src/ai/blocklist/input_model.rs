@@ -1231,10 +1231,11 @@ impl BlocklistAIInputModel {
             self.explicit_input_type_set = None;
         }
 
-        // #968: a huge buffer is a paste, not a prompt. Never let autodetection route it to the
-        // agent (Enter would send it all to the model) and never spend classifier time on it.
+        // #968: a huge buffer is a paste, not a prompt. Never spend classifier time on it, and
+        // never flip the input type either way: forcing Shell would run pasted prose or logs
+        // (`$(..)`, `;`, `>`) on Enter, and forcing AI would send it all to the model. Leave
+        // whatever type the user is in.
         if exceeds_autodetect_limit(&input.buffer_text) {
-            self.apply_autodetected_input_type(InputType::Shell, ctx);
             self.settle_detection(&input.buffer_text);
             return;
         }
