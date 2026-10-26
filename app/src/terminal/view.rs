@@ -690,6 +690,11 @@ const BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(7);
 /// Longest typing is dropped on behalf of one pending ssh bootstrap (#983). A healthy
 /// bootstrap finishes well inside this; a stuck or stale one must not own the keyboard.
 const SSH_BOOTSTRAP_SWALLOW_CEILING: Duration = Duration::from_secs(15);
+/// How long after an ssh command starts the silent connect phase (nothing printed yet, so no
+/// prompt can be waiting) drops typing instead of writing it to the tty, where it would be
+/// split between ssh, the remote tty and the injected bootstrap (#983). Later than this the
+/// command is a plain interactive session and every key goes to the pty.
+const SSH_CONNECT_SILENCE_CEILING: Duration = Duration::from_secs(15);
 /// After this long without a finished subshell bootstrap, input is no longer held back (#960).
 const SUBSHELL_BOOTSTRAP_STALL_CEILING: Duration = Duration::from_secs(20);
 /// Duration before we consider a session invoked from an env vars object to
@@ -2713,6 +2718,9 @@ pub struct TerminalView {
     /// Whether the "typing is ignored while connecting" notice (#983) was shown for the current
     /// ssh setup window. Reset once input is accepted again.
     ssh_setup_drop_notified: bool,
+    /// The block whose ssh connect already produced output; the silent-connect gate never
+    /// re-arms for it (#983).
+    ssh_connect_output_seen: Option<BlockId>,
     /// The pending session whose bootstrap-failed timer already fired (#983): input is never
     /// swallowed on behalf of a bootstrap that is known to be stuck.
     ssh_bootstrap_failed_session: Option<SessionId>,
@@ -4389,6 +4397,7 @@ impl TerminalView {
             tips_completed: resources.tips_completed.clone(),
             was_ever_visible: false,
             ssh_setup_drop_notified: false,
+            ssh_connect_output_seen: None,
             ssh_bootstrap_failed_session: None,
             ssh_bootstrap_swallow_started: None,
             view_id: ctx.view_id(),
@@ -9557,7 +9566,7 @@ impl TerminalView {
     /// Generally, this should be control characters rather than printable characters.
     fn keydown_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
         // Ctrl-C / Ctrl-D still reach the ssh process so the user can abort.
-        if !matches!(characters, "\u{3}" | "\u{4}") && self.swallow_input_during_ssh_setup(ctx) {
+        if !is_ssh_interrupt_key(characters) && self.swallow_input_during_ssh_setup(ctx) {
             return;
         }
         if self.is_long_running()
@@ -9582,10 +9591,12 @@ impl TerminalView {
         }
     }
 
-    /// Control sequences (arrows, Tab, Esc, ...) are deliberately NOT swallowed here, unlike
-    /// printable characters: Ctrl-C/Ctrl-D must always reach ssh (to abort a hung connect), the
-    /// control path cannot form a command line, and dropping them would also eat the keys the
-    /// setup dialog itself consumes. Only printable runs are dropped (#983).
+    /// Control sequences (arrows, Tab, Esc, ...) take `control_sequence_on_terminal`, which never
+    /// calls this, so they are not swallowed, unlike printable characters: the control path
+    /// cannot form a command line, and dropping them would also eat the keys the setup dialog
+    /// itself consumes. `keydown_on_terminal` / `typed_characters_on_terminal` exempt the
+    /// interrupt bytes (Ctrl-C, Ctrl-D, Ctrl-Z, Ctrl-\) so the user can always abort a hung
+    /// connect. Only printable runs, Enter and pastes are dropped (#983).
     ///
     /// True while the SSH remote-server setup owns the session: the
     /// install/continue dialog is up, or the check/install/connect is in
@@ -9599,7 +9610,22 @@ impl TerminalView {
     /// exactly the corruption being avoided -- and focus is handed back to
     /// the dialog so the next key drives it.
     fn swallow_input_during_ssh_setup(&mut self, ctx: &mut ViewContext<Self>) -> bool {
-        let dialog_up = self.active_ssh_remote_server_choice_block().is_some();
+        // The dialog only owns input while it belongs to the pending session. A choice block left
+        // behind by an earlier, abandoned connect must not swallow the keys of a later ssh
+        // command (host-key / password prompts) (#976).
+        let pending_now = self.model.lock().pending_session_id();
+        // Any block (not just the first) may be the current one: stale ones can precede it.
+        let dialog_up = choice_block_owns_input(
+            self.rich_content_views
+                .iter()
+                .filter_map(|view| match view.metadata() {
+                    Some(RichContentMetadata::SshRemoteServerChoiceBlock { handle }) => {
+                        Some(handle.as_ref(ctx).session_id())
+                    }
+                    _ => None,
+                }),
+            pending_now,
+        );
         let setup_in_flight = FeatureFlag::SshRemoteServer.is_enabled()
             && self
                 .model
@@ -9632,7 +9658,31 @@ impl TerminalView {
             &mut self.ssh_bootstrap_swallow_started,
             Instant::now(),
         );
-        if !(dialog_up || setup_in_flight || ssh_bootstrapping) {
+        // #983 / #976: before the remote shell announces itself there is no pending session, and
+        // the ssh process owns the pty. While it has printed nothing at all it is still
+        // connecting and anything typed would reach the tty ahead of the bootstrap and be split
+        // from the rest of the line. Drop the whole run. Every prompt (host key, password, 2FA)
+        // is output, so its answers -- including a bare Enter -- are never held here.
+        let ssh_connecting_silently = pending_now.is_none() && self.has_pending_ssh_command() && {
+            let model = self.model.lock();
+            let block = model.block_list().active_block();
+            let block_id = block.id().clone();
+            // True pre-login phase only: the command has printed nothing at all. Once any output
+            // (banner, prompt, program output) is seen the gate never re-arms for this command,
+            // so a plain session or a later `cat` / `read` can never lose keys.
+            let output_seen = !block.output_grid().is_empty()
+                || self.ssh_connect_output_seen.as_ref() == Some(&block_id);
+            let age = block
+                .start_ts()
+                .and_then(|start| Local::now().signed_duration_since(*start).to_std().ok());
+            let alt_screen = model.is_alt_screen_active();
+            drop(model);
+            if output_seen {
+                self.ssh_connect_output_seen = Some(block_id);
+            }
+            ssh_connect_silence_drops_keys(alt_screen, output_seen, age)
+        };
+        if !(dialog_up || setup_in_flight || ssh_bootstrapping || ssh_connecting_silently) {
             self.ssh_setup_drop_notified = false;
             return false;
         }
@@ -9728,7 +9778,7 @@ impl TerminalView {
     /// We can assume `characters` consists of all printable characters, and therefore,
     /// can go into the input box.
     fn typed_characters_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
-        if self.swallow_input_during_ssh_setup(ctx) {
+        if !is_ssh_interrupt_key(characters) && self.swallow_input_during_ssh_setup(ctx) {
             return;
         }
         self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
@@ -14580,6 +14630,21 @@ impl TerminalView {
         if already_present {
             return;
         }
+        // A new pending session supersedes any choice block of an abandoned one.
+        let stale_sessions: Vec<SessionId> = self
+            .rich_content_views
+            .iter()
+            .filter_map(|view| match view.metadata() {
+                Some(RichContentMetadata::SshRemoteServerChoiceBlock { handle }) => {
+                    Some(handle.as_ref(ctx).session_id())
+                }
+                _ => None,
+            })
+            .filter(|sid| *sid != session_id)
+            .collect();
+        for stale in stale_sessions {
+            self.remove_ssh_remote_server_choice_block(stale, ctx);
+        }
 
         let choice_view =
             ctx.add_typed_action_view(|ctx| SshRemoteServerChoiceView::new(session_id, ctx));
@@ -17956,6 +18021,10 @@ impl TerminalView {
     }
 
     fn paste(&mut self, middle_click: bool, ctx: &mut ViewContext<Self>) {
+        // A paste is typed text: the whole paste is dropped exactly when typing would be (#983).
+        if self.swallow_input_during_ssh_setup(ctx) {
+            return;
+        }
         let (should_paste_in_input, needs_bracketed_paste) = {
             let mut model = self.model.lock();
             (
@@ -30998,6 +31067,33 @@ fn subshell_bootstrap_key_forwarded(
 ) -> bool {
     (pending && abort_key)
         || announced_age.is_some_and(|age| abort_key || age >= SUBSHELL_BOOTSTRAP_STALL_CEILING)
+}
+
+/// Whether any SSH setup choice block belongs to the pending session (#976). Stale blocks of
+/// abandoned connects never own input, and may precede the current one.
+fn choice_block_owns_input(
+    mut block_sessions: impl Iterator<Item = SessionId>,
+    pending: Option<SessionId>,
+) -> bool {
+    pending.is_some_and(|pending| block_sessions.any(|sid| sid == pending))
+}
+
+/// Keys that always reach ssh (Ctrl-C, Ctrl-D, Ctrl-Z, Ctrl-\) so a hung connect can be aborted.
+fn is_ssh_interrupt_key(characters: &str) -> bool {
+    matches!(characters, "\u{3}" | "\u{4}" | "\u{1a}" | "\u{1c}")
+}
+
+/// Whether typing is dropped because an ssh command is still silently connecting (#983): it has
+/// run for less than `SSH_CONNECT_SILENCE_CEILING`, is not full-screen, and has printed nothing
+/// at all (`output_seen` is false). Any output means ssh (or the remote) has spoken, and the
+/// user's keys, a bare Enter included, must reach it (#976). `age` is `None` when unknown,
+/// which never drops.
+fn ssh_connect_silence_drops_keys(
+    alt_screen: bool,
+    output_seen: bool,
+    age: Option<Duration>,
+) -> bool {
+    !alt_screen && !output_seen && age.is_some_and(|age| age < SSH_CONNECT_SILENCE_CEILING)
 }
 
 /// Whether typing is still dropped for a pending ssh bootstrap (#983). Pure so the bounds are
