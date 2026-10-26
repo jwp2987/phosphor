@@ -315,6 +315,10 @@ pub enum ShellDialect {
     /// PowerShell: a word with a control character is double-quoted and the character written
     /// as a `$([char]0x..)` subexpression, which Windows PowerShell 5.1 also understands.
     PowerShell,
+    /// nushell: no backslash escaping of bare words exists; a word containing anything but
+    /// plain path characters is wrapped in double quotes (`"dir with spaces/"`), with `\`, `"`
+    /// and control characters written as nu string escapes (#984).
+    Nu,
 }
 
 impl From<ShellFamily> for ShellDialect {
@@ -329,7 +333,7 @@ impl From<ShellFamily> for ShellDialect {
 impl ShellDialect {
     pub fn family(self) -> ShellFamily {
         match self {
-            Self::Posix | Self::Fish => ShellFamily::Posix,
+            Self::Posix | Self::Fish | Self::Nu => ShellFamily::Posix,
             Self::PowerShell => ShellFamily::PowerShell,
         }
     }
@@ -349,6 +353,9 @@ impl ShellDialect {
     ///
     /// [`ShellFamily::unescape`] does not invert the control-character forms.
     pub fn escape<'s>(self, input: &'s str) -> Cow<'s, str> {
+        if self == Self::Nu {
+            return nu_quote(input);
+        }
         if !input.chars().any(needs_control_char_quoting) {
             return self.family().escape_metacharacters(input);
         }
@@ -362,6 +369,11 @@ impl ShellDialect {
     /// Escapes the path to treat it as a single word within the shell, leaving a leading `~/`
     /// or `$HOME/` unescaped so it still expands. See [`ShellFamily::shell_escape`].
     pub fn shell_escape<'s>(self, path: &'s str) -> Cow<'s, str> {
+        if self == Self::Nu {
+            // nu expands a leading `~` in path arguments even inside a quoted string, and a
+            // quoted string cannot be glued to an unquoted prefix, so quote the whole word.
+            return nu_quote(path);
+        }
         // Special case if the path starts with "~/" or "~\": The escape function escapes the "~" to avoid
         // tilde expansion, but we still want tilde expansion with the rest of the path properly
         // escaped.
@@ -395,6 +407,37 @@ impl ShellDialect {
         }
         self.escape(path)
     }
+}
+
+/// Whether `c` may appear in a nushell bare word without quoting.
+fn nu_bare_char(c: char) -> bool {
+    c.is_alphanumeric() && !needs_control_char_quoting(c)
+        || matches!(c, '_' | '.' | '/' | '-' | '+' | '@' | '%' | ':' | '=' | '~')
+}
+
+/// nushell quoting: bare when every character is safe, otherwise a double-quoted string.
+fn nu_quote(input: &str) -> Cow<'_, str> {
+    use std::fmt::Write as _;
+    if !input.is_empty() && input.chars().all(nu_bare_char) {
+        return Cow::Borrowed(input);
+    }
+    let mut out = String::with_capacity(input.len() + 2);
+    out.push('"');
+    for c in input.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if needs_control_char_quoting(c) => {
+                let _ = write!(out, "\\u{{{:X}}}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    Cow::Owned(out)
 }
 
 /// bash/zsh ANSI-C quoting of the whole word: `$'...'`.
