@@ -1778,6 +1778,22 @@ impl TerminalModel {
         )
     }
 
+    /// Gives up on a subshell bootstrap that was announced (`InitShell`) but never reported
+    /// `Bootstrapped` (#1014): the shell died or lost the script half-way. Without this the pane
+    /// shows "Starting shell..." forever, because only `Bootstrapped` ends that stage. The pending
+    /// session is dropped and the block list marked bootstrapped, as the `Bootstrapped` hook would
+    /// have; the next prompt moves it on as usual. No session is created for the abandoned shell,
+    /// so the parent's stays the active one. Returns whether anything changed.
+    pub fn abandon_stalled_subshell_bootstrap(&mut self) -> bool {
+        if self.pending_subshell_session().is_none() || self.block_list.is_bootstrapped() {
+            return false;
+        }
+        log::warn!("Abandoning a subshell bootstrap that never reported Bootstrapped (#1014)");
+        self.pending_session_info = None;
+        self.block_list.set_bootstrapped();
+        true
+    }
+
     pub fn pending_subshell_session(&self) -> Option<&SubshellInitializationInfo> {
         self.pending_session_info
             .as_ref()

@@ -2957,3 +2957,52 @@ fn precmd_discards_unterminated_in_band_command_output() {
     terminal.prompt_only_precmd(PromptMetadata::default());
     assert!(!terminal.is_receiving_in_band_command_output());
 }
+
+/// #1014: a subshell whose bootstrap never reports `Bootstrapped` (the shell died on the script,
+/// or the script failed) used to leave the pane on "Starting shell..." for good: only the
+/// `Bootstrapped` hook ends that stage. Abandoning the stalled bootstrap drops the pending
+/// session and marks the block list bootstrapped, once; a finished bootstrap is never touched.
+/// Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn stalled_subshell_bootstrap_can_be_abandoned_once() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    command_finished_and_precmd(&mut terminal);
+    command_finished_and_precmd(&mut terminal);
+    assert!(
+        !terminal.abandon_stalled_subshell_bootstrap(),
+        "no subshell is pending"
+    );
+    // The parent shell's long-running `zsh` block, then the subshell announces itself.
+    terminal.start_command_execution();
+    terminal.preexec(PreexecValue {
+        command: "zsh".to_owned(),
+        session_id: None,
+    });
+    terminal.init_shell(InitShellValue {
+        shell: "zsh".into(),
+        user: "u".to_owned(),
+        hostname: "h".to_owned(),
+        session_id: 0.into(),
+        is_subshell: true,
+        ..Default::default()
+    });
+    assert!(terminal.pending_subshell_session().is_some());
+    assert!(
+        !terminal.block_list().is_bootstrapped(),
+        "the pane is on 'Starting shell...'"
+    );
+
+    // The script never ran to the end: no Bootstrapped hook arrives.
+    assert!(terminal.abandon_stalled_subshell_bootstrap());
+    assert!(terminal.pending_subshell_session().is_none());
+    assert!(terminal.pending_session_id().is_none());
+    assert!(
+        terminal.block_list().is_bootstrapped(),
+        "the pane must leave 'Starting shell...'"
+    );
+    assert!(
+        !terminal.abandon_stalled_subshell_bootstrap(),
+        "nothing left to abandon"
+    );
+}
