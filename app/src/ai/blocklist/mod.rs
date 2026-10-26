@@ -45,6 +45,8 @@ pub(crate) mod telemetry_banner;
 pub mod view_util;
 
 #[cfg_attr(target_family = "wasm", allow(unused_imports))]
+pub(crate) use action_model::pty_write_for_target_command;
+#[cfg_attr(target_family = "wasm", allow(unused_imports))]
 pub(crate) use action_model::{
     apply_edits, read_local_file_context, BlocklistAIActionEvent, BlocklistAIActionModel,
     FileReadResult, PromptSuggestionExecutor, PromptSuggestionExecutorEvent, ReadFileContextResult,
