@@ -19,6 +19,6 @@
  # `|| :` after both: `read -d ''` returns 1 at the end of the heredoc and the eval returns the
  # body's last status; `setopt PRINT_EXIT_VALUE` reports either as `zsh: exit 1` from our own
  # bootstrap (#974).
- read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :; eval "$WARP_BOOTSTRAP_VAR" || :; unset WARP_BOOTSTRAP_VAR; if [[ -n ${WARP_RESTORE_PRINT_EXIT_VALUE-} ]]; then setopt print_exit_value; fi; unset WARP_RESTORE_PRINT_EXIT_VALUE
+ read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :; eval "$WARP_BOOTSTRAP_VAR" || :; unset WARP_BOOTSTRAP_VAR; if [[ -n ${WARP_RESTORE_PIPE_FAIL-} ]]; then setopt pipe_fail; fi; if [[ -n ${WARP_RESTORE_NOUNSET-} ]]; then unsetopt unset; fi; [[ -z ${WARP_RESTORE_PRINT_EXIT_VALUE-} ]] || setopt print_exit_value; unset WARP_RESTORE_PRINT_EXIT_VALUE WARP_RESTORE_PIPE_FAIL WARP_RESTORE_NOUNSET
 #include bundled/bootstrap/zsh_body.sh
 EOM

@@ -1617,7 +1617,7 @@ fn test_bootstrap_lines_survive_errexit_nounset_pipefail_rc_settings() {
                     lines.push(" echo ALIVE-AFTER".to_owned());
                     if bin == "zsh" {
                         lines.push(
-                            " print -r -- \"OPTS ee=$options[errexit] nu=$options[unset] pf=$options[pipefail] pev=$options[printexitvalue] whi=$options[histignorespace] residue=[${__whi-}${__wpe-}${_wbs-}]\""
+                            " print -r -- \"OPTS ee=$options[errexit] nu=$options[unset] pf=$options[pipefail] pev=$options[printexitvalue] hand=${WARP_RESTORE_PRINT_EXIT_VALUE-} whi=$options[histignorespace] residue=[${__whi-}${__wpe-}${_wbs-}]\""
                                 .to_owned(),
                         );
                     }
@@ -1655,9 +1655,11 @@ fn test_bootstrap_lines_survive_errexit_nounset_pipefail_rc_settings() {
                     );
                 }
                 if bin == "zsh" {
+                    // print_exit_value is handed to the tail of zsh.sh (WARP_RESTORE_PRINT_EXIT_VALUE),
+                    // not put back by the stage: the next typed line would print `zsh: exit 1`.
                     let hist_ignore_space = rc.contains("HIST_IGNORE_SPACE");
                     let expect = format!(
-                        "OPTS ee=on nu=off pf=on pev=on whi={} residue=[]",
+                        "OPTS ee=on nu=off pf=on pev=off hand=1 whi={} residue=[]",
                         if hist_ignore_space { "on" } else { "off" }
                     );
                     assert!(
@@ -1677,6 +1679,201 @@ fn test_bootstrap_lines_survive_errexit_nounset_pipefail_rc_settings() {
                             }),
                         "{bin}: the user's options were not put back: {stdout:?}"
                     );
+                }
+                std::fs::remove_dir_all(&dir).ok();
+            }
+        });
+    });
+}
+
+/// Drives a real interactive shell on a pty (python3's `pty`, so no extra dependency): types each
+/// line of argv[3] followed by CR, then the contents of argv[4] (the full bootstrap script), then
+/// the commands of argv[5], and prints everything the shell wrote, hex-escaped as `\xNN` for ESC
+/// only so the assertions can match plain text. argv[1] is the shell binary, argv[2] the rc dir.
+#[cfg(unix)]
+const PTY_DRIVER: &str = r#"
+import os, pty, select, sys, time, fcntl
+shell, home, lines_file, script_file, cmds_file = sys.argv[1:6]
+env = {"PATH": os.environ.get("PATH", ""), "HOME": home, "ZDOTDIR": home, "TERM": "xterm",
+       "HISTFILE": os.path.join(home, "history")}
+args = [shell, "-i"]
+if os.path.basename(shell) == "bash":
+    args = [shell, "--rcfile", os.path.join(home, "rc"), "-i"]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execve(shell, args, env)
+fcntl.fcntl(fd, fcntl.F_SETFL, os.O_NONBLOCK | fcntl.fcntl(fd, fcntl.F_GETFL))
+buf = b""
+def pump(t):
+    global buf
+    end = time.time() + t
+    while time.time() < end:
+        r, _, _ = select.select([fd], [], [], 0.05)
+        if r:
+            try:
+                x = os.read(fd, 65536)
+            except OSError:
+                return
+            if not x:
+                return
+            buf += x
+def send(data):
+    for i in range(0, len(data), 1000):
+        chunk = data[i:i + 1000]
+        while chunk:
+            try:
+                n = os.write(fd, chunk)
+                chunk = chunk[n:]
+            except BlockingIOError:
+                pump(0.05)
+            except OSError:
+                return
+        time.sleep(0.03)
+pump(1.5)
+for line in open(lines_file, "rb").read().split(b"\n"):
+    if line:
+        send(line + b"\r")
+        pump(0.15)
+pump(1.0)
+send(open(script_file, "rb").read())
+pump(0.5)
+send(b"\r")
+pump(6)
+for cmd in open(cmds_file, "rb").read().split(b"\n"):
+    if cmd:
+        send(cmd + b"\r")
+        pump(0.8)
+sys.stdout.write(buf.decode("utf-8", "replace").replace("\x1b", "<ESC>").replace("\r", ""))
+"#;
+
+/// #1014 (round 2): the REAL bootstrap -- the probe, the real known-shell stage that emits
+/// InitShell, and the real `zsh.sh` / `bash.sh` body -- typed into a real interactive shell on a
+/// pty whose rc sets errexit / nounset / pipefail / print_exit_value. The first fix was checked
+/// with a stub stage (`echo STAGE2-RAN`) and the real body still died on `$WARP_BOOTSTRAPPED`
+/// under NO_UNSET, leaving the pane on "Starting shell...". The shell must survive, print no
+/// bootstrap noise, report InitShell and Bootstrapped, run later commands, and the user's options
+/// must be theirs again afterwards.
+#[test]
+#[cfg(unix)]
+fn test_real_bootstrap_body_survives_errexit_nounset_pipefail_rc_settings() {
+    use std::process::Command;
+
+    let which = |bin: &str| -> Option<String> {
+        let out = Command::new("sh")
+            .args(["-c", &format!("command -v {bin}")])
+            .output()
+            .ok()?;
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        (!path.is_empty()).then_some(path)
+    };
+    let Some(python) = which("python3") else {
+        eprintln!("skipping: python3 not installed");
+        return;
+    };
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let probe = init_subshell_command_lines(None, &[], SessionId::from(4242u64), ctx);
+            // (shell, rc file name, rc text, shell type)
+            let cases = [
+                ("zsh", ".zshrc", "setopt ERR_EXIT NO_UNSET PIPE_FAIL PRINT_EXIT_VALUE\n", ShellType::Zsh),
+                (
+                    "zsh",
+                    ".zshrc",
+                    "setopt ERR_EXIT ERR_RETURN NO_UNSET PIPE_FAIL PRINT_EXIT_VALUE HIST_IGNORE_SPACE\n",
+                    ShellType::Zsh,
+                ),
+                ("bash", "rc", "set -euo pipefail\n", ShellType::Bash),
+            ];
+            for (bin, rc_name, rc, shell_type) in cases {
+                let Some(shell) = which(bin) else {
+                    eprintln!("skipping {bin}: not installed");
+                    continue;
+                };
+                let dir = std::env::temp_dir().join(format!(
+                    "phosphor-realbody-{bin}-{}-{}",
+                    std::process::id(),
+                    rc.len()
+                ));
+                std::fs::remove_dir_all(&dir).ok();
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join(rc_name), rc).unwrap();
+
+                let mut lines = probe.clone();
+                lines.extend(init_subshell_command_lines(
+                    Some(shell_type),
+                    &[],
+                    SessionId::from(4242u64),
+                    ctx,
+                ));
+                std::fs::write(dir.join("lines.txt"), lines.join("\n")).unwrap();
+                std::fs::write(
+                    dir.join("script.txt"),
+                    &*script_for_shell(shell_type, &crate::ASSETS),
+                )
+                .unwrap();
+                let cmds = if bin == "zsh" {
+                    " echo ALIVE=$((40+2)).\n print -r -- \"OPT pf=$options[pipefail] unset=$options[unset] pev=$options[printexitvalue]\"\n echo $phosphor_undefined_var_zz\n echo STILL=$((1+1)).\n"
+                } else {
+                    " echo ALIVE=$((40+2)).\n echo \"OPT $-\"\n echo STILL=$((1+1)).\n"
+                };
+                std::fs::write(dir.join("cmds.txt"), cmds).unwrap();
+
+                let out = Command::new(&python)
+                    .arg("-I")
+                    .arg("-c")
+                    .arg(PTY_DRIVER)
+                    .arg(&shell)
+                    .arg(&dir)
+                    .arg(dir.join("lines.txt"))
+                    .arg(dir.join("script.txt"))
+                    .arg(dir.join("cmds.txt"))
+                    .output()
+                    .unwrap();
+                let all = String::from_utf8_lossy(&out.stdout).into_owned();
+                let case = format!("{bin} ({rc:?})");
+                assert!(
+                    all.contains("ALIVE=42."),
+                    "{case}: the shell died during the real bootstrap: {all:?}"
+                );
+                assert!(
+                    all.contains("<ESC>P$d"),
+                    "{case}: no InitShell hook was emitted: {all:?}"
+                );
+                // The Bootstrapped hook is DCS-hex-encoded JSON; "Bootstrapped" in hex.
+                assert!(
+                    all.contains("426f6f747374726170706564"),
+                    "{case}: the body never reported Bootstrapped: {all:?}"
+                );
+                let before_user_commands = all.split("ALIVE=42.").next().unwrap_or_default();
+                for noise in ["\nzsh: exit ", ": parameter not set\n", ": unbound variable\n"] {
+                    assert!(
+                        !before_user_commands.contains(noise),
+                        "{case}: bootstrap noise {noise:?}: {all:?}"
+                    );
+                }
+                assert!(
+                    all.contains("STILL=2."),
+                    "{case}: the shell stopped accepting commands: {all:?}"
+                );
+                if bin == "zsh" {
+                    assert!(
+                        all.contains("OPT pf=on unset=off pev=on"),
+                        "{case}: the user's options were not put back: {all:?}"
+                    );
+                    // Their NO_UNSET stays theirs: the undefined name is reported, the shell lives.
+                    assert!(
+                        all.contains("phosphor_undefined_var_zz: parameter not set"),
+                        "{case}: the user's NO_UNSET was not restored: {all:?}"
+                    );
+                } else {
+                    // `OPT <flags>` (the typed line echoes `OPT $-`, which starts with `$`).
+                    let restored = all.match_indices("OPT ").any(|(at, _)| {
+                        let flags = all[at + 4..].split_whitespace().next().unwrap_or_default();
+                        !flags.starts_with('$') && flags.contains('e') && flags.contains('u')
+                    });
+                    assert!(restored, "{case}: set -eu was not put back: {all:?}");
                 }
                 std::fs::remove_dir_all(&dir).ok();
             }

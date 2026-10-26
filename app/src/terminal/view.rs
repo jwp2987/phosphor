@@ -14644,6 +14644,17 @@ impl TerminalView {
                     if !show_debug_block {
                         self.update_long_running_ssh_block_with_lock(|block| block.hide());
                     }
+                    // #1014: a bootstrap that dies half-way (the shell exits, or its script
+                    // fails) never reports `Bootstrapped`; give up after the stall ceiling so the
+                    // pane does not stay on "Starting shell..." for good.
+                    let expected_session = pending_session_info.session_id;
+                    let _ = ctx.spawn(
+                        async move {
+                            warpui::r#async::Timer::after(SUBSHELL_BOOTSTRAP_STALL_CEILING).await;
+                            expected_session
+                        },
+                        Self::abandon_stalled_subshell_bootstrap,
+                    );
                 }
             }
             ModelEvent::Handler(AnsiHandlerEvent::Precmd)
@@ -18024,6 +18035,30 @@ impl TerminalView {
             },
             Self::on_bootstrap_failed_timer_complete,
         );
+    }
+
+    /// Timer callback for [`SUBSHELL_BOOTSTRAP_STALL_CEILING`] after a subshell's `InitShell`
+    /// (#1014): if that same session is still waiting for `Bootstrapped`, abandon it so the pane
+    /// returns to a usable state (the model drops the pending session and marks the block list
+    /// bootstrapped), reveal the hidden block again and stop holding input.
+    fn abandon_stalled_subshell_bootstrap(
+        &mut self,
+        expected_session: SessionId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let abandoned = {
+            let mut model = self.model.lock();
+            model.pending_session_id() == Some(expected_session)
+                && model.abandon_stalled_subshell_bootstrap()
+        };
+        if !abandoned {
+            return;
+        }
+        self.subshell_bootstrap_announced = None;
+        self.update_long_running_ssh_block_with_lock(|block| {
+            block.unhide();
+        });
+        ctx.notify();
     }
 
     /// Called once the bootstrap timer completes
