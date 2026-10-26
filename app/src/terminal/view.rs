@@ -16995,6 +16995,9 @@ impl TerminalView {
         if !still_waiting {
             return;
         }
+        if !ctx.has_singleton_model::<ToastStack>() {
+            return;
+        }
         let window_id = ctx.window_id();
         ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
             let toast = DismissibleToast::new(
@@ -23475,7 +23478,8 @@ impl TerminalView {
 
     /// Shows a queue notice toast when the toast stack exists (it is absent in some test apps).
     fn notify_queue_notice(&self, text: String, ctx: &mut ViewContext<Self>) {
-        if ToastStack::try_as_ref(ctx).is_some() {
+        // `try_as_ref` still panics when the singleton was never registered; ask first.
+        if ctx.has_singleton_model::<ToastStack>() {
             // Persistent, not the 4 s ephemeral toast: a restored or still-queued prompt is the
             // user's own text, and a notice that vanishes before they look up reads as the prompt
             // having silently disappeared (#1026). Dismissed by the user.
@@ -23532,7 +23536,12 @@ impl TerminalView {
         conversation_id: AIConversationId,
         ctx: &mut ViewContext<Self>,
     ) {
-        if self.suspended_for_close || !QueuedQueryModel::as_ref(ctx).has_queue(conversation_id) {
+        // Production registers the model at startup (lib.rs); minimal test apps that build panes
+        // without the AI singletons legitimately lack it, and have no queue to restore.
+        if self.suspended_for_close
+            || !ctx.has_singleton_model::<QueuedQueryModel>()
+            || !QueuedQueryModel::as_ref(ctx).has_queue(conversation_id)
+        {
             return;
         }
         if QueuedQueryModel::as_ref(ctx).has_command_in_flight(conversation_id) {
