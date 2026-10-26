@@ -162,3 +162,44 @@ fn has_selection_ignores_bare_clicks_and_headless_tails() {
     }
     assert!(handle.has_selection());
 }
+
+fn area_at(origin: Vector2F, size: Vector2F) -> SelectableArea {
+    let mut area = SelectableArea::new(
+        SelectionHandle::default(),
+        |_, _, _| {},
+        Rect::new().finish(),
+    );
+    area.origin = Some(Point::from_vec2f(origin, crate::scene::ZIndex::new(0)));
+    area.size = Some(size);
+    area
+}
+
+/// #1021: a drag begun a hair left of an agent bubble's first glyph landed in the frame
+/// padding, outside every area, and started a terminal selection instead. A capturing area
+/// with slop takes such a press and clamps its start point to the nearest in-bounds point.
+#[test]
+fn capture_slop_takes_presses_just_outside_the_bounds_and_clamps_them() {
+    let area =
+        area_at(vec2f(920.4, 590.), vec2f(300., 20.)).capture_clicks_within_bounds_with_slop(6.);
+    // 0.4px left of the origin: outside the bounds, inside the slop.
+    assert!(!area.contains_point_ignoring_clip(vec2f(920., 600.), 0.));
+    assert!(area.contains_point_ignoring_clip(vec2f(920., 600.), area.capture_slop));
+    assert_eq!(
+        area.clamp_into_bounds(vec2f(920., 600.)),
+        vec2f(920.4, 600.)
+    );
+    // Beyond the slop is genuinely outside.
+    assert!(!area.contains_point_ignoring_clip(vec2f(900., 600.), area.capture_slop));
+    // Inside is untouched.
+    assert_eq!(
+        area.clamp_into_bounds(vec2f(1000., 600.)),
+        vec2f(1000., 600.)
+    );
+}
+
+#[test]
+fn plain_capture_has_no_slop() {
+    let area = area_at(vec2f(920.4, 590.), vec2f(300., 20.)).capture_clicks_within_bounds();
+    assert_eq!(area.capture_slop, 0.);
+    assert!(!area.contains_point_ignoring_clip(vec2f(920., 600.), area.capture_slop));
+}

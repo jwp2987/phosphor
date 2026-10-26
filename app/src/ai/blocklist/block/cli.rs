@@ -120,6 +120,8 @@ use super::{
     },
     EmbeddedCodeEditorView, SecretRedactionState,
 };
+/// How far outside a bubble's text areas a press is still taken by that area (#1021).
+const CLI_BUBBLE_CAPTURE_SLOP: f32 = 6.0;
 const MENU_WIDTH: f32 = 200.0;
 const MAX_HEIGHT: f32 = 320.0;
 // Minimum width of the CLI agent floating window, so content doesn't get dragged
@@ -1669,7 +1671,7 @@ impl View for CLISubagentView {
                     // See issue #793: a click genuinely inside this floating bubble must not
                     // leak through to the terminal's own grid selection underneath, even if this
                     // area's own selection start fails for some reason.
-                    .capture_clicks_within_bounds();
+                    .capture_clicks_within_bounds_with_slop(CLI_BUBBLE_CAPTURE_SLOP);
 
                     if FeatureFlag::RectSelection.is_enabled() {
                         selectable_text = selectable_text.should_support_rect_select();
@@ -1983,7 +1985,7 @@ impl View for CLISubagentView {
                 // position momentarily lags the terminal's row bookkeeping while the agent is
                 // in control of a long-running command), the click must not leak through to the
                 // terminal's own grid selection underneath. See issue #793.
-                .capture_clicks_within_bounds();
+                .capture_clicks_within_bounds_with_slop(CLI_BUBBLE_CAPTURE_SLOP);
 
                 if FeatureFlag::RectSelection.is_enabled() {
                     output = output.should_support_rect_select();
@@ -2156,7 +2158,7 @@ impl View for CLISubagentView {
                     // See issue #793: a click genuinely inside this floating bubble must not
                     // leak through to the terminal's own grid selection underneath, even if this
                     // area's own selection start fails for some reason.
-                    .capture_clicks_within_bounds();
+                    .capture_clicks_within_bounds_with_slop(CLI_BUBBLE_CAPTURE_SLOP);
 
                     if FeatureFlag::RectSelection.is_enabled() {
                         selectable_action = selectable_action.should_support_rect_select();
