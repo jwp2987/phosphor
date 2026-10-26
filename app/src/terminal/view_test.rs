@@ -7757,6 +7757,13 @@ fn typing_while_an_approval_card_is_focused_goes_to_the_input_and_never_approves
         let (window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
         let (card, action_id, conversation_id, _pty_writes) =
             setup_requested_command_card(&mut app, &terminal);
+        // `pending_command_card_view_id` resolves the pending action through the terminal view's
+        // ACTIVE conversation, which a bare `start_new_conversation` does not set; a real stream
+        // does. Without it the card is never reported as the pending approval card.
+        let terminal_view_id = terminal.read(&app, |view, _| view.view_id);
+        BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
+            history.set_active_conversation_id(conversation_id, terminal_view_id, ctx);
+        });
         let action_model = terminal.read(&app, |view, _| view.ai_action_model.clone());
         action_model.update(&mut app, |action_model, ctx| {
             action_model.queue_action_for_test(
