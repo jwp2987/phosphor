@@ -14331,6 +14331,91 @@ fn keys_held_behind_the_subshell_bootstrap_reach_the_pty_in_order() {
     })
 }
 
+/// #1014: text typed while an announced subshell setup is unfinished (an rc file that sleeps, no
+/// `InitShell` yet, the block still the parent's bootstrapped `zsh` command) is held by the app
+/// rather than written ahead of the late bootstrap, and delivered once, in order, when setup is
+/// over. An abort key goes through at once and releases what was held after it.
+/// Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn text_typed_during_a_stalled_subshell_setup_is_held_then_delivered_in_order() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            let block_id = view.model.lock().block_list().active_block().id().clone();
+            view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+            assert!(
+                view.subshell_bootstrap_announced_age().is_some(),
+                "the announcement applies although the block is the bootstrapped parent command"
+            );
+            for key in [b"e".to_vec(), b"c".to_vec(), b"\r".to_vec()] {
+                assert!(view.write_user_bytes_to_pty(key, ctx));
+            }
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "nothing typed during the stall may reach the tty ahead of the late bootstrap"
+            );
+            view.release_subshell_setup_held_bytes(ctx);
+        });
+        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(written, b"ec\r".to_vec(), "held keys arrive once, in order");
+        assert!(
+            terminal.read(&app, |view, _| view.subshell_setup_held_bytes.is_empty()),
+            "nothing stays held after the release"
+        );
+
+        // Ctrl-C: goes first, then what was held.
+        pty_writes.borrow_mut().clear();
+        terminal.update(&mut app, |view, ctx| {
+            let block_id = view.model.lock().block_list().active_block().id().clone();
+            view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+            assert!(view.write_user_bytes_to_pty(b"ls".to_vec(), ctx));
+            assert!(pty_writes.borrow().is_empty());
+            view.write_user_bytes_to_pty(vec![0x03], ctx);
+        });
+        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(written, b"\x03ls".to_vec(), "abort first, then the held text");
+    })
+}
+
+/// #1014: the setup-waiting notice and the typed-input hold key off the announcement, which must
+/// stay armed while the announced block is still the active one even though that block (the
+/// parent shell's command) is bootstrapped; once the block changed it needs a pending subshell
+/// session that is not yet bootstrapped.
+#[test]
+fn subshell_announcement_applies_to_the_bootstrapped_parent_block_before_initshell() {
+    // Nothing answered yet, parent block bootstrapped (the rc-sleep stall): still armed.
+    assert!(subshell_bootstrap_announcement_applies(
+        false, true, true, false
+    ));
+    // InitShell changed the block; the subshell's session is bootstrapped: done.
+    assert!(!subshell_bootstrap_announcement_applies(
+        false, true, false, true
+    ));
+    // Block changed, nothing pending: the shell is gone.
+    assert!(!subshell_bootstrap_announcement_applies(
+        false, true, false, false
+    ));
+    // Hold rule: young announcements hold typing, abort keys never, expired ones release.
+    let young = Some(Duration::from_secs(7));
+    assert!(subshell_setup_should_hold_typed_bytes(young, false));
+    assert!(!subshell_setup_should_hold_typed_bytes(young, true));
+    assert!(!subshell_setup_should_hold_typed_bytes(None, false));
+    assert!(!subshell_setup_should_hold_typed_bytes(
+        Some(SUBSHELL_SETUP_TYPED_HOLD_LIMIT),
+        false
+    ));
+}
+
 #[test]
 fn typeahead_handoff_ctrl_c_within_the_young_enter_window_reaches_the_pty() {
     App::test((), |mut app| async move {
@@ -14795,9 +14880,10 @@ fn subshell_bootstrap_announcement_survives_the_initshell_block_change() {
     assert!(!subshell_bootstrap_announcement_applies(
         false, false, false, false
     ));
-    // Bootstrapped or read-only: never holds.
+    // Session bootstrapped after the block changed, or read-only: never holds. (With the block
+    // unchanged, "bootstrapped" is the parent's block and says nothing about the subshell: #1014.)
     assert!(!subshell_bootstrap_announcement_applies(
-        false, true, true, true
+        false, true, false, true
     ));
     assert!(!subshell_bootstrap_announcement_applies(
         true, false, true, true

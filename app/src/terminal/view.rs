@@ -703,6 +703,10 @@ const SSH_BOOTSTRAP_SWALLOW_CEILING: Duration = Duration::from_secs(15);
 const SSH_CONNECT_SILENCE_CEILING: Duration = Duration::from_secs(15);
 /// After this long without a finished subshell bootstrap, input is no longer held back (#960).
 const SUBSHELL_BOOTSTRAP_STALL_CEILING: Duration = Duration::from_secs(20);
+/// Text typed while an announced subshell setup is unfinished is held by the app (not written to
+/// the tty, where the late bootstrap reads it as part of itself) for at most this long, then
+/// delivered anyway so a setup that never finishes cannot swallow it (#1014).
+const SUBSHELL_SETUP_TYPED_HOLD_LIMIT: Duration = Duration::from_secs(90);
 /// Duration before we consider a session invoked from an env vars object to
 /// have failed bootstrapping. The longer duration is meant to account for
 /// a user needing to type in one or many secret manager passwords
@@ -2826,6 +2830,10 @@ pub struct TerminalView {
     /// `SUBSHELL_BOOTSTRAP_STALL_CEILING` (#960).
     subshell_bootstrap_announced: Option<(BlockId, Instant)>,
     subshell_bootstrap_generation: u64,
+    /// Keystrokes typed while an announced subshell setup is unfinished (#1014), in order. They
+    /// are delivered once setup completes, is abandoned or aborted, or after
+    /// `SUBSHELL_SETUP_TYPED_HOLD_LIMIT`; never dropped.
+    subshell_setup_held_bytes: Vec<Vec<u8>>,
 
     show_snackbar: bool,
     hover_near_snackbar_area: bool,
@@ -4474,6 +4482,7 @@ impl TerminalView {
             env_vars: Vec::new(),
             subshell_bootstrap_in_flight: None,
             subshell_bootstrap_announced: None,
+            subshell_setup_held_bytes: Vec::new(),
             subshell_bootstrap_generation: 0,
             show_snackbar: true,
             hover_near_snackbar_area: false,
@@ -10506,6 +10515,27 @@ impl TerminalView {
             in_flight.held_user_bytes.push(bytes.into_owned());
             return true;
         }
+        // #1014: setup is announced but the shell has not finished it (an rc file that sleeps
+        // delays it): text written now would sit in the tty ahead of the late bootstrap and run
+        // inside it or vanish. Hold it here and deliver it, in order, once setup is over. Ctrl-C /
+        // Ctrl-D pass at once and then release what is held.
+        if is_abort_key(&bytes) && !self.subshell_setup_held_bytes.is_empty() {
+            // The user aborts the setup: the abort goes first, then what they typed meanwhile.
+            let held = std::mem::take(&mut self.subshell_setup_held_bytes);
+            self.subshell_bootstrap_announced = None;
+            let written = self.write_user_bytes_to_pty_inner(bytes, takes_over_agent_control, ctx);
+            for held_bytes in held {
+                self.write_user_bytes_to_pty(held_bytes, ctx);
+            }
+            return written;
+        }
+        if subshell_setup_should_hold_typed_bytes(
+            self.subshell_bootstrap_announced_age(),
+            is_abort_key(&bytes),
+        ) {
+            self.subshell_setup_held_bytes.push(bytes.into_owned());
+            return true;
+        }
         // #933: an EOF does not flush typeahead, so Enters held behind the young window go first.
         if FeatureFlag::TypeaheadHandoff.is_enabled()
             && let Some(with_held) = self
@@ -14816,6 +14846,9 @@ impl TerminalView {
                 );
             }
             ModelEvent::BootstrapPrecmdDone => {
+                if !self.subshell_setup_held_bytes.is_empty() {
+                    self.release_subshell_setup_held_bytes(ctx);
+                }
                 self.execute_pending_command((), ctx);
             }
             ModelEvent::AgentTaggedInChanged { is_tagged_in } => {
@@ -16964,6 +16997,19 @@ impl TerminalView {
             Timer::after(SUBSHELL_BOOTSTRAP_STALL_CEILING),
             move |me, _, ctx| me.note_subshell_setup_waiting(announced_at, ctx),
         );
+        // Whatever the user typed meanwhile is delivered at the latest when the hold limit passes.
+        ctx.spawn(
+            Timer::after(SUBSHELL_SETUP_TYPED_HOLD_LIMIT),
+            move |me, _, ctx| {
+                let same_announcement = me
+                    .subshell_bootstrap_announced
+                    .as_ref()
+                    .is_some_and(|(_, at)| Some(*at) == announced_at);
+                if same_announcement || !me.subshell_setup_held_bytes.is_empty() {
+                    me.release_subshell_setup_held_bytes(ctx);
+                }
+            },
+        );
         let rest: Vec<String> = lines.collect();
         if rest.is_empty() {
             return;
@@ -17053,6 +17099,16 @@ impl TerminalView {
             for bytes in in_flight.held_user_bytes {
                 self.write_user_bytes_to_pty(bytes, ctx);
             }
+        }
+    }
+
+    /// Delivers, in order, the keystrokes held while a subshell setup was unfinished (#1014).
+    /// The announcement is cleared first: it is what makes the write path hold, and setup is over
+    /// (finished, abandoned, aborted or timed out) whenever this runs.
+    fn release_subshell_setup_held_bytes(&mut self, ctx: &mut ViewContext<Self>) {
+        self.subshell_bootstrap_announced = None;
+        for bytes in std::mem::take(&mut self.subshell_setup_held_bytes) {
+            self.write_user_bytes_to_pty(bytes, ctx);
         }
     }
 
@@ -18187,7 +18243,7 @@ impl TerminalView {
         if !abandoned {
             return;
         }
-        self.subshell_bootstrap_announced = None;
+        self.release_subshell_setup_held_bytes(ctx);
         self.update_long_running_ssh_block_with_lock(|block| {
             block.unhide();
         });
@@ -31836,7 +31892,21 @@ fn subshell_bootstrap_announcement_applies(
     block_unchanged: bool,
     subshell_session_pending: bool,
 ) -> bool {
-    !read_only && !active_block_bootstrapped && (block_unchanged || subshell_session_pending)
+    // The block the stage was typed into is the *parent* shell's running command (`zsh`, `su -`),
+    // and the parent is bootstrapped, so that block counts as bootstrapped while the subshell has
+    // not even answered yet (an rc file that sleeps, #1014). Only a changed block carries the
+    // question of whether the subshell's own session finished.
+    !read_only && (block_unchanged || (subshell_session_pending && !active_block_bootstrapped))
+}
+
+/// Whether a keystroke typed now is held by the app instead of written to the tty (#1014): an
+/// announced setup is unfinished and younger than `SUBSHELL_SETUP_TYPED_HOLD_LIMIT`. Abort keys
+/// always go through.
+fn subshell_setup_should_hold_typed_bytes(
+    announced_age: Option<Duration>,
+    abort_key: bool,
+) -> bool {
+    !abort_key && announced_age.is_some_and(|age| age < SUBSHELL_SETUP_TYPED_HOLD_LIMIT)
 }
 
 /// What an interrupt key does while the remote shell's bootstrap is pending (#1001).
