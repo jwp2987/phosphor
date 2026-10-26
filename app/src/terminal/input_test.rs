@@ -8315,6 +8315,68 @@ fn prompt_submission_is_not_queued_during_lrc_when_set_to_send_immediately() {
     });
 }
 
+/// #1023 (owner decision 2026-10-26): with default settings a prompt submitted with plain Enter
+/// while the agent is still replying steers the running agent -- it is NOT queued -- and nothing
+/// in the decision depends on the platform. Queueing is an explicit opt-in: the per-conversation
+/// toggle (`Cmd-Shift-J` / `Ctrl-Shift-J`) or the `Queue` default-submission setting.
+#[test]
+fn prompt_submission_while_agent_replies_steers_by_default_and_queues_only_when_asked() {
+    App::test((), |mut app| async move {
+        let _agent_view = FeatureFlag::AgentView.override_enabled(false);
+        let _queue_flag = FeatureFlag::QueueSlashCommand.override_enabled(true);
+        initialize_app(&mut app);
+
+        // The shipped defaults: interrupt (steer), not queue.
+        assert_eq!(
+            PromptSubmissionMode::default(),
+            PromptSubmissionMode::Interrupt
+        );
+        AISettings::handle(&app).read(&app, |settings, _| {
+            assert_eq!(
+                settings.default_prompt_submission_mode,
+                PromptSubmissionMode::Interrupt
+            );
+        });
+
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        // A plain streaming conversation: no long-running command, no approval pending.
+        let conversation_id = seed_in_progress_conversation(&mut app, &terminal);
+        select_conversation(&mut app, &terminal, conversation_id);
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert!(!model.is_queue_next_prompt_toggle_enabled(conversation_id));
+        });
+
+        input.update(&mut app, |input, ctx| {
+            input.set_input_mode_agent(/* ensure_input_is_focused */ false, ctx);
+            input.replace_buffer_content("steer me", ctx);
+            input.input_enter(ctx);
+        });
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert!(
+                model.queue(conversation_id).is_empty(),
+                "plain Enter during a reply must steer, not queue"
+            );
+        });
+
+        // Explicit opt-in: the toggle queues the next prompt.
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.toggle_queue_next_prompt(conversation_id, ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            input.set_input_mode_agent(/* ensure_input_is_focused */ false, ctx);
+            input.replace_buffer_content("queue me", ctx);
+            input.input_enter(ctx);
+        });
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            let queue = model.queue(conversation_id);
+            assert_eq!(queue.len(), 1);
+            assert_eq!(queue[0].text(), "queue me");
+        });
+    });
+}
+
 /// With the default submission mode set to Queue, the LRC machinery is inert: a submission
 /// during an agent-requested LRC still queues, but as a regular queued row (generic origin)
 /// that waits for the end of the full response rather than the end of the command.
