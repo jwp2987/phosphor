@@ -807,7 +807,7 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         # determine what shell is the login shell on the remote machine.  We perform a preliminary check to see if
         # the remote shell is the Bourne shell to avoid asking it to parse later lines that use syntax it doesn't
         # support.
-        command ssh -o ControlMaster=$control_master_mode -o ControlPath="$control_path" \
+        command ssh -o IPQoS="af21 af21" -o ControlMaster=$control_master_mode -o ControlPath="$control_path" \
         -t $argv \
 "
 export TERM_PROGRAM='WarpTerminal'

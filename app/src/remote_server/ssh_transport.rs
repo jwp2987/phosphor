@@ -1064,6 +1064,38 @@ mod tests {
         ))
     }
 
+    /// #985: the interactive ssh owns the connection the remote-server-proxy channel is
+    /// multiplexed onto. A second, non-tty channel makes OpenSSH mark the whole connection
+    /// "bulk" (IPQoS default `af21 cs1`), which Wi-Fi queues penalise by 40-200 ms per
+    /// keystroke. Every bootstrap wrapper must pin both IPQoS classes before ControlMaster.
+    #[test]
+    fn interactive_ssh_wrappers_pin_ipqos_for_both_classes() {
+        for (name, script) in [
+            (
+                "bash",
+                include_str!("../../assets/bundled/bootstrap/bash_body.sh"),
+            ),
+            (
+                "zsh",
+                include_str!("../../assets/bundled/bootstrap/zsh_body.sh"),
+            ),
+            (
+                "fish",
+                include_str!("../../assets/bundled/bootstrap/fish.sh"),
+            ),
+        ] {
+            let line = script
+                .lines()
+                .find(|l| l.contains("command ssh -o"))
+                .unwrap_or_else(|| panic!("{name}: no ssh invocation"));
+            let ipqos = line
+                .find("-o IPQoS=\"af21 af21\"")
+                .unwrap_or_else(|| panic!("{name}: IPQoS not pinned: {line}"));
+            let control = line.find("-o ControlMaster=").expect("ControlMaster");
+            assert!(ipqos < control, "{name}: IPQoS must precede ControlMaster");
+        }
+    }
+
     #[test]
     fn remote_proxy_command_quotes_identity_key() {
         let transport = SshTransport::new(
