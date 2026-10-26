@@ -4891,13 +4891,25 @@ impl Element for BlockListElement {
                 if !*is_composing
                     || (handle_keystroke_despite_composing(keystroke) && in_long_running_command)
                 {
-                    if let Some(escape_sequence) = (KeystrokeWithDetails {
+                    let escape_sequence = (KeystrokeWithDetails {
                         keystroke,
                         key_without_modifiers: details.key_without_modifiers.as_deref(),
                         chars: Some(chars.as_str()),
                     })
-                    .to_escape_sequence(self.model.lock().deref())
+                    .to_escape_sequence(self.model.lock().deref());
+                    if is_agent_shortcut_enter(keystroke)
+                        && (escape_sequence.is_some()
+                            || (!chars.is_empty() && chars.chars().all(|c| c.is_control())))
                     {
+                        // Same acceptance rule as the plain paths below; the view decides
+                        // whether this is the SSH banner's "Use agent" shortcut (#976).
+                        ctx.dispatch_typed_action(TerminalAction::AgentShortcutEnter {
+                            chars: chars.clone(),
+                            fallback_sequence: escape_sequence,
+                        });
+                        return true;
+                    }
+                    if let Some(escape_sequence) = escape_sequence {
                         ctx.dispatch_typed_action(TerminalAction::ControlSequence(escape_sequence));
                         return true;
                     }
@@ -5521,4 +5533,15 @@ mod tests {
             ));
         }
     }
+}
+
+/// Whether `keystroke` is the Enter shortcut the SSH Warpifying banner advertises as "Use agent":
+/// Cmd-Enter on macOS, Ctrl-Enter elsewhere, with no other modifier.
+pub(crate) fn is_agent_shortcut_enter(keystroke: &warpui::keymap::Keystroke) -> bool {
+    let agent_modifier = if cfg!(target_os = "macos") {
+        keystroke.cmd && !keystroke.ctrl
+    } else {
+        keystroke.ctrl && !keystroke.cmd
+    };
+    keystroke.key == "enter" && agent_modifier && !keystroke.shift && !keystroke.alt
 }

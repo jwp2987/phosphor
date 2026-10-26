@@ -226,6 +226,12 @@ pub enum TerminalAction {
         results_tx: async_channel::Sender<Vec<ShellCompletion>>,
     },
     KeyDown(String),
+    /// Cmd-Enter (macOS) / Ctrl-Enter (elsewhere) pressed on the terminal. Carries what the key
+    /// would have been dispatched as, so it can be passed through unchanged (#976).
+    AgentShortcutEnter {
+        chars: String,
+        fallback_sequence: Option<Vec<u8>>,
+    },
     TypedCharacters(String),
     ContextMenu(ContextMenuAction),
     // IMPORTANT: Do not add a binding for ctrl_d, as we don't want this behavior to leak out to
@@ -604,6 +610,7 @@ impl fmt::Debug for TerminalAction {
             UserInputSequence(_) => f.write_str("UserInputSequence"),
             ControlSequence(_) => f.write_str("ControlSequence"),
             KeyDown(_) => f.write_str("KeyDown"),
+            AgentShortcutEnter { .. } => f.write_str("AgentShortcutEnter"),
             TypedCharacters(_) => f.write_str("TypedCharacters"),
             NotificationsDiscoveryBanner(action) => {
                 write!(f, "NotificationsDiscoveryBanner({action:?})")

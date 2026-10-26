@@ -2806,12 +2806,6 @@ pub struct TerminalView {
 
     warpify_state: WarpifyState,
 
-    /// Whether anything other than a bare Enter has been sent to the pty since the SSH
-    /// Warpifying banner appeared (#976). The banner shows while `ssh` is still connecting, so
-    /// the remote may be asking for a password, a host-key answer or a 2FA code: once the user
-    /// has typed anything for it, Enter belongs to the pty, not to "Use agent".
-    ssh_warpify_banner_input_sent: bool,
-
     /// The window-footer-bar color for this session's currently resolved host, per
     /// `host_footer_color::resolve_footer_bar_color`. A plain cache: recomputed by
     /// `recompute_window_footer_bar_color` only when the session's resolved host,
@@ -3066,11 +3060,22 @@ enum BlockMetadataUpdateSource {
     Osc7,
 }
 
-/// Whether an Enter should become "Use agent" instead of going to the pty while the SSH
-/// Warpifying banner shows (#976). Only a bare Enter on an untouched line qualifies: once
-/// something has been typed for the remote, Enter submits it.
-fn should_divert_enter_to_agent(is_warpifying: bool, input_sent: bool, is_enter: bool) -> bool {
-    is_warpifying && !input_sent && is_enter
+/// What the agent-shortcut Enter (Cmd-Enter on macOS, Ctrl-Enter elsewhere) does (#976).
+#[derive(Debug, PartialEq, Eq)]
+enum AgentShortcutEnterRoute {
+    /// The "Use agent" shortcut the SSH Warpifying banner advertises: switch to agent mode and
+    /// send nothing to the pty.
+    SwitchToAgentMode,
+    /// No banner: the key behaves exactly as it did before the shortcut was intercepted.
+    PassThrough,
+}
+
+fn route_agent_shortcut_enter(is_ssh_warpifying: bool) -> AgentShortcutEnterRoute {
+    if is_ssh_warpifying {
+        AgentShortcutEnterRoute::SwitchToAgentMode
+    } else {
+        AgentShortcutEnterRoute::PassThrough
+    }
 }
 
 impl TerminalView {
@@ -4376,7 +4381,6 @@ impl TerminalView {
             input_hoverable_handle: Default::default(),
             find_model,
             warpify_state: Default::default(),
-            ssh_warpify_banner_input_sent: false,
             // Recomputed just below, once `Self` exists and `ctx.notify()` is
             // callable; `None` here is never rendered.
             window_footer_bar_color: None,
@@ -9436,30 +9440,34 @@ impl TerminalView {
         });
     }
 
+    /// The agent shortcut (Cmd-Enter / Ctrl-Enter) arrived as a key event. While the SSH
+    /// Warpifying banner shows it switches to agent mode and sends nothing to the pty; a plain
+    /// Enter never gets here and always goes to the pty (it may answer a password, host-key or
+    /// 2FA prompt). Otherwise the key is handled as it was before it was intercepted: as
+    /// `fallback_sequence` if the keystroke had an escape sequence, else as a plain key down.
+    fn agent_shortcut_enter(
+        &mut self,
+        characters: &str,
+        fallback_sequence: Option<&[u8]>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match route_agent_shortcut_enter(self.warpify_state.is_ssh_warpifying()) {
+            AgentShortcutEnterRoute::SwitchToAgentMode => {
+                ctx.dispatch_typed_action(&TerminalAction::SetInputModeAgent);
+            }
+            AgentShortcutEnterRoute::PassThrough => match fallback_sequence {
+                Some(sequence) => self.control_sequence_on_terminal(sequence, ctx),
+                None => self.keydown_on_terminal(characters, ctx),
+            },
+        }
+    }
+
     /// Receiving the warpui::Event::KeyDown event from a child element.
     /// Generally, this should be control characters rather than printable characters.
     fn keydown_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
         // Ctrl-C / Ctrl-D still reach the ssh process so the user can abort.
         if !matches!(characters, "\u{3}" | "\u{4}") && self.swallow_input_during_ssh_setup(ctx) {
             return;
-        }
-        // During the SSH Warpifying phase, WarpUI's element handlers consume the key before
-        // keybinding resolution, so Cmd-Enter never reaches SetInputModeAgent. The Warpifying
-        // banner advertises "Use agent ⌘↵", so we route Enter to agent mode instead of the
-        // PTY. Ctrl-C/Ctrl-D remain exempt so the user can still abort.
-        let is_enter = matches!(characters, "\n" | "\r" | "\u{2028}");
-        if should_divert_enter_to_agent(
-            self.warpify_state.is_ssh_warpifying(),
-            self.ssh_warpify_banner_input_sent,
-            is_enter,
-        ) {
-            ctx.dispatch_typed_action(&TerminalAction::SetInputModeAgent);
-            return;
-        }
-        // Anything else that reaches the pty while the banner shows is input for the remote
-        // (a password, a host-key answer, a 2FA code), so the Enter that follows is theirs too.
-        if !is_enter && self.warpify_state.is_ssh_warpifying() {
-            self.ssh_warpify_banner_input_sent = true;
         }
         if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
             self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
@@ -9547,9 +9555,6 @@ impl TerminalView {
             return;
         }
         self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
-        if self.warpify_state.is_ssh_warpifying() {
-            self.ssh_warpify_banner_input_sent = true;
-        }
 
         // The pty refuses user bytes while the agent controls the running command. Typing is
         // then meant for the agent's input, not the void (#901): fall through to the input.
@@ -10778,7 +10783,6 @@ impl TerminalView {
         ctx.focus(&ssh_warpify_block_handle);
 
         self.warpify_state.set_block_id(hidden_ssh_block_id);
-        self.ssh_warpify_banner_input_sent = false;
         self.warpify_state
             .set_ssh_block_state(SshBlockState::Warpifying {
                 handle: ssh_warpify_block_handle,
@@ -28341,6 +28345,7 @@ impl TypedActionView for TerminalView {
             | TypedCharacters(_)
             | UserInputSequence(_)
             | ControlSequence(_)
+            | AgentShortcutEnter { .. }
             | TriggerSubshellBootstrap
             | ShowSubshellBanner(_)
             | DismissWarpifyBanner(_)
@@ -28678,6 +28683,10 @@ impl TypedActionView for TerminalView {
             UserInputSequence(bytes) => self.user_input_sequence(bytes, ctx),
             ControlSequence(bytes) => self.control_sequence_on_terminal(bytes, ctx),
             KeyDown(chars) => self.keydown_on_terminal(chars, ctx),
+            AgentShortcutEnter {
+                chars,
+                fallback_sequence,
+            } => self.agent_shortcut_enter(chars, fallback_sequence.as_deref(), ctx),
             TypedCharacters(chars) => self.typed_characters_on_terminal(chars, ctx),
             CtrlD => self.ctrl_d(ctx),
             CtrlC => self.handle_ctrl_c_input_event(0, ctx),
