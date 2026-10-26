@@ -3253,10 +3253,12 @@ fn get_all_codebase_index_metadata(
 ) -> Result<Vec<ai::workspace::WorkspaceMetadata>, diesel::result::Error> {
     use schema::workspace_metadata::dsl::*;
 
-    Ok(workspace_metadata
-        .load_iter::<WorkspaceMetadataModel, DefaultLoadingMode>(conn)?
-        .filter_map(|item| item.ok().map(ai::workspace::WorkspaceMetadata::from))
-        .collect_vec())
+    Ok(collect_rows(
+        workspace_metadata.load_iter::<WorkspaceMetadataModel, DefaultLoadingMode>(conn)?,
+    )?
+    .into_iter()
+    .map(ai::workspace::WorkspaceMetadata::from)
+    .collect_vec())
 }
 
 /// Reads every persisted language-server enablement back at startup, grouped by
@@ -3638,13 +3640,32 @@ fn save_project(conn: &mut SqliteConnection, project: Project) -> Result<()> {
     Ok(())
 }
 
+/// Drains a diesel row iterator, skipping rows that fail to *decode* but
+/// stopping at the first error from SQLite itself.
+///
+/// `load_iter` yields a `Result` per row and a failed `sqlite3_step` does not
+/// advance the statement: on a damaged page the next call fails again, so a
+/// `filter_map(Result::ok)` over it never terminates and the error values pile
+/// up (#1010). A step error therefore ends the read, and the caller treats a
+/// "malformed" one as an unusable database.
+fn collect_rows<T>(rows: impl Iterator<Item = Result<T, Error>>) -> Result<Vec<T>, Error> {
+    let mut collected = Vec::new();
+    for row in rows {
+        match row {
+            Ok(row) => collected.push(row),
+            Err(Error::DeserializationError(err)) => {
+                log::warn!("Skipping a saved row that could not be decoded: {err}");
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(collected)
+}
+
 fn get_all_projects(conn: &mut SqliteConnection) -> Result<Vec<Project>, diesel::result::Error> {
     use schema::projects::dsl::*;
 
-    Ok(projects
-        .load_iter::<Project, DefaultLoadingMode>(conn)?
-        .filter_map(|item| item.ok())
-        .collect_vec())
+    collect_rows(projects.load_iter::<Project, DefaultLoadingMode>(conn)?)
 }
 
 fn delete_project(conn: &mut SqliteConnection, project_path: &str) -> Result<()> {
@@ -3660,14 +3681,11 @@ fn get_all_project_rules(
 ) -> Result<Vec<ProjectRulePath>, diesel::result::Error> {
     use schema::project_rules::dsl::*;
 
-    Ok(project_rules
-        .load_iter::<ProjectRules, DefaultLoadingMode>(conn)?
-        .filter_map(|item| match item {
-            Ok(rule) => Some(ProjectRulePath {
-                path: PathBuf::from(rule.path),
-                project_root: PathBuf::from(rule.project_root),
-            }),
-            Err(_) => None,
+    Ok(collect_rows(project_rules.load_iter::<ProjectRules, DefaultLoadingMode>(conn)?)?
+        .into_iter()
+        .map(|rule| ProjectRulePath {
+            path: PathBuf::from(rule.path),
+            project_root: PathBuf::from(rule.project_root),
         })
         .collect_vec())
 }
@@ -4772,6 +4790,7 @@ fn read_sqlite_data_counting(
     let db_windows = windows.load::<Window>(conn)?;
 
     let mut active_window_index: Option<usize> = None;
+    let unusable_read = std::cell::Cell::new(false);
 
     let db_tabs = Tab::belonging_to(&db_windows)
         .order_by(schema::tabs::columns::id.asc())
@@ -4820,9 +4839,18 @@ fn read_sqlite_data_counting(
             let saved_tabs: Vec<_> = tabs_for_window
                 .into_iter()
                 .filter_map(|tab| {
+                    if unusable_read.get() {
+                        return None;
+                    }
                     let root = match read_root_node(conn, tab.id) {
                         Ok(root) => root,
-                        Err(_) => {
+                        Err(err) => {
+                            if error_means_unusable_database(&underlying_error_message(&err)) {
+                                // Damaged pages, not a tab that merely lacks
+                                // rows: stop reading and let the caller move
+                                // the file aside instead of limping on (#1010).
+                                unusable_read.set(true);
+                            }
                             skipped_tabs.set(skipped_tabs.get() + 1);
                             return None;
                         }
@@ -4961,6 +4989,13 @@ fn read_sqlite_data_counting(
             }
         })
         .collect();
+
+    if unusable_read.get() {
+        return Err(Error::DatabaseError(
+            diesel::result::DatabaseErrorKind::Unknown,
+            Box::new("database disk image is malformed".to_string()),
+        ));
+    }
 
     let object_metadata =
         schema::object_metadata::dsl::object_metadata.load::<model::ObjectMetadata>(conn)?;
@@ -5264,37 +5299,37 @@ fn read_sqlite_data_counting(
         })
         .collect();
 
-    let workspace_teams: Vec<model::WorkspaceTeam> = schema::workspace_teams::dsl::workspace_teams
-        .load_iter::<model::WorkspaceTeam, DefaultLoadingMode>(conn)?
-        .filter_map(|workspace_team| workspace_team.ok())
-        .collect();
+    let workspace_teams: Vec<model::WorkspaceTeam> = collect_rows(
+        schema::workspace_teams::dsl::workspace_teams
+            .load_iter::<model::WorkspaceTeam, DefaultLoadingMode>(conn)?,
+    )?;
 
-    let workspaces: Vec<WorkspaceMetadata> = schema::workspaces::dsl::workspaces
-        .load_iter::<model::Workspace, DefaultLoadingMode>(conn)?
-        .filter_map(|workspace| {
-            workspace.ok().map(|workspace| {
-                let teams_for_workspace = workspace_teams
-                    .iter()
-                    .filter_map(|workspace_team| {
-                        if workspace_team.workspace_server_uid == workspace.server_uid {
-                            teams.iter().find(|team| {
-                                team.uid
-                                    == ServerId::from_string_lossy(&workspace_team.team_server_uid)
-                            })
-                        } else {
-                            None
-                        }
+    let workspaces: Vec<WorkspaceMetadata> = collect_rows(
+        schema::workspaces::dsl::workspaces
+            .load_iter::<model::Workspace, DefaultLoadingMode>(conn)?,
+    )?
+    .into_iter()
+    .map(|workspace| {
+        let teams_for_workspace = workspace_teams
+            .iter()
+            .filter_map(|workspace_team| {
+                if workspace_team.workspace_server_uid == workspace.server_uid {
+                    teams.iter().find(|team| {
+                        team.uid == ServerId::from_string_lossy(&workspace_team.team_server_uid)
                     })
-                    .cloned()
-                    .collect();
-                WorkspaceMetadata::from_local_cache(
-                    workspace.server_uid.into(),
-                    workspace.name,
-                    Some(teams_for_workspace),
-                )
+                } else {
+                    None
+                }
             })
-        })
-        .collect();
+            .cloned()
+            .collect();
+        WorkspaceMetadata::from_local_cache(
+            workspace.server_uid.into(),
+            workspace.name,
+            Some(teams_for_workspace),
+        )
+    })
+    .collect();
 
     let current_workspace_uid: Option<WorkspaceUid> = schema::workspaces::dsl::workspaces
         .filter(schema::workspaces::dsl::is_selected.eq(true))
@@ -5303,36 +5338,44 @@ fn read_sqlite_data_counting(
         .optional()?
         .map(|uid| uid.into());
 
-    let commands = schema::commands::dsl::commands
-        // Newest first (`id DESC`); `History::new` relies on this to keep the most recent
-        // metadata for each distinct command.
-        .order(schema::commands::columns::id.desc())
-        // Inserts already trim the table to COMMANDS_COUNT_LIMIT, so this only bites a database
-        // above that threshold (e.g. 1M rows from before the trim existed) and is normally a
-        // no-op. In that case only the newest N rows are loaded, so the per-command `count` in
-        // `History::command_summaries` covers those rows rather than the whole table (#863).
-        .limit(COMMANDS_COUNT_LIMIT)
-        .load_iter::<model::Command, DefaultLoadingMode>(conn)?
-        .filter_map(|command| command.ok())
-        .map(PersistedCommand::from)
+    let commands = collect_rows(
+        schema::commands::dsl::commands
+            // Newest first (`id DESC`); `History::new` relies on this to keep the most recent
+            // metadata for each distinct command.
+            .order(schema::commands::columns::id.desc())
+            // Inserts already trim the table to COMMANDS_COUNT_LIMIT, so this only bites a database
+            // above that threshold (e.g. 1M rows from before the trim existed) and is normally a
+            // no-op. In that case only the newest N rows are loaded, so the per-command `count` in
+            // `History::command_summaries` covers those rows rather than the whole table (#863).
+            .limit(COMMANDS_COUNT_LIMIT)
+            .load_iter::<model::Command, DefaultLoadingMode>(conn)?,
+    )?
+    .into_iter()
+    .map(PersistedCommand::from)
+    .collect();
+
+    let user_profiles = collect_rows(
+        schema::user_profiles::dsl::user_profiles
+            .load_iter::<model::UserProfile, DefaultLoadingMode>(conn)?,
+    )?
+    .into_iter()
+    .map(UserProfileWithUID::from)
         .collect();
 
-    let user_profiles = schema::user_profiles::dsl::user_profiles
-        .load_iter::<model::UserProfile, DefaultLoadingMode>(conn)?
-        .filter_map(|user_profile| user_profile.ok())
-        .map(UserProfileWithUID::from)
+    let object_actions: Vec<ObjectAction> = collect_rows(
+        schema::object_actions::dsl::object_actions
+            .load_iter::<model::PersistedObjectAction, DefaultLoadingMode>(conn)?,
+    )? // parse into PersistedObjectAction
+    .into_iter()
+    .filter_map(|action| action.try_into().ok())
         .collect();
 
-    let object_actions: Vec<ObjectAction> = schema::object_actions::dsl::object_actions
-        .load_iter::<model::PersistedObjectAction, DefaultLoadingMode>(conn)?
-        .filter_map(|object_action| object_action.ok()) // parse into PersistedObjectAction
-        .filter_map(|action| action.try_into().ok())
-        .collect();
-
-    let server_experiments = schema::server_experiments::dsl::server_experiments
-        .load_iter::<model::ServerExperiment, DefaultLoadingMode>(conn)?
-        .filter_map(|server_experiment| server_experiment.ok())
-        .filter_map(|server_experiment| {
+    let server_experiments = collect_rows(
+        schema::server_experiments::dsl::server_experiments
+            .load_iter::<model::ServerExperiment, DefaultLoadingMode>(conn)?,
+    )?
+    .into_iter()
+    .filter_map(|server_experiment| {
             ServerExperiment::from_string(server_experiment.experiment).ok()
         })
         .collect();
@@ -5352,8 +5395,9 @@ fn read_sqlite_data_counting(
     // Find the smallest refresh timestamp to pass into ObjectStoreModel.
     let time_of_next_force_object_refresh: Option<DateTime<Utc>> =
         schema::cloud_objects_refreshes::dsl::cloud_objects_refreshes
-            .load_iter::<model::ObjectStoreRefresh, DefaultLoadingMode>(conn)?
-            .filter_map(|refresh| refresh.ok())
+            .load_iter::<model::ObjectStoreRefresh, DefaultLoadingMode>(conn)
+            .and_then(collect_rows)?
+            .into_iter()
             .map(|refresh| refresh.time_of_next_refresh.and_utc())
             .min();
 
