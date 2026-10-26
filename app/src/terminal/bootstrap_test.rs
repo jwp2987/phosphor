@@ -998,6 +998,28 @@ fn test_init_subshell_never_deletes_or_rewrites_history() {
             );
             assert!(lines.len() >= 2 && lines[0].contains("-AddToHistoryHandler"));
             assert!(lines[0].contains("_warpPrevHistoryHandler"), "must chain: {}", lines[0]);
+
+            // #967: the handler also refuses the line that later sources the temp bootstrap file,
+            // and the line that installs it carries the word PSReadLine's default handler keeps
+            // out of the history file.
+            assert!(lines[0].contains(r"\.tmp[A-Za-z0-9]{6}\.ps1"), "{}", lines[0]);
+            assert!(lines[0].trim_end().ends_with("# apikey"), "{}", lines[0]);
+            // The pattern in the handler matches the line `source_bootstrap_script` types for a
+            // `tempfile` path (same regex dialect for this subset), and not an ordinary command.
+            let tmp_path = "/var/folders/ab/c_d/T/.tmpAbC123.ps1";
+            let typed = format!(
+                " . {}",
+                warp_util::path::ShellFamily::PowerShell.escape(tmp_path)
+            );
+            let pattern = lines[0]
+                .split("-match '")
+                .nth(1)
+                .and_then(|rest| rest.split("')").next())
+                .expect("the handler has a bootstrap-file pattern");
+            let regex = regex::Regex::new(pattern).unwrap();
+            assert!(regex.is_match(typed.trim_start()), "{pattern} vs {typed}");
+            assert!(!regex.is_match(". ./build.ps1"));
+            assert!(!regex.is_match("Get-ChildItem .tmpAbC123.ps1"));
         });
     });
 }
