@@ -263,3 +263,39 @@ fn test_real_shell_commands_still_classify_as_shell() {
         }
     });
 }
+
+/// #964: short prose that opens with a language/tool name must stay AI when that program is not
+/// installed (the overlap list is trimmed to words that are never prose openers), while a bare
+/// `fish` is a shell.
+#[test]
+fn test_prose_opening_with_tool_name_stays_ai_when_not_installed() {
+    futures::executor::block_on(async move {
+        let classifier = HeuristicClassifier;
+        let context = Context {
+            current_input_type: InputType::AI,
+            is_agent_follow_up: false,
+            commands_fully_loaded: true,
+            in_active_agent_view: false,
+            command_data_current: false,
+        };
+        for text in ["swift vs kotlin?", "ruby is great", "java is slow"] {
+            let token = mock_parsed_input_token_without_descriptions(text);
+            assert_eq!(
+                classifier
+                    .detect_input_type(token, &context)
+                    .await
+                    .input_type,
+                InputType::AI,
+                "expected {text:?} to stay AI"
+            );
+        }
+        let token = mock_parsed_input_token_without_descriptions("fish");
+        assert_eq!(
+            classifier
+                .detect_input_type(token, &context)
+                .await
+                .input_type,
+            InputType::Shell,
+        );
+    });
+}

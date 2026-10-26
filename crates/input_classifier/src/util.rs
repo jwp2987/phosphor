@@ -1486,6 +1486,8 @@ const COLLISION_HEADS: [&str; 5] = ["say", "what", "write", "where", "do"];
 /// greeting, or at least one unquoted [`PROSE_FUNCTION_WORDS`] member (`where is the config`,
 /// `write a script that counts lines`, `what does ls -la do`, `do it`).
 fn collision_head_reads_as_sentence(head: &str, remaining: &[ShellWord]) -> bool {
+    let head = head.to_lowercase();
+    let head = head.as_str();
     if !COLLISION_HEADS.contains(&head)
         || remaining.is_empty()
         || remaining.iter().any(|word| {
@@ -1499,13 +1501,13 @@ fn collision_head_reads_as_sentence(head: &str, remaining: &[ShellWord]) -> bool
     }
     // `where is git`, `what is ls`, `where git`: a head plus one word (optionally via `is`) is a
     // lookup, not a sentence. `do it` is the exception: `do` is never a command by itself.
-    if head != "do"
+    if !head.eq("do")
         && !head.eq("say")
         && (remaining.len() == 1 || (remaining.len() == 2 && remaining[0].text == "is"))
     {
         return false;
     }
-    if head == "say" {
+    if head.eq("say") {
         return remaining.len() == 1
             && SAY_GREETING_WORDS.contains(
                 &strip_sentence_punctuation(&remaining[0].text)
