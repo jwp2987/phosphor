@@ -617,6 +617,21 @@ impl TerminalView {
             }
 
             self.create_and_insert_ai_block(params, ctx);
+
+            // A read-only view of a live conversation never enters the conversation's agent view
+            // (that would move liveness off the pane that is running it, #988), so its AI blocks
+            // must not be scoped to it: `TranscriptScope::Terminal` hides every item that carries
+            // an agent view conversation id, which left the viewer's pane blank (#992).
+            if !register_in_history_model {
+                if let Some(rich_content) = self.rich_content_views.last_mut() {
+                    rich_content.set_agent_view_conversation_id(None);
+                    let view_id = rich_content.view_id();
+                    self.model
+                        .lock()
+                        .block_list_mut()
+                        .update_agent_view_conversation_id_for_rich_content(view_id, None);
+                }
+            }
         }
 
         // Restored command blocks are inserted into the block list without going through the

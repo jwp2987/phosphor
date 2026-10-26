@@ -9540,6 +9540,20 @@ impl TerminalView {
         });
     }
 
+    /// Whether a banner that advertises "Use agent <shortcut>" is on screen: the SSH Warpifying
+    /// banner, or the warpify footer (ssh *or* local "Phosphorize subshell") that the
+    /// use-agent footer renders in place of its normal content. The latter is the two-item
+    /// "Phosphorize subshell | Use agent" banner, which `is_ssh_warpifying` alone missed (#976).
+    fn agent_shortcut_banner_visible(&self, ctx: &AppContext) -> bool {
+        self.warpify_state.is_ssh_warpifying()
+            || (!self.use_agent_footer_suppressed
+                && self
+                    .use_agent_footer
+                    .as_ref(ctx)
+                    .warpify_mode(ctx)
+                    .is_some())
+    }
+
     /// The agent shortcut (Cmd-Enter / Ctrl-Shift-Enter) arrived as a key event. While the SSH
     /// Warpifying banner shows it switches to agent mode and sends nothing to the pty; a plain
     /// Enter never gets here and always goes to the pty (it may answer a password, host-key or
@@ -9551,7 +9565,7 @@ impl TerminalView {
         fallback_sequence: Option<&[u8]>,
         ctx: &mut ViewContext<Self>,
     ) {
-        match route_agent_shortcut_enter(self.warpify_state.is_ssh_warpifying()) {
+        match route_agent_shortcut_enter(self.agent_shortcut_banner_visible(ctx)) {
             AgentShortcutEnterRoute::SwitchToAgentMode => {
                 ctx.dispatch_typed_action(&TerminalAction::SetInputModeAgent);
             }
