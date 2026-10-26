@@ -300,7 +300,6 @@ fn reset_rearms_the_damage_notice() {
     assert_eq!(take_database_problem_notice().unwrap().problem, DatabaseProblem::Corrupt);
 }
 
-
 /// #971: a lock held elsewhere is its own problem, so it gets a notice that
 /// says to wait rather than "Other" with a raw SQLite string.
 #[test]
@@ -319,4 +318,29 @@ fn locked_database_messages_are_classified_as_locked() {
         );
     }
     assert!(!is_lock_error("attempt to write a readonly database"));
+}
+
+/// #971: a lock found at startup disables saving for the session and nothing
+/// retries, so its wording must not promise a retry; the runtime wording (the
+/// writer does retry the latest snapshot) and the write-failing toast it feeds
+/// must not contradict themselves either.
+#[test]
+fn startup_lock_wording_does_not_claim_a_retry() {
+    const FTL: &str = include_str!("../../i18n/en/warp.ftl");
+    let message = |key: &str| {
+        FTL.lines()
+            .find_map(|line| line.strip_prefix(key)?.strip_prefix(" = "))
+            .unwrap_or_else(|| panic!("missing message {key}"))
+            .to_lowercase()
+    };
+    let startup = message("workspace-database-reason-locked-startup");
+    assert!(
+        !startup.contains("retry") && !startup.contains("will save once"),
+        "{startup}"
+    );
+    assert!(startup.contains("won't be saved"), "{startup}");
+    assert!(message("workspace-database-reason-locked").contains("retrying"));
+    // The runtime lock toast must not append the "won't be restored" suffix that
+    // contradicts the retry promise.
+    assert!(!message("workspace-database-write-locked-toast").contains("won't be restored"));
 }

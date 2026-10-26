@@ -28,9 +28,10 @@ pub enum DatabaseProblem {
     /// missing table, or tabs whose rows do not read back. `skipped_tabs` is
     /// 0 when the whole read failed.
     PartialRestore { skipped_tabs: usize },
-    /// Another process (or connection) holds a lock on the database that did not
-    /// clear while the writer retried (#971). Nothing is damaged; the writer keeps
-    /// retrying the latest snapshot and saves once the lock is released.
+    /// Another process (or connection) holds a lock on the database (#971).
+    /// Nothing is damaged. At startup persistence is disabled for the session;
+    /// while running, the writer keeps retrying the latest snapshot (other
+    /// events that hit the lock are not retried).
     Locked,
     /// Anything else; carries SQLite's or the OS's message.
     Other(String),
