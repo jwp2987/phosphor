@@ -336,10 +336,14 @@ pub fn test_completes_inside_open_quote() {
         suggest_file_path_completions_only: false,
         parse_quotes_as_literals: false,
     };
-    // (line, expected replacements for the partial word typed inside the quote)
+    // (line, expected replacements for the partial word typed inside the quote). `cd` only
+    // completes directories; `cat` (no signature, file-path fallback) also offers files, which
+    // exercises the per-quote escaping and the closing quote after a file.
     for (line, expected) in [
-        ("cd 'wi", vec!["wiki dir/", "wiki$.txt'"]),
-        ("cd \"wi", vec!["wiki dir/", "wiki\\$.txt\""]),
+        ("cd 'wi", vec!["wiki dir/"]),
+        ("cd \"wi", vec!["wiki dir/"]),
+        ("cat 'wi", vec!["wiki dir/", "wiki$.txt'"]),
+        ("cat \"wi", vec!["wiki dir/", "wiki\\$.txt\""]),
     ] {
         let results = suggestions_for_test(line, line.len(), options(), &ctx)
             .unwrap_or_else(|| panic!("{line:?} should offer completions"));
