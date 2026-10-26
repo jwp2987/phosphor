@@ -16242,3 +16242,70 @@ fn alt_screen_mouse_and_scroll_do_not_take_agent_control() {
         );
     })
 }
+
+/// #1016: input typed after a deferred Enter has run, while the replay of what was typed during
+/// the verdict wait is still pending, queues behind it in order instead of being routed ahead.
+#[test]
+fn test_keys_typed_while_after_enter_replay_is_pending_queue_in_order() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.input.update(ctx, |input, _| {
+                input.open_after_enter_replay_for_test(
+                    vec![AfterEnterInput::Text("ec".to_string())],
+                    true,
+                )
+            });
+            view.typed_characters_on_terminal("ho ", ctx);
+            view.typed_characters_on_terminal("X", ctx);
+            view.keydown_on_terminal("\r", ctx);
+            view.typed_characters_on_terminal("ls", ctx);
+        });
+        terminal.read(&app, |view, ctx| {
+            let input = view.input.as_ref(ctx);
+            assert_eq!(input.buffer_text(ctx), "", "nothing may overtake the queue");
+            assert_eq!(
+                input.after_enter_replay_for_test(),
+                [
+                    AfterEnterInput::Text("echo X".to_string()),
+                    AfterEnterInput::Enter,
+                    AfterEnterInput::Text("ls".to_string()),
+                ]
+            );
+        });
+
+        // An interrupt cancels the pending replay.
+        terminal.update(&mut app, |view, ctx| view.keydown_on_terminal("\u{3}", ctx));
+        terminal.read(&app, |view, ctx| {
+            assert!(!view.input.as_ref(ctx).after_enter_replay_open());
+        });
+    })
+}
+
+/// #1016: once the replay drains, what was typed during the wait and after it reaches the
+/// editor in typed order.
+#[test]
+fn test_after_enter_replay_drains_in_typed_order() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.input.update(ctx, |input, _| {
+                input.open_after_enter_replay_for_test(
+                    vec![AfterEnterInput::Text("ec".to_string())],
+                    false,
+                )
+            });
+            view.typed_characters_on_terminal("ho X", ctx);
+            view.replay_after_deferred_enter(Instant::now(), ctx);
+        });
+        terminal.read(&app, |view, ctx| {
+            let input = view.input.as_ref(ctx);
+            assert!(!input.after_enter_replay_open());
+            assert_eq!(input.buffer_text(ctx), "echo X");
+        });
+    })
+}

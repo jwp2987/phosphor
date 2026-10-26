@@ -671,6 +671,10 @@ fn find_bar_banner_relayout_delay(find_bar_open: bool) -> Option<Duration> {
 /// (#899, #900). Long enough for an ordinary process to run its signal handlers and exit.
 const AGENT_INTERRUPT_GRACE: Duration = Duration::from_secs(3);
 
+/// The longest input typed after a deferred Enter waits for the pty to take the command that
+/// Enter submitted, before it is routed anyway (#1016).
+const AFTER_ENTER_REPLAY_PTY_WAIT: Duration = Duration::from_millis(300);
+
 pub const WARP_PROMPT_HEIGHT_LINES: f32 = 0.9;
 
 const SCROLLBAR_WIDTH: ScrollbarWidth = ScrollbarWidth::Auto;
@@ -9669,6 +9673,18 @@ impl TerminalView {
         } else if self.swallow_input_during_ssh_setup(Some(characters), ctx) {
             return;
         }
+        if self.input.as_ref(ctx).after_enter_replay_open() {
+            // #1016: keys after a deferred Enter wait their turn; an interrupt cancels the wait.
+            if is_abort_key(characters.as_bytes()) {
+                self.input
+                    .update(ctx, |input, _| input.clear_after_enter_replay());
+            } else if characters == "\r" || characters == "\n" {
+                self.input.update(ctx, |input, _| {
+                    input.queue_after_enter_replay(AfterEnterInput::Enter)
+                });
+                return;
+            }
+        }
         if self.is_long_running()
             || self.typeahead_handoff_routes_keys_to_pty()
             || self.forwards_keys_during_subshell_bootstrap(is_abort_key(characters.as_bytes()))
@@ -10134,6 +10150,14 @@ impl TerminalView {
         } else if self.swallow_input_during_ssh_setup(Some(characters), ctx) {
             return;
         }
+        // #1016: input typed after a deferred Enter is still waiting to be routed; this follows
+        // it, so it queues behind rather than overtaking it.
+        if self.input.as_ref(ctx).after_enter_replay_open() {
+            self.input.update(ctx, |input, _| {
+                input.queue_after_enter_replay(AfterEnterInput::Text(characters.to_string()))
+            });
+            return;
+        }
         self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
 
         // The pty refuses user bytes while the agent controls the running command. Typing is
@@ -10185,12 +10209,29 @@ impl TerminalView {
     /// (#1016), in order, once that Enter has run: the same way keys typed right after any
     /// submitted Enter are routed. An Enter goes where the text before it went: to the pty when
     /// the pty takes the typed characters, otherwise it submits the editor.
-    fn replay_after_deferred_enter(
-        &mut self,
-        queued: &[AfterEnterInput],
-        ctx: &mut ViewContext<Self>,
-    ) {
-        for input in queued {
+    fn replay_after_deferred_enter(&mut self, started: Instant, ctx: &mut ViewContext<Self>) {
+        if !self.input.as_ref(ctx).after_enter_replay_open() {
+            return;
+        }
+        // The submitted shell command is not on its way to the pty until the hand-off engages;
+        // text routed before that lands in the editor, and the shell's report is later inserted
+        // in front of it (reordering the line). Everything typed meanwhile queues behind.
+        let pty_ready = self.should_write_typed_chars_to_pty(ctx)
+            || self.is_long_running()
+            || self.typeahead_handoff_routes_keys_to_pty();
+        if self.input.as_ref(ctx).after_enter_replay_awaits_pty()
+            && !pty_ready
+            && started.elapsed() < AFTER_ENTER_REPLAY_PTY_WAIT
+        {
+            ctx.spawn(Timer::after(Duration::from_millis(5)), move |me, _, ctx| {
+                me.replay_after_deferred_enter(started, ctx)
+            });
+            return;
+        }
+        let queued = self
+            .input
+            .update(ctx, |input, _| input.take_after_enter_replay());
+        for input in &queued {
             match input {
                 AfterEnterInput::Text(text) => self.typed_characters_on_terminal(text, ctx),
                 AfterEnterInput::Enter => {
@@ -24253,8 +24294,8 @@ impl TerminalView {
                     self.focus_terminal(ctx);
                 }
             }
-            InputEvent::ReplayAfterDeferredEnter(queued) => {
-                self.replay_after_deferred_enter(queued, ctx);
+            InputEvent::ReplayAfterDeferredEnter => {
+                self.replay_after_deferred_enter(Instant::now(), ctx);
             }
             #[cfg(not(target_family = "wasm"))]
             InputEvent::OpenPluginInstructionsPane(agent, kind) => {

@@ -1174,7 +1174,8 @@ pub enum Event {
     TypeaheadHandoffEnterDeferred,
     /// Input the user typed after an Enter that waited for its classification verdict (#1016).
     /// The Enter has now run; the terminal view routes these, in order, as if typed after it.
-    ReplayAfterDeferredEnter(Vec<AfterEnterInput>),
+    /// The terminal view drains [`Input::take_after_enter_replay`] once the pty route is settled.
+    ReplayAfterDeferredEnter,
 }
 
 /// One piece of input the user typed after an Enter that is waiting for a classification verdict
@@ -1830,6 +1831,16 @@ pub struct Input {
     verdict_wait_gave_up_on: Option<String>,
     /// The Enter currently waiting for a verdict, with the input typed behind it (#1016).
     verdict_wait: Option<VerdictWait>,
+    /// Input typed after a deferred Enter, held until the terminal view has routed it (#1016).
+    /// While it is non-empty or `after_enter_replay_open` is set, every new key appends here
+    /// instead of being routed, so nothing overtakes what was typed earlier.
+    after_enter_replay: Vec<AfterEnterInput>,
+    /// A replay is in progress: the Enter has run but the queue is not drained yet.
+    after_enter_replay_open: bool,
+    /// The deferred Enter submitted a shell command, so the replay must wait until the pty has
+    /// taken the command and routes keys (before that, routed text lands in the editor and the
+    /// shell's typeahead report is later inserted in front of it).
+    after_enter_replay_awaits_pty: bool,
     /// Whether the last Enter submitted a shell command; read by `input_enter_as_shell_command`.
     last_enter_submitted_shell_command: bool,
     /// What the editor held when it last submitted a command. The editor is cleared when that
@@ -3493,6 +3504,9 @@ impl Input {
             shell_command_submit_pending: false,
             verdict_wait_gave_up_on: None,
             verdict_wait: None,
+            after_enter_replay: Vec::new(),
+            after_enter_replay_open: false,
+            after_enter_replay_awaits_pty: false,
             last_enter_submitted_shell_command: false,
             editor_submission: None,
             last_enter_submitted_ai_query: false,
@@ -12821,6 +12835,11 @@ impl Input {
             }
             return true;
         }
+        // The deferred Enter has run but its replay has not drained: this Enter follows it.
+        if self.after_enter_replay_open {
+            self.queue_after_enter_replay(AfterEnterInput::Enter);
+            return true;
+        }
         // What the Enter-time rules can decide without a verdict is decided now, exactly as
         // before: an unambiguous command or a known head settles to Shell at once (#906, #956),
         // a request to the agent settles to AI. Settling clears the pending verdict, so only
@@ -12919,9 +12938,19 @@ impl Input {
                     .take()
                     .map(|wait| wait.queued)
                     .unwrap_or_default();
+                // Open the replay before the submit so nothing typed from here on can be routed
+                // ahead of the queue (#1016); the view drains it once the pty route is settled.
+                let has_queued = !queued.is_empty();
+                if has_queued {
+                    self.after_enter_replay = queued;
+                    self.after_enter_replay_open = true;
+                    self.after_enter_replay_awaits_pty = false;
+                }
+                self.last_enter_submitted_shell_command = false;
                 self.input_enter(ctx);
-                if !queued.is_empty() {
-                    ctx.emit(Event::ReplayAfterDeferredEnter(queued));
+                if has_queued {
+                    self.after_enter_replay_awaits_pty = self.last_enter_submitted_shell_command;
+                    ctx.emit(Event::ReplayAfterDeferredEnter);
                 }
             }
             YoungSubmit::Wait => {
@@ -12944,6 +12973,57 @@ impl Input {
                 }
             }
         }
+    }
+
+    /// Whether input typed after a deferred Enter is still waiting to be routed (#1016): new
+    /// keys must queue behind it rather than overtake it.
+    pub(crate) fn after_enter_replay_open(&self) -> bool {
+        self.after_enter_replay_open
+    }
+
+    /// Whether the replay must wait for the pty to take the submitted shell command.
+    pub(crate) fn after_enter_replay_awaits_pty(&self) -> bool {
+        self.after_enter_replay_awaits_pty
+    }
+
+    /// Appends `input` behind what is already waiting; adjacent text is merged.
+    pub(crate) fn queue_after_enter_replay(&mut self, input: AfterEnterInput) {
+        match (self.after_enter_replay.last_mut(), input) {
+            (Some(AfterEnterInput::Text(queued)), AfterEnterInput::Text(more)) => {
+                queued.push_str(&more)
+            }
+            (_, input) => self.after_enter_replay.push(input),
+        }
+    }
+
+    /// Takes the whole replay queue and closes the replay: the caller routes it in order.
+    pub(crate) fn take_after_enter_replay(&mut self) -> Vec<AfterEnterInput> {
+        self.after_enter_replay_open = false;
+        self.after_enter_replay_awaits_pty = false;
+        std::mem::take(&mut self.after_enter_replay)
+    }
+
+    /// Opens a replay holding `queued`, as a submitted deferred Enter does.
+    #[cfg(test)]
+    pub(crate) fn open_after_enter_replay_for_test(
+        &mut self,
+        queued: Vec<AfterEnterInput>,
+        awaits_pty: bool,
+    ) {
+        self.after_enter_replay = queued;
+        self.after_enter_replay_open = true;
+        self.after_enter_replay_awaits_pty = awaits_pty;
+    }
+
+    /// The replay queue, for tests.
+    #[cfg(test)]
+    pub(crate) fn after_enter_replay_for_test(&self) -> &[AfterEnterInput] {
+        &self.after_enter_replay
+    }
+
+    /// Drops the replay (the user interrupted).
+    pub(crate) fn clear_after_enter_replay(&mut self) {
+        let _ = self.take_after_enter_replay();
     }
 
     /// Marks the typeahead the hand-off just inserted as young (#933).
