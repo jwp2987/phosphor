@@ -2189,7 +2189,27 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                         deferred = true;
                                         Err(anyhow::anyhow!("database is locked"))
                                     } else {
-                                        handle_model_event(event, conn)
+                                        // #1000: leave a trace of when a conversation write
+                                        // actually reached the database, to tell sender-side
+                                        // lag from writer-side lag in a real-app log.
+                                        let conversation_write = match &event {
+                                            ModelEvent::UpdateMultiAgentConversation {
+                                                conversation_id,
+                                                ..
+                                            } => Some(conversation_id.clone()),
+                                            _ => None,
+                                        };
+                                        let started = std::time::Instant::now();
+                                        let result = handle_model_event(event, conn);
+                                        if let Some(conversation_id) = conversation_write {
+                                            log::debug!(
+                                                "Conversation {conversation_id} write finished \
+                                                 in {:?} (ok: {})",
+                                                started.elapsed(),
+                                                result.is_ok()
+                                            );
+                                        }
+                                        result
                                     }
                                 }
                             };
