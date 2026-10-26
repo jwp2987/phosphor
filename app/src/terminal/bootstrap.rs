@@ -268,17 +268,49 @@ pub fn init_shell_script_for_shell(
     script.replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string())
 }
 
-/// Returns the command to be used to emit the InitShell hook for a new subshell session.
+/// Longest line (bytes, excluding the terminator) the subshell bootstrap writes to a pty.
 ///
-/// If `shell_type` is `Some()`, returns a shell type-specific command (e.g. valid command for
-/// bash, fish, zsh, or pwsh). Otherwise, returns a shell type-agnostic command that emits the
-/// right `InitShell` hook based on the shell it is evaluated in.
+/// The bootstrap is typed into a shell whose tty may still be canonical (cooked): the new shell
+/// has not started its line editor yet. A canonical line is limited to `MAX_CANON` -- 1024 on
+/// macOS, 4096 on Linux -- and a longer one is silently truncated, which leaves the shell
+/// at a continuation prompt with the tail of the script lost (#962). Every line stays well under
+/// the smaller limit.
+pub(crate) const MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES: usize = 900;
+
+/// Budget for the quoted payload of one chunk line (after single-quote escaping). The fixed text
+/// around it (the assignment and the history cleanup) is under 100 bytes.
+const SUBSHELL_CHUNK_PAYLOAD_BYTES: usize = 700;
+
+/// Returns the command to be used to emit the InitShell hook for a new subshell session, as a
+/// single string whose lines are separated by CR.
+///
+/// See [`init_subshell_command_lines`], which the app uses so it can pace the writes.
 pub fn init_subshell_command(
     shell_type: Option<ShellType>,
     vars: &[EnvVar],
     session_id: SessionId,
     ctx: &AppContext,
 ) -> String {
+    init_subshell_command_lines(shell_type, vars, session_id, ctx).join("\r")
+}
+
+/// Returns the lines to be written (each followed by Enter) to emit the InitShell hook for a new
+/// subshell session.
+///
+/// If `shell_type` is `Some()`, returns shell type-specific lines (e.g. valid for bash, fish,
+/// zsh, or pwsh). Otherwise, returns a shell type-agnostic command that emits the right
+/// `InitShell` hook based on the shell it is evaluated in.
+///
+/// For bash, zsh and fish the script is longer than a canonical tty line may be (#962), so it is
+/// accumulated in a shell variable over several short lines and evaluated by the last one. Every
+/// line is below [`MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES`], starts with a space (so histignorespace
+/// and fish skip it) and, in bash, deletes itself from the history list (#967).
+pub fn init_subshell_command_lines(
+    shell_type: Option<ShellType>,
+    vars: &[EnvVar],
+    session_id: SessionId,
+    ctx: &AppContext,
+) -> Vec<String> {
     match shell_type {
         Some(ShellType::PowerShell) => {
             let subshell_script = init_subshell_script_for_shell(
@@ -293,29 +325,73 @@ pub fn init_subshell_command(
             // see its `$global:WARP_BOOTSTRAPPED = 1`) is PowerShell's equivalent guard
             // variable, and the subshell script is raw PowerShell source rather than a
             // single-quoted `eval` argument, so no escaping is needed here.
-            format!(" if (-not $global:WARP_BOOTSTRAPPED) {{ {subshell_script} }}")
+            vec![format!(
+                " if (-not $global:WARP_BOOTSTRAPPED) {{ {subshell_script} }}"
+            )]
         }
-        Some(shell_type @ (ShellType::Bash | ShellType::Zsh)) => {
-            let subshell_script =
-                init_subshell_script_for_shell(shell_type, &crate::ASSETS, vars, session_id, ctx);
-            // `${WARP_BOOTSTRAPPED-}`, not a bare `$WARP_BOOTSTRAPPED`: this is typed into a
-            // shell whose rcfiles already ran, and under their `set -u` / `setopt nounset` the
-            // bare expansion aborts the line, so the subshell is never Warpified (#839).
-            format!(r#" [ -z "${{WARP_BOOTSTRAPPED-}}" ] && eval '{subshell_script}'"#)
+        Some(shell_type @ (ShellType::Bash | ShellType::Zsh | ShellType::Fish)) => {
+            let raw_script =
+                init_subshell_raw_script(shell_type, &crate::ASSETS, vars, session_id, ctx);
+            chunked_eval_lines(shell_type, &raw_script)
         }
-        Some(ShellType::Fish) => {
-            let subshell_script = init_subshell_script_for_shell(
-                ShellType::Fish,
-                &crate::ASSETS,
-                vars,
-                session_id,
-                ctx,
-            );
-            // fish cannot parse `${...}` and has no nounset, so it keeps the bare expansion.
-            format!(r#" [ -z $WARP_BOOTSTRAPPED ] && eval '{subshell_script}'"#)
-        }
-        None => init_subshell_script_for_unknown_shell(&crate::ASSETS, session_id),
+        None => vec![init_subshell_script_for_unknown_shell(
+            &crate::ASSETS,
+            session_id,
+        )],
     }
+}
+
+/// Single-quote escapes `text` for embedding in a single-quoted word of `shell_type`.
+fn escape_for_single_quotes(shell_type: ShellType, text: &str) -> String {
+    match shell_type {
+        // fish processes `\\` and `\'` inside single quotes (#898), so a literal backslash is
+        // doubled first.
+        ShellType::Fish => text.replace('\\', r"\\").replace('\'', r#"'"'"'"#),
+        _ => text.replace('\'', r#"'"'"'"#),
+    }
+}
+
+/// Splits `raw_script` into lines that rebuild it in `$_wbs` and then evaluate it.
+fn chunked_eval_lines(shell_type: ShellType, raw_script: &str) -> Vec<String> {
+    let mut chunks: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for ch in raw_script.chars() {
+        let escaped = escape_for_single_quotes(shell_type, ch.encode_utf8(&mut [0; 4]));
+        if current.len() + escaped.len() > SUBSHELL_CHUNK_PAYLOAD_BYTES {
+            chunks.push(std::mem::take(&mut current));
+        }
+        current.push_str(&escaped);
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+
+    // bash keeps a line in `~/.bash_history` unless HISTCONTROL has ignorespace, so each line
+    // removes its own entry from the in-memory list (a silenced error when the line was never
+    // added). zsh needs `hist_ignore_space` set before the first long line; fish skips any line
+    // that starts with a space.
+    let (assign, cleanup) = match shell_type {
+        ShellType::Bash => ("_wbs=${_wbs-}", "; history -d $HISTCMD 2>/dev/null || :"),
+        ShellType::Zsh => ("_wbs=${_wbs-}", ""),
+        _ => ("set -g _wbs \"$_wbs\"", ""),
+    };
+    let mut lines = Vec::with_capacity(chunks.len() + 2);
+    if shell_type == ShellType::Zsh {
+        lines.push(" setopt hist_ignore_space".to_owned());
+    }
+    for chunk in chunks {
+        lines.push(format!(" {assign}'{chunk}'{cleanup}"));
+    }
+    lines.push(match shell_type {
+        // `${WARP_BOOTSTRAPPED-}`, not a bare `$WARP_BOOTSTRAPPED`: this is typed into a shell
+        // whose rcfiles already ran, and under their `set -u` / `setopt nounset` the bare
+        // expansion aborts the line, so the subshell is never Warpified (#839).
+        ShellType::Bash => " [ -z \"${WARP_BOOTSTRAPPED-}\" ] && eval \"$_wbs\"; unset _wbs; history -d $HISTCMD 2>/dev/null || :".to_owned(),
+        ShellType::Zsh => " [ -z \"${WARP_BOOTSTRAPPED-}\" ] && eval \"$_wbs\"; unset _wbs".to_owned(),
+        // fish cannot parse `${...}` and has no nounset, so it keeps the bare expansion.
+        _ => " [ -z $WARP_BOOTSTRAPPED ] && eval $_wbs; set -e _wbs".to_owned(),
+    });
+    lines
 }
 
 /// Returns the init subshell script for the given `shell_type` (e.g. the script that emits the
@@ -372,6 +448,34 @@ fn init_subshell_script_for_shell(
     format!("{env_setup_script} {shell_init_script}")
 }
 
+/// Like [`init_subshell_script_for_shell`], but returns the script as plain shell source: no
+/// quote escaping and not wrapped for `eval` (the caller chunks and quotes it).
+fn init_subshell_raw_script(
+    shell_type: ShellType,
+    assets: &dyn AssetProvider,
+    env_vars: &[EnvVar],
+    session_id: SessionId,
+    ctx: &AppContext,
+) -> String {
+    let honor_ps1 = *SessionSettings::as_ref(ctx).honor_ps1;
+    let honor_ps1_env_var_value = if honor_ps1 { "1" } else { "0" };
+    let env_vars_init = env_vars
+        .iter()
+        .map(|var| var.get_initialization_string(shell_type))
+        .collect_vec()
+        .join(" ");
+    let file = match shell_type {
+        ShellType::Zsh => "bundled/bootstrap/zsh_init_subshell.sh",
+        ShellType::Bash => "bundled/bootstrap/bash_init_subshell.sh",
+        ShellType::Fish => "bundled/bootstrap/fish_init_subshell.sh",
+        ShellType::PowerShell => "bundled/bootstrap/pwsh_init_subshell.ps1",
+    };
+    let script = load_script(file, assets)
+        .replace("@@USING_CON_PTY_BOOLEAN@@", &(cfg!(windows).to_string()))
+        .replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string());
+    format!("export WARP_HONOR_PS1={honor_ps1_env_var_value}; {env_vars_init} {script}")
+}
+
 /// Returns the init subshell script for an unknown shell which detects the shell type.
 ///
 /// The returned script is one line and has escaped single-quotes for the purposes of being passed
@@ -385,9 +489,13 @@ fn init_subshell_script_for_unknown_shell(
     session_id: SessionId,
 ) -> String {
     // Load and escape the shell-specific init script
-    load_and_escape_script("bundled/bootstrap/unknown_init_subshell.sh", assets)
+    // The leading space keeps the probe out of the user's history in zsh (hist_ignore_space) and
+    // fish, and in bash when HISTCONTROL has ignorespace; otherwise bash drops its own entry
+    // (#967). Guarded on $BASH_VERSION because `history -d` means something else in zsh and fish.
+    let script = load_and_escape_script("bundled/bootstrap/unknown_init_subshell.sh", assets)
         .replace("HOOK_NAME", "InitSubshell")
-        .replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string())
+        .replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string());
+    format!(" {script}; [ -n \"$BASH_VERSION\" ] && history -d $HISTCMD 2>/dev/null || :")
 }
 
 /// Returns the raw init shell script for the given `shell_type`, without

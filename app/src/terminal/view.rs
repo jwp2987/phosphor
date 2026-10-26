@@ -467,7 +467,7 @@ use crate::terminal::block_list_element::{
 };
 use crate::terminal::block_list_viewport::AutoscrollBehavior;
 use crate::terminal::block_list_viewport::{InputMode, ScrollPosition, ViewportState};
-use crate::terminal::bootstrap::{generate_session_id, init_subshell_command};
+use crate::terminal::bootstrap::{generate_session_id, init_subshell_command_lines};
 use crate::terminal::event::TerminalMode;
 use crate::terminal::event::UserBlockCompleted;
 use crate::terminal::find::{BlockGridMatch, BlockListMatch, TerminalFindModel};
@@ -16064,11 +16064,26 @@ impl TerminalView {
     ) {
         let session_id = generate_session_id();
         self.model.lock().register_session_id(session_id);
-        self.clear_line_editor_and_write_to_pty(
-            init_subshell_command(shell_type, &self.env_vars, session_id, ctx).into_bytes(),
-            ctx,
-        );
-        self.write_to_pty(vec![escape_sequences::C0::CR], ctx);
+        // The bootstrap is several short lines (#962: a canonical tty truncates a line longer
+        // than MAX_CANON, 1024 bytes on macOS). The first goes out now; the rest follow at a
+        // short pace so a shell that has not started reading yet is never handed more than its
+        // tty input queue holds.
+        const SUBSHELL_BOOTSTRAP_LINE_DELAY: Duration = Duration::from_millis(30);
+        let mut lines =
+            init_subshell_command_lines(shell_type, &self.env_vars, session_id, ctx).into_iter();
+        if let Some(first) = lines.next() {
+            self.clear_line_editor_and_write_to_pty(first.into_bytes(), ctx);
+            self.write_to_pty(vec![escape_sequences::C0::CR], ctx);
+        }
+        for (index, line) in lines.enumerate() {
+            ctx.spawn(
+                Timer::after(SUBSHELL_BOOTSTRAP_LINE_DELAY * (index as u32 + 1)),
+                move |me, _, ctx| {
+                    me.write_to_pty(line.into_bytes(), ctx);
+                    me.write_to_pty(vec![escape_sequences::C0::CR], ctx);
+                },
+            );
+        }
     }
 
     /// If a command correction exists, generate the command correction banner.
