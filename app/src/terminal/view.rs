@@ -9015,7 +9015,27 @@ impl TerminalView {
     }
 
     fn user_write_ctrl_c_to_pty(&mut self, ctx: &mut ViewContext<Self>) {
-        self.write_user_bytes_to_pty(vec![escape_sequences::C0::ETX], ctx);
+        let bytes = self
+            .ssh_pre_init_abort_bytes()
+            .unwrap_or_else(|| vec![escape_sequences::C0::ETX]);
+        self.write_user_bytes_to_pty(bytes, ctx);
+    }
+
+    /// #1001: the bytes that abort an ssh connect whose remote command has started but whose
+    /// remote shell has not announced itself (InitShell) yet, or `None` when a plain ^C is right.
+    /// By then the local ssh client has put the tty in raw mode, so a ^C byte is forwarded to the
+    /// far side (it cuts the remote startup, which is what wedged the pane) instead of raising
+    /// SIGINT locally. ssh's own escape `~.` terminates the client from raw mode. Before the SSH
+    /// hook the tty is still cooked and the plain ^C reaches ssh as SIGINT.
+    fn ssh_pre_init_abort_bytes(&self) -> Option<Vec<u8>> {
+        let (hook_seen, pending) = {
+            let model = self.model.lock();
+            (
+                model.has_pending_ssh_session(),
+                model.pending_session_id().is_some(),
+            )
+        };
+        ssh_pre_init_abort_bytes(hook_seen, pending)
     }
 
     fn handle_ctrl_c_input_event(
@@ -9125,6 +9145,9 @@ impl TerminalView {
                 conversation_id_to_stop,
             )
         };
+        // #1001: an ssh command is submitted but its block is not long running yet (the first
+        // 50 ms): the ^C must still reach it, not vanish. The connect gate is armed at submission.
+        let is_long_running = is_long_running || self.refresh_ssh_connect_gate();
         // We don't want to copy blocks in AI input mode because those are
         // context blocks.
         let has_copiable_block_selection = !self.selected_blocks.is_empty()
@@ -9637,8 +9660,16 @@ impl TerminalView {
         {
             self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
             self.highlighted_link.invalidate();
-            self.report_possible_typeahead(characters);
-            self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx);
+            // #1001: a Ctrl-C between the SSH hook and InitShell aborts the connect (`~.`).
+            let abort = (characters == "\u{3}")
+                .then(|| self.ssh_pre_init_abort_bytes())
+                .flatten();
+            if let Some(abort) = abort {
+                self.write_user_bytes_to_pty(abort, ctx);
+            } else {
+                self.report_possible_typeahead(characters);
+                self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx);
+            }
         } else if self.apply_key_to_editor_after_handoff(characters.as_bytes(), ctx) {
         } else {
             // When it's not a long-running command, we want to clear the selected block
@@ -31381,6 +31412,16 @@ fn ssh_bootstrap_interrupt_route(
     } else {
         SshBootstrapInterruptRoute::Hold
     }
+}
+
+/// Pure rule for [`TerminalView::ssh_pre_init_abort_bytes`] (#1001): after the SSH hook (the
+/// remote command is running under a raw local tty) and before the remote shell's InitShell, a
+/// Ctrl-C is delivered as ssh's `~.` escape, which ends the client from raw mode.
+fn ssh_pre_init_abort_bytes(
+    ssh_hook_seen: bool,
+    remote_session_pending: bool,
+) -> Option<Vec<u8>> {
+    (ssh_hook_seen && !remote_session_pending).then(|| b"~.".to_vec())
 }
 
 /// Ctrl-C and Ctrl-D: the keys that must always reach a shell whose subshell bootstrap is stuck.
