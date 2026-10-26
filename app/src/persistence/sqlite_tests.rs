@@ -2946,3 +2946,68 @@ fn writes_after_a_lock_episode_are_visible_to_a_fresh_connection() {
     writer.sender.send(ModelEvent::Terminate).ok();
     writer.handle.join().expect("writer should terminate");
 }
+
+/// #1000: a conversation write with no event after it must be committed and
+/// visible from a separate fresh connection within a few seconds, without
+/// waiting for another conversation to be saved or for the writer to close.
+#[test]
+fn lone_conversation_write_is_visible_to_a_fresh_connection_promptly() {
+    use diesel::{Connection as _, sqlite::SqliteConnection};
+    use warp_multi_agent_api as api;
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let conn = setup_database(&database_path).expect("database should initialize");
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+
+    let task = api::Task {
+        id: "root".to_string(),
+        description: "finished exchange".to_string(),
+        dependencies: None,
+        messages: vec![api::Message {
+            id: "root-user-query".to_string(),
+            task_id: "root".to_string(),
+            message: Some(api::message::Message::UserQuery(api::message::UserQuery {
+                query: "hello".to_string(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }],
+        summary: String::new(),
+        server_data: String::new(),
+    };
+    writer
+        .sender
+        .send(ModelEvent::UpdateMultiAgentConversation {
+            conversation_id: "conversation-lone".to_string(),
+            updated_tasks: vec![task],
+            conversation_data: serde_json::from_str(r#"{"server_conversation_token":null}"#)
+                .expect("minimal conversation data"),
+            task_retention: crate::persistence::PersistedTaskRetention::DeleteMissing,
+        })
+        .expect("event should send");
+
+    let url = database_path.to_str().unwrap().to_owned();
+    let mut fresh = SqliteConnection::establish(&url).expect("fresh connection");
+    let started = std::time::Instant::now();
+    let mut found = false;
+    while started.elapsed() < std::time::Duration::from_secs(3) {
+        found = crate::persistence::agent::read_agent_conversation_by_id(
+            &mut fresh,
+            "conversation-lone",
+        )
+        .expect("read")
+        .is_some();
+        if found {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // Checked before Terminate: closing the connection would flush anything stuck.
+    assert!(
+        found,
+        "a lone conversation write must be committed without a follow-up event"
+    );
+    writer.sender.send(ModelEvent::Terminate).ok();
+    writer.handle.join().expect("writer should terminate");
+}

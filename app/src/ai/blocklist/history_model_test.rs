@@ -5511,3 +5511,64 @@ fn update_task_description_action_persists_title_immediately() {
         );
     });
 }
+
+/// #1000: conversation writes must reach the SQLite writer's channel in the order
+/// they were made, and synchronously with the call. They used to be spawned onto
+/// the multi-threaded background executor, so two writes milliseconds apart (the
+/// last streamed message and the stream-finished write) could arrive swapped and
+/// leave the older state on disk.
+#[test]
+fn conversation_writes_reach_the_writer_in_order_without_an_executor_hop() {
+    use crate::ai::agent::conversation::AIConversation;
+    use warp_multi_agent_api::client_action::{Action, UpdateTaskDescription};
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        let (sender, receiver) = std::sync::mpsc::sync_channel(64);
+        let mut global_resource_handles = GlobalResourceHandles::mock(&mut app);
+        global_resource_handles.model_event_sender = Some(sender);
+        app.add_singleton_model(|_| GlobalResourceHandlesProvider::new(global_resource_handles));
+
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let terminal_view_id = EntityId::new();
+        let conversation_id = AIConversationId::new();
+        let conversation: AIConversation =
+            restored_conversation_with_title(conversation_id, "say hello");
+        history_model.update(&mut app, |model, ctx| {
+            model.restore_conversations(terminal_view_id, vec![conversation], ctx);
+        });
+        while receiver.try_recv().is_ok() {}
+
+        let titles: Vec<String> = (0..10).map(|i| format!("title-{i}")).collect();
+        history_model.update(&mut app, |model, ctx| {
+            for title in &titles {
+                model
+                    .apply_client_actions(
+                        &ResponseStreamId::new_for_test(),
+                        vec![api::ClientAction {
+                            action: Some(Action::UpdateTaskDescription(UpdateTaskDescription {
+                                task_id: "root-task".to_string(),
+                                description: title.clone(),
+                            })),
+                        }],
+                        conversation_id,
+                        terminal_view_id,
+                        &ai::skills::SkillPathOrigin::Local,
+                        ctx,
+                    )
+                    .expect("title action applies");
+            }
+        });
+
+        // No waiting: the events are already in the channel when the call returns.
+        let mut seen = Vec::new();
+        while let Ok(event) = receiver.try_recv() {
+            let ModelEvent::UpdateMultiAgentConversation { updated_tasks, .. } = event else {
+                continue;
+            };
+            seen.push(updated_tasks[0].description.clone());
+        }
+        assert_eq!(seen, titles, "writes must arrive in order, immediately");
+    });
+}
