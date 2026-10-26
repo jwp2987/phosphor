@@ -2836,6 +2836,11 @@ impl Workspace {
                 crate::persistence::DatabaseProblem::DiskFull => {
                     crate::t!("workspace-database-reason-disk-full")
                 }
+                // A lock found at startup disables saving for the session and
+                // nothing retries; a lock hit while running does retry (#971).
+                crate::persistence::DatabaseProblem::Locked if notice.persistence_disabled => {
+                    crate::t!("workspace-database-reason-locked-startup")
+                }
                 crate::persistence::DatabaseProblem::Locked => {
                     crate::t!("workspace-database-reason-locked")
                 }
@@ -2843,14 +2848,23 @@ impl Workspace {
                     crate::t!("workspace-database-reason-other", detail = detail.clone())
                 }
             };
+            let is_locked = matches!(notice.problem, crate::persistence::DatabaseProblem::Locked);
             let key = if notice.persistence_disabled {
                 "workspace-database-unavailable-toast"
+            } else if is_locked {
+                "workspace-database-write-locked-toast"
             } else {
                 "workspace-database-write-failing-toast"
             };
             let message = if notice.persistence_disabled {
                 crate::t!(
                     "workspace-database-unavailable-toast",
+                    path = friendly(&notice.path),
+                    reason = reason
+                )
+            } else if is_locked {
+                crate::t!(
+                    "workspace-database-write-locked-toast",
                     path = friendly(&notice.path),
                     reason = reason
                 )

@@ -2425,9 +2425,14 @@ fn writer_retries_snapshot_blocked_by_external_exclusive_lock() {
 
     // Long enough for the first attempt to fail on the 1 s busy timeout.
     std::thread::sleep(std::time::Duration::from_millis(1500));
+    let mut reader = SqliteConnection::establish(database_path.to_str().unwrap()).unwrap();
+    // The first attempt must really have failed: the snapshot is not saved while
+    // the lock is held, so what lands after the release came from the retry path
+    // (the event is never sent again).
+    let while_locked = read_sqlite_data(&mut reader, None).expect("data should load");
+    assert_eq!(while_locked.app_state.windows.len(), 0);
     locker.batch_execute("COMMIT;").expect("lock released");
 
-    let mut reader = SqliteConnection::establish(database_path.to_str().unwrap()).unwrap();
     let mut landed = false;
     for _ in 0..100 {
         let restored = read_sqlite_data(&mut reader, None).expect("data should load");
@@ -2439,5 +2444,8 @@ fn writer_retries_snapshot_blocked_by_external_exclusive_lock() {
     }
     writer.sender.send(ModelEvent::Terminate).ok();
     writer.handle.join().expect("writer should terminate");
-    assert!(landed, "the blocked snapshot must be saved after the lock is released");
+    assert!(
+        landed,
+        "the blocked snapshot must be saved after the lock is released"
+    );
 }
