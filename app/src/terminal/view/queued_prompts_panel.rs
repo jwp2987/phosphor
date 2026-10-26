@@ -494,6 +494,9 @@ impl QueuedPromptsPanelView {
                 conversation_id, ..
             }
             | QueuedQueryEvent::Cleared { conversation_id }
+            | QueuedQueryEvent::DroppedUnsent {
+                conversation_id, ..
+            }
             | QueuedQueryEvent::QueueNextPromptToggled { conversation_id } => *conversation_id,
             // The queue panel doesn't display the auto-queue toggle state, so a
             // change to the cached default doesn't affect what it renders.
@@ -575,6 +578,7 @@ impl QueuedPromptsPanelView {
                 self.update_send_now_availability(ctx);
             }
             QueuedQueryEvent::Reordered { .. }
+            | QueuedQueryEvent::DroppedUnsent { .. }
             | QueuedQueryEvent::QueueNextPromptToggled { .. }
             | QueuedQueryEvent::DefaultModeChanged => {}
         }

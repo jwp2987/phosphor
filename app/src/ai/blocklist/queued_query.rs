@@ -251,6 +251,15 @@ pub enum QueuedQueryEvent {
     Cleared {
         conversation_id: AIConversationId,
     },
+    /// A conversation was removed, deleted, or cleared while it still had queued rows (#1026).
+    /// Emitted just before [`Self::Cleared`]; carries the rows so the owning terminal view can
+    /// put their text back in its input instead of silently losing the user's prompts.
+    /// `terminal_view_id` is the view the removal came from, when the history event names one.
+    DroppedUnsent {
+        conversation_id: AIConversationId,
+        terminal_view_id: Option<EntityId>,
+        rows: Vec<QueuedQuery>,
+    },
     QueueNextPromptToggled {
         conversation_id: AIConversationId,
     },
@@ -308,12 +317,17 @@ impl QueuedQueryModel {
     ) {
         match event {
             BlocklistAIHistoryEvent::RemoveConversation {
-                conversation_id, ..
-            }
-            | BlocklistAIHistoryEvent::DeletedConversation {
-                conversation_id, ..
+                conversation_id,
+                terminal_view_id,
             } => {
-                self.drop_conversation(*conversation_id, ctx);
+                self.drop_conversation(*conversation_id, Some(*terminal_view_id), ctx);
+            }
+            BlocklistAIHistoryEvent::DeletedConversation {
+                conversation_id,
+                terminal_view_id,
+                ..
+            } => {
+                self.drop_conversation(*conversation_id, *terminal_view_id, ctx);
             }
             BlocklistAIHistoryEvent::ClearedConversationsInTerminalView {
                 terminal_view_id,
@@ -329,7 +343,7 @@ impl QueuedQueryModel {
                         .to_vec()
                 });
                 for conversation_id in cleared {
-                    self.drop_conversation(conversation_id, ctx);
+                    self.drop_conversation(conversation_id, Some(*terminal_view_id), ctx);
                 }
             }
             _ => {}
@@ -339,9 +353,18 @@ impl QueuedQueryModel {
     fn drop_conversation(
         &mut self,
         conversation_id: AIConversationId,
+        terminal_view_id: Option<EntityId>,
         ctx: &mut ModelContext<Self>,
     ) {
-        if self.queues.remove(&conversation_id).is_some() {
+        if let Some(state) = self.queues.remove(&conversation_id) {
+            // Never drop queued prompts silently (#1026): hand them to the owning view first.
+            if !state.queue.is_empty() {
+                ctx.emit(QueuedQueryEvent::DroppedUnsent {
+                    conversation_id,
+                    terminal_view_id,
+                    rows: state.queue,
+                });
+            }
             ctx.emit(QueuedQueryEvent::Cleared { conversation_id });
         }
     }
