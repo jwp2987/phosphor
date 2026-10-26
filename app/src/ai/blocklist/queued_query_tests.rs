@@ -15,6 +15,7 @@ use crate::ai::agent::ImageContext;
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::blocklist::{BlocklistAIHistoryModel, PendingAttachment};
 use crate::global_resource_handles::{GlobalResourceHandles, GlobalResourceHandlesProvider};
+use crate::settings::PromptSubmissionMode;
 use crate::test_util::settings::initialize_settings_for_tests;
 
 /// Helper to drive the singleton `QueuedQueryModel` (plus its required `BlocklistAIHistoryModel`
@@ -247,6 +248,48 @@ fn queue_next_prompt_toggle_defaults_false_and_emits_event() {
             evts.as_slice(),
             [QueuedQueryEvent::QueueNextPromptToggled { conversation_id }] if *conversation_id == conv
         ));
+    });
+}
+
+#[test]
+fn consuming_the_toggle_clears_an_explicit_on_but_not_the_queue_default() {
+    // #1030: "queue next prompt" is one-shot.
+    with_model(|mut app, model, events| {
+        let conv = AIConversationId::new();
+        model.update(&mut app, |m, ctx| m.toggle_queue_next_prompt(conv, ctx));
+        model.read(&app, |m, _| {
+            assert!(m.is_queue_next_prompt_toggle_enabled(conv))
+        });
+        let events_before = events.borrow().len();
+
+        let cleared = model.update(&mut app, |m, ctx| {
+            m.consume_queue_next_prompt_toggle(conv, ctx)
+        });
+        assert!(cleared);
+        model.read(&app, |m, _| assert!(!m.is_queue_next_prompt_toggle_enabled(conv)));
+        assert_eq!(events.borrow().len(), events_before + 1, "the UI is told");
+
+        // Nothing explicit left to consume.
+        let cleared = model.update(&mut app, |m, ctx| {
+            m.consume_queue_next_prompt_toggle(conv, ctx)
+        });
+        assert!(!cleared);
+
+        // A persistent Queue default is the standing mode and is never consumed.
+        model.update(&mut app, |m, _| {
+            m.default_mode = PromptSubmissionMode::Queue
+        });
+        let other = AIConversationId::new();
+        model.update(&mut app, |m, ctx| {
+            m.queues
+                .entry(other)
+                .or_default()
+                .queue_next_prompt_override = Some(true);
+            assert!(!m.consume_queue_next_prompt_toggle(other, ctx));
+        });
+        model.read(&app, |m, _| {
+            assert!(m.is_queue_next_prompt_toggle_enabled(other))
+        });
     });
 }
 

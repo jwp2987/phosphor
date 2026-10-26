@@ -8418,6 +8418,22 @@ fn prompt_submission_while_agent_replies_steers_by_default_and_queues_only_when_
             let queue = model.queue(conversation_id);
             assert_eq!(queue.len(), 1);
             assert_eq!(queue[0].text(), "queue me");
+            // #1030: the toggle is one-shot; it cleared when that prompt was queued.
+            assert!(!model.is_queue_next_prompt_toggle_enabled(conversation_id));
+        });
+
+        // So the prompt after it steers again instead of queueing.
+        input.update(&mut app, |input, ctx| {
+            input.set_input_mode_agent(/* ensure_input_is_focused */ false, ctx);
+            input.replace_buffer_content("steer again", ctx);
+            input.input_enter(ctx);
+        });
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert_eq!(
+                model.queue(conversation_id).len(),
+                1,
+                "the prompt after a one-shot queued prompt must not queue"
+            );
         });
     });
 }
