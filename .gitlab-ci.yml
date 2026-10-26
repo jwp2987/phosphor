@@ -114,8 +114,10 @@ check-linux:
   interruptible: true
   script:
     # Non-interactive runner shells do not source ~/.bashrc, so cargo/rustup are not on
-    # PATH. agent-cargo does this itself, but the target check below runs first.
-    - export PATH="$HOME/.cargo/bin:$PATH"
+    # PATH. The runner user (gitlab-runner) has no toolchain of its own, so the maintainer's
+    # /home/winters/.cargo/bin comes first. agent-cargo adds $HOME/.cargo/bin itself, but the
+    # target check below runs before it.
+    - export PATH="/home/winters/.cargo/bin:$HOME/.cargo/bin:$PATH"
     # The pinned toolchain must already provide the target; adding one would
     # modify the box's rustup state.
     - rustup target list --installed | grep -qx x86_64-unknown-linux-gnu || { echo "ERROR target x86_64-unknown-linux-gnu is not installed on this runner; install it by hand (not done automatically on the build box)" >&2; exit 1; }
