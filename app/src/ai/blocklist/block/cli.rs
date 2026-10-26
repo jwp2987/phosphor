@@ -2018,10 +2018,11 @@ impl View for CLISubagentView {
                                 description: Some(render_write_to_pty_input(
                                     {
                                         // The keys shown are the keys sent: for a shell prompt
-                                        // that includes the clear-line prefix (#979).
-                                        let target_command = self
-                                            .terminal_model
-                                            .lock()
+                                        // that includes the clear-line prefix (#979). Uses the
+                                        // guard `render` already holds: the terminal model's
+                                        // mutex isn't reentrant, so locking it again here hung
+                                        // the app whenever this card was shown.
+                                        let target_command = terminal_model
                                             .block_list()
                                             .block_with_id(&block_id)
                                             .map(|block| {
