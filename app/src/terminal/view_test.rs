@@ -14455,3 +14455,182 @@ fn user_takeover_overrides_ai_block_focus_guard() {
     assert!(ai_block_focus_permits_terminal_reset(true, true));
     assert!(ai_block_focus_permits_terminal_reset(true, false));
 }
+/// #988: with a command (e.g. `ksu`) running, clicking an earlier agent response must not be
+/// refused with the "Cannot enter agent mode while a command is running" toast; it routes to the
+/// read-only viewer action instead, and the running pane does not enter the agent view.
+#[test]
+fn long_running_click_on_agent_response_routes_to_read_only_viewer_not_toast() {
+    use crate::ai::blocklist::agent_view::EnterAgentViewError;
+    use crate::workspace::WorkspaceAction;
+
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let conversation_id = terminal.update(&mut app, |view, ctx| {
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
+                history_model.start_new_conversation(view.view_id, false, false, ctx)
+            })
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("ksu", "running");
+
+            // The real controller still refuses to enter in-pane...
+            let error = view
+                .agent_view_controller
+                .update(ctx, |controller, ctx| {
+                    controller.try_enter_agent_view(
+                        Some(conversation_id),
+                        AgentViewEntryOrigin::AgentViewBlock,
+                        ctx,
+                    )
+                })
+                .expect_err("entering agent view must be refused while a command runs");
+            assert_eq!(error, EnterAgentViewError::LongRunningCommand);
+
+            // ...and a click on an agent entry card turns that refusal into the viewer action.
+            let action = super::agent_view::long_running_entry_viewer_action(
+                error,
+                AgentViewEntryOrigin::AgentViewBlock,
+                conversation_id,
+            );
+            assert!(matches!(
+                action,
+                Some(WorkspaceAction::OpenLiveConversationReadOnlyViewer { conversation_id: id })
+                    if id == conversation_id
+            ));
+
+            // Programmatic origins and other errors keep their toast: never redirected silently.
+            for origin in [
+                AgentViewEntryOrigin::AutoFollowUp,
+                AgentViewEntryOrigin::Keybinding,
+                AgentViewEntryOrigin::LongRunningCommand,
+            ] {
+                assert!(
+                    super::agent_view::long_running_entry_viewer_action(
+                        error,
+                        origin,
+                        conversation_id
+                    )
+                    .is_none()
+                );
+            }
+            assert!(
+                super::agent_view::long_running_entry_viewer_action(
+                    EnterAgentViewError::AlreadyInAgentView,
+                    AgentViewEntryOrigin::AgentViewBlock,
+                    conversation_id,
+                )
+                .is_none()
+            );
+
+            // The running pane did not enter the agent view and still has its command running.
+            assert!(
+                !view
+                    .agent_view_controller
+                    .as_ref(ctx)
+                    .agent_view_state()
+                    .is_active()
+            );
+            assert!(
+                view.model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_active_and_long_running()
+            );
+        });
+    });
+}
+
+/// #988: a read-only view of a conversation that is live in another pane must not register a
+/// second live copy, take over liveness, or overwrite the live `AIConversation`.
+#[test]
+fn read_only_view_of_live_conversation_does_not_register_a_second_live_copy() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
+
+        let live = add_window_with_terminal(&mut app, None);
+        let (conversation_id, live_view_id) = live.update(&mut app, |view, ctx| {
+            let (conversation_id, ..) = append_exchange_and_handle_event(
+                view,
+                AIAgentInput::UserQuery {
+                    query: "earlier question".to_owned(),
+                    context: Default::default(),
+                    static_query_type: None,
+                    referenced_attachments: Default::default(),
+                    user_query_mode: UserQueryMode::Normal,
+                    running_command: None,
+                    intended_agent: None,
+                },
+                ctx,
+            );
+            (conversation_id, view.view_id)
+        });
+        let live_snapshot = BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
+            history
+                .conversation(&conversation_id)
+                .expect("live conversation should exist")
+                .clone()
+        });
+        let exchanges_before = live_snapshot.all_exchanges().len();
+
+        let viewer = add_window_with_terminal(&mut app, None);
+        let viewer_view_id = viewer.update(&mut app, |view, ctx| {
+            view.restore_conversations_on_view_creation(
+                ConversationRestorationInNewPaneType::Historical {
+                    conversation: live_snapshot,
+                    should_use_live_appearance: true,
+                    ambient_agent_task_id: None,
+                    read_only_view_of_live: true,
+                },
+                ctx,
+            );
+            view.view_id
+        });
+
+        BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
+            assert_eq!(
+                history.live_owner_terminal_view(conversation_id),
+                Some(live_view_id),
+                "the original pane must still own the live conversation"
+            );
+            assert_eq!(
+                history
+                    .all_live_conversations_for_terminal_view(viewer_view_id)
+                    .count(),
+                0,
+                "the read-only view must not register a live copy"
+            );
+            assert_eq!(
+                history
+                    .conversation(&conversation_id)
+                    .expect("live conversation should still exist")
+                    .all_exchanges()
+                    .len(),
+                exchanges_before,
+                "the live conversation must not be overwritten"
+            );
+        });
+        live.read(&app, |view, ctx| {
+            assert_eq!(view.active_conversation_id(ctx), Some(conversation_id));
+        });
+        // It still renders the earlier response from the shared conversation.
+        viewer.read(&app, |view, _| {
+            assert!(view.rich_content_views.iter().any(|rich_content| {
+                rich_content
+                    .ai_block_metadata()
+                    .is_some_and(|metadata| metadata.conversation_id == conversation_id)
+            }));
+        });
+    });
+}

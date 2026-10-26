@@ -3479,6 +3479,7 @@ impl PaneGroup {
             let (view, terminal_manager) = PaneGroup::create_conversation_viewer(
                 conversation.clone(),
                 ambient_agent_task_id,
+                false,
                 resources,
                 view_bounds.size(),
                 ctx,
@@ -3501,6 +3502,67 @@ impl PaneGroup {
             Box::new(initial_layout),
             ctx,
         )
+    }
+
+    /// Create a new pane group holding a read-only window onto a conversation that is still
+    /// live in another terminal view (#988). It renders from the shared in-memory conversation
+    /// and never registers a second live copy of it.
+    pub fn new_for_live_conversation_read_only_viewer(
+        conversation: AIConversation,
+        tips_completed: ModelHandle<TipsCompleted>,
+        user_default_shell_unsupported_banner_model_handle: ModelHandle<BannerState>,
+        model_event_sender: Option<SyncSender<ModelEvent>>,
+        ctx: &mut ViewContext<Self>,
+    ) -> Self {
+        let model_event_sender_clone = model_event_sender.clone();
+        let initial_layout = move |resources,
+                                   pane_contents: &mut HashMap<PaneId, Box<dyn AnyPaneContent>>,
+                                   pane_history: &mut Vec<PaneId>,
+                                   view_bounds: RectF,
+                                   ctx: &mut ViewContext<Self>| {
+            let (view, terminal_manager) = PaneGroup::create_conversation_viewer(
+                conversation.clone(),
+                None,
+                true,
+                resources,
+                view_bounds.size(),
+                ctx,
+            );
+
+            Self::terminal_pane_data(
+                Uuid::new_v4().as_bytes().to_vec(),
+                view,
+                terminal_manager,
+                model_event_sender_clone,
+                pane_contents,
+                pane_history,
+                ctx,
+            )
+        };
+        Self::new_internal(
+            tips_completed,
+            user_default_shell_unsupported_banner_model_handle,
+            model_event_sender,
+            Box::new(initial_layout),
+            ctx,
+        )
+    }
+
+    /// The conversation shown by a read-only live-conversation viewer in this pane group, if any.
+    pub fn read_only_live_viewer_conversation_id(
+        &self,
+        ctx: &AppContext,
+    ) -> Option<AIConversationId> {
+        self.terminal_pane_ids().into_iter().find_map(|pane_id| {
+            let view = self.terminal_view_from_pane_id(pane_id, ctx)?;
+            let model = view.as_ref(ctx).model.lock();
+            match model.conversation_transcript_viewer_status() {
+                Some(ConversationTranscriptViewerStatus::ViewingLiveConversationReadOnly(id)) => {
+                    Some(*id)
+                }
+                _ => None,
+            }
+        })
     }
 
     /// Create a new pane group with a loading state for a conversation viewer.
@@ -5652,6 +5714,7 @@ impl PaneGroup {
     fn create_conversation_viewer(
         conversation: AIConversation,
         ambient_agent_task_id: Option<AmbientAgentTaskId>,
+        read_only_view_of_live: bool,
         resources: TerminalViewResources,
         initial_size: Vector2F,
         ctx: &mut ViewContext<Self>,
@@ -5660,6 +5723,7 @@ impl PaneGroup {
         ModelHandle<Box<dyn TerminalManager>>,
     ) {
         let restored_blocks = conversation.to_serialized_blocklist_items();
+        let conversation_id = conversation.id();
         let (terminal_view, terminal_manager) = MockTerminalManager::create_model(
             ShellLaunchState::ShellSpawned {
                 available_shell: None,
@@ -5672,15 +5736,20 @@ impl PaneGroup {
                 conversation,
                 should_use_live_appearance: true,
                 ambient_agent_task_id,
+                read_only_view_of_live,
             }),
             initial_size,
             ctx.window_id(),
             ctx,
         );
         // Set the conversation viewer status based on whether this is an ambient agent conversation
-        let viewer_status = ambient_agent_task_id
-            .map(ConversationTranscriptViewerStatus::ViewingAmbientConversation)
-            .unwrap_or(ConversationTranscriptViewerStatus::ViewingLocalConversation);
+        let viewer_status = if read_only_view_of_live {
+            ConversationTranscriptViewerStatus::ViewingLiveConversationReadOnly(conversation_id)
+        } else {
+            ambient_agent_task_id
+                .map(ConversationTranscriptViewerStatus::ViewingAmbientConversation)
+                .unwrap_or(ConversationTranscriptViewerStatus::ViewingLocalConversation)
+        };
 
         terminal_manager.update(ctx, |terminal_manager, _ctx| {
             terminal_manager
@@ -5690,9 +5759,12 @@ impl PaneGroup {
         });
 
         // Insert the conversation ended tombstone (includes Open in Zap button on WASM)
-        terminal_view.update(ctx, |view, ctx| {
-            view.insert_conversation_ended_tombstone(ctx);
-        });
+        // The "conversation ended" tombstone would be wrong for a view of a still-live one.
+        if !read_only_view_of_live {
+            terminal_view.update(ctx, |view, ctx| {
+                view.insert_conversation_ended_tombstone(ctx);
+            });
+        }
 
         BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, _ctx| {
             history_model.mark_terminal_view_as_conversation_transcript_viewer(terminal_view.id());
@@ -5819,6 +5891,7 @@ impl PaneGroup {
                     conversation: *conversation,
                     should_use_live_appearance: true,
                     ambient_agent_task_id: None,
+                    read_only_view_of_live: false,
                 }
             }
             LoadedConversationData::CLIAgent(cli_conversation) => {

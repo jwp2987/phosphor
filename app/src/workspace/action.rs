@@ -725,6 +725,12 @@ pub enum WorkspaceAction {
         conversation_id: ServerConversationToken,
         ambient_agent_task_id: Option<AmbientAgentTaskId>,
     },
+    /// Open a read-only viewer on a conversation that is still live in another pane (e.g. while
+    /// a command runs there and the pane cannot enter the agent view). Focuses the existing
+    /// viewer if one is already open for this conversation. Never creates a second live copy.
+    OpenLiveConversationReadOnlyViewer {
+        conversation_id: AIConversationId,
+    },
     /// Toggle the conversation transcript details panel (WASM-only).
     #[cfg(target_family = "wasm")]
     ToggleConversationTranscriptDetailsPanel,
@@ -1043,6 +1049,7 @@ impl WorkspaceAction {
             | ExecuteDeleteAllConversations
             | OpenAmbientAgentSession { .. }
             | OpenConversationTranscriptViewer { .. }
+            | OpenLiveConversationReadOnlyViewer { .. }
             | OpenLightbox { .. }
             | UpdateLightboxImage { .. }
             | StartAgentOnboardingTutorial(_)
