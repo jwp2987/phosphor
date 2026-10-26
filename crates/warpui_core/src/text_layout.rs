@@ -688,7 +688,7 @@ pub struct Glyph {
 /// On MacOS, CoreText includes line separators in the TextFrame's lines.
 /// On winit, cosmic-text strips line separators, so they do not have their
 /// own glyphs in the TextFrame's lines.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct TextFrame {
     lines: Vec1<Line>,
     /// The max width of any line in the text frame.
@@ -703,6 +703,50 @@ impl TextFrame {
             max_width,
             alignment,
         }
+    }
+
+    /// Returns a copy of this frame, which was laid out from only the first `laid_chars`
+    /// characters of a `total_chars`-character paragraph (#955/#968), whose positions still
+    /// reach the TRUE end of the paragraph. The unlaid tail has no glyphs; instead the last
+    /// row gets one zero-width placeholder glyph for the tail's last character and one caret
+    /// position spanning the whole tail, so every position derived from the row
+    /// (`end_index`, `last_glyph().index + 1`, click past the end, End / Down) is the true
+    /// end offset. The same contract as the vendored cosmic-text word cap (#940), but
+    /// platform independent so it also covers the CoreText path.
+    pub fn with_unlaid_tail(
+        &self,
+        laid_chars: usize,
+        total_chars: usize,
+        blank_glyph_for: impl Fn(FontId) -> Option<GlyphId>,
+    ) -> TextFrame {
+        let mut frame = self.clone();
+        if total_chars <= laid_chars {
+            return frame;
+        }
+        let tail_last = total_chars - 1;
+        let line = frame.lines.last_mut();
+        let end_x = line.width;
+        if let Some(last_run) = line.runs.last_mut() {
+            // The placeholder must be invisible (the font's blank glyph); without one the
+            // glyph is omitted rather than painting a stray character.
+            if let (Some(last_glyph), Some(blank)) = (
+                last_run.glyphs.last().cloned(),
+                blank_glyph_for(last_run.font_id),
+            ) {
+                last_run.glyphs.push(Glyph {
+                    id: blank,
+                    index: tail_last,
+                    position_along_baseline: vec2f(end_x, last_glyph.position_along_baseline.y()),
+                    width: 0.,
+                });
+            }
+        }
+        line.caret_positions.push(CaretPosition {
+            position_in_line: end_x,
+            start_offset: laid_chars,
+            last_offset: tail_last,
+        });
+        frame
     }
 
     /// A text frame with no text. It has a single line with no runs which

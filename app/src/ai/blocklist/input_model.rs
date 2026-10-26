@@ -1231,6 +1231,14 @@ impl BlocklistAIInputModel {
             self.explicit_input_type_set = None;
         }
 
+        // #968: a huge buffer is a paste, not a prompt. Never let autodetection route it to the
+        // agent (Enter would send it all to the model) and never spend classifier time on it.
+        if exceeds_autodetect_limit(&input.buffer_text) {
+            self.apply_autodetected_input_type(InputType::Shell, ctx);
+            self.settle_detection(&input.buffer_text);
+            return;
+        }
+
         let first_token_str = input.parsed_tokens.first().map(|t| t.token.clone());
         let Some(first_token_str) = first_token_str else {
             // If the buffer is empty, short-circuit and leave input type unchanged.
@@ -1858,6 +1866,13 @@ fn resolve_history_match(
             Some((InputType::AI, InputTypeAutoDetectionSource::HistoryMatch))
         }
     }
+}
+
+/// Buffers longer than this many bytes are never autodetected as an agent prompt (#968).
+pub(crate) const MAX_AUTODETECT_BUFFER_BYTES: usize = 16 * 1024;
+
+pub(crate) fn exceeds_autodetect_limit(buffer_text: &str) -> bool {
+    buffer_text.len() > MAX_AUTODETECT_BUFFER_BYTES
 }
 
 #[cfg(test)]

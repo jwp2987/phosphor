@@ -1541,3 +1541,27 @@ fn typeahead_is_young_only_while_the_provenance_lasts() {
         });
     });
 }
+
+/// #968: a huge paste is never autodetected as an agent prompt, even when it reads as prose
+/// and the input was last in AI mode.
+#[test]
+fn huge_buffer_is_never_autodetected_as_agent_prompt() {
+    assert!(!exceeds_autodetect_limit(
+        &"a".repeat(MAX_AUTODETECT_BUFFER_BYTES)
+    ));
+    assert!(exceeds_autodetect_limit(
+        &"a".repeat(MAX_AUTODETECT_BUFFER_BYTES + 1)
+    ));
+
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, AI_UNLOCKED);
+        let prose = "please explain why the build fails on my machine today. ".repeat(1000);
+        assert!(exceeds_autodetect_limit(&prose));
+        request_detection(&mut app, &input_model, snapshot_without_parse(&prose));
+        input_model.read(&app, |model, ctx| {
+            assert_eq!(model.input_type(), InputType::Shell);
+            assert!(!model.is_detection_pending_for(&prose, ctx));
+        });
+    });
+}
