@@ -2806,6 +2806,12 @@ pub struct TerminalView {
 
     warpify_state: WarpifyState,
 
+    /// Whether anything other than a bare Enter has been sent to the pty since the SSH
+    /// Warpifying banner appeared (#976). The banner shows while `ssh` is still connecting, so
+    /// the remote may be asking for a password, a host-key answer or a 2FA code: once the user
+    /// has typed anything for it, Enter belongs to the pty, not to "Use agent".
+    ssh_warpify_banner_input_sent: bool,
+
     /// The window-footer-bar color for this session's currently resolved host, per
     /// `host_footer_color::resolve_footer_bar_color`. A plain cache: recomputed by
     /// `recompute_window_footer_bar_color` only when the session's resolved host,
@@ -3058,6 +3064,13 @@ enum BlockMetadataUpdateSource {
     /// the CWD actually changed, and never run block-completion callbacks
     /// (the block hasn't completed).
     Osc7,
+}
+
+/// Whether an Enter should become "Use agent" instead of going to the pty while the SSH
+/// Warpifying banner shows (#976). Only a bare Enter on an untouched line qualifies: once
+/// something has been typed for the remote, Enter submits it.
+fn should_divert_enter_to_agent(is_warpifying: bool, input_sent: bool, is_enter: bool) -> bool {
+    is_warpifying && !input_sent && is_enter
 }
 
 impl TerminalView {
@@ -4363,6 +4376,7 @@ impl TerminalView {
             input_hoverable_handle: Default::default(),
             find_model,
             warpify_state: Default::default(),
+            ssh_warpify_banner_input_sent: false,
             // Recomputed just below, once `Self` exists and `ctx.notify()` is
             // callable; `None` here is never rendered.
             window_footer_bar_color: None,
@@ -9433,10 +9447,19 @@ impl TerminalView {
         // keybinding resolution, so Cmd-Enter never reaches SetInputModeAgent. The Warpifying
         // banner advertises "Use agent ⌘↵", so we route Enter to agent mode instead of the
         // PTY. Ctrl-C/Ctrl-D remain exempt so the user can still abort.
-        if self.warpify_state.is_ssh_warpifying() && matches!(characters, "\n" | "\r" | "\u{2028}")
-        {
+        let is_enter = matches!(characters, "\n" | "\r" | "\u{2028}");
+        if should_divert_enter_to_agent(
+            self.warpify_state.is_ssh_warpifying(),
+            self.ssh_warpify_banner_input_sent,
+            is_enter,
+        ) {
             ctx.dispatch_typed_action(&TerminalAction::SetInputModeAgent);
             return;
+        }
+        // Anything else that reaches the pty while the banner shows is input for the remote
+        // (a password, a host-key answer, a 2FA code), so the Enter that follows is theirs too.
+        if !is_enter && self.warpify_state.is_ssh_warpifying() {
+            self.ssh_warpify_banner_input_sent = true;
         }
         if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
             self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
@@ -9524,6 +9547,9 @@ impl TerminalView {
             return;
         }
         self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
+        if self.warpify_state.is_ssh_warpifying() {
+            self.ssh_warpify_banner_input_sent = true;
+        }
 
         // The pty refuses user bytes while the agent controls the running command. Typing is
         // then meant for the agent's input, not the void (#901): fall through to the input.
@@ -9708,6 +9734,28 @@ impl TerminalView {
         data: B,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
+        self.write_user_bytes_to_pty_inner(data, true, ctx)
+    }
+
+    /// Like [`Self::write_user_bytes_to_pty`], but for pointer-driven and synthesized input
+    /// (mouse reports, wheel-to-arrow scrolling, arrow keys routed by `terminal_up`/`terminal_down`)
+    /// which must never take agent control of a command (#963): brushing the mouse over a pager
+    /// the agent is driving is not the user taking it over. While the agent is in control these
+    /// bytes are simply dropped.
+    fn write_passive_input_to_pty<B: Into<Cow<'static, [u8]>>>(
+        &mut self,
+        data: B,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        self.write_user_bytes_to_pty_inner(data, false, ctx)
+    }
+
+    fn write_user_bytes_to_pty_inner<B: Into<Cow<'static, [u8]>>>(
+        &mut self,
+        data: B,
+        takes_over_agent_control: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
         let mut bytes: Cow<'static, [u8]> = data.into();
         // #933: an EOF does not flush typeahead, so Enters held behind the young window go first.
         if FeatureFlag::TypeaheadHandoff.is_enabled()
@@ -9723,7 +9771,7 @@ impl TerminalView {
         // the agent is driving is taking the command over. Do it the same way an explicit
         // take-over does, so the agent stops writing to the same program and the two inputs
         // cannot interleave. This must happen before the model lock below: the switch locks it.
-        let should_take_over = {
+        let should_take_over = takes_over_agent_control && {
             let terminal_model = self.model.lock();
             terminal_model.is_alt_screen_active()
                 && terminal_model
@@ -9871,7 +9919,7 @@ impl TerminalView {
         self.highlighted_link.invalidate();
 
         let content = self.alt_scroll_sequences(lines_to_scroll);
-        self.write_user_bytes_to_pty(content, ctx);
+        self.write_passive_input_to_pty(content, ctx);
         ctx.notify();
     }
 
@@ -10730,6 +10778,7 @@ impl TerminalView {
         ctx.focus(&ssh_warpify_block_handle);
 
         self.warpify_state.set_block_id(hidden_ssh_block_id);
+        self.ssh_warpify_banner_input_sent = false;
         self.warpify_state
             .set_ssh_block_state(SshBlockState::Warpifying {
                 handle: ssh_warpify_block_handle,
@@ -19350,7 +19399,7 @@ impl TerminalView {
         let escape_sequences = mouse_state
             .to_escape_sequence(self.model.lock().deref())
             .unwrap();
-        self.write_user_bytes_to_pty(escape_sequences, ctx);
+        self.write_passive_input_to_pty(escape_sequences, ctx);
     }
 
     fn alt_select(&mut self, arg: &SelectAction<Point>, ctx: &mut ViewContext<Self>) {
@@ -23920,7 +23969,7 @@ impl TerminalView {
             self.on_ssh_warpification_key_event(None, ctx);
             let sequence =
                 EscCodes::build_escape_sequence(self.model.lock().deref(), &[EscCodes::ARROW_UP]);
-            self.write_user_bytes_to_pty(sequence, ctx);
+            self.write_passive_input_to_pty(sequence, ctx);
         }
     }
 
@@ -24077,7 +24126,7 @@ impl TerminalView {
         } else if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
             let sequence =
                 EscCodes::build_escape_sequence(self.model.lock().deref(), &[EscCodes::ARROW_DOWN]);
-            self.write_user_bytes_to_pty(sequence, ctx);
+            self.write_passive_input_to_pty(sequence, ctx);
         }
     }
 

@@ -14405,3 +14405,71 @@ fn user_takeover_overrides_ai_block_focus_guard() {
     assert!(ai_block_focus_permits_terminal_reset(true, true));
     assert!(ai_block_focus_permits_terminal_reset(true, false));
 }
+
+/// #976: only a bare Enter on an untouched line becomes "Use agent" while the SSH Warpifying
+/// banner shows. Once anything was typed for the remote (a password, a host-key answer, a 2FA
+/// code), Enter must reach the pty.
+#[test]
+fn ssh_warpify_banner_diverts_only_an_untouched_enter() {
+    assert!(should_divert_enter_to_agent(true, false, true));
+    assert!(!should_divert_enter_to_agent(true, true, true));
+    assert!(!should_divert_enter_to_agent(false, false, true));
+    assert!(!should_divert_enter_to_agent(true, false, false));
+}
+
+/// #963: mouse reports and wheel scrolling over an alt-screen program the agent is driving must
+/// not take control away from the agent (and are not forwarded to the pty).
+#[test]
+fn alt_screen_mouse_and_scroll_do_not_take_agent_control() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.simulate_long_running_block("less log.txt", "");
+                let task_id = TaskId::new("test-task".to_owned());
+                model
+                    .block_list_mut()
+                    .active_block_mut()
+                    .set_agent_interaction_mode_for_agent_monitored_command(
+                        &task_id,
+                        AIConversationId::new(),
+                    )
+                    .expect("user-mode block should become agent-monitored");
+                model.set_mode(ansi::Mode::SwapScreen {
+                    save_cursor_and_clear_screen: true,
+                });
+                assert!(model.is_alt_screen_active());
+                assert!(model.block_list().active_block().is_agent_in_control());
+            }
+
+            view.alt_scroll(3, ctx);
+            view.terminal_up(ctx);
+            view.terminal_down(ctx);
+
+            assert!(
+                view.model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_agent_in_control(),
+                "wheel/arrow-routed input must not switch control to the user"
+            );
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "input from the pointer must not reach a pty the agent controls"
+        );
+    })
+}
