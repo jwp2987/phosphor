@@ -2919,6 +2919,15 @@ impl ansi::Handler for TerminalModel {
         !self.shared_session_status().is_viewer()
     }
 
+    fn allows_tmux_control_mode(&self) -> bool {
+        // Phosphor's own SSH tmux bootstrap, or a `tmux -CC` command the user ran in the active
+        // block. Anything else (e.g. `cat` of a hostile file) is untrusted output (#996).
+        self.pending_warp_initiated_control_mode.is_some()
+            || tmux::command_starts_tmux_control_mode(
+                &self.block_list.active_block().command_to_string(),
+            )
+    }
+
     fn set_title(&mut self, title: Option<String>) {
         // Don't set the tab title if the title event is for a running in-band command.
         if self.block_list().is_writing_or_executing_in_band_command() {

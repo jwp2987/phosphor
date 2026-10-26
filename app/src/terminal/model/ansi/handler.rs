@@ -255,6 +255,15 @@ pub trait Handler {
         false
     }
 
+    /// Returns whether the terminal may enter tmux control mode (DCS `1000p`) right now.
+    ///
+    /// Fail closed: entering control mode makes Phosphor WRITE tmux commands to the pty, so
+    /// untrusted output (`cat hostile-file`) must not be able to trigger it (#996). Only
+    /// implementors that can tell Phosphor/the user started it should return `true`.
+    fn allows_tmux_control_mode(&self) -> bool {
+        false
+    }
+
     /// Returns whether DCS hooks should require a registered session ID.
     fn should_validate_dcs_hook_session_id(&self) -> bool {
         true

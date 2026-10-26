@@ -65,3 +65,22 @@ pub fn parse_generator_output(input: &[u8]) -> Option<ExecutedExecutorCommandEve
 #[cfg(test)]
 #[path = "mod_test.rs"]
 mod tests;
+
+/// Returns whether `command` is a user-typed tmux control-mode invocation (`tmux -CC ...`,
+/// including inside `ssh host tmux -CC attach` or `ssh -t host "tmux -CC"`).
+pub fn command_starts_tmux_control_mode(command: &str) -> bool {
+    let mut seen_tmux = false;
+    let is_separator =
+        |c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ';' | '&' | '|' | '(' | ')');
+    for token in command.split(is_separator) {
+        if token.is_empty() {
+            continue;
+        }
+        if !seen_tmux {
+            seen_tmux = token.rsplit('/').next() == Some("tmux");
+        } else if token.starts_with('-') && !token.starts_with("--") && token.contains("CC") {
+            return true;
+        }
+    }
+    false
+}

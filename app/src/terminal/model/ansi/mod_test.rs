@@ -27,6 +27,8 @@ struct MockHandler {
     explicit_scroll_ups: Vec<usize>,
     registered_session_ids: HashSet<SessionId>,
     should_validate_dcs_hook_session_id: bool,
+    allow_tmux_control_mode: bool,
+    tmux_starting_events: usize,
 }
 
 impl Handler for MockHandler {
@@ -36,6 +38,16 @@ impl Handler for MockHandler {
 
     fn should_validate_dcs_hook_session_id(&self) -> bool {
         self.should_validate_dcs_hook_session_id
+    }
+
+    fn allows_tmux_control_mode(&self) -> bool {
+        self.allow_tmux_control_mode
+    }
+
+    fn tmux_control_mode_event(&mut self, event: ControlModeEvent) {
+        if matches!(event, ControlModeEvent::Starting) {
+            self.tmux_starting_events += 1;
+        }
     }
 
     fn terminal_attribute(&mut self, attr: Attr) {
@@ -295,6 +307,8 @@ impl Default for MockHandler {
             // e.g. `parse_dcs_command_finished`) passing unchanged; the two tests that exercise
             // validation opt in explicitly via `parse_bytes_with_registered_sessions*`.
             should_validate_dcs_hook_session_id: false,
+            allow_tmux_control_mode: false,
+            tmux_starting_events: 0,
         }
     }
 }
@@ -1787,4 +1801,30 @@ fn parse_decoded_hook_salvages_a_precmd_from_its_essential_fields() {
         )
         .is_err()
     );
+}
+
+fn parse_tmux_dcs(allow: bool) -> (Processor, MockHandler) {
+    let mut parser = Processor::new();
+    let mut handler = MockHandler {
+        allow_tmux_control_mode: allow,
+        ..Default::default()
+    };
+    parser.parse_bytes(&mut handler, b"\x1bP1000p%begin 1 1 0\r\n", &mut io::sink());
+    (parser, handler)
+}
+
+#[test]
+fn tmux_control_mode_dcs_ignored_when_not_initiated() {
+    let _guard = FeatureFlag::SSHTmuxWrapper.override_enabled(true);
+    let (parser, handler) = parse_tmux_dcs(false);
+    assert!(parser.state.tmux_control_mode.is_none());
+    assert_eq!(handler.tmux_starting_events, 0);
+}
+
+#[test]
+fn tmux_control_mode_dcs_honoured_when_initiated() {
+    let _guard = FeatureFlag::SSHTmuxWrapper.override_enabled(true);
+    let (parser, handler) = parse_tmux_dcs(true);
+    assert!(parser.state.tmux_control_mode.is_some());
+    assert_eq!(handler.tmux_starting_events, 1);
 }
