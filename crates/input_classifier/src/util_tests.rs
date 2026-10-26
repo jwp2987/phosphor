@@ -996,7 +996,8 @@ fn test_reads_as_command_headed_prose_leaves_shell_alone() {
         "ls the -la",
         "npm install fails with EACCES",
         "install docker and run it",
-        "do it",
+        // `do` as a compound head keeps its body (`do` + a command), unlike #965's `do it`.
+        "do ls",
     ] {
         assert!(!reads_as_command_headed_prose(text), "{text:?}");
     }
