@@ -13230,7 +13230,8 @@ impl Input {
                 }
                 // In ambient agent, Cmd+Enter should exit ambient-agent session entirely and start a
                 // new *local* agent conversation in the root terminal. This should work whether the
-                // buffer is empty (blank convo) or non-empty (prefill draft, but don't auto-send).
+                // buffer is empty (blank convo) or non-empty (sent immediately, like the plain
+                // terminal case below: #1022, owner decision 2026-10-26).
                 if self.ambient_agent_view_model.as_ref(ctx).is_ambient_agent() {
                     let mut draft = self.editor.as_ref(ctx).buffer_text(ctx);
                     // Normalize draft for empty-checks and for prefill.
@@ -13265,12 +13266,21 @@ impl Input {
                     let mut prompt = self.editor.as_ref(ctx).buffer_text(ctx);
                     prompt.truncate(prompt.trim_end().len());
                     let initial_prompt = (!prompt.trim().is_empty()).then_some(prompt);
+                    // Text typed before Cmd-Enter is sent on entry (#1022, owner decision
+                    // 2026-10-26); an empty buffer just enters the agent view. Entering with a
+                    // prompt uses `CmdEnterSend`, which auto-triggers the request; the plain
+                    // `Input` origin would only pre-fill.
+                    let origin = if initial_prompt.is_some() {
+                        AgentViewEntryOrigin::CmdEnterSend
+                    } else {
+                        AgentViewEntryOrigin::Input {
+                            was_prompt_autodetected: false,
+                        }
+                    };
                     ctx.emit(Event::EnterAgentView {
                         initial_prompt,
                         conversation_id: None,
-                        origin: AgentViewEntryOrigin::Input {
-                            was_prompt_autodetected: false,
-                        },
+                        origin,
                     });
                     return;
                 }

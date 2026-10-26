@@ -1229,6 +1229,9 @@ fn test_964_pronoun_arguments_do_not_make_a_request() {
 fn test_965_collision_words_read_as_prose_only_as_a_sentence() {
     for text in [
         "say hello",
+        "say hello world",
+        "say how are you",
+        "Say hello world!",
         "what does ls -la do",
         "write a script that counts lines",
         "where is the config",
@@ -1242,7 +1245,17 @@ fn test_965_collision_words_read_as_prose_only_as_a_sentence() {
     }
     for text in [
         "say \"build done\"",
-        "say how are you",
+        "say -v Alex hello",
+        "say -f file",
+        "say -v Alex hello world",
+        "say \"$x\"",
+        "say $x",
+        "say $(date)",
+        "say hello $(whoami)",
+        "say hello; ls",
+        "say hello | cat",
+        "say hello > out.txt",
+        "say build done",
         "what /usr/bin/ls",
         "write user",
         "where git",

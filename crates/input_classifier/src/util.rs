@@ -1524,12 +1524,30 @@ fn collision_head_reads_as_sentence(head: &str, remaining: &[ShellWord]) -> bool
         return false;
     }
     if head.eq("say") {
-        return remaining.len() == 1
-            && SAY_GREETING_WORDS.contains(
-                &strip_sentence_punctuation(&remaining[0].text)
+        let is_greeting = |word: &ShellWord| {
+            SAY_GREETING_WORDS.contains(
+                &strip_sentence_punctuation(&word.text)
                     .to_lowercase()
                     .as_str(),
-            );
+            )
+        };
+        if remaining.len() == 1 {
+            return is_greeting(&remaining[0]);
+        }
+        // Owner decision 2026-10-26 (#965): `say hello world` goes to the agent like `say hello`.
+        // Prose after `say` is plain words only (no flag, operator, substitution or digit-led
+        // token), opening with a greeting or carrying a sentence function word (`say how are
+        // you`). `say build done` has neither signal and stays a command.
+        let plain_words = remaining.iter().all(|word| {
+            // Raw text, so `hello;` (a command separator) is not mistaken for `hello`.
+            let text = word.text.trim_end_matches(['.', ',', '!', '?', ':']);
+            !text.is_empty()
+                && text
+                    .chars()
+                    .all(|c| c.is_alphabetic() || c == '\'' || c == '’')
+        });
+        return plain_words
+            && (is_greeting(&remaining[0]) || remaining.iter().any(is_function_word));
     }
     remaining.iter().any(|word| {
         is_function_word(word)

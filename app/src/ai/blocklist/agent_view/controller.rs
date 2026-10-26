@@ -145,6 +145,10 @@ pub enum AgentViewEntryOrigin {
     /// Entered agent view by the "Send to agent instead" misroute recovery (#835): the user
     /// explicitly chose to send the text to the agent, so it is sent on entry.
     MisrouteRecovery,
+    /// Entered agent view by Cmd-Enter / Ctrl-Shift-Enter with text typed in a plain terminal
+    /// input (#1022, owner decision 2026-10-26): the user explicitly chose the agent, so the text
+    /// is sent on entry rather than pre-filled.
+    CmdEnterSend,
     /// Entered agent view by adding an image (drag-and-drop or paste).
     ImageAdded,
     /// Entered agent view by executing a slash command that requires agent mode.
@@ -223,9 +227,9 @@ impl AgentViewEntryOrigin {
             AgentViewEntryOrigin::SlashCommand { trigger } if !trigger.is_keybinding() => {
                 AutoTriggerBehavior::Always
             }
-            AgentViewEntryOrigin::Cli | AgentViewEntryOrigin::MisrouteRecovery => {
-                AutoTriggerBehavior::Always
-            }
+            AgentViewEntryOrigin::Cli
+            | AgentViewEntryOrigin::MisrouteRecovery
+            | AgentViewEntryOrigin::CmdEnterSend => AutoTriggerBehavior::Always,
             AgentViewEntryOrigin::AcceptedPromptSuggestion => AutoTriggerBehavior::Always,
             AgentViewEntryOrigin::LinearDeepLink => AutoTriggerBehavior::Never,
             _ => AutoTriggerBehavior::InAgentView,
