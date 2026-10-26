@@ -7,8 +7,12 @@
 #
 # Windows and macOS Intel are intentionally absent (dropped for now; see #989).
 #
-# Port status: only `guards` so far. check-linux, licenses, the test jobs and the
-# release pipeline follow once this stage is green.
+# Port status: guards, check-linux. licenses, the test jobs and the release
+# pipeline follow once these are green.
+#
+# `little-thing` is the maintainer's build box, so jobs there must not change its
+# environment: no apt installs, no rustup target additions, no cargo install.
+# Missing prerequisites FAIL the job with a message instead.
 
 workflow:
   rules:
@@ -94,3 +98,31 @@ guards:
         ./script/check_large_deletions --require-base
     - ./script/macos/test_create_warpctrl_wrapper
     - ./script/test_warpctrl_early_dispatch
+
+# cargo check on the build box. Every cargo call goes through script/agent-cargo,
+# the slot/memory governor: unbounded concurrent compiles OOM-reaped this host
+# before, and `resource_group` additionally serialises the heavy jobs across
+# pipelines. The governor also pins CARGO_TARGET_DIR per agent name, which keeps a
+# warm target dir between runs.
+check-linux:
+  extends: .shim_github_env
+  stage: test
+  tags: [little-thing]
+  needs: [guards]
+  resource_group: little-thing-cargo
+  timeout: 90m
+  interruptible: true
+  script:
+    # The pinned toolchain must already provide the target; adding one would
+    # modify the box's rustup state.
+    - rustup target list --installed | grep -qx x86_64-unknown-linux-gnu || { echo "ERROR target x86_64-unknown-linux-gnu is not installed on this runner; install it by hand (not done automatically on the build box)" >&2; exit 1; }
+    # The GUI feature is the guardrail after any shared-crate change.
+    - ./script/agent-cargo ci-check-linux check -p warp --features gui --lib --tests
+    # Single-package checks miss feature-unified code (#230): `warp`'s
+    # `integration_tests` feature only turns on when `warp` is checked in the SAME
+    # invocation as `integration`.
+    - ./script/agent-cargo ci-check-linux check -p warp -p warp_completer -p integration -p app-installation-detection -p warp_ripgrep --features gui
+    # The app crate carries the TUI via its own `tui` feature.
+    - ./script/agent-cargo ci-check-linux check -p warp --features tui
+    # warp_tui is not in default-members; check it explicitly.
+    - ./script/agent-cargo ci-check-linux check -p warp_tui
