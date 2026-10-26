@@ -4571,6 +4571,18 @@ fn tool_withdrawn_reason(params: &RequestParams, tool_name: &str) -> Option<&'st
     None
 }
 
+/// Whether a tool call must be answered with an error result at dispatch (Plan Mode,
+/// computer use off, or withdrawn from the tools array) instead of becoming an executable
+/// card. The streaming loop checks this BEFORE emitting its in-flight placeholder card:
+/// `parse_incoming_tool_call` resolves against the full REGISTRY, so without the check a
+/// refused call would already be on screen as an approvable card (#979) and the dispatch gate
+/// would add a second assistant tool_call for the same id.
+fn tool_call_refused_at_dispatch(params: &RequestParams, plan_mode: bool, tool_name: &str) -> bool {
+    plan_mode_blocks_tool(plan_mode, tool_name)
+        || (!params.computer_use_enabled && is_computer_use_tool(tool_name))
+        || tool_withdrawn_reason(params, tool_name).is_some()
+}
+
 /// Whether `name` is one of the two computer-use descriptors.
 ///
 /// Both are gated on `RequestParams::computer_use_enabled`, which `ai/agent/api.rs` already
@@ -6908,6 +6920,9 @@ pub async fn generate_byop_output(
                         && call.fn_name != tools::codebase::TOOL_NAME
                         && call.fn_name != tools::get_relevant_files::TOOL_NAME
                         && call.fn_name != tools::todowrite::TOOL_NAME
+                        // Refused at dispatch (#979): no placeholder card, the dispatch
+                        // gate emits the single carrier + error result for this call id.
+                        && !tool_call_refused_at_dispatch(&params, plan_mode, &call.fn_name)
                     {
                         if let Some(msg_id) = tool_msg_ids.get(&call.call_id).cloned() {
                             // Placeholder already emitted → throttled incremental refresh.
@@ -7639,7 +7654,7 @@ pub async fn generate_byop_output(
 
             // #979: tool withdrawn from this request's tools array (running-command strip of
             // `run_shell_command`, remote-without-file-route tools), re-checked at dispatch.
-            if let Some(reason) = tool_withdrawn_reason(params, &call.fn_name) {
+            if let Some(reason) = tool_withdrawn_reason(&params, &call.fn_name) {
                 let args_str = if call.fn_arguments.is_string() {
                     call.fn_arguments.as_str().unwrap_or("").to_owned()
                 } else {
@@ -14017,6 +14032,237 @@ mod plan_mode_round_trip_tests {
             !available_tool_names(&params).iter().any(|n| n == SHELL),
             "the dispatch gate and the advertised list must agree"
         );
+    }
+
+    /// #979 (refuter 1): the streaming loop skips its placeholder card for exactly the calls
+    /// the dispatch gates refuse, so the predicate must cover every gate -- Plan Mode,
+    /// computer use off, the running-command strip and the no-file-route withdrawal -- and
+    /// nothing else.
+    #[test]
+    fn placeholder_is_suppressed_for_every_dispatch_refusal_and_only_those() {
+        let mut params = tool_result_round_trip(false);
+        params.computer_use_enabled = true;
+        assert!(!tool_call_refused_at_dispatch(&params, false, SHELL));
+        assert!(!tool_call_refused_at_dispatch(&params, false, "read_files"));
+
+        // Plan Mode.
+        assert!(tool_call_refused_at_dispatch(&params, true, SHELL));
+        assert!(!tool_call_refused_at_dispatch(&params, true, "read_files"));
+
+        // Computer use off.
+        params.computer_use_enabled = false;
+        assert!(tool_call_refused_at_dispatch(
+            &params,
+            false,
+            tools::computer::USE_COMPUTER_TOOL_NAME
+        ));
+        params.computer_use_enabled = true;
+        assert!(!tool_call_refused_at_dispatch(
+            &params,
+            false,
+            tools::computer::USE_COMPUTER_TOOL_NAME
+        ));
+
+        // Running command: run_shell_command only.
+        params.lrc_command_id = Some("cmd-1".to_owned());
+        assert!(tool_call_refused_at_dispatch(&params, false, SHELL));
+        assert!(!tool_call_refused_at_dispatch(
+            &params,
+            false,
+            "write_to_long_running_shell_command"
+        ));
+        params.lrc_command_id = None;
+
+        // No file route (remote, no client): the NO_FILE_ROUTE tools, with a reason.
+        params.session_context =
+            crate::ai::blocklist::SessionContext::new_warpified_remote_for_test(false);
+        for blocked in NO_FILE_ROUTE_BLOCKED_TOOLS.iter().copied() {
+            assert!(
+                tool_withdrawn_reason(&params, blocked).is_some(),
+                "{blocked} must be refused without a file route"
+            );
+            assert!(tool_call_refused_at_dispatch(&params, false, blocked));
+        }
+        assert!(!tool_call_refused_at_dispatch(&params, false, SHELL));
+
+        // With a connected remote server the file tools have a route and stay callable.
+        params.session_context =
+            crate::ai::blocklist::SessionContext::new_warpified_remote_for_test(true);
+        for ok in NO_FILE_ROUTE_BLOCKED_TOOLS.iter().copied() {
+            assert!(!tool_call_refused_at_dispatch(&params, false, ok));
+        }
+    }
+
+    /// #979 (refuter 2): the history a refused call leaves behind (one carrier ToolCall plus
+    /// its error ToolCallResult) must serialize to exactly one assistant tool_call and one
+    /// tool response for the id -- providers reject duplicates.
+    #[test]
+    fn a_refused_call_serializes_to_one_tool_call_and_one_result() {
+        let carrier = make_tool_call_carrier_message(
+            "task-1",
+            "req-1",
+            "call-1",
+            SHELL,
+            r#"{"command":"echo hi"}"#,
+        );
+        let result = make_tool_call_result_message(
+            "task-1",
+            "req-1",
+            "call-1".to_owned(),
+            r#"{"status":"error","error":"tool_not_offered","executed":false}"#.to_owned(),
+        );
+        let params = RequestParams::new_for_test(
+            vec![user_query_input("continue", UserQueryMode::default())],
+            vec![task_with_messages(vec![
+                make_user_query_message("task-1", "req-1", "hi".to_owned(), &[]),
+                carrier,
+                result,
+            ])],
+        );
+        let request = openai_request(&params);
+        let calls = request
+            .messages
+            .iter()
+            .flat_map(|m| m.content.tool_calls())
+            .filter(|tc| tc.call_id == "call-1")
+            .count();
+        let responses = request
+            .messages
+            .iter()
+            .flat_map(|m| m.content.tool_responses())
+            .filter(|tr| tr.call_id == "call-1")
+            .count();
+        assert_eq!(calls, 1, "exactly one assistant tool_call per id");
+        assert_eq!(responses, 1, "exactly one tool result per id");
+    }
+
+    /// #979 (refuter 1/4), through the real streaming path: a local OpenAI-compatible server
+    /// answers with a `run_shell_command` tool call while a command is running. No message
+    /// carrying `Tool::RunShellCommand` may ever be emitted (that is the approvable phantom
+    /// card), and the call id must get exactly one ToolCall (the carrier) and one result.
+    #[tokio::test]
+    async fn streaming_a_withheld_run_shell_command_never_emits_an_approvable_card() {
+        use std::io::{Read, Write};
+
+        let chunk_call = r#"{"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-test","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"run_shell_command","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":null}]}"#;
+        let chunk_done = r#"{"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-test","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#;
+        let body = format!("data: {chunk_call}\n\ndata: {chunk_done}\n\ndata: [DONE]\n\n");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+        let port = listener.local_addr().expect("local_addr").port();
+        std::thread::spawn(move || {
+            let Ok((mut sock, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 4096];
+            loop {
+                let n = sock.read(&mut tmp).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+                    let want = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if buf.len() >= end + 4 + want {
+                        break;
+                    }
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                 connection: close\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = sock.write_all(response.as_bytes());
+            let _ = sock.flush();
+        });
+
+        let mut params = tool_result_round_trip(false);
+        params.lrc_command_id = Some("cmd-1".to_owned());
+        let (_cancel_tx, cancellation_rx) = futures::channel::oneshot::channel::<()>();
+        let mut stream = generate_byop_output(ByopOutputInput {
+            params,
+            base_url: format!("http://127.0.0.1:{port}/v1"),
+            api_key: "test-key".to_owned(),
+            model_id: "gpt-test".to_owned(),
+            api_type: AgentProviderApiType::OpenAi,
+            reasoning_effort: Default::default(),
+            extra_headers: vec![],
+            task_id: "task-1".to_owned(),
+            target_task_id: "task-1".to_owned(),
+            needs_create_task: false,
+            lrc_command_id: Some("cmd-1".to_owned()),
+            lrc_should_spawn_subagent: false,
+            context_window: None,
+            max_output_tokens: 0,
+            cancellation_rx,
+            attachment_caps: attachment_caps::AttachmentCaps::default(),
+            other_provider_hint: None,
+        })
+        .await
+        .unwrap_or_else(|_| panic!("generate_byop_output should build the request"));
+
+        let mut messages: Vec<api::Message> = Vec::new();
+        let collect = async {
+            while let Some(event) = stream.next().await {
+                let Ok(event) = event else { continue };
+                let Some(api::response_event::Type::ClientActions(actions)) = event.r#type else {
+                    continue;
+                };
+                for action in actions.actions {
+                    match action.action {
+                        Some(api::client_action::Action::AddMessagesToTask(add)) => {
+                            messages.extend(add.messages)
+                        }
+                        Some(api::client_action::Action::UpdateTaskMessage(update)) => {
+                            messages.extend(update.message)
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(30), collect)
+            .await
+            .expect("the mock stream should finish");
+
+        let tool_calls_for_id: Vec<&api::message::ToolCall> = messages
+            .iter()
+            .filter_map(|m| match &m.message {
+                Some(api::message::Message::ToolCall(tc)) if tc.tool_call_id == "call_abc" => {
+                    Some(tc)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !tool_calls_for_id.iter().any(|tc| matches!(
+                tc.tool,
+                Some(api::message::tool_call::Tool::RunShellCommand(_))
+            )),
+            "a withheld run_shell_command must never be emitted as an executable ToolCall"
+        );
+        assert_eq!(
+            tool_calls_for_id.len(),
+            1,
+            "exactly one (carrier) ToolCall for the refused id"
+        );
+        let results = messages
+            .iter()
+            .filter(|m| {
+                matches!(
+                    &m.message,
+                    Some(api::message::Message::ToolCallResult(r)) if r.tool_call_id == "call_abc"
+                )
+            })
+            .count();
+        assert_eq!(results, 1, "exactly one error result for the refused id");
     }
 
     /// Consequence 3: the system prompt keeps its Plan Mode block, so the model is told why
