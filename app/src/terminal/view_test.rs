@@ -14426,6 +14426,173 @@ fn typed_input_during_stalled_setup_passes_through_to_a_visible_prompt() {
     }
 }
 
+/// #1014: the first precmd of a subshell that has earlier blocks reports `AfterBlockCompleted`,
+/// not `BootstrapPrecmdDone`, so the held keys are also released from there. A silent stall
+/// (the tty's echo of the paced bootstrap ends in a newline, so it is no prompt) holds the keys;
+/// they are delivered exactly once.
+/// Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn keys_held_through_a_stall_are_released_once_when_the_subshell_precmd_completes() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            // What the tty echoes of the bootstrap lines: newline-terminated, so not a prompt.
+            view.model
+                .lock()
+                .simulate_long_running_block("zsh", " set | command grep x; true\r\n");
+            let block_id = view.model.lock().block_list().active_block().id().clone();
+            view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+            for key in [b"ls".to_vec(), b"\r".to_vec()] {
+                assert!(view.write_user_bytes_to_pty(key, ctx));
+            }
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "echoed bootstrap text is not a prompt: the keys are held"
+            );
+            view.release_held_setup_input_if_subshell_ready(ctx);
+            view.release_held_setup_input_if_subshell_ready(ctx);
+        });
+        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(written, b"ls\r".to_vec(), "delivered once, in order");
+    })
+}
+
+/// #1032: a shell showing a prompt for input (`Password: `) gets none of the setup text. Typing
+/// goes straight to the pty as the answer; once the answer was sent and the output is quiet, the
+/// setup is written.
+/// Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn subshell_setup_waits_behind_a_password_prompt_until_it_is_answered() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("zsh", "Password: ");
+            view.trigger_subshell_bootstrap(Some(ShellType::Zsh), false, ctx);
+            assert!(view.subshell_setup_deferred.is_some(), "setup is deferred");
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "no setup text reaches the prompt"
+            );
+            assert!(view.subshell_bootstrap_announced.is_none());
+
+            // Polling without an answer never writes, however long it has been quiet.
+            let since = view.subshell_setup_deferred.as_ref().unwrap().since;
+            if let Some(d) = view.subshell_setup_deferred.as_mut() {
+                d.unchanged_since = Instant::now() - Duration::from_secs(5);
+            }
+            view.poll_deferred_subshell_setup(since, ctx);
+            assert!(pty_writes.borrow().is_empty());
+
+            // The user's password goes to the pty untouched and counts as the answer.
+            assert!(view.write_user_bytes_to_pty(b"secret\r".to_vec(), ctx));
+            assert!(
+                pty_writes
+                    .borrow()
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .collect::<Vec<u8>>()
+                    .starts_with(b"secret"),
+                "the answer reaches the pty untouched"
+            );
+            assert!(
+                view.subshell_setup_deferred
+                    .as_ref()
+                    .unwrap()
+                    .answered_at
+                    .is_some()
+            );
+            pty_writes.borrow_mut().clear();
+
+            // Quiet since the answer: now the setup goes out.
+            if let Some(d) = view.subshell_setup_deferred.as_mut() {
+                d.unchanged_since = Instant::now() - Duration::from_secs(5);
+            }
+            view.poll_deferred_subshell_setup(since, ctx);
+            assert!(view.subshell_setup_deferred.is_none());
+            assert!(
+                !pty_writes.borrow().is_empty(),
+                "setup is written after the answer"
+            );
+        });
+    })
+}
+
+/// #1032: Ctrl-C while setup waits behind a prompt skips the setup; nothing is written for it.
+/// Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn ctrl_c_skips_a_deferred_subshell_setup() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("zsh", "Enter passphrase: ");
+            view.trigger_subshell_bootstrap(Some(ShellType::Zsh), false, ctx);
+            assert!(view.subshell_setup_deferred.is_some());
+            view.write_user_bytes_to_pty(vec![0x03], ctx);
+            assert!(view.subshell_setup_deferred.is_none());
+        });
+    })
+}
+
+/// #1032: what counts as a prompt for input, and when a deferred setup may go out.
+#[test]
+fn input_prompt_detection_and_deferred_setup_readiness() {
+    for prompt in [
+        "Password: ",
+        "[sudo] password for me: ",
+        "Enter passphrase for key '/h/.ssh/id': ",
+        "Continue connecting (yes/no)? ",
+        "out\nOverwrite [y/N]? ",
+        "Your secret> ",
+    ] {
+        assert!(output_tail_is_input_prompt(prompt), "{prompt:?}");
+    }
+    for not_prompt in [
+        "",
+        "\n",
+        "bash-5.1$ ",
+        "me@host ~ % ",
+        "~/src \u{276f} ",
+        "banner line\n",
+    ] {
+        assert!(!output_tail_is_input_prompt(not_prompt), "{not_prompt:?}");
+    }
+    let quiet = SUBSHELL_SETUP_DEFER_QUIET;
+    assert!(
+        !subshell_setup_defer_ready(true, false, quiet * 10),
+        "never without an answer"
+    );
+    assert!(!subshell_setup_defer_ready(false, false, quiet * 10));
+    assert!(!subshell_setup_defer_ready(true, true, Duration::ZERO));
+    assert!(subshell_setup_defer_ready(true, true, quiet));
+    assert!(subshell_setup_defer_ready(false, true, Duration::ZERO));
+}
+
 /// #1014: the setup-waiting notice and the typed-input hold key off the announcement, which must
 /// stay armed while the announced block is still the active one even though that block (the
 /// parent shell's command) is bootstrapped; once the block changed it needs a pending subshell

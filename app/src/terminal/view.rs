@@ -703,6 +703,13 @@ const SSH_BOOTSTRAP_SWALLOW_CEILING: Duration = Duration::from_secs(15);
 const SSH_CONNECT_SILENCE_CEILING: Duration = Duration::from_secs(15);
 /// After this long without a finished subshell bootstrap, input is no longer held back (#960).
 const SUBSHELL_BOOTSTRAP_STALL_CEILING: Duration = Duration::from_secs(20);
+/// How often a deferred subshell setup (#1032) re-checks whether the prompt it is waiting behind
+/// has been answered.
+const SUBSHELL_SETUP_DEFER_POLL: Duration = Duration::from_millis(250);
+/// After the user answered a prompt that setup was deferred behind, the output must stay unchanged
+/// this long (the shell took the answer and went quiet) before setup is written, when the
+/// answer left no visible newline behind (#1032).
+const SUBSHELL_SETUP_DEFER_QUIET: Duration = Duration::from_millis(600);
 /// Text typed while an announced subshell setup is unfinished is held by the app (not written to
 /// the tty, where the late bootstrap reads it as part of itself) for at most this long, then
 /// delivered anyway so a setup that never finishes cannot swallow it (#1014).
@@ -2508,6 +2515,22 @@ struct LocalSessionCanonicalPwdCache {
     canonical: CanonicalizedPath,
 }
 
+/// A subshell setup waiting behind a prompt for input (#1032): the arguments of the
+/// `trigger_subshell_bootstrap` call to repeat once the prompt is answered.
+struct DeferredSubshellSetup {
+    shell_type: Option<ShellType>,
+    triggered_by_rc_file_snippet: bool,
+    /// The block that showed the prompt; setup is dropped if another block takes over.
+    block_id: BlockId,
+    since: Instant,
+    /// When the user last sent a line (Enter) to the pty while setup waited.
+    answered_at: Option<Instant>,
+    /// The visible output last seen and since when it has not changed.
+    last_output: String,
+    unchanged_since: Instant,
+    notified: bool,
+}
+
 /// Bookkeeping for the paced subshell bootstrap write (see
 /// `TerminalView::write_init_subshell_bytes_to_pty`).
 struct SubshellBootstrapInFlight {
@@ -2834,6 +2857,10 @@ pub struct TerminalView {
     /// are delivered once setup completes, is abandoned or aborted, or after
     /// `SUBSHELL_SETUP_TYPED_HOLD_LIMIT`; never dropped.
     subshell_setup_held_bytes: Vec<Vec<u8>>,
+    /// A subshell setup that was not written because the shell was showing a prompt for input
+    /// (`Password:`, a passphrase or `read -p` prompt, #1032). Nothing of the setup is written
+    /// while this is `Some`; typing goes straight to the pty, where it answers the prompt.
+    subshell_setup_deferred: Option<DeferredSubshellSetup>,
 
     show_snackbar: bool,
     hover_near_snackbar_area: bool,
@@ -4483,6 +4510,7 @@ impl TerminalView {
             subshell_bootstrap_in_flight: None,
             subshell_bootstrap_announced: None,
             subshell_setup_held_bytes: Vec::new(),
+            subshell_setup_deferred: None,
             subshell_bootstrap_generation: 0,
             show_snackbar: true,
             hover_near_snackbar_area: false,
@@ -10513,6 +10541,7 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) -> bool {
         let mut bytes: Cow<'static, [u8]> = data.into();
+        self.note_input_for_deferred_subshell_setup(&bytes);
         // The paced subshell bootstrap is still being written: hold the keystrokes (never drop
         // them) and deliver them after its last line.
         if let Some(in_flight) = self.subshell_bootstrap_in_flight.as_mut() {
@@ -11316,6 +11345,29 @@ impl TerminalView {
     ) {
         self.dismiss_warpify_banner(&RememberForWarpification::DoNotRememberSubshellCommand, ctx);
 
+        // #1032: a shell that is asking for something (an rc file's `read -s "pw?Password: "`)
+        // would take the setup text as the answer, and the real answer typed next would land in
+        // the input editor. Write nothing until the prompt is answered. A trigger while setup is
+        // already waiting is the same request again.
+        if self.subshell_setup_deferred.is_some() {
+            return;
+        }
+        if let Some(prompt_line) = self.active_output_input_prompt_line() {
+            log::info!("Deferring subshell setup behind an input prompt ({prompt_line:?})");
+            self.defer_subshell_setup(shell_type, triggered_by_rc_file_snippet, ctx);
+            return;
+        }
+        self.trigger_subshell_bootstrap_now(shell_type, triggered_by_rc_file_snippet, ctx);
+    }
+
+    /// The part of [`Self::trigger_subshell_bootstrap`] that writes the setup, past the check for
+    /// a prompt waiting for input (#1032).
+    fn trigger_subshell_bootstrap_now(
+        &mut self,
+        shell_type: Option<ShellType>,
+        triggered_by_rc_file_snippet: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
         // Record the active long-running block so we can hide it later once the remote
         // actually confirms subshell bootstrap is in progress.
         // If the remote never emits InitShell, the block stays visible.
@@ -14125,6 +14177,12 @@ impl TerminalView {
                 cloud_workflow_id,
                 cloud_env_var_collection_id,
             }) => {
+                // #1014: the first precmd of a subshell that has earlier blocks announces itself
+                // with this event, never `BootstrapPrecmdDone` (that one only fires when the
+                // block list has no previous block). Keys held through a stalled setup are
+                // delivered here, once the subshell is bootstrapped and its precmd (which clears
+                // the typeahead model) has run.
+                self.release_held_setup_input_if_subshell_ready(ctx);
                 // To automatically warpify a subshell, we run the relevant command to open the
                 // subshell and create a future to delay bootstrapping the subshell long enough for
                 // the command to complete. We receive AfterBlockCompleted if the subshell command
@@ -16986,6 +17044,139 @@ impl TerminalView {
         }
     }
 
+    /// The visible last line of the active block's output when it is a prompt waiting for the
+    /// user's input (#1032): unterminated text (the #983 gate's rule) that reads as a question or
+    /// a request for a secret, as opposed to the shell's own `$ ` prompt.
+    fn active_output_input_prompt_line(&self) -> Option<String> {
+        if !self.active_output_ends_in_unterminated_text() {
+            return None;
+        }
+        let model = self.model.lock();
+        let contents = model
+            .block_list()
+            .active_block()
+            .output_grid()
+            .contents_to_string(false, None);
+        output_tail_is_input_prompt(&contents).then(|| {
+            contents
+                .trim_end_matches('\n')
+                .rsplit('\n')
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        })
+    }
+
+    fn active_output_snapshot(&self) -> String {
+        self.model
+            .lock()
+            .block_list()
+            .active_block()
+            .output_grid()
+            .contents_to_string(false, None)
+    }
+
+    fn defer_subshell_setup(
+        &mut self,
+        shell_type: Option<ShellType>,
+        triggered_by_rc_file_snippet: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let now = Instant::now();
+        let block_id = self.model.lock().block_list().active_block().id().clone();
+        self.subshell_setup_deferred = Some(DeferredSubshellSetup {
+            shell_type,
+            triggered_by_rc_file_snippet,
+            block_id,
+            since: now,
+            answered_at: None,
+            last_output: self.active_output_snapshot(),
+            unchanged_since: now,
+            notified: false,
+        });
+        self.schedule_subshell_setup_poll(now, ctx);
+    }
+
+    fn schedule_subshell_setup_poll(&mut self, since: Instant, ctx: &mut ViewContext<Self>) {
+        ctx.spawn(
+            Timer::after(SUBSHELL_SETUP_DEFER_POLL),
+            move |me, _, ctx| me.poll_deferred_subshell_setup(since, ctx),
+        );
+    }
+
+    /// Re-checks a deferred subshell setup (#1032): writes it once the prompt is answered and the
+    /// shell moved on, drops it if another block took over. Never aborts the shell and never
+    /// types into the prompt.
+    fn poll_deferred_subshell_setup(&mut self, since: Instant, ctx: &mut ViewContext<Self>) {
+        let output = self.active_output_snapshot();
+        let prompt_visible = self.active_output_input_prompt_line().is_some();
+        let block_id = self.model.lock().block_list().active_block().id().clone();
+        let now = Instant::now();
+        let Some(deferred) = self.subshell_setup_deferred.as_mut() else {
+            return;
+        };
+        if deferred.since != since {
+            return;
+        }
+        if deferred.block_id != block_id {
+            // The shell the setup was for is gone.
+            self.subshell_setup_deferred = None;
+            return;
+        }
+        if deferred.last_output != output {
+            deferred.last_output = output;
+            deferred.unchanged_since = now;
+        }
+        let ready = subshell_setup_defer_ready(
+            prompt_visible,
+            deferred.answered_at.is_some(),
+            now.saturating_duration_since(deferred.unchanged_since),
+        );
+        if ready {
+            let deferred = self.subshell_setup_deferred.take().expect("checked above");
+            self.trigger_subshell_bootstrap_now(
+                deferred.shell_type,
+                deferred.triggered_by_rc_file_snippet,
+                ctx,
+            );
+            return;
+        }
+        let notify = !deferred.notified
+            && now.saturating_duration_since(deferred.since) >= SUBSHELL_BOOTSTRAP_STALL_CEILING;
+        if notify {
+            deferred.notified = true;
+            if ctx.has_singleton_model::<ToastStack>() {
+                let window_id = ctx.window_id();
+                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                    let toast = DismissibleToast::new(
+                        "Phosphor setup is waiting for the prompt to be answered. Answer it, or \
+                         press Ctrl-C to skip setup."
+                            .to_string(),
+                        ToastFlavor::Default,
+                    );
+                    toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+                });
+            }
+        }
+        self.schedule_subshell_setup_poll(since, ctx);
+    }
+
+    /// Notes what the user sends while a subshell setup is deferred (#1032): a line sent to the
+    /// pty is the answer to the prompt; an abort key skips the setup. The bytes themselves are
+    /// not touched, they go to the pty like any typing.
+    fn note_input_for_deferred_subshell_setup(&mut self, bytes: &[u8]) {
+        let Some(deferred) = self.subshell_setup_deferred.as_mut() else {
+            return;
+        };
+        if is_abort_key(bytes) {
+            self.subshell_setup_deferred = None;
+        } else if bytes.iter().any(|b| matches!(b, b'\r' | b'\n')) {
+            let now = Instant::now();
+            deferred.answered_at = Some(now);
+            deferred.unchanged_since = now;
+        }
+    }
+
     fn write_init_subshell_bytes_to_pty(
         &mut self,
         shell_type: Option<ShellType>,
@@ -17124,6 +17315,15 @@ impl TerminalView {
             for bytes in in_flight.held_user_bytes {
                 self.write_user_bytes_to_pty(bytes, ctx);
             }
+        }
+    }
+
+    /// Delivers the keystrokes held through a stalled setup (#1014) once no subshell bootstrap is
+    /// pending any more. Safe to call at any block completion: it does nothing while the setup
+    /// is still pending or when nothing is held, so the keys are delivered exactly once.
+    fn release_held_setup_input_if_subshell_ready(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.subshell_setup_held_bytes.is_empty() && !self.subshell_bootstrap_pending() {
+            self.release_subshell_setup_held_bytes(ctx);
         }
     }
 
@@ -32101,6 +32301,39 @@ fn output_has_visible_text(output: &str) -> bool {
     output
         .chars()
         .any(|c| !c.is_whitespace() && !c.is_control())
+}
+
+/// Whether the last line of `output` reads as a prompt for the user's input (#1032): a question
+/// or a request ending in `:` / `?`, a `[y/n]` choice, or one that names a secret. The shell's
+/// own `$ ` / `% ` prompt is deliberately not one. Callers check that the line is unterminated.
+fn output_tail_is_input_prompt(output: &str) -> bool {
+    let Some(line) = output.trim_end_matches('\n').rsplit('\n').next() else {
+        return false;
+    };
+    let line = line.trim_end();
+    if !output_has_visible_text(line) {
+        return false;
+    }
+    let lower = line.to_lowercase();
+    line.ends_with(':')
+        || line.ends_with('?')
+        || lower.ends_with("[y/n]")
+        || lower.ends_with("(y/n)")
+        || ["password", "passphrase", "passcode", "secret"]
+            .iter()
+            .any(|word| lower.contains(word))
+}
+
+/// Whether a deferred subshell setup (#1032) may be written now: the prompt text is gone from
+/// the end of the output (the answer was taken and the shell printed a newline or moved on), or
+/// the user answered it and the output has been unchanged for `SUBSHELL_SETUP_DEFER_QUIET`.
+/// Without an answer it keeps waiting however long that takes.
+fn subshell_setup_defer_ready(
+    prompt_visible: bool,
+    answered: bool,
+    unchanged_for: Duration,
+) -> bool {
+    answered && (!prompt_visible || unchanged_for >= SUBSHELL_SETUP_DEFER_QUIET)
 }
 
 /// Keys that always reach ssh (Ctrl-C, Ctrl-D, Ctrl-Z, Ctrl-\) so a hung connect can be aborted.
