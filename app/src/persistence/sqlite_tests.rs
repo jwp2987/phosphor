@@ -2451,3 +2451,199 @@ fn writer_retries_snapshot_blocked_by_external_exclusive_lock() {
         "the blocked snapshot must be saved after the lock is released"
     );
 }
+
+/// #971: events other than snapshots (conversation updates, blocks, upserts)
+/// that hit a lock were reported and dropped. They are now kept and replayed in
+/// order, together with the snapshot.
+#[test]
+fn writer_replays_non_snapshot_events_in_order_after_lock_release() {
+    use diesel::{Connection as _, connection::SimpleConnection as _, sqlite::SqliteConnection};
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let conn = setup_database(&database_path).expect("database should initialize");
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+
+    let mut locker =
+        SqliteConnection::establish(database_path.to_str().unwrap()).expect("locker connects");
+    locker
+        .batch_execute("BEGIN EXCLUSIVE;")
+        .expect("exclusive lock should be taken");
+
+    let kept = test_workspace_metadata("/tmp/kept-repo");
+    let upserted_then_deleted = test_workspace_metadata("/tmp/upsert-then-delete");
+    for event in [
+        ModelEvent::UpsertCodebaseIndexMetadata {
+            index_metadata: Box::new(kept.clone()),
+        },
+        ModelEvent::UpsertCodebaseIndexMetadata {
+            index_metadata: Box::new(upserted_then_deleted.clone()),
+        },
+        // Executed out of order (ahead of the upsert), this delete would be a
+        // no-op and the row would survive.
+        ModelEvent::DeleteCodebaseIndexMetadata {
+            repo_path: upserted_then_deleted.path.clone(),
+        },
+        ModelEvent::Snapshot(AppState {
+            windows: vec![test_terminal_window_snapshot(false)],
+            active_window_index: Some(0),
+            block_lists: Default::default(),
+            running_mcp_servers: Default::default(),
+        }),
+    ] {
+        writer.sender.send(event).expect("event should send");
+    }
+
+    // The first attempts fail on the 1 s busy timeout.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let mut reader = SqliteConnection::establish(database_path.to_str().unwrap()).unwrap();
+    assert!(
+        get_all_codebase_index_metadata(&mut reader)
+            .expect("metadata should load")
+            .is_empty(),
+        "nothing may be written while the lock is held"
+    );
+    locker.batch_execute("COMMIT;").expect("lock released");
+
+    let mut landed = false;
+    for _ in 0..150 {
+        let metadata = get_all_codebase_index_metadata(&mut reader).expect("metadata");
+        let snapshot = read_sqlite_data(&mut reader, None).expect("data should load");
+        if metadata.len() == 1 && snapshot.app_state.windows.len() == 1 {
+            assert_eq!(metadata[0].path, kept.path);
+            landed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    writer.sender.send(ModelEvent::Terminate).ok();
+    writer.handle.join().expect("writer should terminate");
+    assert!(
+        landed,
+        "the blocked events and the snapshot must land, in order, after the lock is released"
+    );
+}
+
+/// #971: the lock is still held when the app quits; Terminate makes one last
+/// attempt, which succeeds if the lock was released in the meantime.
+#[test]
+fn terminate_flushes_queued_events_once_the_lock_is_gone() {
+    use diesel::{Connection as _, connection::SimpleConnection as _, sqlite::SqliteConnection};
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let conn = setup_database(&database_path).expect("database should initialize");
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+    let mut locker =
+        SqliteConnection::establish(database_path.to_str().unwrap()).expect("locker connects");
+    locker.batch_execute("BEGIN EXCLUSIVE;").expect("lock");
+
+    let metadata = test_workspace_metadata("/tmp/flush-on-terminate");
+    writer
+        .sender
+        .send(ModelEvent::UpsertCodebaseIndexMetadata {
+            index_metadata: Box::new(metadata.clone()),
+        })
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    locker.batch_execute("COMMIT;").expect("release");
+    // Before the 2 s retry timer fires again.
+    writer.sender.send(ModelEvent::Terminate).unwrap();
+    writer.handle.join().expect("writer should terminate");
+
+    let mut reader = setup_database(&database_path).expect("reopen");
+    let restored = get_all_codebase_index_metadata(&mut reader).expect("metadata");
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].path, metadata.path);
+}
+
+/// #971: pausing (logout) must drop queued events so they are not replayed into
+/// the next user's database; so must reconstructing.
+#[test]
+fn pause_and_reconstruct_discard_queued_events() {
+    use diesel::{Connection as _, connection::SimpleConnection as _, sqlite::SqliteConnection};
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let conn = setup_database(&database_path).expect("database should initialize");
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+    let mut locker =
+        SqliteConnection::establish(database_path.to_str().unwrap()).expect("locker connects");
+    locker.batch_execute("BEGIN EXCLUSIVE;").expect("lock");
+
+    let stale = test_workspace_metadata("/tmp/previous-users-repo");
+    writer
+        .sender
+        .send(ModelEvent::UpsertCodebaseIndexMetadata {
+            index_metadata: Box::new(stale),
+        })
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    // The pause closes the connection and unlinks the file (the locker keeps its
+    // own handle open on the old inode).
+    writer
+        .sender
+        .send(ModelEvent::PauseAndRemoveDatabase)
+        .unwrap();
+    writer
+        .sender
+        .send(ModelEvent::ReconstructAndResume)
+        .unwrap();
+    let fresh = test_workspace_metadata("/tmp/new-users-repo");
+    writer
+        .sender
+        .send(ModelEvent::UpsertCodebaseIndexMetadata {
+            index_metadata: Box::new(fresh.clone()),
+        })
+        .unwrap();
+    locker.batch_execute("ROLLBACK;").ok();
+    drop(locker);
+    // Past the 2 s retry timer: a surviving queue would have been replayed.
+    std::thread::sleep(std::time::Duration::from_millis(3000));
+    writer.sender.send(ModelEvent::Terminate).unwrap();
+    writer.handle.join().expect("writer should terminate");
+
+    let mut reader = setup_database(&database_path).expect("reopen");
+    let restored = get_all_codebase_index_metadata(&mut reader).expect("metadata");
+    assert_eq!(
+        restored.len(),
+        1,
+        "only the post-reconstruct event may land"
+    );
+    assert_eq!(restored[0].path, fresh.path);
+}
+
+/// #971: the retry queue is bounded; the oldest event is dropped, newest kept.
+#[test]
+fn retry_queue_is_bounded_and_drops_the_oldest() {
+    let mut queue = super::RetryQueue::default();
+    let event = |n: usize| ModelEvent::DeleteCodebaseIndexMetadata {
+        repo_path: PathBuf::from(format!("/tmp/{n}")),
+    };
+    for n in 0..super::MAX_QUEUED_RETRY_EVENTS {
+        assert!(!queue.push(event(n)), "within the cap nothing is dropped");
+    }
+    assert!(queue.push(event(super::MAX_QUEUED_RETRY_EVENTS)));
+    assert_eq!(queue.len(), super::MAX_QUEUED_RETRY_EVENTS);
+    let first = queue.events.front().expect("non-empty");
+    assert!(
+        matches!(first, ModelEvent::DeleteCodebaseIndexMetadata { repo_path } if repo_path == &PathBuf::from("/tmp/1"))
+    );
+    queue.clear();
+    assert!(queue.is_empty());
+}
+
+/// #971: giving up after the fast retries must not be final; the interval just
+/// slows down.
+#[test]
+fn lock_retry_slows_down_instead_of_giving_up() {
+    assert_eq!(super::lock_retry_interval(0), super::LOCK_RETRY_INTERVAL);
+    assert_eq!(
+        super::lock_retry_interval(super::MAX_SNAPSHOT_LOCK_RETRIES),
+        super::LOCK_RETRY_INTERVAL
+    );
+    assert_eq!(
+        super::lock_retry_interval(super::MAX_SNAPSHOT_LOCK_RETRIES + 1),
+        super::LOCK_SLOW_RETRY_INTERVAL
+    );
+}

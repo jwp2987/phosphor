@@ -3106,7 +3106,7 @@ enum BlockMetadataUpdateSource {
     Osc7,
 }
 
-/// What the agent-shortcut Enter (Cmd-Enter on macOS, Ctrl-Enter elsewhere) does (#976).
+/// What the agent-shortcut Enter (Cmd-Enter on macOS, Ctrl-Shift-Enter elsewhere) does (#976).
 #[derive(Debug, PartialEq, Eq)]
 enum AgentShortcutEnterRoute {
     /// The "Use agent" shortcut the SSH Warpifying banner advertises: switch to agent mode and
@@ -9531,7 +9531,7 @@ impl TerminalView {
         });
     }
 
-    /// The agent shortcut (Cmd-Enter / Ctrl-Enter) arrived as a key event. While the SSH
+    /// The agent shortcut (Cmd-Enter / Ctrl-Shift-Enter) arrived as a key event. While the SSH
     /// Warpifying banner shows it switches to agent mode and sends nothing to the pty; a plain
     /// Enter never gets here and always goes to the pty (it may answer a password, host-key or
     /// 2FA prompt). Otherwise the key is handled as it was before it was intercepted: as

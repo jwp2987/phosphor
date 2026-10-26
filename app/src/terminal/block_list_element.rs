@@ -5607,13 +5607,10 @@ mod tests {
     }
 }
 
-/// Whether `keystroke` is the Enter shortcut the SSH Warpifying banner advertises as "Use agent":
-/// Cmd-Enter on macOS, Ctrl-Enter elsewhere, with no other modifier.
+/// Whether `keystroke` is the shortcut the SSH Warpifying banner (and the "Use agent" footer)
+/// displays: Cmd-Enter on macOS, Ctrl-Shift-Enter elsewhere. It is derived from the displayed
+/// keystroke itself, so the label and the behaviour cannot diverge (#976).
 pub(crate) fn is_agent_shortcut_enter(keystroke: &warpui::keymap::Keystroke) -> bool {
-    let agent_modifier = if cfg!(target_os = "macos") {
-        keystroke.cmd && !keystroke.ctrl
-    } else {
-        keystroke.ctrl && !keystroke.cmd
-    };
-    keystroke.key == "enter" && agent_modifier && !keystroke.shift && !keystroke.alt
+    keystroke.key == "enter"
+        && crate::terminal::view::use_agent_footer::is_use_agent_keystroke(keystroke)
 }

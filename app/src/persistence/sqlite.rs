@@ -145,9 +145,95 @@ const CHANNEL_SIZE: usize = 1024;
 /// How often the writer retries a snapshot that failed on a lock held by
 /// another process (#971).
 const LOCK_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
-/// Retries of one blocked snapshot before giving up (about a minute); a newer
-/// snapshot starts over.
+/// Retries at the fast interval (about a minute). A lock that outlasts this is
+/// not a reason to drop the data: the writer keeps retrying, but at
+/// `LOCK_SLOW_RETRY_INTERVAL`, until the lock is released (#971).
 const MAX_SNAPSHOT_LOCK_RETRIES: u32 = 30;
+/// Retry interval once `MAX_SNAPSHOT_LOCK_RETRIES` fast attempts have failed.
+const LOCK_SLOW_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+/// Most non-snapshot events kept for retry while a lock is held (#971). When
+/// full, the oldest is dropped (and reported).
+const MAX_QUEUED_RETRY_EVENTS: usize = 1000;
+
+fn lock_retry_interval(attempts: u32) -> std::time::Duration {
+    if attempts > MAX_SNAPSHOT_LOCK_RETRIES {
+        LOCK_SLOW_RETRY_INTERVAL
+    } else {
+        LOCK_RETRY_INTERVAL
+    }
+}
+
+/// Non-snapshot events that hit a lock held by another process, kept in arrival
+/// order and replayed once the lock clears (#971). `ModelEvent` is not `Clone`,
+/// so an event is queued *instead of* being executed (the lock is probed first,
+/// see [`write_lock_blocked`]) and is never consumed by a failed attempt.
+#[derive(Default)]
+struct RetryQueue {
+    events: std::collections::VecDeque<ModelEvent>,
+}
+
+impl RetryQueue {
+    /// Appends `event`; returns whether the oldest event had to be dropped to
+    /// stay within [`MAX_QUEUED_RETRY_EVENTS`].
+    fn push(&mut self, event: ModelEvent) -> bool {
+        let dropped = self.events.len() >= MAX_QUEUED_RETRY_EVENTS;
+        if dropped {
+            self.events.pop_front();
+        }
+        self.events.push_back(event);
+        dropped
+    }
+
+    fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    fn clear(&mut self) {
+        self.events.clear();
+    }
+}
+
+/// Whether another connection currently blocks writes to the database (waits
+/// out the connection's busy timeout). Checked before an event is consumed.
+fn write_lock_blocked(conn: &mut SqliteConnection) -> bool {
+    match conn.batch_execute("BEGIN IMMEDIATE; ROLLBACK;") {
+        Ok(()) => false,
+        Err(err) => {
+            let _ = conn.batch_execute("ROLLBACK;");
+            super::database_notice::is_lock_error(&err.to_string().to_lowercase())
+        }
+    }
+}
+
+enum DrainOutcome {
+    Done,
+    Locked,
+}
+
+/// Replays queued events in order; stops at the first one that is still blocked.
+fn drain_retry_queue(
+    queue: &mut RetryQueue,
+    conn: &mut SqliteConnection,
+    database_path: &Path,
+) -> DrainOutcome {
+    while !queue.is_empty() {
+        if write_lock_blocked(conn) {
+            return DrainOutcome::Locked;
+        }
+        let Some(event) = queue.events.pop_front() else {
+            break;
+        };
+        if let Err(err) = handle_model_event(event, conn) {
+            // Not a retryable lock (the probe just succeeded): report and move on.
+            report_db_error("Model", err, database_path);
+        }
+    }
+    DrainOutcome::Done
+}
 /// Consecutive lock failures (each already waited out the busy timeout) before
 /// the user is told saves are blocked.
 const LOCK_NOTICE_THRESHOLD: u32 = 3;
@@ -1681,46 +1767,45 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
             // When the pending snapshot is next retried. A deadline rather than
             // a per-wait timeout, so unrelated events do not push it back.
             let mut retry_deadline: Option<std::time::Instant> = None;
+            // #971: non-snapshot events blocked by a lock, replayed in order.
+            let mut retry_queue = RetryQueue::default();
             loop {
                 // Whether this iteration is a retry of the pending snapshot.
                 let mut timed_out = false;
-                let received = if pending_snapshot.is_some() {
+                let retrying = pending_snapshot.is_some() || !retry_queue.is_empty();
+                let received: Result<Option<ModelEvent>, ()> = if retrying {
                     let wait = retry_deadline
-                        .unwrap_or_else(|| std::time::Instant::now() + LOCK_RETRY_INTERVAL)
+                        .unwrap_or_else(|| {
+                            std::time::Instant::now() + lock_retry_interval(snapshot_retries)
+                        })
                         .saturating_duration_since(std::time::Instant::now());
                     match rx.recv_timeout(wait) {
-                        Ok(event) => Ok(event),
+                        Ok(event) => Ok(Some(event)),
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                             snapshot_retries += 1;
-                            match pending_snapshot.take() {
-                                Some(state) if snapshot_retries <= MAX_SNAPSHOT_LOCK_RETRIES => {
-                                    timed_out = true;
-                                    Ok(ModelEvent::Snapshot(state))
-                                }
-                                _ => {
-                                    log::warn!(
-                                        "Giving up retrying the app state save after \
-                                         {MAX_SNAPSHOT_LOCK_RETRIES} attempts; the next \
-                                         snapshot will try again"
-                                    );
-                                    snapshot_retries = 0;
-                                    retry_deadline = None;
-                                    continue;
-                                }
+                            if snapshot_retries == MAX_SNAPSHOT_LOCK_RETRIES + 1 {
+                                log::warn!(
+                                    "The database is still locked after \
+                                     {MAX_SNAPSHOT_LOCK_RETRIES} attempts; continuing to \
+                                     retry every {}s until it is released",
+                                    LOCK_SLOW_RETRY_INTERVAL.as_secs()
+                                );
                             }
+                            timed_out = true;
+                            // The attempts below set the next deadline.
+                            retry_deadline = None;
+                            Ok(None)
                         }
-                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                            Err(std::sync::mpsc::RecvError)
-                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(()),
                     }
                 } else {
-                    rx.recv()
+                    rx.recv().map(Some).map_err(|_| ())
                 };
                 // True only when the event being handled is the retried snapshot
                 // itself; a newer snapshot that supersedes it is a fresh one and
                 // gets a fresh retry budget.
                 let (events, is_retry) = match received {
-                    Ok(event) => {
+                    Ok(Some(event)) => {
                         // Wait for there to be at least one event, but collect any other pending
                         // events too. This way, we can start dropping redundant events if the
                         // writer thread is falling behind.
@@ -1732,13 +1817,71 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                 .any(|event| matches!(event, ModelEvent::Snapshot(_)));
                         (deduplicate_events(events), is_retry)
                     }
-                    Err(_) => {
+                    // Retry timer fired: re-attempt the pending snapshot.
+                    Ok(None) => (
+                        pending_snapshot
+                            .take()
+                            .map(ModelEvent::Snapshot)
+                            .into_iter()
+                            .collect(),
+                        true,
+                    ),
+                    Err(()) => {
                         log::warn!(
                             "SQLite event sender has closed; terminating SQLite writer thread."
                         );
+                        if !paused
+                            && !abandoned
+                            && let Some(conn) = current_conn.as_mut()
+                        {
+                            drain_retry_queue(&mut retry_queue, conn, &database_path);
+                        }
                         return;
                     }
                 };
+
+                // #971: replay blocked events first, so later events never
+                // overtake them.
+                if !retry_queue.is_empty()
+                    && !paused
+                    && !abandoned
+                    && let Some(conn) = current_conn.as_mut()
+                {
+                    match drain_retry_queue(&mut retry_queue, conn, &database_path) {
+                        DrainOutcome::Done => {
+                            log::info!("Saved the events that were blocked by a database lock");
+                            lock_failures = 0;
+                            suppressed_errors = 0;
+                            super::database_notice::record_write_outcome(&database_path, None);
+                            if pending_snapshot.is_none() && events.is_empty() {
+                                snapshot_retries = 0;
+                                retry_deadline = None;
+                            }
+                        }
+                        DrainOutcome::Locked => {
+                            retry_deadline.get_or_insert_with(|| {
+                                std::time::Instant::now() + lock_retry_interval(snapshot_retries)
+                            });
+                            // Events in this batch count their own failures when
+                            // they are queued behind these; a bare timer tick
+                            // would otherwise never raise the notice.
+                            if events.is_empty() {
+                                lock_failures += 1;
+                                if lock_failures >= LOCK_NOTICE_THRESHOLD {
+                                    let err = anyhow::anyhow!(
+                                        "database is locked ({} writes waiting)",
+                                        retry_queue.len()
+                                    );
+                                    report_write_failure(
+                                        &database_path,
+                                        err,
+                                        &mut suppressed_errors,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
 
                 for event in events {
                     match event {
@@ -1751,6 +1894,7 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                     // #920: nothing from the previous session may be
                                     // replayed into the new database.
                                     pending_snapshot = None;
+                                    retry_queue.clear();
                                     snapshot_retries = 0;
                                     lock_failures = 0;
                                     retry_deadline = None;
@@ -1777,6 +1921,7 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                             // #920: a quick re-login must not replay the previous
                             // user's snapshot into the next database.
                             pending_snapshot = None;
+                            retry_queue.clear();
                             snapshot_retries = 0;
                             lock_failures = 0;
                             retry_deadline = None;
@@ -1802,8 +1947,25 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                             }
                         }
                         ModelEvent::Terminate => {
-                            // One last attempt at a snapshot that was blocked by a
-                            // lock; bounded by the connection's busy timeout.
+                            // One last attempt at what a lock blocked: the queued
+                            // events (stops at the first still-blocked one, so at
+                            // most one busy timeout), then the snapshot.
+                            if !paused
+                                && !abandoned
+                                && let Some(conn) = current_conn.as_mut()
+                                && !retry_queue.is_empty()
+                            {
+                                match drain_retry_queue(&mut retry_queue, conn, &database_path) {
+                                    DrainOutcome::Done => {
+                                        log::info!("Saved the blocked events on shutdown")
+                                    }
+                                    DrainOutcome::Locked => log::warn!(
+                                        "Could not save {} blocked events on shutdown: the \
+                                         database is still locked",
+                                        retry_queue.len()
+                                    ),
+                                }
+                            }
                             if let Some(state) = pending_snapshot.take()
                                 && !paused
                                 && !abandoned
@@ -1850,6 +2012,7 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                 )
                             }) {
                                 abandoned = true;
+                                retry_queue.clear();
                                 let leaked = current_conn
                                     .take()
                                     .is_some_and(|conn| retire_abandoned_connection(conn, &database_path));
@@ -1866,51 +2029,86 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                 continue;
                             }
                             let is_snapshot = matches!(event, ModelEvent::Snapshot(_));
+                            // Set when the event was parked behind a lock instead of
+                            // being executed.
+                            let mut deferred = false;
                             let result = match event {
                                 ModelEvent::Snapshot(state) => {
                                     if !is_retry {
                                         // A new snapshot supersedes any pending one.
                                         snapshot_retries = 0;
                                     }
-                                    let result = save_app_state(conn, &state)
-                                        .context("error saving app state");
-                                    match &result {
-                                        Err(err)
-                                            if super::database_notice::is_lock_error(
-                                                &underlying_error_message(err),
-                                            ) =>
-                                        {
-                                            pending_snapshot = Some(state);
-                                            retry_deadline = Some(
-                                                std::time::Instant::now() + LOCK_RETRY_INTERVAL,
+                                    if !retry_queue.is_empty() {
+                                        // Earlier writes are still blocked; the lock is
+                                        // evidently still held.
+                                        pending_snapshot = Some(state);
+                                        retry_deadline.get_or_insert_with(|| {
+                                            std::time::Instant::now()
+                                                + lock_retry_interval(snapshot_retries)
+                                        });
+                                        deferred = true;
+                                        Err(anyhow::anyhow!(
+                                            "database is locked (earlier writes are waiting)"
+                                        ))
+                                    } else {
+                                        let result = save_app_state(conn, &state)
+                                            .context("error saving app state");
+                                        match &result {
+                                            Err(err)
+                                                if super::database_notice::is_lock_error(
+                                                    &underlying_error_message(err),
+                                                ) =>
+                                            {
+                                                pending_snapshot = Some(state);
+                                                retry_deadline = Some(
+                                                    std::time::Instant::now()
+                                                        + lock_retry_interval(snapshot_retries),
+                                                );
+                                            }
+                                            Ok(()) | Err(_) => {
+                                                pending_snapshot = None;
+                                                snapshot_retries = 0;
+                                                retry_deadline = None;
+                                            }
+                                        }
+                                        result
+                                    }
+                                }
+                                event => {
+                                    // #971: park the event while a lock is held (or
+                                    // while older events wait), keeping order.
+                                    if !retry_queue.is_empty() || write_lock_blocked(conn) {
+                                        if retry_queue.push(event) {
+                                            log::error!(
+                                                "The database has been locked for too long: the \
+                                                 retry queue is full ({MAX_QUEUED_RETRY_EVENTS}), \
+                                                 so the oldest queued write was dropped"
                                             );
                                         }
-                                        Ok(()) => {
-                                            pending_snapshot = None;
-                                            snapshot_retries = 0;
-                                            retry_deadline = None;
-                                        }
-                                        Err(_) => {
-                                            pending_snapshot = None;
-                                            snapshot_retries = 0;
-                                            retry_deadline = None;
-                                        }
+                                        retry_deadline.get_or_insert_with(|| {
+                                            std::time::Instant::now()
+                                                + lock_retry_interval(snapshot_retries)
+                                        });
+                                        deferred = true;
+                                        Err(anyhow::anyhow!("database is locked"))
+                                    } else {
+                                        handle_model_event(event, conn)
                                     }
-                                    result
                                 }
-                                event => handle_model_event(event, conn),
                             };
-                            // Only a snapshot is retried (it is kept in
-                            // `pending_snapshot`). Any other event that hit a lock
-                            // is lost, so it is reported as a failure at once and
-                            // never described as "will retry".
-                            let lock_blocked_snapshot = is_snapshot
-                                && result.as_ref().err().is_some_and(|err| {
-                                    super::database_notice::is_lock_error(
-                                        &underlying_error_message(err),
-                                    )
-                                });
-                            if lock_blocked_snapshot {
+                            // A blocked snapshot is kept in `pending_snapshot` and a
+                            // blocked event in `retry_queue`; both are retried. An
+                            // event that fails on a lock *during* execution (it won
+                            // the probe, then lost a race) is lost, so it is
+                            // reported as a failure at once.
+                            let lock_blocked = deferred
+                                || (is_snapshot
+                                    && result.as_ref().err().is_some_and(|err| {
+                                        super::database_notice::is_lock_error(
+                                            &underlying_error_message(err),
+                                        )
+                                    }));
+                            if lock_blocked {
                                 lock_failures += 1;
                             }
                             match result {
@@ -1922,32 +2120,20 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                         None,
                                     );
                                 }
-                                Err(_) if lock_blocked_snapshot
+                                Err(_) if lock_blocked
                                     && lock_failures < LOCK_NOTICE_THRESHOLD =>
                                 {
                                     log::info!(
                                         "SQLite write blocked by a lock held elsewhere \
-                                         (failure {lock_failures}); the snapshot will be retried"
+                                         (failure {lock_failures}); the write will be retried"
                                     );
                                 }
                                 Err(err) => {
-                                    let log_mode = super::database_notice::record_write_outcome(
+                                    report_write_failure(
                                         &database_path,
-                                        Some(&underlying_error_message(&err)),
+                                        err,
+                                        &mut suppressed_errors,
                                     );
-                                    // Once per failing stretch, then a count
-                                    // now and then, not a line per event.
-                                    if log_mode == super::database_notice::WriteFailureLog::Repeat {
-                                        suppressed_errors += 1;
-                                        if suppressed_errors.is_power_of_two() {
-                                            log::warn!(
-                                                "SQLite writes are still failing \
-                                                 ({suppressed_errors} repeats not logged)"
-                                            );
-                                        }
-                                    } else {
-                                        report_db_error("Model", err, &database_path);
-                                    }
                                 }
                             }
                         }
@@ -1956,6 +2142,23 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
             }
         })?;
     Ok(WriterHandles { handle, sender: tx })
+}
+
+/// Records a failed write and logs it: in full the first time in a failing
+/// stretch, then only a count now and then, not a line per event.
+fn report_write_failure(database_path: &Path, err: anyhow::Error, suppressed_errors: &mut u32) {
+    let log_mode = super::database_notice::record_write_outcome(
+        database_path,
+        Some(&underlying_error_message(&err)),
+    );
+    if log_mode == super::database_notice::WriteFailureLog::Repeat {
+        *suppressed_errors += 1;
+        if suppressed_errors.is_power_of_two() {
+            log::warn!("SQLite writes are still failing ({suppressed_errors} repeats not logged)");
+        }
+    } else {
+        report_db_error("Model", err, database_path);
+    }
 }
 
 /// Retires the writer's connection once its database file turned out to be
