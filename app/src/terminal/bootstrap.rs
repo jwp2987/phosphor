@@ -414,7 +414,7 @@ fn chunked_eval_lines(shell_type: ShellType, raw_script: &str) -> Vec<String> {
             )
         }
         ShellType::Zsh => lines.push(
-            " [ -n \"${__whi-}\" ] || { __whi=0; [[ -o hist_ignore_space ]] && __whi=1; }; setopt hist_ignore_space"
+            " [ -n \"${__whi-}\" ] || { __whi=0; [[ -o hist_ignore_space ]] && __whi=1; }; setopt hist_ignore_space; [ -n \"${__wpe-}\" ] || { __wpe=0; [[ -o print_exit_value ]] && __wpe=1; }; unsetopt print_exit_value"
                 .to_owned(),
         ),
         _ => {}
@@ -438,10 +438,10 @@ fn chunked_eval_lines(shell_type: ShellType, raw_script: &str) -> Vec<String> {
         // whose rcfiles already ran, and under their `set -u` / `setopt nounset` the bare
         // expansion aborts the line, so the subshell is never Warpified (#839).
         ShellType::Bash => format!(
-            " HISTCONTROL=$__hc0; unset __hc0; if [ -z \"${{WARP_BOOTSTRAPPED-}}\" ]; then if [ \"${{#_wbs}}\" -eq {chars} ] || [ \"${{#_wbs}}\" -eq {bytes} ]; then eval \"$_wbs\"; else {SKIPPED_NOTICE}; fi; fi; unset _wbs"
+            " HISTCONTROL=${{__hc0-}}; unset __hc0; if [ -z \"${{WARP_BOOTSTRAPPED-}}\" ]; then if [ \"${{#_wbs}}\" -eq {chars} ] || [ \"${{#_wbs}}\" -eq {bytes} ]; then eval \"$_wbs\"; else {SKIPPED_NOTICE}; fi; fi; unset _wbs"
         ),
         ShellType::Zsh => format!(
-            " if [ \"$__whi\" = 1 ]; then WARP_HIST_IGNORE_SPACE_USER=1; else unsetopt hist_ignore_space; fi; unset __whi; if [ -z \"${{WARP_BOOTSTRAPPED-}}\" ]; then if [ \"${{#_wbs}}\" -eq {chars} ] || [ \"${{#_wbs}}\" -eq {bytes} ]; then eval \"$_wbs\"; else {SKIPPED_NOTICE}; fi; fi; unset _wbs WARP_HIST_IGNORE_SPACE_USER"
+            " if [ \"${{__whi-}}\" = 1 ]; then WARP_HIST_IGNORE_SPACE_USER=1; else unsetopt hist_ignore_space; fi; unset __whi; if [ \"${{__wpe-}}\" = 1 ]; then setopt print_exit_value; fi; unset __wpe; if [ -z \"${{WARP_BOOTSTRAPPED-}}\" ]; then if [ \"${{#_wbs}}\" -eq {chars} ] || [ \"${{#_wbs}}\" -eq {bytes} ]; then eval \"$_wbs\"; else {SKIPPED_NOTICE}; fi; fi; unset _wbs WARP_HIST_IGNORE_SPACE_USER"
         ),
         // fish cannot parse `${...}` and has no nounset, so it keeps the bare expansion.
         _ => format!(
@@ -567,14 +567,14 @@ fn init_subshell_script_for_unknown_shell(
 /// [`UNKNOWN_SHELL_HISTORY_RESTORE`]). Every `${}` sits inside a single-quoted `eval` that only
 /// bash (`shopt` exists) or zsh (`setopt` exists) reaches, so fish and POSIX sh parse the line
 /// without running any of it, and a bash with `set -u` does not trip on an unset name.
-const UNKNOWN_SHELL_HISTORY_PRELUDE: &str = " command -v shopt >/dev/null 2>&1 && eval '__hc0=${HISTCONTROL-}; HISTCONTROL=ignorespace:${HISTCONTROL-}'; command -v setopt >/dev/null 2>&1 && eval '__whi=$(setopt | command grep -c histignorespace); setopt hist_ignore_space'";
+const UNKNOWN_SHELL_HISTORY_PRELUDE: &str = " command -v shopt >/dev/null 2>&1 && eval '__hc0=${HISTCONTROL-}; HISTCONTROL=ignorespace:${HISTCONTROL-}'; command -v setopt >/dev/null 2>&1 && eval '__whi=0; [[ -o hist_ignore_space ]] && __whi=1; __wpe=0; [[ -o print_exit_value ]] && __wpe=1; setopt hist_ignore_space; unsetopt print_exit_value'; true";
 /// Tail of the probe line: puts back what [`UNKNOWN_SHELL_HISTORY_PRELUDE`] changed, except when
 /// the probe is about to report `bash` or `zsh` (the same `$0` test the probe uses). Those are
 /// followed by the known-shell stage, whose first line was recorded under the old behaviour
 /// because this tail had already switched the option off; now the option stays on until that
 /// stage's last line restores it (it reuses `__hc0` / `__whi`). A bash or zsh the probe cannot
 /// name (for example bash started as `sh`) gets no known-shell stage, so it is restored here.
-const UNKNOWN_SHELL_HISTORY_RESTORE: &str = "command -v shopt >/dev/null 2>&1 && eval 'case $0 in *bash*|*zsh*) ;; *) HISTCONTROL=${__hc0-}; unset __hc0;; esac'; command -v setopt >/dev/null 2>&1 && eval 'case $0 in *bash*|*zsh*) ;; *) [ \"${__whi-}\" = 1 ] || unsetopt hist_ignore_space; unset __whi;; esac'";
+const UNKNOWN_SHELL_HISTORY_RESTORE: &str = "command -v shopt >/dev/null 2>&1 && eval 'case $0 in *bash*|*zsh*) ;; *) HISTCONTROL=${__hc0-}; unset __hc0;; esac'; command -v setopt >/dev/null 2>&1 && eval 'case $0 in *bash*|*zsh*) ;; *) [ \"${__whi-}\" = 1 ] || unsetopt hist_ignore_space; unset __whi; [ \"${__wpe-}\" != 1 ] || setopt print_exit_value; unset __wpe;; esac'; true";
 /// Returns the raw init shell script for the given `shell_type`, without
 /// single-quote escaping. Suitable for passing as an environment variable
 /// where the caller controls the eval context (e.g. Docker sandbox init).
