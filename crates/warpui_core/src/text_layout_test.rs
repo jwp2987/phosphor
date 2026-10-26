@@ -660,3 +660,54 @@ fn test_paint_start_fade_unchanged_by_ellipsis_offset() {
         });
     });
 }
+
+/// #955/#968: a frame laid out from only a prefix of a long paragraph still reports the TRUE
+/// end of the paragraph through every glyph/caret-derived position.
+#[test]
+fn test_unlaid_tail_keeps_true_end_offsets() {
+    let prefix = "a".repeat(100);
+    let total = 5_000_000;
+    let frame =
+        TextFrame::mock_with_positions(&prefix, 10.).with_unlaid_tail(100, total, |_| Some(7));
+    let line = frame.lines().last().unwrap();
+    assert_eq!(line.end_index(), total, "End key / row end");
+    assert_eq!(
+        line.last_glyph().unwrap().index + 1,
+        total,
+        "Down / clamp column"
+    );
+    assert_eq!(
+        line.last_glyph().unwrap().id,
+        7,
+        "placeholder is the blank glyph"
+    );
+    assert_eq!(line.last_glyph().unwrap().width, 0.);
+    assert_eq!(
+        line.caret_index_for_x_unbounded(line.width + 50.),
+        total,
+        "click past end"
+    );
+    assert_eq!(line.first_index(), 0, "Home");
+    // The laid-out prefix keeps exact offsets.
+    assert_eq!(line.caret_index_for_x_unbounded(35.), 3);
+    assert_eq!(frame.row_within_frame(total, true), 0);
+}
+
+#[test]
+fn test_unlaid_tail_without_blank_glyph_still_extends_carets() {
+    let frame = TextFrame::mock_with_positions("abc", 10.).with_unlaid_tail(3, 50, |_| None);
+    let line = frame.lines().last().unwrap();
+    assert_eq!(line.end_index(), 50);
+    assert_eq!(
+        line.last_glyph().unwrap().index,
+        2,
+        "no stray visible glyph added"
+    );
+}
+
+#[test]
+fn test_unlaid_tail_noop_when_fully_laid_out() {
+    let frame = TextFrame::mock_with_positions("abc", 10.).with_unlaid_tail(3, 3, |_| Some(1));
+    assert_eq!(frame.lines().last().unwrap().end_index(), 3);
+    assert_eq!(frame.lines().last().unwrap().runs[0].glyphs.len(), 3);
+}

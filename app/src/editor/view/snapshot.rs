@@ -502,15 +502,28 @@ impl ViewSnapshot {
         let properties = self.font_properties;
         let font_size = self.font_size;
 
-        // Collect style information for lines
+        // Collect style information for lines. A row longer than `MAX_LAID_OUT_ROW_CHARS` is laid
+        // out only up to that cap (#955/#968): CoreText line breaking and shaping both cost
+        // seconds-to-minutes on a multi-megabyte row. The row's true char count is kept so the
+        // unlaid tail can be re-attached to the frame (see `TextFrame::with_unlaid_tail`); the
+        // buffer itself is never truncated.
         let stylized_lines = rows
             .map(|row| {
-                display_map
+                let chars = display_map
                     .chars_with_styles_at(DisplayPoint::new(row, 0), app)
                     .unwrap()
                     // Stop when we hit the end of the row.
                     .take_while(|c| c.char() != '\n')
-                    .collect::<Vec<_>>()
+                    .take(MAX_LAID_OUT_ROW_CHARS)
+                    .collect::<Vec<_>>();
+                let true_len = if chars.len() == MAX_LAID_OUT_ROW_CHARS {
+                    display_map
+                        .line_len(row, app)
+                        .map_or(chars.len(), |len| len as usize)
+                } else {
+                    chars.len()
+                };
+                (chars, true_len)
             })
             .collect::<Vec<_>>();
 
@@ -523,7 +536,8 @@ impl ViewSnapshot {
         let layouts = stylized_lines
             .into_par_iter()
             .enumerate()
-            .map(|(cur_line_idx, stylized_chars)| {
+            .map(|(cur_line_idx, (stylized_chars, true_len))| {
+                let laid_chars = stylized_chars.len();
                 let (line, style_runs) = line_and_style_runs(
                     stylized_chars
                         .into_iter()
@@ -532,7 +546,7 @@ impl ViewSnapshot {
                     properties,
                 );
 
-                layout_cache.layout_text(
+                let frame = layout_cache.layout_text(
                     &line,
                     LineStyle {
                         font_size,
@@ -547,7 +561,16 @@ impl ViewSnapshot {
                     // Push over text by left notch width, if we're on the first line. Note notch width will be 0 if same line prompt is disabled.
                     (cur_line_idx == 0).then_some(left_notch_width_px),
                     &text_layout_system,
-                )
+                );
+                if true_len > laid_chars {
+                    Arc::new(frame.with_unlaid_tail(laid_chars, true_len, |font_id| {
+                        font_cache
+                            .glyph_for_char(font_id, ' ', false)
+                            .map(|(glyph_id, _)| glyph_id)
+                    }))
+                } else {
+                    frame
+                }
             })
             .collect();
 
@@ -661,6 +684,11 @@ impl ViewSnapshot {
         vec2f(scaled_size + VOICE_INPUT_ICON_IMAGE_OFFSET_X, scaled_size)
     }
 }
+
+/// The most characters of one buffer row that are handed to the platform text layout (#955,
+/// #968). Rows past it are laid out up to the cap and keep true offsets via
+/// `TextFrame::with_unlaid_tail`. Large enough for the #864 30k-char single line.
+pub(crate) const MAX_LAID_OUT_ROW_CHARS: usize = 32 * 1024;
 
 /// Collects one row's characters into the string to lay out, together with the style
 /// runs (char-index ranges, as `layout_text` expects) that describe it.
