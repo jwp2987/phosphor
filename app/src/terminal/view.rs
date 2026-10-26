@@ -2722,6 +2722,15 @@ pub struct TerminalView {
     /// command (before the shell's preexec hook can say anything) and held until the remote
     /// session is ready, the connect shows the user a prompt, or the ceiling passes.
     ssh_connect_gate: Option<SshConnectGate>,
+    /// Line-atomic dropping (#983): set once the gate dropped any printable key or paste of the
+    /// current line. While set, every further typed key is dropped through and including the
+    /// next Enter even after the gate released, so a line typed across the release is never
+    /// split (head dropped, tail run on the remote). Ends at: the Enter that is dropped, a
+    /// Ctrl-C/D/Z or Ctrl-U, visible prompt text arriving (a prompt is a new line context, so
+    /// a typed `yes` + Enter answer is not eaten), a failed ssh block, and any new command.
+    ssh_drop_line_through_enter: bool,
+    /// The pending remote session whose "interrupt held" notice was shown (#1001).
+    ssh_interrupt_held_notified: Option<SessionId>,
     /// When the last gate was released. A command that started before this never re-arms the
     /// gate lazily from the warpify pending-ssh state.
     ssh_connect_gate_released_at: Option<DateTime<Local>>,
@@ -4402,6 +4411,8 @@ impl TerminalView {
             was_ever_visible: false,
             ssh_setup_drop_notified: false,
             ssh_connect_gate: None,
+            ssh_drop_line_through_enter: false,
+            ssh_interrupt_held_notified: None,
             ssh_connect_gate_released_at: None,
             ssh_bootstrap_failed_session: None,
             ssh_bootstrap_swallow_started: None,
@@ -8588,8 +8599,17 @@ impl TerminalView {
     pub fn shutdown_for_discard(&mut self, ctx: &mut ViewContext<Self>) {
         #[cfg(not(target_family = "wasm"))]
         if FeatureFlag::SshRemoteServer.is_enabled() {
-            let session_id = self.model.lock().block_list().active_block().session_id();
-            if let Some(session_id) = session_id {
+            // #1001: a remote session that never finished bootstrapping is registered with the
+            // manager (its `ssh ... remote-server-proxy` runs) under the PENDING session id,
+            // not the active block's, so deregister both or the proxy outlives the pane.
+            let (active_session, pending_session) = {
+                let model = self.model.lock();
+                (
+                    model.block_list().active_block().session_id(),
+                    model.pending_session_id(),
+                )
+            };
+            for session_id in [active_session, pending_session].into_iter().flatten() {
                 use crate::remote_server::manager::RemoteServerManager;
                 RemoteServerManager::handle(ctx).update(
                     ctx,
@@ -9271,6 +9291,15 @@ impl TerminalView {
                     ctx,
                 );
             });
+        } else if self.ssh_bootstrap_interrupt_route() == Some(SshBootstrapInterruptRoute::Hold) {
+            // #1001: not while the remote bootstrap script is being fed (see the route's docs).
+            self.note_ssh_interrupt_held(ctx);
+        } else if !is_long_running
+            && self.ssh_bootstrap_interrupt_route() == Some(SshBootstrapInterruptRoute::Forward)
+        {
+            // #1001: a stuck remote bootstrap leaves no running block; the user's ^C must still
+            // reach the remote shell instead of vanishing into the hidden input.
+            self.user_write_ctrl_c_to_pty(ctx);
         } else if is_long_running {
             // A second Ctrl+C after Stop takeover should cancel both the command and conversation.
             if let Some(conversation_id) = conversation_id_to_stop {
@@ -9589,12 +9618,22 @@ impl TerminalView {
     /// Generally, this should be control characters rather than printable characters.
     fn keydown_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
         // Ctrl-C / Ctrl-D still reach the ssh process so the user can abort.
-        if !is_ssh_interrupt_key(characters) && self.swallow_input_during_ssh_setup(ctx) {
+        if is_ssh_interrupt_key(characters) {
+            self.ssh_drop_line_through_enter = false;
+            // #1001: an interrupt must not land in the middle of the remote bootstrap script.
+            if self.ssh_bootstrap_interrupt_route() == Some(SshBootstrapInterruptRoute::Hold) {
+                self.note_ssh_interrupt_held(ctx);
+                return;
+            }
+        } else if self.swallow_input_during_ssh_setup(Some(characters), ctx) {
             return;
         }
         if self.is_long_running()
             || self.typeahead_handoff_routes_keys_to_pty()
             || self.forwards_keys_during_subshell_bootstrap(is_abort_key(characters.as_bytes()))
+            || (is_abort_key(characters.as_bytes())
+                && self.ssh_bootstrap_interrupt_route()
+                    == Some(SshBootstrapInterruptRoute::Forward))
         {
             self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
             self.highlighted_link.invalidate();
@@ -9632,7 +9671,11 @@ impl TerminalView {
     /// queued -- replaying a queued Enter into a half-bootstrapped shell is
     /// exactly the corruption being avoided -- and focus is handed back to
     /// the dialog so the next key drives it.
-    fn swallow_input_during_ssh_setup(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+    fn swallow_input_during_ssh_setup(
+        &mut self,
+        characters: Option<&str>,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
         // The dialog only owns input while it belongs to the pending session. A choice block left
         // behind by an earlier, abandoned connect must not swallow the keys of a later ssh
         // command (host-key / password prompts) (#976).
@@ -9688,9 +9731,45 @@ impl TerminalView {
         // from the rest of the line. Drop the whole run. Every prompt (host key, password, 2FA)
         // is output, so its answers -- including a bare Enter -- are never held here.
         let ssh_connecting_silently = pending_now.is_none() && self.ssh_connect_gate_drops_keys();
-        if !(dialog_up || setup_in_flight || ssh_bootstrapping || ssh_connecting_silently) {
+        let gate_drops =
+            dialog_up || setup_in_flight || ssh_bootstrapping || ssh_connecting_silently;
+        // Line-atomic dropping (#983). `characters` is None for a paste. Enter ends a line;
+        // anything printable (or a paste) belongs to it.
+        let is_enter = matches!(characters, Some("\r" | "\n" | "\r\n"));
+        let is_printable = characters.is_none_or(|c| c.chars().any(|ch| !ch.is_control()));
+        if !gate_drops && self.ssh_drop_line_through_enter {
+            // Visible prompt text (host key, password) arrived and the gate opened because of
+            // it: that is a new line context, so the user's answer must not be eaten by a line
+            // that was dropped blind before the prompt existed. Ctrl-U clears the line.
+            // Only an UNTERMINATED line of text is a prompt (cursor parked after text on its
+            // row: "password: ", "(yes/no)? "). A newline-terminated banner / MOTD is also
+            // visible text and opens the gate, but must not end the drop-through: the tail
+            // typed during the banner would otherwise run remotely.
+            let prompt_arrived = self
+                .ssh_connect_gate
+                .as_ref()
+                .is_some_and(|g| g.output_seen && !g.block_done)
+                && self.active_output_ends_in_unterminated_text();
+            if prompt_arrived || characters == Some("\u{15}") {
+                self.ssh_drop_line_through_enter = false;
+            }
+        }
+        if !gate_drops && self.ssh_drop_line_through_enter {
+            if is_enter {
+                self.ssh_drop_line_through_enter = false;
+                self.ssh_setup_drop_notified = false;
+            }
+            return true;
+        }
+        if !gate_drops {
             self.ssh_setup_drop_notified = false;
             return false;
+        }
+        if is_enter {
+            // The dropped Enter ends the line: what is typed next is a new one.
+            self.ssh_drop_line_through_enter = false;
+        } else if is_printable {
+            self.ssh_drop_line_through_enter = true;
         }
         if dialog_up {
             self.redetermine_global_focus(ctx);
@@ -9717,6 +9796,7 @@ impl TerminalView {
     /// submitted (#983). Runs at submission, so the window before the shell's preexec hook (and
     /// the 50 ms before the block counts as long running) is covered too.
     fn note_command_submitted_for_ssh_gate(&mut self, command: &str) {
+        self.ssh_drop_line_through_enter = false;
         if parse_interactive_ssh_command(command).is_some() {
             let block_id = self.model.lock().active_block_id().clone();
             let mut gate = SshConnectGate::new(Instant::now());
@@ -9771,6 +9851,33 @@ impl TerminalView {
         true
     }
 
+    /// True when the active block's output has visible text and the cursor sits after text on
+    /// its row (no trailing newline): the shape of a prompt, as opposed to banner output.
+    fn active_output_ends_in_unterminated_text(&self) -> bool {
+        let model = self.model.lock();
+        let grid = model.block_list().active_block().output_grid();
+        grid.grid_handler().cursor_point().col > 0
+            && output_has_visible_text(&grid.contents_to_string(false, None))
+    }
+
+    /// Tells the user (once per pending remote session) that an interrupt was held (#1001).
+    fn note_ssh_interrupt_held(&mut self, ctx: &mut ViewContext<Self>) {
+        let sid = self.model.lock().pending_session_id();
+        log::info!("Interrupt held until the SSH session finishes starting (session {sid:?})");
+        if sid.is_none() || self.ssh_interrupt_held_notified == sid {
+            return;
+        }
+        self.ssh_interrupt_held_notified = sid;
+        let window_id = ctx.window_id();
+        ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+            let toast = DismissibleToast::new(
+                "Interrupt held until the SSH session finishes starting".to_string(),
+                ToastFlavor::Default,
+            );
+            toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+        });
+    }
+
     /// Applies a finished user block to the gate (#983). Only the armed block's completion
     /// counts; the observation of the announced remote runs first so a managed remote is known.
     fn apply_block_completed_to_ssh_gate(&mut self, block_id: &BlockId, exit_code: i32) {
@@ -9782,6 +9889,10 @@ impl TerminalView {
         self.refresh_ssh_connect_gate();
         if let Some(gate) = self.ssh_connect_gate.as_mut() {
             gate.note_block_completed(Instant::now(), exit_code == 0);
+            if gate.failed {
+                // The local prompt is back with an empty line: nothing is left to complete.
+                self.ssh_drop_line_through_enter = false;
+            }
         }
         // Release a gate that has nothing more to wait for right away, not at the next refresh.
         self.refresh_ssh_connect_gate();
@@ -9812,6 +9923,32 @@ impl TerminalView {
             gate.output_seen = true;
         }
         gate.drops_keys(alt_screen)
+    }
+
+    /// Where the remote (ssh) shell's bootstrap stands (#1001): `None` when no ssh-style session
+    /// is pending bootstrap (no pending session, a subshell -- see #960 -- or already
+    /// bootstrapped). Otherwise the pure route for an interrupt key.
+    fn ssh_bootstrap_interrupt_route(&self) -> Option<SshBootstrapInterruptRoute> {
+        let (pending, is_subshell, bootstrapped) = {
+            let model = self.model.lock();
+            (
+                model.pending_session_id(),
+                model.pending_subshell_session().is_some(),
+                model.is_active_block_bootstrapped(),
+            )
+        };
+        if is_subshell || bootstrapped {
+            return None;
+        }
+        let sid = pending?;
+        let age = match self.ssh_bootstrap_swallow_started {
+            Some((tracked, at)) if tracked == sid => Some(at.elapsed()),
+            _ => None,
+        };
+        Some(ssh_bootstrap_interrupt_route(
+            self.ssh_bootstrap_failed_session == Some(sid),
+            age,
+        ))
     }
 
     /// True while a subshell bootstrap (`su -`, `sudo -i`, ...) has been announced by the shell
@@ -9888,7 +10025,14 @@ impl TerminalView {
     /// We can assume `characters` consists of all printable characters, and therefore,
     /// can go into the input box.
     fn typed_characters_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
-        if !is_ssh_interrupt_key(characters) && self.swallow_input_during_ssh_setup(ctx) {
+        if is_ssh_interrupt_key(characters) {
+            self.ssh_drop_line_through_enter = false;
+            // #1001: an interrupt must not land in the middle of the remote bootstrap script.
+            if self.ssh_bootstrap_interrupt_route() == Some(SshBootstrapInterruptRoute::Hold) {
+                self.note_ssh_interrupt_held(ctx);
+                return;
+            }
+        } else if self.swallow_input_during_ssh_setup(Some(characters), ctx) {
             return;
         }
         self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
@@ -13567,6 +13711,8 @@ impl TerminalView {
                             if self.ssh_connect_gate.as_ref().is_some_and(|g| !g.managed) {
                                 self.ssh_connect_gate = None;
                             }
+                            // Nothing dropped for an earlier command may leak into this one.
+                            self.ssh_drop_line_through_enter = false;
                             self.warpify_state.clear_pending_ssh_host();
                             self.recompute_window_footer_bar_color(ctx);
 
@@ -18169,7 +18315,7 @@ impl TerminalView {
 
     fn paste(&mut self, middle_click: bool, ctx: &mut ViewContext<Self>) {
         // A paste is typed text: the whole paste is dropped exactly when typing would be (#983).
-        if self.swallow_input_during_ssh_setup(ctx) {
+        if self.swallow_input_during_ssh_setup(None, ctx) {
             return;
         }
         let (should_paste_in_input, needs_bracketed_paste) = {
@@ -31210,6 +31356,31 @@ fn subshell_bootstrap_announcement_applies(
     subshell_session_pending: bool,
 ) -> bool {
     !read_only && !active_block_bootstrapped && (block_unchanged || subshell_session_pending)
+}
+
+/// What an interrupt key does while the remote shell's bootstrap is pending (#1001).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SshBootstrapInterruptRoute {
+    /// The bootstrap script is being fed to the remote shell: a ^C written now interrupts it
+    /// half-way and leaves the pane on "Starting shell..." with a remote shell that nobody can
+    /// see. The key is held (setup finishes) -- bounded by the failure timer and the ceiling.
+    Hold,
+    /// The bootstrap is stuck (failure timer fired or ceiling passed): the key must reach the
+    /// remote shell so the user can abort (Ctrl-D leaves it, which ends ssh).
+    Forward,
+}
+
+/// Pure rule for [`SshBootstrapInterruptRoute`]. `age` is how long this pending session has been
+/// tracked; unknown (`None`) means it only just started.
+fn ssh_bootstrap_interrupt_route(
+    failed: bool,
+    age: Option<Duration>,
+) -> SshBootstrapInterruptRoute {
+    if failed || age.is_some_and(|age| age >= SSH_BOOTSTRAP_SWALLOW_CEILING) {
+        SshBootstrapInterruptRoute::Forward
+    } else {
+        SshBootstrapInterruptRoute::Hold
+    }
 }
 
 /// Ctrl-C and Ctrl-D: the keys that must always reach a shell whose subshell bootstrap is stuck.

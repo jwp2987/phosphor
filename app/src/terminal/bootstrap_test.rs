@@ -1114,3 +1114,120 @@ fn subshell_bootstrap_chunks_are_small_and_lossless() {
     }
     assert!(subshell_bootstrap_chunks(b"").is_empty());
 }
+
+/// Extracts `is_interactive_ssh_session` from a bundled bootstrap script: from its `function`
+/// line to the first later line that is just `}` (bash/zsh) or `end` (fish) at the same indent.
+fn extract_ssh_gate_function(script: &str, closer: &str) -> String {
+    let mut out = Vec::new();
+    let mut indent = None;
+    for line in script.lines() {
+        if indent.is_none() {
+            if line
+                .trim_start()
+                .starts_with("function is_interactive_ssh_session")
+            {
+                indent = Some(line.len() - line.trim_start().len());
+                out.push(line);
+            }
+            continue;
+        }
+        out.push(line);
+        if line.trim() == closer && line.len() - line.trim_start().len() == indent.unwrap() {
+            break;
+        }
+    }
+    assert!(indent.is_some(), "is_interactive_ssh_session not found");
+    out.join("\n")
+}
+
+/// #999: the ssh wrapper must only wrap an interactive login. `-O <cmd>`, `-N`, `-f` (also in
+/// clusters), `-V`, `-G`, `-Q`, `-T`, `-W` and any remote command pass straight to real ssh,
+/// while plain `ssh host` and option-with-argument forms still get the wrapper. Runs the real
+/// function text from every bundled shell body, in that shell.
+#[test]
+fn ssh_wrapper_only_wraps_interactive_logins() {
+    let sources = [
+        (
+            "bash",
+            include_str!("../../assets/bundled/bootstrap/bash_body.sh"),
+            "}",
+        ),
+        (
+            "zsh",
+            include_str!("../../assets/bundled/bootstrap/zsh_body.sh"),
+            "}",
+        ),
+        (
+            "fish",
+            include_str!("../../assets/bundled/bootstrap/fish.sh"),
+            "end",
+        ),
+    ];
+    let wrapped: &[&[&str]] = &[
+        &["host"],
+        &["-p", "22", "host"],
+        &["-p22", "host"],
+        &["-o", "X=Y", "host"],
+        &["-i", "key", "-l", "user", "host"],
+        &["-L", "1:h:2", "-F", "cfg", "host"],
+        &["-tt", "host"],
+        &["-A", "-v", "host"],
+        &["user@host"],
+    ];
+    let passthrough: &[&[&str]] = &[
+        &["-O", "check", "host"],
+        &["-O", "exit", "host"],
+        &["-O", "stop", "host"],
+        &["-O", "forward", "-L", "1:h:2", "host"],
+        &["-p", "22", "-O", "check", "host"],
+        &["-N", "host"],
+        &["-f", "host"],
+        &["-fN", "host"],
+        &["-Nf", "-L", "1:h:2", "host"],
+        &["-V"],
+        &["-G", "host"],
+        &["-Q", "cipher"],
+        &["-W", "h:22", "host"],
+        &["-T", "host"],
+        &["host", "ls"],
+        &["-p", "22", "host", "uptime"],
+    ];
+    for (shell, source, closer) in sources {
+        if std::process::Command::new(shell)
+            .arg("-c")
+            .arg("true")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipping {shell}: not installed");
+            continue;
+        }
+        let function = extract_ssh_gate_function(source, closer);
+        let run = |args: &[&str]| -> bool {
+            let quoted = args
+                .iter()
+                .map(|a| format!("'{a}'"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let status_var = if shell == "fish" { "$status" } else { "$?" };
+            let script = format!(
+                "{function}\nis_interactive_ssh_session {quoted}\necho RESULT=={status_var}"
+            );
+            let out = std::process::Command::new(shell)
+                .args(["-c", &script])
+                .output()
+                .expect("run shell");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            stdout.contains("RESULT==0")
+        };
+        for args in wrapped {
+            assert!(run(args), "{shell}: {args:?} must still get the wrapper");
+        }
+        for args in passthrough {
+            assert!(
+                !run(args),
+                "{shell}: {args:?} must pass straight through to ssh"
+            );
+        }
+    }
+}

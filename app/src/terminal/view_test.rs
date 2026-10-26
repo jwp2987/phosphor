@@ -14461,7 +14461,7 @@ fn user_takeover_overrides_ai_block_focus_guard() {
 /// until the stall ceiling, after which nothing is held (no automatic abort is ever written).
 #[test]
 fn pending_subshell_bootstrap_forwards_only_abort_keys() {
-    let young = Some(Duration::from_secs(1));
+    let young = Some(std::time::Duration::from_secs(1));
     assert!(!subshell_bootstrap_key_forwarded(false, true, None));
     assert!(!subshell_bootstrap_key_forwarded(false, false, None));
     assert!(!subshell_bootstrap_key_forwarded(true, false, None));
@@ -14513,7 +14513,7 @@ fn subshell_bootstrap_announcement_survives_the_initshell_block_change() {
     assert!(subshell_bootstrap_key_forwarded(
         true,
         true,
-        Some(Duration::from_secs(1))
+        Some(std::time::Duration::from_secs(1))
     ));
 }
 
@@ -15444,6 +15444,225 @@ fn ssh_gate_completion_applies_only_to_the_armed_block() {
                 view.ssh_connect_gate.is_none(),
                 "the armed block failed: released"
             );
+        });
+    })
+}
+
+/// Releases the connect gate the way the gate does when its window ends (#983).
+fn release_ssh_gate_for_test(view: &mut TerminalView) {
+    view.ssh_connect_gate = None;
+    view.ssh_connect_gate_released_at = Some(chrono::Local::now());
+}
+
+/// #983 straddle: typing that crosses the gate release is dropped WHOLE. The head is dropped
+/// while the gate holds; the tail and its Enter must not reach the pty or the editor, and the
+/// next line passes.
+#[test]
+fn ssh_line_typed_across_gate_release_is_dropped_whole() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo QW", ctx);
+            assert!(view.ssh_setup_drop_notified);
+            release_ssh_gate_for_test(view);
+            view.typed_characters_on_terminal("ERTY && x", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            view.keydown_on_terminal("\r", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert!(!view.ssh_drop_line_through_enter, "Enter ends the drop");
+            // The next line passes.
+            view.typed_characters_on_terminal("ls", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #983: a paste after a dropped head is dropped too (and a paste alone arms the drop-through).
+#[test]
+fn ssh_paste_across_gate_release_is_dropped_whole() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo QW", ctx);
+            release_ssh_gate_for_test(view);
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text("ERTY".to_owned()));
+            view.paste(false, ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #983: visible prompt text arriving ends the drop-through, so a `yes` + Enter answer typed at
+/// a host-key prompt is delivered even though the user typed blind before the prompt existed.
+#[test]
+fn ssh_prompt_arrival_ends_drop_through() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            view.typed_characters_on_terminal("blind", ctx);
+            assert!(view.ssh_drop_line_through_enter);
+            view.model
+                .lock()
+                .process_bytes("Are you sure you want to continue connecting (yes/no)? ");
+            view.keydown_on_terminal("\r", ctx);
+            assert!(!view.ssh_drop_line_through_enter);
+        });
+        assert!(
+            pty_writes.borrow().iter().any(|w| w.as_slice() == b"\r"),
+            "the answer must reach ssh: {:?}",
+            pty_writes.borrow()
+        );
+    })
+}
+
+/// #983: a newline-terminated banner / MOTD is visible text but not a prompt: the drop-through
+/// keeps dropping (through the Enter) even though the gate itself opened on the banner.
+#[test]
+fn ssh_banner_does_not_end_drop_through() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            view.typed_characters_on_terminal("echo QW", ctx);
+            assert!(view.ssh_drop_line_through_enter);
+            view.model.lock().process_bytes("Welcome to Ubuntu\r\n");
+            view.typed_characters_on_terminal("ERTY", ctx);
+            view.keydown_on_terminal("\r", ctx);
+            assert!(!view.ssh_drop_line_through_enter, "the Enter ends it");
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #983: password and host-key prompts (unterminated lines) end the drop-through.
+#[test]
+fn ssh_password_and_hostkey_prompts_end_drop_through() {
+    for prompt in [
+        "winters@box's password: ",
+        "Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
+    ] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh host", ctx);
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh host", "");
+                view.warpify_state
+                    .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+                view.typed_characters_on_terminal("blind", ctx);
+                assert!(view.ssh_drop_line_through_enter);
+                view.model.lock().process_bytes("banner\r\n");
+                view.model.lock().process_bytes(prompt);
+                view.typed_characters_on_terminal("x", ctx);
+                assert!(!view.ssh_drop_line_through_enter, "{prompt:?}");
+            });
+        })
+    }
+}
+
+/// #983: Ctrl-C passes and ends the drop-through; the next typing is not dropped.
+#[test]
+fn ssh_ctrl_c_ends_drop_through() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("abc", ctx);
+            release_ssh_gate_for_test(view);
+            view.keydown_on_terminal("\u{3}", ctx);
+            assert!(!view.ssh_drop_line_through_enter);
+            view.typed_characters_on_terminal("ls", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+        });
+    })
+}
+
+/// #983: the drop-through can never leak to a later command.
+#[test]
+fn ssh_drop_through_resets_on_new_command() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("abc", ctx);
+            release_ssh_gate_for_test(view);
+            assert!(view.ssh_drop_line_through_enter);
+            submit_command(view, "ls", ctx);
+            assert!(!view.ssh_drop_line_through_enter);
+            view.typed_characters_on_terminal("pwd", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "pwd");
+        });
+    })
+}
+
+/// #1001: an interrupt during the remote bootstrap is held (it would cut the script mid-feed and
+/// wedge the pane on "Starting shell..."), then forwarded once the bootstrap is stuck so the
+/// user can leave.
+#[test]
+fn ssh_bootstrap_interrupt_route_holds_then_forwards() {
+    use SshBootstrapInterruptRoute::{Forward, Hold};
+    assert_eq!(ssh_bootstrap_interrupt_route(false, None), Hold);
+    assert_eq!(
+        ssh_bootstrap_interrupt_route(false, Some(std::time::Duration::from_secs(1))),
+        Hold
+    );
+    assert_eq!(ssh_bootstrap_interrupt_route(true, None), Forward);
+    assert_eq!(
+        ssh_bootstrap_interrupt_route(false, Some(SSH_BOOTSTRAP_SWALLOW_CEILING)),
+        Forward
+    );
+}
+
+/// #1001: with no pending remote bootstrap the route is `None`, so Ctrl-C behaves as before.
+#[test]
+fn ssh_bootstrap_interrupt_route_is_none_without_pending_session() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, _| {
+            assert_eq!(view.ssh_bootstrap_interrupt_route(), None);
         });
     })
 }
