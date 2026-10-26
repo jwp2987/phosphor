@@ -14461,7 +14461,7 @@ fn user_takeover_overrides_ai_block_focus_guard() {
 /// until the stall ceiling, after which nothing is held (no automatic abort is ever written).
 #[test]
 fn pending_subshell_bootstrap_forwards_only_abort_keys() {
-    let young = Some(Duration::from_secs(1));
+    let young = Some(std::time::Duration::from_secs(1));
     assert!(!subshell_bootstrap_key_forwarded(false, true, None));
     assert!(!subshell_bootstrap_key_forwarded(false, false, None));
     assert!(!subshell_bootstrap_key_forwarded(true, false, None));
@@ -14513,7 +14513,7 @@ fn subshell_bootstrap_announcement_survives_the_initshell_block_change() {
     assert!(subshell_bootstrap_key_forwarded(
         true,
         true,
-        Some(Duration::from_secs(1))
+        Some(std::time::Duration::from_secs(1))
     ));
 }
 
@@ -15575,6 +15575,36 @@ fn ssh_drop_through_resets_on_new_command() {
             assert!(!view.ssh_drop_line_through_enter);
             view.typed_characters_on_terminal("pwd", ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "pwd");
+        });
+    })
+}
+
+/// #1001: an interrupt during the remote bootstrap is held (it would cut the script mid-feed and
+/// wedge the pane on "Starting shell..."), then forwarded once the bootstrap is stuck so the
+/// user can leave.
+#[test]
+fn ssh_bootstrap_interrupt_route_holds_then_forwards() {
+    use SshBootstrapInterruptRoute::{Forward, Hold};
+    assert_eq!(ssh_bootstrap_interrupt_route(false, None), Hold);
+    assert_eq!(
+        ssh_bootstrap_interrupt_route(false, Some(std::time::Duration::from_secs(1))),
+        Hold
+    );
+    assert_eq!(ssh_bootstrap_interrupt_route(true, None), Forward);
+    assert_eq!(
+        ssh_bootstrap_interrupt_route(false, Some(SSH_BOOTSTRAP_SWALLOW_CEILING)),
+        Forward
+    );
+}
+
+/// #1001: with no pending remote bootstrap the route is `None`, so Ctrl-C behaves as before.
+#[test]
+fn ssh_bootstrap_interrupt_route_is_none_without_pending_session() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, _| {
+            assert_eq!(view.ssh_bootstrap_interrupt_route(), None);
         });
     })
 }

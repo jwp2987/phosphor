@@ -8596,8 +8596,17 @@ impl TerminalView {
     pub fn shutdown_for_discard(&mut self, ctx: &mut ViewContext<Self>) {
         #[cfg(not(target_family = "wasm"))]
         if FeatureFlag::SshRemoteServer.is_enabled() {
-            let session_id = self.model.lock().block_list().active_block().session_id();
-            if let Some(session_id) = session_id {
+            // #1001: a remote session that never finished bootstrapping is registered with the
+            // manager (its `ssh ... remote-server-proxy` runs) under the PENDING session id,
+            // not the active block's, so deregister both or the proxy outlives the pane.
+            let (active_session, pending_session) = {
+                let model = self.model.lock();
+                (
+                    model.block_list().active_block().session_id(),
+                    model.pending_session_id(),
+                )
+            };
+            for session_id in [active_session, pending_session].into_iter().flatten() {
                 use crate::remote_server::manager::RemoteServerManager;
                 RemoteServerManager::handle(ctx).update(
                     ctx,
@@ -9279,6 +9288,14 @@ impl TerminalView {
                     ctx,
                 );
             });
+        } else if self.ssh_bootstrap_interrupt_route() == Some(SshBootstrapInterruptRoute::Hold) {
+            // #1001: not while the remote bootstrap script is being fed (see the route's docs).
+        } else if !is_long_running
+            && self.ssh_bootstrap_interrupt_route() == Some(SshBootstrapInterruptRoute::Forward)
+        {
+            // #1001: a stuck remote bootstrap leaves no running block; the user's ^C must still
+            // reach the remote shell instead of vanishing into the hidden input.
+            self.user_write_ctrl_c_to_pty(ctx);
         } else if is_long_running {
             // A second Ctrl+C after Stop takeover should cancel both the command and conversation.
             if let Some(conversation_id) = conversation_id_to_stop {
@@ -9599,12 +9616,19 @@ impl TerminalView {
         // Ctrl-C / Ctrl-D still reach the ssh process so the user can abort.
         if is_ssh_interrupt_key(characters) {
             self.ssh_drop_line_through_enter = false;
+            // #1001: an interrupt must not land in the middle of the remote bootstrap script.
+            if self.ssh_bootstrap_interrupt_route() == Some(SshBootstrapInterruptRoute::Hold) {
+                return;
+            }
         } else if self.swallow_input_during_ssh_setup(Some(characters), ctx) {
             return;
         }
         if self.is_long_running()
             || self.typeahead_handoff_routes_keys_to_pty()
             || self.forwards_keys_during_subshell_bootstrap(is_abort_key(characters.as_bytes()))
+            || (is_abort_key(characters.as_bytes())
+                && self.ssh_bootstrap_interrupt_route()
+                    == Some(SshBootstrapInterruptRoute::Forward))
         {
             self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
             self.highlighted_link.invalidate();
@@ -9864,6 +9888,32 @@ impl TerminalView {
         gate.drops_keys(alt_screen)
     }
 
+    /// Where the remote (ssh) shell's bootstrap stands (#1001): `None` when no ssh-style session
+    /// is pending bootstrap (no pending session, a subshell -- see #960 -- or already
+    /// bootstrapped). Otherwise the pure route for an interrupt key.
+    fn ssh_bootstrap_interrupt_route(&self) -> Option<SshBootstrapInterruptRoute> {
+        let (pending, is_subshell, bootstrapped) = {
+            let model = self.model.lock();
+            (
+                model.pending_session_id(),
+                model.pending_subshell_session().is_some(),
+                model.is_active_block_bootstrapped(),
+            )
+        };
+        if is_subshell || bootstrapped {
+            return None;
+        }
+        let sid = pending?;
+        let age = match self.ssh_bootstrap_swallow_started {
+            Some((tracked, at)) if tracked == sid => Some(at.elapsed()),
+            _ => None,
+        };
+        Some(ssh_bootstrap_interrupt_route(
+            self.ssh_bootstrap_failed_session == Some(sid),
+            age,
+        ))
+    }
+
     /// True while a subshell bootstrap (`su -`, `sudo -i`, ...) has been announced by the shell
     /// but has not finished. Input is normally held for that whole window so the user cannot
     /// interleave with the script (#960). Only Ctrl-C / Ctrl-D are exempt, see
@@ -9940,6 +9990,10 @@ impl TerminalView {
     fn typed_characters_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
         if is_ssh_interrupt_key(characters) {
             self.ssh_drop_line_through_enter = false;
+            // #1001: an interrupt must not land in the middle of the remote bootstrap script.
+            if self.ssh_bootstrap_interrupt_route() == Some(SshBootstrapInterruptRoute::Hold) {
+                return;
+            }
         } else if self.swallow_input_during_ssh_setup(Some(characters), ctx) {
             return;
         }
@@ -31264,6 +31318,31 @@ fn subshell_bootstrap_announcement_applies(
     subshell_session_pending: bool,
 ) -> bool {
     !read_only && !active_block_bootstrapped && (block_unchanged || subshell_session_pending)
+}
+
+/// What an interrupt key does while the remote shell's bootstrap is pending (#1001).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SshBootstrapInterruptRoute {
+    /// The bootstrap script is being fed to the remote shell: a ^C written now interrupts it
+    /// half-way and leaves the pane on "Starting shell..." with a remote shell that nobody can
+    /// see. The key is held (setup finishes) -- bounded by the failure timer and the ceiling.
+    Hold,
+    /// The bootstrap is stuck (failure timer fired or ceiling passed): the key must reach the
+    /// remote shell so the user can abort (Ctrl-D leaves it, which ends ssh).
+    Forward,
+}
+
+/// Pure rule for [`SshBootstrapInterruptRoute`]. `age` is how long this pending session has been
+/// tracked; unknown (`None`) means it only just started.
+fn ssh_bootstrap_interrupt_route(
+    failed: bool,
+    age: Option<Duration>,
+) -> SshBootstrapInterruptRoute {
+    if failed || age.is_some_and(|age| age >= SSH_BOOTSTRAP_SWALLOW_CEILING) {
+        SshBootstrapInterruptRoute::Forward
+    } else {
+        SshBootstrapInterruptRoute::Hold
+    }
 }
 
 /// Ctrl-C and Ctrl-D: the keys that must always reach a shell whose subshell bootstrap is stuck.
