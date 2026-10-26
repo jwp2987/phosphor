@@ -14749,11 +14749,12 @@ fn agent_shortcut_enter_routes_by_banner_state() {
     );
 }
 
-/// #976: only Cmd-Enter (macOS) / Ctrl-Enter (elsewhere) is the agent shortcut; a plain Enter
-/// never is, so it always reaches the pty.
+/// #976: the agent shortcut is exactly the keystroke the banner displays (Cmd-Enter on macOS,
+/// Ctrl-Shift-Enter elsewhere); a plain Enter never is, so it always reaches the pty.
 #[test]
-fn only_the_modified_enter_is_the_agent_shortcut() {
+fn only_the_displayed_use_agent_keystroke_is_the_agent_shortcut() {
     use crate::terminal::block_list_element::is_agent_shortcut_enter as is_shortcut;
+    use crate::terminal::view::use_agent_footer::USE_AGENT_KEYSTROKE;
     use warpui::keymap::Keystroke;
     let key = |ctrl, cmd, shift, alt, name: &str| Keystroke {
         ctrl,
@@ -14763,17 +14764,23 @@ fn only_the_modified_enter_is_the_agent_shortcut() {
         meta: false,
         key: name.to_owned(),
     };
+    // Whatever the banner displays works, on every platform.
+    assert!(is_shortcut(&USE_AGENT_KEYSTROKE));
+    if cfg!(target_os = "macos") {
+        assert!(is_shortcut(&key(false, true, false, false, "enter")));
+    } else {
+        assert!(is_shortcut(&key(true, false, true, false, "enter")));
+        // Ctrl-Enter is not what the banner advertises.
+        assert!(!is_shortcut(&key(true, false, false, false, "enter")));
+    }
     assert!(!is_shortcut(&key(false, false, false, false, "enter")));
     assert!(!is_shortcut(&key(false, false, true, false, "enter")));
-    let shortcut = if cfg!(target_os = "macos") {
-        key(false, true, false, false, "enter")
-    } else {
-        key(true, false, false, false, "enter")
-    };
-    assert!(is_shortcut(&shortcut));
-    let mut other_key = shortcut.clone();
+    let mut other_key = USE_AGENT_KEYSTROKE.clone();
     other_key.key = "a".to_owned();
     assert!(!is_shortcut(&other_key));
+    let mut extra_modifier = USE_AGENT_KEYSTROKE.clone();
+    extra_modifier.alt = true;
+    assert!(!is_shortcut(&extra_modifier));
 }
 
 /// #976: a plain Enter reaches the pty, with nothing typed and after typing, regardless of the

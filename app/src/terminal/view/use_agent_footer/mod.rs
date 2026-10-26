@@ -159,8 +159,16 @@ fn rich_input_submit_strategy(agent: CLIAgent) -> RichInputSubmitStrategy {
     }
 }
 
-static USE_AGENT_KEYSTROKE: LazyLock<Keystroke> =
+/// The "Use agent" shortcut the footer and the SSH Warpifying banner display. This is the one
+/// place it is defined: the key handler that switches to agent mode (#976) compares against it
+/// via [`is_use_agent_keystroke`], so what is displayed is exactly what works.
+pub(crate) static USE_AGENT_KEYSTROKE: LazyLock<Keystroke> =
     LazyLock::new(|| Keystroke::parse(cmd_or_ctrl_shift("enter")).expect("valid keystroke"));
+
+/// Whether `keystroke` is the displayed "Use agent" shortcut (exact match, modifiers included).
+pub(crate) fn is_use_agent_keystroke(keystroke: &Keystroke) -> bool {
+    keystroke == &*USE_AGENT_KEYSTROKE
+}
 
 impl TerminalView {
     pub(super) fn register_subscriptions_for_use_agent_footer(
