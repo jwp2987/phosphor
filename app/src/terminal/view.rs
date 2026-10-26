@@ -90,7 +90,7 @@ use crate::ai::blocklist::usage::conversation_usage_view::{
 };
 use crate::ai::blocklist::{
     block_context_from_terminal_model, AutofireAction, QueuedQuery, QueuedQueryId,
-    QueuedQueryModel, QueuedQueryOrigin, SlashCommandRequest,
+    QueuedQueryEvent, QueuedQueryModel, QueuedQueryOrigin, SlashCommandRequest,
 };
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentModel, AIDocumentVersion};
 use crate::ai::loading::shimmering_warp_loading_text;
@@ -3320,6 +3320,25 @@ impl TerminalView {
             me.handle_ambient_agent_event(event, ctx);
         });
 
+        // Prompts queued for a conversation that is then removed, deleted, or cleared come back
+        // into the input instead of vanishing (#1026). The panel needs the model under the same
+        // flag, so it is registered whenever this is.
+        if FeatureFlag::QueueSlashCommand.is_enabled() {
+            let queued_query_model = QueuedQueryModel::handle(ctx);
+            ctx.subscribe_to_model(&queued_query_model, |me, _, event, ctx| {
+                if let QueuedQueryEvent::DroppedUnsent {
+                    terminal_view_id,
+                    rows,
+                    ..
+                } = event
+                {
+                    if *terminal_view_id == Some(me.view_id) && !me.suspended_for_close {
+                        me.restore_dropped_queue_rows(rows, ctx);
+                    }
+                }
+            });
+        }
+
         ctx.subscribe_to_model(&agent_view_controller, |me, _, event, ctx| {
             match event {
                 AgentViewControllerEvent::EnteredAgentView {
@@ -3331,6 +3350,7 @@ impl TerminalView {
                 } => {
                     // Clear prompt suggestions shown in the context of the terminal mode or prior agent view.
                     me.clear_prompt_suggestions(ctx);
+                    me.restore_stranded_queue_on_agent_view_entry(*conversation_id, ctx);
                     match display_mode {
                         AgentViewDisplayMode::Inline => {
                             // Insert the inline agent view header as rich content
@@ -5545,6 +5565,13 @@ impl TerminalView {
                 QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
                     model.unlock_pending_lrc_rows(conversation_id, ctx)
                 });
+                // The user stopped the conversation, but no turn end ran the cancel drain when
+                // no stream was in flight (a Stop during a long-running command), so the
+                // queued rows had no other trigger left (#1026). Run it now: it restores the
+                // head into an empty input when the user is viewing this conversation, and
+                // never auto-sends. A turn end that already restored the head leaves the input
+                // non-empty, which makes this a no-op.
+                self.drain_queued_prompts(conversation_id, FinishReason::Cancelled, ctx);
             }
             SubagentFinishedQueueDelivery::Nothing => {}
             SubagentFinishedQueueDelivery::ReplaySkippedTurnEnd(reason) => {
@@ -5693,6 +5720,18 @@ impl TerminalView {
                             QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
                                 model.remove_fired_row(conversation_id, query_id, ctx);
                             });
+                        } else {
+                            // The command could not start and the user's draft owns the input, so
+                            // the row stays queued with no further trigger (#1026). Never leave
+                            // that silent: say where it is and how to send it.
+                            self.notify_queue_notice(
+                                format!(
+                                    "Queued command `{}` could not start and is still queued. \
+                                     Send it from the queue panel, or remove it.",
+                                    truncate_from_end(&command, 40)
+                                ),
+                                ctx,
+                            );
                         }
                     }
                     Some(AutofireAction::PopFromEditMode {
@@ -5849,6 +5888,12 @@ impl TerminalView {
         if let BlocklistAIControllerEvent::SentRequest { model_id, .. } = event {
             self.maybe_insert_aws_bedrock_login_banner(model_id, ctx);
         }
+        if let BlocklistAIControllerEvent::QueuedPromptsReleased { conversation_id } = event {
+            // A blocked action ended with no follow-up request, so no turn end will drain the
+            // queue (#1026). Restore the head into the input like every other cancel; a Reject
+            // and a Stop look the same here, so nothing is sent on the user's behalf.
+            self.drain_queued_prompts(*conversation_id, FinishReason::Cancelled, ctx);
+        }
         if let BlocklistAIControllerEvent::FinishedReceivingOutput {
             conversation_id, ..
         } = event
@@ -5921,7 +5966,9 @@ impl TerminalView {
             // queued prompt. `finish_reason_for_conversation` scopes the lookup to
             // `conversation_id` instead.
             if !has_active_subagent {
-                if let Some(reason) = self.finish_reason_for_conversation(*conversation_id, ctx) {
+                if let Some(reason) =
+                    self.queue_drain_reason_for_conversation(*conversation_id, ctx)
+                {
                     self.drain_queued_prompts(*conversation_id, reason, ctx);
                 }
             }
@@ -23347,6 +23394,109 @@ impl TerminalView {
                 && !ai_block.is_hidden(ctx))
             .then_some(&ai_metadata.ai_block_handle)
         })
+    }
+
+    /// Shows a queue notice toast when the toast stack exists (it is absent in some test apps).
+    fn notify_queue_notice(&self, text: String, ctx: &mut ViewContext<Self>) {
+        if ToastStack::try_as_ref(ctx).is_some() {
+            self.show_error_toast(text, ctx);
+        }
+    }
+
+    /// Puts the text of queued rows whose conversation was removed, deleted, or cleared back in
+    /// this view's input, with a notice, instead of dropping the user's prompts (#1026).
+    fn restore_dropped_queue_rows(&mut self, rows: &[QueuedQuery], ctx: &mut ViewContext<Self>) {
+        if rows.is_empty() {
+            return;
+        }
+        let restored = rows
+            .iter()
+            .map(QueuedQuery::text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let existing = self.input.as_ref(ctx).buffer_text(ctx);
+        let combined = if existing.is_empty() {
+            restored
+        } else {
+            format!("{existing}\n{restored}")
+        };
+        self.input.update(ctx, |input, ctx| {
+            input.replace_buffer_content(&combined, ctx);
+        });
+        for row in rows.iter().filter(|row| !row.is_command()) {
+            self.ai_context_model.update(ctx, |context_model, ctx| {
+                context_model.append_pending_attachments(row.attachments().to_vec(), ctx);
+            });
+        }
+        self.notify_queue_notice(
+            format!(
+                "The conversation was removed with {} unsent queued prompt(s); \
+                 their text is back in the input.",
+                rows.len()
+            ),
+            ctx,
+        );
+    }
+
+    /// Restores the head of a stopped or failed conversation's queue when the user comes back to
+    /// it (#1026). The cancel/error drain leaves the queue alone while the conversation is not
+    /// the one in view, so that re-entering shows the queue the user left; nothing else ran the
+    /// drain afterwards, so the rows sat there with no trigger. Cancel semantics: restore into an
+    /// empty input, never send. Skipped while a queued command runs (its finish drains) or the
+    /// pane is closed.
+    fn restore_stranded_queue_on_agent_view_entry(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.suspended_for_close || !QueuedQueryModel::as_ref(ctx).has_queue(conversation_id) {
+            return;
+        }
+        if QueuedQueryModel::as_ref(ctx).has_command_in_flight(conversation_id) {
+            return;
+        }
+        let reason = BlocklistAIHistoryModel::as_ref(ctx)
+            .conversation(&conversation_id)
+            .and_then(|conversation| {
+                let status = conversation.status();
+                if status.is_cancelled() {
+                    Some(FinishReason::Cancelled)
+                } else if status.is_error() {
+                    Some(FinishReason::Error)
+                } else {
+                    None
+                }
+            });
+        if let Some(reason) = reason {
+            self.drain_queued_prompts(conversation_id, reason, ctx);
+        }
+    }
+
+    /// The finish reason that drives `conversation_id`'s queue drain at a stream end. The AI
+    /// block's own reason when it has landed; otherwise the conversation's terminal status. The
+    /// block can lack a reason at this moment (the block finishes from its own subscription, and
+    /// a conversation may have no block at all after an early failure), and `None` skipped the
+    /// drain with nothing left to run it, stranding the queue (#1026). A conversation that is
+    /// still running or blocked has no reason, so a turn that continues is never drained.
+    fn queue_drain_reason_for_conversation(
+        &self,
+        conversation_id: AIConversationId,
+        ctx: &AppContext,
+    ) -> Option<FinishReason> {
+        self.finish_reason_for_conversation(conversation_id, ctx)
+            .or_else(|| {
+                let history = BlocklistAIHistoryModel::as_ref(ctx);
+                let status = history.conversation(&conversation_id)?.status();
+                if status.is_cancelled() {
+                    Some(FinishReason::Cancelled)
+                } else if status.is_error() {
+                    Some(FinishReason::Error)
+                } else if status.is_done() {
+                    Some(FinishReason::Complete)
+                } else {
+                    None
+                }
+            })
     }
 
     /// Returns the finish reason of the most recent AI block belonging to
