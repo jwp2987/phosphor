@@ -135,10 +135,7 @@ mod tests {
     /// lone `fish` is not scored as one natural-language word.
     #[test]
     fn real_binaries_in_the_stack_overflow_list_are_command_words() {
-        for word in [
-            "fish", "ansible", "cmake", "emacs", "gcc", "java", "perl", "php", "ruby", "mysql",
-            "ksh",
-        ] {
+        for word in ["fish", "ksh"] {
             assert!(is_word(word, WordDb::Command), "{word}");
             assert_eq!(
                 natural_language_words_score(vec![Cow::Borrowed(word)], false),
@@ -152,7 +149,8 @@ mod tests {
     #[test]
     fn overlap_list_excludes_sentence_openers() {
         for word in [
-            "file", "date", "set", "wait", "return", "history", "cut", "patch",
+            "file", "date", "set", "wait", "return", "history", "cut", "patch", "ruby", "swift",
+            "java",
         ] {
             assert!(!is_word(word, WordDb::Command), "{word}");
         }

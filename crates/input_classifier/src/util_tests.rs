@@ -997,7 +997,9 @@ fn test_reads_as_command_headed_prose_leaves_shell_alone() {
         "npm install fails with EACCES",
         "install docker and run it",
         // `do` as a compound head keeps its body (`do` + a command), unlike #965's `do it`.
-        "do ls",
+        "then ls",
+        "if ls the",
+        "do ls the",
     ] {
         assert!(!reads_as_command_headed_prose(text), "{text:?}");
     }
@@ -1195,6 +1197,9 @@ fn test_965_collision_words_read_as_prose_only_as_a_sentence() {
         "where is the config",
         "what is the capital of France",
         "do it",
+        "Say hello",
+        "Where is the config?",
+        "Do it",
     ] {
         assert!(reads_as_request_to_agent(text), "{text:?}");
     }
@@ -1207,6 +1212,7 @@ fn test_965_collision_words_read_as_prose_only_as_a_sentence() {
         "where is git",
         "what is ls",
         "where is foo.txt",
+        "Where is git",
         "do ls",
         "say",
     ] {
