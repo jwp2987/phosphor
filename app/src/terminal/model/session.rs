@@ -2229,7 +2229,7 @@ const MAX_EXTRA_PATH_DIRS: usize = 16;
 
 /// Commands found on `$PATH` after the bootstrap scan, and the bookkeeping to find them cheaply
 /// (#1019). See [`Session::discover_command_word`].
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct LateCommands {
     found: Mutex<Vec<&'static str>>,
     /// Words not found on `$PATH`, with when that was checked.
