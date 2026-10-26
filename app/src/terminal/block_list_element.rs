@@ -4691,6 +4691,21 @@ impl Element for BlockListElement {
         // that region — breaking selection auto-scroll when dragging downward.
         // This matches the pattern used by SelectableArea, Draggable, Resizable,
         // and both Scrollable variants, which all use `raw_event()` for drags.
+        // #988 diagnostics: drag-select is lost in sidebar-opened conversations; trace where.
+        if matches!(
+            event.raw_event(),
+            Event::LeftMouseDown { .. } | Event::LeftMouseDragged { .. }
+        ) {
+            log::debug!(
+                "#988 block_list drag: event={:?} focused={} rich_drag={} term_sel={} \
+                 at_z={}",
+                event.raw_event(),
+                self.pane_state.is_focused(),
+                self.rich_content_drag_selecting.load(Ordering::Relaxed),
+                self.is_terminal_selecting,
+                event.at_z_index(z_index, ctx).is_some()
+            );
+        }
         let event_at_z_index = if (self.is_terminal_selecting
             || self.rich_content_drag_selecting.load(Ordering::Relaxed))
             && matches!(

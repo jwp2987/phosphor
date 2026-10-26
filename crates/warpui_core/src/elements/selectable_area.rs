@@ -755,6 +755,13 @@ impl Element for SelectableArea {
                         && self.contains_point_ignoring_clip(*position))
             }
             Event::LeftMouseDragged { position, .. } => {
+                // #988 diagnostics: which early return drops a drag-select.
+                log::debug!(
+                    "#988 selectable_area drag: selecting={} origin={} size={}",
+                    self.selectable_area_state.is_selecting(),
+                    self.origin.is_some(),
+                    self.size.is_some()
+                );
                 if !self.selectable_area_state.is_selecting() {
                     return false;
                 }
@@ -764,6 +771,7 @@ impl Element for SelectableArea {
 
                 let selection_updated = self.update_selection(*position);
                 if !selection_updated {
+                    log::debug!("#988 selectable_area drag: update_selection returned false");
                     return false;
                 }
                 if let Some(selection_updated_handler) = self.selection_updated_handler.as_mut() {
