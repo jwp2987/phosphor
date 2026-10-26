@@ -657,6 +657,16 @@ pub const EXECUTE_PENDING_COMMAND_DELAY: Duration = Duration::from_millis(100);
 /// How long the agent's command gets to react to an interrupt (^C) before the stop is escalated:
 /// the conversation is cancelled, the command handed to the user and the agent view left
 /// (#899, #900). Long enough for an ordinary process to run its signal handlers and exit.
+/// How long after a notice banner opens/closes the find bar is redrawn so it picks up the
+/// banner's freshly saved position (#958). Must be longer than one frame.
+const FIND_BAR_BANNER_RELAYOUT_DELAY: Duration = Duration::from_millis(50);
+
+/// The delay after which the find bar must be redrawn following a banner change, if at all.
+/// Only an open find bar offsets itself by the banner.
+fn find_bar_banner_relayout_delay(find_bar_open: bool) -> Option<Duration> {
+    find_bar_open.then_some(FIND_BAR_BANNER_RELAYOUT_DELAY)
+}
+
 const AGENT_INTERRUPT_GRACE: Duration = Duration::from_secs(3);
 
 pub const WARP_PROMPT_HEIGHT_LINES: f32 = 0.9;
@@ -9941,6 +9951,13 @@ impl TerminalView {
         self.model.lock().push_user_input(input);
     }
 
+    /// Show `display` instead of `wrapped` for the command about to run (#952).
+    pub fn set_command_display_override(&self, wrapped: &str, display: &str) {
+        self.model
+            .lock()
+            .set_command_display_override(wrapped.to_owned(), display.to_owned());
+    }
+
     pub fn set_pending_command(&self, exec: &str, ctx: &mut ViewContext<Self>) {
         self.input.update(ctx, |input, ctx| {
             input.set_pending_command(exec, ctx);
@@ -10516,7 +10533,7 @@ impl TerminalView {
                 associated_session_id: active_session_id,
             };
 
-            ctx.notify();
+            self.notify_notice_banner_changed(ctx);
 
             send_telemetry_from_ctx!(TelemetryEvent::SSHControlMasterError, ctx);
         }
@@ -17222,7 +17239,7 @@ impl TerminalView {
         }
         if self.is_slow_bootstrap_banner_open {
             self.is_slow_bootstrap_banner_open = false;
-            ctx.notify();
+            self.notify_notice_banner_changed(ctx);
         }
     }
 
@@ -21315,6 +21332,21 @@ impl TerminalView {
         format!("terminal_notice_banner_{view_id}")
     }
 
+    /// Call after a notice banner opened or closed. Redraws this view and, when the find bar is
+    /// open, redraws it once the frame that saved the banner's new position has been drawn: the
+    /// find bar offsets itself by the banner's position from the *previous* frame, so without
+    /// this it would stay partly behind a banner that appeared while it was open (#958).
+    fn notify_notice_banner_changed(&mut self, ctx: &mut ViewContext<Self>) {
+        ctx.notify();
+        if let Some(delay) =
+            find_bar_banner_relayout_delay(self.find_model.as_ref(ctx).is_find_bar_open())
+        {
+            ctx.spawn(Timer::after(delay), |me, _, ctx| {
+                me.find_bar.update(ctx, |_, ctx| ctx.notify());
+            });
+        }
+    }
+
     fn show_find_bar(&mut self, ctx: &mut ViewContext<Self>) {
         let model = self.model.lock();
         let inverted_blocklist = self.is_inverted_blocklist(ctx);
@@ -23904,7 +23936,7 @@ impl TerminalView {
         match event {
             BannerEvent::Dismiss { .. } => {
                 self.is_incompatible_configuration_banner_open = false;
-                ctx.notify();
+                self.notify_notice_banner_changed(ctx);
             }
             BannerEvent::Action(_) => {
                 #[cfg(debug_assertions)]
@@ -23934,7 +23966,7 @@ impl TerminalView {
                 .set_value(BannerState::Dismissed, settings_ctx));
         });
         self.is_emacs_bindings_banner_open = false;
-        ctx.notify();
+        self.notify_notice_banner_changed(ctx);
     }
 
     fn should_show_emacs_bindings_banner(&mut self, ctx: &mut ViewContext<Self>) -> bool {
@@ -23955,7 +23987,7 @@ impl TerminalView {
 
     fn show_emacs_bindings_banner(&mut self, ctx: &mut ViewContext<Self>) {
         self.is_emacs_bindings_banner_open = true;
-        ctx.notify();
+        self.notify_notice_banner_changed(ctx);
     }
 
     /// Updates the state of the "incompatible shell configuration" banner with
@@ -24012,7 +24044,7 @@ impl TerminalView {
 
         if show_banner != self.is_incompatible_configuration_banner_open {
             self.is_incompatible_configuration_banner_open = show_banner;
-            ctx.notify();
+            self.notify_notice_banner_changed(ctx);
         }
     }
 
@@ -24024,7 +24056,7 @@ impl TerminalView {
         match event {
             BannerEvent::Dismiss(DismissalType::Temporary) => {
                 self.control_master_error_banner_state.is_open = false;
-                ctx.notify();
+                self.notify_notice_banner_changed(ctx);
             }
             BannerEvent::Dismiss(DismissalType::Permanent) => {
                 self.control_master_error_banner_state.is_open = false;

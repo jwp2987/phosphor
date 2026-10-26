@@ -301,12 +301,17 @@ impl From<StateSplitDirection> for SplitDirection {
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct CommandTemplate {
     pub exec: String,
+    /// What to show for `exec` (block header, tab title, history) when `exec` is a rewritten
+    /// form of the command the user configured (#952). `None` shows `exec`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
 }
 
 impl From<&str> for CommandTemplate {
     fn from(s: &str) -> CommandTemplate {
         CommandTemplate {
             exec: s.to_string(),
+            display: None,
         }
     }
 }

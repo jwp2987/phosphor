@@ -486,6 +486,9 @@ pub struct TerminalModel {
     /// The command the user should see for an agent command typed into the shell in a wrapped
     /// form, by the action that requested it (#904). Consumed at preexec.
     agent_display_commands: HashMap<AIAgentActionId, String>,
+    /// Wrapped command text typed into the shell -> the command to show for it (tab config
+    /// panes, #952). Consumed at preexec.
+    command_display_overrides: HashMap<String, String>,
     /// Whether the blocklist has been cleared in the lifetime of this terminal model.
     pub blocklist_has_been_cleared: bool,
 
@@ -1200,6 +1203,7 @@ impl TerminalModel {
             typeahead_handoff: TypeaheadHandoff::default(),
             reply_ledger: SharedReplyLedger::default(),
             agent_display_commands: HashMap::new(),
+            command_display_overrides: HashMap::new(),
             blocklist_has_been_cleared: false,
             alt_screen_active: false,
             title_stack: Vec::new(),
@@ -2760,12 +2764,26 @@ impl TerminalModel {
         self.agent_display_commands.insert(action_id, command);
     }
 
+    /// Records that the command `wrapped`, typed into the shell by the app (a tab config pane's
+    /// startup command rewritten to bypass aliases, #884), is shown as `display` in the block
+    /// header, tab title and history instead (#952).
+    pub fn set_command_display_override(&mut self, wrapped: String, display: String) {
+        if wrapped == display {
+            return;
+        }
+        if self.command_display_overrides.len() >= 32 {
+            self.command_display_overrides.clear();
+        }
+        self.command_display_overrides.insert(wrapped, display);
+    }
+
     fn apply_preexec(&mut self, mut data: PreexecValue) {
         let display_command = self
             .block_list
             .active_block()
             .requested_command_action_id()
-            .and_then(|action_id| self.agent_display_commands.remove(action_id));
+            .and_then(|action_id| self.agent_display_commands.remove(action_id))
+            .or_else(|| self.command_display_overrides.remove(data.command.trim()));
         if let Some(display_command) = display_command {
             self.block_list
                 .active_block_mut()

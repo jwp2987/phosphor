@@ -14427,3 +14427,14 @@ fn abort_keys_are_exactly_ctrl_c_and_ctrl_d() {
     assert!(!is_abort_key(&[0x03, 0x03]));
     assert!(!is_abort_key(b""));
 }
+
+#[test]
+fn find_bar_relayouts_after_banner_change_only_when_open() {
+    // #958: a banner appearing while the find bar is open must trigger a delayed redraw of the
+    // bar so it picks up the banner's newly saved position.
+    assert_eq!(
+        super::find_bar_banner_relayout_delay(true),
+        Some(super::FIND_BAR_BANNER_RELAYOUT_DELAY)
+    );
+    assert_eq!(super::find_bar_banner_relayout_delay(false), None);
+}
