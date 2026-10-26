@@ -2830,3 +2830,19 @@ fn command_display_overrides_are_trimmed_expiring_and_bounded() {
     );
     assert_eq!(model.command_display_overrides.len(), 1);
 }
+
+/// #1001: a remote session that was announced but never bootstrapped is detected (so closing it
+/// skips the undo-close grace); a local shell that is merely starting, a bootstrapped session and
+/// a subshell bootstrap are not.
+#[test]
+fn remote_session_unbootstrapped_rule() {
+    // (ssh_hook_seen, session_pending, local_bootstrapped, subshell_pending)
+    assert!(remote_session_unbootstrapped(true, false, true, false));
+    assert!(remote_session_unbootstrapped(false, true, true, false));
+    // The local shell is itself still starting: its own pending session.
+    assert!(!remote_session_unbootstrapped(false, true, false, false));
+    // `su -` / `sudo -i` bootstrap.
+    assert!(!remote_session_unbootstrapped(false, true, true, true));
+    // Nothing pending.
+    assert!(!remote_session_unbootstrapped(false, false, true, false));
+}

@@ -159,6 +159,11 @@ impl ClosedItem {
         match self {
             ClosedItem::Window(data) => {
                 let ClosedWindowData { window_id, .. } = *data;
+                // The window is gone, so `window_workspace` finds nothing and no pane can be
+                // updated: end the window's terminals directly (#1001, #980). Without this the
+                // shells, ssh clients and remote proxies of a closed window outlived the grace
+                // period until the app quit.
+                end_terminals_of_window(window_id, false, ctx);
                 if let Some(workspace) = window_workspace(window_id, ctx) {
                     workspace.update(ctx, |workspace, ctx| {
                         for pane_group in workspace.tab_views() {
@@ -289,6 +294,9 @@ impl UndoCloseStack {
     /// Handles a window being closed, adding the necessary data to the undo
     /// stack.
     pub fn handle_window_closed(&mut self, data: ClosedWindowData, ctx: &mut ModelContext<Self>) {
+        // A wedged / abandoned remote session has nothing to restore: end it now instead of
+        // keeping its processes through the undo-close grace period (#1001).
+        end_terminals_of_window(data.window_id, true, ctx);
         self.push_item(ClosedItem::Window(Box::new(data)), ctx);
     }
 
@@ -405,6 +413,31 @@ impl UndoCloseStack {
             expiry_data: ExpiryData { id, task_handle },
         })
     }
+}
+
+/// Ends the terminal sessions of `window_id` (usually a closed window, whose views cannot be
+/// updated any more). With `only_unbootstrapped`, only remote sessions that never finished
+/// bootstrapping (#1001) are ended. Returns how many sessions were ended.
+fn end_terminals_of_window(
+    window_id: WindowId,
+    only_unbootstrapped: bool,
+    ctx: &mut AppContext,
+) -> usize {
+    let managers: Vec<ModelHandle<Box<dyn crate::terminal::TerminalManager>>> =
+        ctx.models_of_type();
+    let mut ended = 0;
+    for manager in managers {
+        let applies = {
+            let manager = manager.as_ref(ctx);
+            manager.view_window_id(ctx) == Some(window_id)
+                && (!only_unbootstrapped || manager.has_unbootstrapped_remote_session())
+        };
+        if applies {
+            manager.update(ctx, |manager, ctx| manager.discard_now(ctx));
+            ended += 1;
+        }
+    }
+    ended
 }
 
 /// Find the root [`Workspace`] view for a window.

@@ -1767,6 +1767,17 @@ impl TerminalModel {
         &self.shell_launch_state
     }
 
+    /// Whether an ssh-style remote session was announced but has not finished bootstrapping
+    /// (#1001). See [`remote_session_unbootstrapped`].
+    pub fn has_unbootstrapped_remote_session(&self) -> bool {
+        remote_session_unbootstrapped(
+            self.has_pending_ssh_session(),
+            self.pending_session_id().is_some(),
+            self.block_list.is_bootstrapped(),
+            self.pending_subshell_session().is_some(),
+        )
+    }
+
     pub fn pending_subshell_session(&self) -> Option<&SubshellInitializationInfo> {
         self.pending_session_info
             .as_ref()
@@ -4294,6 +4305,20 @@ pub enum ExitReason {
     ProcessKilled,
     /// Shell could not be found/determined
     ShellNotFound,
+}
+
+/// Pure rule for [`TerminalModel::has_unbootstrapped_remote_session`]. The SSH hook was seen
+/// (`ssh_hook_seen`) but no InitShell followed, or a session is pending (`session_pending`) on
+/// top of an already bootstrapped local shell that is not a subshell (`su -`, `sudo -i`): that is
+/// a remote shell whose bootstrap never finished. A pending session on a not yet bootstrapped
+/// local shell is just the local shell starting.
+pub(crate) fn remote_session_unbootstrapped(
+    ssh_hook_seen: bool,
+    session_pending: bool,
+    local_bootstrapped: bool,
+    subshell_pending: bool,
+) -> bool {
+    ssh_hook_seen || (session_pending && local_bootstrapped && !subshell_pending)
 }
 
 #[cfg(test)]

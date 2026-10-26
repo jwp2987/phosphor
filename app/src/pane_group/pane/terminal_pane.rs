@@ -389,6 +389,17 @@ impl PaneContent for TerminalPane {
             manager.update(ctx, |terminal_manager, ctx| {
                 terminal_manager.on_view_detached(detach_type, ctx);
             });
+            // #1001: a remote session that never finished bootstrapping (wedged or abandoned
+            // connect) has nothing to restore, so closing it must not keep its shell, ssh
+            // client, ControlMaster and remote proxy alive for the undo-close grace period.
+            if detach_type_skips_undo_grace(
+                detach_type,
+                manager.as_ref(ctx).has_unbootstrapped_remote_session(),
+            ) {
+                manager.update(ctx, |terminal_manager, ctx| {
+                    terminal_manager.discard_now(ctx)
+                });
+            }
             ctx.unsubscribe_to_view(&view);
         }
 
@@ -1565,3 +1576,29 @@ fn handle_ai_history_event(
 #[cfg(all(test, not(target_family = "wasm")))]
 #[path = "terminal_pane_tests.rs"]
 mod tests;
+
+/// Whether detaching a terminal pane ends its session at once instead of keeping it for the
+/// undo-close grace period (#1001): a reversible close (`HiddenForClose`) of a remote session
+/// that never bootstrapped. A move keeps everything running; a permanent close already ends it.
+fn detach_type_skips_undo_grace(detach_type: DetachType, unbootstrapped_remote: bool) -> bool {
+    unbootstrapped_remote && matches!(detach_type, DetachType::HiddenForClose)
+}
+
+#[cfg(test)]
+mod undo_grace_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_reversible_close_of_an_unbootstrapped_remote_skips_the_grace() {
+        assert!(detach_type_skips_undo_grace(
+            DetachType::HiddenForClose,
+            true
+        ));
+        assert!(!detach_type_skips_undo_grace(
+            DetachType::HiddenForClose,
+            false
+        ));
+        assert!(!detach_type_skips_undo_grace(DetachType::Moved, true));
+        assert!(!detach_type_skips_undo_grace(DetachType::Closed, true));
+    }
+}

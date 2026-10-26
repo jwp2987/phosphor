@@ -1273,6 +1273,38 @@ impl TerminalManagerTrait for TerminalManager<TerminalView> {
         }
     }
 
+    fn view_window_id(&self, app: &AppContext) -> Option<warpui::WindowId> {
+        // Falls back to the window the view was created in, so it still answers once that
+        // window was closed and its views moved into the undo-close stack.
+        Some(self.view.window_id(app))
+    }
+
+    fn discard_now(&self, app: &mut AppContext) {
+        // The pane's own `shutdown_for_discard` cannot run for a window that is gone (its
+        // views are not updatable), so deregister the remote-server sessions from the model:
+        // that stops the `ssh ... remote-server-proxy` and exits an owned ControlMaster.
+        #[cfg(not(target_family = "wasm"))]
+        if crate::features::FeatureFlag::SshRemoteServer.is_enabled() {
+            let session_ids = {
+                let model = self.model.lock();
+                [
+                    model.block_list().active_block().session_id(),
+                    model.pending_session_id(),
+                ]
+            };
+            for session_id in session_ids.into_iter().flatten() {
+                use crate::remote_server::manager::RemoteServerManager;
+                RemoteServerManager::handle(app).update(
+                    app,
+                    |mgr: &mut RemoteServerManager, ctx| {
+                        mgr.deregister_session(session_id, ctx);
+                    },
+                );
+            }
+        }
+        self.on_view_detached(crate::pane_group::pane::DetachType::Closed, app);
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
