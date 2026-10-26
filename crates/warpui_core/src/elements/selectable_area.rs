@@ -57,6 +57,14 @@ pub struct SelectableArea {
     /// "let it propagate when genuinely outside our bounds" behavior below is relied upon
     /// elsewhere for legitimate cross-element/cross-block selection.
     capture_clicks_within_bounds: bool,
+
+    /// Extra pixels around the painted bounds, on every side, in which a capturing area still
+    /// takes the click (and starts its selection at the nearest point inside its bounds).
+    /// Only consulted when `capture_clicks_within_bounds` is set. An agent bubble draws its
+    /// text inside a padded frame, so a drag begun a pixel or two left of the first glyph
+    /// lands in the frame's padding, outside every area, and used to fall through to the
+    /// terminal's grid selection underneath (#1021).
+    capture_slop: f32,
 }
 
 /// Stores the selection start and end points. We include the option to store
@@ -264,6 +272,7 @@ impl SelectableArea {
             smart_select_fn: None,
             should_support_rect_select: false,
             capture_clicks_within_bounds: false,
+            capture_slop: 0.,
         }
     }
 
@@ -279,6 +288,14 @@ impl SelectableArea {
     /// `capture_clicks_within_bounds`.
     pub fn capture_clicks_within_bounds(mut self) -> Self {
         self.capture_clicks_within_bounds = true;
+        self
+    }
+
+    /// Like `capture_clicks_within_bounds`, but the area also takes presses landing within
+    /// `slop` pixels outside its bounds, starting the selection at the nearest point inside.
+    pub fn capture_clicks_within_bounds_with_slop(mut self, slop: f32) -> Self {
+        self.capture_clicks_within_bounds = true;
+        self.capture_slop = slop.max(0.);
         self
     }
 
@@ -332,6 +349,14 @@ impl SelectableArea {
         let Some(selectable_child_ref) = self.child.as_selectable_element() else {
             return false;
         };
+        // A press in the capture slop starts its selection at the nearest in-bounds point.
+        let position = if self.capture_clicks_within_bounds
+            && self.contains_point_ignoring_clip(position, self.capture_slop)
+        {
+            self.clamp_into_bounds(position)
+        } else {
+            position
+        };
         // Clear any previously existing selection on mouse down.
         let mut selection_state = self
             .selectable_area_state
@@ -346,7 +371,7 @@ impl SelectableArea {
         // swallowing the click without starting a selection would leave the prose
         // unselectable rather than merely stop the click reaching the terminal underneath.
         let mouse_in = if self.capture_clicks_within_bounds {
-            self.contains_point_ignoring_clip(position)
+            self.contains_point_ignoring_clip(position, 0.)
         } else {
             is_mouse_in(self.origin, self.size, ctx, position)
         };
@@ -630,15 +655,28 @@ impl SelectableArea {
     /// current clip/visible-rect stack. Unlike `is_mouse_in`, this does not consult
     /// `ctx.visible_rect`, so it stays correct even if this area's clip bookkeeping is stale
     /// relative to where it was actually painted (see `capture_clicks_within_bounds`).
-    fn contains_point_ignoring_clip(&self, position: Vector2F) -> bool {
+    fn contains_point_ignoring_clip(&self, position: Vector2F, slop: f32) -> bool {
         let (Some(origin), Some(size)) = (self.origin, self.size) else {
             return false;
         };
         let origin = origin.xy();
-        position.x() >= origin.x()
-            && position.x() <= origin.x() + size.x()
-            && position.y() >= origin.y()
-            && position.y() <= origin.y() + size.y()
+        position.x() >= origin.x() - slop
+            && position.x() <= origin.x() + size.x() + slop
+            && position.y() >= origin.y() - slop
+            && position.y() <= origin.y() + size.y() + slop
+    }
+
+    /// `position` moved to the nearest point inside this area's painted bounds (unchanged when
+    /// already inside, or when the area has no bounds yet).
+    fn clamp_into_bounds(&self, position: Vector2F) -> Vector2F {
+        let (Some(origin), Some(size)) = (self.origin, self.size) else {
+            return position;
+        };
+        let origin = origin.xy();
+        vec2f(
+            position.x().clamp(origin.x(), origin.x() + size.x()),
+            position.y().clamp(origin.y(), origin.y() + size.y()),
+        )
     }
 
     fn invoke_selection_handler(&mut self, ctx: &mut EventContext, app: &AppContext) {
@@ -759,7 +797,7 @@ impl Element for SelectableArea {
                 self.invoke_selection_handler(ctx, app);
                 selection_started
                     || (self.capture_clicks_within_bounds
-                        && self.contains_point_ignoring_clip(*position))
+                        && self.contains_point_ignoring_clip(*position, self.capture_slop))
             }
             Event::LeftMouseDragged { position, .. } => {
                 // #988 diagnostics: which early return drops a drag-select.
@@ -815,7 +853,7 @@ impl Element for SelectableArea {
                 // across elements. Note that this behavior may need to change in the future.
                 is_mouse_in(self.origin, self.size, ctx, *position)
                     || (self.capture_clicks_within_bounds
-                        && self.contains_point_ignoring_clip(*position))
+                        && self.contains_point_ignoring_clip(*position, self.capture_slop))
             }
             Event::RightMouseDown { position, .. } => self.on_right_mouse_down(*position, ctx),
             _ => false,
