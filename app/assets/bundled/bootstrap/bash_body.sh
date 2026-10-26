@@ -164,13 +164,16 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             fi
         }
         # Bash allows only one handler per signal, so compose with the
-        # already-installed generator cleanup. Cover both normal exit (exit,
-        # logout, Ctrl-D) and SIGHUP (connection drop).
+        # already-installed generator cleanup. Only EXIT is trapped: bash runs the
+        # EXIT trap for a SIGHUP death too (connection drop), but a trap on HUP
+        # itself replaces bash's default hang-up handling, so the shell neither
+        # exited on hang-up nor ever did while a foreground child (sudo, ssh) ran,
+        # leaving orphaned shells behind (#960).
         __warp_on_exit() {
             __warp_emit_exit_shell
             __warp_generator_pid_file_cleanup
         }
-        trap __warp_on_exit EXIT HUP
+        trap __warp_on_exit EXIT
     fi
 
     warp_maybe_send_reset_grid_osc () {

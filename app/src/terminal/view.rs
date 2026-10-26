@@ -677,6 +677,13 @@ const BRACKETED_PASTE_SUFFIX: &str = "\x1b[201~";
 
 /// Duration before we consider a session to have failed bootstrapping.
 const BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(7);
+/// How long after the bootstrap-failed timer a subshell bootstrap may stay unfinished before the
+/// pane gives up on it and tries to hand the shell back in a usable state (#960).
+const SUBSHELL_BOOTSTRAP_ABORT_DELAY: Duration = Duration::from_secs(20);
+/// Bytes written to a subshell whose bootstrap was abandoned (#960): Ctrl-C ends a half-typed
+/// continuation line, and `stty sane` undoes the `stty raw` the bootstrap ran first (raw mode
+/// has ISIG off, so without this Ctrl-C would never again interrupt anything in that shell).
+const SUBSHELL_BOOTSTRAP_ABORT_BYTES: &[u8] = b"\x03 command -p stty sane 2>/dev/null\r";
 /// Duration before we consider a session invoked from an env vars object to
 /// have failed bootstrapping. The longer duration is meant to account for
 /// a user needing to type in one or many secret manager passwords
@@ -2601,6 +2608,11 @@ pub struct TerminalView {
     enter_agent_view_after_ssh_bootstrap: bool,
     slow_bootstrap_banner: ViewHandle<Banner<TerminalAction>>,
     is_slow_bootstrap_banner_open: bool,
+    /// A subshell bootstrap (su/sudo/ssh-less nested shell) sat unfinished past
+    /// `BOOTSTRAP_FAILED_DURATION` (#960): keys go straight to the pty instead of being held, so
+    /// the pane can never swallow all input. Cleared when the subshell bootstraps or a new
+    /// bootstrap starts.
+    subshell_bootstrap_stalled: bool,
     /// Timer that auto-dismisses the slow-bootstrap banner after
     /// [`SLOW_BOOTSTRAP_BANNER_AUTO_DISMISS_DURATION`]. Held so it can be
     /// aborted when the banner is hidden for any other reason (manual
@@ -4295,6 +4307,7 @@ impl TerminalView {
             enter_agent_view_after_ssh_bootstrap: false,
             slow_bootstrap_banner,
             is_slow_bootstrap_banner_open: false,
+            subshell_bootstrap_stalled: false,
             slow_bootstrap_banner_auto_dismiss_handle: None,
             incompatible_configuration_banner,
             is_incompatible_configuration_banner_open: false,
@@ -9355,7 +9368,10 @@ impl TerminalView {
     }
 
     fn control_sequence_on_terminal(&mut self, bytes: &[u8], ctx: &mut ViewContext<Self>) {
-        if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
+        if self.is_long_running()
+            || self.typeahead_handoff_routes_keys_to_pty()
+            || self.forwards_keys_during_subshell_bootstrap(is_abort_key(bytes))
+        {
             self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_bytes(bytes)), ctx);
             self.write_user_bytes_to_pty(bytes.to_owned(), ctx);
         } else if self.apply_key_to_editor_after_handoff(bytes, ctx) {
@@ -9438,7 +9454,10 @@ impl TerminalView {
             ctx.dispatch_typed_action(&TerminalAction::SetInputModeAgent);
             return;
         }
-        if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
+        if self.is_long_running()
+            || self.typeahead_handoff_routes_keys_to_pty()
+            || self.forwards_keys_during_subshell_bootstrap(is_abort_key(characters.as_bytes()))
+        {
             self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
             self.highlighted_link.invalidate();
             self.report_possible_typeahead(characters);
@@ -9490,7 +9509,32 @@ impl TerminalView {
         true
     }
 
+    /// True while a subshell bootstrap (`su -`, `sudo -i`, ...) has been announced by the shell
+    /// but has not finished. Input is normally held for that whole window so the user cannot
+    /// interleave with the script (#960), which is exactly what made a stalled bootstrap swallow
+    /// every key.
+    fn subshell_bootstrap_pending(&self) -> bool {
+        let model = self.model.lock();
+        !model.is_read_only()
+            && model.pending_subshell_session().is_some()
+            && !model.is_active_block_bootstrapped()
+    }
+
+    /// Whether keys must go straight to the pty although the bootstrap block is not a running
+    /// command. `abort_key` is Ctrl-C / Ctrl-D, which always get through (#960); everything
+    /// else does once the bootstrap has stalled.
+    fn forwards_keys_during_subshell_bootstrap(&self, abort_key: bool) -> bool {
+        subshell_bootstrap_key_forwarded(
+            self.subshell_bootstrap_pending(),
+            self.subshell_bootstrap_stalled,
+            abort_key,
+        )
+    }
+
     fn should_write_typed_chars_to_pty(&self, ctx: &mut ViewContext<Self>) -> bool {
+        if self.forwards_keys_during_subshell_bootstrap(false) {
+            return true;
+        }
         // Lock the model once and hold it throughout the function
         let model = self.model.lock();
 
@@ -10472,6 +10516,7 @@ impl TerminalView {
             }
         }
 
+        self.subshell_bootstrap_stalled = false;
         self.write_init_subshell_bytes_to_pty(shell_type, ctx);
 
         if !self.env_vars.is_empty() {
@@ -17200,6 +17245,18 @@ impl TerminalView {
         );
     }
 
+    /// Gives up on a subshell bootstrap that is still unfinished (#960): ends whatever the
+    /// shell was reading and puts its tty back in cooked mode, so the user is left with a
+    /// working (if un-Phosphorized) shell instead of a raw-mode one that ignores Ctrl-C.
+    fn abort_stalled_subshell_bootstrap(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.subshell_bootstrap_stalled || !self.subshell_bootstrap_pending() {
+            return;
+        }
+        log::warn!("Abandoning stalled subshell bootstrap");
+        self.write_to_pty(SUBSHELL_BOOTSTRAP_ABORT_BYTES.to_vec(), ctx);
+        ctx.notify();
+    }
+
     /// Called once the bootstrap timer completes
     /// Will send telemetry if the current session is not bootstrapped and will show a banner to
     /// the user if this is the first bootstrap in the session.
@@ -17236,6 +17293,18 @@ impl TerminalView {
         };
 
         log::warn!("Bootstrapping failed for shell {shell:?} on ssh {is_ssh}");
+
+        if is_subshell {
+            // #960: a subshell that never finishes bootstrapping must not own the pane. Stop
+            // holding input now, and give up on the bootstrap a little later.
+            self.subshell_bootstrap_stalled = true;
+            ctx.spawn(
+                async {
+                    warpui::r#async::Timer::after(SUBSHELL_BOOTSTRAP_ABORT_DELAY).await;
+                },
+                |me, _, ctx| me.abort_stalled_subshell_bootstrap(ctx),
+            );
+        }
 
         // Unhide the long-running block that was hidden at the start of
         // subshell bootstrap so the user can see the session output again.
@@ -30615,6 +30684,17 @@ fn command_first_word_and_suffix(command: &str) -> Option<(&str, &str)> {
 /// Returns `Some(ShellType::PowerShell)` if `command` is a recognized `pwsh`/`powershell`
 /// invocation (`PWSH_SUBSHELL_COMMAND_REGEX`), `None` otherwise. See
 /// `TerminalView::pending_subshell_shell_type`'s doc comment for why this matters (#800).
+/// Ctrl-C and Ctrl-D: the keys that must always reach a shell whose subshell bootstrap is stuck.
+fn is_abort_key(bytes: &[u8]) -> bool {
+    matches!(bytes, [0x03] | [0x04])
+}
+
+/// Pure routing rule for a pane whose subshell bootstrap is announced but unfinished (#960):
+/// forward abort keys at once, everything else once the bootstrap has stalled.
+fn subshell_bootstrap_key_forwarded(pending: bool, stalled: bool, abort_key: bool) -> bool {
+    pending && (stalled || abort_key)
+}
+
 fn shell_type_for_recognized_powershell_subshell_command(command: &str) -> Option<ShellType> {
     PWSH_SUBSHELL_COMMAND_REGEX
         .is_match(command.trim())

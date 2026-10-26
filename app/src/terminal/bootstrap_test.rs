@@ -725,3 +725,23 @@ fn test_init_subshell_lines_run_in_real_shells_and_stay_out_of_history() {
         });
     });
 }
+
+/// #960: `trap <fn> EXIT HUP` replaced bash's default hang-up handling, so a remote shell
+/// neither exited on SIGHUP nor, while a foreground child such as `sudo` ran, ever did --
+/// closing the tab left orphaned shells (and root shells under them). EXIT alone already runs
+/// on a SIGHUP death.
+#[test]
+fn bash_body_does_not_trap_sighup() {
+    let body = include_str!("../../assets/bundled/bootstrap/bash_body.sh");
+    for line in body.lines() {
+        let code = line.trim_start();
+        if code.starts_with('#') {
+            continue;
+        }
+        assert!(
+            !(code.starts_with("trap ")
+                && code.split_whitespace().any(|w| w == "HUP" || w == "SIGHUP")),
+            "bash_body.sh must not trap HUP: {line}"
+        );
+    }
+}
