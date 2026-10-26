@@ -1067,6 +1067,15 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
                       T) return 1;;
                       # -W implies -T
                       W) return 1;;
+                      # #999: -O (control-master command: check/exit/stop/forward/cancel), -N (no command),
+                      # -f (background) and -V (version) never start an interactive login, so the wrapper
+                      # (ControlMaster=yes, -t, a remote export command) must not touch them. -G and -Q are not
+                      # in the optstring above, so they already fail as invalid options and go to real ssh.
+                      # Keep in step with InteractiveSshCommand::parse_ssh_command (ssh/util.rs).
+                      O) return 1;;
+                      N) return 1;;
+                      f) return 1;;
+                      V) return 1;;
                       # The user provided an invalid option; kick it to real ssh.
                       \?) return 1;;
                       # The user omitted a required argument; kick it to real ssh.

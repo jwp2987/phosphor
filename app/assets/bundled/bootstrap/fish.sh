@@ -730,6 +730,13 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
             # -W implies -T
             return 1
         end
+        # #999: -O (control-master command), -N (no command), -f (background) and -V (version)
+        # never start an interactive login, so the wrapper must not touch them. -G and -Q are
+        # not declared above, so argparse already rejects them and they go to real ssh. Keep in
+        # step with InteractiveSshCommand::parse_ssh_command (ssh/util.rs).
+        if set -q _flag_O; or set -q _flag_N; or set -q _flag_f; or set -q _flag_V
+            return 1
+        end
 
         # If there is more than one positional argument, the user is attempting to
         # run a command, not start an interactive session.  If there is less than
