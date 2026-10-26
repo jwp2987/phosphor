@@ -2718,9 +2718,13 @@ pub struct TerminalView {
     /// Whether the "typing is ignored while connecting" notice (#983) was shown for the current
     /// ssh setup window. Reset once input is accepted again.
     ssh_setup_drop_notified: bool,
-    /// The block whose ssh connect already produced output; the silent-connect gate never
-    /// re-arms for it (#983).
-    ssh_connect_output_seen: Option<BlockId>,
+    /// The ssh connect window (#983): armed when the user submits an interactive `ssh ...`
+    /// command (before the shell's preexec hook can say anything) and held until the remote
+    /// session is ready, the connect shows the user a prompt, or the ceiling passes.
+    ssh_connect_gate: Option<SshConnectGate>,
+    /// When the last gate was released. A command that started before this never re-arms the
+    /// gate lazily from the warpify pending-ssh state.
+    ssh_connect_gate_released_at: Option<DateTime<Local>>,
     /// The pending session whose bootstrap-failed timer already fired (#983): input is never
     /// swallowed on behalf of a bootstrap that is known to be stuck.
     ssh_bootstrap_failed_session: Option<SessionId>,
@@ -4397,7 +4401,8 @@ impl TerminalView {
             tips_completed: resources.tips_completed.clone(),
             was_ever_visible: false,
             ssh_setup_drop_notified: false,
-            ssh_connect_output_seen: None,
+            ssh_connect_gate: None,
+            ssh_connect_gate_released_at: None,
             ssh_bootstrap_failed_session: None,
             ssh_bootstrap_swallow_started: None,
             view_id: ctx.view_id(),
@@ -9665,7 +9670,8 @@ impl TerminalView {
         // Bounded: a pending session that already hit its bootstrap-failed timer, or has been
         // swallowing for `SSH_BOOTSTRAP_SWALLOW_CEILING`, no longer swallows (a stale pending
         // session left by a failed su/sudo -i must not eat a later plain ssh's typing).
-        let pending_sid = if self.has_pending_ssh_command() {
+        let gate_armed = self.refresh_ssh_connect_gate();
+        let pending_sid = if gate_armed || self.has_pending_ssh_command() {
             self.model.lock().pending_session_id()
         } else {
             None
@@ -9681,25 +9687,7 @@ impl TerminalView {
         // connecting and anything typed would reach the tty ahead of the bootstrap and be split
         // from the rest of the line. Drop the whole run. Every prompt (host key, password, 2FA)
         // is output, so its answers -- including a bare Enter -- are never held here.
-        let ssh_connecting_silently = pending_now.is_none() && self.has_pending_ssh_command() && {
-            let model = self.model.lock();
-            let block = model.block_list().active_block();
-            let block_id = block.id().clone();
-            // True pre-login phase only: the command has printed nothing at all. Once any output
-            // (banner, prompt, program output) is seen the gate never re-arms for this command,
-            // so a plain session or a later `cat` / `read` can never lose keys.
-            let output_seen = block.output_grid().has_received_content()
-                || self.ssh_connect_output_seen.as_ref() == Some(&block_id);
-            let age = block
-                .start_ts()
-                .and_then(|start| Local::now().signed_duration_since(*start).to_std().ok());
-            let alt_screen = model.is_alt_screen_active();
-            drop(model);
-            if output_seen {
-                self.ssh_connect_output_seen = Some(block_id);
-            }
-            ssh_connect_silence_drops_keys(alt_screen, output_seen, age)
-        };
+        let ssh_connecting_silently = pending_now.is_none() && self.ssh_connect_gate_drops_keys();
         if !(dialog_up || setup_in_flight || ssh_bootstrapping || ssh_connecting_silently) {
             self.ssh_setup_drop_notified = false;
             return false;
@@ -9723,6 +9711,77 @@ impl TerminalView {
             });
         }
         true
+    }
+
+    /// Arms the ssh connect gate when `command` is an interactive ssh command the user just
+    /// submitted (#983). Runs at submission, so the window before the shell's preexec hook (and
+    /// the 50 ms before the block counts as long running) is covered too.
+    fn note_command_submitted_for_ssh_gate(&mut self, command: &str) {
+        if parse_interactive_ssh_command(command).is_some() {
+            self.ssh_connect_gate = Some(SshConnectGate::new(Instant::now()));
+        }
+    }
+
+    /// Makes the gate consistent with the model and says whether it is still armed. Lazily arms
+    /// from the warpify pending-ssh state (preexec saw ssh) for a command that started after the
+    /// last release, releases it when it ran its course, and records a completed ssh block.
+    fn refresh_ssh_connect_gate(&mut self) -> bool {
+        let (pending, block_start) = {
+            let model = self.model.lock();
+            (
+                model.pending_session_id().is_some(),
+                model.block_list().active_block().start_ts().copied(),
+            )
+        };
+        if self.ssh_connect_gate.is_none() && self.has_pending_ssh_command() {
+            let age = block_start
+                .and_then(|start| Local::now().signed_duration_since(start).to_std().ok());
+            let started_after_release = match (block_start, self.ssh_connect_gate_released_at) {
+                (Some(start), Some(released)) => start > released,
+                _ => true,
+            };
+            if started_after_release && age.is_some_and(|age| age < SSH_CONNECT_SILENCE_CEILING) {
+                let now = Instant::now();
+                let armed_at = now.checked_sub(age.unwrap_or_default()).unwrap_or(now);
+                self.ssh_connect_gate = Some(SshConnectGate::new(armed_at));
+            }
+        }
+        let Some(gate) = self.ssh_connect_gate.as_mut() else {
+            return false;
+        };
+        if gate.should_release(Instant::now(), pending) {
+            self.ssh_connect_gate = None;
+            self.ssh_connect_gate_released_at = Some(Local::now());
+            return false;
+        }
+        true
+    }
+
+    /// The pre-session half of the gate: true while the user has submitted ssh, nothing visible
+    /// has been printed and the session is not up. Visible text (a banner, a host-key, password
+    /// or passphrase prompt) ends it for good; escape sequences and bare CR/LF do not (#983).
+    fn ssh_connect_gate_drops_keys(&mut self) -> bool {
+        let Some(gate) = self.ssh_connect_gate.as_ref() else {
+            return false;
+        };
+        let (alt_screen, visible) = {
+            let model = self.model.lock();
+            let visible = !gate.output_seen
+                && !gate.block_done
+                && output_has_visible_text(
+                    &model
+                        .block_list()
+                        .active_block()
+                        .output_grid()
+                        .contents_to_string(false, None),
+                );
+            (model.is_alt_screen_active(), visible)
+        };
+        let gate = self.ssh_connect_gate.as_mut().expect("checked above");
+        if visible {
+            gate.output_seen = true;
+        }
+        gate.drops_keys(alt_screen)
     }
 
     /// True while a subshell bootstrap (`su -`, `sudo -i`, ...) has been announced by the shell
@@ -12993,6 +13052,11 @@ impl TerminalView {
     }
 
     fn handle_terminal_event(&mut self, event: &ModelEvent, ctx: &mut ViewContext<Self>) {
+        // #983: observe the announced remote session (and its end) as it happens, so the gate
+        // does not depend on a keystroke arriving while the session is pending.
+        if self.ssh_connect_gate.is_some() {
+            self.refresh_ssh_connect_gate();
+        }
         match event {
             ModelEvent::TerminalClear => {
                 self.handle_terminal_wakeup((), ctx);
@@ -13205,8 +13269,23 @@ impl TerminalView {
                     }
                 }
 
-                if let BlockType::User(_) = &block_completed_event.block_type {
+                if let BlockType::User(user_completed) = &block_completed_event.block_type {
                     self.on_user_block_completed(&block_completed_event.block_id, ctx);
+                    // #983: the ssh block ends when the remote shell's first precmd arrives, well
+                    // before the remote session is registered and bootstrapped. A failed ssh ends
+                    // the connect window; a clean end keeps it for the bootstrap grace period.
+                    if self.ssh_connect_gate.is_some() {
+                        let exit_code = user_completed
+                            .serialized_block
+                            .get_with(|compute| {
+                                let model = self.model.lock();
+                                compute(model.block_list())
+                            })
+                            .exit_code;
+                        if let Some(gate) = self.ssh_connect_gate.as_mut() {
+                            gate.note_block_completed(Instant::now(), exit_code.value() == 0);
+                        }
+                    }
 
                     // #856: an ssh command that ends after a warpification script was typed
                     // into it (killed while hung, or never warpified) has that script echoed
@@ -23408,6 +23487,7 @@ impl TerminalView {
             InputEvent::PageUp => self.page_up(ctx),
             InputEvent::PageDown => self.page_down(ctx),
             InputEvent::ExecuteCommand(event) => {
+                self.note_command_submitted_for_ssh_gate(&event.command);
                 self.update_scroll_position_locking(
                     ScrollPositionUpdate::AfterCommandExecutionStarted,
                     ctx,
@@ -31115,22 +31195,84 @@ fn choice_block_owns_input(
     pending.is_some_and(|pending| block_sessions.any(|sid| sid == pending))
 }
 
+/// How long after the ssh block ended cleanly (the remote shell's first precmd) the gate keeps
+/// holding keys while it waits for the remote session to register (#983).
+const SSH_CONNECT_POST_BLOCK_GRACE: Duration = Duration::from_secs(5);
+
+/// State of one ssh connect window (#983). Pure so the transitions are unit-testable.
+#[derive(Debug, Clone)]
+struct SshConnectGate {
+    armed_at: Instant,
+    /// A remote session has been announced (pending) at some point in this window.
+    saw_pending: bool,
+    /// Visible text (not escape sequences) has been printed: the user is being asked something.
+    output_seen: bool,
+    /// The ssh block ended cleanly; the remote bootstrap is expected to follow.
+    block_done: bool,
+    block_done_at: Option<Instant>,
+    /// The ssh block ended with a failure: nothing more is coming.
+    failed: bool,
+}
+
+impl SshConnectGate {
+    fn new(armed_at: Instant) -> Self {
+        Self {
+            armed_at,
+            saw_pending: false,
+            output_seen: false,
+            block_done: false,
+            block_done_at: None,
+            failed: false,
+        }
+    }
+
+    fn note_block_completed(&mut self, now: Instant, success: bool) {
+        if success {
+            self.block_done = true;
+            self.block_done_at = Some(now);
+        } else {
+            self.failed = true;
+        }
+    }
+
+    /// Whether the window is over. `pending` is whether a remote session is announced now.
+    fn should_release(&mut self, now: Instant, pending: bool) -> bool {
+        if pending {
+            self.saw_pending = true;
+        }
+        if self.failed
+            || now.saturating_duration_since(self.armed_at) >= SSH_CONNECT_SILENCE_CEILING
+        {
+            return true;
+        }
+        // The announced session came up (or exited): the remote shell owns input now.
+        if self.saw_pending && !pending {
+            return true;
+        }
+        // The ssh block ended cleanly but no remote session ever registered.
+        !pending
+            && self
+                .block_done_at
+                .is_some_and(|at| now.saturating_duration_since(at) >= SSH_CONNECT_POST_BLOCK_GRACE)
+    }
+
+    /// The no-session half: hold keys until something visible was printed, or for the whole
+    /// post-block bootstrap wait. Full-screen programs never hold.
+    fn drops_keys(&self, alt_screen: bool) -> bool {
+        !alt_screen && (self.block_done || !self.output_seen)
+    }
+}
+
+/// Whether `output` holds text a user could read (not just whitespace and control bytes).
+fn output_has_visible_text(output: &str) -> bool {
+    output
+        .chars()
+        .any(|c| !c.is_whitespace() && !c.is_control())
+}
+
 /// Keys that always reach ssh (Ctrl-C, Ctrl-D, Ctrl-Z, Ctrl-\) so a hung connect can be aborted.
 fn is_ssh_interrupt_key(characters: &str) -> bool {
     matches!(characters, "\u{3}" | "\u{4}" | "\u{1a}" | "\u{1c}")
-}
-
-/// Whether typing is dropped because an ssh command is still silently connecting (#983): it has
-/// run for less than `SSH_CONNECT_SILENCE_CEILING`, is not full-screen, and has printed nothing
-/// at all (`output_seen` is false). Any output means ssh (or the remote) has spoken, and the
-/// user's keys, a bare Enter included, must reach it (#976). `age` is `None` when unknown,
-/// which never drops.
-fn ssh_connect_silence_drops_keys(
-    alt_screen: bool,
-    output_seen: bool,
-    age: Option<Duration>,
-) -> bool {
-    !alt_screen && !output_seen && age.is_some_and(|age| age < SSH_CONNECT_SILENCE_CEILING)
 }
 
 /// Whether typing is still dropped for a pending ssh bootstrap (#983). Pure so the bounds are

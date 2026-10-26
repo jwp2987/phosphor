@@ -15137,22 +15137,162 @@ fn plain_enter_always_reaches_the_pty() {
     })
 }
 
-/// #983 / #976: pure rule for the silent ssh connect phase.
+/// #983: the gate's pure transitions. Visible text ends the silent phase, a clean block end keeps
+/// holding for the bootstrap grace, a failure or a session that came up releases.
 #[test]
-fn ssh_connect_silence_drops_only_before_any_output() {
-    let young = Some(Duration::from_secs(2));
-    // Nothing printed yet, young, not full-screen: drop.
-    assert!(ssh_connect_silence_drops_keys(false, false, young));
-    // Any output (prompt, banner, program output) has been seen: never drop.
-    assert!(!ssh_connect_silence_drops_keys(false, true, young));
-    // Full-screen program, unknown age, or a long-running plain session: never drop.
-    assert!(!ssh_connect_silence_drops_keys(true, false, young));
-    assert!(!ssh_connect_silence_drops_keys(false, false, None));
-    assert!(!ssh_connect_silence_drops_keys(
-        false,
-        false,
-        Some(SSH_CONNECT_SILENCE_CEILING)
-    ));
+fn ssh_connect_gate_transitions() {
+    let t0 = Instant::now();
+    let mut gate = SshConnectGate::new(t0);
+    assert!(gate.drops_keys(false));
+    assert!(!gate.drops_keys(true), "full-screen programs never hold");
+    assert!(!gate.should_release(t0, false));
+    gate.output_seen = true;
+    assert!(!gate.drops_keys(false), "a prompt must get its answers");
+    // A clean block end re-holds (the remote bootstrap is coming) even after visible output.
+    gate.note_block_completed(t0, true);
+    assert!(gate.drops_keys(false));
+    assert!(!gate.should_release(t0 + Duration::from_secs(1), false));
+    assert!(gate.should_release(t0 + SSH_CONNECT_POST_BLOCK_GRACE, false));
+    // Announced session, then gone: released.
+    let mut gate = SshConnectGate::new(t0);
+    assert!(!gate.should_release(t0, true));
+    assert!(gate.should_release(t0, false));
+    // Failure releases at once; so does the ceiling.
+    let mut gate = SshConnectGate::new(t0);
+    gate.note_block_completed(t0, false);
+    assert!(gate.should_release(t0, false));
+    let mut gate = SshConnectGate::new(t0);
+    assert!(gate.should_release(t0 + SSH_CONNECT_SILENCE_CEILING, false));
+}
+
+#[test]
+fn visible_text_ignores_whitespace_and_controls() {
+    assert!(!output_has_visible_text(""));
+    assert!(!output_has_visible_text("\r\n\n \t\u{7}\u{1b}"));
+    assert!(output_has_visible_text("\r\nPassword:"));
+}
+
+fn submit_command(view: &mut TerminalView, command: &str, ctx: &mut ViewContext<TerminalView>) {
+    let session_id = view
+        .active_block_session_id()
+        .unwrap_or_else(|| SessionId::from(9001));
+    view.handle_input_event(
+        &InputEvent::ExecuteCommand(Box::new(ExecuteCommandEvent {
+            command: command.to_owned(),
+            session_id,
+            workflow_id: None,
+            workflow_command: None,
+            should_add_command_to_history: true,
+            source: CommandExecutionSource::User,
+        })),
+        ctx,
+    );
+}
+
+/// #983 window 1: keys typed right after Enter, before the shell's preexec has set the pending
+/// ssh state (and inside the first 50 ms, when the block is not yet "long running"), must be
+/// dropped whole, not written to the tty or the editor.
+#[test]
+fn ssh_keys_before_pending_state_is_set_are_dropped_whole() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            assert!(!view.has_pending_ssh_command(), "preexec has not run yet");
+            view.typed_characters_on_terminal("echo typed-", ctx);
+            view.typed_characters_on_terminal("during-connect", ctx);
+            view.keydown_on_terminal("\r", ctx);
+            view.keydown_on_terminal("\u{3}", ctx);
+        });
+        let writes = pty_writes.borrow();
+        assert!(
+            !writes.iter().any(|w| w.as_slice() == b"echo typed-"
+                || w.as_slice() == b"during-connect"
+                || w.as_slice() == b"\r"),
+            "typed text must not reach the tty: {writes:?}"
+        );
+    })
+}
+
+/// #983 window 2: output that is only escape sequences and CR/LF (hooks, a newline echo) does
+/// not mean "the user is being asked something"; typing is still dropped whole.
+#[test]
+fn ssh_control_only_output_does_not_open_the_gate() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "\r\n\x1b[0m\x1b]0;title\x07\r\n");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            view.typed_characters_on_terminal("echo hi", ctx);
+            view.keydown_on_terminal("\r", ctx);
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        // A real prompt ends it.
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().process_bytes("host's password: ");
+            view.keydown_on_terminal("\r", ctx);
+        });
+        assert!(pty_writes.borrow().iter().any(|w| w.as_slice() == b"\r"));
+    })
+}
+
+/// #983 window 3: the ssh block ends (remote shell's first precmd) before the remote session is
+/// registered; typing in that gap, even with MOTD text already printed, is dropped whole.
+#[test]
+fn ssh_keys_after_ssh_block_ends_before_remote_session_are_dropped() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "Welcome to Ubuntu\r\n");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            // The ssh block completes cleanly and the pending ssh state is cleared with it.
+            if let Some(gate) = view.ssh_connect_gate.as_mut() {
+                gate.note_block_completed(Instant::now(), true);
+            }
+            view.warpify_state.clear_pending_ssh_host();
+            view.typed_characters_on_terminal("echo hi", ctx);
+            view.keydown_on_terminal("\r", ctx);
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #983 window 4: typeahead pasted after Enter takes the same path as typing.
+#[test]
+fn ssh_paste_after_enter_is_dropped_whole() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text("echo pasted\n".to_owned()));
+            view.paste(false, ctx);
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
 }
 
 fn record_pty_writes(
