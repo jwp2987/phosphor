@@ -14660,7 +14660,21 @@ fn read_only_view_of_live_conversation_does_not_register_a_second_live_copy() {
                 },
                 ctx,
             );
+            // The live pane is showing the conversation in its agent view.
+            view.enter_agent_view_for_conversation(
+                None,
+                AgentViewEntryOrigin::AgentViewBlock,
+                conversation_id,
+                ctx,
+            );
             (conversation_id, view.view_id)
+        });
+        live.read(&app, |view, ctx| {
+            assert_eq!(
+                view.active_conversation_id(ctx),
+                Some(conversation_id),
+                "setup: the live pane starts in the conversation's agent view"
+            );
         });
         let live_snapshot = BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
             history

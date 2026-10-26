@@ -7534,10 +7534,25 @@ fn live_conversation_read_only_viewer_opens_once_and_never_duplicates_the_conver
             .update(&mut app, |history, ctx| {
                 history.start_new_conversation(running_view_id, false, false, ctx)
             });
-        running_pane.update(&mut app, |view, _| {
+        running_pane.update(&mut app, |view, ctx| {
+            // The running pane is showing the conversation in its agent view when the command
+            // starts.
+            view.enter_agent_view_for_conversation(
+                None,
+                crate::ai::blocklist::agent_view::AgentViewEntryOrigin::AgentViewBlock,
+                conversation_id,
+                ctx,
+            );
             view.model
                 .lock()
                 .simulate_long_running_block("ksu", "running");
+        });
+        running_pane.read(&app, |view, ctx| {
+            assert_eq!(
+                view.active_conversation_id(ctx),
+                Some(conversation_id),
+                "setup: the running pane starts in the conversation's agent view"
+            );
         });
 
         let open = |app: &mut App| {
