@@ -112,6 +112,17 @@ check-linux:
   resource_group: little-thing-cargo
   timeout: 90m
   interruptible: true
+  variables:
+    # The toolchain lives in the maintainer's home (read access granted to the runner
+    # user by ACL, traverse-only). rustup only needs to READ its toolchains; cargo's
+    # registry cache must be WRITABLE, so CARGO_HOME is the runner user's own.
+    RUSTUP_HOME: /home/winters/.rustup
+    CARGO_HOME: /home/gitlab-runner/.cargo-ci
+    # agent-cargo defaults to /cache/git/..., which does not exist on this box (it
+    # then silently disables slot limiting). Give it a real, writable base.
+    PHOSPHOR_TARGET_ROOT: /home/gitlab-runner/.phosphor-build/targets
+    PHOSPHOR_LOCK_DIR: /home/gitlab-runner/.phosphor-build/locks
+    PHOSPHOR_LOG_DIR: /home/gitlab-runner/.phosphor-build/logs
   script:
     # Non-interactive runner shells do not source ~/.bashrc, so cargo/rustup are not on
     # PATH. The runner user (gitlab-runner) has no toolchain of its own, so the maintainer's
