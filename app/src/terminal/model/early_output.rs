@@ -263,6 +263,11 @@ impl EarlyOutput {
         EarlyOutputHandler { block_list }
     }
 
+    /// The pending (not yet started) background block, if one exists.
+    pub(super) fn pending_background_block(&self) -> Option<&Block> {
+        self.pending_background_block.as_ref()
+    }
+
     /// Returns a mutable reference to the pending background block, if one
     /// exists.
     pub(super) fn pending_background_block_mut(&mut self) -> Option<&mut Block> {

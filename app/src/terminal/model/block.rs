@@ -14,6 +14,7 @@ use super::kitty::{KittyAction, KittyResponse};
 use super::secrets::RespectObfuscatedSecrets;
 use super::selection::ScrollDelta;
 use super::session::{command_executor, Sessions};
+use super::typed_echo::EchoGrid;
 pub use super::BlockId;
 use super::{bootstrap::BootstrapStage, find::RegexDFAs};
 use warp_terminal::model::{KeyboardModes, KeyboardModesApplyBehavior};
@@ -416,10 +417,6 @@ pub struct Block {
     /// `true` if this command block corresponds to a startup command in an oz environment executed
     /// in ambient-agent mode.
     is_oz_environment_startup_command: bool,
-
-    /// The command the shell reported at preexec, i.e. what actually ran (#1033). The command
-    /// grid is filled from the tty echo, which typed-ahead keys can pollute.
-    preexec_command: Option<String>,
 
     /// Blocklist Env var metadata associated with this block, if any.
     env_var_metadata: Option<BlocklistEnvVarMetadata>,
@@ -1107,7 +1104,6 @@ impl Block {
             },
             nld_overridden: false,
             is_oz_environment_startup_command: false,
-            preexec_command: None,
             visible_bootstrap_block_event_sent: false,
         }
     }
@@ -1442,6 +1438,41 @@ impl Block {
     /// Copy an existing grid into this block's command grid. We use this to
     /// fill out the command grid when the actual command, as echoed by the shell,
     /// was instead classified as background output.
+    /// The grid the next printed character goes to, for tracking the tty echo of typed-ahead
+    /// keys (#1033): the command grid before the command runs, the output grid after. `None`
+    /// while a prompt is being received.
+    pub(super) fn echo_input_grid(&self) -> Option<(EchoGrid, &GridHandler)> {
+        if self.header_grid.receiving_chars_for_prompt.is_some() {
+            return None;
+        }
+        if self.state == BlockState::BeforeExecution {
+            Some((
+                EchoGrid::Command,
+                self.header_grid.prompt_and_command_grid().grid_handler(),
+            ))
+        } else {
+            Some((EchoGrid::Output, self.output_grid.grid_handler()))
+        }
+    }
+
+    /// Removes a recorded tty echo of typed-ahead keys from one of this block's grids (#1033).
+    /// See `GridHandler::strip_echo_run`.
+    pub(super) fn strip_echo_run(
+        &mut self,
+        grid: EchoGrid,
+        text: &str,
+        span: Option<((usize, usize), (usize, usize))>,
+        allow_head: bool,
+    ) -> bool {
+        match grid {
+            EchoGrid::Command => self
+                .header_grid
+                .prompt_and_command_grid_mut()
+                .strip_echo_run(text, span, allow_head),
+            EchoGrid::Output => self.output_grid.strip_echo_run(text, span, allow_head),
+        }
+    }
+
     pub fn copy_command_grid(&mut self, command: &BlockGrid) {
         // Cloning the background command grid as-is, instead of roundtripping
         // through a string, is more efficient and preserves shell formatting.
@@ -2360,21 +2391,6 @@ impl Block {
     /// `HeaderGrid::replace_command_text` (#904).
     pub(super) fn replace_command_text(&mut self, command: &str) {
         self.header_grid.replace_command_text(command);
-    }
-
-    /// Removes the shell's tty echo of the user's typed-ahead line `typed` from this finished
-    /// block: from the end of its output and from around its command in the header (#1033).
-    /// Only text byte-identical to (a prefix of) `typed` is removed. Returns whether anything
-    /// changed.
-    pub(super) fn strip_typeahead_echo(&mut self, typed: &str) -> bool {
-        if !self.finished() || self.is_for_in_band_command {
-            return false;
-        }
-        let mut changed = self.output_grid.strip_trailing_echo_of(typed);
-        if let Some(real) = self.preexec_command.as_deref() {
-            changed |= self.header_grid.repair_typeahead_echo(real, typed);
-        }
-        changed
     }
 
     /// Returns the top-level command executed in this block.
@@ -3710,7 +3726,6 @@ impl ansi::Handler for Block {
         self.finish_command_grid_for_execution(was_started);
 
         let is_for_in_band_command = command_executor::is_in_band_command(data.command.as_str());
-        self.preexec_command = Some(data.command.clone());
         if self.bootstrap_stage() == BootstrapStage::PostBootstrapPrecmd {
             self.event_proxy
                 .send_terminal_event(Event::AfterBlockStarted {

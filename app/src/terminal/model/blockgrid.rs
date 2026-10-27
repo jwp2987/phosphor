@@ -332,22 +332,21 @@ impl BlockGrid {
         self.grid_handler.set_track_content_length(trim);
     }
 
-    /// Removes the tty echo of `typed` from the end of the grid, even once it is finished, and
-    /// drops the values memoized for the finished grid (#1033). See
-    /// [`GridHandler::strip_trailing_echo_of`].
-    pub(super) fn strip_trailing_echo_of(&mut self, typed: &str) -> bool {
-        let stripped = self.grid_handler.strip_trailing_echo_of(typed);
+    /// Removes a recorded tty echo of typed-ahead keys, even once the grid is finished, and drops
+    /// the values memoized for the finished grid (#1033). See [`GridHandler::strip_echo_run`].
+    pub(super) fn strip_echo_run(
+        &mut self,
+        text: &str,
+        span: Option<((usize, usize), (usize, usize))>,
+        allow_head: bool,
+    ) -> bool {
+        let stripped = self.grid_handler.strip_echo_run(text, span, allow_head);
         if stripped {
-            self.reset_finished_caches();
+            self.cached_rightmost_visible_nonempty_cell.take();
+            self.cached_has_visible_chars.take();
+            self.cached_starts_with_input_buffer_sequence.take();
         }
         stripped
-    }
-
-    /// Forgets the values memoized once the grid finished, after a repair mutated it.
-    pub(super) fn reset_finished_caches(&mut self) {
-        self.cached_rightmost_visible_nonempty_cell.take();
-        self.cached_has_visible_chars.take();
-        self.cached_starts_with_input_buffer_sequence.take();
     }
 
     pub(in crate::terminal) fn enable_full_grid_clear_behavior(&mut self) {

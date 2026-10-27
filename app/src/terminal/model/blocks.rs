@@ -53,7 +53,8 @@ use warpui::{
 use super::block::{BlockId, BlockSize, BlockState};
 use super::lifecycle::NextBlockIdDisposition;
 use warp_core::command::ExitCode;
-use super::early_output::{EarlyOutput, TypeaheadMode};
+use super::early_output::EarlyOutput;
+use super::typed_echo::{EchoGrid, EchoMatch, EchoPoint, EchoRun, TypedEcho};
 use super::grid::grid_handler::{FragmentBoundary, GridHandler, PossiblePath};
 use super::grid::RespectDisplayedOutput;
 use super::image_map::StoredImageMetadata;
@@ -285,6 +286,9 @@ pub struct BlockList {
     block_id_to_block_index: FxHashMap<BlockId, BlockIndex>,
     size: SizeInfo,
     early_output: EarlyOutput,
+
+    /// The user's typed-ahead keys and the cells their tty echo was printed in (#1033).
+    typed_echo: TypedEcho,
 
     /// Set of rich content views whose heights may be out of date and should be
     /// remeasured on the next layout.
@@ -793,6 +797,7 @@ impl BlockList {
             latest_block_finished_time: None,
             skip_next_after_block_completed_event: false,
             early_output: EarlyOutput::new(event_proxy),
+            typed_echo: TypedEcho::new(),
             in_flight_in_band_command_count: 0,
             pending_clear_visible_screen: false,
             last_populated_precmd_payload: None,
@@ -1203,33 +1208,126 @@ impl BlockList {
         // TODO: Update active gap.
     }
 
-    /// Removes the tty echo of the shell-reported typed-ahead line from the block that just
-    /// finished (#1033).
-    ///
-    /// Keys typed while a short command finishes are echoed by the tty into that command's
-    /// block, but the shell's report of its unconsumed input only arrives after the prompt.
-    /// Only the block immediately before the (not yet started) active block is considered, only
-    /// text identical to the reported typeahead is removed, and only in shell-reported mode,
-    /// where this path exists solely at a fresh prompt. Returns whether a block was changed.
-    pub fn strip_reported_typeahead_echo(&mut self) -> bool {
-        if self.early_output.typeahead_mode() != TypeaheadMode::ShellReported
-            || !self.early_output.has_uninserted_typeahead()
-            || self.active_block().started()
-        {
-            return false;
+    /// Records bytes the app wrote to the pty as the user's typed-ahead keys, so that the tty's
+    /// echo of them can be told apart from output (#1033). See [`TypedEcho`].
+    pub fn record_typed_ahead_bytes(&mut self, bytes: &[u8]) {
+        self.typed_echo.record_typed(bytes);
+    }
+
+    /// Stops expecting the echo of keys recorded so far (#1033): they reached something that
+    /// does not echo them the usual way (a full-screen program).
+    pub fn forget_typed_ahead_bytes(&mut self) {
+        self.typed_echo.forget_typed();
+    }
+
+    /// The background block, if there is one live (unfinished) before the active block.
+    fn background_block(&self) -> Option<&Block> {
+        let mut index = self.active_block_index().0.checked_sub(1)?;
+        while self.blocks[index].is_for_in_band_command {
+            index = index.checked_sub(1)?;
         }
-        let typed = self.early_output.typeahead().to_owned();
-        let Some(prev) = self.active_block_index().0.checked_sub(1) else {
-            return false;
-        };
-        let Some(block) = self.blocks.get_mut(prev) else {
-            return false;
-        };
-        if block.is_background() || !block.strip_typeahead_echo(&typed) {
-            return false;
+        let block = &self.blocks[index];
+        (block.is_background() && !block.finished()).then_some(block)
+    }
+
+    /// Where the next printed character goes, for [`TypedEcho::classify`]: the block (`None` for
+    /// a background block this very character will create) and grid, the point it lands at, and
+    /// whether that point starts a line. `None` when it goes to a prompt.
+    fn echo_target_before_input(&self) -> Option<(Option<(BlockId, EchoGrid)>, EchoPoint, bool)> {
+        if self.is_early_output() {
+            let block = self
+                .background_block()
+                .or_else(|| self.early_output.pending_background_block());
+            return Some(match block {
+                Some(block) => {
+                    let (point, at_line_start) =
+                        block.output_grid().grid_handler().next_echo_point();
+                    (
+                        Some((block.id().clone(), EchoGrid::Output)),
+                        point,
+                        at_line_start,
+                    )
+                }
+                None => (None, (0, 0), true),
+            });
         }
-        self.refresh_block_height(BlockIndex(prev));
-        true
+        let block = self.active_block();
+        let (grid, handler) = block.echo_input_grid()?;
+        let (point, at_line_start) = handler.next_echo_point();
+        Some((Some((block.id().clone(), grid)), point, at_line_start))
+    }
+
+    /// Records that `c` was just printed at `point` as the echo `m` of a typed key.
+    fn commit_typed_echo(&mut self, m: EchoMatch, c: char, point: EchoPoint) {
+        let (block, grid, next) = if self.is_early_output() {
+            let Some(block) = self.background_block() else {
+                return;
+            };
+            (
+                block.id().clone(),
+                EchoGrid::Output,
+                block.output_grid().grid_handler().next_echo_point().0,
+            )
+        } else {
+            let block = self.active_block();
+            let Some((grid, handler)) = block.echo_input_grid() else {
+                return;
+            };
+            (block.id().clone(), grid, handler.next_echo_point().0)
+        };
+        self.typed_echo.commit(m, block, grid, c, point, next);
+    }
+
+    /// Removes the echo runs `runs` from their blocks, where each block still shows them
+    /// exactly (#1033). A run that opens its grid ahead of other text is only removed in
+    /// `head_block`: the block of early output, where no program wrote, so the echo and the
+    /// text after it cannot have been told apart wrongly.
+    fn strip_typed_echo_runs(&mut self, mut runs: Vec<EchoRun>, head_block: Option<&BlockId>) {
+        // Later runs first: removing one never moves an earlier one.
+        runs.sort_by(|a, b| b.first_seq.cmp(&a.first_seq));
+        for run in runs {
+            let Some(index) = self.block_index_for_id(&run.block) else {
+                continue;
+            };
+            let Some(block) = self.blocks.get_mut(index.0) else {
+                continue;
+            };
+            let span = run.span.map(|span| (span.start, span.end));
+            let allow_head = head_block == Some(&run.block);
+            let stripped = block.strip_echo_run(run.grid, &run.text, span, allow_head);
+            let finished = block.finished();
+            if stripped {
+                if index == self.active_block_index() || !finished {
+                    self.update_live_block_height(index);
+                } else {
+                    self.refresh_block_height(index);
+                }
+            }
+        }
+    }
+
+    /// The active block's command exited (#1033): the echo of the line the user is still
+    /// typing, printed in its header or at the end of its output, is the shell's typeahead.
+    /// Removed before the block is finished and saved.
+    fn strip_typed_echo_from_finishing_block(&mut self) {
+        let id = self.active_block().id().clone();
+        let runs = self.typed_echo.take_runs_of_unterminated_line(&id);
+        if !runs.is_empty() {
+            self.strip_typed_echo_runs(runs, None);
+        }
+    }
+
+    /// Removes the echo printed in the live background block between a command's exit and the
+    /// shell accepting its next line: no command ran, so every key typed then is for the shell
+    /// (#1033).
+    fn strip_typed_echo_from_background_block(&mut self) {
+        let Some(id) = self.background_block().map(|block| block.id().clone()) else {
+            return;
+        };
+        let runs = self.typed_echo.take_runs_before_accept(&id);
+        if !runs.is_empty() {
+            self.strip_typed_echo_runs(runs, Some(&id));
+        }
     }
 
     /// Hides the active block and records its new (zero) height in `block_heights`.
@@ -3954,6 +4052,7 @@ impl BlockList {
 
         if !self.active_block().is_for_in_band_command {
             self.finish_background_block();
+            self.typed_echo.on_command_finished();
         }
 
         if active_block_was_finished {
@@ -3961,6 +4060,10 @@ impl BlockList {
             self.latest_block_finished_time = None;
         } else {
             self.skip_next_after_block_completed_event = false;
+            if self.is_bootstrapping_precmd_done() && !self.active_block().is_for_in_band_command {
+                // Before the block is finished and saved (#1033).
+                self.strip_typed_echo_from_finishing_block();
+            }
             self.active_block_mut().finish(data.exit_code);
             self.latest_block_finished_time = Some(instant::SystemTime::now());
         }
@@ -4083,7 +4186,28 @@ impl BlockList {
         // because the distinction between typeahead and background output only
         // matters for user input.
         if self.is_bootstrapping_precmd_done() {
+            // A command the shell runs from its own line (typed ahead, not written by the
+            // editor): the keys of that line were echoed wherever the stream was while they were
+            // typed, and are now known to be the shell's (#1033).
+            let shell_run =
+                !self.active_block().started() && !self.active_block().is_for_in_band_command;
+            let background = self.background_block().map(|block| block.id().clone());
+            if shell_run {
+                let runs = self.typed_echo.take_runs_of_shell_run_line(&data.command);
+                if !runs.is_empty() {
+                    self.strip_typed_echo_runs(runs, background.as_ref());
+                }
+                self.strip_typed_echo_from_background_block();
+            }
             EarlyOutput::preexec(self);
+            // The early output became the command's header; echo runs left in it (keys typed
+            // after the shell accepted the line) are now that header's end.
+            if let Some(background) = background
+                && self.block_index_for_id(&background).is_none()
+            {
+                let active = self.active_block().id().clone();
+                self.typed_echo.move_runs_to_header(&background, active);
+            }
         }
 
         delegate_to_block!(self.preexec(data));
@@ -4112,6 +4236,8 @@ impl BlockList {
     /// notifies the view of the completed block, so that it can be saved for
     /// session restoration.
     fn finish_background_block(&mut self) {
+        // Before it is finished and saved (#1033).
+        self.strip_typed_echo_from_background_block();
         let num_secrets_obfuscated = self
             .background_block_mut()
             .map(|block| block.num_secrets_obfuscated());
@@ -4438,7 +4564,21 @@ impl ansi::Handler for BlockList {
             self.start_active_block();
             self.update_active_block_height();
         }
+        // #1033: whether this is the tty's echo of a key the user typed ahead.
+        let echo = if self.typed_echo.may_match(c) {
+            self.echo_target_before_input()
+                .and_then(|(target, point, at_line_start)| {
+                    self.typed_echo
+                        .classify(c, target, point, at_line_start)
+                        .map(|m| (m, point))
+                })
+        } else {
+            None
+        };
         delegate!(self.input(c));
+        if let Some((m, point)) = echo {
+            self.commit_typed_echo(m, c, point);
+        }
     }
 
     fn set_hyperlink(&mut self, hyperlink: Option<warp_terminal::model::ansi::Hyperlink>) {
@@ -4661,10 +4801,17 @@ impl ansi::Handler for BlockList {
     }
 
     fn set_mode(&mut self, mode: Mode) {
+        if matches!(mode, Mode::BracketedPaste) {
+            // The shell's line editor took the terminal; the tty no longer echoes (#1033).
+            self.typed_echo.set_line_editor_active(true);
+        }
         delegate!(self.set_mode(mode));
     }
 
     fn unset_mode(&mut self, mode: Mode) {
+        if matches!(mode, Mode::BracketedPaste) {
+            self.typed_echo.set_line_editor_active(false);
+        }
         delegate!(self.unset_mode(mode));
     }
 
@@ -4800,7 +4947,14 @@ impl ansi::Handler for BlockList {
     }
 
     fn input_buffer(&mut self, data: InputBufferValue) {
+        // The shell reported and cleared its line: every key typed so far is accounted for, and
+        // the echo of the reported line is the shell's typeahead (#1033).
+        let runs = self.typed_echo.take_runs_of_reported_line(&data.buffer);
         EarlyOutput::handler(self).input_buffer(data);
+        if !runs.is_empty() {
+            let background = self.background_block().map(|block| block.id().clone());
+            self.strip_typed_echo_runs(runs, background.as_ref());
+        }
     }
 
     fn on_finish_byte_processing(&mut self, input: &ansi::ProcessorInput<'_>) {

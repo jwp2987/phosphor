@@ -11024,12 +11024,6 @@ impl TerminalView {
     /// Applies a shell typeahead report under the typeahead hand-off.
     fn handle_typeahead_report_with_handoff(&mut self, ctx: &mut ViewContext<Self>) {
         let disposition = self.model.lock().typeahead_handoff_mut().on_report();
-        if disposition != ReportDisposition::InsertLegacy {
-            // #1033: the tty echoed these keys into the block that just finished.
-            if self.model.lock().block_list_mut().strip_reported_typeahead_echo() {
-                ctx.notify();
-            }
-        }
         match disposition {
             ReportDisposition::InsertLegacy => self.handle_typeahead_event(ctx),
             ReportDisposition::Insert | ReportDisposition::InsertYoung => {

@@ -536,6 +536,16 @@ impl<T: EventLoopSender> PtyController<T> {
         // An Enter voids any quiet-period reset armed before it, so decide again (which arms a
         // fresh one) rather than leave nobody to.
         let has_enter = bytes.iter().any(|byte| matches!(byte, b'\r' | b'\n'));
+        {
+            // #1033: the tty echoes these keys wherever the output is when they arrive; record
+            // them so that echo can be told from output. A full-screen program reads them raw.
+            let mut model = self.terminal_model.lock();
+            if model.is_alt_screen_active() {
+                model.block_list_mut().forget_typed_ahead_bytes();
+            } else {
+                model.block_list_mut().record_typed_ahead_bytes(&bytes);
+            }
+        }
         if self.handoff_command_pending {
             self.handoff_bytes_after_command.extend_from_slice(&bytes);
         } else {
@@ -1180,6 +1190,10 @@ impl<T: EventLoopSender> PtyController<T> {
                 engages_typeahead_handoff = is_editor_command && can_report;
                 if engages_typeahead_handoff {
                     handoff_held_bytes = model.typeahead_handoff_mut().on_command_written();
+                    // #1033: keys typed behind the command's Enter follow it to the pty.
+                    model
+                        .block_list_mut()
+                        .record_typed_ahead_bytes(&handoff_held_bytes);
                     model
                         .block_list_mut()
                         .early_output_mut()
