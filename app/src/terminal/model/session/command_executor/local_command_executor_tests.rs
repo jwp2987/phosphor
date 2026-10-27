@@ -211,4 +211,83 @@ mod unix {
             );
         });
     }
+
+    /// Commands Phosphor runs for itself are POSIX syntax. nushell cannot parse them, so for a
+    /// nushell session they go through bash; the nushell binary is not even started.
+    #[test]
+    fn nu_session_commands_are_posix_syntax_run_by_bash() {
+        futures_lite::future::block_on(async {
+            let executor =
+                LocalCommandExecutor::new(Some("/nonexistent/path/to/nu".into()), ShellType::Nu);
+            let output = executor
+                .execute_local_command(
+                    "echo \"$((1 + 2)) $FOO\" && test -d /tmp",
+                    Some("/tmp"),
+                    Some(HashMap::from([("FOO".to_owned(), "bar baz".to_owned())])),
+                    ExecuteCommandOptions::default(),
+                )
+                .await
+                .expect("a POSIX command should run for a nushell session");
+            assert!(output.success());
+            assert_eq!(String::from_utf8_lossy(output.output()).trim(), "3 bar baz");
+
+            // A syntax error is the shell's, not a nushell parse error about `$((`.
+            let failing = executor
+                .execute_local_command("exit 4", None, None, ExecuteCommandOptions::default())
+                .await
+                .expect("the command ran");
+            assert!(!failing.success());
+        });
+    }
+
+    /// The login-shell variant is the user's own shell, so it takes nushell syntax.
+    #[test]
+    fn nu_login_shell_commands_run_in_nushell() {
+        let Some(nu) = [
+            "/home/linuxbrew/.linuxbrew/bin/nu",
+            "/opt/homebrew/bin/nu",
+            "/usr/local/bin/nu",
+        ]
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .chain(
+            std::env::var_os("PATH")
+                .map(|path| {
+                    std::env::split_paths(&path)
+                        .map(|dir| dir.join("nu"))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+        )
+        .find(|candidate| candidate.is_file()) else {
+            eprintln!("skipping: nu is not installed");
+            return;
+        };
+        futures_lite::future::block_on(async {
+            let home = tempfile::tempdir().expect("create temp dir");
+            // Existing (empty) config files: a missing one makes nushell announce that it
+            // created it, on stdout.
+            let config_dir = home.path().join("cfg/nushell");
+            fs::create_dir_all(&config_dir).expect("create config dir");
+            fs::write(config_dir.join("env.nu"), "").expect("write env.nu");
+            fs::write(config_dir.join("config.nu"), "").expect("write config.nu");
+            let executor = LocalCommandExecutor::new(Some(nu), ShellType::Nu);
+            let output = executor
+                .execute_local_command_in_login_shell(
+                    "print -n ($env.FOO | str length)",
+                    None,
+                    Some(HashMap::from([
+                        ("FOO".to_owned(), "bar".to_owned()),
+                        ("HOME".to_owned(), home.path().display().to_string()),
+                        (
+                            "XDG_CONFIG_HOME".to_owned(),
+                            home.path().join("cfg").display().to_string(),
+                        ),
+                    ])),
+                )
+                .await
+                .expect("nu should run");
+            assert_eq!(String::from_utf8_lossy(output.output()), "3");
+        });
+    }
 }

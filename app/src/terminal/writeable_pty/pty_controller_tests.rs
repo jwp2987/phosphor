@@ -2418,3 +2418,52 @@ mod typeahead_handoff {
         });
     }
 }
+
+/// nushell cannot eval a string, so its bootstrap is always a file: the app types a space-led
+/// `source '<path>'` (the space keeps the line out of the history) and submits it with CR.
+#[cfg(feature = "local_fs")]
+#[test]
+fn nu_rc_file_bootstrap_sources_the_file_with_a_space_led_line_and_cr() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        controller.update(&mut app, |controller, ctx| {
+            controller.source_bootstrap_script(
+                b"/tmp/phosphor-bootstrap.nu".to_vec(),
+                ShellType::Nu,
+                ctx,
+            );
+        });
+
+        let messages = sender.messages.lock();
+        let mut written = Vec::new();
+        for message in messages.iter() {
+            match message {
+                Message::Input(bytes) => written.extend_from_slice(bytes),
+                other => panic!("unexpected message on the rc-file bootstrap path: {other:?}"),
+            }
+        }
+        assert_eq!(written, b" source '/tmp/phosphor-bootstrap.nu'\r");
+
+        drop(model_events_tx);
+    });
+}

@@ -117,3 +117,46 @@ fn split_kill_buffer_write_does_not_split_tmux_wrapped_bytes() {
     assert!(!tmux_wrapped.starts_with(ShellType::PowerShell.kill_buffer_bytes()));
     assert!(split_kill_buffer_write(&tmux_wrapped, ShellType::PowerShell).is_none());
 }
+
+/// nushell's line editor (reedline) takes a bracketed paste as one insertion, keeps its newlines
+/// and leading whitespace, and submits on CR; Ctrl-P (bound to `edit: clear` by `nu.nu`) empties
+/// the buffer first.
+#[test]
+fn nu_command_execution_clears_the_buffer_pastes_and_submits_with_cr() {
+    let command = " if true {\n    echo multi\n}";
+
+    let bytes = bytes_to_execute_command(command, ShellType::Nu, true);
+
+    let mut expected = vec![escape_sequences::C0::DLE];
+    expected.extend_from_slice(escape_sequences::BRACKETED_PASTE_START);
+    expected.extend_from_slice(command.as_bytes());
+    expected.extend_from_slice(escape_sequences::BRACKETED_PASTE_END);
+    expected.push(b'\r');
+    assert_eq!(bytes, expected);
+
+    // Without bracketed paste the text is typed as it is, then submitted.
+    let bytes = bytes_to_execute_command("ls | where size > 1mb", ShellType::Nu, false);
+    let mut expected = vec![escape_sequences::C0::DLE];
+    expected.extend_from_slice(b"ls | where size > 1mb");
+    expected.push(b'\r');
+    assert_eq!(bytes, expected);
+}
+
+#[test]
+fn nu_command_execution_never_pastes_an_escape_byte() {
+    // An ESC inside a paste could end the bracketed paste early.
+    let bytes = bytes_to_execute_command("echo \u{1b}[201~ rm", ShellType::Nu, true);
+    let start = escape_sequences::BRACKETED_PASTE_START.len() + 1;
+    let end = bytes.len() - escape_sequences::BRACKETED_PASTE_END.len() - 1;
+    assert!(!bytes[start..end].contains(&escape_sequences::C0::ESC));
+}
+
+#[test]
+fn nu_kill_buffer_chord_is_a_single_byte_and_never_split_off() {
+    let bytes = bytes_to_execute_command("ls", ShellType::Nu, false);
+    assert!(split_kill_buffer_write(&bytes, ShellType::Nu).is_none());
+    assert_eq!(
+        ShellType::Nu.kill_buffer_bytes(),
+        &[escape_sequences::C0::DLE]
+    );
+}

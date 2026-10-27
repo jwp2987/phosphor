@@ -702,3 +702,87 @@ mod late_commands {
         assert!(super::super::path_dirs_assigned_in("export PATH=~/b", None).is_empty());
     }
 }
+
+/// A nushell session's Bootstrapped hook is turned into the same session data the other shells
+/// produce: its commands are what the completer and the input classifier know about, so
+/// `ls | where size > 1mb` is routed to the shell because `ls` and `where` are builtins.
+#[test]
+fn nu_bootstrapped_value_populates_the_session_the_classifier_and_completer_read() {
+    use crate::terminal::model::ansi;
+
+    let init_shell_value = ansi::InitShellValue {
+        shell: "nu".into(),
+        ..Default::default()
+    };
+    let bootstrapped_value = ansi::BootstrappedValue {
+        shell: "nu".into(),
+        shell_version: Some("0.116.1".into()),
+        builtins: Some("ls\nwhere\neach\nopen\nget\nselect\nhttp\nstr".into()),
+        function_names: Some("my-command\ndeploy".into()),
+        aliases: Some("ll -> ls -l\ngs -> git status".into()),
+        env_var_names: Some("PATH\nHOME\nMY VAR".into()),
+        shell_options: Some(HashSet::from(["ignore_space_prefixed".to_owned()])),
+        ..Default::default()
+    };
+    let info = SessionInfo::create_pending(
+        ShellType::from_name("nu").unwrap(),
+        init_shell_value,
+        None,
+        None,
+        None,
+        false,
+        None,
+    )
+    .merge_from_bootstrapped_value(bootstrapped_value, false);
+
+    assert_eq!(info.shell.shell_type(), ShellType::Nu);
+    for builtin in ["ls", "where", "each", "open", "get", "select", "http"] {
+        assert!(
+            info.builtins.contains(builtin),
+            "{builtin} is not a builtin"
+        );
+    }
+    assert!(info.function_names.contains("deploy"));
+    assert_eq!(info.aliases.get("ll").map(String::as_str), Some("ls -l"));
+    assert_eq!(
+        info.aliases.get("gs").map(String::as_str),
+        Some("git status")
+    );
+    // One name per line, so a name with a space survives.
+    assert!(info.environment_variable_names.contains("MY VAR"));
+    assert!(info.environment_variable_names.contains("PATH"));
+    // The history option the bootstrap reported decides whether space-led lines are recorded.
+    assert!(!info.shell.should_add_command_to_history(" ls"));
+    assert!(info.shell.should_add_command_to_history("ls"));
+    assert!(info.shell.supports_autocd());
+}
+
+/// Like bash, zsh and fish, nushell reports its function and builtin names at bootstrap, so no
+/// second in-band enumeration is run.
+#[test]
+fn nu_enumerates_functions_and_builtins_during_bootstrap() {
+    App::test((), |_app| async move {
+        let executor = RecordingCommandExecutor::succeeding("should_never_be_read\n");
+        let session = session_for_shell(ShellType::Nu, executor.clone());
+
+        session.load_all_function_names().await;
+        session.load_all_builtins().await;
+
+        assert!(executor.recorded().is_empty());
+        assert_eq!(sorted(session.function_names()), vec!["prompt"]);
+        assert_eq!(sorted(session.builtin_names()), vec!["Get-Item"]);
+    });
+}
+
+/// Completion quoting follows the session's shell: a nushell session quotes, never
+/// backslash-escapes (#984).
+#[test]
+fn nu_session_quotes_paths_in_the_nushell_dialect() {
+    let info = SessionInfo::new_for_test().with_shell_type(ShellType::Nu);
+    let session = Session::new(info, Arc::new(TestCommandExecutor::default()));
+    assert_eq!(session.shell_dialect(), warp_util::path::ShellDialect::Nu);
+    assert_eq!(
+        session.shell_dialect().escape("dir with spaces/"),
+        "\"dir with spaces/\""
+    );
+}

@@ -681,3 +681,136 @@ pub fn test_sorted_cd_directories_pwd_at_dot_in_middle() {
     .collect();
     assert_eq!(displays, vec!["from-a/", "from-pwd/", "from-b/"]);
 }
+
+/// Runs the path engine for `token` and returns `(display, replacement)` for the entries named in
+/// `wanted` (the engine also offers `.` and `..`).
+fn nu_path_replacements(
+    ctx: &MockPathCompletionContext,
+    token: &str,
+    wanted: &[&str],
+) -> Vec<(String, String)> {
+    warpui::r#async::block_on(sorted_paths_relative_to(
+        &ParsedToken::new(token),
+        MatchStrategy::CaseInsensitive,
+        ctx,
+    ))
+    .into_iter()
+    .map(|matched| matched.suggestion)
+    .filter(|suggestion| wanted.contains(&suggestion.display.as_str()))
+    .map(|suggestion| {
+        (
+            suggestion.display.to_string(),
+            suggestion.replacement.to_string(),
+        )
+    })
+    .collect()
+}
+
+/// #984: nushell has no backslash escaping, so the same names that become `my\ dir/` for bash
+/// become one quoted word, and a directory's quote stays open so the next Tab can go inside.
+#[test]
+pub fn test_nu_path_completions_quote_instead_of_backslash_escaping() {
+    let ctx = MockPathCompletionContext::default()
+        .with_shell_dialect(ShellDialect::Nu)
+        .with_home_directory(TEST_HOME_DIR.to_owned())
+        .with_entries_in_pwd([
+            dir_entry("my dir"),
+            dir_entry("plain"),
+            dir_entry("it's"),
+            file_entry("a b.txt"),
+            file_entry("say \"hi\".txt"),
+            file_entry("1"),
+            file_entry("src.rs"),
+            file_entry("$HOME"),
+        ]);
+    let wanted = [
+        "my dir/",
+        "plain/",
+        "it's/",
+        "a b.txt",
+        "say \"hi\".txt",
+        "1",
+        "src.rs",
+        "$HOME",
+    ];
+    let mut got = nu_path_replacements(&ctx, "", &wanted);
+    got.sort();
+    let mut expected: Vec<(String, String)> = [
+        ("my dir/", "\"my dir/"),
+        ("plain/", "plain/"),
+        ("it's/", "\"it's/"),
+        ("a b.txt", "\"a b.txt\""),
+        ("say \"hi\".txt", "\"say \\\"hi\\\".txt\""),
+        // A bare `1` would be an int, not a path.
+        ("1", "\"1\""),
+        ("src.rs", "src.rs"),
+        ("$HOME", "\"$HOME\""),
+    ]
+    .into_iter()
+    .map(|(display, replacement)| (display.to_owned(), replacement.to_owned()))
+    .collect();
+    expected.sort();
+    assert_eq!(got, expected);
+
+    // The same directory under bash is backslash-escaped, so the dialect is what decides.
+    let posix = MockPathCompletionContext::default().with_entries_in_pwd([dir_entry("my dir")]);
+    assert_eq!(
+        nu_path_replacements(&posix, "", &["my dir/"]),
+        vec![("my dir/".to_owned(), "my\\ dir/".to_owned())]
+    );
+}
+
+/// The directory part and the file name are ONE quoted word: `"my dir/a b.txt"`, never
+/// `"my dir/""a b.txt"`, which nushell cannot parse.
+#[test]
+pub fn test_nu_path_completions_inside_a_directory_are_one_word() {
+    let ctx = MockPathCompletionContext::default()
+        .with_shell_dialect(ShellDialect::Nu)
+        .with_entries(
+            TypedPathBuf::from(if cfg!(windows) {
+                r"C:\Users\my dir"
+            } else {
+                "/home/my dir"
+            }),
+            [
+                file_entry("a b.txt"),
+                dir_entry("sub dir"),
+                file_entry("plain.rs"),
+            ],
+        );
+    let mut got = nu_path_replacements(&ctx, "my dir/", &["a b.txt", "sub dir/", "plain.rs"]);
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            ("a b.txt".to_owned(), "\"my dir/a b.txt\"".to_owned()),
+            ("plain.rs".to_owned(), "\"my dir/plain.rs\"".to_owned()),
+            ("sub dir/".to_owned(), "\"my dir/sub dir/".to_owned()),
+        ]
+    );
+}
+
+/// nushell tilde-expands only a bare word or a backtick string, never a double-quoted one, and a
+/// backtick string cannot stay open, so a home-relative path that needs quoting is spelled with
+/// the real home directory.
+#[test]
+pub fn test_nu_path_completions_spell_the_home_directory_when_quoting_is_needed() {
+    let ctx = MockPathCompletionContext::default()
+        .with_shell_dialect(ShellDialect::Nu)
+        .with_home_directory(TEST_HOME_DIR.to_owned())
+        .with_entries(
+            TypedPathBuf::from(TEST_HOME_DIR),
+            [dir_entry("my dir"), file_entry("a b.txt"), dir_entry("src")],
+        );
+    let mut got = nu_path_replacements(&ctx, "~/", &["my dir/", "a b.txt", "src/"]);
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            ("a b.txt".to_owned(), format!("\"{TEST_HOME_DIR}/a b.txt\"")),
+            ("my dir/".to_owned(), format!("\"{TEST_HOME_DIR}/my dir/")),
+            // No quoting needed: the bare word keeps its `~`.
+            ("src/".to_owned(), "~/src/".to_owned()),
+        ]
+    );
+}
