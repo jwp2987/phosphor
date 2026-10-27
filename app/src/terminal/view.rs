@@ -8751,9 +8751,11 @@ impl TerminalView {
                 ]
             };
             for session_id in ids.into_iter().flatten() {
-                let dir = crate::terminal::local_tty::shell::ssh_socket_dir();
-                let dir = shellexpand::tilde(&dir).into_owned();
-                let socket = std::path::PathBuf::from(dir).join(session_id.as_u64().to_string());
+                let socket = crate::terminal::ssh::wrapper_master::socket_path(
+                    &crate::terminal::local_tty::shell::ssh_socket_dir(),
+                    session_id.as_u64(),
+                );
+                crate::terminal::ssh::wrapper_master::unregister(&socket);
                 ctx.background_executor()
                     .spawn(async move { remote_server::ssh::stop_control_master(&socket).await })
                     .detach();
@@ -14645,7 +14647,21 @@ impl TerminalView {
                 //receiving background output, or to auto-scroll it.
                 send_telemetry_from_ctx!(TelemetryEvent::BackgroundBlockStarted, ctx);
             }
-            ModelEvent::PreInteractiveSSHSession => {}
+            ModelEvent::PreInteractiveSSHSession => {
+                // #1035: the ssh wrapper may start a background ControlMaster at
+                // `$SSH_SOCKET_DIR/<this shell's session id>`; remember it so quitting the app
+                // ends it too (a plain Windows session is never registered anywhere else).
+                #[cfg(unix)]
+                if let Some(session_id) = self.model.lock().block_list().active_block().session_id()
+                {
+                    crate::terminal::ssh::wrapper_master::register(
+                        crate::terminal::ssh::wrapper_master::socket_path(
+                            &crate::terminal::local_tty::shell::ssh_socket_dir(),
+                            session_id.as_u64(),
+                        ),
+                    );
+                }
+            }
             ModelEvent::SSH(remote_shell) => {
                 if let Some(shell) = ShellType::from_name(remote_shell) {
                     if shell.is_fully_supported_remotely() {

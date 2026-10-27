@@ -737,7 +737,9 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         #1003: -J <jump[,jump2]> is an option WITH an argument (it is in the optstring), so a jump-host login is
         # still wrapped. Every probe and the wrapped ssh get the original arguments, so `ssh -G`/`ssh -O check`
         # resolve the jump chain, and the multiplexed follow-up ssh calls reuse the master (and so its jump).
-        if set -q _flag_O; or set -q _flag_N; or set -q _flag_f; or set -q _flag_V
+        # #1035: -w (tun device), -M (master) and -S (control socket) cannot ride the wrapper's
+        # multiplexed session (it owns the master and the ControlPath), so they go to plain ssh too.
+        if set -q _flag_O; or set -q _flag_N; or set -q _flag_f; or set -q _flag_V; or set -q _flag_w; or set -q _flag_M; or set -q _flag_S
             return 1
         end
 
@@ -843,7 +845,9 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
                 # The connection failed (ssh already printed why) or was interrupted.
                 return $warp_master_rc
             end
-            if test -S "$control_path"
+            # ssh expands a leading ~ in ControlPath itself; the shell must do it for the -S test.
+            # $HOME matches the app (shellexpand::tilde in shutdown_for_discard).
+            if test -S (string replace -r '^~' -- "$HOME" "$control_path")
                 set warp_owns_master 1
                 set control_master_mode no
             end

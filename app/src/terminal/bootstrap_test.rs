@@ -1467,23 +1467,37 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
         let to = from + source[from..].find(close).unwrap();
         let function = source[from..to].to_owned();
 
-        for case in &cases {
+        // Each case runs twice: with an absolute SSH_SOCKET_DIR, and with the literal `~/.ssh`
+        // the app really exports (HOME is a temp dir). With the tilde, the wrapper must still
+        // find the master's socket (`-S` test), so the probe and the single-connection session
+        // happen; it passes the tilde path on to ssh unexpanded, as ssh expands it itself.
+        for (case, tilde) in cases.iter().flat_map(|c| [(c, false), (c, true)]) {
             let dir = std::env::temp_dir().join(format!(
-                "p1035-{name}-{}-{}",
+                "p1035-{name}-{}-{}{}",
                 cases.iter().position(|c| c.name == case.name).unwrap(),
-                std::process::id()
+                std::process::id(),
+                if tilde { "t" } else { "" }
             ));
             std::fs::remove_dir_all(&dir).ok();
-            std::fs::create_dir_all(dir.join("socks")).unwrap();
-            let socks = dir.join("socks");
+            let socks = if tilde {
+                dir.join("home/.ssh")
+            } else {
+                dir.join("socks")
+            };
+            std::fs::create_dir_all(&socks).unwrap();
+            let socket_dir_literal = if tilde {
+                "~/.ssh".to_owned()
+            } else {
+                socks.display().to_string()
+            };
             let prelude = match kind {
                 2 => format!(
-                    "function warp_init_shell; echo init-$argv; end; function warp_send_json_message; end; set -g SSH_SOCKET_DIR {}; set -g WARP_SESSION_ID 77; set -g WARP_HONOR_PS1 1;",
-                    socks.display()
+                    "function warp_init_shell; echo init-$argv; end; function warp_send_json_message; end; set -g SSH_SOCKET_DIR '{}'; set -g WARP_SESSION_ID 77; set -g WARP_HONOR_PS1 1;",
+                    socket_dir_literal
                 ),
                 _ => format!(
-                    "init_shell_hook(){{ echo hook-$1; }}; warp_send_json_message(){{ :; }}; SSH_SOCKET_DIR={}; WARP_SESSION_ID=77; WARP_HONOR_PS1=1;",
-                    socks.display()
+                    "init_shell_hook(){{ echo hook-$1; }}; warp_send_json_message(){{ :; }}; SSH_SOCKET_DIR='{}'; WARP_SESSION_ID=77; WARP_HONOR_PS1=1;",
+                    socket_dir_literal
                 ),
             };
             // The stub records every invocation (arguments one per line after a `CALL` marker),
@@ -1500,13 +1514,13 @@ printf 'CALL\n' >> "$OUT"
 for a in "$@"; do printf '%s\n' "$a" >> "$OUT"; done
 case " $* " in
   *" -G "*) exit 1;;
-  *" -O exit "*) for a in "$@"; do case "$a" in ControlPath=*) rm -f "${a#ControlPath=}";; esac; done; exit 0;;
+  *" -O exit "*) for a in "$@"; do case "$a" in ControlPath=*) p="${a#ControlPath=}"; case "$p" in "~"*) p="$HOME${p#\~}";; esac; rm -f "$p";; esac; done; exit 0;;
   *" -N "*)
     case "$MASTER" in
       fail255) echo "ssh: connect to host failed" >&2; exit 255;;
       fail130) exit 130;;
     esac
-    for a in "$@"; do case "$a" in ControlPath=*) python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "${a#ControlPath=}";; esac; done
+    for a in "$@"; do case "$a" in ControlPath=*) p="${a#ControlPath=}"; case "$p" in "~"*) p="$HOME${p#\~}";; esac; python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$p";; esac; done
     exit 0;;
   *" -T "*) printf '%s\n' "$PROBE"; exit 0;;
 esac
@@ -1530,6 +1544,9 @@ exit 0
                 command.args(["-c", &script]);
             }
             let out_file = dir.join("out");
+            if tilde {
+                command.env("HOME", dir.join("home"));
+            }
             let status = command
                 .env(
                     "PATH",
@@ -1617,7 +1634,7 @@ exit 0
                     let session = sessions[0];
                     assert!(
                         session.contains("ControlMaster=no")
-                            && session.contains(&format!("ControlPath={}/77\n", socks.display())),
+                            && session.contains(&format!("ControlPath={socket_dir_literal}/77\n")),
                         "{name}/{}: the session runs over the master: {session:?}",
                         case.name
                     );
@@ -1859,6 +1876,13 @@ fn ssh_wrapper_only_wraps_interactive_logins() {
         &["-J", "j", "-fN", "host"],
         &["-o", "ProxyJump=j", "-N", "host"],
         &["-oProxyJump=j", "host", "cmd"],
+        // #1035: -w (tun device), -M and -S (user-chosen master / control socket) cannot ride
+        // the wrapper's multiplexed session, so they run as plain ssh.
+        &["-w", "any", "host"],
+        &["-w", "0:0", "host"],
+        &["-M", "host"],
+        &["-S", "/tmp/ctl", "host"],
+        &["-vw", "any", "host"],
     ];
     // The Rust typing gate (`parse_interactive_ssh_command`) must agree with the shell wrappers
     // on every form above. (ssh word-splits the same way here: no argument contains a space
