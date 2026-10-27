@@ -1510,8 +1510,7 @@ fn create_window(
         work_area
     };
 
-    #[cfg_attr(not(windows), expect(unused_mut))]
-    let (mut size, mut origin) = if tiling_window_manager && window_options.style != WindowStyle::Pin {
+    let (size, origin) = if tiling_window_manager && window_options.style != WindowStyle::Pin {
         (None, None)
     } else {
         match window_bounds {
@@ -1524,6 +1523,8 @@ fn create_window(
         }
     };
 
+    #[cfg(windows)]
+    let (mut size, mut origin) = (size, origin);
     #[cfg(windows)]
     if let (Some(work_area), Some(requested_size)) = (work_area, size) {
         let min_size = vec2f(MIN_WINDOW_SIZE.width as f32, MIN_WINDOW_SIZE.height as f32);
@@ -1698,8 +1699,8 @@ fn create_window(
 /// taskbar and any docked app bars.
 #[cfg(windows)]
 fn get_monitor_physical_work_area(monitor: &MonitorHandle) -> Option<(i32, i32, i32, i32)> {
-    use winit::platform::windows::MonitorHandleExtWindows;
     use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITORINFO};
+    use winit::platform::windows::MonitorHandleExtWindows;
 
     let hmonitor = HMONITOR(monitor.hmonitor() as *mut core::ffi::c_void);
     let mut info = MONITORINFO {
