@@ -14950,7 +14950,7 @@ impl Input {
                             env_var_collection_name.to_owned(),
                         )))
                     } else {
-                        info.spawning_command.split_whitespace().next().map(|exec| {
+                        crate::terminal::warpify::subshell_display_name(&info.spawning_command).map(|exec| {
                             SubshellRenderState::Flag(SubshellSource::Command(exec.to_owned()))
                         })
                     }

@@ -17225,10 +17225,23 @@ impl TerminalView {
         // short pace so a shell that has not started reading yet is never handed more than its
         // tty input queue holds.
         const SUBSHELL_BOOTSTRAP_LINE_DELAY: Duration = Duration::from_millis(30);
-        let mut lines =
-            init_subshell_command_lines(shell_type, &self.env_vars, session_id, ctx).into_iter();
+        let all_lines = init_subshell_command_lines(shell_type, &self.env_vars, session_id, ctx);
         // A bootstrap still in flight belongs to an older shell: release what it held first.
         self.finish_subshell_bootstrap(ctx);
+        // The tty echoes these lines as soon as they are written, whether or not the shell reads
+        // them (an rc file that sleeps holds it for as long as it likes, #1014). The terminal model
+        // recognises that exact echo and keeps it out of the running block until the setup's
+        // `InitShell` arrives (#1038). PowerShell redraws the line itself, so it is left alone.
+        {
+            let mut model = self.model.lock();
+            model.clear_setup_echo();
+            if shell_type != Some(ShellType::PowerShell) {
+                for line in &all_lines {
+                    model.expect_setup_echo(line);
+                }
+            }
+        }
+        let mut lines = all_lines.into_iter();
         let Some(first) = lines.next() else {
             return;
         };
@@ -17351,6 +17364,7 @@ impl TerminalView {
         let block_unchanged =
             self.model.lock().block_list().active_block().id() == &in_flight.block_id;
         if !block_unchanged {
+            self.model.lock().clear_setup_echo();
             self.finish_subshell_bootstrap(ctx);
             return;
         }

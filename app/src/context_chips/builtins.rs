@@ -113,10 +113,7 @@ pub fn subshell(ctx: &GeneratorContext) -> Option<ChipValue> {
     {
         env_var_collection_name.clone()
     } else {
-        subshell_info
-            .spawning_command
-            .split_whitespace()
-            .next()
+        crate::terminal::warpify::subshell_display_name(&subshell_info.spawning_command)
             .unwrap_or("subshell")
             .to_string()
     };
