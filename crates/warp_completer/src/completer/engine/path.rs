@@ -335,6 +335,7 @@ async fn list_directory_contents(
                         &split_path.directory_relative_path_name,
                         &file_name,
                         entry.is_dir(),
+                        home_dir,
                     )
                 } else {
                     // We use `shell_escape()` instead of `escape()` on the relative path name to allow
@@ -390,13 +391,28 @@ async fn list_directory_contents(
 /// closing quote off (`"my dir/`): nothing can be appended after a closed quote, and an open quote
 /// is what lets the next Tab continue inside the directory (see `adjust_for_open_quote`).
 /// `\~` is the parser's marker for a literal tilde and is turned back into `~` first.
-fn nu_completion_path(directory_relative_path_name: &str, file_name: &str, is_dir: bool) -> String {
+///
+/// nushell only expands a leading `~` in a bare word or a backtick string, never in a quoted
+/// one, and a backtick string cannot stay open (it is also a glob). So a path that starts with
+/// `~/` and needs quoting is spelled with the real home directory instead, which can.
+fn nu_completion_path(
+    directory_relative_path_name: &str,
+    file_name: &str,
+    is_dir: bool,
+    home_dir: Option<&str>,
+) -> String {
     let raw = format!(
         "{}{}",
         directory_relative_path_name.replace(r"\~", "~"),
         file_name
     );
     let mut quoted = ShellDialect::Nu.shell_escape(&raw).into_owned();
+    if quoted.starts_with('`') {
+        if let (Some(home), Some(rest)) = (home_dir, raw.strip_prefix('~')) {
+            let expanded = format!("{}{rest}", home.trim_end_matches('/'));
+            quoted = ShellDialect::Nu.escape(&expanded).into_owned();
+        }
+    }
     if is_dir && quoted.len() > 1 && quoted.starts_with('"') && quoted.ends_with('"') {
         quoted.pop();
     }
