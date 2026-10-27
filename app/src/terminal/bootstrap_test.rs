@@ -1475,6 +1475,16 @@ fn ssh_wrapper_only_wraps_interactive_logins() {
         &["-tt", "host"],
         &["-A", "-v", "host"],
         &["user@host"],
+        // #1003: jump-host logins are interactive logins and are wrapped.
+        &["-J", "j", "host"],
+        &["-J", "u@j:2222", "host"],
+        &["-J", "j1,j2", "host"],
+        &["-Jj", "host"],
+        &["-J", "j", "-p", "2200", "-A", "host"],
+        &["-o", "ProxyJump=j", "host"],
+        &["-oProxyJump=j", "host"],
+        &["-oProxyCommand=nc %h %p", "host"],
+        &["-o", "ProxyCommand=nc %h %p", "host"],
     ];
     let passthrough: &[&[&str]] = &[
         &["-O", "check", "host"],
@@ -1493,7 +1503,57 @@ fn ssh_wrapper_only_wraps_interactive_logins() {
         &["-T", "host"],
         &["host", "ls"],
         &["-p", "22", "host", "uptime"],
+        // #1003: a jump host changes nothing about what makes a session non-interactive.
+        &["-J", "j", "host", "cmd"],
+        &["-J", "j", "-N", "host"],
+        &["-J", "j", "-O", "check", "host"],
+        &["-J", "j", "-W", "h:22", "host"],
+        &["-J", "j", "-T", "host"],
+        &["-J", "j", "-G", "host"],
+        &["-J", "j", "-fN", "host"],
+        &["-o", "ProxyJump=j", "-N", "host"],
+        &["-oProxyJump=j", "host", "cmd"],
     ];
+    // The Rust typing gate (`parse_interactive_ssh_command`) must agree with the shell wrappers
+    // on every form above. (ssh word-splits the same way here: no argument contains a space
+    // except the ProxyCommand ones, which are quoted for the parser.)
+    let as_command = |args: &[&str]| {
+        let words = args
+            .iter()
+            .map(|a| {
+                if a.contains(' ') {
+                    format!("'{a}'")
+                } else {
+                    (*a).to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("ssh {words}")
+    };
+    for args in wrapped {
+        assert!(
+            crate::terminal::ssh::util::parse_interactive_ssh_command(&as_command(args)).is_some(),
+            "parser: {args:?} must be interactive"
+        );
+    }
+    for args in passthrough {
+        assert!(
+            crate::terminal::ssh::util::parse_interactive_ssh_command(&as_command(args)).is_none(),
+            "parser: {args:?} must not be interactive"
+        );
+    }
+    // The jump spec is an option argument, never mistaken for the destination.
+    for (cmd, host) in [
+        ("ssh -J j host", "host"),
+        ("ssh -J u@j:2222 host", "host"),
+        ("ssh -J j1,j2 u@host", "u@host"),
+        ("ssh -Jj host", "host"),
+        ("ssh -o ProxyJump=j host", "host"),
+    ] {
+        let parsed = crate::terminal::ssh::util::parse_interactive_ssh_command(cmd).unwrap();
+        assert_eq!(parsed.host.as_deref(), Some(host), "{cmd}");
+    }
     for (shell, source, closer) in sources {
         if std::process::Command::new(shell)
             .arg("-c")

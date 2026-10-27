@@ -718,7 +718,7 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
     function is_interactive_ssh_session
         # Parse through all ssh options, as defined in the ssh man pages.  Send
         # stderr to /dev/null to silence argparse output when an option is invalid.
-        argparse '1' '2' '4' '6' 'A' 'a' 'C' 'f' 'g' 'K' 'k' 'M' 'N' 'n' 'q' 's' 'T' 't' 'V' 'v' 'X' 'x' 'Y' 'y' 'b=' 'c=' 'D=' 'e=' 'F=' 'i=' 'L=' 'l=' 'm=' 'O=' 'o=' 'p=' 'R=' 'S=' 'W=' 'w=' -- $argv 2>/dev/null
+        argparse '1' '2' '4' '6' 'A' 'a' 'C' 'f' 'g' 'K' 'k' 'M' 'N' 'n' 'q' 's' 'T' 't' 'V' 'v' 'X' 'x' 'Y' 'y' 'b=' 'c=' 'D=' 'e=' 'F=' 'i=' 'J=' 'L=' 'l=' 'm=' 'O=' 'o=' 'p=' 'R=' 'S=' 'W=' 'w=' -- $argv 2>/dev/null
         # If argparse returned a non-success value, propagate it up.
         or return
 
@@ -734,6 +734,9 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         # never start an interactive login, so the wrapper must not touch them. -G and -Q are
         # not declared above, so argparse already rejects them and they go to real ssh. Keep in
         # step with InteractiveSshCommand::parse_ssh_command (ssh/util.rs).
+        #1003: -J <jump[,jump2]> is an option WITH an argument (it is in the optstring), so a jump-host login is
+        # still wrapped. Every probe and the wrapped ssh get the original arguments, so `ssh -G`/`ssh -O check`
+        # resolve the jump chain, and the multiplexed follow-up ssh calls reuse the master (and so its jump).
         if set -q _flag_O; or set -q _flag_N; or set -q _flag_f; or set -q _flag_V
             return 1
         end
