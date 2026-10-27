@@ -38,7 +38,7 @@ use crate::ai::blocklist::block::cli_controller::CLISubagentController;
 use crate::ai::blocklist::block::status_bar::BlocklistAIStatusBar;
 use crate::ai::blocklist::{
     ai_indicator_height, BlocklistAIActionModel, QueuedQuery, QueuedQueryId, QueuedQueryModel,
-    QueuedQueryOrigin, SlashCommandRequest,
+    QueuedQueryEvent, QueuedQueryOrigin, SlashCommandRequest,
 };
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentVersion};
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
@@ -3079,6 +3079,17 @@ impl Input {
             me.set_zero_state_hint_text(ctx);
             ctx.notify();
         });
+        // Re-render the placeholder when queue mode is toggled (#1043) so the "Queue mode on"
+        // hint appears and disappears immediately.
+        ctx.subscribe_to_model(&QueuedQueryModel::handle(ctx), move |me, _, event, ctx| {
+            if matches!(
+                event,
+                QueuedQueryEvent::QueueNextPromptToggled { .. }
+                    | QueuedQueryEvent::DefaultModeChanged
+            ) {
+                me.set_zero_state_hint_text(ctx);
+            }
+        });
         // Re-render the input's placeholder/hint text when any history event that could
         // change `selected_conversation_status_for_hint` fires — the selected conversation
         // swapping, its status changing, its title being set/unset, it becoming non-empty,
@@ -5488,6 +5499,17 @@ impl Input {
                     .as_ref(app)
                     .selected_conversation_status_for_hint(app)
                 {
+                    // Queue mode armed (#1043): say so unmistakably and say how to turn it off,
+                    // whether or not a reply is streaming right now.
+                    Some(_) if is_queue_next_prompt_enabled => {
+                        return crate::ai::blocklist::queued_query::queue_mode_armed_hint(
+                            bindings::keybinding_name_to_display_string(
+                                crate::terminal::TOGGLE_QUEUE_NEXT_PROMPT_KEYBINDING,
+                                app,
+                            )
+                            .as_deref(),
+                        );
+                    }
                     Some(status) if status.is_in_progress() => {
                         if is_queue_next_prompt_enabled {
                             if is_udi_enabled {

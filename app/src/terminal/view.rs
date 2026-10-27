@@ -30814,6 +30814,25 @@ impl TypedActionView for TerminalView {
                     QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
                         model.toggle_queue_next_prompt(conversation_id, ctx);
                     });
+                    // Brief confirmation of the new state (#1043).
+                    let is_on = QueuedQueryModel::as_ref(ctx)
+                        .is_queue_next_prompt_toggle_enabled(conversation_id);
+                    let shortcut = crate::util::bindings::keybinding_name_to_display_string(
+                        TOGGLE_QUEUE_NEXT_PROMPT_KEYBINDING,
+                        ctx,
+                    );
+                    let text = crate::ai::blocklist::queued_query::queue_mode_toast_text(
+                        is_on,
+                        shortcut.as_deref(),
+                    );
+                    let window_id = ctx.window_id();
+                    ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                        toast_stack.add_ephemeral_toast(
+                            DismissibleToast::new(text, ToastFlavor::Default),
+                            window_id,
+                            ctx,
+                        );
+                    });
                 }
                 ctx.notify();
             }
