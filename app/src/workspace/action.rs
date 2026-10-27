@@ -701,6 +701,10 @@ pub enum WorkspaceAction {
         exchange_id: AIAgentExchangeId,
         conversation_id: AIConversationId,
     },
+    /// Ask before running a long multi-line buffer one line at a time (#1046).
+    ShowMultilineSubmitConfirmationDialog {
+        line_count: usize,
+    },
     /// Execute the actual rewind after confirmation
     ExecuteRewindAIConversation {
         ai_block_view_id: EntityId,
@@ -1044,6 +1048,7 @@ impl WorkspaceAction {
             | HideAIDocumentPanes
             | OpenAIDocumentPane { .. }
             | ShowRewindConfirmationDialog { .. }
+            | ShowMultilineSubmitConfirmationDialog { .. }
             | ExecuteRewindAIConversation { .. }
             | ExecuteDeleteConversation { .. }
             | ExecuteDeleteAllConversations

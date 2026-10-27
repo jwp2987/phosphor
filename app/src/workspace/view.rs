@@ -413,6 +413,9 @@ use super::delete_conversation_confirmation_dialog::{
 };
 use super::native_modal::{NativeModal, NativeModalEvent};
 use super::one_time_modal_model::OneTimeModalEvent;
+use super::multiline_submit_confirmation_dialog::{
+    MultilineSubmitConfirmationDialog, MultilineSubmitConfirmationEvent,
+};
 use super::rewind_confirmation_dialog::{
     RewindConfirmationDialog, RewindConfirmationEvent, RewindDialogSource,
 };
@@ -1005,6 +1008,7 @@ pub struct Workspace {
     new_worktree_modal: ModalViewState<Modal<NewWorktreeModal>>,
     close_session_confirmation_dialog: ViewHandle<CloseSessionConfirmationDialog>,
     rewind_confirmation_dialog: ViewHandle<RewindConfirmationDialog>,
+    multiline_submit_confirmation_dialog: ViewHandle<MultilineSubmitConfirmationDialog>,
     delete_conversation_confirmation_dialog: ViewHandle<DeleteConversationConfirmationDialog>,
     resource_center_view: ViewHandle<ResourceCenterView>,
     command_search_view: ViewHandle<CommandSearchView>,
@@ -1801,6 +1805,16 @@ impl Workspace {
         });
 
         rewind_confirmation_dialog
+    }
+
+    fn build_multiline_submit_confirmation_dialog(
+        ctx: &mut ViewContext<Self>,
+    ) -> ViewHandle<MultilineSubmitConfirmationDialog> {
+        let dialog = ctx.add_typed_action_view(|_| MultilineSubmitConfirmationDialog::new());
+        ctx.subscribe_to_view(&dialog, move |me, _, event, ctx| {
+            me.handle_multiline_submit_confirmation_dialog_event(event, ctx);
+        });
+        dialog
     }
 
     fn build_delete_conversation_confirmation_dialog(
@@ -3073,6 +3087,8 @@ impl Workspace {
 
         let close_session_confirmation_dialog = Self::build_close_session_confirmation_dialog(ctx);
         let rewind_confirmation_dialog = Self::build_rewind_confirmation_dialog(ctx);
+        let multiline_submit_confirmation_dialog =
+            Self::build_multiline_submit_confirmation_dialog(ctx);
         let delete_conversation_confirmation_dialog =
             Self::build_delete_conversation_confirmation_dialog(ctx);
         let command_search_view = ctx.add_typed_action_view(CommandSearchView::new);
@@ -3453,6 +3469,7 @@ impl Workspace {
             new_worktree_modal,
             close_session_confirmation_dialog,
             rewind_confirmation_dialog,
+            multiline_submit_confirmation_dialog,
             delete_conversation_confirmation_dialog,
             resource_center_view,
             command_search_view,
@@ -10810,6 +10827,32 @@ impl Workspace {
         }
     }
 
+    /// #1046: the answer to "run N lines one at a time?" goes back to the focused session's input,
+    /// which still holds the text.
+    fn handle_multiline_submit_confirmation_dialog_event(
+        &mut self,
+        event: &MultilineSubmitConfirmationEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.current_workspace_state
+            .is_multiline_submit_confirmation_dialog_open = false;
+        let input = self
+            .active_tab_pane_group()
+            .as_ref(ctx)
+            .focused_session_view(ctx)
+            .map(|terminal_view| terminal_view.as_ref(ctx).input().clone());
+        if let Some(input) = input {
+            input.update(ctx, |input, ctx| match event {
+                MultilineSubmitConfirmationEvent::Confirm => {
+                    input.confirm_multiline_submit(ctx)
+                }
+                MultilineSubmitConfirmationEvent::Cancel => input.cancel_multiline_submit(ctx),
+            });
+        }
+        self.focus_active_tab(ctx);
+        ctx.notify();
+    }
+
     fn handle_rewind_confirmation_dialog_event(
         &mut self,
         event: &RewindConfirmationEvent,
@@ -17464,6 +17507,11 @@ impl Workspace {
                 .is_rewind_confirmation_dialog_open
             {
                 ctx.focus(&self.rewind_confirmation_dialog);
+            } else if self
+                .current_workspace_state
+                .is_multiline_submit_confirmation_dialog_open
+            {
+                ctx.focus(&self.multiline_submit_confirmation_dialog);
             } else if self.current_workspace_state.is_native_quit_modal_open {
                 ctx.focus(&self.native_modal);
             } else {
@@ -17585,6 +17633,19 @@ impl Workspace {
         self.current_workspace_state
             .is_close_session_confirmation_dialog_open = true;
         ctx.focus(&self.close_session_confirmation_dialog);
+        ctx.notify();
+    }
+
+    pub fn show_multiline_submit_confirmation_dialog(
+        &mut self,
+        line_count: usize,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.multiline_submit_confirmation_dialog
+            .update(ctx, |view, _| view.set_line_count(line_count));
+        self.current_workspace_state
+            .is_multiline_submit_confirmation_dialog_open = true;
+        ctx.focus(&self.multiline_submit_confirmation_dialog);
         ctx.notify();
     }
 
@@ -23832,6 +23893,9 @@ impl TypedActionView for Workspace {
                     );
                 }
             }
+            ShowMultilineSubmitConfirmationDialog { line_count } => {
+                self.show_multiline_submit_confirmation_dialog(*line_count, ctx);
+            }
             ShowRewindConfirmationDialog {
                 ai_block_view_id,
                 exchange_id,
@@ -25094,6 +25158,21 @@ impl View for Workspace {
         {
             stack.add_positioned_overlay_child(
                 ChildView::new(&self.close_session_confirmation_dialog).finish(),
+                OffsetPositioning::offset_from_parent(
+                    Vector2F::zero(),
+                    ParentOffsetBounds::WindowByPosition,
+                    ParentAnchor::Center,
+                    ChildAnchor::Center,
+                ),
+            );
+        }
+
+        if self
+            .current_workspace_state
+            .is_multiline_submit_confirmation_dialog_open
+        {
+            stack.add_positioned_overlay_child(
+                ChildView::new(&self.multiline_submit_confirmation_dialog).finish(),
                 OffsetPositioning::offset_from_parent(
                     Vector2F::zero(),
                     ParentOffsetBounds::WindowByPosition,
