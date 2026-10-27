@@ -8535,21 +8535,40 @@ fn prompt_submission_while_agent_replies_steers_by_default_and_queues_only_when_
             let queue = model.queue(conversation_id);
             assert_eq!(queue.len(), 1);
             assert_eq!(queue[0].text(), "queue me");
-            // #1030: the toggle is one-shot; it cleared when that prompt was queued.
-            assert!(!model.is_queue_next_prompt_toggle_enabled(conversation_id));
+            // #1043 (owner decision 2026-10-26, supersedes #1030's one-shot toggle): queue mode
+            // stays on after a queued prompt, until the user turns it off or the turn ends.
+            assert!(model.is_queue_next_prompt_toggle_enabled(conversation_id));
         });
 
-        // So the prompt after it steers again instead of queueing.
+        // So the next prompt queues too...
+        input.update(&mut app, |input, ctx| {
+            input.set_input_mode_agent(/* ensure_input_is_focused */ false, ctx);
+            input.replace_buffer_content("queue me too", ctx);
+            input.input_enter(ctx);
+        });
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert_eq!(
+                model.queue(conversation_id).len(),
+                2,
+                "queue mode stays on across queued prompts"
+            );
+        });
+
+        // ...and once the user turns it off, Enter steers again instead of queueing.
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.toggle_queue_next_prompt(conversation_id, ctx);
+        });
         input.update(&mut app, |input, ctx| {
             input.set_input_mode_agent(/* ensure_input_is_focused */ false, ctx);
             input.replace_buffer_content("steer again", ctx);
             input.input_enter(ctx);
         });
         QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert!(!model.is_queue_next_prompt_toggle_enabled(conversation_id));
             assert_eq!(
                 model.queue(conversation_id).len(),
-                1,
-                "the prompt after a one-shot queued prompt must not queue"
+                2,
+                "with queue mode off, the prompt steers instead of queueing"
             );
         });
     });
