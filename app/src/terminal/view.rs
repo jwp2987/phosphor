@@ -10080,6 +10080,15 @@ impl TerminalView {
         true
     }
 
+    /// Whether the active block's output ends in a line the user is answering (a `Password:` or
+    /// `read -p` prompt) rather than in the tty's echo of the setup script (#1014). On macOS that
+    /// echo stops mid-line for as long as the shell is not reading (the tty input queue is full),
+    /// and keys passed through on the strength of it ran inside the hidden setup block.
+    fn active_output_awaits_an_answer(&self) -> bool {
+        self.active_output_ends_in_unterminated_text()
+            && !self.model.lock().is_setup_echo_mid_line()
+    }
+
     /// True when the active block's output has visible text and the cursor sits after text on
     /// its row (no trailing newline): the shape of a prompt, as opposed to banner output.
     fn active_output_ends_in_unterminated_text(&self) -> bool {
@@ -10616,7 +10625,7 @@ impl TerminalView {
         if subshell_setup_should_hold_typed_bytes(
             self.subshell_bootstrap_announced_age(),
             is_abort_key(&bytes),
-        ) && !self.active_output_ends_in_unterminated_text()
+        ) && !self.active_output_awaits_an_answer()
         {
             self.subshell_setup_held_bytes.push(bytes.into_owned());
             return true;

@@ -3141,3 +3141,22 @@ fn stalled_setup_echo_of_every_line_leaves_the_running_block_empty() {
     terminal.process_bytes(&b"rc says hi\r\n"[..]);
     assert!(running_block_output(&terminal).0.contains("rc says hi"));
 }
+
+/// #1014: an rc that printed an unterminated line (`Loading plugins... `) before the stalled echo
+/// leaves the block ending in text with the cursor after it, the shape the view takes for a
+/// prompt. The model still reports that the tty is mid-way through echoing the setup, so the view
+/// holds typed keys instead of passing them into the hidden setup.
+#[test]
+fn unterminated_rc_output_before_a_stalled_setup_echo_is_not_a_prompt() {
+    let mut terminal = stalled_zsh_setup();
+    let cut = ZSH_SETUP_SECOND_LINE.find("[##").unwrap() + 3;
+    let echo = format!(
+        "Loading plugins... ^K\x08 \x08\x08 \x08\x08 \x08{ZSH_SETUP_FIRST_LINE}\r\n{}",
+        &ZSH_SETUP_SECOND_LINE[..cut]
+    );
+    terminal.process_bytes(echo.as_bytes());
+    let (contents, cursor_col) = running_block_output(&terminal);
+    assert_eq!(contents.trim_end(), "Loading plugins...");
+    assert!(cursor_col > 0);
+    assert!(terminal.is_setup_echo_mid_line());
+}
