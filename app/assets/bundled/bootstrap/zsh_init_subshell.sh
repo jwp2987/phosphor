@@ -14,5 +14,5 @@ setopt hist_ignore_space
  _ju=${_user//\\/\\\\}; _ju=${_ju//\"/\\\"}; _jh=${_hostname//\\/\\\\}; _jh=${_jh//\"/\\\"}; for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do _c=${(#)_i}; _x=$(( [##16] _i )); _h="\\u00${(l:2::0:)_x}"; _ju=${_ju//$_c/$_h}; _jh=${_jh//$_c/$_h}; done
  _msg=$(builtin printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"zsh\", \"user\": \"%s\", \"hostname\": \"%s\", \"is_subshell\": true, \"wsl_name\": \"${WSL_DISTRO_NAME:-}\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d " \n")
  WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@
- if [ "$WARP_USING_WINDOWS_CON_PTY" = true ]; then builtin printf '\e]9278;d;%s\x07' "$_msg"; else builtin printf '\e\x50\x24\x64%s\x9c' "$_msg"; fi
+ case $WARP_USING_WINDOWS_CON_PTY in true) builtin printf '\e]9278;d;%s\x07' "$_msg";; *) builtin printf '\e\x50\x24\x64%s\x9c' "$_msg";; esac
  unset _hostname _user _msg _ju _jh _i _c _h _x

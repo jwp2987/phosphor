@@ -1880,3 +1880,116 @@ fn test_real_bootstrap_body_survives_errexit_nounset_pipefail_rc_settings() {
         });
     });
 }
+
+/// #974: the typed init lines are the first thing a shell with `setopt PRINT_EXIT_VALUE` runs, and
+/// `if [ cond ]; then ..; fi` with a false condition counts as a failed statement there, so it
+/// printed `zsh: exit 1`. A source check that needs no shell.
+#[test]
+fn zsh_init_lines_have_no_failing_condition_statement() {
+    for file in [
+        include_str!("../../assets/bundled/bootstrap/zsh_init_shell.sh"),
+        include_str!("../../assets/bundled/bootstrap/zsh_init_subshell.sh"),
+    ] {
+        for line in file.lines().filter(|l| !l.trim_start().starts_with('#')) {
+            assert!(
+                !line.trim_start().starts_with("if [ "),
+                "a bare `if [ .. ]` prints `zsh: exit 1` under PRINT_EXIT_VALUE; use `case`: {line}"
+            );
+        }
+    }
+}
+
+/// #974: the MAIN (non-subshell) zsh bootstrap -- the init-shell line, then the real `zsh.sh` --
+/// typed into a real interactive zsh whose rc only does `setopt PRINT_EXIT_VALUE`. Nothing of
+/// Phosphor's may print `zsh: exit N` (the old init line's `if [ .. ]`, and zsh.sh's own `read`
+/// at the end of the heredoc, which fails by design, both did); the user's option must be back
+/// afterwards; and a plain `preexec()` function of the user's, which zsh runs before the
+/// `preexec_functions` array, must write after Phosphor's Preexec hook, not before it (that
+/// output was drawn inside the command header).
+#[test]
+#[cfg(unix)]
+fn test_main_zsh_bootstrap_prints_no_exit_value_and_orders_user_preexec() {
+    use std::process::Command;
+
+    let which = |bin: &str| -> Option<String> {
+        let out = Command::new("sh")
+            .args(["-c", &format!("command -v {bin}")])
+            .output()
+            .ok()?;
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        (!path.is_empty()).then_some(path)
+    };
+    let (Some(python), Some(zsh)) = (which("python3"), which("zsh")) else {
+        eprintln!("skipping: python3 or zsh not installed");
+        return;
+    };
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let _ = ctx;
+            let dir =
+                std::env::temp_dir().join(format!("phosphor-974-main-{}", std::process::id()));
+            std::fs::remove_dir_all(&dir).ok();
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join(".zshrc"),
+                "setopt PRINT_EXIT_VALUE\npreexec() { print -u2 -r -- \"USERPREEXEC-ERR\"; }\n",
+            )
+            .unwrap();
+            let init = init_shell_script_for_shell(
+                ShellType::Zsh,
+                &crate::ASSETS,
+                SessionId::from(4242u64),
+            );
+            std::fs::write(dir.join("lines.txt"), init).unwrap();
+            std::fs::write(
+                dir.join("script.txt"),
+                &*script_for_shell(ShellType::Zsh, &crate::ASSETS),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("cmds.txt"),
+                " echo ALIVE=$((40+2)).\n print -r -- \"OPT pev=$options[printexitvalue]\"\n",
+            )
+            .unwrap();
+            let out = Command::new(&python)
+                .arg("-I")
+                .arg("-c")
+                .arg(PTY_DRIVER)
+                .arg(&zsh)
+                .arg(&dir)
+                .arg(dir.join("lines.txt"))
+                .arg(dir.join("script.txt"))
+                .arg(dir.join("cmds.txt"))
+                .output()
+                .unwrap();
+            let all = String::from_utf8_lossy(&out.stdout).into_owned();
+            assert!(all.contains("ALIVE=42."), "the shell died: {all:?}");
+            assert!(
+                all.contains("426f6f747374726170706564"),
+                "the body never reported Bootstrapped: {all:?}"
+            );
+            assert!(
+                !all.contains("\nzsh: exit "),
+                "bootstrap printed an exit value: {all:?}"
+            );
+            assert!(
+                all.contains("OPT pev=on"),
+                "the user's PRINT_EXIT_VALUE was not put back: {all:?}"
+            );
+            // Preexec hook ("Preexec" in hex) for the last command, then the user's stderr.
+            let preexec = all
+                .rfind("7b22686f6f6b223a202250726565786563")
+                .expect("a Preexec hook");
+            let user_err = all
+                .rfind("USERPREEXEC-ERR")
+                .expect("the user's preexec ran");
+            assert!(
+                preexec < user_err,
+                "the user's preexec output came before the Preexec hook: {all:?}"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        });
+    });
+}

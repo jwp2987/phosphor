@@ -6,6 +6,11 @@
    ORIGINAL_PS2="$PS2"
  fi
  PS2=""
+ # `setopt PRINT_EXIT_VALUE` (#974) reports every failing top-level command, including the `read`
+ # below (it returns 1 at the end of the heredoc even with `|| :`), as `zsh: exit 1`. Turn it off
+ # before anything of ours can fail and hand the user's setting to the tail of this script. `[[ ]]`
+ # is not reported when it is false; the zsh_body.sh guard skips this when it is already off.
+ [[ -o print_exit_value ]] && { WARP_RESTORE_PRINT_EXIT_VALUE=1; unsetopt print_exit_value; }
  # Similar to our approach in bash, we start a shell with the minimal amount of
  # startup (i.e. --no-rcs) and then take over by executing the shell startup.
  # We only support the local zsh case for now.

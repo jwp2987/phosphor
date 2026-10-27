@@ -11,5 +11,6 @@
  _msg=$(builtin printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"zsh\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d " \n")
  WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@
  # We send the InitShell hook via OSCs when on Windows and via DCSs otherwise.
- if [ "$WARP_USING_WINDOWS_CON_PTY" = true ]; then builtin printf '\e]9278;d;%s\x07' "$_msg"; else builtin printf '\e\x50\x24\x64%s\x9c' "$_msg"; fi
+ # `case`, not `if [ .. ]`: a false condition is a failed statement, and `setopt PRINT_EXIT_VALUE` reports it as `zsh: exit 1` (#974).
+ case $WARP_USING_WINDOWS_CON_PTY in true) builtin printf '\e]9278;d;%s\x07' "$_msg";; *) builtin printf '\e\x50\x24\x64%s\x9c' "$_msg";; esac
  unset _hostname _user _msg _ju _jh
