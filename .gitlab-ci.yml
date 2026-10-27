@@ -695,7 +695,7 @@ cli-linux:
       RES=$(grep '^bundled_resources_dir=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
       mkdir -p cli-artifacts out
       cp "$EXE" out/phosphor-oss
-      tar czf cli-artifacts/phosphor-cli-linux-x86_64.tar.gz -C out phosphor-oss -C "$(dirname "$RES")" resources
+      tar czf cli-artifacts/phosphor-cli-linux-x86_64.tar.gz -C out phosphor-oss -C "$(cd "$(dirname "$RES")" && pwd)" resources
       # warp_tui reuses the toolchain and profile already warmed above.
       cargo zigbuild -p warp_tui --profile release-cli --target x86_64-unknown-linux-musl --bin zap-tui-oss
       cp target/x86_64-unknown-linux-musl/release-cli/zap-tui-oss out/phosphor-tui
@@ -728,7 +728,7 @@ cli-macos:
       RES=$(grep '^bundled_resources_dir=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
       mkdir -p cli-artifacts out
       cp "$BIN" out/phosphor-oss
-      tar czf cli-artifacts/phosphor-cli-macos-aarch64.tar.gz -C out phosphor-oss -C "$(dirname "$RES")" resources
+      tar czf cli-artifacts/phosphor-cli-macos-aarch64.tar.gz -C out phosphor-oss -C "$(cd "$(dirname "$RES")" && pwd)" resources
       cargo build -p warp_tui --profile release-cli --target aarch64-apple-darwin --bin zap-tui-oss
       cp target/aarch64-apple-darwin/release-cli/zap-tui-oss out/phosphor-tui
       tar czf out/phosphor-tui-macos-aarch64.tar.gz -C out phosphor-tui
