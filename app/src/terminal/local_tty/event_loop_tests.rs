@@ -539,6 +539,7 @@ fn the_per_iteration_questions_are_constant_time_with_a_hundred_thousand_gated_e
             bytes: Cow::Borrowed(b"R"),
             produced_while_executing: Some(block("cmd")),
             is_reply: true,
+            discardable: false,
         });
     }
     state.gated_count = 100_000;
