@@ -56,38 +56,76 @@ pub fn describe_key(key: &str) -> String {
     }
 }
 
+/// Every line starts with this, because release builds do not print the log target: without it a
+/// tester cannot grep the log for these lines (#1034).
+const LINE_PREFIX: &str = "input_order";
+
+fn key_down_line(key: &str, ctrl: bool, alt: bool, shift: bool, cmd: bool) -> String {
+    format!(
+        "{LINE_PREFIX} keydown key={} ctrl={ctrl} alt={alt} shift={shift} cmd={cmd} t={}",
+        describe_key(key),
+        now_ms()
+    )
+}
+
+fn typed_characters_line(chars: &str) -> String {
+    format!(
+        "{LINE_PREFIX} typed_characters text={} t={}",
+        describe_text(chars),
+        now_ms()
+    )
+}
+
+fn submit_line(buffer: &str) -> String {
+    format!(
+        "{LINE_PREFIX} submit buffer={} t={}",
+        describe_text(buffer),
+        now_ms()
+    )
+}
+
 /// Logs a key-down being dispatched.
 pub fn log_key_down(key: &str, ctrl: bool, alt: bool, shift: bool, cmd: bool) {
     if enabled() {
-        log::debug!(
-            target: TARGET,
-            "keydown key={} ctrl={ctrl} alt={alt} shift={shift} cmd={cmd} t={}",
-            describe_key(key),
-            now_ms()
-        );
+        log::debug!(target: TARGET, "{}", key_down_line(key, ctrl, alt, shift, cmd));
     }
 }
 
 /// Logs typed characters being dispatched.
 pub fn log_typed_characters(chars: &str) {
     if enabled() {
-        log::debug!(
-            target: TARGET,
-            "typed_characters text={} t={}",
-            describe_text(chars),
-            now_ms()
-        );
+        log::debug!(target: TARGET, "{}", typed_characters_line(chars));
     }
 }
 
 /// Logs the editor submitting `buffer` as a command.
 pub fn log_submit(buffer: &str) {
     if enabled() {
-        log::debug!(
-            target: TARGET,
-            "submit buffer={} t={}",
-            describe_text(buffer),
-            now_ms()
-        );
+        log::debug!(target: TARGET, "{}", submit_line(buffer));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_is_the_documented_name() {
+        assert_eq!(TARGET, "warp::input_order");
+    }
+
+    #[test]
+    fn lines_are_greppable_without_the_target_and_redact_text() {
+        for line in [
+            key_down_line("a", false, false, false, false),
+            key_down_line("enter", false, false, false, false),
+            typed_characters_line("hunter2"),
+            submit_line("hunter2"),
+        ] {
+            assert!(line.starts_with("input_order "), "{line}");
+            assert!(!line.contains("hunter2"), "{line}");
+        }
+        assert!(key_down_line("enter", false, false, false, false).contains("key=enter"));
+        assert!(typed_characters_line("hunter2").contains("<7 chars>"));
     }
 }
