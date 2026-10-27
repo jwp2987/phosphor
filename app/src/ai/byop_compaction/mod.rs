@@ -20,6 +20,30 @@ pub mod token;
 pub use config::CompactionConfig;
 pub use overflow::{is_overflow, turn_has_tool_calls, usable};
 
+/// What to do when a finished, tool-free turn is over the context threshold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoCompactionDecision {
+    /// Under the threshold, or no usage reported: do nothing.
+    None,
+    /// Summarize now; the interrupted task is resumed after the summary commits.
+    Compact,
+    /// This turn was already auto-compacted once and is still over the limit; another
+    /// summary would loop (compact, continue, still over, compact, ...). Fail instead.
+    GiveUp,
+}
+
+/// Policy for [`AutoCompactionDecision`]: at most one auto-compaction per turn.
+pub fn auto_compaction_decision(
+    overflowing: bool,
+    already_auto_compacted_this_turn: bool,
+) -> AutoCompactionDecision {
+    match (overflowing, already_auto_compacted_this_turn) {
+        (false, _) => AutoCompactionDecision::None,
+        (true, false) => AutoCompactionDecision::Compact,
+        (true, true) => AutoCompactionDecision::GiveUp,
+    }
+}
+
 /// Byte-for-byte matches the constants at the top of opencode `compaction.ts` (lines 33-39, overflow.ts:6, util/token.ts:1).
 pub mod consts {
     pub const PRUNE_MINIMUM: usize = 20_000;
