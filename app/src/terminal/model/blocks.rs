@@ -53,7 +53,7 @@ use warpui::{
 use super::block::{BlockId, BlockSize, BlockState};
 use super::lifecycle::NextBlockIdDisposition;
 use warp_core::command::ExitCode;
-use super::early_output::{EarlyOutput, TypeaheadMode};
+use super::early_output::EarlyOutput;
 use super::grid::grid_handler::{FragmentBoundary, GridHandler, PossiblePath};
 use super::grid::RespectDisplayedOutput;
 use super::image_map::StoredImageMetadata;
@@ -1201,35 +1201,6 @@ impl BlockList {
             new_tree
         };
         // TODO: Update active gap.
-    }
-
-    /// Removes the tty echo of the shell-reported typed-ahead line from the block that just
-    /// finished (#1033).
-    ///
-    /// Keys typed while a short command finishes are echoed by the tty into that command's
-    /// block, but the shell's report of its unconsumed input only arrives after the prompt.
-    /// Only the block immediately before the (not yet started) active block is considered, only
-    /// text identical to the reported typeahead is removed, and only in shell-reported mode,
-    /// where this path exists solely at a fresh prompt. Returns whether a block was changed.
-    pub fn strip_reported_typeahead_echo(&mut self) -> bool {
-        if self.early_output.typeahead_mode() != TypeaheadMode::ShellReported
-            || !self.early_output.has_uninserted_typeahead()
-            || self.active_block().started()
-        {
-            return false;
-        }
-        let typed = self.early_output.typeahead().to_owned();
-        let Some(prev) = self.active_block_index().0.checked_sub(1) else {
-            return false;
-        };
-        let Some(block) = self.blocks.get_mut(prev) else {
-            return false;
-        };
-        if block.is_background() || !block.strip_typeahead_echo(&typed) {
-            return false;
-        }
-        self.refresh_block_height(BlockIndex(prev));
-        true
     }
 
     /// Hides the active block and records its new (zero) height in `block_heights`.
