@@ -10362,23 +10362,36 @@ fn submitted_line_count_matches_the_lines_submitted() {
     }
 }
 
-/// The dispatched count is that of the buffer in the editor, for every size.
-#[test]
-fn multiline_confirmation_is_requested_for_the_buffer_it_holds() {
+/// The dispatched request is for the buffer in the editor, whatever its size. One `App` per case:
+/// the app's singletons can only be registered once.
+fn assert_confirmation_requested_for_lines(n: usize) {
     App::test((), |mut app| async move {
-        for n in [51, 60, 119] {
-            let text = comment_lines(n);
-            let (input, executed) = multiline_submit_fixture(&mut app, &text, false).await;
-            input.update(&mut app, |input, ctx| {
-                input.input_enter_as_shell_command(ctx);
-            });
-            assert!(executed.borrow().is_empty());
-            input.read(&app, |input, ctx| {
-                assert!(input.awaiting_multiline_submit_confirmation);
-                assert_eq!(submitted_line_count(&input.buffer_text(ctx)), n);
-            });
-        }
+        let text = comment_lines(n);
+        let (input, executed) = multiline_submit_fixture(&mut app, &text, false).await;
+        input.update(&mut app, |input, ctx| {
+            input.input_enter_as_shell_command(ctx);
+        });
+        assert!(executed.borrow().is_empty());
+        input.read(&app, |input, ctx| {
+            assert!(input.awaiting_multiline_submit_confirmation);
+            assert_eq!(submitted_line_count(&input.buffer_text(ctx)), n);
+        });
     });
+}
+
+#[test]
+fn multiline_confirmation_is_requested_for_51_lines() {
+    assert_confirmation_requested_for_lines(51);
+}
+
+#[test]
+fn multiline_confirmation_is_requested_for_60_lines() {
+    assert_confirmation_requested_for_lines(60);
+}
+
+#[test]
+fn multiline_confirmation_is_requested_for_119_lines() {
+    assert_confirmation_requested_for_lines(119);
 }
 
 /// #1046: the confirmation follows the pty controller's flag, not the active block's grid mode.
@@ -10405,8 +10418,14 @@ fn multiline_confirmation_follows_the_pty_flag_not_the_grid_mode() {
             input.input_enter_as_shell_command(ctx);
         });
         assert_eq!(executed.borrow().as_slice(), [text.clone()]);
+    });
+}
 
-        // And the other way round: grid mode set, controller flag clear.
+/// The other way round: grid mode set, controller flag clear.
+#[test]
+fn multiline_confirmation_ignores_a_set_grid_mode_when_the_pty_flag_is_clear() {
+    App::test((), |mut app| async move {
+        let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 10);
         let (input, _) = multiline_submit_fixture(&mut app, &text, false).await;
         input.read(&app, |input, ctx| {
             input
