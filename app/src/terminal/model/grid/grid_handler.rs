@@ -2157,9 +2157,12 @@ impl GridHandler {
                 start
             }
             None => {
-                // The run was copied here cell by cell (padded with blanks), so the cursor is
-                // not right after it: it must be the last text on the cursor's row, which is the
-                // grid's last row, and start a line.
+                // The run was copied here cell by cell (`append_cells_from_grid`), so it is
+                // not where it was printed: rows are padded with blanks, and a copied row starts
+                // in the column the previous copied row ended in (its line break is a bare line
+                // feed). It must be the last text on the cursor's row, which is the grid's last
+                // row, with nothing but blanks before it on that row, and that row must start a
+                // line. The whole row is then cleared, padding included.
                 if !nothing_after_cursor {
                     return false;
                 }
@@ -2170,14 +2173,15 @@ impl GridHandler {
                 let Some(start) = self.point_before(cursor_row, last + 1, chars.len()) else {
                     return false;
                 };
-                let line_start = start.1 == 0 && (start.0 == 0 || !self.row_wraps(start.0 - 1));
+                let row_starts_line = start.0 == 0 || !self.row_wraps(start.0 - 1);
                 if chars.is_empty()
-                    || !line_start
+                    || !row_starts_line
+                    || !self.only_blanks_before(start.0, start.1)
                     || self.cells_hold(start, &chars) != Some((cursor_row, last + 1))
                 {
                     return false;
                 }
-                return self.truncate_from_point(Point::new(start.0, start.1));
+                return self.truncate_from_point(Point::new(start.0, 0));
             }
         };
         let end = self.cells_hold(start, &chars);
@@ -2234,6 +2238,21 @@ impl GridHandler {
                 .flags
                 .contains(Flags::WRAPLINE),
         )
+    }
+
+    /// Whether the cells of absolute row `abs_row` before column `col` are all blank.
+    fn only_blanks_before(&self, abs_row: usize, col: usize) -> bool {
+        let Some(row) = abs_row.checked_sub(self.history_size()) else {
+            return false;
+        };
+        if row >= self.grid.visible_rows() || col > self.grid.columns() {
+            return false;
+        }
+        let cells = &self.grid[VisibleRow(row)];
+        (0..col).all(|col| match cells[col].raw_content() {
+            CharOrStr::Char(c) => c == DEFAULT_CHAR || c == ' ',
+            CharOrStr::Str(_) => false,
+        })
     }
 
     /// The last column of absolute row `abs_row` holding anything but a blank.
