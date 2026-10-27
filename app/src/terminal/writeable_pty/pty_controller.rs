@@ -220,10 +220,10 @@ impl<T: EventLoopSender> PtyController<T> {
                 me.shell_bootstrapped(*is_subshell);
             }
             ModelEvent::Handler(AnsiHandlerEvent::SetBracketedPaste) => {
-                me.is_bracketed_paste_enabled = true;
+                me.set_bracketed_paste_enabled(true);
             }
             ModelEvent::Handler(AnsiHandlerEvent::UnsetBracketedPaste) => {
-                me.is_bracketed_paste_enabled = false;
+                me.set_bracketed_paste_enabled(false);
             }
             ModelEvent::Handler(AnsiHandlerEvent::StartTmuxControlMode) => {
                 me.tmux_control_mode = Some(TmuxControlMode::Pending {
@@ -536,6 +536,16 @@ impl<T: EventLoopSender> PtyController<T> {
         // An Enter voids any quiet-period reset armed before it, so decide again (which arms a
         // fresh one) rather than leave nobody to.
         let has_enter = bytes.iter().any(|byte| matches!(byte, b'\r' | b'\n'));
+        {
+            // #1033: the tty echoes these keys wherever the output is when they arrive; record
+            // them so that echo can be told from output. A full-screen program reads them raw.
+            let mut model = self.terminal_model.lock();
+            if model.is_alt_screen_active() {
+                model.block_list_mut().forget_typed_ahead_bytes();
+            } else {
+                model.block_list_mut().record_typed_ahead_bytes(&bytes);
+            }
+        }
         if self.handoff_command_pending {
             self.handoff_bytes_after_command.extend_from_slice(&bytes);
         } else {
@@ -1180,6 +1190,10 @@ impl<T: EventLoopSender> PtyController<T> {
                 engages_typeahead_handoff = is_editor_command && can_report;
                 if engages_typeahead_handoff {
                     handoff_held_bytes = model.typeahead_handoff_mut().on_command_written();
+                    // #1033: keys typed behind the command's Enter follow it to the pty.
+                    model
+                        .block_list_mut()
+                        .record_typed_ahead_bytes(&handoff_held_bytes);
                     model
                         .block_list_mut()
                         .early_output_mut()
@@ -1383,6 +1397,13 @@ impl<T: EventLoopSender> PtyController<T> {
     }
 
     /// Clears the bookkeeping of a held command that was dropped without being written.
+    /// Records whether the shell has bracketed paste on, here and on the terminal model, so the
+    /// input's multi-line confirmation decides on exactly the flag the write uses (#1046).
+    fn set_bracketed_paste_enabled(&mut self, enabled: bool) {
+        self.is_bracketed_paste_enabled = enabled;
+        self.terminal_model.lock().set_pty_bracketed_paste(enabled);
+    }
+
     fn forget_held_handoff_command(&mut self) {
         self.handoff_held_command_pending = false;
         if !self.handoff_command_written_since_hold {
@@ -1479,6 +1500,8 @@ impl<T: EventLoopSender> PtyController<T> {
     /// Interrupts the pty's foreground program with SIGINT rather than a ^C byte, which a raw
     /// tty would hand to the program as data (#1001). Falls back to the byte.
     pub fn sigint_foreground_or_write_etx(&mut self, ctx: &mut ModelContext<Self>) {
+        // Whatever of a big paste is still waiting to be written must not outlive the interrupt.
+        self.send_message_to_event_loop(Message::DiscardQueuedInput, ctx);
         if self.foreground_sigint.as_ref().is_some_and(|f| f()) {
             return;
         }
@@ -1516,6 +1539,22 @@ impl<T: EventLoopSender> PtyController<T> {
             | PtyWrite::TmuxCommand(_)
             | PtyWrite::RunNativeShellCompletions(_) => None,
         };
+
+        // The submitted buffer of a user command (not an in-band one) may be cancelled by a ^C
+        // while still unwritten (#1046); nothing else is.
+        let is_user_command = matches!(
+            &write,
+            PtyWrite::Command {
+                in_band_command_id: None,
+                ..
+            }
+        );
+
+        // A lone ^C is an interrupt: it cancels what is still queued for the pty (#1046).
+        let is_interrupt = matches!(
+            &write,
+            PtyWrite::Bytes { bytes } if bytes.as_ref() == [escape_sequences::C0::ETX]
+        );
 
         let (bytes_to_write, is_for_command, on_write_fn, raw_tmux_command) = match write {
             PtyWrite::Command {
@@ -1600,11 +1639,29 @@ impl<T: EventLoopSender> PtyController<T> {
             && let Some((kill_buffer, rest)) = split_kill_buffer_write(&bytes_to_write, shell_type)
         {
             self.send_message_to_event_loop(Message::Input(Cow::Owned(kill_buffer.to_vec())), ctx);
-            self.send_message_to_event_loop(Message::Input(Cow::Owned(rest.to_vec())), ctx);
+            let rest = Cow::Owned(rest.to_vec());
+            self.send_message_to_event_loop(
+                if is_user_command {
+                    Message::CommandInput(rest)
+                } else {
+                    Message::Input(rest)
+                },
+                ctx,
+            );
             return true;
         }
 
-        self.send_message_to_event_loop(Message::Input(bytes_to_write), ctx);
+        if is_interrupt {
+            self.send_message_to_event_loop(Message::DiscardQueuedInput, ctx);
+        }
+        self.send_message_to_event_loop(
+            if is_user_command {
+                Message::CommandInput(bytes_to_write)
+            } else {
+                Message::Input(bytes_to_write)
+            },
+            ctx,
+        );
         true
     }
 
@@ -1739,6 +1796,16 @@ fn split_kill_buffer_write(bytes: &[u8], shell_type: ShellType) -> Option<(&[u8]
     Some((kill_buffer_bytes, rest))
 }
 
+/// Whether `command` is written to the pty as one bracketed paste (the shell then takes it as a
+/// single block) rather than line by line. The one decision `bytes_to_execute_command` makes, and
+/// the one the input's multi-line confirmation asks (#1046).
+pub(crate) fn command_is_sent_as_bracketed_paste(
+    is_bracketed_paste_enabled: bool,
+    command: &str,
+) -> bool {
+    is_bracketed_paste_enabled && !command.is_empty()
+}
+
 /// Returns the shell-dependent array of bytes to be written to the PTY to execute `command`.
 fn bytes_to_execute_command(
     command: &str,
@@ -1757,7 +1824,7 @@ fn bytes_to_execute_command(
     // Only execute the command via bracketed paste if the command is not empty. Some ZSH
     // bracketed paste magic functions return errors if bracketed paste is used without text
     // in-between the bracketed paste escape sequences.
-    if is_bracketed_paste_enabled && !command.is_empty() {
+    if command_is_sent_as_bracketed_paste(is_bracketed_paste_enabled, &command) {
         match shell_type {
             ShellType::Fish => {
                 // Fish strips leading (and trailing) whitespace from pasted commands (entered via

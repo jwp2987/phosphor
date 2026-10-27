@@ -1303,3 +1303,359 @@ fn pop_front_restores_an_unlocked_approval_row_after_a_cancel() {
         model.read(&app, |m, _| assert!(m.queue(conv).is_empty()));
     });
 }
+
+// ---- Persistence across restarts (#1027) ----
+
+use crate::persistence::ModelEvent;
+use crate::persistence::model::QueuedPromptRow;
+
+/// Like [`with_model`], but the writer channel is real, so every queue write can be read back
+/// from the returned receiver.
+fn with_persisting_model<F>(test: F)
+where
+    F: FnOnce(App, warpui::ModelHandle<QueuedQueryModel>, std::sync::mpsc::Receiver<ModelEvent>)
+        + 'static,
+{
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let (tx, rx) = std::sync::mpsc::sync_channel(256);
+        let mut handles = GlobalResourceHandles::mock(&mut app);
+        handles.model_event_sender = Some(tx);
+        app.add_singleton_model(|_| GlobalResourceHandlesProvider::new(handles));
+        app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+        let model = app.add_singleton_model(QueuedQueryModel::new);
+        test(app, model, rx);
+    });
+}
+
+/// The rows the writer would hold for `conversation` after replaying every event received:
+/// the last `ReplaceQueuedPrompts` for it wins, exactly as in the database.
+fn stored_rows(
+    rx: &std::sync::mpsc::Receiver<ModelEvent>,
+    conversation: AIConversationId,
+) -> Vec<QueuedPromptRow> {
+    let key = conversation.to_string();
+    let mut rows = Vec::new();
+    for event in rx.try_iter() {
+        if let ModelEvent::ReplaceQueuedPrompts {
+            conversation_id,
+            rows: new_rows,
+        } = event
+            && conversation_id == key
+        {
+            rows = new_rows;
+        }
+    }
+    rows
+}
+
+fn start_conversation(app: &mut App, terminal_view_id: warpui::EntityId) -> AIConversationId {
+    BlocklistAIHistoryModel::handle(app).update(app, |h, ctx| {
+        h.start_new_conversation(terminal_view_id, false, false, ctx)
+    })
+}
+
+#[test]
+fn every_queue_change_is_mirrored_in_order_and_sent_or_removed_rows_are_gone() {
+    with_persisting_model(|mut app, model, rx| {
+        let conv = AIConversationId::new();
+        let first = append_user(&model, &mut app, conv, "first");
+        let second = append_user(&model, &mut app, conv, "second");
+        model.update(&mut app, |m, ctx| m.append(conv, command_query("ls"), ctx));
+
+        let rows = stored_rows(&rx, conv);
+        let texts: Vec<_> = rows
+            .iter()
+            .map(|r| (r.position, r.text.as_str(), r.kind.as_str()))
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                (0, "first", "prompt"),
+                (1, "second", "prompt"),
+                (2, "ls", "command")
+            ]
+        );
+
+        // Reorder is mirrored.
+        model.update(&mut app, |m, ctx| m.reorder(conv, second, 0, ctx));
+        let rows = stored_rows(&rx, conv);
+        assert_eq!(
+            rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            ["second", "first", "ls"]
+        );
+
+        // An edit is mirrored.
+        model.update(&mut app, |m, ctx| {
+            m.enter_edit_mode(conv, first, ctx);
+            m.commit_edit(conv, "first, edited".to_owned(), ctx);
+        });
+        let rows = stored_rows(&rx, conv);
+        assert_eq!(
+            rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            ["second", "first, edited", "ls"]
+        );
+
+        // Sent (fired) and removed rows leave the stored queue.
+        model.update(&mut app, |m, ctx| m.remove_fired_row(conv, second, ctx));
+        model.update(&mut app, |m, ctx| m.remove_by_id(conv, first, ctx));
+        let rows = stored_rows(&rx, conv);
+        assert_eq!(
+            rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            ["ls"]
+        );
+
+        // Popping the last row (a cancel restoring it to the input) empties the stored queue.
+        let popped = model.update(&mut app, |m, ctx| m.pop_front(conv, ctx));
+        assert!(popped.is_some());
+        assert!(stored_rows(&rx, conv).is_empty());
+    });
+}
+
+#[test]
+fn persisted_rows_come_back_suspended_in_order_and_never_autofire() {
+    with_persisting_model(|mut app, model, rx| {
+        let terminal_view_id = warpui::EntityId::new();
+        let conv = start_conversation(&mut app, terminal_view_id);
+        append_user(&model, &mut app, conv, "one");
+        model.update(&mut app, |m, ctx| {
+            m.append(
+                conv,
+                QueuedQuery::new("two".to_owned(), QueuedQueryOrigin::PendingLrcAutoQueue),
+                ctx,
+            )
+        });
+        model.update(&mut app, |m, ctx| {
+            m.append(conv, command_query("make"), ctx)
+        });
+        let saved = stored_rows(&rx, conv);
+        assert_eq!(saved.len(), 3);
+
+        // "Restart": a fresh model that has only the saved rows, over a history that still
+        // knows the conversation.
+        let restarted = app.add_model(QueuedQueryModel::new);
+        restarted.update(&mut app, |m, ctx| m.restore_persisted(saved, ctx));
+
+        restarted.read(&app, |m, _| {
+            let queue = m.queue(conv);
+            assert_eq!(
+                queue.iter().map(|r| r.text()).collect::<Vec<_>>(),
+                ["one", "two", "make"],
+                "restored in the order they were queued"
+            );
+            assert!(queue.iter().all(|r| r.is_suspended()));
+            assert!(queue[2].is_command(), "a command stays a command");
+            assert!(
+                !queue[0].is_command() && !queue[1].is_command(),
+                "a prompt stays a prompt: the queue panel draws `!` only for commands"
+            );
+            assert!(
+                queue.iter().all(|r| !r.is_locked()),
+                "the lock described an action snapshot that no longer exists"
+            );
+            assert!(!m.has_autofireable_prompt(conv));
+            assert!(
+                m.peek_autofire(conv).is_none(),
+                "a restored row must never be sent without the user seeing it"
+            );
+        });
+
+        // Announced exactly once; nothing is an orphan.
+        let session = restarted.update(&mut app, |m, ctx| m.take_restored_session(ctx));
+        assert_eq!(session.suspended_count, 3);
+        assert!(session.orphans.is_empty());
+        let again = restarted.update(&mut app, |m, ctx| m.take_restored_session(ctx));
+        assert_eq!(again.suspended_count, 0);
+    });
+}
+
+#[test]
+fn a_prompt_queued_after_a_restart_still_drains_past_suspended_rows() {
+    with_persisting_model(|mut app, model, rx| {
+        let terminal_view_id = warpui::EntityId::new();
+        let conv = start_conversation(&mut app, terminal_view_id);
+        append_user(&model, &mut app, conv, "old");
+        let saved = stored_rows(&rx, conv);
+
+        let restarted = app.add_model(QueuedQueryModel::new);
+        restarted.update(&mut app, |m, ctx| m.restore_persisted(saved, ctx));
+        let new_id = restarted.update(&mut app, |m, ctx| m.append(conv, user_query("new"), ctx));
+
+        restarted.read(&app, |m, _| match m.peek_autofire(conv) {
+            Some(AutofireAction::Submit { query_id, text }) => {
+                assert_eq!(query_id, new_id);
+                assert_eq!(text, "new");
+            }
+            other => panic!("the new prompt must drain, got {other:?}"),
+        });
+
+        // Cancel/error restore skips the suspended row too, and returns the live one.
+        let popped = restarted.update(&mut app, |m, ctx| m.pop_front(conv, ctx));
+        assert_eq!(popped.expect("the live row pops").text(), "new");
+        let none = restarted.update(&mut app, |m, ctx| m.pop_front(conv, ctx));
+        assert!(none.is_none(), "a restored row stays in the panel");
+        restarted.read(&app, |m, _| assert_eq!(m.queue(conv).len(), 1));
+    });
+}
+
+#[test]
+fn rows_whose_conversation_is_gone_become_orphans_and_are_cleared_only_when_claimed() {
+    with_persisting_model(|mut app, model, rx| {
+        let gone = AIConversationId::new();
+        append_user(&model, &mut app, gone, "lost one");
+        append_user(&model, &mut app, gone, "lost two");
+        let saved = stored_rows(&rx, gone);
+        assert_eq!(saved.len(), 2);
+        // A row whose stored conversation id is not even a valid id is treated the same way.
+        let mut garbled = saved[0].clone();
+        garbled.conversation_id = "not-a-conversation".to_owned();
+        garbled.text = "garbled".to_owned();
+
+        let mut rows = saved;
+        rows.push(garbled);
+        let restarted = app.add_model(QueuedQueryModel::new);
+        restarted.update(&mut app, |m, ctx| m.restore_persisted(rows, ctx));
+
+        restarted.read(&app, |m, _| {
+            assert!(
+                !m.has_queue(gone),
+                "no conversation, so no queue to show them in"
+            );
+        });
+        assert!(
+            rx.try_iter().next().is_none(),
+            "stored rows are kept until a view has the text in hand"
+        );
+
+        let session = restarted.update(&mut app, |m, ctx| m.take_restored_session(ctx));
+        assert_eq!(session.suspended_count, 0);
+        assert_eq!(
+            session.orphans.iter().map(|r| r.text()).collect::<Vec<_>>(),
+            ["lost one", "lost two", "garbled"]
+        );
+        let cleared: Vec<String> = rx
+            .try_iter()
+            .filter_map(|event| match event {
+                ModelEvent::ReplaceQueuedPrompts {
+                    conversation_id,
+                    rows,
+                } if rows.is_empty() => Some(conversation_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cleared.len(), 2);
+        assert!(cleared.contains(&gone.to_string()));
+        assert!(cleared.contains(&"not-a-conversation".to_owned()));
+    });
+}
+
+#[test]
+fn deleting_a_conversation_clears_its_stored_queue() {
+    with_persisting_model(|mut app, model, rx| {
+        let terminal_view_id = warpui::EntityId::new();
+        let conv = start_conversation(&mut app, terminal_view_id);
+        append_user(&model, &mut app, conv, "x");
+        assert_eq!(stored_rows(&rx, conv).len(), 1);
+
+        BlocklistAIHistoryModel::handle(&app).update(&mut app, |h, ctx| {
+            h.delete_conversation(conv, Some(terminal_view_id), ctx);
+        });
+        assert!(stored_rows(&rx, conv).is_empty());
+    });
+}
+
+/// #1043: the armed-state indicator names the state and how to turn it off, using the displayed
+/// keybinding it is given (so Mac glyphs flow through unchanged).
+#[test]
+fn queue_mode_armed_hint_names_state_and_shortcut() {
+    crate::i18n::init(Some("en"));
+    let hint = super::queue_mode_armed_hint(Some("⌘⇧J"));
+    assert!(hint.contains("Queue mode on"), "{hint}");
+    assert!(
+        hint.contains("queues this prompt instead of interrupting"),
+        "{hint}"
+    );
+    assert!(hint.contains("⌘⇧J"), "{hint}");
+    assert!(hint.contains("turn off"), "{hint}");
+
+    let no_shortcut = super::queue_mode_armed_hint(None);
+    assert!(no_shortcut.contains("Queue mode on"), "{no_shortcut}");
+    assert!(no_shortcut.contains("turn off"), "{no_shortcut}");
+}
+
+#[test]
+fn queue_mode_chip_and_toast_text_reflect_state() {
+    crate::i18n::init(Some("en"));
+    assert_eq!(super::queue_mode_chip_label(true), "Queue: ON");
+    assert_eq!(super::queue_mode_chip_label(false), "Queue: OFF");
+    let on = super::queue_mode_toast_text(true, Some("Ctrl-Shift-J"));
+    let off = super::queue_mode_toast_text(false, Some("Ctrl-Shift-J"));
+    assert!(
+        on.contains("Queue mode on") && on.contains("Ctrl-Shift-J"),
+        "{on}"
+    );
+    assert!(
+        off.contains("Queue mode off") && off.contains("Ctrl-Shift-J"),
+        "{off}"
+    );
+    assert_eq!(super::queue_mode_toast_text(true, None), "Queue mode on");
+}
+
+/// #1043: only an explicit toggle counts as "armed" for the indicator.
+#[test]
+fn explicit_arm_requires_user_toggle() {
+    with_model(|mut app, model, _events| {
+        let conv = AIConversationId::new();
+        model.read(&app, |m, _| {
+            assert!(!m.is_queue_next_prompt_explicitly_armed(conv))
+        });
+        model.update(&mut app, |m, ctx| m.toggle_queue_next_prompt(conv, ctx));
+        model.read(&app, |m, _| {
+            assert!(m.is_queue_next_prompt_explicitly_armed(conv))
+        });
+        model.update(&mut app, |m, ctx| m.toggle_queue_next_prompt(conv, ctx));
+        model.read(&app, |m, _| {
+            assert!(!m.is_queue_next_prompt_explicitly_armed(conv))
+        });
+    });
+}
+
+/// #1043: queue mode stays armed across queued prompts; only an explicit toggle-off or the
+/// end-of-turn consume disarms it.
+#[test]
+fn queue_mode_stays_armed_across_queued_prompts_until_turn_end() {
+    with_model(|mut app, model, _events| {
+        let conv = AIConversationId::new();
+        model.update(&mut app, |m, ctx| m.toggle_queue_next_prompt(conv, ctx));
+        for text in ["first", "second"] {
+            model.update(&mut app, |m, ctx| {
+                m.append(
+                    conv,
+                    QueuedQuery::new(text.to_owned(), QueuedQueryOrigin::AutoQueueToggle),
+                    ctx,
+                );
+            });
+            model.read(&app, |m, _| {
+                assert!(
+                    m.is_queue_next_prompt_explicitly_armed(conv),
+                    "after {text}"
+                )
+            });
+        }
+        // Turn ends.
+        let cleared = model.update(&mut app, |m, ctx| {
+            m.consume_queue_next_prompt_toggle(conv, ctx)
+        });
+        assert!(cleared);
+        model.read(&app, |m, _| {
+            assert!(!m.is_queue_next_prompt_explicitly_armed(conv))
+        });
+
+        // Explicit toggle off also disarms.
+        model.update(&mut app, |m, ctx| m.toggle_queue_next_prompt(conv, ctx));
+        model.update(&mut app, |m, ctx| m.toggle_queue_next_prompt(conv, ctx));
+        model.read(&app, |m, _| {
+            assert!(!m.is_queue_next_prompt_explicitly_armed(conv))
+        });
+    });
+}

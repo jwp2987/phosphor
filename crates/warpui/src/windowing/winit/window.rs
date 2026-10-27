@@ -4,6 +4,8 @@ mod x11;
 #[cfg(windows)]
 mod windows_wm;
 
+mod work_area;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 #[cfg(windows)]
@@ -1489,6 +1491,25 @@ fn create_window(
         window_attributes.visible = false;
     }
 
+    // On Windows, size and place the window within the work area (monitor minus taskbar) of the
+    // monitor it will open on, rather than a fixed size at an OS-chosen cascade offset that can
+    // push the caption buttons off-screen. See #1045.
+    #[cfg(windows)]
+    let work_area: Option<RectF> = {
+        let target_monitor = most_overlapping_monitor
+            .clone()
+            .or_else(|| window_target.primary_monitor())
+            .or_else(|| window_target.available_monitors().next());
+        let work_area = target_monitor
+            .as_ref()
+            .and_then(get_monitor_logical_work_area);
+        // `position` below is converted logical -> physical with this monitor's scale factor.
+        if most_overlapping_monitor.is_none() {
+            most_overlapping_monitor = target_monitor;
+        }
+        work_area
+    };
+
     let (size, origin) = if tiling_window_manager && window_options.style != WindowStyle::Pin {
         (None, None)
     } else {
@@ -1501,6 +1522,38 @@ fn create_window(
             WindowBounds::ExactPosition(bounds) => (Some(bounds.size()), Some(bounds.origin())),
         }
     };
+
+    #[cfg(windows)]
+    let (mut size, mut origin) = (size, origin);
+    #[cfg(windows)]
+    if let (Some(work_area), Some(requested_size)) = (work_area, size) {
+        let min_size = vec2f(MIN_WINDOW_SIZE.width as f32, MIN_WINDOW_SIZE.height as f32);
+        match window_bounds {
+            WindowBounds::Default => {
+                let fitted = work_area::fit_size(
+                    requested_size,
+                    work_area,
+                    work_area::WORK_AREA_MARGIN,
+                    min_size,
+                );
+                size = Some(fitted);
+                origin = Some(work_area::center_in(fitted, work_area).origin());
+            }
+            WindowBounds::ExactSize(_) => {
+                size = Some(work_area::fit_size(
+                    requested_size,
+                    work_area,
+                    work_area::WORK_AREA_MARGIN,
+                    min_size,
+                ));
+            }
+            WindowBounds::ExactPosition(bounds) => {
+                let clamped = work_area::clamp_into(bounds, work_area, min_size);
+                size = Some(clamped.size());
+                origin = Some(clamped.origin());
+            }
+        }
+    }
 
     if let Some(origin) = origin {
         let mut position =
@@ -1564,6 +1617,10 @@ fn create_window(
             if let Err(e) = window.set_cloaked(true) {
                 log::error!("Failed to mark window as cloaked: {e:#?}");
             };
+
+            if clamp_window_into_work_area(window) {
+                log::info!("Window launched partially outside the work area; clamped it back");
+            }
 
             if let Some(adjustment) = maybe_adjust_window_vertically(window) {
                 let direction = if adjustment > 0 { "down" } else { "up" };
@@ -1636,6 +1693,86 @@ fn create_window(
     }
 
     created_window
+}
+
+/// Physical-pixel work area (left, top, right, bottom) of `monitor`: the monitor minus the
+/// taskbar and any docked app bars.
+#[cfg(windows)]
+fn get_monitor_physical_work_area(monitor: &MonitorHandle) -> Option<(i32, i32, i32, i32)> {
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITORINFO};
+    use winit::platform::windows::MonitorHandleExtWindows;
+
+    let hmonitor = HMONITOR(monitor.hmonitor() as *mut core::ffi::c_void);
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `info` is a valid MONITORINFO with `cbSize` set, as the API requires.
+    if !unsafe { GetMonitorInfoW(hmonitor, &mut info) }.as_bool() {
+        return None;
+    }
+    let work = info.rcWork;
+    Some((work.left, work.top, work.right, work.bottom))
+}
+
+/// Logical-pixel work area of `monitor` (see [`get_monitor_physical_work_area`]).
+#[cfg(windows)]
+fn get_monitor_logical_work_area(monitor: &MonitorHandle) -> Option<RectF> {
+    let (left, top, right, bottom) = get_monitor_physical_work_area(monitor)?;
+    Some(work_area::physical_edges_to_logical(
+        left,
+        top,
+        right,
+        bottom,
+        monitor.scale_factor(),
+    ))
+}
+
+#[cfg(windows)]
+/// Shrinks and/or moves the new window so it lies entirely within the work area of the monitor it
+/// opened on (never shrinking below the minimum window size). Returns whether anything changed.
+fn clamp_window_into_work_area(window: &winit::window::Window) -> bool {
+    if window.is_maximized() || window.fullscreen().is_some() {
+        return false;
+    }
+    let (Ok(position), Some(monitor)) = (window.outer_position(), window.current_monitor()) else {
+        return false;
+    };
+    let Some((left, top, right, bottom)) = get_monitor_physical_work_area(&monitor) else {
+        return false;
+    };
+    // Physical pixels throughout; scale factor 1.0 means "don't convert".
+    let work_area = work_area::physical_edges_to_logical(left, top, right, bottom, 1.0);
+    let outer = window.outer_size();
+    let scale = monitor.scale_factor() as f32;
+    let current = RectF::new(
+        vec2f(position.x as f32, position.y as f32),
+        vec2f(outer.width as f32, outer.height as f32),
+    );
+    let min_size = vec2f(
+        MIN_WINDOW_SIZE.width as f32 * scale,
+        MIN_WINDOW_SIZE.height as f32 * scale,
+    );
+    let clamped = work_area::clamp_into(current, work_area, min_size);
+    if clamped == current {
+        return false;
+    }
+
+    if clamped.size() != current.size() {
+        // Shrink the inner size by the same amount the outer size shrank.
+        let inner = window.inner_size();
+        let shrink_w = (outer.width as f32 - clamped.width()).max(0.) as u32;
+        let shrink_h = (outer.height as f32 - clamped.height()).max(0.) as u32;
+        let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(
+            inner.width.saturating_sub(shrink_w),
+            inner.height.saturating_sub(shrink_h),
+        ));
+    }
+    window.set_outer_position(winit::dpi::PhysicalPosition::new(
+        clamped.origin_x().round() as i32,
+        clamped.origin_y().round() as i32,
+    ));
+    true
 }
 
 #[cfg(windows)]

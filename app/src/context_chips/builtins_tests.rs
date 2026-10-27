@@ -139,3 +139,30 @@ fn test_node_version() {
         Some("v18.0.0")
     );
 }
+
+/// Chip commands are run for Phosphor by the session's command executors, which take POSIX
+/// syntax for a nushell session; a chip with no nushell entry falls back to its bash command,
+/// and one that really lacks bash support is still unsupported.
+#[test]
+fn test_shell_specific_chip_commands_fall_back_to_bash_for_nu() {
+    use crate::context_chips::context_chip::ShellCommand;
+    use crate::terminal::shell::ShellType;
+
+    let command = ShellCommand::shell_specific([
+        (ShellType::Bash, "bash-version".to_string()),
+        (ShellType::Fish, "fish-version".to_string()),
+    ]);
+    assert_eq!(command.for_shell(ShellType::Nu), Some("bash-version"));
+    assert_eq!(command.for_shell(ShellType::Fish), Some("fish-version"));
+    assert_eq!(command.for_shell(ShellType::PowerShell), None);
+
+    // An explicit nushell entry wins.
+    let command = ShellCommand::shell_specific([
+        (ShellType::Bash, "bash-version".to_string()),
+        (ShellType::Nu, "nu-version".to_string()),
+    ]);
+    assert_eq!(command.for_shell(ShellType::Nu), Some("nu-version"));
+
+    let git = super::shell_git_branch();
+    assert!(git.command().for_shell(ShellType::Nu).is_some());
+}

@@ -434,9 +434,12 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
       # truncating the title's len to 25 characters and leading ".."
       local title_text=${1-}
       # Phosphor (#935): a pasted multi-line command would otherwise lose its newlines in the
-      # terminal and run the lines together ("gradle onegradle two"); show a visible separator.
+      # terminal and run the lines together ("gradle onegradle two"); title the tab with the
+      # first line and an ellipsis instead (a ';' separator would also split the OSC title).
       title_text=${title_text//$'\r'/}
-      title_text=${title_text//$'\n'/ ; }
+      if [[ "$title_text" == *$'\n'* ]]; then
+        title_text="${title_text%%$'\n'*}…"
+      fi
       tmp_len=$((${#title_text}-25)) # starting character's position
       len=$((tmp_len>0 ? tmp_len : 0)) # account for the shorter strings
       if [[ $len -ne 0 ]]; then
@@ -1165,7 +1168,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
                 # Initialize this to 1 before each call, as per getopts documentation.
                 OPTIND=1
                 # Parse through all ssh options, as defined in the ssh man pages.
-                while getopts :1246AaCfgKkMNnqsTtVvXxYyb:c:D:e:F:i:L:l:m:O:o:p:R:S:W:w: OPTION; do
+                while getopts :1246AaCfgKkMNnqsTtVvXxYyb:c:D:e:F:i:J:L:l:m:O:o:p:R:S:W:w: OPTION; do
                     case $OPTION in
                         # -T disables pty allocation (aka a non-interactive session)
                         T) return 1;;
@@ -1175,11 +1178,19 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
                         # -f (background) and -V (version) never start an interactive login, so the wrapper
                         # (ControlMaster=yes, -t, a remote export command) must not touch them. -G and -Q are not
                         # in the optstring above, so they already fail as invalid options and go to real ssh.
+                        #1003: -J <jump[,jump2]> is an option WITH an argument (it is in the optstring), so a jump-host login is
+                        # still wrapped. Every probe and the wrapped ssh get the original arguments, so `ssh -G`/`ssh -O check`
+                        # resolve the jump chain, and the multiplexed follow-up ssh calls reuse the master (and so its jump).
                         # Keep in step with InteractiveSshCommand::parse_ssh_command (ssh/util.rs).
                         O) return 1;;
                         N) return 1;;
                         f) return 1;;
                         V) return 1;;
+                        # #1035: -w (tun device), -M (master) and -S (control socket) cannot ride the wrapper's multiplexed
+                        # session (it owns the master and the ControlPath), so they go to plain ssh as well.
+                        w) return 1;;
+                        M) return 1;;
+                        S) return 1;;
                         # The user provided an invalid option; kick it to real ssh.
                         \?) return 1;;
                         # The user omitted a required argument; kick it to real ssh.
@@ -1281,6 +1292,44 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
                 warp_ipqos_args=(-o "IPQoS=af21 af21")
             fi
 
+            # #1035: decide AFTER connecting, with ONE authentication. The bootstrap below is a POSIX
+            # shell script, which a Windows OpenSSH server (default shell cmd.exe or PowerShell)
+            # cannot run ("'export' is not recognized", then the connection closes). So first start
+            # the Phosphor-owned ControlMaster in the background: the user's authentication (password,
+            # key passphrase, host-key prompt) happens here, in the foreground terminal -- `-f` only
+            # backgrounds ssh once it is authenticated -- and Ctrl-C aborts it like any ssh. Then
+            # ask the remote what shell family it runs over that master (no second connection, no
+            # second authentication) and start the session as a managed POSIX bootstrap or as a
+            # plain interactive session. `ControlPersist` is only the safety net: a master that
+            # nobody connects to (interrupted between steps, shell killed) exits by itself.
+            # `ClearAllForwardings` keeps -L/-R/-D on the session client alone (it asks the master),
+            # so a forward is not requested twice.
+            local warp_owns_master=0
+            if [[ "$control_master_mode" == "yes" ]]; then
+                command ssh ${warp_ipqos_args[@]+"${warp_ipqos_args[@]}"} -o ControlMaster=yes -o ControlPath="$control_path" -o ControlPersist=10 -o ClearAllForwardings=yes -N -f "${@:1}"
+                local warp_master_rc=$?
+                if [[ $warp_master_rc -ne 0 ]]; then
+                    # The connection failed (ssh already printed why) or was interrupted.
+                    return $warp_master_rc
+                fi
+                if [[ -S "${control_path/#\~/$HOME}" ]]; then
+                    warp_owns_master=1
+                    control_master_mode="no"
+                fi
+                # No socket (e.g. ControlPath too long): fall through to the single-connection
+                # managed session below; the idle background master expires via ControlPersist.
+            fi
+            if [[ $warp_owns_master -eq 1 || "$external_control_master" == "true" ]]; then
+                if warp_ssh_remote_is_non_posix "$control_path" "${@:1}"; then
+                    command ssh -o ControlMaster=no -o ControlPath="$control_path" -t "${@:1}"
+                    local warp_plain_rc=$?
+                    if [[ $warp_owns_master -eq 1 ]]; then
+                        warp_ssh_stop_master "$control_path" "${@:1}"
+                    fi
+                    return $warp_plain_rc
+                fi
+            fi
+
             # Keep remote commands up-to-date with shell.rs & bash.sh.
             # Note that in this command, we're passing a string to the remote shell. Any variable expansions need to be
             # escaped with "''" to avoid the local shell from expanding them before they're passed to the remote shell.
@@ -1367,6 +1416,45 @@ esac
 "
             command ssh ${warp_ipqos_args[@]+"${warp_ipqos_args[@]}"} -o ControlMaster=$control_master_mode -o ControlPath="$control_path" \
             -t "${@:1}" "$warp_remote_bootstrap"
+            local warp_session_rc=$?
+            # The session is over: take the master down with it (the app's own pane-close /
+            # ExitShell cleanup does the same by socket path; both are idempotent).
+            if [[ $warp_owns_master -eq 1 ]]; then
+                warp_ssh_stop_master "$control_path" "${@:1}"
+            fi
+            return $warp_session_rc
+        }
+
+        # #1035: 0 when the remote answers like a non-POSIX shell (cmd.exe or PowerShell), asked over
+        # the already-authenticated master at "$1" (no new connection). POSIX shells print the
+        # literal %COMSPEC% and an empty $PSVersionTable; cmd.exe expands %COMSPEC% and leaves
+        # $PSVersionTable; PowerShell leaves %COMSPEC% and expands $PSVersionTable. Anything else
+        # (timeout after 5 s, failure, csh/fish errors) is inconclusive and returns 1, i.e. the
+        # managed session as before.
+        function warp_ssh_remote_is_non_posix() {
+            local control_path="$1"
+            shift
+            local out
+            out=$( {
+                command ssh -o BatchMode=yes -o ControlMaster=no -o ControlPath="$control_path" "$@" -T 'echo warp-probe-%COMSPEC%-$PSVersionTable' </dev/null 2>/dev/null &
+                probe_pid=$!
+                ( command -p sleep 5; kill $probe_pid ) >/dev/null 2>&1 &
+                killer_pid=$!
+                wait $probe_pid
+                kill $killer_pid
+            } 2>/dev/null )
+            case "$out" in
+                *[Hh]ash[Tt]able* | *[Cc][Mm][Dd].[Ee][Xx][Ee]-'$PSVersionTable'*) return 0 ;;
+            esac
+            return 1
+        }
+
+        # Ends the Phosphor-owned master at "$1" (the remaining args resolve the destination).
+        function warp_ssh_stop_master() {
+            local control_path="$1"
+            shift
+            command ssh -O exit -o ControlPath="$control_path" "$@" >/dev/null 2>&1
+            return 0
         }
 
         function __warp_ssh_impl() {

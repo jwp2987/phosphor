@@ -509,7 +509,7 @@ impl ViewSnapshot {
         // buffer itself is never truncated.
         let stylized_lines = rows
             .map(|row| {
-                let chars = display_map
+                let mut chars = display_map
                     .chars_with_styles_at(DisplayPoint::new(row, 0), app)
                     .unwrap()
                     // Stop when we hit the end of the row.
@@ -523,7 +523,32 @@ impl ViewSnapshot {
                 } else {
                     chars.len()
                 };
-                (chars, true_len)
+                // #1036: lay out the START and the END of an over-long row, not only its
+                // start. Text pasted or typed at the end of a huge row is where the cursor is;
+                // laying out only the head left it invisible until Ctrl-End. The middle is
+                // elided and the tail keeps its true offsets (`with_elided_middle`).
+                let mut elided_head = None;
+                if true_len > MAX_LAID_OUT_ROW_CHARS {
+                    let head = MAX_LAID_OUT_ROW_CHARS - ROW_TAIL_LAID_OUT_CHARS;
+                    let tail = display_map
+                        .chars_with_styles_at(
+                            DisplayPoint::new(row, (true_len - ROW_TAIL_LAID_OUT_CHARS) as u32),
+                            app,
+                        )
+                        .map(|chars| {
+                            chars
+                                .take_while(|c| c.char() != '\n')
+                                .take(ROW_TAIL_LAID_OUT_CHARS)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    if tail.len() == ROW_TAIL_LAID_OUT_CHARS {
+                        chars.truncate(head);
+                        chars.extend(tail);
+                        elided_head = Some(head);
+                    }
+                }
+                (chars, true_len, elided_head)
             })
             .collect::<Vec<_>>();
 
@@ -536,7 +561,7 @@ impl ViewSnapshot {
         let layouts = stylized_lines
             .into_par_iter()
             .enumerate()
-            .map(|(cur_line_idx, (stylized_chars, true_len))| {
+            .map(|(cur_line_idx, (stylized_chars, true_len, elided_head))| {
                 let laid_chars = stylized_chars.len();
                 let (line, style_runs) = line_and_style_runs(
                     stylized_chars
@@ -562,7 +587,10 @@ impl ViewSnapshot {
                     (cur_line_idx == 0).then_some(left_notch_width_px),
                     &text_layout_system,
                 );
-                (frame, (true_len > laid_chars).then_some((laid_chars, true_len)))
+                let elided = elided_head.map(|head| (head, laid_chars, true_len));
+                let capped =
+                    (elided.is_none() && true_len > laid_chars).then_some((laid_chars, true_len));
+                (frame, capped, elided)
             })
             .collect::<Vec<_>>();
 
@@ -570,15 +598,20 @@ impl ViewSnapshot {
         // `Sync`, so it can't be used inside the parallel layout above.
         let layouts = layouts
             .into_iter()
-            .map(|(frame, capped)| match capped {
-                Some((laid_chars, true_len)) => {
-                    Arc::new(frame.with_unlaid_tail(laid_chars, true_len, |font_id| {
-                        font_cache
-                            .glyph_for_char(font_id, ' ', false)
-                            .map(|(glyph_id, _)| glyph_id)
-                    }))
+            .map(|(frame, capped, elided)| {
+                if let Some((head, laid_len, true_len)) = elided {
+                    return Arc::new(frame.with_elided_middle(head, laid_len, true_len));
                 }
-                None => frame,
+                match capped {
+                    Some((laid_chars, true_len)) => {
+                        Arc::new(frame.with_unlaid_tail(laid_chars, true_len, |font_id| {
+                            font_cache
+                                .glyph_for_char(font_id, ' ', false)
+                                .map(|(glyph_id, _)| glyph_id)
+                        }))
+                    }
+                    None => frame,
+                }
             })
             .collect();
 
@@ -697,6 +730,10 @@ impl ViewSnapshot {
 /// #968). Rows past it are laid out up to the cap and keep true offsets via
 /// `TextFrame::with_unlaid_tail`. Large enough for the #864 30k-char single line.
 pub(crate) const MAX_LAID_OUT_ROW_CHARS: usize = 32 * 1024;
+
+/// Of the [`MAX_LAID_OUT_ROW_CHARS`] laid out for an over-long row, how many come from the END of
+/// the row (#1036), so the cursor and what is typed after a huge paste are visible.
+pub(crate) const ROW_TAIL_LAID_OUT_CHARS: usize = 4 * 1024;
 
 /// Collects one row's characters into the string to lay out, together with the style
 /// runs (char-index ranges, as `layout_text` expects) that describe it.

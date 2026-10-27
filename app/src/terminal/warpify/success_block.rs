@@ -92,12 +92,24 @@ impl WarpifySuccessBlock {
                 // If warpification wasn't triggered automatically, show a snippet about
                 // how to automatically warpify.
                 (!subshell_info.was_triggered_by_rc_file_snippet).then(|| {
-                    let (command, is_executable) = subshell_bootstrap_success_block_bytes(
-                        &subshell_info,
-                        shell.shell_type(),
-                        remote_os,
-                        disable_tmux,
-                    );
+                    let (command, is_executable) = if cfg!(windows)
+                        && matches!(source, WarpificationSource::Subshell)
+                        && shell.shell_type() == ShellType::PowerShell
+                        && subshell_info.env_var_collection_name.is_none()
+                    {
+                        // A local PowerShell on a Windows host: `$PROFILE`, no `uname`.
+                        (
+                            super::windows_powershell_subshell_success_block_bytes(disable_tmux),
+                            true,
+                        )
+                    } else {
+                        subshell_bootstrap_success_block_bytes(
+                            &subshell_info,
+                            shell.shell_type(),
+                            remote_os,
+                            disable_tmux,
+                        )
+                    };
                     if command.is_empty() {
                         return ("".into(), false);
                     }

@@ -31,12 +31,12 @@ pub fn ssh_args(socket_path: &Path) -> Vec<String> {
 /// SSH `ControlMaster` managing `socket_path` to exit immediately,
 /// without waiting for multiplexed channels to finish draining.
 ///
-/// The user's interactive ssh is spawned with `-o ControlMaster=yes` by
-/// `warp_ssh_helper`, so it is both the interactive session and the
-/// multiplex master. When the user's remote shell exits, that ssh can
-/// hang waiting for half-closed slave channels (e.g. from
-/// `ssh ... remote-server-proxy`) to finish cleanup on the remote
-/// side. Sending `-O exit` bypasses that wait.
+/// `warp_ssh_helper` starts the master as its own background process
+/// (`ssh -o ControlMaster=yes -N -f`, #1035) and runs the interactive session as a multiplex
+/// client of it. The master can outlive the session: it waits for the server to close
+/// half-closed channels (e.g. from `ssh ... remote-server-proxy`), and a Windows OpenSSH server
+/// never closes an abandoned session channel at all, so `ControlPersist` alone does not expire
+/// it. Sending `-O exit` ends it right away.
 ///
 /// **Only safe to call once the user's shell has already exited** --
 /// this tears down the interactive ssh outright. In practice it is
@@ -60,7 +60,7 @@ pub async fn stop_control_master(socket_path: &Path) {
 /// to the pty. Only a real Unix socket is removed: the path is inspected with
 /// `symlink_metadata` (never following symlinks), and regular files, directories and symlinks
 /// are left alone.
-pub(crate) fn remove_stale_control_socket(socket_path: &Path) {
+pub fn remove_stale_control_socket(socket_path: &Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileTypeExt as _;

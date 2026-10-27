@@ -232,7 +232,7 @@ impl WarpifyState {
         terminal_model: Arc<FairMutex<TerminalModel>>,
         ctx: &mut ViewContext<TerminalView>,
     ) {
-        let Some(command) = subshell_info.spawning_command.split_whitespace().next() else {
+        let Some(command) = super::subshell_display_name(&subshell_info.spawning_command) else {
             return;
         };
         let separator_id = self.subshell_separator_state.next_separator_id();

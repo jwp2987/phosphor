@@ -28,7 +28,7 @@ up the PTY as DCS/OSC escape sequences:
 - `SourcedRcFileForWarp` — "an rc file I control just got sourced, adopt me".
 
 The scripts live in `app/assets/bundled/bootstrap/`: `bash.sh` + `bash_body.sh`,
-`zsh.sh` + `zsh_body.sh`, `fish.sh`, `pwsh.ps1`, plus the small
+`zsh.sh` + `zsh_body.sh`, `fish.sh`, `pwsh.ps1`, `nu.nu`, plus the small
 `*_init_shell` / `*_init_subshell` stubs that emit the first hook.
 
 Once it is on you get: blocks, per-block exit status, the Phosphor input editor
@@ -38,7 +38,7 @@ highlighting, and correct working-directory tracking for new tabs and panes.
 ### How do I turn it on for a local shell?
 
 You do not. Phosphor launches your login shell itself with the bootstrap
-attached, so a local `bash`, `zsh`, `fish` or `pwsh` tab is integrated from the
+attached, so a local `bash`, `zsh`, `fish`, `pwsh` or `nu` tab is integrated from the
 first prompt. Concretely:
 
 | shell | how Phosphor starts it |
@@ -47,6 +47,7 @@ first prompt. Concretely:
 | zsh | `zsh -c "exec -a -zsh <shell> -g --no-rcs"`, then the bootstrap replays your startup files |
 | fish | `fish --no-config -c "exec <shell> -f no-mark-prompt --login --init-command <init script>"` |
 | pwsh | `-NoLogo -NoProfile -NoExit -EncodedCommand <init script>` |
+| nu | `nu --login --execute <init script>` — runs after your `env.nu` / `config.nu` / `login.nu`, before the first prompt; the bootstrap is then `source`d from a temp file |
 
 Two consequences worth knowing. Bash sessions are **not login shells** (bash
 refuses a custom rcfile in a login shell), so the bootstrap prints the MoTD
@@ -78,6 +79,8 @@ Phosphor then pastes the subshell bootstrap into the running program's stdin.
 The built-in patterns (`app/src/terminal/warpify/settings.rs`) are:
 
 - a bare shell path: `bash`, `zsh`, `fish`, `/bin/zsh`, `./some/path/fish`
+- `nu` / `nushell`, alone or with `-l`, `-i`, `-n`, `--no-config-file`,
+  `--no-history`, `--no-std-lib` (any other argument runs code and exits)
 - `docker run … bash` and `docker exec … bash` (also `zsh`/`fish`, optionally
   quoted)
 - `poetry shell`, `pipenv shell`
@@ -227,6 +230,7 @@ integration off and `warpify.ssh.use_ssh_tmux_wrapper` to pick the mechanism.
 | **bash** | yes | yes | yes | Uses a vendored copy of `bash-preexec`. Not a login shell; MoTD printed by the bootstrap. Bootstrap commands are hidden from history via `HISTCONTROL=ignorespace`. |
 | **zsh** | yes | yes | yes | Started `--no-rcs -g`; `/etc/zshenv` still runs. `PS2` is blanked during bootstrap and restored as `ORIGINAL_PS2`. On the remote side the wrapper writes a temporary `ZDOTDIR`. |
 | **fish** | yes | yes | no | Started with `-f no-mark-prompt` to suppress fish's OSC 133, whose partial implementation breaks block detection. The SSH helper's remote branch handles only bash and zsh, so an SSH into a fish login shell falls through to plain `ssh`. |
+| **nushell** | yes | yes | no | Written and tested against nushell 0.116.1. Started `--login --execute`; hooks are `$env.config.hooks.pre_prompt` / `pre_execution` and key bindings (Ctrl-P clears the line, Alt-i reports the line, Alt-p / Alt-w switch prompts), so Ctrl-P is not "history up" in a Phosphorized nushell. The bootstrap lines are typed with a leading space and the bootstrap sets `history.ignore_space_prefixed` until it is done, so only one short line can reach the history of a user who turned that option off (and none otherwise). nushell cannot evaluate a string, so a subshell is set up by short typed lines that write a file to `$nu.cache-dir` and `source` it. Commands Phosphor runs for itself (completion generators, probes) are POSIX and are run with `bash -c` — never in nushell. Completion quotes paths (`"my dir/"`, or a backtick string for `~/…`), it never backslash-escapes. Not done: the SSH helper and the update/dist-upgrade helpers `fish.sh` carries; the agent's pager suppression (no wrapper, since nushell scopes `cd` and `$env` to blocks). |
 | **PowerShell** | yes | banner only | in-band only | `-NoProfile` plus an `-EncodedCommand` init script (UTF-16LE base64 — `-Command` quoting is broken on PS 7.6). If `ExecutionPolicy` is `Restricted` at machine or user scope, integration cannot start and PowerShell says so. No subshell success block, no Auto-Warpify snippet. The subshell banner is hard-coded to appear for interactive `ssh` commands from pwsh because in-band generators are the only workable route there. |
 
 WSL is supported for bash/zsh/fish only; PowerShell under WSL is not

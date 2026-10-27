@@ -582,12 +582,12 @@ fn test_zsh_hooks_survive_strict_options_and_failing_precmd() {
     );
 }
 
-/// #935: a pasted multi-line command must title the tab with a visible separator instead of
-/// running the lines together ("gradle onegradle two"). Runs the real `warp_title` of the bash
-/// bootstrap with a stub `__warp_emit`; skipped, visibly, when bash is missing.
+/// #935: a pasted multi-line command must title the tab with its first line and an ellipsis
+/// instead of running the lines together ("gradle onegradle two"). Runs the real `warp_title`
+/// of the bash bootstrap with a stub `__warp_emit`; skipped, visibly, when bash is missing.
 #[cfg(unix)]
 #[test]
-fn bash_warp_title_joins_multiline_commands_with_a_separator() {
+fn bash_warp_title_shows_first_line_and_ellipsis_for_multiline_commands() {
     use std::process::Command;
 
     let bash = include_str!("../../assets/bundled/bootstrap/bash_body.sh");
@@ -602,8 +602,9 @@ fn bash_warp_title_joins_multiline_commands_with_a_separator() {
     let function = &bash[start..end];
     let script = format!("__warp_emit() {{ printf \"$@\"; }}\n{function}\nwarp_title \"$1\"\n");
     for (input, expected) in [
-        ("gradle one\ngradle two", "gradle one ; gradle two"),
-        ("a\r\nb", "a ; b"),
+        ("gradle one\ngradle two", "gradle one…"),
+        ("a\r\nb", "a…"),
+        ("echo PL1\necho PL2\necho PL3", "echo PL1…"),
         ("ls -la", "ls -la"),
     ] {
         let output = match Command::new("bash")
@@ -1238,11 +1239,14 @@ fn ssh_wrapper_job_text_is_short_and_remote_script_still_arrives() {
         // The statement that runs `command ssh ... -t <args>` with the remote script.
         let start = source
             .find(if fish {
-                "command ssh $warp_ipqos_args -o ControlMaster"
+                "$warp_ipqos_args -o ControlMaster=$control_master_mode"
             } else {
-                "command ssh ${warp_ipqos_args[@]+"
+                "-o ControlMaster=$control_master_mode"
             })
             .unwrap_or_else(|| panic!("{name}: the wrapper's ssh invocation moved"));
+        // (#1035: the background-master start before it, `... -N -f "$@"`, is a separate short
+        // ssh call with no remote script; this is the session invocation that carries it.)
+        let start = source[..start].rfind("command ssh").unwrap();
         let statement: String = source[start..]
             .lines()
             .take(2)
@@ -1325,6 +1329,372 @@ fn ssh_wrapper_job_text_is_short_and_remote_script_still_arrives() {
             "{name}: the remote script did not reach ssh intact: {remote:?}"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// #1035 / #1039: the wrapper decides AFTER connecting, with ONE authentication. It starts the
+/// Phosphor-owned ControlMaster in the background (`-N -f`), asks the remote what shell family it
+/// runs over that master, then runs either the managed POSIX session or a plain interactive
+/// session over the same master, and finally takes the master down. A stub `ssh` records every
+/// invocation and simulates the master start, the probe answer and failures.
+///
+/// Every ssh the wrapper runs (master, probe, session, `-O exit`) must carry the user's own
+/// arguments (`-p 22 user@host` here): a helper ssh without them would not see the user's
+/// known_hosts / jump host / port (#1039).
+#[test]
+#[cfg(unix)]
+fn ssh_wrapper_decides_after_connecting_over_one_master() {
+    use std::process::Command;
+
+    if Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("skipping: python3 is needed to bind the stub's control socket");
+        return;
+    }
+
+    // (case, master behaviour, probe output, expected session: "plain" | "managed" | "none",
+    //  expected helper exit status, extra ssh args)
+    struct Case {
+        name: &'static str,
+        master: &'static str,
+        probe: &'static str,
+        session: &'static str,
+        status: i32,
+        extra: &'static [&'static str],
+    }
+    let cases = [
+        Case {
+            name: "windows-cmd",
+            master: "ok",
+            probe: "warp-probe-C:\\Windows\\system32\\cmd.exe-$PSVersionTable",
+            session: "plain",
+            status: 0,
+            extra: &[],
+        },
+        Case {
+            name: "windows-powershell",
+            master: "ok",
+            probe: "warp-probe-%COMSPEC%-System.Management.Automation.PSVersionHashTable",
+            session: "plain",
+            status: 0,
+            extra: &[],
+        },
+        Case {
+            name: "posix",
+            master: "ok",
+            probe: "warp-probe-%COMSPEC%-",
+            session: "managed",
+            status: 0,
+            extra: &[],
+        },
+        Case {
+            name: "inconclusive",
+            master: "ok",
+            probe: "",
+            session: "managed",
+            status: 0,
+            extra: &[],
+        },
+        Case {
+            name: "windows-behind-jump",
+            master: "ok",
+            probe: "warp-probe-C:\\Windows\\system32\\cmd.exe-$PSVersionTable",
+            session: "plain",
+            status: 0,
+            extra: &["-J", "jump"],
+        },
+        Case {
+            name: "posix-behind-jump",
+            master: "ok",
+            probe: "warp-probe-%COMSPEC%-",
+            session: "managed",
+            status: 0,
+            extra: &["-J", "jump"],
+        },
+        // The connection failed: ssh's own error and status come back, nothing else runs.
+        Case {
+            name: "auth-failure",
+            master: "fail255",
+            probe: "",
+            session: "none",
+            status: 255,
+            extra: &[],
+        },
+        // Ctrl-C while the master authenticates: ssh dies with 130, nothing else may run (no
+        // probe, no session) and no master is left to clean up.
+        Case {
+            name: "interrupted",
+            master: "fail130",
+            probe: "",
+            session: "none",
+            status: 130,
+            extra: &[],
+        },
+    ];
+
+    for (name, source, kind) in [
+        (
+            "bash",
+            include_str!("../../assets/bundled/bootstrap/bash_body.sh"),
+            0,
+        ),
+        (
+            "zsh",
+            include_str!("../../assets/bundled/bootstrap/zsh_body.sh"),
+            1,
+        ),
+        (
+            "fish",
+            include_str!("../../assets/bundled/bootstrap/fish.sh"),
+            2,
+        ),
+    ] {
+        if Command::new(name).arg("--version").output().is_err() {
+            eprintln!("skipping {name}: not installed");
+            continue;
+        }
+        // From the helper through the probe / stop-master helpers that follow it.
+        let (open, close) = match kind {
+            0 => (
+                "        function warp_ssh_helper() {",
+                "\n        function __warp_ssh_impl",
+            ),
+            1 => (
+                "      function warp_ssh_helper() {",
+                "\n      function ssh() {",
+            ),
+            _ => ("    function warp_ssh_helper", "\n    function ssh\n"),
+        };
+        let from = source.find(open).unwrap();
+        let to = from + source[from..].find(close).unwrap();
+        let function = source[from..to].to_owned();
+
+        // Each case runs twice: with an absolute SSH_SOCKET_DIR, and with the literal `~/.ssh`
+        // the app really exports (HOME is a temp dir). With the tilde, the wrapper must still
+        // find the master's socket (`-S` test), so the probe and the single-connection session
+        // happen; it passes the tilde path on to ssh unexpanded, as ssh expands it itself.
+        for (case, tilde) in cases.iter().flat_map(|c| [(c, false), (c, true)]) {
+            let dir = std::env::temp_dir().join(format!(
+                "p1035-{name}-{}-{}{}",
+                cases.iter().position(|c| c.name == case.name).unwrap(),
+                std::process::id(),
+                if tilde { "t" } else { "" }
+            ));
+            std::fs::remove_dir_all(&dir).ok();
+            let socks = if tilde {
+                dir.join("home/.ssh")
+            } else {
+                dir.join("socks")
+            };
+            std::fs::create_dir_all(&socks).unwrap();
+            let socket_dir_literal = if tilde {
+                "~/.ssh".to_owned()
+            } else {
+                socks.display().to_string()
+            };
+            let prelude = match kind {
+                2 => format!(
+                    "function warp_init_shell; echo init-$argv; end; function warp_send_json_message; end; set -g SSH_SOCKET_DIR '{}'; set -g WARP_SESSION_ID 77; set -g WARP_HONOR_PS1 1;",
+                    socket_dir_literal
+                ),
+                _ => format!(
+                    "init_shell_hook(){{ echo hook-$1; }}; warp_send_json_message(){{ :; }}; SSH_SOCKET_DIR='{}'; WARP_SESSION_ID=77; WARP_HONOR_PS1=1;",
+                    socket_dir_literal
+                ),
+            };
+            // The stub records every invocation (arguments one per line after a `CALL` marker),
+            // fails -G, and otherwise behaves like ssh would:
+            //   -O exit  -> removes the socket and records;
+            //   -N       -> master start: fail or bind the ControlPath socket;
+            //   probe    -> prints $PROBE;
+            //   other    -> the session.
+            let stub = dir.join("ssh");
+            std::fs::write(
+                &stub,
+                r#"#!/bin/sh
+printf 'CALL\n' >> "$OUT"
+for a in "$@"; do printf '%s\n' "$a" >> "$OUT"; done
+case " $* " in
+  *" -G "*) exit 1;;
+  *" -O exit "*) for a in "$@"; do case "$a" in ControlPath=*) p="${a#ControlPath=}"; case "$p" in "~"*) p="$HOME${p#\~}";; esac; rm -f "$p";; esac; done; exit 0;;
+  *" -N "*)
+    case "$MASTER" in
+      fail255) echo "ssh: connect to host failed" >&2; exit 255;;
+      fail130) exit 130;;
+    esac
+    for a in "$@"; do case "$a" in ControlPath=*) p="${a#ControlPath=}"; case "$p" in "~"*) p="$HOME${p#\~}";; esac; python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$p";; esac; done
+    exit 0;;
+  *" -T "*) printf '%s\n' "$PROBE"; exit 0;;
+esac
+exit 0
+"#,
+            )
+            .unwrap();
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let extra = case.extra.join(" ");
+            let exit_status = if kind == 2 { "$status" } else { "$?" };
+            let script = format!(
+                "{prelude}\n{function}\nwarp_ssh_helper -p 22 {extra} user@host\nexit {exit_status}"
+            );
+            let mut command = Command::new(name);
+            if kind == 2 {
+                command.args(["--no-config", "-c", &script]);
+            } else {
+                command.args(["-c", &script]);
+            }
+            let out_file = dir.join("out");
+            if tilde {
+                command.env("HOME", dir.join("home"));
+            } else {
+                // The app exports an ABSOLUTE SSH_SOCKET_DIR: a $HOME that differs from where the
+                // socket lives (isolated HOME, sudo -E, containers) must change nothing, and the
+                // master/probe/session still make exactly one connection.
+                std::fs::create_dir_all(dir.join("unrelated-home")).unwrap();
+                command.env("HOME", dir.join("unrelated-home"));
+            }
+            let status = command
+                .env(
+                    "PATH",
+                    format!(
+                        "{}:{}",
+                        dir.display(),
+                        std::env::var("PATH").unwrap_or_default()
+                    ),
+                )
+                .env("OUT", &out_file)
+                .env("MASTER", case.master)
+                .env("PROBE", case.probe)
+                .stdin(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            let recorded = std::fs::read_to_string(&out_file).unwrap_or_default();
+            assert_eq!(
+                status.code(),
+                Some(case.status),
+                "{name}/{}: helper status; calls: {recorded:?}",
+                case.name
+            );
+            let all_calls: Vec<&str> = recorded
+                .split("CALL\n")
+                .filter(|call| !call.is_empty())
+                .collect();
+            // `ssh -G` config lookups are local-only; they still must carry the user's arguments.
+            let calls: Vec<&str> = all_calls
+                .iter()
+                .copied()
+                .filter(|call| !call.starts_with("-G\n"))
+                .collect();
+            let mut user_args = String::from("-p\n22\n");
+            for extra in case.extra {
+                user_args.push_str(extra);
+                user_args.push('\n');
+            }
+            user_args.push_str("user@host\n");
+            // #1039: every helper ssh (master, probe, session, -O exit) carries the user's own
+            // arguments, so their known_hosts / port / jump host apply to it.
+            for call in &all_calls {
+                assert!(
+                    call.contains(&user_args),
+                    "{name}/{}: an ssh call without the user's arguments: {call:?}",
+                    case.name
+                );
+            }
+            let is_master = |call: &&str| call.contains("-N\n") && call.contains("-f\n");
+            let masters = calls.iter().filter(|call| is_master(*call)).count();
+            assert_eq!(
+                masters, 1,
+                "{name}/{}: exactly one master: {recorded:?}",
+                case.name
+            );
+            let master = calls.iter().find(|call| is_master(*call)).unwrap();
+            assert!(
+                master.contains("ControlMaster=yes") && master.contains("ControlPersist="),
+                "{name}/{}: the master is Phosphor-owned with a safety-net persist: {master:?}",
+                case.name
+            );
+            let exits = calls.iter().filter(|c| c.contains("-O\nexit\n")).count();
+            let probes = calls.iter().filter(|c| c.contains("-T\n")).count();
+            let sessions: Vec<&&str> = calls
+                .iter()
+                .filter(|c| c.contains("-t\n") && !is_master(c))
+                .collect();
+            match case.session {
+                "none" => {
+                    assert_eq!(
+                        (calls.len(), probes, exits),
+                        (1, 0, 0),
+                        "{name}/{}: a failed connect runs nothing else: {recorded:?}",
+                        case.name
+                    );
+                    continue;
+                }
+                kind_of_session => {
+                    assert_eq!(probes, 1, "{name}/{}: one probe: {recorded:?}", case.name);
+                    assert_eq!(
+                        exits, 1,
+                        "{name}/{}: the master is taken down at the end: {recorded:?}",
+                        case.name
+                    );
+                    assert_eq!(sessions.len(), 1, "{name}/{}: {recorded:?}", case.name);
+                    let session = sessions[0];
+                    assert!(
+                        session.contains("ControlMaster=no")
+                            && session.contains(&format!("ControlPath={socket_dir_literal}/77\n")),
+                        "{name}/{}: the session runs over the master: {session:?}",
+                        case.name
+                    );
+                    // The exit is the last call, after the session.
+                    assert!(
+                        calls.last().unwrap().contains("-O\nexit\n"),
+                        "{name}/{}: -O exit comes last: {recorded:?}",
+                        case.name
+                    );
+                    if kind_of_session == "plain" {
+                        assert!(
+                            !session.contains("export TERM_PROGRAM"),
+                            "{name}/{}: a non-POSIX remote must not get the POSIX bootstrap: {session:?}",
+                            case.name
+                        );
+                    } else {
+                        assert!(
+                            session.contains("export TERM_PROGRAM='WarpTerminal'"),
+                            "{name}/{}: a POSIX remote keeps the managed session: {session:?}",
+                            case.name
+                        );
+                    }
+                }
+            }
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+}
+
+/// #1039: no ssh the wrapper itself runs may omit the user's arguments. The old pre-connect
+/// banner probe (ControlPath=none, its own option set) is gone; every remaining helper takes
+/// the original arguments through.
+#[test]
+fn ssh_wrappers_have_no_pre_connect_banner_probe() {
+    for (name, script) in [
+        (
+            "bash",
+            include_str!("../../assets/bundled/bootstrap/bash_body.sh"),
+        ),
+        (
+            "zsh",
+            include_str!("../../assets/bundled/bootstrap/zsh_body.sh"),
+        ),
+        (
+            "fish",
+            include_str!("../../assets/bundled/bootstrap/fish.sh"),
+        ),
+    ] {
+        assert!(
+            !script.contains("remote software version")
+                && !script.contains("PreferredAuthentications=none"),
+            "{name}: the unauthenticated pre-connect banner probe must stay removed"
+        );
     }
 }
 
@@ -1475,6 +1845,16 @@ fn ssh_wrapper_only_wraps_interactive_logins() {
         &["-tt", "host"],
         &["-A", "-v", "host"],
         &["user@host"],
+        // #1003: jump-host logins are interactive logins and are wrapped.
+        &["-J", "j", "host"],
+        &["-J", "u@j:2222", "host"],
+        &["-J", "j1,j2", "host"],
+        &["-Jj", "host"],
+        &["-J", "j", "-p", "2200", "-A", "host"],
+        &["-o", "ProxyJump=j", "host"],
+        &["-oProxyJump=j", "host"],
+        &["-oProxyCommand=nc %h %p", "host"],
+        &["-o", "ProxyCommand=nc %h %p", "host"],
     ];
     let passthrough: &[&[&str]] = &[
         &["-O", "check", "host"],
@@ -1493,7 +1873,63 @@ fn ssh_wrapper_only_wraps_interactive_logins() {
         &["-T", "host"],
         &["host", "ls"],
         &["-p", "22", "host", "uptime"],
+        // #1003: a jump host changes nothing about what makes a session non-interactive.
+        &["-J", "j", "host", "cmd"],
+        &["-J", "j", "-N", "host"],
+        &["-J", "j", "-O", "check", "host"],
+        &["-J", "j", "-W", "h:22", "host"],
+        &["-J", "j", "-T", "host"],
+        &["-J", "j", "-G", "host"],
+        &["-J", "j", "-fN", "host"],
+        &["-o", "ProxyJump=j", "-N", "host"],
+        &["-oProxyJump=j", "host", "cmd"],
+        // #1035: -w (tun device), -M and -S (user-chosen master / control socket) cannot ride
+        // the wrapper's multiplexed session, so they run as plain ssh.
+        &["-w", "any", "host"],
+        &["-w", "0:0", "host"],
+        &["-M", "host"],
+        &["-S", "/tmp/ctl", "host"],
     ];
+    // The Rust typing gate (`parse_interactive_ssh_command`) must agree with the shell wrappers
+    // on every form above. (ssh word-splits the same way here: no argument contains a space
+    // except the ProxyCommand ones, which are quoted for the parser.)
+    let as_command = |args: &[&str]| {
+        let words = args
+            .iter()
+            .map(|a| {
+                if a.contains(' ') {
+                    format!("'{a}'")
+                } else {
+                    (*a).to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("ssh {words}")
+    };
+    for args in wrapped {
+        assert!(
+            crate::terminal::ssh::util::parse_interactive_ssh_command(&as_command(args)).is_some(),
+            "parser: {args:?} must be interactive"
+        );
+    }
+    for args in passthrough {
+        assert!(
+            crate::terminal::ssh::util::parse_interactive_ssh_command(&as_command(args)).is_none(),
+            "parser: {args:?} must not be interactive"
+        );
+    }
+    // The jump spec is an option argument, never mistaken for the destination.
+    for (cmd, host) in [
+        ("ssh -J j host", "host"),
+        ("ssh -J u@j:2222 host", "host"),
+        ("ssh -J j1,j2 u@host", "u@host"),
+        ("ssh -Jj host", "host"),
+        ("ssh -o ProxyJump=j host", "host"),
+    ] {
+        let parsed = crate::terminal::ssh::util::parse_interactive_ssh_command(cmd).unwrap();
+        assert_eq!(parsed.host.as_deref(), Some(host), "{cmd}");
+    }
     for (shell, source, closer) in sources {
         if std::process::Command::new(shell)
             .arg("-c")
@@ -1876,6 +2312,837 @@ fn test_real_bootstrap_body_survives_errexit_nounset_pipefail_rc_settings() {
                     assert!(restored, "{case}: set -eu was not put back: {all:?}");
                 }
                 std::fs::remove_dir_all(&dir).ok();
+            }
+        });
+    });
+}
+
+/// #974: the typed init lines are the first thing a shell with `setopt PRINT_EXIT_VALUE` runs, and
+/// `if [ cond ]; then ..; fi` with a false condition counts as a failed statement there, so it
+/// printed `zsh: exit 1`. A source check that needs no shell.
+#[test]
+fn zsh_init_lines_have_no_failing_condition_statement() {
+    for file in [
+        include_str!("../../assets/bundled/bootstrap/zsh_init_shell.sh"),
+        include_str!("../../assets/bundled/bootstrap/zsh_init_subshell.sh"),
+    ] {
+        for line in file.lines().filter(|l| !l.trim_start().starts_with('#')) {
+            assert!(
+                !line.trim_start().starts_with("if [ "),
+                "a bare `if [ .. ]` prints `zsh: exit 1` under PRINT_EXIT_VALUE; use `case`: {line}"
+            );
+        }
+    }
+}
+
+/// #974: the MAIN (non-subshell) zsh bootstrap -- the init-shell line, then the real `zsh.sh` --
+/// typed into a real interactive zsh whose rc only does `setopt PRINT_EXIT_VALUE`. Nothing of
+/// Phosphor's may print `zsh: exit N` (the old init line's `if [ .. ]`, and zsh.sh's own `read`
+/// at the end of the heredoc, which fails by design, both did); the user's option must be back
+/// afterwards; and a plain `preexec()` function of the user's, which zsh runs before the
+/// `preexec_functions` array, must write after Phosphor's Preexec hook, not before it (that
+/// output was drawn inside the command header).
+#[test]
+#[cfg(unix)]
+fn test_main_zsh_bootstrap_prints_no_exit_value_and_orders_user_preexec() {
+    use std::process::Command;
+
+    let which = |bin: &str| -> Option<String> {
+        let out = Command::new("sh")
+            .args(["-c", &format!("command -v {bin}")])
+            .output()
+            .ok()?;
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        (!path.is_empty()).then_some(path)
+    };
+    let (Some(python), Some(zsh)) = (which("python3"), which("zsh")) else {
+        eprintln!("skipping: python3 or zsh not installed");
+        return;
+    };
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let _ = ctx;
+            let dir =
+                std::env::temp_dir().join(format!("phosphor-974-main-{}", std::process::id()));
+            std::fs::remove_dir_all(&dir).ok();
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join(".zshrc"),
+                "setopt PRINT_EXIT_VALUE\npreexec() { print -u2 -r -- \"USERPREEXEC-ERR\"; }\n",
+            )
+            .unwrap();
+            let init = init_shell_script_for_shell(
+                ShellType::Zsh,
+                &crate::ASSETS,
+                SessionId::from(4242u64),
+            );
+            std::fs::write(dir.join("lines.txt"), init).unwrap();
+            std::fs::write(
+                dir.join("script.txt"),
+                &*script_for_shell(ShellType::Zsh, &crate::ASSETS),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("cmds.txt"),
+                " echo ALIVE=$((40+2)).\n print -r -- \"OPT pev=$options[printexitvalue]\"\n",
+            )
+            .unwrap();
+            let out = Command::new(&python)
+                .arg("-I")
+                .arg("-c")
+                .arg(PTY_DRIVER)
+                .arg(&zsh)
+                .arg(&dir)
+                .arg(dir.join("lines.txt"))
+                .arg(dir.join("script.txt"))
+                .arg(dir.join("cmds.txt"))
+                .output()
+                .unwrap();
+            let all = String::from_utf8_lossy(&out.stdout).into_owned();
+            assert!(all.contains("ALIVE=42."), "the shell died: {all:?}");
+            assert!(
+                all.contains("426f6f747374726170706564"),
+                "the body never reported Bootstrapped: {all:?}"
+            );
+            assert!(
+                !all.contains("\nzsh: exit "),
+                "bootstrap printed an exit value: {all:?}"
+            );
+            assert!(
+                all.contains("OPT pev=on"),
+                "the user's PRINT_EXIT_VALUE was not put back: {all:?}"
+            );
+            // Preexec hook ("Preexec" in hex) for the last command, then the user's stderr.
+            let preexec = all
+                .rfind("7b22686f6f6b223a202250726565786563")
+                .expect("a Preexec hook");
+            let user_err = all
+                .rfind("USERPREEXEC-ERR")
+                .expect("the user's preexec ran");
+            assert!(
+                preexec < user_err,
+                "the user's preexec output came before the Preexec hook: {all:?}"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        });
+    });
+}
+
+// ---------------------------------------------------------------------------------------------
+// nushell
+// ---------------------------------------------------------------------------------------------
+
+/// The nushell shipped on this machine: `PATH`, then the Homebrew locations (Linuxbrew, Apple
+/// Silicon, Intel). `None` makes the real-shell tests below skip, visibly.
+#[cfg(unix)]
+fn find_nu() -> Option<std::path::PathBuf> {
+    let mut candidates: Vec<std::path::PathBuf> = std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join("nu"))
+                .collect()
+        })
+        .unwrap_or_default();
+    for fixed in [
+        "/home/linuxbrew/.linuxbrew/bin/nu",
+        "/opt/homebrew/bin/nu",
+        "/usr/local/bin/nu",
+    ] {
+        candidates.push(fixed.into());
+    }
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+/// Drives a real interactive `nu` on a pty (python3's `pty`, like the other real-shell tests): sends
+/// every step of the spec in order, answers nushell's cursor-position queries the way a terminal
+/// would, and prints a JSON object with the decoded Phosphor hooks (`hooks`) and the raw output.
+/// argv[1] is a JSON spec: `{nu, args, home, steps: [str | {"wait": secs}]}`.
+#[cfg(unix)]
+const NU_PTY_DRIVER: &str = r#"
+import json, os, pty, re, select, sys, time, fcntl, termios, struct
+spec = json.load(open(sys.argv[1]))
+home = spec["home"]
+env = dict(os.environ)
+env.update({"HOME": home, "XDG_CONFIG_HOME": home + "/cfg", "XDG_DATA_HOME": home + "/data",
+            "TERM": "xterm-256color", "LANG": "C.UTF-8", "WARP_IS_LOCAL_SHELL_SESSION": "1"})
+env.update(spec.get("env", {}))
+os.makedirs(home + "/cfg/nushell", exist_ok=True)
+open(home + "/cfg/nushell/env.nu", "w").write("")
+open(home + "/cfg/nushell/config.nu", "w").write(spec.get("config", ""))
+pid, fd = pty.fork()
+if pid == 0:
+    os.chdir(home)
+    os.execve(spec["nu"], [spec["nu"]] + spec["args"], env)
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+out = b""
+seen = 0
+def drain(t):
+    global out, seen
+    end = time.time() + t
+    while time.time() < end:
+        r, _, _ = select.select([fd], [], [], 0.05)
+        if r:
+            try:
+                data = os.read(fd, 65536)
+            except OSError:
+                return
+            if not data:
+                return
+            out += data
+            while seen < out.count(b"\x1b[6n"):
+                os.write(fd, b"\x1b[1;1R")
+                seen += 1
+drain(2.0)
+for step in spec["steps"]:
+    if isinstance(step, dict):
+        drain(step["wait"])
+        continue
+    os.write(fd, step.encode())
+    drain(0.5 + 0.012 * len(step))
+drain(1.0)
+try:
+    os.kill(pid, 9)
+    os.waitpid(pid, 0)
+except OSError:
+    pass
+text = out.decode("latin-1")
+hooks = []
+for m in re.finditer(r"\x1bP\$d([0-9a-f]*)\x9c", text):
+    try:
+        hooks.append(json.loads(bytes.fromhex(m.group(1)).decode()))
+    except Exception as e:
+        hooks.append({"hook": "UNPARSEABLE", "error": str(e), "hex": m.group(1)[:200]})
+for m in re.finditer(r"\x1b\]9277;A\x07(\d+);([0-9a-f]*)\x1b\]9277;B\x07", text):
+    hooks.append({"hook": "GeneratorOutput", "length": int(m.group(1)), "text": bytes.fromhex(m.group(2)).decode("utf-8", "replace")})
+print(json.dumps({"hooks": hooks, "raw": text}))
+"#;
+
+/// Result of one [`run_nu_session`].
+#[cfg(unix)]
+struct NuSession {
+    hooks: Vec<serde_json::Value>,
+    raw: String,
+    home: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+impl NuSession {
+    fn hook_names(&self) -> Vec<String> {
+        self.hooks
+            .iter()
+            .map(|hook| hook["hook"].as_str().unwrap_or("?").to_owned())
+            .collect()
+    }
+
+    fn hooks_named(&self, name: &str) -> Vec<&serde_json::Value> {
+        self.hooks
+            .iter()
+            .filter(|hook| hook["hook"] == name)
+            .collect()
+    }
+
+    fn history(&self) -> String {
+        std::fs::read_to_string(self.home.join("cfg/nushell/history.txt")).unwrap_or_default()
+    }
+}
+
+/// Runs `nu` with `args` and `config` (its config.nu) in a scratch home, sends `steps`, and
+/// returns what it printed. `None` when nu or python3 is missing.
+#[cfg(unix)]
+fn run_nu_session(
+    tag: &str,
+    args: &[String],
+    config: &str,
+    env: &[(&str, &str)],
+    steps: &[String],
+) -> Option<NuSession> {
+    use std::process::Command;
+
+    let Some(nu) = find_nu() else {
+        eprintln!("skipping: nu is not installed");
+        return None;
+    };
+    let python_ok = Command::new("python3")
+        .args(["-c", "import pty"])
+        .status()
+        .is_ok_and(|status| status.success());
+    if !python_ok {
+        eprintln!("skipping: python3 is not installed");
+        return None;
+    }
+    // The caller may already have written the bootstrap file into this directory.
+    let home = std::env::temp_dir().join(format!("phosphor-nu-{tag}-{}", std::process::id()));
+    for stale in ["cfg", "data"] {
+        let _ = std::fs::remove_dir_all(home.join(stale));
+    }
+    std::fs::create_dir_all(&home).unwrap();
+    let spec = serde_json::json!({
+        "nu": nu,
+        "args": args,
+        "home": home,
+        "config": config,
+        "env": env.iter().cloned().collect::<std::collections::HashMap<_, _>>(),
+        "steps": steps,
+    });
+    let spec_path = home.join("spec.json");
+    std::fs::write(&spec_path, spec.to_string()).unwrap();
+    let driver_path = home.join("driver.py");
+    std::fs::write(&driver_path, NU_PTY_DRIVER).unwrap();
+    let output = Command::new("python3")
+        .arg(&driver_path)
+        .arg(&spec_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "driver failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    Some(NuSession {
+        hooks: result["hooks"].as_array().cloned().unwrap_or_default(),
+        raw: result["raw"].as_str().unwrap_or_default().to_owned(),
+        home,
+    })
+}
+
+/// The temp file the app would write the full bootstrap script to and `source`.
+#[cfg(unix)]
+fn write_nu_bootstrap_file(home: &std::path::Path) -> String {
+    let path = home.join("bootstrap.nu");
+    std::fs::create_dir_all(home).unwrap();
+    std::fs::write(&path, script_for_shell(ShellType::Nu, &crate::ASSETS)).unwrap();
+    path.display().to_string()
+}
+
+#[test]
+fn test_nu_scripts_are_loaded_and_have_no_leftover_placeholders() {
+    let script = script_for_shell(ShellType::Nu, &crate::ASSETS);
+    let bootstrap = decode_script(&script);
+    assert!(bootstrap.ends_with('\n'));
+    // Comments and blank lines are dropped to keep the file small.
+    assert!(
+        !bootstrap
+            .lines()
+            .any(|line| line.trim_start().starts_with('#'))
+    );
+    assert!(!bootstrap.lines().any(|line| line.trim().is_empty()));
+    // The generator wrapper's name is a protocol surface shared with the Rust app.
+    assert!(
+        bootstrap.contains(&format!(
+            "def --env {} [",
+            crate::terminal::model::session::command_executor::POSIX_GENERATOR_WRAPPER
+        )),
+        "nu.nu must define the generator wrapper the in-band executor calls"
+    );
+
+    let init = init_shell_script_for_shell(ShellType::Nu, &crate::ASSETS, SessionId::from(4242u64));
+    assert!(init.contains("\"4242\""), "{init}");
+    assert!(!init.contains("@@"), "{init}");
+    assert!(
+        !init.contains('\n'),
+        "the init script is one --execute argument line: {init}"
+    );
+    // Every statement ends in the DCS hook; nothing is deleted from history.
+    assert!(init.contains("InitShell") && init.contains("\"shell\": \"nu\""));
+    assert!(!init.contains("history -c") && !init.contains("history.txt"));
+}
+
+#[test]
+#[cfg(feature = "local_fs")]
+fn test_nu_is_bootstrapped_through_a_sourced_file() {
+    use crate::terminal::model::session::SessionInfo;
+
+    // nushell cannot eval a string, so the temp-file route is not optional for it.
+    let info = SessionInfo::new_for_test().with_shell_type(ShellType::Nu);
+    assert!(should_use_rc_file_bootstrap_method(ShellType::Nu, &info));
+}
+
+#[test]
+fn test_nu_init_subshell_lines_are_short_independent_lines() {
+    use crate::env_vars::{EnvVar, EnvVarValue};
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let hostile = EnvVar {
+                name: "WEIRD NAME".to_owned(),
+                value: EnvVarValue::Constant(
+                    "it's a '# \"quoted\" \\ value\nwith a newline".to_owned(),
+                ),
+                description: None,
+            };
+            let lines = init_subshell_command_lines(
+                Some(ShellType::Nu),
+                &[hostile],
+                SessionId::from(4242u64),
+                ctx,
+            );
+            assert!(lines.len() >= 5, "{lines:?}");
+            for line in &lines {
+                assert!(
+                    line.starts_with(' '),
+                    "history.ignore_space_prefixed needs a space: {line:?}"
+                );
+                assert!(
+                    !line.contains('\n') && !line.contains('\r'),
+                    "each typed line must be one line: {line:?}"
+                );
+                assert!(
+                    line.len() <= MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES,
+                    "{} bytes: {line:?}",
+                    line.len()
+                );
+            }
+            // Only the first line may touch the history setting, and it saves the prior value.
+            assert!(lines[0].contains("$env.__wbh = $env.config.history.ignore_space_prefixed"));
+            assert!(
+                lines[1..].iter().all(|l| !l.contains("history.")),
+                "{lines:?}"
+            );
+            // Nothing ever deletes a history entry (#967).
+            assert!(
+                !lines
+                    .iter()
+                    .any(|l| l.contains("history -") || l.contains("history.txt"))
+            );
+            // The raw string delimiter has more `#`s than the longest run in the script.
+            assert!(lines[1].starts_with(" $env._wbs = r##'"), "{}", lines[1]);
+            // The last lines write, source and clean up the stage-one file.
+            let n = lines.len();
+            assert!(lines[n - 3].contains("save -f $_wbf"));
+            assert_eq!(lines[n - 2], " source $_wbf");
+            assert!(lines[n - 1].starts_with(" rm -f $_wbf"));
+            assert!(lines[n - 3].contains("phosphor-nu-4242.nu"));
+            assert!(
+                !lines[n - 3].contains("/tmp"),
+                "the file lives in the user's cache dir"
+            );
+        });
+    });
+}
+
+/// The whole local flow in a real nushell: `--execute <init>` prints InitShell, the bootstrap file
+/// is sourced by a space-led line, and every hook arrives with the payload shape fish.sh uses.
+#[test]
+#[cfg(unix)]
+fn test_nu_real_local_bootstrap_emits_hooks_and_keeps_history_clean() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let init = app.read(|_| {
+            init_shell_script_for_shell(ShellType::Nu, &crate::ASSETS, SessionId::from(4242u64))
+        });
+        let home = std::env::temp_dir().join(format!("phosphor-nu-local-{}", std::process::id()));
+        let bootstrap = write_nu_bootstrap_file(&home);
+        let steps = vec![
+            format!(" source '{bootstrap}'\r"),
+            "echo hi\r".to_owned(),
+            "^sh -c 'exit 7'\r".to_owned(),
+            // A user command with a control character and quotes in it.
+            "echo \"a\\tb\"\r".to_owned(),
+            "ls /definitely/not/here\r".to_owned(),
+            "cd /tmp\r".to_owned(),
+            // Typeahead report (Alt-i) while text is in the buffer, then the kill-buffer chord.
+            "half typed".to_owned(),
+            "\x1bi".to_owned(),
+            "\x10".to_owned(),
+            "echo after\r".to_owned(),
+            // A multi-line command through bracketed paste, as the app sends it.
+            "\x10\x1b[200~if true {\n    echo multi\n}\x1b[201~\r".to_owned(),
+            "clear\r".to_owned(),
+        ];
+        let Some(session) = run_nu_session(
+            "local",
+            &["--login".to_owned(), "--execute".to_owned(), init],
+            // A user config that records space-led lines: the init script must still hide ours.
+            "$env.config.history.ignore_space_prefixed = false\n",
+            &[("WARP_HONOR_PS1", "1")],
+            &steps,
+        ) else {
+            return;
+        };
+
+        let names = session.hook_names();
+        assert_eq!(names[0], "InitShell", "{names:?}\n{}", session.raw);
+        assert_eq!(session.hooks[0]["value"]["shell"], "nu");
+        assert_eq!(session.hooks[0]["value"]["session_id"], 4242);
+
+        // CommandFinished, Precmd, Bootstrapped come from the sourced file, in that order.
+        assert_eq!(
+            &names[1..4],
+            ["CommandFinished", "Precmd", "Bootstrapped"],
+            "{names:?}"
+        );
+        let bootstrapped = &session.hooks[3]["value"];
+        assert_eq!(bootstrapped["shell"], "nu");
+        assert_eq!(bootstrapped["session_id"], 4242);
+        for key in [
+            "histfile",
+            "home_dir",
+            "path",
+            "aliases",
+            "function_names",
+            "env_var_names",
+            "builtins",
+            "shell_version",
+            "os_category",
+            "shell_path",
+        ] {
+            assert!(
+                bootstrapped[key].as_str().is_some_and(|v| !v.is_empty()),
+                "Bootstrapped.{key} is empty: {bootstrapped}"
+            );
+        }
+        let builtins: Vec<&str> = bootstrapped["builtins"].as_str().unwrap().lines().collect();
+        for builtin in ["ls", "where", "each", "open", "get", "select", "http"] {
+            assert!(
+                builtins.contains(&builtin),
+                "{builtin} missing from builtins"
+            );
+        }
+        assert_eq!(bootstrapped["shell_options"], "ignore_space_prefixed");
+
+        // Each command: Preexec with the exact text, then CommandFinished + Precmd with its code.
+        let preexec: Vec<&str> = session
+            .hooks_named("Preexec")
+            .iter()
+            .map(|hook| hook["value"]["command"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            preexec,
+            [
+                "echo hi",
+                "^sh -c 'exit 7'",
+                "echo \"a\\tb\"",
+                "ls /definitely/not/here",
+                "cd /tmp",
+                "echo after",
+                "if true {\n    echo multi\n}",
+                "clear",
+            ]
+        );
+        let exit_codes: Vec<i64> = session
+            .hooks_named("CommandFinished")
+            .iter()
+            .map(|hook| hook["value"]["exit_code"].as_i64().unwrap())
+            .collect();
+        // the bootstrap (twice: its own report and the prompt after it), echo hi, exit 7, echo,
+        // ls (an error is 1), cd, echo after, multi, clear
+        assert_eq!(exit_codes, [0, 0, 0, 7, 0, 1, 0, 0, 0, 0], "{exit_codes:?}");
+        let precmds = session.hooks_named("Precmd");
+        assert_eq!(precmds.last().unwrap()["value"]["pwd"], "/tmp");
+        assert_eq!(
+            precmds.last().unwrap()["value"]["ignore_prompt_markers"],
+            false
+        );
+        // Block ids chain: each CommandFinished names the block its Precmd starts.
+        for (finished, precmd) in session
+            .hooks_named("CommandFinished")
+            .iter()
+            .zip(session.hooks_named("Precmd"))
+        {
+            assert_eq!(
+                finished["value"]["next_block_id"],
+                precmd["value"]["next_block_id"]
+            );
+        }
+
+        // The typeahead report carries the buffer and is not itself a command.
+        let input = session.hooks_named("InputBuffer");
+        assert_eq!(input.len(), 1, "{:?}", session.hook_names());
+        assert_eq!(input[0]["value"]["buffer"], "half typed");
+        assert_eq!(session.hooks_named("Clear").len(), 1);
+
+        // History: the user's commands only. The `source` line and the key-bound helpers were
+        // typed with a leading space, and the init script switched the option on even though
+        // this user's config has it off.
+        let history = session.history();
+        for command in ["echo hi", "echo after", "cd /tmp"] {
+            assert!(history.contains(command), "{history:?}");
+        }
+        assert!(
+            !history.contains("source")
+                && !history.contains("__warp")
+                && !history.contains("bootstrap.nu"),
+            "bootstrap text reached the history: {history:?}"
+        );
+        assert!(
+            history.contains("if true {<\\n>    echo multi<\\n>}"),
+            "{history:?}"
+        );
+        std::fs::remove_dir_all(&session.home).ok();
+    });
+}
+
+/// With `WARP_HONOR_PS1=0` Precmd tells the app to ignore nushell's own OSC 133 markers, the
+/// prompt is blank, and the user's prompt text travels hex-encoded for the preview.
+#[test]
+#[cfg(unix)]
+fn test_nu_real_warp_prompt_mode_blanks_the_prompt_and_previews_the_users() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let init = app.read(|_| {
+            init_shell_script_for_shell(ShellType::Nu, &crate::ASSETS, SessionId::from(9u64))
+        });
+        let home = std::env::temp_dir().join(format!("phosphor-nu-warp-{}", std::process::id()));
+        let bootstrap = write_nu_bootstrap_file(&home);
+        let steps = vec![
+            format!(" source '{bootstrap}'\r"),
+            "echo one\r".to_owned(),
+            // Alt-p switches to the user's prompt, Alt-w back; neither is a command.
+            "\x1bp".to_owned(),
+            "echo two\r".to_owned(),
+            "\x1bw".to_owned(),
+            "echo three\r".to_owned(),
+        ];
+        let Some(session) = run_nu_session(
+            "warp",
+            &["--login".to_owned(), "--execute".to_owned(), init],
+            "$env.PROMPT_COMMAND = {|| 'MYPROMPT' }\n$env.PROMPT_INDICATOR = '$$ '\n",
+            &[("WARP_HONOR_PS1", "0")],
+            &steps,
+        ) else {
+            return;
+        };
+        let precmds = session.hooks_named("Precmd");
+        let ignore: Vec<bool> = precmds
+            .iter()
+            .map(|p| p["value"]["ignore_prompt_markers"].as_bool().unwrap())
+            .collect();
+        // The bootstrap's own report, the prompt after it, one, two (the user's prompt, switched
+        // on by Alt-p before it ran), three (back to Warp's after Alt-w).
+        assert_eq!(ignore, [true, true, true, false, true], "{ignore:?}");
+        let preview = |p: &serde_json::Value| -> String {
+            let hex = p["value"]["ps1"].as_str().unwrap();
+            let bytes: Vec<u8> = (0..hex.len() / 2)
+                .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap())
+                .collect();
+            String::from_utf8(bytes).unwrap()
+        };
+        assert_eq!(preview(precmds[2]), "MYPROMPT$$ ");
+        assert_eq!(precmds[3]["value"]["ps1"], "");
+        let preexec: Vec<&str> = session
+            .hooks_named("Preexec")
+            .iter()
+            .map(|hook| hook["value"]["command"].as_str().unwrap())
+            .collect();
+        assert_eq!(preexec, ["echo one", "echo two", "echo three"]);
+        std::fs::remove_dir_all(&session.home).ok();
+    });
+}
+
+/// The in-band generator wrapper in a real nushell: the POSIX command runs under bash with stderr
+/// merged, its output and status come back in the OSC 9277 envelope, the call is not recorded,
+/// and the prompt after it is flagged as following an in-band command.
+#[test]
+#[cfg(unix)]
+fn test_nu_real_generator_wrapper_round_trip() {
+    use crate::terminal::model::session::command_executor::POSIX_GENERATOR_WRAPPER;
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let init = app.read(|_| {
+            init_shell_script_for_shell(ShellType::Nu, &crate::ASSETS, SessionId::from(11u64))
+        });
+        let home = std::env::temp_dir().join(format!("phosphor-nu-gen-{}", std::process::id()));
+        let bootstrap = write_nu_bootstrap_file(&home);
+        // The same text the in-band executor builds, including a quote and a `'#` in the command.
+        let command = "echo \"it's out\"; echo '#' err >&2; echo \"a'#b\"; exit 3";
+        let call = format!(
+            " {POSIX_GENERATOR_WRAPPER} 77 {}",
+            crate::terminal::model::session::command_executor::nu_raw_string(command)
+        );
+        let steps = vec![format!(" source '{bootstrap}'\r"), format!("{call}\r")];
+        let Some(session) = run_nu_session(
+            "gen",
+            &["--login".to_owned(), "--execute".to_owned(), init],
+            "",
+            &[("WARP_HONOR_PS1", "1")],
+            &steps,
+        ) else {
+            return;
+        };
+        let output = session.hooks_named("GeneratorOutput");
+        assert_eq!(output.len(), 1, "{:?}", session.hook_names());
+        assert_eq!(
+            output[0]["text"], "77;it's out\n# err\na'#b\n;3",
+            "id;output;status"
+        );
+        let last_precmd = session.hooks_named("Precmd").pop().unwrap();
+        assert_eq!(last_precmd["value"]["is_after_in_band_command"], true);
+        assert!(
+            !session.history().contains(POSIX_GENERATOR_WRAPPER),
+            "{:?}",
+            session.history()
+        );
+        std::fs::remove_dir_all(&session.home).ok();
+    });
+}
+
+/// The subshell flow in a real nushell: the typed lines rebuild the stage-one script (with a
+/// hostile env var in it), write it to the cache dir, source it and clean up. It announces the
+/// subshell, the full bootstrap is sourced after InitShell, and with a config that records
+/// space-led lines only the first, short, line reaches the history (#967).
+#[test]
+#[cfg(unix)]
+fn test_nu_real_subshell_bootstrap_keeps_all_but_one_line_out_of_history() {
+    use crate::env_vars::{EnvVar, EnvVarValue};
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let home = std::env::temp_dir().join(format!("phosphor-nu-sub-{}", std::process::id()));
+        let bootstrap = write_nu_bootstrap_file(&home);
+        let weird_value = "it's a '# \"quoted\" \\ value";
+        let lines = app.read(|ctx| {
+            init_subshell_command_lines(
+                Some(ShellType::Nu),
+                &[EnvVar {
+                    name: "PHOSPHOR_WEIRD".to_owned(),
+                    value: EnvVarValue::Constant(weird_value.to_owned()),
+                    description: None,
+                }],
+                SessionId::from(4242u64),
+                ctx,
+            )
+        });
+        let out_file = home.join("weird.txt");
+        let mut steps: Vec<String> = lines.iter().map(|line| format!("{line}\r")).collect();
+        steps.push(format!(" source '{bootstrap}'\r"));
+        steps.push(format!(
+            "$env.PHOSPHOR_WEIRD | save -f '{}'\r",
+            out_file.display()
+        ));
+        let Some(session) = run_nu_session(
+            "sub",
+            &[],
+            "$env.config.show_banner = false\n$env.config.history.ignore_space_prefixed = false\n",
+            &[("WARP_HONOR_PS1", "1")],
+            &steps,
+        ) else {
+            return;
+        };
+        let names = session.hook_names();
+        assert_eq!(names[0], "InitShell", "{names:?}\n{}", session.raw);
+        let init = &session.hooks[0]["value"];
+        assert_eq!(init["is_subshell"], true);
+        assert_eq!(init["session_id"], 4242);
+        assert_eq!(init["shell"], "nu");
+        assert!(names.contains(&"Bootstrapped".to_owned()), "{names:?}");
+        assert_eq!(
+            std::fs::read_to_string(&out_file).unwrap_or_default(),
+            weird_value,
+            "the env var survived the raw-string chunking"
+        );
+        // The script arrived whole, so the "skipped" notice was never printed (the typed line
+        // that holds its text is echoed, but the printed notice starts a new line).
+        assert!(
+            !session.raw.contains("\r\nPhosphor: subshell setup skipped"),
+            "{}",
+            session.raw
+        );
+        // User config records space-led lines; only the first prelude line may be in history,
+        // and the user's setting is back afterwards.
+        let history = session.history();
+        assert!(
+            history.contains("$env.__wbh = $env.config.history.ignore_space_prefixed"),
+            "{history:?}"
+        );
+        assert!(
+            !history.contains("_wbs") && !history.contains("_wbf") && !history.contains("source"),
+            "bootstrap text reached the history: {history:?}"
+        );
+        std::fs::remove_dir_all(&session.home).ok();
+    });
+}
+
+/// A script that arrives incomplete is not run: the file holds a notice instead, and the shell
+/// carries on.
+#[test]
+#[cfg(unix)]
+fn test_nu_real_subshell_bootstrap_with_a_lost_chunk_is_skipped_with_a_notice() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let lines = app.read(|ctx| {
+            init_subshell_command_lines(Some(ShellType::Nu), &[], SessionId::from(5u64), ctx)
+        });
+        // Drop the accumulating line(s): the length check must fail.
+        let chunk_lines: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.starts_with(" $env._wbs = "))
+            .map(|(index, _)| index)
+            .collect();
+        let dropped = *chunk_lines.last().unwrap();
+        let mut steps: Vec<String> = lines
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != dropped || chunk_lines.len() == 1)
+            .map(|(_, line)| format!("{line}\r"))
+            .collect();
+        steps.push("echo still-alive\r".to_owned());
+        let Some(session) = run_nu_session("lost", &[], "", &[], &steps) else {
+            return;
+        };
+        if chunk_lines.len() > 1 {
+            assert!(
+                session.raw.contains("\r\nPhosphor: subshell setup skipped"),
+                "{}",
+                session.raw
+            );
+            assert!(!session.hook_names().contains(&"InitShell".to_owned()));
+        }
+        assert!(session.raw.contains("still-alive"), "{}", session.raw);
+        std::fs::remove_dir_all(&session.home).ok();
+    });
+}
+
+/// #1047: PSReadLine (Windows PowerShell 5.1) crashed with `SetCursorPosition ... Actual value was
+/// -2` on one Phosphorize in two. The ^K/^U line-clearing prefix is POSIX-line-editor only, and
+/// the PowerShell lines need a real gap between them.
+#[test]
+fn powershell_bootstrap_is_psreadline_safe() {
+    assert!(!subshell_bootstrap_clears_line_editor(Some(
+        ShellType::PowerShell
+    )));
+    for shell in [
+        None,
+        Some(ShellType::Bash),
+        Some(ShellType::Zsh),
+        Some(ShellType::Fish),
+        Some(ShellType::Nu),
+    ] {
+        assert!(subshell_bootstrap_clears_line_editor(shell), "{shell:?}");
+        assert_eq!(
+            subshell_bootstrap_line_delay(shell),
+            std::time::Duration::from_millis(30),
+            "{shell:?}"
+        );
+    }
+    assert!(
+        subshell_bootstrap_line_delay(Some(ShellType::PowerShell))
+            >= std::time::Duration::from_millis(200)
+    );
+}
+
+#[test]
+fn powershell_bootstrap_lines_carry_no_control_characters() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let lines = init_subshell_command_lines(
+                Some(ShellType::PowerShell),
+                &[],
+                SessionId::from(1u64),
+                ctx,
+            );
+            assert!(lines.len() >= 2);
+            for line in &lines {
+                assert!(
+                    !line.chars().any(char::is_control),
+                    "a control character would reach PSReadLine as typed input: {line:?}"
+                );
             }
         });
     });

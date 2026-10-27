@@ -468,6 +468,8 @@ pub fn test_completions_with_autocd() -> Builder {
                 }
                 // TODO(PLAT-751)
                 ShellType::PowerShell => false,
+                // The rc-file setup above has no nushell equivalent.
+                ShellType::Nu => false,
             }
         })
         .with_setup(|utils| {

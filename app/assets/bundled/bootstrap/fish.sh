@@ -718,7 +718,7 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
     function is_interactive_ssh_session
         # Parse through all ssh options, as defined in the ssh man pages.  Send
         # stderr to /dev/null to silence argparse output when an option is invalid.
-        argparse '1' '2' '4' '6' 'A' 'a' 'C' 'f' 'g' 'K' 'k' 'M' 'N' 'n' 'q' 's' 'T' 't' 'V' 'v' 'X' 'x' 'Y' 'y' 'b=' 'c=' 'D=' 'e=' 'F=' 'i=' 'L=' 'l=' 'm=' 'O=' 'o=' 'p=' 'R=' 'S=' 'W=' 'w=' -- $argv 2>/dev/null
+        argparse '1' '2' '4' '6' 'A' 'a' 'C' 'f' 'g' 'K' 'k' 'M' 'N' 'n' 'q' 's' 'T' 't' 'V' 'v' 'X' 'x' 'Y' 'y' 'b=' 'c=' 'D=' 'e=' 'F=' 'i=' 'J=' 'L=' 'l=' 'm=' 'O=' 'o=' 'p=' 'R=' 'S=' 'W=' 'w=' -- $argv 2>/dev/null
         # If argparse returned a non-success value, propagate it up.
         or return
 
@@ -734,7 +734,12 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         # never start an interactive login, so the wrapper must not touch them. -G and -Q are
         # not declared above, so argparse already rejects them and they go to real ssh. Keep in
         # step with InteractiveSshCommand::parse_ssh_command (ssh/util.rs).
-        if set -q _flag_O; or set -q _flag_N; or set -q _flag_f; or set -q _flag_V
+        #1003: -J <jump[,jump2]> is an option WITH an argument (it is in the optstring), so a jump-host login is
+        # still wrapped. Every probe and the wrapped ssh get the original arguments, so `ssh -G`/`ssh -O check`
+        # resolve the jump chain, and the multiplexed follow-up ssh calls reuse the master (and so its jump).
+        # #1035: -w (tun device), -M (master) and -S (control socket) cannot ride the wrapper's
+        # multiplexed session (it owns the master and the ControlPath), so they go to plain ssh too.
+        if set -q _flag_O; or set -q _flag_N; or set -q _flag_f; or set -q _flag_V; or set -q _flag_w; or set -q _flag_M; or set -q _flag_S
             return 1
         end
 
@@ -820,6 +825,46 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
             set warp_ipqos_args -o "IPQoS=af21 af21"
         end
 
+        # #1035: decide AFTER connecting, with ONE authentication. The bootstrap below is a POSIX
+        # shell script, which a Windows OpenSSH server (default shell cmd.exe or PowerShell)
+        # cannot run ("'export' is not recognized", then the connection closes). So first start
+        # the Phosphor-owned ControlMaster in the background: the user's authentication (password,
+        # key passphrase, host-key prompt) happens here, in the foreground terminal -- `-f` only
+        # backgrounds ssh once it is authenticated -- and Ctrl-C aborts it like any ssh. Then
+        # ask the remote what shell family it runs over that master (no second connection, no
+        # second authentication) and start the session as a managed POSIX bootstrap or as a
+        # plain interactive session. `ControlPersist` is only the safety net: a master that
+        # nobody connects to (interrupted between steps, shell killed) exits by itself.
+        # `ClearAllForwardings` keeps -L/-R/-D on the session client alone (it asks the master),
+        # so a forward is not requested twice.
+        set -l warp_owns_master 0
+        if test "$control_master_mode" = "yes"
+            command ssh $warp_ipqos_args -o ControlMaster=yes -o ControlPath="$control_path" -o ControlPersist=10 -o ClearAllForwardings=yes -N -f $argv
+            set -l warp_master_rc $status
+            if test $warp_master_rc -ne 0
+                # The connection failed (ssh already printed why) or was interrupted.
+                return $warp_master_rc
+            end
+            # ssh expands a leading ~ in ControlPath itself; the shell must do it for the -S test.
+            # $HOME matches the app (shellexpand::tilde in shutdown_for_discard).
+            if test -S (string replace -r '^~' -- "$HOME" "$control_path")
+                set warp_owns_master 1
+                set control_master_mode no
+            end
+            # No socket (e.g. ControlPath too long): fall through to the single-connection
+            # managed session below; the idle background master expires via ControlPersist.
+        end
+        if test $warp_owns_master -eq 1; or test "$external_control_master" = "true"
+            if warp_ssh_remote_is_non_posix "$control_path" $argv
+                command ssh -o ControlMaster=no -o ControlPath="$control_path" -t $argv
+                set -l warp_plain_rc $status
+                if test $warp_owns_master -eq 1
+                    warp_ssh_stop_master "$control_path" $argv
+                end
+                return $warp_plain_rc
+            end
+        end
+
         # Note that in this command, we're passing a string to the remote shell. Any variable expansions need to be
         # escaped with "''" to avoid the local shell from expanding them before they're passed to the remote shell.
         # We check the SHELL env var and use shell string manipulation to get the contents after the last slash to
@@ -899,6 +944,49 @@ esac
 "
         command ssh $warp_ipqos_args -o ControlMaster=$control_master_mode -o ControlPath="$control_path" \
         -t $argv $warp_remote_bootstrap
+        set -l warp_session_rc $status
+        # The session is over: take the master down with it (the app's own pane-close /
+        # ExitShell cleanup does the same by socket path; both are idempotent).
+        if test $warp_owns_master -eq 1
+            warp_ssh_stop_master "$control_path" $argv
+        end
+        return $warp_session_rc
+    end
+
+    # #1035: succeeds when the remote answers like a non-POSIX shell (cmd.exe or PowerShell),
+    # asked over the already-authenticated master at $argv[1] (no new connection). POSIX shells
+    # print the literal %COMSPEC% and an empty $PSVersionTable; cmd.exe expands %COMSPEC% and
+    # leaves $PSVersionTable; PowerShell leaves %COMSPEC% and expands $PSVersionTable. Anything
+    # else (timeout after 5 s, failure, csh/fish errors) is inconclusive and fails, i.e. the
+    # managed session as before.
+    function warp_ssh_remote_is_non_posix
+        set -l control_path $argv[1]
+        set -e argv[1]
+        set -l probe_out (command mktemp 2>/dev/null)
+        or return 1
+        command ssh -o BatchMode=yes -o ControlMaster=no -o ControlPath="$control_path" $argv -T 'echo warp-probe-%COMSPEC%-$PSVersionTable' </dev/null >$probe_out 2>/dev/null &
+        set -l probe_pid (jobs --last --pid)
+        for i in (seq 1 50)
+            if not kill -0 $probe_pid 2>/dev/null
+                break
+            end
+            command sleep 0.1
+        end
+        kill $probe_pid 2>/dev/null
+        set -l out (command cat $probe_out 2>/dev/null | string collect)
+        command rm -f $probe_out
+        if string match -q -r -i -- 'Hashtable|cmd\.exe-\$PSVersionTable' "$out"
+            return 0
+        end
+        return 1
+    end
+
+    # Ends the Phosphor-owned master at $argv[1] (the remaining args resolve the destination).
+    function warp_ssh_stop_master
+        set -l control_path $argv[1]
+        set -e argv[1]
+        command ssh -O exit -o ControlPath="$control_path" $argv >/dev/null 2>&1
+        return 0
     end
 
     function ssh

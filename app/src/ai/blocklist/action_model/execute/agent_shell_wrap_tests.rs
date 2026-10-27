@@ -1043,6 +1043,7 @@ mod real_shells {
             ShellType::Zsh => "zsh",
             ShellType::Fish => "fish",
             ShellType::PowerShell => "pwsh",
+            ShellType::Nu => "nu",
         };
         let mut candidates = vec![name.to_owned()];
         if let Ok(home) = std::env::var("HOME") {
@@ -1079,6 +1080,7 @@ mod real_shells {
                 "-Command",
                 script,
             ]),
+            ShellType::Nu => cmd.args(["--no-config-file", "-c", script]),
         };
         let mut child = cmd
             .stdin(Stdio::null())
@@ -1591,4 +1593,24 @@ fn the_exit_guard_exits_for_real_inside_subshells() {
         let (out, _) = run(shell, &wrapped).unwrap();
         assert!(out.contains("f=6"), "{shell:?}: {out}");
     }
+}
+
+/// nushell scopes `cd` and `$env` changes to a block, so the agent's command is NOT wrapped in
+/// one (a `cd` would silently not take effect). It goes through as typed, with a leading space
+/// that keeps it out of the history (`history.ignore_space_prefixed`).
+#[test]
+fn nushell_commands_are_not_wrapped_in_a_block() {
+    assert_eq!(wrap_command(Some(ShellType::Nu), "cd /tmp"), " cd /tmp");
+    assert_eq!(
+        wrap_command(Some(ShellType::Nu), "ls | where size > 1mb\n\n"),
+        " ls | where size > 1mb"
+    );
+    let multi = wrap_command(Some(ShellType::Nu), "let x = 1\n$x + 1");
+    assert_eq!(multi, " let x = 1\n$x + 1");
+    for wrapped in [&multi, &wrap_command(Some(ShellType::Nu), "exit 3")] {
+        assert!(!wrapped.contains("{ "), "{wrapped}");
+        assert!(!wrapped.contains("__phosphor_ap"), "{wrapped}");
+    }
+    // `$$` / `$PPID` do not exist in nushell, so the POSIX self-kill scan does not apply.
+    assert_eq!(kills_own_shell(Some(ShellType::Nu), "kill $$"), None);
 }

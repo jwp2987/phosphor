@@ -372,6 +372,16 @@ impl InBandCommandExecutor {
                         // fish.
                         format!(" {POSIX_GENERATOR_WRAPPER} {id} '{escaped_command}'")
                     }
+                    // The leading space keeps the call out of nushell's history
+                    // (`history.ignore_space_prefixed`, enabled by the bootstrap). The command is
+                    // POSIX syntax that `warp_run_generator_command` runs with bash, passed as a
+                    // raw string because a nushell single-quoted string cannot hold a `'`.
+                    ShellType::Nu => {
+                        format!(
+                            " {POSIX_GENERATOR_WRAPPER} {id} {}",
+                            shared::nu_raw_string(command)
+                        )
+                    }
                     _ => {
                         format!("{POSIX_GENERATOR_WRAPPER} {id} '{escaped_command}'")
                     }

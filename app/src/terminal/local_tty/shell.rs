@@ -728,6 +728,17 @@ fn arguments_for_session_spawning_command(
                 .into(),
             ]
         }
+        ShellType::Nu => {
+            // `--execute` runs the init script after nushell has loaded env.nu / config.nu /
+            // login.nu (so it sees the user's configuration, as fish's `--init-command` does) and
+            // before the first prompt, then drops into the interactive shell. The init script
+            // prints the InitShell hook, which makes the app send the rest of the bootstrap.
+            vec![
+                "--login".to_owned().into(),
+                "--execute".to_owned().into(),
+                init_shell_script_for_shell(ShellType::Nu, &crate::ASSETS, session_id).into(),
+            ]
+        }
         ShellType::PowerShell => {
             // When PowerShell starts a session, it writes "PowerShell <version>" to the PTY. This
             // option suppresses that message.
@@ -808,6 +819,7 @@ fn msys2_arguments_for_session_spawning_command(shell_type: ShellType) -> Vec<Os
             ]
         }
         ShellType::PowerShell => panic!("MSYS2 not supported for PowerShell"),
+        ShellType::Nu => panic!("MSYS2 not supported for nushell"),
     }
 }
 
@@ -819,6 +831,50 @@ pub fn ssh_socket_dir() -> String {
     };
     socket_dir.push_str("/.ssh");
     socket_dir
+}
+
+/// Longest absolute `SSH_SOCKET_DIR` we export. A control socket path is
+/// `<dir>/<20-digit session id>`, and ssh binds it through a `.XXXXXXXXXXXXXXXX` temp name, all of
+/// which must fit a unix socket path (104 bytes on macOS).
+const MAX_ABSOLUTE_SSH_SOCKET_DIR_LEN: usize = 60;
+
+/// `literal` (see [`ssh_socket_dir`]) with a leading `~` replaced by `home`, so ssh's
+/// `ControlPath`, the wrapper's socket test, `ssh -O exit` and the app all see ONE absolute path
+/// regardless of whether `$HOME` equals the passwd home (ssh itself expands `~` from the passwd
+/// database, a shell from `$HOME`). Falls back to `literal` when there is no home or the result
+/// is too long for a socket path or contains characters the SSH hook JSON cannot carry unescaped.
+fn absolute_ssh_socket_dir(literal: &str, home: Option<&std::path::Path>) -> String {
+    let Some(rest) = literal.strip_prefix('~') else {
+        return literal.to_owned();
+    };
+    let Some(home) = home.and_then(|home| home.to_str()) else {
+        return literal.to_owned();
+    };
+    let absolute = format!("{}{rest}", home.trim_end_matches('/'));
+    let safe = absolute.starts_with('/')
+        && absolute.len() <= MAX_ABSOLUTE_SSH_SOCKET_DIR_LEN
+        && absolute
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._/+@:,-".contains(c));
+    if safe { absolute } else { literal.to_owned() }
+}
+
+/// The `SSH_SOCKET_DIR` to export to unix shells: [`ssh_socket_dir`] made absolute from the home
+/// the app uses (#1035). The directory is created if missing (ssh does not create the parent of a
+/// ControlPath, and an isolated `$HOME` may have no `.ssh`). A created directory is private (0700),
+/// as ssh itself creates `~/.ssh`; an existing one is left as it is.
+pub fn ssh_socket_dir_absolute() -> String {
+    let dir = absolute_ssh_socket_dir(&ssh_socket_dir(), dirs::home_dir().as_deref());
+    if dir.starts_with('/') && !std::path::Path::new(&dir).is_dir() {
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        if let Err(e) = builder.create(&dir) {
+            log::warn!("could not create SSH_SOCKET_DIR {dir}: {e}");
+        }
+    }
+    dir
 }
 
 /// Take the output of a wsl.exe subcommand and try to decode it while reporting errors.

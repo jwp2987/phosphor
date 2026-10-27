@@ -37,6 +37,10 @@ const PWSH_SNIPPET: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/bundled/bootstrap/pwsh_subshell_bootstrap_block_output.txt"
 ));
+const NU_SNIPPET: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/bundled/bootstrap/nu_subshell_bootstrap_block_output.txt"
+));
 
 /// Not scanned by `assert_no_stray_warp_branding` below: this script is riddled with
 /// internal `Warp-*` function/variable names (`Warp-Send-JsonMessage`, `$global:_warpOriginalPrompt`,
@@ -264,4 +268,204 @@ mod ssh_payload_only {
         ));
         assert!(!ssh_output_is_payload_only("anything", &[]));
     }
+}
+
+#[test]
+fn subshell_display_name_skips_env_assignments_and_env_prefix() {
+    use super::subshell_display_name as n;
+    assert_eq!(n("zsh"), Some("zsh"));
+    assert_eq!(n("AUTOP=1 zsh"), Some("zsh"));
+    assert_eq!(n("ZDOTDIR=/x zsh"), Some("zsh"));
+    assert_eq!(n("ZDOTDIR=$HOME/x A_1=b  zsh -i"), Some("zsh"));
+    assert_eq!(n("env -i FOO=1 zsh"), Some("zsh"));
+    assert_eq!(n("env -u FOO zsh"), Some("zsh"));
+    assert_eq!(n("bash --rcfile x"), Some("bash"));
+    assert_eq!(n("docker exec -it c bash"), Some("docker"));
+    // Not assignments: no valid name before `=`.
+    assert_eq!(n("1A=b zsh"), Some("1A=b"));
+    assert_eq!(n("--x=1 zsh"), Some("--x=1"));
+    assert_eq!(n("env"), Some("env"));
+    assert_eq!(n("   "), None);
+    assert_eq!(n("A=1"), None);
+}
+
+#[test]
+fn subshell_flag_source_uses_the_display_name() {
+    use super::{SubshellSource, subshell_flag_source as f};
+    assert_eq!(
+        f(&SubshellSource::Command("AUTOP=1 zsh".to_owned())),
+        SubshellSource::Command("zsh".to_owned())
+    );
+    assert_eq!(
+        f(&SubshellSource::Command("docker exec -it c bash".to_owned())),
+        SubshellSource::Command("docker".to_owned())
+    );
+    assert_eq!(
+        f(&SubshellSource::Command("A=1".to_owned())),
+        SubshellSource::Command("A=1".to_owned())
+    );
+    assert_eq!(
+        f(&SubshellSource::EnvVarCollection("c".to_owned())),
+        SubshellSource::EnvVarCollection("c".to_owned())
+    );
+}
+
+fn nu_subshell_info() -> SubshellInitializationInfo {
+    SubshellInitializationInfo {
+        spawning_command: "nu".to_owned(),
+        was_triggered_by_rc_file_snippet: false,
+        env_var_collection_name: None,
+        ssh_connection_info: None,
+    }
+}
+
+/// The nushell snippet is nushell syntax (it is run by the Phosphorized `nu` itself), carries the
+/// same wire hook as the other snippets, and its three `%` placeholders (shell name, tmux
+/// suffix, rc file) line up with the three arguments `replace_template_chars_with_arguments` fills.
+#[test]
+fn nu_bootstrap_snippet_says_phosphorize_emits_the_wire_hook_and_has_three_placeholders() {
+    assert!(
+        NU_SNIPPET.contains("# Auto-Phosphorize"),
+        "expected the nu rc-file comment to say Phosphorize: {NU_SNIPPET:?}"
+    );
+    assert_no_stray_warp_branding(NU_SNIPPET, "nu bootstrap snippet");
+    assert!(
+        NU_SNIPPET.contains(r#""hook": "SourcedRcFileForWarp""#),
+        "nu snippet no longer emits the SourcedRcFileForWarp hook: {NU_SNIPPET:?}"
+    );
+    assert_eq!(NU_SNIPPET.matches('%').count(), 3);
+
+    let (bytes, is_executable) = subshell_bootstrap_success_block_bytes(
+        &nu_subshell_info(),
+        ShellType::Nu,
+        TargetOS::Linux,
+        true,
+    );
+    let command = String::from_utf8(bytes).unwrap();
+    assert!(is_executable);
+    assert!(!command.contains('%'), "{command}");
+    assert!(command.contains(r#""shell": "nu""#), "{command}");
+    assert!(command.contains(r#""tmux": false"#), "{command}");
+    // The file written is whichever config.nu this nushell loads (macOS keeps it elsewhere).
+    assert!(command.contains("$nu.config-path"), "{command}");
+
+    let (bytes, _) = subshell_bootstrap_success_block_bytes(
+        &nu_subshell_info(),
+        ShellType::Nu,
+        TargetOS::Linux,
+        false,
+    );
+    assert!(!String::from_utf8(bytes).unwrap().contains("tmux"));
+}
+
+/// Runs the snippet the way the user would paste it, in a real nushell, and checks what it
+/// appended to `config.nu`. Skipped, visibly, without nu.
+#[cfg(unix)]
+#[test]
+fn nu_bootstrap_snippet_appends_a_valid_auto_phosphorize_block_to_config_nu() {
+    let Some(nu) = [
+        "/home/linuxbrew/.linuxbrew/bin/nu",
+        "/opt/homebrew/bin/nu",
+        "/usr/local/bin/nu",
+    ]
+    .into_iter()
+    .map(std::path::PathBuf::from)
+    .chain(
+        std::env::var_os("PATH")
+            .map(|path| {
+                std::env::split_paths(&path)
+                    .map(|d| d.join("nu"))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+    )
+    .find(|candidate| candidate.is_file()) else {
+        eprintln!("skipping: nu is not installed");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("phosphor-nu-snippet-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = dir.join("config.nu");
+    std::fs::write(&config, "$env.USER_MARK = 1\n").unwrap();
+
+    let (bytes, _) = subshell_bootstrap_success_block_bytes(
+        &nu_subshell_info(),
+        ShellType::Nu,
+        TargetOS::Linux,
+        true,
+    );
+    let command = String::from_utf8(bytes).unwrap();
+    let output = std::process::Command::new(&nu)
+        .arg("--config")
+        .arg(&config)
+        .arg("--no-history")
+        .arg("-c")
+        .arg(&command)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{command}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let written = std::fs::read_to_string(&config).unwrap();
+    assert!(written.starts_with("$env.USER_MARK = 1\n"), "{written:?}");
+    assert!(written.contains("# Auto-Phosphorize"), "{written:?}");
+    assert!(written.contains("if $nu.is-interactive {"), "{written:?}");
+    // Evaluating what was written, as an interactive nushell would at start-up, prints the hook.
+    let evaluated = std::process::Command::new(&nu)
+        .arg("--no-config-file")
+        .arg("-c")
+        .arg(written.replace("$nu.is-interactive", "true"))
+        .output()
+        .unwrap();
+    let printed = String::from_utf8_lossy(&evaluated.stdout).into_owned();
+    assert!(
+        printed.starts_with(
+            "\u{1b}P$f{\"hook\": \"SourcedRcFileForWarp\", \"value\": { \"shell\": \"nu\""
+        ),
+        "{printed:?}; stderr: {}",
+        String::from_utf8_lossy(&evaluated.stderr)
+    );
+    assert!(printed.contains(r#""tmux": false }}"#), "{printed:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// #1047: the "Session Phosphorized" advice for a PowerShell on a Windows host must target
+/// `$PROFILE` (not `~/.config/powershell/...`), must not run `uname`, and must create the
+/// profile when it does not exist yet.
+#[test]
+fn windows_powershell_success_block_uses_profile_and_no_uname() {
+    let bytes = super::windows_powershell_subshell_success_block_bytes(false);
+    let command = String::from_utf8(bytes).expect("utf8");
+    assert!(command.contains("-Path $PROFILE"), "{command}");
+    assert!(command.contains("New-Item -ItemType File -Force -Path $PROFILE"));
+    assert!(!command.contains("uname)"), "{command}");
+    assert!(!command.contains(".config"), "{command}");
+    assert!(command.contains("\"shell`\": `\"pwsh"), "{command}");
+    assert!(!command.contains('%'), "unfilled template char: {command}");
+    let bytes = super::windows_powershell_subshell_success_block_bytes(true);
+    let no_tmux = String::from_utf8(bytes).expect("utf8");
+    assert!(no_tmux.contains("\"tmux\": false"), "{no_tmux}");
+}
+
+/// The unix flavour is unchanged: pwsh on Linux/macOS keeps the XDG profile path and `uname`.
+#[test]
+fn unix_powershell_success_block_keeps_xdg_profile_and_uname() {
+    let info = SubshellInitializationInfo {
+        spawning_command: "pwsh".to_owned(),
+        was_triggered_by_rc_file_snippet: false,
+        env_var_collection_name: None,
+        ssh_connection_info: None,
+    };
+    let (bytes, _) = subshell_bootstrap_success_block_bytes(
+        &info,
+        ShellType::PowerShell,
+        TargetOS::Linux,
+        false,
+    );
+    let command = String::from_utf8(bytes).expect("utf8");
+    assert!(command.contains(".config/powershell/Microsoft.PowerShell_profile.ps1"));
+    assert!(command.contains("$(uname)"));
 }

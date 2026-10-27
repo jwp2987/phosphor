@@ -317,7 +317,9 @@ pub enum ShellDialect {
     PowerShell,
     /// nushell: no backslash escaping of bare words exists; a word containing anything but
     /// plain path characters is wrapped in double quotes (`"dir with spaces/"`), with `\`, `"`
-    /// and control characters written as nu string escapes (#984).
+    /// and control characters written as nu string escapes (#984). A quoted string is a literal:
+    /// it is not globbed and a leading `~` in it is not expanded, so a home-relative path that
+    /// needs quoting is a backtick string instead (`` `~/my dir/` ``).
     Nu,
 }
 
@@ -371,9 +373,7 @@ impl ShellDialect {
     /// or `$HOME/` unescaped so it still expands. See [`ShellFamily::shell_escape`].
     pub fn shell_escape<'s>(self, path: &'s str) -> Cow<'s, str> {
         if self == Self::Nu {
-            // nu expands a leading `~` in path arguments even inside a quoted string, and a
-            // quoted string cannot be glued to an unquoted prefix, so quote the whole word.
-            return nu_quote(path);
+            return nu_shell_escape(path);
         }
         // Special case if the path starts with "~/" or "~\": The escape function escapes the "~" to avoid
         // tilde expansion, but we still want tilde expansion with the rest of the path properly
@@ -416,13 +416,77 @@ fn nu_bare_char(c: char) -> bool {
         || matches!(c, '_' | '.' | '/' | '-' | '+' | '@' | '%' | ':' | '=' | '~')
 }
 
-/// nushell quoting: bare when every character is safe, otherwise a double-quoted string.
+/// Whether nushell could read the bare word `word` as a value other than a string: `true`,
+/// `false`, `null`, `inf` / `nan`, and anything that starts like a number, a filesize, a duration
+/// or a date (`12`, `1e3`, `0x1F`, `10kb`, `5sec`, `2020-01-01`, `.5`). A file with such a name
+/// is quoted to stay a path; quoting an ordinary word such as `2024-notes.txt` only costs two
+/// characters, so the check errs on the side of quoting.
+fn nu_bare_word_is_literal(word: &str) -> bool {
+    if matches!(word, "true" | "false" | "null" | "nothing") {
+        return true;
+    }
+    let unsigned = word.strip_prefix(['-', '+']).unwrap_or(word);
+    let mut chars = unsigned.chars();
+    let starts_like_a_number = match chars.next() {
+        Some(c) if c.is_ascii_digit() => true,
+        Some('.') => chars.next().is_some_and(|c| c.is_ascii_digit()),
+        _ => false,
+    };
+    starts_like_a_number || unsigned.parse::<f64>().is_ok()
+}
+
+/// A nushell double-quoted string literal for `input`, always quoted (never a bare word).
+///
+/// Use this where the value must stay a string: a bare `1` or `true` is an int or a bool in
+/// nushell (`$env.X = 1` stores an int), whereas [`ShellDialect::escape`] leaves such a safe
+/// word bare because a command argument is converted to a string anyway.
+pub fn nu_quoted_string(input: &str) -> String {
+    nu_double_quote(input)
+}
+
+/// nushell quoting of a literal name: bare when every character is safe, otherwise a
+/// double-quoted string. A leading `~` is never bare, since nushell expands it to a home
+/// directory.
 fn nu_quote(input: &str) -> Cow<'_, str> {
-    use std::fmt::Write as _;
     // `..` makes a bare word a nushell range (`a..b`), so it must be quoted.
-    if !input.is_empty() && !input.contains("..") && input.chars().all(nu_bare_char) {
+    if !input.is_empty()
+        && !input.starts_with('~')
+        && !input.contains("..")
+        && input.chars().all(nu_bare_char)
+        && !nu_bare_word_is_literal(input)
+    {
         return Cow::Borrowed(input);
     }
+    Cow::Owned(nu_double_quote(input))
+}
+
+/// nushell quoting of a path that should keep a leading `~` meaning the home directory.
+///
+/// Only a bare word (`~/src`) or a backtick string (`` `~/my dir/` ``) is tilde-expanded:
+/// `ls "~/my dir"` looks for a directory literally named `~`. A backtick string is also globbed,
+/// so it is only used when the path holds no glob character; the rare remainder falls back to the
+/// double-quoted literal. A path without a leading `~/` is quoted as a literal name.
+fn nu_shell_escape(path: &str) -> Cow<'_, str> {
+    if path == "~" {
+        return Cow::Borrowed(path);
+    }
+    let Some(rest) = path.strip_prefix("~/") else {
+        return nu_quote(path);
+    };
+    if !path.contains("..") && path.chars().all(nu_bare_char) {
+        return Cow::Borrowed(path);
+    }
+    let backtick_safe = |c: char| {
+        !needs_control_char_quoting(c) && !matches!(c, '`' | '*' | '?' | '[' | ']' | '{' | '}')
+    };
+    if rest.chars().all(backtick_safe) {
+        return Cow::Owned(format!("`{path}`"));
+    }
+    Cow::Owned(nu_double_quote(path))
+}
+
+fn nu_double_quote(input: &str) -> String {
+    use std::fmt::Write as _;
     let mut out = String::with_capacity(input.len() + 2);
     out.push('"');
     for c in input.chars() {
@@ -439,7 +503,7 @@ fn nu_quote(input: &str) -> Cow<'_, str> {
         }
     }
     out.push('"');
-    Cow::Owned(out)
+    out
 }
 
 /// bash/zsh ANSI-C quoting of the whole word: `$'...'`.

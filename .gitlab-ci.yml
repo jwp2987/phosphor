@@ -4,12 +4,13 @@
 # carry a `tags:` entry or it sits pending forever:
 #   little-thing  linux amd64 (the build box)
 #   Mac           darwin arm64
+#   windows       Windows 10 x86_64 VM (shell executor, PowerShell 5.1)
 #
-# Windows and macOS Intel are intentionally absent (dropped for now; see #989).
+# macOS Intel is intentionally absent (dropped for now; see #989).
 #
-# Port status: every pr-check.yml job is ported except the Windows and macOS Intel
-# ones (dropped for now), plus MANUAL build jobs for the Mac DMG and the Linux
-# AppImage/deb, and the tag-triggered release pipeline (CLI tarballs -> digest pins ->
+# Port status: every pr-check.yml job is ported except the macOS Intel ones
+# (dropped for now), plus MANUAL build jobs for the Mac DMG, the Linux
+# AppImage/deb and the Windows installer, and the tag-triggered release pipeline (CLI tarballs -> digest pins ->
 # installers -> GitLab release). The release pipeline has never run end to end.
 #
 # `little-thing` is the maintainer's build box, so jobs there must not change its
@@ -291,6 +292,90 @@ build-linux-x86_64:
     when: on_success
 
 # ---------------------------------------------------------------------------
+# Windows jobs (manual). The `windows` runner is a Windows 10 x86_64 VM with the
+# shell executor and Windows PowerShell 5.1. It runs as a STANDARD user (not an
+# admin) inside the logged-in desktop session, so a job can open real windows.
+# The toolchain is installed by hand once (script/windows/bootstrap.ps1, minus its
+# gcloud tail): VS 2022 Build Tools + Windows SDK, Git, rustup, Strawberry Perl,
+# protoc 25.1 (PROTOC is set for the user), CMake, jq and Inno Setup. Jobs never
+# install anything: a missing prerequisite fails with a message.
+#
+# PowerShell does not stop on a native command's exit code, so every native call
+# is followed by an explicit $LASTEXITCODE check.
+#
+# Git LFS: only *.pdb debug symbols and an optional model are in LFS, and the
+# Linux and Mac builds already run with the pointer files; skip the smudge so a
+# clone never needs LFS objects.
+# ---------------------------------------------------------------------------
+
+.windows_job:
+  tags: [windows]
+  needs: []
+  variables:
+    GIT_LFS_SKIP_SMUDGE: "1"
+  before_script:
+    - New-Item -ItemType Directory -Force "$env:CI_PROJECT_DIR\.ci" | Out-Null
+    - foreach ($f in $env:GITHUB_OUTPUT, $env:GITHUB_PATH, $env:GITHUB_ENV) { if (-not (Test-Path $f)) { New-Item -ItemType File $f | Out-Null } }
+    - $env:PATH = "$env:USERPROFILE\.cargo\bin;C:\Program Files (x86)\Inno Setup 6;$env:PATH"
+
+# Read-only environment report for the Windows runner. Changes nothing.
+diag-windows:
+  extends: .windows_job
+  stage: test
+  when: manual
+  allow_failure: true
+  timeout: 10m
+  script:
+    - whoami; [Environment]::OSVersion.VersionString; $env:PROCESSOR_ARCHITECTURE
+    - '"cpus: " + (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors + "  ram GB: " + [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB,1)'
+    - Get-PSDrive C | Format-Table -AutoSize | Out-String
+    - 'foreach ($t in "git","cargo","rustc","rustup","perl","cmake","jq","ISCC","cargo-nextest") { "{0,-14} {1}" -f $t, ((Get-Command $t -ErrorAction SilentlyContinue).Source) }'
+    - '"PROTOC=$env:PROTOC  exists=" + (Test-Path "$env:PROTOC")'
+    - '& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property displayName'
+    - rustup show
+
+# cargo check for the Windows-only code paths, with the same bin, features and
+# profile the installer build uses (script/windows/bundle.ps1 -CHECK_ONLY).
+check-windows:
+  extends: .windows_job
+  stage: test
+  when: manual
+  timeout: 3h
+  interruptible: true
+  script:
+    - foreach ($t in "cargo","rustc","perl","cmake") { if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { Write-Error "$t is missing on this runner; install it by hand (not done automatically)"; exit 1 } }
+    - .\script\windows\bundle.ps1 -CHANNEL oss -CHECK_ONLY
+    - if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+# Windows x86_64 installer (Inno Setup), unsigned. Like the other build jobs this is
+# NOT the release pipeline: no CLI tarballs or digest pins, nothing published; the
+# output is a job artifact.
+build-windows-x86_64:
+  extends: .windows_job
+  stage: build
+  when: manual
+  timeout: 5h
+  variables:
+    CARGO_BUILD_JOBS: "8"
+  script:
+    - foreach ($t in "cargo","rustc","perl","cmake","ISCC") { if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { Write-Error "$t is missing on this runner; install it by hand (not done automatically)"; exit 1 } }
+    - if (-not (Test-Path "$env:PROTOC")) { Write-Error "PROTOC is not set to an existing protoc.exe on this runner"; exit 1 }
+    - $version = (Select-String -Path app\Cargo.toml -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+    - .\script\windows\bundle.ps1 -CHANNEL oss -ARCH x64 -RELEASE_TAG "v$version-dev"
+    - if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    - |
+      $installer = (Select-String -Path $env:GITHUB_OUTPUT -Pattern '^installer_path=(.*)$' | Select-Object -Last 1).Matches[0].Groups[1].Value
+      if (-not $installer -or -not (Test-Path $installer)) { Write-Error "no installer at '$installer'"; exit 1 }
+      New-Item -ItemType Directory -Force dist | Out-Null
+      Copy-Item $installer dist\
+      Get-FileHash dist\* -Algorithm SHA256 | ForEach-Object { $_.Hash.ToLower() + "  " + (Split-Path $_.Path -Leaf) } | Tee-Object -FilePath dist\SHA256SUMS
+  artifacts:
+    name: phosphor-windows-x86_64
+    paths: [dist/]
+    expire_in: 3 days
+    when: on_success
+
+# ---------------------------------------------------------------------------
 # Test jobs (ported from pr-check.yml). All run on the build box and all go
 # through script/agent-cargo (slot/memory governor); `resource_group` serialises
 # them with every other cargo job across pipelines.
@@ -464,7 +549,7 @@ usage-test-macos:
 # Release pipeline (ported from .github/workflows/phosphor_release.yml).
 #
 #   release-meta -> cli-linux / cli-macos -> release-macos-arm64 /
-#   release-linux-x86_64 -> release-publish
+#   release-linux-x86_64 / release-windows-x86_64 -> release-publish
 #
 # Runs automatically for a pushed `v*` TAG and as a manual dry run on main (version
 # `dev-<pipeline iid>`; nothing is published as a GitLab release in that case). The
@@ -476,8 +561,9 @@ usage-test-macos:
 # before either GUI client is built, and the digests are computed from the exact bytes
 # that get published, never from a rebuild (the build is not bit-reproducible).
 #
-# Scope today: Linux x86_64 and macOS arm64 only. No macOS Intel (digest left unset: an
-# install onto an Intel host fails closed), no Windows, no Linux aarch64 (same), and no
+# Scope today: Linux x86_64, macOS arm64 and Windows x86_64 (installer only; the remote
+# server CLI is never installed ON Windows). No macOS Intel (digest left unset: an
+# install onto an Intel host fails closed), no Linux aarch64 (same), and no
 # rpm/Arch packages (rpmbuild and docker are not installed on the build box).
 #
 # Big files go to the GENERIC PACKAGE REGISTRY (script/ci/upload_package), not job
@@ -736,6 +822,44 @@ release-linux-x86_64:
     paths: [manifest-linux.txt, dist/]
     expire_in: 3 days
 
+# Windows x86_64 installer (Inno Setup, unsigned) on the `windows` runner. Same pins as the
+# other GUI builds, computed from the downloaded CLI tarballs. The package-registry upload
+# goes through Git for Windows' bash so it shares script/ci/upload_package (and its
+# tag-only guard) with the other jobs.
+release-windows-x86_64:
+  extends: [.windows_job, .release_rules]
+  stage: build
+  needs: [release-meta, cli-linux, cli-macos]
+  timeout: 5h
+  variables:
+    CARGO_BUILD_JOBS: "8"
+    GIT_DEPTH: "0"
+  script:
+    - foreach ($t in "cargo","rustc","perl","cmake","ISCC") { if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { Write-Error "$t is missing on this runner"; exit 1 } }
+    - if (-not (Test-Path "$env:PROTOC")) { Write-Error "PROTOC is not set to an existing protoc.exe on this runner"; exit 1 }
+    - |
+      foreach ($pin in @(@("PHOSPHOR_CLI_SHA256_LINUX_X86_64", "phosphor-cli-linux-x86_64.tar.gz"), @("PHOSPHOR_CLI_SHA256_MACOS_AARCH64", "phosphor-cli-macos-aarch64.tar.gz"))) {
+        $file = "cli-artifacts\$($pin[1])"
+        if (-not (Test-Path $file)) { Write-Error "missing CLI tarball $file; the client would compile with no pinned digest and refuse every remote-server install"; exit 1 }
+        $digest = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
+        Set-Item -Path "env:$($pin[0])" -Value $digest
+        "$($pin[0])=$digest"
+      }
+    - .\script\windows\bundle.ps1 -CHANNEL $env:CHANNEL -ARCH x64 -RELEASE_TAG $env:RELEASE_TAG
+    - if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    - |
+      $installer = (Select-String -Path $env:GITHUB_OUTPUT -Pattern '^installer_path=(.*)$' | Select-Object -Last 1).Matches[0].Groups[1].Value
+      if (-not $installer -or -not (Test-Path $installer)) { Write-Error "no installer at '$installer'"; exit 1 }
+      New-Item -ItemType Directory -Force dist | Out-Null
+      Copy-Item $installer "dist\Phosphor-windows-x86_64-Setup.exe"
+      & "C:\Program Files\Git\bin\bash.exe" ./script/ci/upload_package "$env:RELEASE_VERSION" dist/Phosphor-windows-x86_64-Setup.exe
+      if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      Get-FileHash dist\* -Algorithm SHA256 | ForEach-Object { $_.Hash.ToLower() + "  " + (Split-Path $_.Path -Leaf) } | Set-Content -Encoding ascii manifest-windows.txt
+      Get-Content manifest-windows.txt
+  artifacts:
+    paths: [manifest-windows.txt, dist/]
+    expire_in: 3 days
+
 # Creates the GitLab release for a TAG: links to everything uploaded above, each with a
 # direct_asset_path so /-/releases/<tag>/downloads/<file> works. Skipped for dry runs on
 # main. Uses the job token (release creation by job token is allowed).
@@ -743,7 +867,7 @@ release-publish:
   extends: [.shim_github_env]
   stage: publish
   tags: [little-thing]
-  needs: [release-meta, cli-linux, cli-macos, release-macos-arm64, release-linux-x86_64]
+  needs: [release-meta, cli-linux, cli-macos, release-macos-arm64, release-linux-x86_64, release-windows-x86_64]
   timeout: 20m
   rules:
     - if: $CI_COMMIT_TAG

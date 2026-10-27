@@ -539,3 +539,57 @@ fn test_cancelling_command_queues_up_next_command_command() {
             .await;
     });
 }
+
+/// A nushell single-quoted string cannot contain `'`, and the command is POSIX syntax full of
+/// them, so it is passed as a raw string whose `#` count beats any `'#` inside it. The leading
+/// space keeps the call out of nushell's history (`history.ignore_space_prefixed`).
+#[test]
+fn test_nu_generator_call_is_a_space_led_raw_string() {
+    App::test((), |_app| async move {
+        let (executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let (in_band_command_cancelled_tx, _) = async_channel::unbounded();
+        let executor = Arc::new(InBandCommandExecutor::new(
+            executor_command_tx,
+            in_band_command_cancelled_tx,
+        ));
+        let task_executor = async_executor::LocalExecutor::new();
+        let command = "echo 'it'\"'\"'s'; echo '#' \"$HOME\" (not nu) \\";
+        let shell = Shell::new(ShellType::Nu, None, None, Default::default(), None);
+        let execute_future = {
+            let executor = executor.clone();
+            task_executor.spawn(async move {
+                let _ = executor
+                    .execute_command(
+                        command,
+                        &shell,
+                        /*current_directory_path=*/ None,
+                        /*environment_variables=*/ None,
+                        ExecuteCommandOptions::default(),
+                    )
+                    .await;
+            })
+        };
+        let check_future = task_executor.spawn(async move {
+            let event = executor_command_rx.recv().await.unwrap();
+            let ExecutorCommandEvent::ExecuteCommand { command: sent, .. } = event else {
+                panic!("expected an ExecuteCommand event");
+            };
+            assert_eq!(sent.shell_type, ShellType::Nu);
+            assert_eq!(
+                sent.command,
+                format!(
+                    " {POSIX_GENERATOR_WRAPPER} {} r##'{command}'##",
+                    sent.command_id
+                )
+            );
+            // It is still recognised as an in-band command, whatever the leading space.
+            assert!(is_in_band_command(&sent.command));
+        });
+        task_executor
+            .run(async move {
+                check_future.await;
+            })
+            .await;
+        drop(execute_future);
+    });
+}

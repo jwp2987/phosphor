@@ -1324,7 +1324,8 @@ fn command_prefix(shell: RenderShell, word: &str) -> Result<String, &'static str
                 format!("command {word}")
             })
         }
-        // Tab configs never select nushell (`dialect_for_shell_name` cannot return it).
+        // A pane whose `shell` is `nu` lands here: there is no builtin / external distinction to
+        // prefix in nushell (`command` does not exist), so the command is refused, not guessed.
         ShellDialect::Nu => Err("nushell command prefixing is not supported"),
         ShellDialect::PowerShell => {
             let lower = word.to_ascii_lowercase();
@@ -1343,12 +1344,13 @@ fn command_prefix(shell: RenderShell, word: &str) -> Result<String, &'static str
 }
 
 /// The dialect a tab config pane's `shell` names: PowerShell for `pwsh`/`powershell`, fish
-/// for `fish`, otherwise the POSIX family (bash, zsh, sh, ...).
+/// for `fish`, nushell for `nu`, otherwise the POSIX family (bash, zsh, sh, ...).
 pub(crate) fn dialect_for_shell_name(shell: &str) -> ShellDialect {
     let name = command_name(shell);
     match name.as_str() {
         "pwsh" | "powershell" | "pwsh-preview" => ShellDialect::PowerShell,
         "fish" => ShellDialect::Fish,
+        "nu" | "nushell" => ShellDialect::Nu,
         _ => ShellDialect::Posix,
     }
 }

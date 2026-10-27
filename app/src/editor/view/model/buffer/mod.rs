@@ -1250,6 +1250,47 @@ impl Buffer {
         })
     }
 
+    /// True iff the buffer holds at least `len` visible chars from `start` and none of them
+    /// is a tab. Scans whole fragment slices (`str::contains`) instead of walking chars one
+    /// at a time, so it stays cheap on a multi-megabyte row (#955). `false` means "not
+    /// proven"; callers fall back to the exact per-char path.
+    pub fn is_tab_free_for_chars(&self, start: CharOffset, len: usize) -> bool {
+        let mut fragments_cursor = self.fragments.cursor::<CharOffset, CharOffset>();
+        fragments_cursor.seek(&start, SeekBias::Right);
+        let mut remaining = len;
+        let mut first = true;
+        while remaining > 0 {
+            let Some(fragment) = fragments_cursor.item() else {
+                return false;
+            };
+            if first || fragment.is_visible(&self.undo_history) {
+                let chunk: &str = if first {
+                    let fragment_offset = start - *fragments_cursor.start();
+                    &fragment.text[fragment_offset..]
+                } else {
+                    fragment.text.as_str()
+                };
+                first = false;
+                let chunk_chars = chunk.chars().count();
+                let taken = if chunk_chars <= remaining {
+                    chunk
+                } else {
+                    let byte_end = chunk
+                        .char_indices()
+                        .nth(remaining)
+                        .map_or(chunk.len(), |(i, _)| i);
+                    &chunk[..byte_end]
+                };
+                if taken.contains('\t') {
+                    return false;
+                }
+                remaining -= chunk_chars.min(remaining);
+            }
+            fragments_cursor.next();
+        }
+        true
+    }
+
     /// Get an iterator of subword starting points forward from the given offset
     pub fn subword_starts_from_offset<T: BufferIndex>(
         &self,

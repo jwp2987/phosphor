@@ -1,4 +1,4 @@
-use super::{sh_script_quote_arg, shell_escape_single_quotes, shell_quote_arg};
+use super::{nu_raw_string, sh_script_quote_arg, shell_escape_single_quotes, shell_quote_arg};
 use crate::terminal::shell::ShellType;
 
 #[test]
@@ -182,4 +182,85 @@ fn shell_quote_arg_escapes_control_characters_per_shell() {
 fn sh_script_quote_arg_keeps_posix_single_quotes() {
     assert_eq!(sh_script_quote_arg("a\tb"), "'a\tb'");
     assert_eq!(sh_script_quote_arg("it's"), r#"'it'"'"'s'"#);
+}
+
+#[test]
+fn nu_quotes_a_plain_value_with_single_quotes_and_anything_else_with_double_quotes() {
+    // A nushell single-quoted string is literal, so a plain value needs nothing else.
+    assert_eq!(shell_quote_arg("/tmp/a b", ShellType::Nu), "'/tmp/a b'");
+    assert_eq!(
+        shell_quote_arg("$HOME `x` \\", ShellType::Nu),
+        "'$HOME `x` \\'"
+    );
+    // It cannot hold a single quote at all, so the double-quoted form (with nushell's escapes)
+    // takes over, and never the `'"'"'` spelling that only POSIX shells understand.
+    assert_eq!(shell_quote_arg("it's", ShellType::Nu), "\"it's\"");
+    assert_eq!(
+        shell_quote_arg("it's \"a\" \\", ShellType::Nu),
+        "\"it's \\\"a\\\" \\\\\""
+    );
+    // A control character is never typed raw (#867): the escape form is used.
+    assert_eq!(shell_quote_arg("a\nb", ShellType::Nu), "\"a\\nb\"");
+}
+
+#[test]
+fn nu_raw_string_has_more_hashes_than_any_run_inside() {
+    assert_eq!(nu_raw_string("echo hi"), "r#'echo hi'#");
+    // `'#` would end an `r#'..'#` string early.
+    assert_eq!(nu_raw_string("echo '#'"), "r##'echo '#''##");
+    assert_eq!(nu_raw_string("a'##b"), "r###'a'##b'###");
+    // A `#` run that is not after a quote still counts: the extra `#`s are harmless.
+    assert_eq!(nu_raw_string("# comment"), "r##'# comment'##");
+    assert_eq!(nu_raw_string(""), "r#''#");
+    // Newlines stay inside the literal.
+    assert_eq!(nu_raw_string("a\nb"), "r#'a\nb'#");
+}
+
+/// The raw string must really be one nushell word that evaluates to the original text.
+#[cfg(unix)]
+#[test]
+fn nu_raw_string_round_trips_through_a_real_nushell() {
+    let Some(nu) = [
+        "/home/linuxbrew/.linuxbrew/bin/nu",
+        "/opt/homebrew/bin/nu",
+        "/usr/bin/nu",
+        "/usr/local/bin/nu",
+    ]
+    .into_iter()
+    .map(std::path::PathBuf::from)
+    .chain(
+        std::env::var_os("PATH")
+            .map(|path| {
+                std::env::split_paths(&path)
+                    .map(|d| d.join("nu"))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+    )
+    .find(|candidate| candidate.is_file()) else {
+        eprintln!("skipping: nu is not installed");
+        return;
+    };
+    for text in [
+        "echo hi",
+        "echo 'it'\"'\"'s'",
+        "echo '#' '##' \"'#\"",
+        "a'###b",
+        "($x) $y `z` \\ \"q\"",
+        "line one\nline two",
+    ] {
+        let output = std::process::Command::new(&nu)
+            .args(["--no-config-file", "-c"])
+            .arg(format!("print -n {}", nu_raw_string(text)))
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&output.stdout), text);
+    }
+}
+
+#[test]
+fn nu_single_quote_escaping_leaves_the_text_alone() {
+    // There is no way to escape a `'` inside a nushell single-quoted string; callers use
+    // `shell_quote_arg` / `nu_raw_string`, and the commands run for Phosphor are bash's.
+    assert_eq!(shell_escape_single_quotes("it's", ShellType::Nu), "it's");
 }

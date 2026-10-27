@@ -154,6 +154,10 @@ pub(super) fn validate_local_harness_shell(shell_type: Option<ShellType>) -> Res
             "Local child harnesses currently require bash, zsh, or fish; PowerShell is not supported."
                 .to_string(),
         ),
+        Some(ShellType::Nu) => Err(
+            "Local child harnesses currently require bash, zsh, or fish; nushell is not supported."
+                .to_string(),
+        ),
         None => Err(
             "Local child harnesses currently require a detected bash, zsh, or fish session."
                 .to_string(),

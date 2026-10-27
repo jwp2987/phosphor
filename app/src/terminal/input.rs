@@ -38,7 +38,7 @@ use crate::ai::blocklist::block::cli_controller::CLISubagentController;
 use crate::ai::blocklist::block::status_bar::BlocklistAIStatusBar;
 use crate::ai::blocklist::{
     ai_indicator_height, BlocklistAIActionModel, QueuedQuery, QueuedQueryId, QueuedQueryModel,
-    QueuedQueryOrigin, SlashCommandRequest,
+    ConversationStatusUpdate, QueuedQueryEvent, QueuedQueryOrigin, SlashCommandRequest,
 };
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentVersion};
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
@@ -499,6 +499,15 @@ const COMPLETIONS_START_OF_REPLACEMENT_SPAN_POSITION_ID: &str =
 const HISTORY_DETAILS_VIEW_WIDTH_REQUIREMENT: f32 = 1100.;
 
 const MIN_BUFFER_LEN_TO_SHOW_COMPLETIONS_WHILE_TYPING: usize = 2;
+
+/// The number of lines in a submitted buffer, as the confirmation dialog states it.
+pub(crate) fn submitted_line_count(command: &str) -> usize {
+    command.lines().count()
+}
+
+/// A shell command of more lines than this, going to a shell that runs each line as its own
+/// command (no bracketed paste), asks before it is submitted (#1046).
+pub(crate) const MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD: usize = 50;
 
 const AI_COMMAND_SEARCH_TRIGGER: &str = "#";
 
@@ -1841,6 +1850,11 @@ pub struct Input {
     /// Typeahead hand-off: the next Enter runs as a shell command (see
     /// `input_enter_as_shell_command`).
     shell_command_submit_pending: bool,
+    /// A long multi-line submission is waiting for the user's answer to the confirmation dialog
+    /// (#1046). The buffer is left untouched meanwhile.
+    awaiting_multiline_submit_confirmation: bool,
+    /// The user confirmed: the next shell submission skips the multi-line check.
+    multiline_submit_confirmed: bool,
     /// The buffer text an Enter gave up waiting for a classification verdict on (#933): pressing
     /// Enter again submits it as the rules decide.
     verdict_wait_gave_up_on: Option<String>,
@@ -3079,6 +3093,20 @@ impl Input {
             me.set_zero_state_hint_text(ctx);
             ctx.notify();
         });
+        // Re-render the placeholder when queue mode is toggled (#1043) so the "Queue mode on"
+        // hint appears and disappears immediately.
+        // Guarded: some harnesses build an input without registering the queue model.
+        if ctx.has_singleton_model::<QueuedQueryModel>() {
+            ctx.subscribe_to_model(&QueuedQueryModel::handle(ctx), move |me, _, event, ctx| {
+                if matches!(
+                    event,
+                    QueuedQueryEvent::QueueNextPromptToggled { .. }
+                        | QueuedQueryEvent::DefaultModeChanged
+                ) {
+                    me.set_zero_state_hint_text(ctx);
+                }
+            });
+        }
         // Re-render the input's placeholder/hint text when any history event that could
         // change `selected_conversation_status_for_hint` fires — the selected conversation
         // swapping, its status changing, its title being set/unset, it becoming non-empty,
@@ -3088,6 +3116,43 @@ impl Input {
         ctx.subscribe_to_model(
             &BlocklistAIHistoryModel::handle(ctx),
             move |me, _, event, ctx| {
+                // #1043: queue mode ends with the agent's turn; tell the user when it does.
+                if let BlocklistAIHistoryEvent::UpdatedConversationStatus {
+                    conversation_id,
+                    terminal_view_id: event_view_id,
+                    update: ConversationStatusUpdate::Changed { .. },
+                    new_status,
+                } = event
+                    && *event_view_id == terminal_view_id
+                    && !new_status.is_in_progress()
+                    && !new_status.is_blocked()
+                    && ctx.has_singleton_model::<QueuedQueryModel>()
+                {
+                    let conversation_id = *conversation_id;
+                    let armed = QueuedQueryModel::as_ref(ctx)
+                        .is_queue_next_prompt_explicitly_armed(conversation_id);
+                    if armed {
+                        QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+                            model.consume_queue_next_prompt_toggle(conversation_id, ctx);
+                        });
+                        let shortcut = bindings::keybinding_name_to_display_string(
+                            crate::terminal::TOGGLE_QUEUE_NEXT_PROMPT_KEYBINDING,
+                            ctx,
+                        );
+                        let text = crate::ai::blocklist::queued_query::queue_mode_toast_text(
+                            false,
+                            shortcut.as_deref(),
+                        );
+                        let window_id = ctx.window_id();
+                        ToastStack::handle(ctx).update(ctx, |ts, ctx| {
+                            ts.add_ephemeral_toast(
+                                DismissibleToast::new(text, ToastFlavor::Default),
+                                window_id,
+                                ctx,
+                            );
+                        });
+                    }
+                }
                 let affects_hint = matches!(
                     event,
                     BlocklistAIHistoryEvent::UpdatedConversationStatus { .. }
@@ -3523,6 +3588,8 @@ impl Input {
             cached_slash_menu_disabled: None,
             is_editor_empty_on_last_edit: is_editor_empty,
             shell_command_submit_pending: false,
+            awaiting_multiline_submit_confirmation: false,
+            multiline_submit_confirmed: false,
             verdict_wait_gave_up_on: None,
             verdict_wait: None,
             handoff_enter_mark: None,
@@ -5471,6 +5538,12 @@ impl Input {
                     app,
                 )
             });
+        // The "Queue mode on" indicator is only for a toggle the user actually armed: not the
+        // standing `Queue` default setting and not the automatic agent-requested-LRC queueing.
+        let is_queue_mode_armed = is_queue_next_prompt_enabled
+            && selected_conversation_id.is_some_and(|conversation_id| {
+                QueuedQueryModel::as_ref(app).is_queue_next_prompt_explicitly_armed(conversation_id)
+            });
 
         let key = match (
             input_model.input_type(),
@@ -5488,6 +5561,17 @@ impl Input {
                     .as_ref(app)
                     .selected_conversation_status_for_hint(app)
                 {
+                    // Queue mode armed (#1043): say so unmistakably and say how to turn it off,
+                    // whether or not a reply is streaming right now.
+                    Some(_) if is_queue_mode_armed => {
+                        return crate::ai::blocklist::queued_query::queue_mode_armed_hint(
+                            bindings::keybinding_name_to_display_string(
+                                crate::terminal::TOGGLE_QUEUE_NEXT_PROMPT_KEYBINDING,
+                                app,
+                            )
+                            .as_deref(),
+                        );
+                    }
                     Some(status) if status.is_in_progress() => {
                         if is_queue_next_prompt_enabled {
                             if is_udi_enabled {
@@ -6270,6 +6354,38 @@ impl Input {
 
             buffer_text
         })
+    }
+
+    /// Whether submitting `command` would run it as many separate commands: it has more than
+    /// [`MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD`] lines and the shell is not in bracketed paste
+    /// mode, so each line is executed on its own (Windows PowerShell 5.1) (#1046).
+    pub(crate) fn multiline_submit_needs_confirmation(
+        &self,
+        command: &str,
+        ctx: &AppContext,
+    ) -> bool {
+        submitted_line_count(command) > MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD
+            && !self.can_execute_command(ctx).is_no()
+            && !crate::terminal::writeable_pty::pty_controller::command_is_sent_as_bracketed_paste(
+                self.model.lock().pty_bracketed_paste(),
+                command,
+            )
+    }
+
+    /// The user chose to run the waiting multi-line buffer line by line.
+    pub(crate) fn confirm_multiline_submit(&mut self, ctx: &mut ViewContext<Self>) {
+        if !std::mem::take(&mut self.awaiting_multiline_submit_confirmation) {
+            return;
+        }
+        self.multiline_submit_confirmed = true;
+        self.input_enter_as_shell_command(ctx);
+        self.multiline_submit_confirmed = false;
+    }
+
+    /// The user declined: the text stays in the input exactly as it was.
+    pub(crate) fn cancel_multiline_submit(&mut self, ctx: &mut ViewContext<Self>) {
+        self.awaiting_multiline_submit_confirmation = false;
+        ctx.focus(&self.editor);
     }
 
     pub fn try_execute_command(&mut self, command: &str, ctx: &mut ViewContext<Self>) -> bool {
@@ -7100,9 +7216,11 @@ impl Input {
             .model()
             .string_model;
 
-        if shell_type == ShellType::Fish {
-            // Zap currently doesn't support newlines in Fish, just prepend the vars
-            let mut command = env_vars.export_variables_for_shell(ShellType::Fish);
+        if matches!(shell_type, ShellType::Fish | ShellType::Nu) {
+            // Zap currently doesn't support newlines in Fish, just prepend the vars. nushell has
+            // no `NAME=value cmd` prefix and its `$env.NAME = value;` statements are valid
+            // anywhere, so it takes the same route.
+            let mut command = env_vars.export_variables_for_shell(shell_type);
             command.push(' ');
             Some(command)
         } else {
@@ -12696,6 +12814,18 @@ impl Input {
             }
 
             let command = self.get_command(ctx);
+            if !std::mem::take(&mut self.multiline_submit_confirmed)
+                && self.multiline_submit_needs_confirmation(&command, ctx)
+            {
+                // Nothing is written and the text stays in the editor until the user answers.
+                self.awaiting_multiline_submit_confirmation = true;
+                ctx.dispatch_typed_action(
+                    &WorkspaceAction::ShowMultilineSubmitConfirmationDialog {
+                        line_count: submitted_line_count(&command),
+                    },
+                );
+                return;
+            }
             warpui::input_order::log_submit(&command);
             // Read how this submit is routed before the submit resets the input config (#835).
             let route_reason = self.ai_input_model.as_ref(ctx).submit_route_reason();
@@ -12890,6 +13020,12 @@ impl Input {
         // before: an unambiguous command or a known head settles to Shell at once (#906, #956),
         // a request to the agent settles to AI. Settling clears the pending verdict, so only
         // text those rules leave undecided waits below.
+        // #1036: text over the background-job cap is never parsed, so no verdict can land;
+        // the debounced job that would clear the request may not have run before this Enter.
+        if self.buffer_exceeds_background_job_cap(ctx) {
+            self.ai_input_model
+                .update(ctx, |model, _| model.abandon_pending_detection());
+        }
         self.settle_pending_input_detection_for_submit(ctx);
         let text = self.editor.as_ref(ctx).buffer_text(ctx);
         let model = self.ai_input_model.as_ref(ctx);
@@ -14018,13 +14154,10 @@ impl Input {
             });
             QueuedQuery::new_with_attachments(prompt, origin, attachments)
         };
-        let queued_by_toggle = queue_enabled && origin == QueuedQueryOrigin::AutoQueueToggle;
+        // #1043: queue mode stays armed after a queued prompt; it is turned off by the user or
+        // when the agent's turn ends (see the history subscription in `Input::new`).
         QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
             model.append(conversation_id, query, ctx);
-            // #1030: "queue next prompt" is one-shot; this was that prompt.
-            if queued_by_toggle {
-                model.consume_queue_next_prompt_toggle(conversation_id, ctx);
-            }
         });
 
         true
@@ -14944,7 +15077,7 @@ impl Input {
                             env_var_collection_name.to_owned(),
                         )))
                     } else {
-                        info.spawning_command.split_whitespace().next().map(|exec| {
+                        crate::terminal::warpify::subshell_display_name(&info.spawning_command).map(|exec| {
                             SubshellRenderState::Flag(SubshellSource::Command(exec.to_owned()))
                         })
                     }

@@ -208,6 +208,7 @@ fn test_precommand_wrappers_are_peeled() {
         "bash -lc \"rm -rf ~\"",
         "bash -o pipefail -c 'rm -rf ~'",
         "zsh -c 'true; rm -rf ~'",
+        "nu -c 'rm -rf ~'",
         "env -S 'rm -rf ~'",
         "su -c 'rm -rf ~' root",
         "watch -n 1 rm -rf ~",

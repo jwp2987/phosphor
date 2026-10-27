@@ -7340,6 +7340,66 @@ fn test_enter_waiting_for_verdict_queues_input_typed_behind_it() {
     });
 }
 
+/// #1036: a buffer over the background-job cap is never parsed, so no verdict can ever land for
+/// it. The first Enter must submit rather than wait for one (it used to be swallowed, and only a
+/// second Enter submitted).
+#[test]
+fn test_enter_on_oversized_buffer_does_not_wait_for_a_verdict() {
+    use crate::ai::blocklist::InputConfig;
+    use crate::terminal::input::decorations::MAX_BACKGROUND_JOB_BUFFER_CHARS;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+
+        initialize_app(&mut app);
+
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        let line = format!(
+            "is it true {}",
+            "x".repeat(MAX_BACKGROUND_JOB_BUFFER_CHARS + 1)
+        );
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false,
+                    },
+                    false, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("x", ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(&line, ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(input.buffer_exceeds_background_job_cap(ctx));
+        });
+
+        // The first Enter must not park itself waiting for a verdict that cannot come.
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        input.read(&app, |input, _| {
+            assert!(
+                input.verdict_wait.is_none(),
+                "an oversized buffer has no verdict to wait for"
+            );
+        });
+    });
+}
+
 /// #1016: a burst of lines typed with no gaps behind an Enter that waits for its verdict queues
 /// every line and every Enter, in typed order, and the waiting Enter still submits only the first
 /// line.
@@ -8475,21 +8535,40 @@ fn prompt_submission_while_agent_replies_steers_by_default_and_queues_only_when_
             let queue = model.queue(conversation_id);
             assert_eq!(queue.len(), 1);
             assert_eq!(queue[0].text(), "queue me");
-            // #1030: the toggle is one-shot; it cleared when that prompt was queued.
-            assert!(!model.is_queue_next_prompt_toggle_enabled(conversation_id));
+            // #1043 (owner decision 2026-10-26, supersedes #1030's one-shot toggle): queue mode
+            // stays on after a queued prompt, until the user turns it off or the turn ends.
+            assert!(model.is_queue_next_prompt_toggle_enabled(conversation_id));
         });
 
-        // So the prompt after it steers again instead of queueing.
+        // So the next prompt queues too...
+        input.update(&mut app, |input, ctx| {
+            input.set_input_mode_agent(/* ensure_input_is_focused */ false, ctx);
+            input.replace_buffer_content("queue me too", ctx);
+            input.input_enter(ctx);
+        });
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert_eq!(
+                model.queue(conversation_id).len(),
+                2,
+                "queue mode stays on across queued prompts"
+            );
+        });
+
+        // ...and once the user turns it off, Enter steers again instead of queueing.
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.toggle_queue_next_prompt(conversation_id, ctx);
+        });
         input.update(&mut app, |input, ctx| {
             input.set_input_mode_agent(/* ensure_input_is_focused */ false, ctx);
             input.replace_buffer_content("steer again", ctx);
             input.input_enter(ctx);
         });
         QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert!(!model.is_queue_next_prompt_toggle_enabled(conversation_id));
             assert_eq!(
                 model.queue(conversation_id).len(),
-                1,
-                "the prompt after a one-shot queued prompt must not queue"
+                2,
+                "with queue mode off, the prompt steers instead of queueing"
             );
         });
     });
@@ -10174,4 +10253,205 @@ fn completion_consumes_auto_paired_closing_quote() {
     assert_eq!(end("foo\\\"", "cat foo\"", 7), 7);
     // Out-of-range / non-boundary offsets never panic.
     assert_eq!(end("a\"", "a", 5), 5);
+}
+
+/// A buffer of `n` one-line comments, as in the #1046 report.
+fn comment_lines(n: usize) -> String {
+    (0..n)
+        .map(|i| format!("# comment line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Sets up a bootstrapped terminal whose input holds `text`, records every command the input
+/// executes, and sets bracketed paste on the shell if asked.
+async fn multiline_submit_fixture(
+    app: &mut App,
+    text: &str,
+    bracketed_paste: bool,
+) -> (ViewHandle<Input>, Rc<RefCell<Vec<String>>>) {
+    initialize_app(app);
+    let session_info = SessionInfo::new_for_test();
+    let session_id = session_info.session_id;
+    let terminal = add_window_with_bootstrapped_terminal(app, None, Some(session_info)).await;
+    simulate_directory_for_completion(session_id, &terminal, app, "~");
+    if bracketed_paste {
+        terminal.read(app, |view, _| {
+            // The flag the pty controller writes commands by, not the grid's mode (#1046).
+            view.model.lock().set_pty_bracketed_paste(true);
+        });
+    }
+    let input = terminal.read(app, |view, _| view.input().clone());
+    let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+    let executed_for_subscription = executed.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+            if let super::Event::ExecuteCommand(event) = event {
+                executed_for_subscription
+                    .borrow_mut()
+                    .push(event.command.clone());
+            }
+        });
+    });
+    input.update(app, |input, ctx| {
+        input.replace_buffer_content(text, ctx);
+    });
+    (input, executed)
+}
+
+/// #1046: more than the threshold of lines to a shell that runs each line on its own asks first;
+/// nothing is written and the text stays in the input. Confirming runs it once; cancelling
+/// leaves the input as it was.
+#[test]
+fn long_multiline_submit_without_bracketed_paste_asks_before_writing() {
+    App::test((), |mut app| async move {
+        let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
+        let (input, executed) = multiline_submit_fixture(&mut app, &text, false).await;
+
+        input.update(&mut app, |input, ctx| {
+            input.input_enter_as_shell_command(ctx);
+        });
+        assert!(executed.borrow().is_empty(), "nothing may be written yet");
+        input.read(&app, |input, ctx| {
+            assert!(input.awaiting_multiline_submit_confirmation);
+            assert_eq!(input.buffer_text(ctx), text);
+        });
+
+        // Cancel: still nothing written, text intact, and a stray confirm does nothing.
+        input.update(&mut app, |input, ctx| {
+            input.cancel_multiline_submit(ctx);
+            input.confirm_multiline_submit(ctx);
+        });
+        assert!(executed.borrow().is_empty());
+        input.read(&app, |input, ctx| {
+            assert!(!input.awaiting_multiline_submit_confirmation);
+            assert_eq!(input.buffer_text(ctx), text);
+        });
+
+        // Ask again, then confirm: the buffer is written exactly once.
+        input.update(&mut app, |input, ctx| {
+            input.input_enter_as_shell_command(ctx);
+            input.confirm_multiline_submit(ctx);
+        });
+        assert_eq!(executed.borrow().as_slice(), [text.clone()]);
+        input.read(&app, |input, _| {
+            assert!(!input.multiline_submit_confirmed);
+        });
+    });
+}
+
+#[test]
+fn multiline_submit_does_not_ask_with_bracketed_paste() {
+    App::test((), |mut app| async move {
+        let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
+        let (input, executed) = multiline_submit_fixture(&mut app, &text, true).await;
+
+        input.update(&mut app, |input, ctx| {
+            input.input_enter_as_shell_command(ctx);
+        });
+        input.read(&app, |input, _| {
+            assert!(!input.awaiting_multiline_submit_confirmation);
+        });
+        assert_eq!(executed.borrow().as_slice(), [text]);
+    });
+}
+
+#[test]
+fn multiline_submit_at_the_threshold_does_not_ask() {
+    App::test((), |mut app| async move {
+        let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD);
+        let (input, executed) = multiline_submit_fixture(&mut app, &text, false).await;
+
+        input.update(&mut app, |input, ctx| {
+            input.input_enter_as_shell_command(ctx);
+        });
+        input.read(&app, |input, _| {
+            assert!(!input.awaiting_multiline_submit_confirmation);
+        });
+        assert_eq!(executed.borrow().as_slice(), [text]);
+    });
+}
+
+/// #1046: the line count the dialog states is the number of lines of the buffer submitted.
+#[test]
+fn submitted_line_count_matches_the_lines_submitted() {
+    for n in [51, 60, 119, 2500] {
+        assert_eq!(submitted_line_count(&comment_lines(n)), n);
+        assert_eq!(submitted_line_count(&format!("{}\n", comment_lines(n))), n);
+    }
+}
+
+/// The dispatched request is for the buffer in the editor, whatever its size. One `App` per case:
+/// the app's singletons can only be registered once.
+fn assert_confirmation_requested_for_lines(n: usize) {
+    App::test((), |mut app| async move {
+        let text = comment_lines(n);
+        let (input, executed) = multiline_submit_fixture(&mut app, &text, false).await;
+        input.update(&mut app, |input, ctx| {
+            input.input_enter_as_shell_command(ctx);
+        });
+        assert!(executed.borrow().is_empty());
+        input.read(&app, |input, ctx| {
+            assert!(input.awaiting_multiline_submit_confirmation);
+            assert_eq!(submitted_line_count(&input.buffer_text(ctx)), n);
+        });
+    });
+}
+
+#[test]
+fn multiline_confirmation_is_requested_for_51_lines() {
+    assert_confirmation_requested_for_lines(51);
+}
+
+#[test]
+fn multiline_confirmation_is_requested_for_60_lines() {
+    assert_confirmation_requested_for_lines(60);
+}
+
+#[test]
+fn multiline_confirmation_is_requested_for_119_lines() {
+    assert_confirmation_requested_for_lines(119);
+}
+
+/// #1046: the confirmation follows the pty controller's flag, not the active block's grid mode.
+/// A Phosphorized zsh at its prompt had the grid mode unset while the controller wrote commands
+/// as a bracketed paste, and the dialog claimed the shell had none.
+#[test]
+fn multiline_confirmation_follows_the_pty_flag_not_the_grid_mode() {
+    App::test((), |mut app| async move {
+        let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 10);
+        let (input, executed) = multiline_submit_fixture(&mut app, &text, true).await;
+        // The grid says no bracketed paste; the controller's flag says yes.
+        input.read(&app, |input, ctx| {
+            assert!(
+                !input
+                    .model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .needs_bracketed_paste()
+            );
+            assert!(!input.multiline_submit_needs_confirmation(&text, ctx));
+        });
+        input.update(&mut app, |input, ctx| {
+            input.input_enter_as_shell_command(ctx);
+        });
+        assert_eq!(executed.borrow().as_slice(), [text.clone()]);
+    });
+}
+
+/// The other way round: grid mode set, controller flag clear.
+#[test]
+fn multiline_confirmation_ignores_a_set_grid_mode_when_the_pty_flag_is_clear() {
+    App::test((), |mut app| async move {
+        let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 10);
+        let (input, _) = multiline_submit_fixture(&mut app, &text, false).await;
+        input.read(&app, |input, ctx| {
+            input
+                .model
+                .lock()
+                .set_mode(crate::terminal::model::ansi::Mode::BracketedPaste);
+            assert!(input.multiline_submit_needs_confirmation(&text, ctx));
+        });
+    });
 }

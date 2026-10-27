@@ -14,6 +14,7 @@ use super::kitty::{KittyAction, KittyResponse};
 use super::secrets::RespectObfuscatedSecrets;
 use super::selection::ScrollDelta;
 use super::session::{command_executor, Sessions};
+use super::typed_echo::EchoGrid;
 pub use super::BlockId;
 use super::{bootstrap::BootstrapStage, find::RegexDFAs};
 use warp_terminal::model::{KeyboardModes, KeyboardModesApplyBehavior};
@@ -1437,6 +1438,41 @@ impl Block {
     /// Copy an existing grid into this block's command grid. We use this to
     /// fill out the command grid when the actual command, as echoed by the shell,
     /// was instead classified as background output.
+    /// The grid the next printed character goes to, for tracking the tty echo of typed-ahead
+    /// keys (#1033): the command grid before the command runs, the output grid after. `None`
+    /// while a prompt is being received.
+    pub(super) fn echo_input_grid(&self) -> Option<(EchoGrid, &GridHandler)> {
+        if self.header_grid.receiving_chars_for_prompt.is_some() {
+            return None;
+        }
+        if self.state == BlockState::BeforeExecution {
+            Some((
+                EchoGrid::Command,
+                self.header_grid.prompt_and_command_grid().grid_handler(),
+            ))
+        } else {
+            Some((EchoGrid::Output, self.output_grid.grid_handler()))
+        }
+    }
+
+    /// Removes a recorded tty echo of typed-ahead keys from one of this block's grids (#1033).
+    /// See `GridHandler::strip_echo_run`.
+    pub(super) fn strip_echo_run(
+        &mut self,
+        grid: EchoGrid,
+        text: &str,
+        span: Option<((usize, usize), (usize, usize))>,
+        allow_head: bool,
+    ) -> bool {
+        match grid {
+            EchoGrid::Command => self
+                .header_grid
+                .prompt_and_command_grid_mut()
+                .strip_echo_run(text, span, allow_head),
+            EchoGrid::Output => self.output_grid.strip_echo_run(text, span, allow_head),
+        }
+    }
+
     pub fn copy_command_grid(&mut self, command: &BlockGrid) {
         // Cloning the background command grid as-is, instead of roundtripping
         // through a string, is more efficient and preserves shell formatting.

@@ -450,6 +450,14 @@ terminal-input-steer-agent-hint = Steer the running agent
 terminal-input-steer-agent-backspace-hint = Steer the running agent, or backspace to exit
 terminal-input-queue-follow-up-hint = Queue a follow up for the running agent
 terminal-input-queue-follow-up-backspace-hint = Queue a follow up for the running agent, or backspace to exit
+terminal-input-queue-mode-armed-hint = Queue mode on — Enter queues this prompt instead of interrupting · { $shortcut } to turn off
+terminal-input-queue-mode-armed-hint-no-shortcut = Queue mode on — Enter queues this prompt instead of interrupting · click the Queue chip to turn off
+terminal-queue-mode-chip-on = Queue: ON
+terminal-queue-mode-chip-off = Queue: OFF
+terminal-queue-mode-toast-on = Queue mode on ({ $shortcut })
+terminal-queue-mode-toast-off = Queue mode off ({ $shortcut })
+terminal-queue-mode-toast-on-no-shortcut = Queue mode on
+terminal-queue-mode-toast-off-no-shortcut = Queue mode off
 terminal-input-follow-up-hint = Ask a follow up
 terminal-input-follow-up-backspace-hint = Ask a follow up, or backspace to exit
 terminal-input-search-queries = Search queries
@@ -2772,6 +2780,10 @@ welcome-tips-close = Close Welcome Tips
 
 # --- ANCHOR-SUB-SMALL-DIALOGS ---
 # Rewind confirmation dialog (app/src/workspace/rewind_confirmation_dialog.rs)
+multiline-submit-dialog-title = Run { $count } lines one at a time?
+multiline-submit-dialog-body = This shell has no bracketed paste, so it runs each of the { $count } lines as a separate command. Ctrl-C may not stop the lines already sent to it.
+multiline-submit-dialog-cancel = Cancel
+multiline-submit-dialog-confirm = Run
 rewind-dialog-title = Rewind
 rewind-dialog-body = Are you sure you want to rewind? This will restore your code and conversation to before this point, and cancel any commands the agent is currently running. A copy of the original conversation will be saved in your conversation history.
 rewind-dialog-info = Rewinding does not affect files edited manually or via shell commands.

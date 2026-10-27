@@ -1557,7 +1557,9 @@ impl<'o> Analyzer<'o> {
         match name.as_str() {
             "eval" | "iex" | "invoke-expression" => self.analyze_args_as_command(args),
             "sh" | "bash" | "zsh" | "dash" | "ksh" | "mksh" | "ash" | "yash" | "fish" | "csh"
-            | "tcsh" | "pwsh" | "powershell" | "cmd" => self.emit_shell(&name, args),
+            | "tcsh" | "pwsh" | "powershell" | "cmd" | "nu" | "nushell" => {
+                self.emit_shell(&name, args)
+            }
             "find" => self.emit_find_exec(args, inner),
             "git" => self.emit_git(args, inner),
             "alias" => {

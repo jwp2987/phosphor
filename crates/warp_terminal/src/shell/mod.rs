@@ -25,6 +25,9 @@ use crate::model::escape_sequences;
 
 use self::unescape::unescape_quotes;
 
+/// How reedline's file-backed history writes a newline inside one entry.
+const NU_HISTORY_NEWLINE: &str = "<\\n>";
+
 const ZSH_META: u8 = 0x83;
 
 /// These are file extensions of executable files on Windows.
@@ -153,6 +156,8 @@ impl Shell {
                 .is_some_and(|map| map.contains("autocd")),
             // autocd is always enabled in Fish, see https://fishshell.com/docs/current/cmds/cd.html.
             ShellType::Fish => true,
+            // Typing a directory path on its own `cd`s into it in nushell.
+            ShellType::Nu => true,
             ShellType::PowerShell => false,
         }
     }
@@ -169,7 +174,9 @@ impl Shell {
     pub fn input_reporting_sequence(&self) -> Option<[u8; 2]> {
         match self.shell_type {
             ShellType::PowerShell => Some([escape_sequences::C0::ESC, b'1']),
-            ShellType::Fish | ShellType::Zsh => Some([escape_sequences::C0::ESC, b'i']),
+            ShellType::Fish | ShellType::Zsh | ShellType::Nu => {
+                Some([escape_sequences::C0::ESC, b'i'])
+            }
             ShellType::Bash => self
                 .version
                 .as_ref()
@@ -213,6 +220,9 @@ impl Shell {
                             true
                         }
                     }
+                    // nushell skips space-prefixed lines when `history.ignore_space_prefixed` is on
+                    // (its default); `nu.nu` reports that as the `ignore_space_prefixed` option.
+                    ShellType::Nu => !options.contains("ignore_space_prefixed"),
                     _ => true,
                 }
             }
@@ -254,6 +264,9 @@ pub enum ShellType {
     Bash,
     Fish,
     PowerShell,
+    /// nushell. Structured-data shell with its own syntax (no `&&`, no `$(...)`, no backslash
+    /// escaping of bare words); see `app/assets/bundled/bootstrap/nu.nu`.
+    Nu,
 }
 
 impl From<ShellType> for command_corrections::Shell {
@@ -263,6 +276,9 @@ impl From<ShellType> for command_corrections::Shell {
             ShellType::Zsh => command_corrections::Shell::Zsh,
             ShellType::Fish => command_corrections::Shell::Fish,
             ShellType::PowerShell => command_corrections::Shell::PowerShell,
+            // `command_corrections` has no nushell. Bash is the closest spelling; its
+            // suggestions are only ever shown, never run on the user's behalf.
+            ShellType::Nu => command_corrections::Shell::Bash,
         }
     }
 }
@@ -270,7 +286,9 @@ impl From<ShellType> for command_corrections::Shell {
 impl From<ShellType> for warp_util::path::ShellFamily {
     fn from(value: ShellType) -> Self {
         match value {
-            ShellType::Zsh | ShellType::Bash | ShellType::Fish => Self::Posix,
+            // nushell's quoting is not POSIX, but the family only decides the escape character
+            // and the executable-name syntax; the exact quoting comes from `ShellDialect`.
+            ShellType::Zsh | ShellType::Bash | ShellType::Fish | ShellType::Nu => Self::Posix,
             ShellType::PowerShell => Self::PowerShell,
         }
     }
@@ -282,6 +300,7 @@ impl From<ShellType> for warp_util::path::ShellDialect {
             ShellType::Zsh | ShellType::Bash => Self::Posix,
             ShellType::Fish => Self::Fish,
             ShellType::PowerShell => Self::PowerShell,
+            ShellType::Nu => Self::Nu,
         }
     }
 }
@@ -300,6 +319,15 @@ impl ShellType {
             Some(ShellType::Zsh)
         } else if name == "fish" || name == "-fish" || name.ends_with("/fish") {
             Some(ShellType::Fish)
+        } else if name == "nu"
+            || name == "-nu"
+            || name == "nushell"
+            || name.ends_with("/nu")
+            || name.ends_with("/nushell")
+            || name.ends_with("/nu.exe")
+            || name == "nu.exe"
+        {
+            Some(ShellType::Nu)
         } else if name == "pwsh"
             || name.ends_with("/pwsh")
             || name.ends_with("pwsh.exe")
@@ -320,6 +348,7 @@ impl ShellType {
             "zsh" => Some(ShellType::Zsh),
             "fish" => Some(ShellType::Fish),
             "powershell" | "pwsh" => Some(ShellType::PowerShell),
+            "nu" | "nushell" => Some(ShellType::Nu),
             _ => None,
         }
     }
@@ -330,6 +359,13 @@ impl ShellType {
             ShellType::Zsh => vec!["~/.zsh_history".to_string(), "~/.zhistory".to_string()],
             ShellType::Bash => vec!["~/.bash_history".to_string()],
             ShellType::Fish => vec!["~/.local/share/fish/fish_history".to_string()],
+            // The plaintext history file. Nushell keeps it in the platform config directory,
+            // which is `~/Library/Application Support/nushell` on macOS and the XDG config
+            // directory elsewhere. A SQLite history (`history.sqlite3`) is not readable here.
+            ShellType::Nu => vec![
+                "~/.config/nushell/history.txt".to_string(),
+                "~/Library/Application Support/nushell/history.txt".to_string(),
+            ],
             #[cfg(not(windows))]
             ShellType::PowerShell => {
                 vec!["~/.local/share/powershell/PSReadLine/ConsoleHost_history.txt".to_string()]
@@ -369,6 +405,11 @@ impl ShellType {
                 vec![".config/powershell/Microsoft.PowerShell_profile.ps1"]
             }
             (_, TargetOS::Windows) => vec![],
+            // `config.nu` under the XDG config directory. macOS keeps it under `~/Library/
+            // Application Support/nushell` instead; the Phosphorize snippet therefore writes to
+            // `$nu.config-path` (see `nu_subshell_bootstrap_block_output.txt`) and this path is
+            // only what the success block displays.
+            (ShellType::Nu, _) => vec![".config/nushell/config.nu"],
             (ShellType::Bash, _) => vec![".bashrc"],
             (ShellType::Zsh, _) => vec![".zshrc"],
             (ShellType::Fish, _) => vec![".config/fish/config.fish"],
@@ -397,6 +438,10 @@ impl ShellType {
         match self {
             ShellType::Bash | ShellType::Zsh | ShellType::PowerShell => " && ",
             ShellType::Fish => "; and ",
+            // nushell has no `&&`, so there is no string that short-circuits. `;` runs the second
+            // command regardless, which is NOT the same: nothing calls this today, and a caller
+            // that needs real short-circuiting for nushell must build an `if` block instead.
+            ShellType::Nu => " ; ",
         }
     }
 
@@ -410,6 +455,7 @@ impl ShellType {
         match self {
             ShellType::Bash | ShellType::Zsh | ShellType::PowerShell => " ; ",
             ShellType::Fish => "; or ",
+            ShellType::Nu => " ; ",
         }
     }
 
@@ -465,6 +511,18 @@ impl ShellType {
                     line.split_once(" -> ")
                         .filter(|(_, value)| !value.trim().is_empty())
                         .and_then(|(key, value)| unescape_alias_key_value(key, value))
+                })
+                .collect(),
+            ShellType::Nu => alias_output
+                .lines()
+                .filter_map(|line| {
+                    // `nu.nu` writes one alias per line as `name -> expansion`, with the
+                    // expansion's newlines already folded to spaces. Nushell aliases are not
+                    // shell-escaped, so the text is taken verbatim rather than unescaped (an
+                    // expansion containing a quote or backslash must not be mangled).
+                    line.split_once(" -> ")
+                        .filter(|(key, value)| !key.is_empty() && !value.trim().is_empty())
+                        .map(|(key, value)| (SmolStr::from(key), value.to_owned()))
                 })
                 .collect(),
         }
@@ -564,6 +622,18 @@ impl ShellType {
                     .map(|s| s.to_owned())
                     .collect()
             }
+
+            ShellType::Nu => {
+                let history_file_contents = String::from_utf8_lossy(history_file_bytes);
+                // Nushell's plaintext history (reedline's file-backed history) is one entry per
+                // line, with the newlines inside a multi-line entry written as the 4 characters
+                // `<\n>`.
+                history_lines = history_file_contents
+                    .lines()
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.replace(NU_HISTORY_NEWLINE, "\n"))
+                    .collect()
+            }
         }
 
         history_lines
@@ -584,7 +654,11 @@ impl ShellType {
         const OTHER_BINDING: [u8; 1] = [escape_sequences::C0::DLE];
         match self {
             ShellType::PowerShell => POWERSHELL_BINDING.as_slice(),
-            ShellType::Zsh | ShellType::Bash | ShellType::Fish => OTHER_BINDING.as_slice(),
+            // `nu.nu` binds Ctrl-P to `edit: clear` in every edit mode, replacing reedline's
+            // history-up binding (input goes through Phosphor's editor, as with fish).
+            ShellType::Zsh | ShellType::Bash | ShellType::Fish | ShellType::Nu => {
+                OTHER_BINDING.as_slice()
+            }
         }
     }
 
@@ -593,11 +667,25 @@ impl ShellType {
         match self {
             ShellType::Bash | ShellType::Zsh => &b"\n"[..],
             ShellType::PowerShell => &b"\r"[..],
+            // Reedline submits on CR, the byte the Enter key sends.
+            ShellType::Nu => &b"\r"[..],
             // For Fish, we send an extra space, immediately followed by backspace, and then
             // the newline character. The backspace ensures that any autosuggestions are
             // suppressed, so we don't get erroneous ghosted autosuggestion text in the command
             // grid.
             ShellType::Fish => &b" \x7f\n"[..],
+        }
+    }
+
+    /// The shell whose syntax commands that Phosphor runs for itself (generators, probes, chip
+    /// commands) are written in. They are executed through `sh -c` / `bash -c` rather than typed
+    /// into the user's line editor, so for nushell, whose own syntax shares almost nothing
+    /// with them, that is bash. Commands that are typed into the user's prompt (a pre-filled
+    /// `cd`, `git checkout`) use the shell's own type instead.
+    pub fn executor_syntax(self) -> ShellType {
+        match self {
+            ShellType::Nu => ShellType::Bash,
+            other => other,
         }
     }
 
@@ -608,6 +696,7 @@ impl ShellType {
             ShellType::Bash => "bash",
             ShellType::Fish => "fish",
             ShellType::PowerShell => "pwsh",
+            ShellType::Nu => "nu",
         }
     }
 
@@ -615,7 +704,7 @@ impl ShellType {
     pub fn is_fully_supported_remotely(&self) -> bool {
         match self {
             ShellType::Zsh | ShellType::Bash => true,
-            ShellType::Fish | ShellType::PowerShell => false,
+            ShellType::Fish | ShellType::PowerShell | ShellType::Nu => false,
         }
     }
 
@@ -642,6 +731,13 @@ impl ShellType {
             ShellType::Zsh => {
                 // zsh is cool and has an API for just fetching executables
                 "builtin print -l -- ${(ok)commands}"
+            }
+            // Every in-band and local command Phosphor runs is POSIX `sh` syntax (the nushell
+            // executors run it through `sh -c`), so this lists the executable files on `$PATH`
+            // with shell builtins only: no per-file process, and nothing nushell-specific to
+            // parse. Nushell's own commands are reported by `nu.nu` at bootstrap.
+            ShellType::Nu => {
+                r#"IFS=:; for d in $PATH; do [ -d "$d" ] || continue; for f in "$d"/*; do if [ -f "$f" ] && [ -x "$f" ]; then printf '%s\n' "${f##*/}"; fi; done; done"#
             }
             ShellType::PowerShell => {
                 // PowerShell does not deal in strings, but in Objects and Object lists
@@ -727,6 +823,7 @@ impl ShellType {
                             })
                             .collect()
                     }
+                    ShellType::Nu => output_string.lines().map_into().collect(),
                     ShellType::PowerShell => {
                         // Windows allows certain suffixes, e.g. "exe", to be elided.
                         if cfg!(windows) {
@@ -798,7 +895,8 @@ impl ShellType {
                 $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($text); \
                 [Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)",
             ),
-            ShellType::Bash | ShellType::Zsh | ShellType::Fish => None,
+            // Nushell reports its commands in the Bootstrapped hook (`scope commands`).
+            ShellType::Bash | ShellType::Zsh | ShellType::Fish | ShellType::Nu => None,
         }
     }
 
@@ -818,7 +916,8 @@ impl ShellType {
                 $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($text); \
                 [Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)",
             ),
-            ShellType::Bash | ShellType::Zsh | ShellType::Fish => None,
+            // Nushell reports its commands in the Bootstrapped hook (`scope commands`).
+            ShellType::Bash | ShellType::Zsh | ShellType::Fish | ShellType::Nu => None,
         }
     }
 

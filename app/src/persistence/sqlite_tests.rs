@@ -3024,6 +3024,80 @@ fn lone_conversation_write_is_visible_to_a_fresh_connection_promptly() {
     writer.handle.join().expect("writer should terminate");
 }
 
+fn queued_row(id: &str, conversation: &str, position: i32, text: &str) -> model::QueuedPromptRow {
+    model::QueuedPromptRow {
+        id: id.to_owned(),
+        conversation_id: conversation.to_owned(),
+        position,
+        kind: "prompt".to_owned(),
+        text: text.to_owned(),
+        origin: "QueueSlashCommand".to_owned(),
+        created_at: chrono::NaiveDate::from_ymd_opt(2026, 10, 27)
+            .unwrap()
+            .and_hms_opt(1, 2, 3)
+            .unwrap(),
+    }
+}
+
+/// #1027: the `queued_prompts` table exists after migration, a conversation's queue is
+/// replaced as a whole, a cleared queue leaves nothing, and the next launch's startup read
+/// returns the rows grouped by conversation in queue order.
+#[test]
+fn queued_prompts_round_trip_through_the_writer_and_startup_read() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let conn = setup_database(&database_path).expect("database should initialize");
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+
+    let send = |conversation: &str, rows: Vec<model::QueuedPromptRow>| {
+        writer
+            .sender
+            .send(ModelEvent::ReplaceQueuedPrompts {
+                conversation_id: conversation.to_owned(),
+                rows,
+            })
+            .expect("event should send");
+    };
+    // Queued out of order on purpose: the read must sort by position, not insertion.
+    send(
+        "conv-a",
+        vec![
+            queued_row("a1", "conv-a", 0, "first"),
+            queued_row("a2", "conv-a", 1, "second"),
+            queued_row("a3", "conv-a", 2, "third"),
+        ],
+    );
+    send("conv-b", vec![queued_row("b1", "conv-b", 0, "other")]);
+    // A send/remove rewrites the queue without the row...
+    send(
+        "conv-a",
+        vec![
+            queued_row("a1", "conv-a", 0, "first"),
+            queued_row("a3", "conv-a", 1, "third"),
+        ],
+    );
+    // ...and an emptied queue deletes everything stored for that conversation.
+    send("conv-b", Vec::new());
+    writer.sender.send(ModelEvent::Terminate).ok();
+    writer.handle.join().expect("writer should terminate");
+
+    let mut conn = setup_database(&database_path).expect("database should reopen");
+    let data = read_sqlite_data(&mut conn, None).expect("startup read should succeed");
+    let restored: Vec<(String, i32, String)> = data
+        .queued_prompts
+        .iter()
+        .map(|row| (row.id.clone(), row.position, row.text.clone()))
+        .collect();
+    assert_eq!(
+        restored,
+        vec![
+            ("a1".to_owned(), 0, "first".to_owned()),
+            ("a3".to_owned(), 1, "third".to_owned()),
+        ],
+        "only rows still queued are restored, in queue order"
+    );
+}
+
 #[derive(diesel::QueryableByName)]
 struct SingleInt {
     #[diesel(sql_type = diesel::sql_types::BigInt)]

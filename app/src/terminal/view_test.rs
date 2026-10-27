@@ -14459,12 +14459,368 @@ fn keys_held_through_a_stall_are_released_once_when_the_subshell_precmd_complete
                 pty_writes.borrow().is_empty(),
                 "echoed bootstrap text is not a prompt: the keys are held"
             );
-            view.release_held_setup_input_if_subshell_ready(ctx);
-            view.release_held_setup_input_if_subshell_ready(ctx);
+            // The waiting notice is showing (as if the stall ceiling had passed).
+            view.subshell_setup_waiting_toast_id = Some("subshell-setup-waiting-test".to_string());
+            // The model's `AfterBlockCompleted` comes before the view has reinitialized the
+            // editor for the new block: nothing is released from it (#1014, the Mac case where
+            // the released command's block never showed).
+            view.handle_terminal_event(
+                &ModelEvent::AfterBlockCompleted(AfterBlockCompletedEvent {
+                    command_finished_to_precmd_delay: None,
+                    block_type: BlockType::BootstrapHidden,
+                    num_secrets_obfuscated: 0,
+                    cloud_workflow_id: None,
+                    cloud_env_var_collection_id: None,
+                }),
+                ctx,
+            );
+            assert_eq!(view.subshell_setup_held_bytes.len(), 2, "still held");
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "AfterBlockCompleted must not release the held keys"
+        );
+        terminal.update(&mut app, |view, ctx| {
+            // The prompt is drawn and the editor reinitialized: now they are delivered, once.
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert!(
+                view.subshell_setup_waiting_toast_id.is_none(),
+                "the waiting notice goes away once setup is over"
+            );
         });
         let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
         assert_eq!(written, b"ls\r".to_vec(), "delivered once, in order");
     })
+}
+
+/// #1048: what a view delivers to the shell, in order: raw pty writes as they are, and each
+/// command it asks to execute as its text plus Enter (what it runs as).
+fn collect_delivered_input(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+) -> Rc<RefCell<Vec<u8>>> {
+    let delivered: Rc<RefCell<Vec<u8>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = delivered.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(terminal, move |_, event, _| match event {
+            Event::WriteBytesToPty { bytes } | Event::WriteHandoffUserBytesToPty { bytes } => {
+                sink.borrow_mut().extend_from_slice(bytes);
+            }
+            Event::ExecuteCommand(event) => {
+                sink.borrow_mut()
+                    .extend_from_slice(event.command.as_bytes());
+                sink.borrow_mut().push(b'\r');
+            }
+            _ => {}
+        });
+    });
+    delivered
+}
+
+/// Puts `view` in the state the Phosphorize chip leaves a PowerShell subshell in once its
+/// bootstrap lines are written (#1048): setup announced, keys held by the PowerShell hold.
+fn announce_powershell_setup(view: &mut TerminalView) {
+    let block_id = view.model.lock().block_list().active_block().id().clone();
+    view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+    view.powershell_setup_hold = PowerShellSetupHold::Setup;
+}
+
+/// Backdates the PowerShell setup announcement past the stall ceiling (#1051).
+fn stall_powershell_setup(view: &mut TerminalView) {
+    let block_id = view.model.lock().block_list().active_block().id().clone();
+    let long_ago = Instant::now()
+        .checked_sub(SUBSHELL_BOOTSTRAP_STALL_CEILING + Duration::from_secs(1))
+        .expect("the clock goes back far enough");
+    view.subshell_bootstrap_announced = Some((block_id, long_ago));
+}
+
+/// #1048: PSReadLine draws the bootstrap lines it reads and the prompt before each, so during a
+/// PowerShell setup the output ends in unterminated text (`PS C:\> ...`) most of the time. That
+/// is not a prompt asking for input: keys typed then are held, never written into the middle of
+/// the setup (where they broke the ` . <bootstrap file>` line and wedged setup) or out of order.
+/// Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn powershell_setup_holds_keys_although_the_output_looks_like_a_prompt() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let delivered = collect_delivered_input(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("powershell", "PS C:\\Users\\me> ");
+            announce_powershell_setup(view);
+            assert!(view.active_output_ends_in_unterminated_text());
+            for key in [b"ec".to_vec(), b"ho".to_vec(), b"\r".to_vec()] {
+                assert!(view.write_user_bytes_to_pty(key, ctx));
+            }
+            assert_eq!(
+                view.subshell_setup_held_bytes,
+                vec![b"ec".to_vec(), b"ho".to_vec(), b"\r".to_vec()]
+            );
+        });
+        assert!(
+            delivered.borrow().is_empty(),
+            "nothing typed during a PowerShell setup reaches the shell early"
+        );
+    })
+}
+
+/// #1048: the PowerShell bootstrap reports a `Precmd` before it sources the profile and reports
+/// `Bootstrapped`. Keys typed after it (the block list shows a prompt block that has not started,
+/// and focus would go to the editor) are held with the rest -- the Enter too, which the editor
+/// used to drop, merging the line with the next command -- and that `Precmd` releases nothing.
+/// Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn powershell_setup_holds_keys_and_enter_typed_after_its_first_precmd() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let delivered = collect_delivered_input(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            announce_powershell_setup(view);
+            assert!(view.write_user_bytes_to_pty(b"ec".to_vec(), ctx));
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            view.typed_characters_on_terminal("ho 1", ctx);
+            view.keydown_on_terminal("\r", ctx);
+            view.typed_characters_on_terminal("ls", ctx);
+            assert_eq!(
+                view.subshell_setup_held_bytes.concat(),
+                b"echo 1\rls".to_vec(),
+                "every key is held, in order, the Enter included"
+            );
+            assert!(
+                view.input.as_ref(ctx).buffer_text(ctx).is_empty(),
+                "nothing reached the input editor"
+            );
+            // #1051: that Precmd says the script is running (sourcing the profiles).
+            assert_eq!(
+                view.powershell_setup_hold,
+                PowerShellSetupHold::ScriptRunning
+            );
+        });
+        assert!(
+            delivered.borrow().is_empty(),
+            "the early Precmd releases nothing"
+        );
+    })
+}
+
+/// #1048: the held keys are delivered at the prompt that follows `Bootstrapped`, exactly once
+/// and in order, with keys typed between `Bootstrapped` and that prompt behind them (one used to
+/// overtake them). A complete line runs as a command; what follows it waits for its prompt; a
+/// trailing incomplete line ends up in the editor, where the user goes on typing. (Where the test
+/// session cannot run a command, the line is written to the pty instead: the same order.)
+/// Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn powershell_setup_keys_are_delivered_once_in_order_at_the_prompt_after_bootstrapped() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let delivered = collect_delivered_input(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            announce_powershell_setup(view);
+            view.typed_characters_on_terminal("echo 1", ctx);
+            view.keydown_on_terminal("\r", ctx);
+            view.typed_characters_on_terminal("ls", ctx);
+            view.handle_terminal_event(
+                &ModelEvent::Handler(AnsiHandlerEvent::Bootstrapped {
+                    session_id: SessionId::from(1048),
+                    is_subshell: true,
+                }),
+                ctx,
+            );
+            assert_eq!(
+                view.powershell_setup_hold,
+                PowerShellSetupHold::AwaitingPrompt
+            );
+            // Typed after `Bootstrapped`, before its prompt: still behind the held keys.
+            view.typed_characters_on_terminal("x", ctx);
+            assert!(view.write_user_bytes_to_pty(b"y".to_vec(), ctx));
+        });
+        assert!(delivered.borrow().is_empty(), "nothing before the prompt");
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+        });
+        assert!(
+            delivered.borrow().starts_with(b"echo 1\r"),
+            "the first line goes first: {:?}",
+            String::from_utf8_lossy(&delivered.borrow())
+        );
+        // The command's prompt.
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+        });
+        let (editor_text, hold, held) = terminal.read(&app, |view, ctx| {
+            (
+                view.input.as_ref(ctx).buffer_text(ctx),
+                view.powershell_setup_hold,
+                view.subshell_setup_held_bytes.clone(),
+            )
+        });
+        let mut everything = delivered.borrow().clone();
+        everything.extend_from_slice(editor_text.as_bytes());
+        assert_eq!(
+            String::from_utf8_lossy(&everything),
+            "echo 1\rlsxy",
+            "every key exactly once, in the order typed"
+        );
+        assert_eq!(hold, PowerShellSetupHold::Off, "the hold is over");
+        assert!(held.is_empty(), "nothing stays held");
+    })
+}
+
+/// #1051: a Ctrl-C early in a PowerShell setup (Ctrl-C at ~0.5 s or ~2 s after the chip) is not
+/// written to the shell -- it stopped the bootstrap half-way and left the pane on "Starting
+/// shell..." with an editor that refused every command. It does what Ctrl-C does at a prompt:
+/// the line being typed is discarded, complete lines stay held, and setup carries on.
+/// Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn early_ctrl_c_in_a_powershell_setup_discards_the_line_being_typed_and_lets_setup_finish() {
+    for hold in [
+        PowerShellSetupHold::Setup,
+        PowerShellSetupHold::ScriptRunning,
+        PowerShellSetupHold::AwaitingPrompt,
+    ] {
+        App::test((), |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let delivered = collect_delivered_input(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                announce_powershell_setup(view);
+                view.powershell_setup_hold = hold;
+                view.typed_characters_on_terminal("echo 1", ctx);
+                view.keydown_on_terminal("\r", ctx);
+                view.typed_characters_on_terminal("ls", ctx);
+                view.ctrl_c(ctx);
+                assert_eq!(
+                    view.subshell_setup_held_bytes.concat(),
+                    b"echo 1\r".to_vec(),
+                    "only the line being typed is discarded"
+                );
+                assert_eq!(view.powershell_setup_hold, hold, "setup carries on");
+                view.typed_characters_on_terminal("pwd", ctx);
+                assert_eq!(
+                    view.subshell_setup_held_bytes.concat(),
+                    b"echo 1\rpwd".to_vec()
+                );
+            });
+            assert!(
+                delivered.borrow().is_empty(),
+                "nothing reaches the shell, the ^C included"
+            );
+        })
+    }
+}
+
+/// #1051: once the setup has stalled while the profiles are being sourced (a hanging profile; the
+/// waiting notice offers Ctrl-C), the ^C goes to the shell to stop them. `pwsh.ps1` still
+/// finishes setup, so the held keys stay held for the prompt after `Bootstrapped`.
+/// Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn ctrl_c_after_a_stalled_powershell_profile_stops_it_and_keeps_the_keys_held() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let delivered = collect_delivered_input(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            announce_powershell_setup(view);
+            stall_powershell_setup(view);
+            view.powershell_setup_hold = PowerShellSetupHold::ScriptRunning;
+            view.typed_characters_on_terminal("ls", ctx);
+            view.ctrl_c(ctx);
+            assert_eq!(
+                view.powershell_setup_hold,
+                PowerShellSetupHold::ScriptRunning
+            );
+            assert_eq!(view.subshell_setup_held_bytes.concat(), b"ls".to_vec());
+        });
+        assert_eq!(*delivered.borrow(), b"\x03".to_vec(), "only the ^C");
+    })
+}
+
+/// #1048 / #1014: Ctrl-C after a PowerShell setup stalled before its script ran skips setup: the
+/// ^C reaches the shell first. The Windows console flushes its pending input as it processes a
+/// Ctrl-C, so the keys held meanwhile -- and keys typed right after -- follow only once the
+/// settle time has passed, in order, and nothing is held afterwards.
+/// Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn ctrl_c_skips_a_powershell_setup_and_releases_the_held_keys_after_it() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let delivered = collect_delivered_input(&mut app, &terminal);
+        let generation = terminal.update(&mut app, |view, ctx| {
+            announce_powershell_setup(view);
+            stall_powershell_setup(view);
+            view.typed_characters_on_terminal("ls", ctx);
+            assert!(delivered.borrow().is_empty());
+            view.ctrl_c(ctx);
+            // Typed while the ^C is being processed: behind the held keys.
+            view.typed_characters_on_terminal("x", ctx);
+            match view.powershell_setup_hold {
+                PowerShellSetupHold::AfterAbort { generation } => generation,
+                other => panic!("expected the post-abort wait, got {other:?}"),
+            }
+        });
+        assert_eq!(
+            *delivered.borrow(),
+            b"\x03".to_vec(),
+            "only the abort goes out at once"
+        );
+        terminal.update(&mut app, |view, ctx| {
+            view.end_powershell_abort_wait(generation, ctx);
+            assert_eq!(view.powershell_setup_hold, PowerShellSetupHold::Off);
+            assert!(view.subshell_setup_held_bytes.is_empty());
+        });
+        assert_eq!(
+            *delivered.borrow(),
+            b"\x03lsx".to_vec(),
+            "abort first, then the held keys, in order"
+        );
+    })
+}
+
+/// #1051: the Ctrl-C rule as a table, and the line a Ctrl-C discards.
+#[test]
+fn powershell_setup_ctrl_c_routes() {
+    use PowerShellSetupCtrlC::*;
+    use PowerShellSetupHold as H;
+    for hold in [H::Setup, H::ScriptRunning, H::AwaitingPrompt] {
+        assert_eq!(powershell_setup_ctrl_c_route(hold, false), CancelHeldLine);
+    }
+    assert_eq!(
+        powershell_setup_ctrl_c_route(H::ScriptRunning, true),
+        StopProfiles
+    );
+    assert_eq!(powershell_setup_ctrl_c_route(H::Setup, true), SkipSetup);
+    assert_eq!(
+        powershell_setup_ctrl_c_route(H::LineRunning { generation: 1 }, false),
+        SkipSetup
+    );
+    assert_eq!(held_bytes_through_last_enter(b"ls\rpw"), 3);
+    assert_eq!(held_bytes_through_last_enter(b"pw"), 0);
+    assert_eq!(held_bytes_through_last_enter(b"a\nb\r"), 4);
+}
+
+/// #1048: a held line ends at the first Enter (`\r`, `\n`, or `\r\n` as one), its text is what
+/// the editor would hold (a Backspace erases), and the rest is kept byte for byte.
+#[test]
+fn split_first_held_line_cuts_at_the_first_enter() {
+    let mut held = b"ecx\x7fho 1\r\nls\rpwd".to_vec();
+    let (line, raw, rest) = split_first_held_line(&mut held).expect("a complete line");
+    assert_eq!(line, "echo 1");
+    assert_eq!(raw, b"ecx\x7fho 1\r\n".to_vec());
+    assert_eq!(rest, b"ls\rpwd".to_vec());
+
+    let mut partial = b"pwd".to_vec();
+    assert!(split_first_held_line(&mut partial).is_none());
+    assert_eq!(
+        partial,
+        b"pwd".to_vec(),
+        "an incomplete line is left as it is"
+    );
 }
 
 /// #1032: a shell showing a prompt for input (`Password: `) gets none of the setup text. Typing
@@ -14633,6 +14989,40 @@ fn subshell_announcement_applies_to_the_bootstrapped_parent_block_before_initshe
     assert!(!subshell_setup_should_hold_typed_bytes(None, false));
     assert!(!subshell_setup_should_hold_typed_bytes(
         Some(SUBSHELL_SETUP_TYPED_HOLD_LIMIT),
+        false
+    ));
+}
+
+/// #1014 (Mac, third stalled subshell in a row): the 90 s hold-limit timer of the first setup
+/// fired during the third setup's stall, released the keys typed so far and cleared the third
+/// announcement, so the rest of the line went straight to the tty and ran inside the hidden
+/// setup. A timer releases only its own setup's keys.
+#[test]
+fn a_stale_hold_limit_timer_does_not_release_a_later_setups_keys() {
+    let first = Instant::now();
+    let third = first + Duration::from_secs(82);
+    // The first setup's timer, the third setup announced and keys held for it.
+    assert!(!subshell_setup_hold_limit_releases(
+        Some(third),
+        Some(first),
+        true
+    ));
+    // Its own timer releases them, held or not (the announcement is cleared either way).
+    assert!(subshell_setup_hold_limit_releases(
+        Some(third),
+        Some(third),
+        true
+    ));
+    assert!(subshell_setup_hold_limit_releases(
+        Some(third),
+        Some(third),
+        false
+    ));
+    // No setup announced any more: keys still held are delivered, nothing else happens.
+    assert!(subshell_setup_hold_limit_releases(None, Some(first), true));
+    assert!(!subshell_setup_hold_limit_releases(
+        None,
+        Some(first),
         false
     ));
 }
@@ -15102,6 +15492,42 @@ fn typeahead_handoff_applies_a_key_that_beat_the_focus_change_to_the_editor() {
         assert_eq!(cursor(&app), 1, "Left moved the cursor");
         send(&mut app, &[0x7f]);
         assert_eq!(buffer(&app), "s");
+    })
+}
+
+/// #1016: an Enter typed after a complete line that reaches the terminal just after the editor
+/// took input over (CGEvent injection at ~1 ms/key beats the focus change) submits the line. It
+/// used to be dropped, leaving the line unsubmitted in the editor. With nothing in the editor it
+/// is still a stray Enter and does nothing.
+#[test]
+fn typeahead_handoff_an_enter_that_beat_the_focus_change_submits_the_editor_line() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            awaiting_typeahead_report(view);
+            view.note_editor_took_over();
+            // Nothing to submit: a stray Enter is ignored, the report is still awaited.
+            view.keydown_on_terminal("\r", ctx);
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::AwaitingReport
+            );
+
+            view.input.update(ctx, |input, ctx| {
+                input.replace_buffer_content("echo LOCAL-OK-42", ctx)
+            });
+            view.keydown_on_terminal("\r", ctx);
+            assert!(
+                matches!(
+                    view.model.lock().typeahead_handoff().state(),
+                    HandoffState::HoldAfterEnter { .. }
+                ),
+                "the Enter reached the editor's submit path instead of being dropped"
+            );
+        });
     })
 }
 
@@ -16947,4 +17373,73 @@ fn queue_restore_notice_says_it_was_put_back_and_why() {
         queue_restore_notice(FinishReason::Cancelled, false),
         "the reason must differ between a failure and a stop"
     );
+}
+
+/// Restoring a past conversation into a pane must leave the pane following the end of the
+/// transcript, not at whatever offset it had before (#1042). `create_and_insert_ai_block` never
+/// updated the scroll position, so a pane that had been scrolled up (or whose offset was computed
+/// against placeholder block heights) showed blank space until the user scrolled.
+///
+/// Fails without the fix: the position stays `FixedAtPosition`.
+#[test]
+fn restoring_a_conversation_scrolls_the_pane_to_the_end_of_the_transcript() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                for _ in 0..100 {
+                    model.simulate_block("ls", "foo");
+                }
+            }
+            view.update_scroll_position_locking(ScrollPositionUpdate::AfterHome, ctx);
+            assert!(
+                matches!(
+                    view.scroll_position(),
+                    ScrollPosition::FixedAtPosition { .. }
+                ),
+                "precondition: the pane starts scrolled away from the end"
+            );
+
+            view.restore_conversation_after_view_creation(
+                RestoredAIConversation::new(
+                    build_restored_conversation_without_cli_subagent_for_test(),
+                ),
+                true,
+                RestoreConversationEntryBehavior::EnterRestoredConversation,
+                ctx,
+            );
+            assert_eq!(
+                view.scroll_position(),
+                ScrollPosition::FollowsBottomOfMostRecentBlock,
+                "the restored transcript is shown from its end"
+            );
+        });
+    });
+}
+
+#[test]
+fn test_static_subshell_commands_resolve_to_the_shell_type_without_the_sh_probe() {
+    for (command, expected) in [
+        ("pwsh", Some(ShellType::PowerShell)),
+        ("pwsh -NoLogo", Some(ShellType::PowerShell)),
+        ("nu", Some(ShellType::Nu)),
+        ("  nu  ", Some(ShellType::Nu)),
+        ("/opt/homebrew/bin/nu --login", Some(ShellType::Nu)),
+        ("nushell -n", Some(ShellType::Nu)),
+        // These need the probe (or are not subshells at all).
+        ("bash", None),
+        ("fish", None),
+        ("nu -c 'ls'", None),
+        ("nu script.nu", None),
+        ("menu", None),
+    ] {
+        assert_eq!(
+            shell_type_for_recognized_static_subshell_command(command),
+            expected,
+            "{command:?}"
+        );
+    }
 }

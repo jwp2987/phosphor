@@ -574,6 +574,10 @@ pub struct BlocklistAIController {
     pending_auto_resume_handles: HashMap<AIConversationId, SpawnedFutureHandle>,
     /// Passive conversations explicitly requested to follow up after actions complete.
     pending_passive_follow_ups: HashSet<AIConversationId>,
+    /// Conversations that already had a BYOP auto-compaction in the current turn (reset when
+    /// the user sends a new query). Caps auto-compaction at one per turn so a summary that
+    /// is still over the limit can't loop compact -> continue -> compact.
+    auto_compacted_this_turn: HashSet<AIConversationId>,
     /// Passive suggestion results that should be included with the next request
     /// for a given conversation (e.g. accepted/iterated code diffs that weren't
     /// auto-resumed).
@@ -936,6 +940,7 @@ impl BlocklistAIController {
             attachments_download_dir: None,
             pending_auto_resume_handles: HashMap::new(),
             pending_passive_follow_ups: HashSet::new(),
+            auto_compacted_this_turn: HashSet::new(),
             pending_passive_suggestion_results: HashMap::new(),
             pending_byop_requests: HashMap::new(),
             suspended_for_close: false,
@@ -1007,6 +1012,12 @@ impl BlocklistAIController {
                 task_id,
             } => (conversation_id, task_id),
         };
+
+        // A query that isn't the agent's own synthetic "continue" starts a new turn, so
+        // it gets a fresh one-auto-compaction allowance.
+        if !matches!(entrypoint_type, EntrypointType::AgentInitiated) {
+            self.auto_compacted_this_turn.remove(&conversation_id);
+        }
 
         // Drain any queued passive suggestion results for this conversation
         // *before* cancelling progress, since cancel_conversation_progress
@@ -4477,29 +4488,29 @@ impl BlocklistAIController {
         });
 
         let history_model = BlocklistAIHistoryModel::handle(ctx);
+        let mut resume_after_auto_compaction = false;
         match finished_event.reason {
             Some(warp_multi_agent_api::response_event::stream_finished::Reason::Done(_)) | None => {
                 // Zap BYOP local session compaction - write the summary back
+                let mut summary_committed = false;
                 if let Some(overflow) = summarize_overflow {
                     let compaction_cfg = crate::ai::byop_compaction::CompactionConfig::from_settings(ctx);
                     history_model.update(ctx, |history_model, _ctx| {
                         if let Some(convo) = history_model.conversation_mut(&conversation_id) {
-                            crate::ai::byop_compaction::commit::commit_summarization(
+                            summary_committed = crate::ai::byop_compaction::commit::commit_summarization(
                                 convo,
                                 overflow,
                                 &compaction_cfg,
                             );
                         }
                     });
+                    // An automatic (overflow) summary interrupted the user's task. Don't let
+                    // the turn end on the summary text; resume below, after the stream is
+                    // marked complete.
+                    if overflow && summary_committed {
+                        resume_after_auto_compaction = true;
+                    }
                 }
-                history_model.update(ctx, |history_model, ctx| {
-                    history_model.mark_response_stream_completed_successfully(
-                        stream_id,
-                        conversation_id,
-                        self.terminal_view_id,
-                        ctx,
-                    );
-                });
 
                 // Zap BYOP local session compaction - auto overflow trigger
                 // (matches opencode `processor.ts:395-403`). Only checked when this
@@ -4528,6 +4539,8 @@ impl BlocklistAIController {
                         "[byop-compaction] auto overflow check deferred: the finished turn requested tool calls"
                     );
                 }
+                let mut auto_compaction_decision =
+                    crate::ai::byop_compaction::AutoCompactionDecision::None;
                 if summarize_overflow.is_none() && !turn_continues_with_tools {
                     let aggregate_count = aggregate_token_count;
                     if aggregate_count > 0 {
@@ -4542,26 +4555,86 @@ impl BlocklistAIController {
                             total: aggregate_count,
                             ..Default::default()
                         };
-                        if crate::ai::byop_compaction::is_overflow(&cfg, counts, model_limit) {
+                        let overflowing =
+                            crate::ai::byop_compaction::is_overflow(&cfg, counts, model_limit);
+                        auto_compaction_decision = crate::ai::byop_compaction::auto_compaction_decision(
+                            overflowing,
+                            self.auto_compacted_this_turn.contains(&conversation_id),
+                        );
+                        if overflowing {
                             log::info!(
-                                "[byop-compaction] auto overflow detected: tokens={aggregate_count} usable={}",
+                                "[byop-compaction] auto overflow detected: tokens={aggregate_count} usable={} decision={auto_compaction_decision:?}",
                                 crate::ai::byop_compaction::usable(&cfg, model_limit)
-                            );
-                            // Triggered via SlashCommandRequest::Summarize (same
-                            // chain as /compact-and); overflow=true → chat_stream
-                            // includes the overflow marker when it builds the
-                            // summary request, and commit_summarization also writes
-                            // overflow=true into state when it saves back (so the UI
-                            // can distinguish the two).
-                            self.send_slash_command_request(
-                                crate::ai::blocklist::controller::SlashCommandRequest::Summarize {
-                                    prompt: None,
-                                    overflow: true,
-                                },
-                                ctx,
                             );
                         }
                     }
+                }
+
+                if auto_compaction_decision
+                    == crate::ai::byop_compaction::AutoCompactionDecision::GiveUp
+                {
+                    // Already auto-compacted once this turn and still over the limit:
+                    // end the turn with a clear error instead of looping.
+                    history_model.update(ctx, |history_model, ctx| {
+                        history_model.mark_response_stream_completed_with_error(
+                            RenderableAIError::ContextWindowExceeded(
+                                "The conversation is still over the model's context window after automatic compaction. Start a new conversation, use a larger-context model, or reduce the amount of data read in one task.".to_owned(),
+                            ),
+                            /*recovery_pending*/ false,
+                            stream_id,
+                            conversation_id,
+                            self.terminal_view_id,
+                            ctx,
+                        );
+                    });
+                } else {
+                    history_model.update(ctx, |history_model, ctx| {
+                        history_model.mark_response_stream_completed_successfully(
+                            stream_id,
+                            conversation_id,
+                            self.terminal_view_id,
+                            ctx,
+                        );
+                    });
+                }
+
+                if auto_compaction_decision
+                    == crate::ai::byop_compaction::AutoCompactionDecision::Compact
+                {
+                    self.auto_compacted_this_turn.insert(conversation_id);
+                    // Triggered via SlashCommandRequest::Summarize (same
+                    // chain as /compact-and); overflow=true → chat_stream
+                    // includes the overflow marker when it builds the
+                    // summary request, and commit_summarization also writes
+                    // overflow=true into state when it saves back (so the UI
+                    // can distinguish the two).
+                    self.send_slash_command_request(
+                        crate::ai::blocklist::controller::SlashCommandRequest::Summarize {
+                            prompt: None,
+                            overflow: true,
+                        },
+                        ctx,
+                    );
+                }
+
+                if resume_after_auto_compaction {
+                    // Opencode `compaction.ts:533-537`: after an automatic summary, a
+                    // synthetic user message tells the model to carry on. The request is
+                    // built from the compacted history (summary + kept tail), so the task
+                    // continues instead of ending on the summary text. Sent as
+                    // agent-initiated so it doesn't reset the one-compaction-per-turn cap.
+                    log::info!("[byop-compaction] resuming the interrupted task after auto-compaction");
+                    self.send_user_query_in_conversation_internal(
+                        crate::ai::byop_compaction::prompt::build_continue_message(false),
+                        conversation_id,
+                        None,
+                        /*skip_running_command_detection*/ true,
+                        HashMap::new(),
+                        EntrypointType::AgentInitiated,
+                        /*is_queued_prompt*/ false,
+                        /*queued_query_id*/ None,
+                        ctx,
+                    );
                 }
             }
             Some(warp_multi_agent_api::response_event::stream_finished::Reason::Other(_)) => {

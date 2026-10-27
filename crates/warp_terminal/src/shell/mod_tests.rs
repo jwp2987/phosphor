@@ -394,3 +394,209 @@ fn powershell_executable_enumeration_writes_utf8_not_the_active_code_page() {
         );
     }
 }
+
+#[test]
+fn test_nu_from_name_and_markdown_spec() {
+    for name in [
+        "nu",
+        "-nu",
+        "nushell",
+        "/usr/bin/nu",
+        "/opt/homebrew/bin/nu",
+        "nu.exe",
+        "/c/Program Files/nu/nu.exe",
+    ] {
+        assert_eq!(Some(ShellType::Nu), ShellType::from_name(name), "{name}");
+    }
+    // Names that merely contain "nu" are not nushell.
+    for name in [
+        "menu",
+        "/usr/bin/gnu",
+        "nul",
+        "nu.sh",
+        "nushell-config",
+        "/bin/nu/foo",
+    ] {
+        assert_eq!(None, ShellType::from_name(name), "{name}");
+    }
+    assert_eq!(
+        Some(ShellType::Nu),
+        ShellType::from_markdown_language_spec("nu")
+    );
+    assert_eq!(
+        Some(ShellType::Nu),
+        ShellType::from_markdown_language_spec("nushell")
+    );
+    assert_eq!("nu", ShellType::Nu.name());
+    // The name round-trips, which `StartupShell` and the InitShell hook rely on.
+    assert_eq!(
+        Some(ShellType::Nu),
+        ShellType::from_name(ShellType::Nu.name())
+    );
+}
+
+#[test]
+fn test_nu_parse_history_decodes_multi_line_entries() {
+    // reedline's plaintext history writes the newlines inside one entry as `<\n>`.
+    let history = "ls\nif true {<\\n>    echo hi<\\n>}\n\n   \nls | where size > 1mb\n";
+    assert_eq!(
+        ShellType::Nu.parse_history(history.as_bytes()),
+        vec![
+            "ls".to_string(),
+            "if true {\n    echo hi\n}".to_string(),
+            "ls | where size > 1mb".to_string(),
+        ]
+    );
+    assert_eq!(
+        ShellType::Nu.history_files()[0],
+        "~/.config/nushell/history.txt"
+    );
+}
+
+#[test]
+fn test_nu_parse_aliases_keeps_the_expansion_verbatim() {
+    let aliases = ShellType::Nu.aliases(
+        "ll -> ls -l\ngs -> git status --short\nq -> echo \"a b\" 'c'\nbroken\nempty -> \n",
+    );
+    assert_eq!(aliases.get("ll").map(String::as_str), Some("ls -l"));
+    assert_eq!(
+        aliases.get("gs").map(String::as_str),
+        Some("git status --short")
+    );
+    // Quotes and backslashes are not shell-escaped by nushell and must survive.
+    assert_eq!(
+        aliases.get("q").map(String::as_str),
+        Some("echo \"a b\" 'c'")
+    );
+    assert_eq!(aliases.len(), 3);
+}
+
+#[test]
+fn test_nu_terminal_bytes_and_capabilities() {
+    // Ctrl-P, bound to `edit: clear` by nu.nu.
+    assert_eq!(
+        ShellType::Nu.kill_buffer_bytes(),
+        &[escape_sequences::C0::DLE][..]
+    );
+    assert_eq!(ShellType::Nu.execute_command_bytes(), b"\r");
+    assert!(!ShellType::Nu.is_fully_supported_remotely());
+    assert_eq!(ShellType::Nu.shell_command_to_get_all_functions(), None);
+    assert_eq!(ShellType::Nu.shell_command_to_get_all_builtins(), None);
+
+    let shell = Shell::new(ShellType::Nu, None, None, Default::default(), None);
+    assert!(shell.supports_autocd());
+    assert_eq!(
+        shell.input_reporting_sequence(),
+        Some([escape_sequences::C0::ESC, b'i'])
+    );
+}
+
+#[test]
+fn test_nu_should_add_command_to_history_follows_ignore_space_prefixed() {
+    let ignoring = Shell::new(
+        ShellType::Nu,
+        None,
+        Some(HashSet::from(["ignore_space_prefixed".to_string()])),
+        Default::default(),
+        None,
+    );
+    assert!(ignoring.should_add_command_to_history("ls"));
+    assert!(!ignoring.should_add_command_to_history(" ls"));
+
+    let recording = Shell::new(
+        ShellType::Nu,
+        None,
+        Some(HashSet::new()),
+        Default::default(),
+        None,
+    );
+    assert!(recording.should_add_command_to_history(" ls"));
+    let unknown = Shell::new(ShellType::Nu, None, None, Default::default(), None);
+    assert!(unknown.should_add_command_to_history(" ls"));
+}
+
+#[test]
+fn test_nu_commands_phosphor_runs_for_itself_are_bash() {
+    assert_eq!(ShellType::Nu.executor_syntax(), ShellType::Bash);
+    for shell_type in [
+        ShellType::Bash,
+        ShellType::Zsh,
+        ShellType::Fish,
+        ShellType::PowerShell,
+    ] {
+        assert_eq!(shell_type.executor_syntax(), shell_type);
+    }
+    // POSIX `sh` syntax only: no nushell constructs, and it must run under `sh` itself.
+    let command = ShellType::Nu.shell_command_to_get_executables();
+    assert!(command.starts_with("IFS=:; for d in $PATH"));
+    assert!(!command.contains("$env"));
+    let output = CommandOutput {
+        status: CommandExitStatus::Success,
+        stdout: b"ls\ngit\nnu\n".to_vec(),
+        stderr: vec![],
+        exit_code: None,
+    };
+    assert_eq!(
+        ShellType::Nu.executables_from_shell_command_output(Ok(output), false),
+        vec![SmolStr::from("ls"), "git".into(), "nu".into()]
+    );
+}
+
+#[test]
+fn test_nu_dialect_family_and_rc_file() {
+    assert_eq!(
+        warp_util::path::ShellDialect::from(ShellType::Nu),
+        warp_util::path::ShellDialect::Nu
+    );
+    assert_eq!(
+        warp_util::path::ShellFamily::from(ShellType::Nu),
+        warp_util::path::ShellFamily::Posix
+    );
+    let rc = ShellType::Nu.rc_file_paths(TargetOS::Linux);
+    assert_eq!(rc.len(), 1);
+    assert_eq!(rc[0].to_str(), Some("~/.config/nushell/config.nu"));
+    assert!(ShellType::Nu.rc_file_paths(TargetOS::Windows).is_empty());
+}
+
+/// The executables listing must work in a plain POSIX `sh` (it is run through `bash -c` / `sh -c`
+/// for a nushell session) and list only executable regular files, once per directory entry.
+#[cfg(unix)]
+#[test]
+fn test_nu_executables_command_runs_in_sh_and_lists_executables() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = std::env::temp_dir().join(format!("phosphor-nu-exes-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("bin one")).unwrap();
+    std::fs::create_dir_all(dir.join("bin2/subdir")).unwrap();
+    for (path, mode) in [
+        ("bin one/tool a", 0o755),
+        ("bin one/plain", 0o644),
+        ("bin2/tool-b", 0o755),
+    ] {
+        std::fs::write(dir.join(path), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(dir.join(path), std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+    let path = format!(
+        "{}:{}:{}",
+        dir.join("bin one").display(),
+        dir.join("bin2").display(),
+        dir.join("missing").display()
+    );
+    // Absolute path: `PATH` is overridden below, and `Command` resolves the program against the
+    // child's `PATH`, so a bare "sh" would fail with NotFound.
+    let output = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(ShellType::Nu.shell_command_to_get_executables())
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    let mut names: Vec<String> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["tool a".to_string(), "tool-b".to_string()]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

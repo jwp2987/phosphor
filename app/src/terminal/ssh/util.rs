@@ -113,6 +113,12 @@ impl InteractiveSshCommand {
                 // -T or -W imply a non-interactive session.
                 "-T" | "-W" => return None,
 
+                // #1035: -w (tun device), -M (master) and -S (control socket) cannot ride the
+                // wrapper's multiplexed session; the shell wrappers hand them to plain ssh. Only
+                // the standalone forms are recognised here: a clustered `-4vw host` has always
+                // parsed as interactive (see ssh_interactive_shell_parsing).
+                "-w" | "-M" | "-S" => return None,
+
                 // -O (control command), -Q (query): never an interactive session.
                 "-O" | "-Q" => return None,
 
@@ -127,7 +133,7 @@ impl InteractiveSshCommand {
 
                 // SSH option that doesn't change interactivity and require an argument: Skip the next item.
                 "-B" | "-b" | "-c" | "-D" | "-E" | "-e" | "-F" | "-I" | "-i" | "-J" | "-L"
-                | "-l" | "-m" | "-o" | "-P" | "-R" | "-S" | "-w" => {
+                | "-l" | "-m" | "-o" | "-P" | "-R" => {
                     i += 1;
                 }
 
@@ -138,7 +144,7 @@ impl InteractiveSshCommand {
                 arg if arg.starts_with('-') && !arg.starts_with("--") => {
                     for flag in arg.chars().skip(1) {
                         match flag {
-                            'N' | 'f' | 'G' | 'V' | 'T' | 'W' | 'O' | 'Q' => return None,
+                            'N' | 'f' | 'G' | 'V' | 'T' | 'W' | 'O' | 'Q' | 'M' => return None,
                             'B' | 'b' | 'c' | 'D' | 'E' | 'e' | 'F' | 'I' | 'i' | 'J' | 'L'
                             | 'l' | 'm' | 'o' | 'P' | 'p' | 'R' | 'S' | 'w' => break,
                             _ => {}
@@ -312,6 +318,9 @@ mod tests {
             "ssh -Q cipher",
             "ssh -G host",
             "ssh -V",
+            "ssh -w any host",
+            "ssh -M host",
+            "ssh -S /tmp/ctl host",
             "ssh host&",
             "ssh host;",
             "ssh host | cat",

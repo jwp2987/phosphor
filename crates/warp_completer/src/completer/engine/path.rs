@@ -330,26 +330,35 @@ async fn list_directory_contents(
                 if entry.is_dir() {
                     file_name.push(path_separators.main);
                 }
-                // We use `shell_escape()` instead of `escape()` on the relative path name to allow
-                // home directory expansion if needed.
-                format!(
-                    "{}{}",
-                    if split_path.directory_relative_path_name.is_empty() {
-                        "".to_owned()
-                    } else {
-                        // `directory_relative_path_name` may have escaped tildes which we use to
-                        // distinguish between a tilde representing the home directory and a literal
-                        // tilde. `shell_escape()` will doubly escape an escaped tilde which is
-                        // incorrect so we correct that behavior here.
-                        ctx.shell_dialect()
-                            .shell_escape(split_path.directory_relative_path_name.as_str())
-                            .replace(r"\\\~", r"\~")
-                    },
-                    // Home directory expansion is never needed on file names, so we use the
-                    // standard `escape()`. The dialect, not the family: a name with a control
-                    // character must be spelled for the exact shell (#867).
-                    ctx.shell_dialect().escape(file_name.as_str())
-                )
+                if ctx.shell_dialect() == ShellDialect::Nu {
+                    nu_completion_path(
+                        &split_path.directory_relative_path_name,
+                        &file_name,
+                        entry.is_dir(),
+                        home_dir,
+                    )
+                } else {
+                    // We use `shell_escape()` instead of `escape()` on the relative path name to allow
+                    // home directory expansion if needed.
+                    format!(
+                        "{}{}",
+                        if split_path.directory_relative_path_name.is_empty() {
+                            "".to_owned()
+                        } else {
+                            // `directory_relative_path_name` may have escaped tildes which we use to
+                            // distinguish between a tilde representing the home directory and a literal
+                            // tilde. `shell_escape()` will doubly escape an escaped tilde which is
+                            // incorrect so we correct that behavior here.
+                            ctx.shell_dialect()
+                                .shell_escape(split_path.directory_relative_path_name.as_str())
+                                .replace(r"\\\~", r"\~")
+                        },
+                        // Home directory expansion is never needed on file names, so we use the
+                        // standard `escape()`. The dialect, not the family: a name with a control
+                        // character must be spelled for the exact shell (#867).
+                        ctx.shell_dialect().escape(file_name.as_str())
+                    )
+                }
             };
 
             (!entry.is_hidden() || split_path.file_name.starts_with('.')).then(|| {
@@ -372,6 +381,42 @@ async fn list_directory_contents(
             })
         })
         .collect_vec()
+}
+
+/// The replacement text for a path suggestion in nushell (#984).
+///
+/// nushell has no backslash escaping, and a quoted string cannot be glued to an unquoted
+/// prefix, so the directory part and the file name are quoted together as ONE word
+/// (`"my dir/my file.txt"`), never as two. A directory whose word needs quoting is left with its
+/// closing quote off (`"my dir/`): nothing can be appended after a closed quote, and an open quote
+/// is what lets the next Tab continue inside the directory (see `adjust_for_open_quote`).
+/// `\~` is the parser's marker for a literal tilde and is turned back into `~` first.
+///
+/// nushell only expands a leading `~` in a bare word or a backtick string, never in a quoted
+/// one, and a backtick string cannot stay open (it is also a glob). So a path that starts with
+/// `~/` and needs quoting is spelled with the real home directory instead, which can.
+fn nu_completion_path(
+    directory_relative_path_name: &str,
+    file_name: &str,
+    is_dir: bool,
+    home_dir: Option<&str>,
+) -> String {
+    let raw = format!(
+        "{}{}",
+        directory_relative_path_name.replace(r"\~", "~"),
+        file_name
+    );
+    let mut quoted = ShellDialect::Nu.shell_escape(&raw).into_owned();
+    if quoted.starts_with('`') {
+        if let (Some(home), Some(rest)) = (home_dir, raw.strip_prefix('~')) {
+            let expanded = format!("{}{rest}", home.trim_end_matches('/'));
+            quoted = ShellDialect::Nu.escape(&expanded).into_owned();
+        }
+    }
+    if is_dir && quoted.len() > 1 && quoted.starts_with('"') && quoted.ends_with('"') {
+        quoted.pop();
+    }
+    quoted
 }
 
 /// A path split into the parent path (the entire piece before the last separator) and the

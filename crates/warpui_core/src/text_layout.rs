@@ -749,6 +749,43 @@ impl TextFrame {
         frame
     }
 
+    /// Returns a copy of this frame, laid out from the concatenation of the first `laid_head`
+    /// characters and the last characters of a `total_chars`-character paragraph (#1036),
+    /// with every glyph and caret offset in the tail re-based to its TRUE offset in the
+    /// paragraph. Unlike [`Self::with_unlaid_tail`], the end of the paragraph is really laid
+    /// out, so text typed at the end of a huge row is visible; the elided middle has no
+    /// glyphs. `laid_len` is the number of characters actually laid out (head plus tail).
+    pub fn with_elided_middle(
+        &self,
+        laid_head: usize,
+        laid_len: usize,
+        total_chars: usize,
+    ) -> TextFrame {
+        let mut frame = self.clone();
+        if total_chars <= laid_len {
+            return frame;
+        }
+        let delta = total_chars - laid_len;
+        for line in frame.lines.iter_mut() {
+            for run in line.runs.iter_mut() {
+                for glyph in run.glyphs.iter_mut() {
+                    if glyph.index >= laid_head {
+                        glyph.index += delta;
+                    }
+                }
+            }
+            for caret in line.caret_positions.iter_mut() {
+                if caret.start_offset >= laid_head {
+                    caret.start_offset += delta;
+                }
+                if caret.last_offset >= laid_head {
+                    caret.last_offset += delta;
+                }
+            }
+        }
+        frame
+    }
+
     /// A text frame with no text. It has a single line with no runs which
     /// is created by `Line#empty`.
     ///

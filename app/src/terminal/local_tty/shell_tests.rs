@@ -62,6 +62,30 @@ fn test_powershell_encoded_command_has_no_trailing_nul() {
 }
 
 #[test]
+fn test_nu_is_started_with_the_init_script_as_its_execute_argument() {
+    let session_id = crate::terminal::bootstrap::generate_session_id();
+    let args = arguments_for_session_spawning_command("/usr/bin/nu", ShellType::Nu, session_id);
+    let args: Vec<&str> = args.iter().map(|a| a.to_str().unwrap()).collect();
+    // `--execute` runs after env.nu / config.nu / login.nu and before the first prompt.
+    assert_eq!(&args[..2], ["--login", "--execute"]);
+    assert_eq!(args.len(), 3);
+    assert_eq!(
+        args[2],
+        init_shell_script_for_shell(ShellType::Nu, &crate::ASSETS, session_id)
+    );
+    assert!(args[2].contains(&session_id.as_u64().to_string()));
+    assert!(args[2].contains("InitShell"));
+}
+
+#[test]
+fn test_nu_is_a_supported_shell_by_name() {
+    assert_eq!(
+        parse_shell_type_from_path(Path::new("/opt/homebrew/bin/nu")),
+        Some((PathBuf::from("/opt/homebrew/bin/nu"), ShellType::Nu))
+    );
+}
+
+#[test]
 fn test_trim_wsl_err_from_output() {
     assert_eq!(
         take_until_utf16_crlf(b"/bin/bash\n".to_vec()),
@@ -228,4 +252,42 @@ fn fish_tab_config_pane_shell_starter_args_emit_init_shell() {
             _ => panic!("fish should start directly"),
         }
     });
+}
+
+/// #1035: the app exports an absolute `SSH_SOCKET_DIR`, so ssh's ControlPath, the wrapper's socket
+/// test, `ssh -O exit` and the app's registry all name the same file whatever `$HOME` is.
+#[test]
+fn ssh_socket_dir_is_exported_absolute() {
+    use std::path::Path;
+    assert_eq!(
+        absolute_ssh_socket_dir("~/.ssh", Some(Path::new("/Users/winters"))),
+        "/Users/winters/.ssh"
+    );
+    assert_eq!(
+        absolute_ssh_socket_dir("~/.ssh", Some(Path::new("/home/me/"))),
+        "/home/me/.ssh"
+    );
+    // Already absolute (Integration channel): untouched.
+    assert_eq!(
+        absolute_ssh_socket_dir("/abs/.ssh", Some(Path::new("/Users/winters"))),
+        "/abs/.ssh"
+    );
+    // No home, a home too long for a socket path, or one the hook JSON cannot carry: keep `~`.
+    assert_eq!(absolute_ssh_socket_dir("~/.ssh", None), "~/.ssh");
+    let long = format!("/{}", "x".repeat(70));
+    assert_eq!(
+        absolute_ssh_socket_dir("~/.ssh", Some(Path::new(&long))),
+        "~/.ssh"
+    );
+    assert_eq!(
+        absolute_ssh_socket_dir("~/.ssh", Some(Path::new("/Users/a b"))),
+        "~/.ssh"
+    );
+    assert_eq!(
+        absolute_ssh_socket_dir("~/.ssh", Some(Path::new("/Users/a\"b"))),
+        "~/.ssh"
+    );
+    // A typical macOS home leaves room for `/<20-digit id>` plus ssh's 17-byte temp suffix.
+    let dir = absolute_ssh_socket_dir("~/.ssh", Some(Path::new("/Users/winters")));
+    assert!(dir.len() + 1 + 20 + 17 < 104);
 }

@@ -2402,6 +2402,12 @@ fn handle_model_event_unsettled(
             enabled,
         } => upsert_workspace_language_server(connection, &workspace_path, lsp_type, enabled)
             .context("error upserting workspace language server"),
+        ModelEvent::ReplaceQueuedPrompts {
+            conversation_id,
+            rows,
+        } => replace_queued_prompts(connection, &conversation_id, &rows)
+            .map_err(anyhow::Error::from)
+            .context("error saving queued prompts"),
         ModelEvent::UpsertProject { project } => {
             save_project(connection, project).context("error upserting project")
         }
@@ -3660,6 +3666,47 @@ fn collect_rows<T>(rows: impl Iterator<Item = Result<T, Error>>) -> Result<Vec<T
         }
     }
     Ok(collected)
+}
+
+/// Replaces every stored queued-prompt row of `conversation` with `rows`; an empty `rows`
+/// deletes them (#1027).
+///
+/// Delete-then-insert in one transaction, so a reader never sees a half-written queue and
+/// positions stay dense without per-row bookkeeping.
+fn replace_queued_prompts(
+    conn: &mut SqliteConnection,
+    conversation: &str,
+    rows: &[model::QueuedPromptRow],
+) -> Result<(), diesel::result::Error> {
+    use schema::queued_prompts::dsl::*;
+
+    conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        diesel::delete(queued_prompts.filter(conversation_id.eq(conversation))).execute(conn)?;
+        for row in rows {
+            // `REPLACE` so a row id that moved conversations cannot make the whole queue fail
+            // to save on a primary-key clash.
+            diesel::replace_into(queued_prompts)
+                .values(row)
+                .execute(conn)?;
+        }
+        Ok(())
+    })
+}
+
+/// Every stored queued-prompt row, grouped by conversation and in queue order (#1027).
+///
+/// Goes through `collect_rows`, so a damaged page ends the read with an error that the caller
+/// treats like any other unreadable table (#1010) instead of spinning on it.
+fn get_all_queued_prompts(
+    conn: &mut SqliteConnection,
+) -> Result<Vec<model::QueuedPromptRow>, diesel::result::Error> {
+    use schema::queued_prompts::dsl::*;
+
+    collect_rows(
+        queued_prompts
+            .order((conversation_id.asc(), position.asc()))
+            .load_iter::<model::QueuedPromptRow, DefaultLoadingMode>(conn)?,
+    )
 }
 
 fn get_all_projects(conn: &mut SqliteConnection) -> Result<Vec<Project>, diesel::result::Error> {
@@ -5432,6 +5479,7 @@ fn read_sqlite_data_counting(
     let ignored_suggestions = get_all_ignored_suggestions(conn)?;
     let mcp_server_installations = get_all_mcp_server_installations(conn)?;
     let mcp_servers_to_restore = get_mcp_servers_to_restore(conn)?;
+    let queued_prompts = get_all_queued_prompts(conn)?;
 
     Ok(PersistedData {
         app_state,
@@ -5453,6 +5501,7 @@ fn read_sqlite_data_counting(
         ignored_suggestions,
         mcp_server_installations,
         mcp_servers_to_restore,
+        queued_prompts,
     })
 }
 

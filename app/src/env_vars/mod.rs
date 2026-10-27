@@ -96,11 +96,30 @@ impl EnvVar {
             ShellType::PowerShell => {
                 format!("$env:{name} = {value};")
             }
+            // `name` is bare or double-quoted (`$env."my var" = ...` is valid), and `value` is
+            // always a quoted string so `1` or `true` is not stored as an int or a bool.
+            ShellType::Nu => {
+                format!("$env.{name} = {value};")
+            }
         }
     }
 }
 
 fn get_init_command_for_env_var(value: &EnvVarValue, shell_dialect: ShellDialect) -> String {
+    // nushell: neither POSIX quoting nor `$(...)` exist. Commands are written in nushell
+    // syntax and run as a `( ... )` subexpression; secret extraction commands are POSIX `sh`.
+    if shell_dialect == ShellDialect::Nu {
+        return match value {
+            EnvVarValue::Constant(val) => warp_util::path::nu_quoted_string(val),
+            EnvVarValue::Command(cmd) => format!("({})", cmd.command),
+            EnvVarValue::Secret(secret) => format!(
+                "(^sh -c {} | str trim --right)",
+                warp_util::path::nu_quoted_string(
+                    &secret.get_secret_extraction_command(ShellFamily::Posix)
+                )
+            ),
+        };
+    }
     let shell_family = shell_dialect.family();
     match value {
         EnvVarValue::Constant(val) => match shell_family {
@@ -242,6 +261,17 @@ pub fn serialize_variables_for_shell<'s, I: IntoIterator<Item = (&'s str, &'s En
         ShellType::PowerShell => {
             serialize_variables_internal(pairs, "$env:", " = ", ";", " ", shell_type.into())
         }
+        ShellType::Nu => pairs
+            .into_iter()
+            .map(|(name, value)| {
+                format!(
+                    "$env.{} = {};",
+                    ShellDialect::Nu.escape(name),
+                    get_init_command_for_env_var(value, ShellDialect::Nu)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
     }
 }
 
@@ -276,3 +306,7 @@ fn serialize_variables_internal<'s, I: IntoIterator<Item = (&'s str, &'s EnvVarV
         .collect_vec()
         .join(delimiter)
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;
