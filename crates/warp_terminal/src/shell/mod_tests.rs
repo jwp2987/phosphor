@@ -583,7 +583,9 @@ fn test_nu_executables_command_runs_in_sh_and_lists_executables() {
         dir.join("bin2").display(),
         dir.join("missing").display()
     );
-    let output = std::process::Command::new("sh")
+    // Absolute path: `PATH` is overridden below, and `Command` resolves the program against the
+    // child's `PATH`, so a bare "sh" would fail with NotFound.
+    let output = std::process::Command::new("/bin/sh")
         .arg("-c")
         .arg(ShellType::Nu.shell_command_to_get_executables())
         .env("PATH", path)
