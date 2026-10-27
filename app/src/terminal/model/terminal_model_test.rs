@@ -3097,6 +3097,30 @@ fn stalled_zsh_setup() -> TerminalModel {
     terminal
 }
 
+/// Where the running block's output cursor is (row and column) after `zsh` printed only
+/// `rc_output`: the state the block must be in when the setup echo after it is hidden. The mock
+/// grid is 7 columns wide, so this also covers the soft wrap of a longer line.
+fn cursor_after_rc_output_alone(rc_output: &str) -> Point {
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.simulate_long_running_block("zsh", "");
+    terminal.process_bytes(rc_output.as_bytes());
+    terminal
+        .block_list()
+        .active_block()
+        .output_grid()
+        .grid_handler()
+        .cursor_point()
+}
+
+fn running_block_cursor(terminal: &TerminalModel) -> Point {
+    terminal
+        .block_list()
+        .active_block()
+        .output_grid()
+        .grid_handler()
+        .cursor_point()
+}
+
 fn running_block_output(terminal: &TerminalModel) -> (String, usize) {
     let grid = terminal.block_list().active_block().output_grid();
     (
@@ -3157,7 +3181,12 @@ fn unterminated_rc_output_before_a_stalled_setup_echo_is_not_a_prompt() {
     terminal.process_bytes(echo.as_bytes());
     let (contents, cursor_col) = running_block_output(&terminal);
     assert_eq!(contents.trim_end(), "Loading plugins...");
-    assert_eq!(cursor_col, "Loading plugins...".len());
+    assert!(cursor_col > 0);
+    // Exactly where the rc's text alone leaves it: the hidden echo moved nothing.
+    assert_eq!(
+        running_block_cursor(&terminal),
+        cursor_after_rc_output_alone("Loading plugins...")
+    );
     assert!(terminal.is_setup_echo_mid_line());
 }
 
@@ -3174,6 +3203,10 @@ fn rc_output_ending_in_a_space_before_a_stalled_setup_echo_keeps_the_echo_hidden
     terminal.process_bytes(echo.as_bytes());
     let (contents, cursor_col) = running_block_output(&terminal);
     assert_eq!(contents.trim_end(), "Loading plugins...");
-    assert_eq!(cursor_col, "Loading plugins... ".len());
+    assert!(cursor_col > 0);
+    assert_eq!(
+        running_block_cursor(&terminal),
+        cursor_after_rc_output_alone("Loading plugins... ")
+    );
     assert!(terminal.is_setup_echo_mid_line());
 }
