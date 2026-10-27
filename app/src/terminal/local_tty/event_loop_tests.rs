@@ -661,52 +661,78 @@ fn big_paste(n: usize) -> Vec<u8> {
 }
 
 /// #1046: a big multi-line submission is written a tty-buffer at a time, and a ^C queued behind
-/// it waited for all of it. Discarding the queued input drops the unwritten lines and whatever is
-/// queued after them, closes the half-written bracketed paste, and keeps query replies.
+/// it waited for all of it. Discarding drops the unwritten lines of the submitted command, closes
+/// its half-written bracketed paste, and keeps everything else queued, in order.
 #[test]
-fn discard_queued_input_drops_the_unwritten_lines_of_a_big_paste() {
+fn discard_queued_input_drops_only_the_submitted_command() {
     let mut state = State::default();
-    let paste = big_paste(2500);
-    assert!(paste.len() > 40_000);
-    state.queue_input(Cow::Owned(paste));
-    state.queue_input(Cow::Borrowed(b"echo typed ahead\r"));
+    state.queue_input(Cow::Borrowed(b"bootstrap script\r"));
+    state.queue_command_input(Cow::Owned(big_paste(2500)));
+    state.queue_input(Cow::Borrowed(b"typed ahead"));
     state.queue_response(b"\x1b[?62c".to_vec(), None);
+    state.queue_command_input(Cow::Borrowed(b"echo later\r"));
 
-    // The tty accepts only the first 4 KiB.
+    // The bootstrap goes out, then the tty accepts only 4 KiB of the paste.
     state.ensure_next();
+    let first = state.take_current().unwrap();
+    assert_eq!(first.remaining_bytes(), b"bootstrap script\r");
+    state.goto_next();
     let mut current = state.take_current().expect("the paste is being written");
+    assert!(current.discardable);
     current.advance(4096);
     state.set_current(Some(current));
 
     state.discard_queued_input();
     state.queue_input(Cow::Borrowed(&[0x03]));
 
-    let rest = drain(&mut state);
     assert_eq!(
-        rest,
+        drain(&mut state),
         vec![
             BRACKETED_PASTE_END.to_vec(),
+            b"typed ahead".to_vec(),
             b"\x1b[?62c".to_vec(),
             vec![0x03]
-        ],
-        "only the paste's close, the query reply and the ^C may still be written"
+        ]
     );
 }
 
-/// A write that had not started, or was cut outside a paste (a raw multi-line write to a shell
-/// without bracketed paste), is dropped without a stray paste-close.
+/// A ^C with no submitted command in flight changes nothing in the queue.
+#[test]
+fn discard_queued_input_without_a_command_changes_nothing() {
+    let mut state = State::default();
+    state.queue_input(Cow::Borrowed(b"bootstrap\r"));
+    state.queue_input(Cow::Borrowed(b"typed ahead"));
+    state.queue_response(b"\x1b[?62c".to_vec(), None);
+    state.ensure_next();
+    let mut current = state.take_current().unwrap();
+    current.advance(3);
+    state.set_current(Some(current));
+
+    state.discard_queued_input();
+
+    assert_eq!(
+        drain(&mut state),
+        vec![
+            b"strap\r".to_vec(),
+            b"typed ahead".to_vec(),
+            b"\x1b[?62c".to_vec()
+        ]
+    );
+}
+
+/// A command cut outside a paste (a raw multi-line write to a shell without bracketed paste) is
+/// dropped without a stray paste-close.
 #[test]
 fn discard_queued_input_adds_no_paste_close_outside_a_paste() {
     let mut state = State::default();
     let raw: Vec<u8> = (0..2500)
         .flat_map(|i| format!("# comment line {i}\r").into_bytes())
         .collect();
-    state.queue_input(Cow::Owned(raw));
+    state.queue_command_input(Cow::Owned(raw));
     state.ensure_next();
     let mut current = state.take_current().unwrap();
     current.advance(4096);
     state.set_current(Some(current));
-    state.queue_input(Cow::Owned(big_paste(10)));
 
     state.discard_queued_input();
 
@@ -717,7 +743,7 @@ fn discard_queued_input_adds_no_paste_close_outside_a_paste() {
 #[test]
 fn discard_queued_input_does_not_double_close_a_finished_paste() {
     let mut state = State::default();
-    let mut writing = Writing::new(Cow::Owned(big_paste(3)), false);
+    let mut writing = Writing::new(Cow::Owned(big_paste(3)), false, true);
     let end_of_paste = writing.source.len() - 1;
     writing.advance(end_of_paste);
     assert!(!writing.cut_inside_bracketed_paste());

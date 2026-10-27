@@ -7,9 +7,14 @@ pub enum Message {
     /// Data that should be written to the PTY.
     Input(Cow<'static, [u8]>),
 
-    /// Drops user input that is queued for the PTY but not yet written, including the unwritten
-    /// remainder of a large write in progress (#1046). Sent just before a ^C so the interrupt is
-    /// not stuck behind a big multi-line paste; replies to terminal queries are kept.
+    /// Like `Input`, but the submitted buffer of a user command, which
+    /// `DiscardQueuedInput` may drop while it is unwritten (#1046).
+    CommandInput(Cow<'static, [u8]>),
+
+    /// Drops submitted user commands (`CommandInput`) that are queued for the PTY but not yet
+    /// written, including the unwritten remainder of one in progress (#1046). Sent just before a
+    /// ^C so the interrupt is not stuck behind a big multi-line paste. Everything else queued
+    /// (bootstrap, typeahead, replies, agent writes) is kept.
     DiscardQueuedInput,
 
     /// Indicates that the `EventLoop` should be shut down.

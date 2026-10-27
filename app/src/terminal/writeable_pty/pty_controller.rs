@@ -1533,6 +1533,16 @@ impl<T: EventLoopSender> PtyController<T> {
             | PtyWrite::RunNativeShellCompletions(_) => None,
         };
 
+        // The submitted buffer of a user command (not an in-band one) may be cancelled by a ^C
+        // while still unwritten (#1046); nothing else is.
+        let is_user_command = matches!(
+            &write,
+            PtyWrite::Command {
+                in_band_command_id: None,
+                ..
+            }
+        );
+
         // A lone ^C is an interrupt: it cancels what is still queued for the pty (#1046).
         let is_interrupt = matches!(
             &write,
@@ -1622,14 +1632,29 @@ impl<T: EventLoopSender> PtyController<T> {
             && let Some((kill_buffer, rest)) = split_kill_buffer_write(&bytes_to_write, shell_type)
         {
             self.send_message_to_event_loop(Message::Input(Cow::Owned(kill_buffer.to_vec())), ctx);
-            self.send_message_to_event_loop(Message::Input(Cow::Owned(rest.to_vec())), ctx);
+            let rest = Cow::Owned(rest.to_vec());
+            self.send_message_to_event_loop(
+                if is_user_command {
+                    Message::CommandInput(rest)
+                } else {
+                    Message::Input(rest)
+                },
+                ctx,
+            );
             return true;
         }
 
         if is_interrupt {
             self.send_message_to_event_loop(Message::DiscardQueuedInput, ctx);
         }
-        self.send_message_to_event_loop(Message::Input(bytes_to_write), ctx);
+        self.send_message_to_event_loop(
+            if is_user_command {
+                Message::CommandInput(bytes_to_write)
+            } else {
+                Message::Input(bytes_to_write)
+            },
+            ctx,
+        );
         true
     }
 
