@@ -1596,3 +1596,22 @@ fn queue_mode_chip_and_toast_text_reflect_state() {
     );
     assert_eq!(super::queue_mode_toast_text(true, None), "Queue mode on");
 }
+
+/// #1043: only an explicit toggle counts as "armed" for the indicator.
+#[test]
+fn explicit_arm_requires_user_toggle() {
+    with_model(|mut app, model, _events| {
+        let conv = AIConversationId::new();
+        model.read(&app, |m, _| {
+            assert!(!m.is_queue_next_prompt_explicitly_armed(conv))
+        });
+        model.update(&mut app, |m, ctx| m.toggle_queue_next_prompt(conv, ctx));
+        model.read(&app, |m, _| {
+            assert!(m.is_queue_next_prompt_explicitly_armed(conv))
+        });
+        model.update(&mut app, |m, ctx| m.toggle_queue_next_prompt(conv, ctx));
+        model.read(&app, |m, _| {
+            assert!(!m.is_queue_next_prompt_explicitly_armed(conv))
+        });
+    });
+}
