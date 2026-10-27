@@ -953,10 +953,36 @@ fn render_queue_next_prompt_button(
     )
     .finish();
 
-    let tooltip_text = if props.is_active {
-        "Auto-queue is on: your next prompt will be queued"
+    // Read as a state ("Queue: ON" / "Queue: OFF"), not just a highlighted shortcut (#1043).
+    let label_color = if props.is_active {
+        appearance.theme().accent()
     } else {
-        "Auto-queue next prompt while agent is responding"
+        appearance.theme().disabled_ui_text_color()
+    };
+    let label = Text::new_inline(
+        crate::ai::blocklist::queued_query::queue_mode_chip_label(props.is_active),
+        appearance.ui_font_family(),
+        get_keybinding_font_size(appearance),
+    )
+    .with_color(label_color.into())
+    .finish();
+    let icon = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(4.0)
+        .with_child(icon)
+        .with_child(label)
+        .finish();
+
+    let shortcut = props.keystroke.map(|k| k.displayed());
+    let tooltip_text = match (props.is_active, shortcut) {
+        (true, Some(shortcut)) => format!(
+            "Queue mode is on: Enter queues your prompt instead of interrupting. Click or press {shortcut} to turn it off"
+        ),
+        (true, None) => "Queue mode is on: Enter queues your prompt instead of interrupting. Click to turn it off".to_string(),
+        (false, Some(shortcut)) => format!(
+            "Queue mode is off: Enter steers (interrupts) the running agent. Click or press {shortcut} to queue your next prompt instead"
+        ),
+        (false, None) => "Queue mode is off: Enter steers (interrupts) the running agent. Click to queue your next prompt instead".to_string(),
     };
 
     render_warping_indicator_button(
@@ -964,7 +990,7 @@ fn render_queue_next_prompt_button(
         appearance,
         icon,
         props.keystroke,
-        tooltip_text.to_string(),
+        tooltip_text,
         props.is_active,
         |ctx| {
             ctx.dispatch_typed_action(TerminalAction::ToggleQueueNextPrompt);

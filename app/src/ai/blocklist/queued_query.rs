@@ -1184,6 +1184,34 @@ pub(crate) fn is_lrc_auto_queue_active(
         && active_block.ai_conversation_id() == Some(conversation_id)
 }
 
+/// Placeholder shown in an empty input while queue mode is armed (#1043). `shortcut` is the
+/// displayed keybinding for the toggle (from the keymap, so Mac shows its own glyphs).
+pub(crate) fn queue_mode_armed_hint(shortcut: Option<&str>) -> String {
+    match shortcut {
+        Some(shortcut) => crate::t!("terminal-input-queue-mode-armed-hint", shortcut = shortcut),
+        None => crate::t!("terminal-input-queue-mode-armed-hint-no-shortcut"),
+    }
+}
+
+/// Label on the queue chip: reads as a state rather than a bare shortcut.
+pub(crate) fn queue_mode_chip_label(is_on: bool) -> String {
+    if is_on {
+        crate::t!("terminal-queue-mode-chip-on")
+    } else {
+        crate::t!("terminal-queue-mode-chip-off")
+    }
+}
+
+/// Ephemeral toast text shown when queue mode is toggled.
+pub(crate) fn queue_mode_toast_text(is_on: bool, shortcut: Option<&str>) -> String {
+    match (is_on, shortcut) {
+        (true, Some(shortcut)) => crate::t!("terminal-queue-mode-toast-on", shortcut = shortcut),
+        (false, Some(shortcut)) => crate::t!("terminal-queue-mode-toast-off", shortcut = shortcut),
+        (true, None) => crate::t!("terminal-queue-mode-toast-on-no-shortcut"),
+        (false, None) => crate::t!("terminal-queue-mode-toast-off-no-shortcut"),
+    }
+}
+
 #[cfg(test)]
 #[path = "queued_query_tests.rs"]
 mod tests;

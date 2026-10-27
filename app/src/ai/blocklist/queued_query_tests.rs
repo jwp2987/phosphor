@@ -1559,3 +1559,40 @@ fn deleting_a_conversation_clears_its_stored_queue() {
         assert!(stored_rows(&rx, conv).is_empty());
     });
 }
+
+/// #1043: the armed-state indicator names the state and how to turn it off, using the displayed
+/// keybinding it is given (so Mac glyphs flow through unchanged).
+#[test]
+fn queue_mode_armed_hint_names_state_and_shortcut() {
+    crate::i18n::init(Some("en"));
+    let hint = super::queue_mode_armed_hint(Some("⌘⇧J"));
+    assert!(hint.contains("Queue mode on"), "{hint}");
+    assert!(
+        hint.contains("queues this prompt instead of interrupting"),
+        "{hint}"
+    );
+    assert!(hint.contains("⌘⇧J"), "{hint}");
+    assert!(hint.contains("turn off"), "{hint}");
+
+    let no_shortcut = super::queue_mode_armed_hint(None);
+    assert!(no_shortcut.contains("Queue mode on"), "{no_shortcut}");
+    assert!(no_shortcut.contains("turn off"), "{no_shortcut}");
+}
+
+#[test]
+fn queue_mode_chip_and_toast_text_reflect_state() {
+    crate::i18n::init(Some("en"));
+    assert_eq!(super::queue_mode_chip_label(true), "Queue: ON");
+    assert_eq!(super::queue_mode_chip_label(false), "Queue: OFF");
+    let on = super::queue_mode_toast_text(true, Some("Ctrl-Shift-J"));
+    let off = super::queue_mode_toast_text(false, Some("Ctrl-Shift-J"));
+    assert!(
+        on.contains("Queue mode on") && on.contains("Ctrl-Shift-J"),
+        "{on}"
+    );
+    assert!(
+        off.contains("Queue mode off") && off.contains("Ctrl-Shift-J"),
+        "{off}"
+    );
+    assert_eq!(super::queue_mode_toast_text(true, None), "Queue mode on");
+}
