@@ -2780,6 +2780,10 @@ welcome-tips-close = Close Welcome Tips
 
 # --- ANCHOR-SUB-SMALL-DIALOGS ---
 # Rewind confirmation dialog (app/src/workspace/rewind_confirmation_dialog.rs)
+multiline-submit-dialog-title = Run { $count } lines one at a time?
+multiline-submit-dialog-body = This shell has no bracketed paste, so it runs each of the { $count } lines as a separate command. Ctrl-C may not stop the lines already sent to it.
+multiline-submit-dialog-cancel = Cancel
+multiline-submit-dialog-confirm = Run
 rewind-dialog-title = Rewind
 rewind-dialog-body = Are you sure you want to rewind? This will restore your code and conversation to before this point, and cancel any commands the agent is currently running. A copy of the original conversation will be saved in your conversation history.
 rewind-dialog-info = Rewinding does not affect files edited manually or via shell commands.

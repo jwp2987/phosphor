@@ -10235,3 +10235,121 @@ fn completion_consumes_auto_paired_closing_quote() {
     // Out-of-range / non-boundary offsets never panic.
     assert_eq!(end("a\"", "a", 5), 5);
 }
+
+/// A buffer of `n` one-line comments, as in the #1046 report.
+fn comment_lines(n: usize) -> String {
+    (0..n)
+        .map(|i| format!("# comment line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Sets up a bootstrapped terminal whose input holds `text`, records every command the input
+/// executes, and sets bracketed paste on the shell if asked.
+async fn multiline_submit_fixture(
+    app: &mut App,
+    text: &str,
+    bracketed_paste: bool,
+) -> (ViewHandle<Input>, Rc<RefCell<Vec<String>>>) {
+    initialize_app(app);
+    let session_info = SessionInfo::new_for_test();
+    let session_id = session_info.session_id;
+    let terminal = add_window_with_bootstrapped_terminal(app, None, Some(session_info)).await;
+    simulate_directory_for_completion(session_id, &terminal, app, "~");
+    if bracketed_paste {
+        terminal.read(app, |view, _| {
+            view.model
+                .lock()
+                .set_mode(crate::terminal::model::ansi::Mode::BracketedPaste);
+        });
+    }
+    let input = terminal.read(app, |view, _| view.input().clone());
+    let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+    let executed_for_subscription = executed.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+            if let super::Event::ExecuteCommand(event) = event {
+                executed_for_subscription
+                    .borrow_mut()
+                    .push(event.command.clone());
+            }
+        });
+    });
+    input.update(app, |input, ctx| {
+        input.replace_buffer_content(text, ctx);
+    });
+    (input, executed)
+}
+
+/// #1046: more than the threshold of lines to a shell that runs each line on its own asks first;
+/// nothing is written and the text stays in the input. Confirming runs it once; cancelling
+/// leaves the input as it was.
+#[test]
+fn long_multiline_submit_without_bracketed_paste_asks_before_writing() {
+    App::test((), |mut app| async move {
+        let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
+        let (input, executed) = multiline_submit_fixture(&mut app, &text, false).await;
+
+        input.update(&mut app, |input, ctx| {
+            input.input_enter_as_shell_command(ctx);
+        });
+        assert!(executed.borrow().is_empty(), "nothing may be written yet");
+        input.read(&app, |input, ctx| {
+            assert!(input.awaiting_multiline_submit_confirmation);
+            assert_eq!(input.buffer_text(ctx), text);
+        });
+
+        // Cancel: still nothing written, text intact, and a stray confirm does nothing.
+        input.update(&mut app, |input, ctx| {
+            input.cancel_multiline_submit(ctx);
+            input.confirm_multiline_submit(ctx);
+        });
+        assert!(executed.borrow().is_empty());
+        input.read(&app, |input, ctx| {
+            assert!(!input.awaiting_multiline_submit_confirmation);
+            assert_eq!(input.buffer_text(ctx), text);
+        });
+
+        // Ask again, then confirm: the buffer is written exactly once.
+        input.update(&mut app, |input, ctx| {
+            input.input_enter_as_shell_command(ctx);
+            input.confirm_multiline_submit(ctx);
+        });
+        assert_eq!(executed.borrow().as_slice(), [text.clone()]);
+        input.read(&app, |input, _| {
+            assert!(!input.multiline_submit_confirmed);
+        });
+    });
+}
+
+#[test]
+fn multiline_submit_does_not_ask_with_bracketed_paste() {
+    App::test((), |mut app| async move {
+        let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD + 1);
+        let (input, executed) = multiline_submit_fixture(&mut app, &text, true).await;
+
+        input.update(&mut app, |input, ctx| {
+            input.input_enter_as_shell_command(ctx);
+        });
+        input.read(&app, |input, _| {
+            assert!(!input.awaiting_multiline_submit_confirmation);
+        });
+        assert_eq!(executed.borrow().as_slice(), [text]);
+    });
+}
+
+#[test]
+fn multiline_submit_at_the_threshold_does_not_ask() {
+    App::test((), |mut app| async move {
+        let text = comment_lines(MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD);
+        let (input, executed) = multiline_submit_fixture(&mut app, &text, false).await;
+
+        input.update(&mut app, |input, ctx| {
+            input.input_enter_as_shell_command(ctx);
+        });
+        input.read(&app, |input, _| {
+            assert!(!input.awaiting_multiline_submit_confirmation);
+        });
+        assert_eq!(executed.borrow().as_slice(), [text]);
+    });
+}

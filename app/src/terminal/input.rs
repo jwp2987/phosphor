@@ -500,6 +500,10 @@ const HISTORY_DETAILS_VIEW_WIDTH_REQUIREMENT: f32 = 1100.;
 
 const MIN_BUFFER_LEN_TO_SHOW_COMPLETIONS_WHILE_TYPING: usize = 2;
 
+/// A shell command of more lines than this, going to a shell that runs each line as its own
+/// command (no bracketed paste), asks before it is submitted (#1046).
+pub(crate) const MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD: usize = 50;
+
 const AI_COMMAND_SEARCH_TRIGGER: &str = "#";
 
 /// Whether closing a hashtag-triggered AI command search panel should erase the
@@ -1841,6 +1845,11 @@ pub struct Input {
     /// Typeahead hand-off: the next Enter runs as a shell command (see
     /// `input_enter_as_shell_command`).
     shell_command_submit_pending: bool,
+    /// A long multi-line submission is waiting for the user's answer to the confirmation dialog
+    /// (#1046). The buffer is left untouched meanwhile.
+    awaiting_multiline_submit_confirmation: bool,
+    /// The user confirmed: the next shell submission skips the multi-line check.
+    multiline_submit_confirmed: bool,
     /// The buffer text an Enter gave up waiting for a classification verdict on (#933): pressing
     /// Enter again submits it as the rules decide.
     verdict_wait_gave_up_on: Option<String>,
@@ -3537,6 +3546,8 @@ impl Input {
             cached_slash_menu_disabled: None,
             is_editor_empty_on_last_edit: is_editor_empty,
             shell_command_submit_pending: false,
+            awaiting_multiline_submit_confirmation: false,
+            multiline_submit_confirmed: false,
             verdict_wait_gave_up_on: None,
             verdict_wait: None,
             handoff_enter_mark: None,
@@ -6301,6 +6312,40 @@ impl Input {
 
             buffer_text
         })
+    }
+
+    /// Whether submitting `command` would run it as many separate commands: it has more than
+    /// [`MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD`] lines and the shell is not in bracketed paste
+    /// mode, so each line is executed on its own (Windows PowerShell 5.1) (#1046).
+    pub(crate) fn multiline_submit_needs_confirmation(
+        &self,
+        command: &str,
+        ctx: &AppContext,
+    ) -> bool {
+        command.lines().count() > MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD
+            && !self.can_execute_command(ctx).is_no()
+            && !self
+                .model
+                .lock()
+                .block_list()
+                .active_block()
+                .needs_bracketed_paste()
+    }
+
+    /// The user chose to run the waiting multi-line buffer line by line.
+    pub(crate) fn confirm_multiline_submit(&mut self, ctx: &mut ViewContext<Self>) {
+        if !std::mem::take(&mut self.awaiting_multiline_submit_confirmation) {
+            return;
+        }
+        self.multiline_submit_confirmed = true;
+        self.input_enter_as_shell_command(ctx);
+        self.multiline_submit_confirmed = false;
+    }
+
+    /// The user declined: the text stays in the input exactly as it was.
+    pub(crate) fn cancel_multiline_submit(&mut self, ctx: &mut ViewContext<Self>) {
+        self.awaiting_multiline_submit_confirmation = false;
+        ctx.focus(&self.editor);
     }
 
     pub fn try_execute_command(&mut self, command: &str, ctx: &mut ViewContext<Self>) -> bool {
@@ -12729,6 +12774,18 @@ impl Input {
             }
 
             let command = self.get_command(ctx);
+            if !std::mem::take(&mut self.multiline_submit_confirmed)
+                && self.multiline_submit_needs_confirmation(&command, ctx)
+            {
+                // Nothing is written and the text stays in the editor until the user answers.
+                self.awaiting_multiline_submit_confirmation = true;
+                ctx.dispatch_typed_action(
+                    &WorkspaceAction::ShowMultilineSubmitConfirmationDialog {
+                        line_count: command.lines().count(),
+                    },
+                );
+                return;
+            }
             warpui::input_order::log_submit(&command);
             // Read how this submit is routed before the submit resets the input config (#835).
             let route_reason = self.ai_input_model.as_ref(ctx).submit_route_reason();
