@@ -23,8 +23,7 @@
 //! Conservative by construction: a character that does not continue the echo of the line being
 //! matched is output like any other. If it arrives while a line is half matched the filter stands
 //! down entirely (whatever follows is not the plain echo this expects); before any character of a
-//! line matched, foreign output (an rc banner, `^K` from the line-clearing prefix) is passed
-//! through and the filter stays armed.
+//! line matched, foreign output (an rc banner) is passed through and the filter stays armed.
 
 use std::collections::VecDeque;
 
