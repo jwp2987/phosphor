@@ -714,6 +714,14 @@ const SUBSHELL_SETUP_DEFER_QUIET: Duration = Duration::from_millis(600);
 /// the tty, where the late bootstrap reads it as part of itself) for at most this long, then
 /// delivered anyway so a setup that never finishes cannot swallow it (#1014).
 const SUBSHELL_SETUP_TYPED_HOLD_LIMIT: Duration = Duration::from_secs(90);
+/// How long the keys typed during a PowerShell subshell setup after a complete line stay held
+/// behind the command that line ran, waiting for its prompt (#1048). A command still running
+/// then is slow or interactive, and the rest is written to the pty as its typeahead.
+const POWERSHELL_HELD_LINE_GRACE: Duration = Duration::from_secs(2);
+/// How long after a Ctrl-C that skips a PowerShell subshell setup the keys held behind it wait
+/// (#1048): the Windows console flushes its input buffer as it processes the Ctrl-C, and keys
+/// written right behind the ^C were lost with it.
+const POWERSHELL_ABORT_SETTLE: Duration = Duration::from_millis(500);
 /// Duration before we consider a session invoked from an env vars object to
 /// have failed bootstrapping. The longer duration is meant to account for
 /// a user needing to type in one or many secret manager passwords
@@ -2542,6 +2550,25 @@ struct SubshellBootstrapInFlight {
     held_user_bytes: Vec<Vec<u8>>,
 }
 
+/// How the keys typed during a PowerShell subshell setup are held (#1048). See
+/// `TerminalView::holds_keys_for_powershell_subshell_setup`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PowerShellSetupHold {
+    /// No PowerShell setup is holding keys (another shell, or the keys were delivered).
+    Off,
+    /// The setup is announced and has not reported `Bootstrapped` yet.
+    Setup,
+    /// `Bootstrapped` arrived; the keys are delivered at the prompt that follows it.
+    AwaitingPrompt,
+    /// A held line was submitted as a command; what was typed after it stays held until that
+    /// command's prompt is back (or `POWERSHELL_HELD_LINE_GRACE` passes).
+    LineRunning { generation: u64 },
+    /// Ctrl-C skipped the setup. The Windows console discards its pending input when it processes
+    /// a Ctrl-C, so the keys held meanwhile (and any typed now) go out only once
+    /// `POWERSHELL_ABORT_SETTLE` has passed, behind the ^C.
+    AfterAbort { generation: u64 },
+}
+
 pub struct TerminalView {
     /// Image ids this view handed to the asset cache for off-thread decoding and has not yet
     /// been told finished (#880).
@@ -2857,6 +2884,11 @@ pub struct TerminalView {
     /// are delivered once setup completes, is abandoned or aborted, or after
     /// `SUBSHELL_SETUP_TYPED_HOLD_LIMIT`; never dropped.
     subshell_setup_held_bytes: Vec<Vec<u8>>,
+    /// Where a PowerShell subshell setup is in holding the user's keys (#1048).
+    powershell_setup_hold: PowerShellSetupHold,
+    /// Tags each held line submitted under [`PowerShellSetupHold::LineRunning`], so a grace
+    /// timer of an earlier line never ends the hold of a later one.
+    powershell_setup_hold_generation: u64,
     /// Object id of the persistent "Phosphor setup is waiting..." toast while it is showing
     /// (#1014). The wait is a state, not an event: the toast stays until setup completes, is
     /// skipped or is abandoned.
@@ -4526,6 +4558,8 @@ impl TerminalView {
             subshell_bootstrap_in_flight: None,
             subshell_bootstrap_announced: None,
             subshell_setup_held_bytes: Vec::new(),
+            powershell_setup_hold: PowerShellSetupHold::Off,
+            powershell_setup_hold_generation: 0,
             subshell_setup_waiting_toast_id: None,
             subshell_setup_deferred: None,
             subshell_bootstrap_generation: 0,
@@ -9251,6 +9285,12 @@ impl TerminalView {
     /// we perform the normal ctrl-c action.
     fn ctrl_c(&mut self, ctx: &mut ViewContext<Self>) {
         self.end_focus_reclaim();
+        // #1048 / #1014: Ctrl-C during a PowerShell subshell setup skips it, whatever block is
+        // active: the ^C reaches the shell first, then (once it is processed) what was typed.
+        if self.powershell_setup_hold != PowerShellSetupHold::Off {
+            self.write_user_bytes_to_pty(vec![escape_sequences::C0::ETX], ctx);
+            return;
+        }
         // Ctrl-C after an Enter that waits for the typeahead report cancels that Enter and the
         // keys held behind it, instead of being held and replayed after the deferred command.
         // An agent command in flight still gets its single ^C below (#850); only the deferred
@@ -9849,6 +9889,12 @@ impl TerminalView {
                 return;
             }
         }
+        // #1048: Enter (and every other non-abort key) typed during a PowerShell subshell setup
+        // joins the held keys, whatever block is active; abort keys keep their own path below.
+        if !is_abort_key(characters.as_bytes()) && self.holds_keys_for_powershell_subshell_setup() {
+            self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx);
+            return;
+        }
         if self.is_long_running()
             || self.typeahead_handoff_routes_keys_to_pty()
             || self.forwards_keys_during_subshell_bootstrap(is_abort_key(characters.as_bytes()))
@@ -10276,6 +10322,32 @@ impl TerminalView {
         .then(|| at.elapsed())
     }
 
+    /// Whether every non-abort key is to be held by the app for an unfinished PowerShell subshell
+    /// setup (#1048), whichever view it reaches and whatever the block list looks like.
+    ///
+    /// The PowerShell bootstrap reports its first `Precmd` before it sources the user's profile
+    /// and reports `Bootstrapped`, and that `Precmd` hands focus to the input editor, which cannot
+    /// submit yet: an Enter typed there was silently dropped and its line merged with the next
+    /// command. Until setup is over the terminal keeps focus and every key joins the held keys, in
+    /// order; they are delivered once, at the first prompt after `Bootstrapped`, through the input
+    /// editor one line at a time (see `deliver_powershell_setup_keys`), or raw when setup is
+    /// skipped (Ctrl-C), abandoned or times out.
+    fn holds_keys_for_powershell_subshell_setup(&self) -> bool {
+        match self.powershell_setup_hold {
+            PowerShellSetupHold::Off => false,
+            PowerShellSetupHold::LineRunning { .. } | PowerShellSetupHold::AfterAbort { .. } => {
+                true
+            }
+            PowerShellSetupHold::Setup | PowerShellSetupHold::AwaitingPrompt => {
+                !self.model.lock().is_read_only()
+                    && self
+                        .subshell_bootstrap_announced
+                        .as_ref()
+                        .is_some_and(|(_, at)| at.elapsed() < SUBSHELL_SETUP_TYPED_HOLD_LIMIT)
+            }
+        }
+    }
+
     fn should_write_typed_chars_to_pty(&self, ctx: &mut ViewContext<Self>) -> bool {
         // Computed before the model lock below (it takes the same lock).
         let subshell_bootstrap_stalled = self
@@ -10335,6 +10407,12 @@ impl TerminalView {
 
         // The pty refuses user bytes while the agent controls the running command. Typing is
         // then meant for the agent's input, not the void (#901): fall through to the input.
+        // #1048: during a PowerShell subshell setup every key joins the held keys, whatever block
+        // is active (after the setup's first `Precmd` the editor would take it and drop its Enter).
+        if self.holds_keys_for_powershell_subshell_setup() {
+            self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx);
+            return;
+        }
         // #1028: while the pending approval card holds focus, printable keys are for the agent
         // input (a follow-up), never the running command underneath, even when the pty would take
         // them.
@@ -10610,6 +10688,24 @@ impl TerminalView {
             // Ctrl-C / Ctrl-D skips the setup: the waiting notice no longer applies.
             self.dismiss_subshell_setup_waiting_toast(ctx);
         }
+        if is_abort_key(&bytes) && self.powershell_setup_hold != PowerShellSetupHold::Off {
+            // #1048: the user skips a PowerShell setup. The abort goes first; what they typed
+            // meanwhile stays held until the console has processed it (it would be flushed).
+            self.subshell_bootstrap_announced = None;
+            self.powershell_setup_hold = PowerShellSetupHold::Off;
+            // Out of the way while the ^C is written, so the generic abort below does not
+            // release them right behind it.
+            let held = std::mem::take(&mut self.subshell_setup_held_bytes);
+            let written = self.write_user_bytes_to_pty_inner(bytes, takes_over_agent_control, ctx);
+            self.subshell_setup_held_bytes = held;
+            self.powershell_setup_hold_generation += 1;
+            let generation = self.powershell_setup_hold_generation;
+            self.powershell_setup_hold = PowerShellSetupHold::AfterAbort { generation };
+            ctx.spawn(Timer::after(POWERSHELL_ABORT_SETTLE), move |me, _, ctx| {
+                me.end_powershell_abort_wait(generation, ctx)
+            });
+            return written;
+        }
         if is_abort_key(&bytes) && !self.subshell_setup_held_bytes.is_empty() {
             // The user aborts the setup: the abort goes first, then what they typed meanwhile.
             let held = std::mem::take(&mut self.subshell_setup_held_bytes);
@@ -10619,6 +10715,15 @@ impl TerminalView {
                 self.write_user_bytes_to_pty(held_bytes, ctx);
             }
             return written;
+        }
+        // PowerShell (#1048): PSReadLine draws every bootstrap line it reads and the prompt before
+        // each, so the output looks like a prompt asking for input for most of the setup. The
+        // exemption below sent keys into the middle of the setup (in front of the
+        // ` . <bootstrap file>` line, which then failed and wedged setup on "Starting shell...")
+        // and, as that shape flipped from key to key, out of order. Every key is held instead.
+        if !is_abort_key(&bytes) && self.holds_keys_for_powershell_subshell_setup() {
+            self.subshell_setup_held_bytes.push(bytes.into_owned());
+            return true;
         }
         // Not while the shell is asking for something: a visible unterminated line (`Password:`,
         // a passphrase or `read -p` prompt) means typing is the answer to it, and held text would
@@ -14955,9 +15060,26 @@ impl TerminalView {
                 // state: only now are the keys held through a stalled setup delivered, so the
                 // command they spell starts an ordinary visible block. (Setup still pending:
                 // nothing is released; the notice is dropped once setup is over.)
-                self.release_held_setup_input_if_subshell_ready(ctx);
+                // #1048: a PowerShell setup's keys are delivered by their own path, at the first
+                // prompt after `Bootstrapped` and after each held line's command.
+                if matches!(
+                    self.powershell_setup_hold,
+                    PowerShellSetupHold::AwaitingPrompt | PowerShellSetupHold::LineRunning { .. }
+                ) {
+                    self.deliver_powershell_setup_keys(ctx);
+                } else if self.powershell_setup_hold == PowerShellSetupHold::Off {
+                    self.release_held_setup_input_if_subshell_ready(ctx);
+                }
                 if !self.subshell_bootstrap_pending() {
                     self.dismiss_subshell_setup_waiting_toast(ctx);
+                }
+            }
+            ModelEvent::Handler(AnsiHandlerEvent::Bootstrapped {
+                is_subshell: true, ..
+            }) => {
+                // #1048: the subshell is set up; its keys go out at the prompt that follows.
+                if self.powershell_setup_hold == PowerShellSetupHold::Setup {
+                    self.powershell_setup_hold = PowerShellSetupHold::AwaitingPrompt;
                 }
             }
             ModelEvent::Handler(AnsiHandlerEvent::Preexec)
@@ -17305,6 +17427,16 @@ impl TerminalView {
             self.model.lock().block_list().active_block().id().clone(),
             Instant::now(),
         ));
+        // PSReadLine draws every bootstrap line it reads and the prompt before each, so the
+        // output nearly always ends in unterminated text while a PowerShell setup runs: the
+        // "a prompt is asking for input" exemption of the generic hold cannot apply, and the
+        // setup's first `Precmd` comes before `Bootstrapped`. It gets a hold of its own (#1048).
+        self.powershell_setup_hold =
+            if crate::terminal::bootstrap::subshell_bootstrap_clears_line_editor(shell_type) {
+                PowerShellSetupHold::Off
+            } else {
+                PowerShellSetupHold::Setup
+            };
         if crate::terminal::bootstrap::subshell_bootstrap_clears_line_editor(shell_type) {
             self.clear_line_editor_and_write_to_pty(first.into_bytes(), ctx);
         } else {
@@ -17462,10 +17594,85 @@ impl TerminalView {
     /// The announcement is cleared first: it is what makes the write path hold, and setup is over
     /// (finished, abandoned, aborted or timed out) whenever this runs.
     fn release_subshell_setup_held_bytes(&mut self, ctx: &mut ViewContext<Self>) {
+        self.powershell_setup_hold = PowerShellSetupHold::Off;
         self.subshell_bootstrap_announced = None;
         self.dismiss_subshell_setup_waiting_toast(ctx);
         for bytes in std::mem::take(&mut self.subshell_setup_held_bytes) {
             self.write_user_bytes_to_pty(bytes, ctx);
+        }
+    }
+
+    /// Delivers the keys held through a PowerShell subshell setup (#1048), at a prompt: the first
+    /// one after `Bootstrapped`, then the one after each held line's command.
+    ///
+    /// The session is set up, so the keys take the path keys typed at a prompt take: each complete
+    /// line is submitted from the input editor as a shell command, one at a time, and what was
+    /// typed after it stays held until that command's prompt is back. A trailing incomplete line
+    /// is put into the editor, where whatever the user types next follows it. Nothing is written
+    /// raw into PSReadLine, so its line buffer never has to be reported back while the user keeps
+    /// typing into the editor (where an Enter fell between the two and two commands merged). A
+    /// line that cannot be submitted, and keys held behind a command still running after
+    /// `POWERSHELL_HELD_LINE_GRACE`, are written to the pty in order instead, as typeahead.
+    fn deliver_powershell_setup_keys(&mut self, ctx: &mut ViewContext<Self>) {
+        self.subshell_bootstrap_announced = None;
+        self.dismiss_subshell_setup_waiting_toast(ctx);
+        let mut held: Vec<u8> = std::mem::take(&mut self.subshell_setup_held_bytes).concat();
+        loop {
+            let Some((line, raw_line, rest)) = split_first_held_line(&mut held) else {
+                self.powershell_setup_hold = PowerShellSetupHold::Off;
+                let text = text_for_editor(&held);
+                if !text.is_empty() {
+                    self.input
+                        .update(ctx, |input, ctx| input.system_insert(&text, ctx));
+                }
+                self.redetermine_terminal_focus(ctx);
+                return;
+            };
+            held = rest;
+            // An empty line at a prompt runs nothing: skip it rather than wait on it.
+            if line.trim().is_empty() {
+                continue;
+            }
+            let submitted = self
+                .input
+                .update(ctx, |input, ctx| input.try_execute_command(&line, ctx));
+            if !submitted {
+                self.powershell_setup_hold = PowerShellSetupHold::Off;
+                self.write_user_bytes_to_pty(raw_line, ctx);
+                if !held.is_empty() {
+                    self.write_user_bytes_to_pty(held, ctx);
+                }
+                return;
+            }
+            if !held.is_empty() {
+                self.subshell_setup_held_bytes.push(held);
+            }
+            self.powershell_setup_hold_generation += 1;
+            let generation = self.powershell_setup_hold_generation;
+            self.powershell_setup_hold = PowerShellSetupHold::LineRunning { generation };
+            ctx.spawn(
+                Timer::after(POWERSHELL_HELD_LINE_GRACE),
+                move |me, _, ctx| me.end_powershell_held_line_wait(generation, ctx),
+            );
+            return;
+        }
+    }
+
+    /// The Ctrl-C that skipped a PowerShell setup (#1048) has had `POWERSHELL_ABORT_SETTLE` to be
+    /// processed: the keys held behind it are written to the pty now, in order. Nothing happens if
+    /// a later Ctrl-C restarted the wait.
+    fn end_powershell_abort_wait(&mut self, generation: u64, ctx: &mut ViewContext<Self>) {
+        if self.powershell_setup_hold == (PowerShellSetupHold::AfterAbort { generation }) {
+            self.release_subshell_setup_held_bytes(ctx);
+        }
+    }
+
+    /// The held line `generation` ran was still running after `POWERSHELL_HELD_LINE_GRACE`
+    /// (#1048): a slow or interactive command. What was typed after it is its typeahead, written
+    /// to the pty in order as if typed while it ran. Nothing happens if its prompt already came.
+    fn end_powershell_held_line_wait(&mut self, generation: u64, ctx: &mut ViewContext<Self>) {
+        if self.powershell_setup_hold == (PowerShellSetupHold::LineRunning { generation }) {
+            self.release_subshell_setup_held_bytes(ctx);
         }
     }
 
@@ -24276,6 +24483,10 @@ impl TerminalView {
                 || has_block_or_text_selection_in_shell_mode
                 || typeahead_handoff_wants_terminal
         };
+        // #1048: the input editor must not take keys while a PowerShell subshell setup holds them.
+        // Computed outside the model lock above (it takes the same lock).
+        let should_focus_terminal =
+            should_focus_terminal || self.holds_keys_for_powershell_subshell_setup();
         let blocked_cli_subagent_view = {
             let model = self.model.lock();
             let active_block = model.block_list().active_block();
@@ -32400,6 +32611,22 @@ fn subshell_setup_hold_limit_releases(
         Some(current) => timer_announced_at == Some(current),
         None => keys_held,
     }
+}
+
+/// Splits the first complete line off keys held through a PowerShell subshell setup (#1048):
+/// returns the line's text as the editor would hold it (see `text_for_editor`), its raw bytes
+/// including the Enter, and the bytes after it (a `\r\n` counts as one Enter). `None` when no
+/// Enter was typed; `held` is then left as it is.
+fn split_first_held_line(held: &mut Vec<u8>) -> Option<(String, Vec<u8>, Vec<u8>)> {
+    let enter = held.iter().position(|b| matches!(b, b'\r' | b'\n'))?;
+    let mut rest_start = enter + 1;
+    if held[enter] == b'\r' && held.get(rest_start) == Some(&b'\n') {
+        rest_start += 1;
+    }
+    let rest = held.split_off(rest_start);
+    let raw_line = std::mem::take(held);
+    let line = text_for_editor(&raw_line[..enter]);
+    Some((line, raw_line, rest))
 }
 
 /// What an interrupt key does while the remote shell's bootstrap is pending (#1001).

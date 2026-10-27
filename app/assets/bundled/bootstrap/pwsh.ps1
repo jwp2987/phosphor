@@ -429,6 +429,24 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         }
 
         Warp-Disable-PSPrediction
+        Warp-Disable-PSErrorPrompt
+    }
+
+    # PSReadLine recolors the end of the prompt (its PromptText, '> ' taken from the default prompt)
+    # whenever the line being typed starts or stops parsing, by moving the cursor back by that
+    # many cells from where the prompt ended. Phosphor's prompt leaves the console cursor at column
+    # 0, so on Windows PowerShell 5.1 (PSReadLine 2.0.0, which has no bounds check there) the first
+    # such flip while keys are rendered one at a time -- typeahead, or a line that arrives in
+    # pieces -- throws ArgumentOutOfRangeException ("Actual value was -2") and loses the line
+    # (#1048). An empty PromptText turns the recoloring off. Phosphor draws its own prompt and
+    # input editor, so nothing visible depends on it.
+    function Warp-Disable-PSErrorPrompt {
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingEmptyCatchBlock', '', Justification = 'Errors expected')]
+        param()
+        try {
+            PSReadLine\Set-PSReadLineOption -PromptText ''
+        } catch {
+        }
     }
 
     # Force use of the Inline PredictionViewStyle. The ListView style can occasionally cause some
