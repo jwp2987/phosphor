@@ -751,8 +751,8 @@ impl QueuedQueryModel {
         ctx.emit(QueuedQueryEvent::QueueNextPromptToggled { conversation_id });
     }
 
-    /// Makes the "queue next prompt" toggle one-shot (#1030): once a prompt has been queued
-    /// because the toggle was on, the toggle turns itself off again. Only an explicit "on" is
+    /// Turns an explicit "queue next prompt" toggle off at the end of the agent's turn (#1043;
+    /// it used to clear after a single queued prompt, #1030, which silently disarmed it). Only an explicit "on" is
     /// consumed, and only when the default submission mode is not `Queue`: with the persistent
     /// setting on, queueing is the standing mode, not a one-time choice, and is left alone.
     /// Returns whether the toggle was cleared.

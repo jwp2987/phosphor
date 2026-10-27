@@ -38,7 +38,7 @@ use crate::ai::blocklist::block::cli_controller::CLISubagentController;
 use crate::ai::blocklist::block::status_bar::BlocklistAIStatusBar;
 use crate::ai::blocklist::{
     ai_indicator_height, BlocklistAIActionModel, QueuedQuery, QueuedQueryId, QueuedQueryModel,
-    QueuedQueryEvent, QueuedQueryOrigin, SlashCommandRequest,
+    ConversationStatusUpdate, QueuedQueryEvent, QueuedQueryOrigin, SlashCommandRequest,
 };
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentVersion};
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
@@ -3116,6 +3116,43 @@ impl Input {
         ctx.subscribe_to_model(
             &BlocklistAIHistoryModel::handle(ctx),
             move |me, _, event, ctx| {
+                // #1043: queue mode ends with the agent's turn; tell the user when it does.
+                if let BlocklistAIHistoryEvent::UpdatedConversationStatus {
+                    conversation_id,
+                    terminal_view_id: event_view_id,
+                    update: ConversationStatusUpdate::Changed { .. },
+                    new_status,
+                } = event
+                    && *event_view_id == terminal_view_id
+                    && !new_status.is_in_progress()
+                    && !new_status.is_blocked()
+                    && ctx.has_singleton_model::<QueuedQueryModel>()
+                {
+                    let conversation_id = *conversation_id;
+                    let armed = QueuedQueryModel::as_ref(ctx)
+                        .is_queue_next_prompt_explicitly_armed(conversation_id);
+                    if armed {
+                        QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+                            model.consume_queue_next_prompt_toggle(conversation_id, ctx);
+                        });
+                        let shortcut = bindings::keybinding_name_to_display_string(
+                            crate::terminal::TOGGLE_QUEUE_NEXT_PROMPT_KEYBINDING,
+                            ctx,
+                        );
+                        let text = crate::ai::blocklist::queued_query::queue_mode_toast_text(
+                            false,
+                            shortcut.as_deref(),
+                        );
+                        let window_id = ctx.window_id();
+                        ToastStack::handle(ctx).update(ctx, |ts, ctx| {
+                            ts.add_ephemeral_toast(
+                                DismissibleToast::new(text, ToastFlavor::Default),
+                                window_id,
+                                ctx,
+                            );
+                        });
+                    }
+                }
                 let affects_hint = matches!(
                     event,
                     BlocklistAIHistoryEvent::UpdatedConversationStatus { .. }
@@ -14119,13 +14156,10 @@ impl Input {
             });
             QueuedQuery::new_with_attachments(prompt, origin, attachments)
         };
-        let queued_by_toggle = queue_enabled && origin == QueuedQueryOrigin::AutoQueueToggle;
+        // #1043: queue mode stays armed after a queued prompt; it is turned off by the user or
+        // when the agent's turn ends (see the history subscription in `Input::new`).
         QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
             model.append(conversation_id, query, ctx);
-            // #1030: "queue next prompt" is one-shot; this was that prompt.
-            if queued_by_toggle {
-                model.consume_queue_next_prompt_toggle(conversation_id, ctx);
-            }
         });
 
         true
