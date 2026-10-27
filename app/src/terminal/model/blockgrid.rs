@@ -332,6 +332,23 @@ impl BlockGrid {
         self.grid_handler.set_track_content_length(trim);
     }
 
+    /// Removes a recorded tty echo of typed-ahead keys, even once the grid is finished, and drops
+    /// the values memoized for the finished grid (#1033). See [`GridHandler::strip_echo_run`].
+    pub(super) fn strip_echo_run(
+        &mut self,
+        text: &str,
+        span: Option<((usize, usize), (usize, usize))>,
+        allow_head: bool,
+    ) -> bool {
+        let stripped = self.grid_handler.strip_echo_run(text, span, allow_head);
+        if stripped {
+            self.cached_rightmost_visible_nonempty_cell.take();
+            self.cached_has_visible_chars.take();
+            self.cached_starts_with_input_buffer_sequence.take();
+        }
+        stripped
+    }
+
     pub(in crate::terminal) fn enable_full_grid_clear_behavior(&mut self) {
         self.grid_handler.enable_full_grid_clear_behavior();
     }

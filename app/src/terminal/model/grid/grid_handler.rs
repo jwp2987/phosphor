@@ -2106,6 +2106,205 @@ impl GridHandler {
         true
     }
 
+    /// Where the next printed character will land, as (absolute row, column), and whether that
+    /// is the first column of a line rather than of a soft-wrapped continuation (#1033).
+    pub fn next_echo_point(&self) -> ((usize, usize), bool) {
+        let cursor = &self.grid.cursor;
+        let row = self.history_size() + cursor.point.row.0;
+        if cursor.input_needs_wrap {
+            ((row + 1, 0), false)
+        } else {
+            ((row, cursor.point.col), cursor.point.col == 0)
+        }
+    }
+
+    /// Removes the tty echo of typed-ahead keys, `text`, recorded at `span` (#1033).
+    ///
+    /// Every cell of the run must still hold its character, unwrapped single-width text from
+    /// `span.start` on (following soft wraps), ending at `span.end`; anything else leaves the
+    /// grid alone. Two shapes are removed:
+    /// - the run is the end of the grid: the cursor is at `span.end` and nothing was printed
+    ///   after it. The run is blanked and the cursor moved back to its start, exactly as if the
+    ///   keys had never been echoed.
+    /// - `allow_head` and the run is at the very start of the grid, on its first row, followed
+    ///   by other text on that row (keys echoed before the first output): the rest of the row
+    ///   moves left over it. Only allowed where no program wrote (early output), since there the
+    ///   order of echo and output cannot have been confused.
+    ///
+    /// With `span` `None` (the run was copied here from another grid), only a run ending the
+    /// grid and starting a line is removed. Returns whether the grid changed.
+    pub fn strip_echo_run(
+        &mut self,
+        text: &str,
+        span: Option<((usize, usize), (usize, usize))>,
+        allow_head: bool,
+    ) -> bool {
+        let chars: Vec<char> = text.chars().collect();
+        let columns = self.grid.columns();
+        if chars.is_empty() || columns == 0 {
+            return false;
+        }
+        let ((cursor_row, cursor_col), _) = self.next_echo_point();
+        let max = self.grid.max_cursor_point;
+        let cursor = self.grid.cursor.point;
+        let nothing_after_cursor =
+            max.row.0 < cursor.row.0 || (max.row.0 == cursor.row.0 && max.col <= cursor.col);
+        let start = match span {
+            Some((start, end)) => {
+                if self.cells_hold(start, &chars) != Some(end) {
+                    return false;
+                }
+                start
+            }
+            None => {
+                // The run was copied here cell by cell (padded with blanks), so the cursor is
+                // not right after it: it must be the last text on the cursor's row, which is the
+                // grid's last row, and start a line.
+                if !nothing_after_cursor {
+                    return false;
+                }
+                let chars: Vec<char> = text.trim_end().chars().collect();
+                let Some(last) = self.last_text_col_in_row(cursor_row) else {
+                    return false;
+                };
+                let Some(start) = self.point_before(cursor_row, last + 1, chars.len()) else {
+                    return false;
+                };
+                let line_start = start.1 == 0 && (start.0 == 0 || !self.row_wraps(start.0 - 1));
+                if chars.is_empty()
+                    || !line_start
+                    || self.cells_hold(start, &chars) != Some((cursor_row, last + 1))
+                {
+                    return false;
+                }
+                return self.truncate_from_point(Point::new(start.0, start.1));
+            }
+        };
+        let end = self.cells_hold(start, &chars);
+        if end == Some((cursor_row, cursor_col)) && nothing_after_cursor {
+            return self.truncate_from_point(Point::new(start.0, start.1));
+        }
+        // The run opens the grid and shares its first row with text printed after it.
+        let n = chars.len();
+        if !allow_head
+            || span.is_none()
+            || start != (0, 0)
+            || self.history_size() != 0
+            || n >= columns
+            || end != Some((0, n))
+            || self.echo_row_wraps(0) != Some(false)
+            || !self.secrets.is_empty()
+        {
+            return false;
+        }
+        let row = &mut self.grid[VisibleRow(0)];
+        let occ = row.occ;
+        if occ <= n {
+            return false;
+        }
+        for col in 0..columns {
+            row[col] = if col + n < occ {
+                row[col + n].clone()
+            } else {
+                Cell::default()
+            };
+        }
+        row.occ = occ - n;
+        if cursor.row.0 == 0 {
+            let col = cursor.col.saturating_sub(n);
+            self.update_cursor(|cursor| cursor.point.col = col);
+        }
+        if self.grid.max_cursor_point.row.0 == 0 {
+            self.grid.max_cursor_point.col = self.grid.max_cursor_point.col.saturating_sub(n);
+        }
+        self.content_generation.bump();
+        true
+    }
+
+    /// Whether visible-or-history row `abs_row` continues on the next row (soft wrap). `None`
+    /// when the row is not in the visible region.
+    fn echo_row_wraps(&self, abs_row: usize) -> Option<bool> {
+        let row = abs_row.checked_sub(self.history_size())?;
+        let columns = self.grid.columns();
+        if row >= self.grid.visible_rows() || columns == 0 {
+            return None;
+        }
+        Some(
+            self.grid[VisibleRow(row)][columns - 1]
+                .flags
+                .contains(Flags::WRAPLINE),
+        )
+    }
+
+    /// The last column of absolute row `abs_row` holding anything but a blank.
+    fn last_text_col_in_row(&self, abs_row: usize) -> Option<usize> {
+        let row = abs_row.checked_sub(self.history_size())?;
+        if row >= self.grid.visible_rows() {
+            return None;
+        }
+        let cells = &self.grid[VisibleRow(row)];
+        (0..self.grid.columns())
+            .rev()
+            .find(|&col| match cells[col].raw_content() {
+                CharOrStr::Char(c) => c != DEFAULT_CHAR && !c.is_whitespace(),
+                CharOrStr::Str(_) => true,
+            })
+    }
+
+    /// The point `n` cells before (`row`, `col`), following soft wraps backwards.
+    fn point_before(&self, mut row: usize, mut col: usize, mut n: usize) -> Option<(usize, usize)> {
+        let columns = self.grid.columns();
+        while n > col {
+            n -= col;
+            row = row.checked_sub(1)?;
+            if !self.echo_row_wraps(row)? {
+                return None;
+            }
+            col = columns;
+        }
+        Some((row, col - n))
+    }
+
+    /// If the cells from `start` (following soft wraps) hold exactly `chars` as plain
+    /// single-width characters, the point after the last of them.
+    fn cells_hold(&self, start: (usize, usize), chars: &[char]) -> Option<(usize, usize)> {
+        let columns = self.grid.columns();
+        let (mut row, mut col) = start;
+        for (i, want) in chars.iter().enumerate() {
+            if col >= columns {
+                return None;
+            }
+            let visible = row.checked_sub(self.history_size())?;
+            if visible >= self.grid.visible_rows() {
+                return None;
+            }
+            let cell = &self.grid[VisibleRow(visible)][col];
+            if cell.flags.intersects(
+                Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER,
+            ) {
+                return None;
+            }
+            match cell.raw_content() {
+                CharOrStr::Char(c) if c == *want => {}
+                _ => return None,
+            }
+            col += 1;
+            if col == columns && i + 1 < chars.len() {
+                if !self.echo_row_wraps(row)? {
+                    return None;
+                }
+                row += 1;
+                col = 0;
+            }
+        }
+        // A run that fills its row's last column ends where a pending wrap would print next.
+        if col == columns {
+            Some((row + 1, 0))
+        } else {
+            Some((row, col))
+        }
+    }
+
     /// Resets all cells after the cursor in the cursor row to the default cell.
     fn reset_trailing_cells_in_cursor_row(&mut self) {
         let cursor_point = self.grid.cursor.point;
