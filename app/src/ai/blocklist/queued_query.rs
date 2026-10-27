@@ -1,14 +1,20 @@
 use std::collections::HashMap;
 
+use chrono::{NaiveDateTime, Utc};
 use uuid::Uuid;
+use warp_core::execution_mode::AppExecutionMode;
 use warpui::{AppContext, Entity, EntityId, ModelContext, SingletonEntity};
 
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::blocklist::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel, PendingAttachment};
 use crate::features::FeatureFlag;
+use crate::global_resource_handles::GlobalResourceHandlesProvider;
+use crate::persistence::ModelEvent;
+use crate::persistence::model::QueuedPromptRow;
 use crate::settings::{
     AISettings, AISettingsChangedEvent, LongRunningCommandSubmissionMode, PromptSubmissionMode,
 };
+use crate::terminal::general_settings::GeneralSettings;
 use crate::terminal::model::block::Block;
 
 /// A globally unique identifier for a single queued prompt row.
@@ -19,6 +25,19 @@ pub struct QueuedQueryId(Uuid);
 impl QueuedQueryId {
     fn new() -> Self {
         Self(Uuid::new_v4())
+    }
+
+    /// The id as stored in the `queued_prompts` table.
+    fn to_storage_string(self) -> String {
+        self.0.to_string()
+    }
+
+    /// Parses a stored id. A malformed one is replaced rather than dropping the row: the id
+    /// only addresses the row in the panel, so nothing depends on it surviving a restart.
+    fn from_storage_string(raw: &str) -> Self {
+        Uuid::try_parse(raw)
+            .map(Self)
+            .unwrap_or_else(|_| Self::new())
     }
 }
 
@@ -57,6 +76,23 @@ pub enum QueuedQueryOrigin {
     ForkAndCompactSlashCommand,
 }
 
+impl QueuedQueryOrigin {
+    /// The variant name stored in `queued_prompts.origin`. Diagnostic only: restored rows do
+    /// not keep their origin (see [`QueuedQuery::from_persisted_row`]).
+    fn storage_name(self) -> &'static str {
+        match self {
+            Self::QueueSlashCommand => "QueueSlashCommand",
+            Self::AutoQueueToggle => "AutoQueueToggle",
+            Self::LrcAutoQueue => "LrcAutoQueue",
+            Self::PendingLrcAutoQueue => "PendingLrcAutoQueue",
+            Self::PendingApprovalFollowUp => "PendingApprovalFollowUp",
+            Self::ApprovalFollowUp => "ApprovalFollowUp",
+            Self::CompactAndSlashCommand => "CompactAndSlashCommand",
+            Self::ForkAndCompactSlashCommand => "ForkAndCompactSlashCommand",
+        }
+    }
+}
+
 /// Whether a queued row is an agent prompt or a shell command. Attachments live inside the
 /// `Prompt` variant so a `Command` structurally cannot carry any.
 #[derive(Debug, Clone)]
@@ -75,6 +111,10 @@ pub struct QueuedQuery {
     text: String,
     origin: QueuedQueryOrigin,
     kind: QueuedQueryKind,
+    created_at: NaiveDateTime,
+    /// True for a row restored from the previous session (#1027). A suspended row is never
+    /// auto-fired: the user must see it first, and sends, edits or removes it themselves.
+    suspended: bool,
 }
 
 impl QueuedQuery {
@@ -92,6 +132,8 @@ impl QueuedQuery {
             text,
             origin,
             kind: QueuedQueryKind::Prompt { attachments },
+            created_at: Utc::now().naive_utc(),
+            suspended: false,
         }
     }
 
@@ -102,6 +144,60 @@ impl QueuedQuery {
             text,
             origin,
             kind: QueuedQueryKind::Command,
+            created_at: Utc::now().naive_utc(),
+            suspended: false,
+        }
+    }
+
+    /// True when this row was restored from the previous session and has not been acted on
+    /// yet; such a row never auto-fires (#1027).
+    pub fn is_suspended(&self) -> bool {
+        self.suspended
+    }
+
+    /// The row as stored in `queued_prompts`. Attachments (images/files) are not stored; see
+    /// [`QueuedQueryModel::persist_queue`].
+    fn to_persisted_row(
+        &self,
+        conversation_id: AIConversationId,
+        position: usize,
+    ) -> QueuedPromptRow {
+        QueuedPromptRow {
+            id: self.id.to_storage_string(),
+            conversation_id: conversation_id.to_string(),
+            position: i32::try_from(position).unwrap_or(i32::MAX),
+            kind: if self.is_command() {
+                "command"
+            } else {
+                "prompt"
+            }
+            .to_owned(),
+            text: self.text.clone(),
+            origin: self.origin.storage_name().to_owned(),
+            created_at: self.created_at,
+        }
+    }
+
+    /// Rebuilds a row stored by a previous session, suspended. An unrecognised `kind` is read
+    /// as a prompt rather than dropping the user's text. The origin is reset to
+    /// [`QueuedQueryOrigin::QueueSlashCommand`]: the locked origins describe an action
+    /// snapshot that no longer exists, and the origin-specific send paths (LRC delivery,
+    /// approval follow-ups) must not pick up a row that was restored.
+    fn from_persisted_row(row: &QueuedPromptRow) -> Self {
+        let kind = if row.kind == "command" {
+            QueuedQueryKind::Command
+        } else {
+            QueuedQueryKind::Prompt {
+                attachments: Vec::new(),
+            }
+        };
+        Self {
+            id: QueuedQueryId::from_storage_string(&row.id),
+            text: row.text.clone(),
+            origin: QueuedQueryOrigin::QueueSlashCommand,
+            kind,
+            created_at: row.created_at,
+            suspended: true,
         }
     }
 
@@ -211,6 +307,24 @@ pub struct QueuedQueryModel {
     /// per-conversation override. Caching keeps the warping-indicator render
     /// path doing only a hashmap lookup plus a comparison.
     default_mode: PromptSubmissionMode,
+    /// How many rows [`Self::restore_persisted`] put back into queues, not yet announced.
+    restored_suspended: usize,
+    /// Restored rows whose conversation no longer exists. A terminal view claims them with
+    /// [`Self::take_restored_session`] and puts their text in its input.
+    restored_orphans: Vec<QueuedQuery>,
+    /// Stored conversation ids behind `restored_orphans`; their rows are deleted from the
+    /// database once a view has claimed the text, never before.
+    orphan_conversation_ids: Vec<String>,
+}
+
+/// What [`QueuedQueryModel::take_restored_session`] hands the first terminal view after a
+/// restart (#1027).
+#[derive(Debug, Default)]
+pub struct RestoredQueueSession {
+    /// Number of rows put back into conversation queues, suspended.
+    pub suspended_count: usize,
+    /// Rows whose conversation is gone; the caller must put their text in an input.
+    pub orphans: Vec<QueuedQuery>,
 }
 
 /// Events emitted by [`QueuedQueryModel`]. Every variant carries the `conversation_id` it applies
@@ -307,7 +421,123 @@ impl QueuedQueryModel {
         Self {
             queues: HashMap::new(),
             default_mode,
+            restored_suspended: 0,
+            restored_orphans: Vec::new(),
+            orphan_conversation_ids: Vec::new(),
         }
+    }
+
+    /// Writes `conversation_id`'s whole queue to the `queued_prompts` table through the SQLite
+    /// writer thread, so a quit or crash does not lose it (#1027). An empty queue deletes the
+    /// stored rows. Called after every change to a queue.
+    ///
+    /// Follows the conversation writes' channel discipline (#1000): hand the event over from
+    /// this thread with `try_send` so successive writes reach the writer in order, and fall
+    /// back to a blocking send off the UI thread only when the channel is full. Attachments
+    /// (images and files) are not stored; only the text survives a restart.
+    ///
+    /// Skipped, like conversation persistence, when the user turned conversation saving off
+    /// or the app cannot save sessions (tests, CLI).
+    fn persist_queue(&self, conversation_id: AIConversationId, ctx: &mut ModelContext<Self>) {
+        let rows: Vec<QueuedPromptRow> = self
+            .queue(conversation_id)
+            .iter()
+            .enumerate()
+            .map(|(position, row)| row.to_persisted_row(conversation_id, position))
+            .collect();
+        Self::send_queue_rows(conversation_id.to_string(), rows, ctx);
+    }
+
+    fn send_queue_rows(
+        stored_conversation_id: String,
+        rows: Vec<QueuedPromptRow>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if !ctx.has_singleton_model::<GeneralSettings>()
+            || !*GeneralSettings::as_ref(ctx).persist_conversations
+            || !ctx.has_singleton_model::<AppExecutionMode>()
+            || !AppExecutionMode::as_ref(ctx).can_save_session()
+            || !ctx.has_singleton_model::<GlobalResourceHandlesProvider>()
+        {
+            return;
+        }
+        let Some(sender) = GlobalResourceHandlesProvider::as_ref(ctx)
+            .get()
+            .model_event_sender
+            .clone()
+        else {
+            return;
+        };
+        let event = ModelEvent::ReplaceQueuedPrompts {
+            conversation_id: stored_conversation_id,
+            rows,
+        };
+        match sender.try_send(event) {
+            Ok(()) => {}
+            Err(std::sync::mpsc::TrySendError::Full(event)) => {
+                log::warn!("SQLite writer channel is full; sending the queue write async");
+                ctx.spawn(
+                    async move {
+                        if let Err(e) = sender.send(event) {
+                            log::warn!("Failed to send queued prompts to the sqlite writer: {e:?}");
+                        }
+                    },
+                    |_, _, _| {},
+                );
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                log::warn!("Failed to send queued prompts to the sqlite writer: disconnected");
+            }
+        }
+    }
+
+    /// Puts the queues saved by the previous session back (#1027), once, at startup.
+    ///
+    /// Rows whose conversation still exists return to its queue **suspended**: they never
+    /// auto-fire, and sit in the panel until the user sends, edits or removes them. Rows whose
+    /// conversation is gone cannot be shown anywhere, so they are held as orphans for the
+    /// first terminal view to put in its input ([`Self::take_restored_session`]). Nothing
+    /// is sent, and nothing is deleted from the database here: stored rows stay until a later
+    /// change to the same queue rewrites them, or a view claims an orphan.
+    pub fn restore_persisted(&mut self, rows: Vec<QueuedPromptRow>, ctx: &mut ModelContext<Self>) {
+        let history = BlocklistAIHistoryModel::handle(ctx);
+        for row in rows {
+            let conversation_id = AIConversationId::try_from(row.conversation_id.clone()).ok();
+            let exists = conversation_id.is_some_and(|id| {
+                history.read(ctx, |history, _| {
+                    history.conversation(&id).is_some()
+                        || history.get_conversation_metadata(&id).is_some()
+                })
+            });
+            let query = QueuedQuery::from_persisted_row(&row);
+            match conversation_id.filter(|_| exists) {
+                Some(id) => {
+                    self.queues.entry(id).or_default().queue.push(query);
+                    self.restored_suspended += 1;
+                }
+                None => {
+                    if !self.orphan_conversation_ids.contains(&row.conversation_id) {
+                        self.orphan_conversation_ids
+                            .push(row.conversation_id.clone());
+                    }
+                    self.restored_orphans.push(query);
+                }
+            }
+        }
+    }
+
+    /// Hands over what [`Self::restore_persisted`] found, exactly once. The orphans' stored
+    /// rows are deleted here, after the caller has them in hand, so a crash before any view
+    /// existed leaves them for the next launch.
+    pub fn take_restored_session(&mut self, ctx: &mut ModelContext<Self>) -> RestoredQueueSession {
+        let session = RestoredQueueSession {
+            suspended_count: std::mem::take(&mut self.restored_suspended),
+            orphans: std::mem::take(&mut self.restored_orphans),
+        };
+        for stored_conversation_id in std::mem::take(&mut self.orphan_conversation_ids) {
+            Self::send_queue_rows(stored_conversation_id, Vec::new(), ctx);
+        }
+        session
     }
 
     fn handle_history_event(
@@ -366,6 +596,7 @@ impl QueuedQueryModel {
                 });
             }
             ctx.emit(QueuedQueryEvent::Cleared { conversation_id });
+            self.persist_queue(conversation_id, ctx);
         }
     }
 
@@ -390,7 +621,7 @@ impl QueuedQueryModel {
     pub fn has_autofireable_prompt(&self, conversation_id: AIConversationId) -> bool {
         self.queues
             .get(&conversation_id)
-            .and_then(|state| state.queue.first())
+            .and_then(|state| state.queue.iter().find(|row| !row.suspended))
             .is_some_and(|first| !first.is_locked())
     }
 
@@ -576,6 +807,7 @@ impl QueuedQueryModel {
         }
         if unlocked {
             ctx.emit(QueuedQueryEvent::RowUnlocked { conversation_id });
+            self.persist_queue(conversation_id, ctx);
         }
     }
 
@@ -615,6 +847,7 @@ impl QueuedQueryModel {
         }
         if unlocked {
             ctx.emit(QueuedQueryEvent::RowUnlocked { conversation_id });
+            self.persist_queue(conversation_id, ctx);
         }
     }
 
@@ -637,11 +870,15 @@ impl QueuedQueryModel {
                 true
             }
         });
+        let changed = !removed_ids.is_empty();
         for query_id in removed_ids {
             ctx.emit(QueuedQueryEvent::Removed {
                 conversation_id,
                 query_id,
             });
+        }
+        if changed {
+            self.persist_queue(conversation_id, ctx);
         }
     }
 
@@ -659,6 +896,7 @@ impl QueuedQueryModel {
             conversation_id,
             query_id,
         });
+        self.persist_queue(conversation_id, ctx);
         query_id
     }
 
@@ -674,10 +912,13 @@ impl QueuedQueryModel {
         ctx: &mut ModelContext<Self>,
     ) -> Option<QueuedQuery> {
         let state = self.queues.get_mut(&conversation_id)?;
-        if state.queue.first()?.is_locked() {
+        // A restored (suspended) row stays in the panel for the user to act on; the first
+        // row that is not restored is the one a cancel/error drain returns to the input.
+        let index = state.queue.iter().position(|row| !row.suspended)?;
+        if state.queue[index].is_locked() {
             return None;
         }
-        let popped = state.queue.remove(0);
+        let popped = state.queue.remove(index);
         if state.editing == Some(popped.id) {
             state.editing = None;
         }
@@ -685,6 +926,7 @@ impl QueuedQueryModel {
             conversation_id,
             query_id: popped.id,
         });
+        self.persist_queue(conversation_id, ctx);
         Some(popped)
     }
 
@@ -694,7 +936,9 @@ impl QueuedQueryModel {
     /// [`Self::remove_fired_row`] once it has been dispatched or restored to the input.
     pub fn peek_autofire(&self, conversation_id: AIConversationId) -> Option<AutofireAction> {
         let state = self.queues.get(&conversation_id)?;
-        let first = state.queue.first()?;
+        // Restored (suspended) rows are skipped, not treated as a locked head: a prompt queued
+        // behind them this session must still drain, or it would sit there forever.
+        let first = state.queue.iter().find(|row| !row.suspended)?;
         if first.is_locked() {
             return None;
         }
@@ -742,6 +986,7 @@ impl QueuedQueryModel {
             conversation_id,
             query_id,
         });
+        self.persist_queue(conversation_id, ctx);
     }
 
     /// Restores a fired row when submission fails after the row was removed.
@@ -763,6 +1008,7 @@ impl QueuedQueryModel {
             conversation_id,
             query_id,
         });
+        self.persist_queue(conversation_id, ctx);
     }
 
     /// Returns the attachments captured on the queued row `query_id` within `conversation_id`'s
@@ -807,6 +1053,7 @@ impl QueuedQueryModel {
             conversation_id,
             query_id,
         });
+        self.persist_queue(conversation_id, ctx);
         Some(removed)
     }
 
@@ -836,6 +1083,7 @@ impl QueuedQueryModel {
         let clamped = target_index.min(state.queue.len());
         state.queue.insert(clamped, row);
         ctx.emit(QueuedQueryEvent::Reordered { conversation_id });
+        self.persist_queue(conversation_id, ctx);
     }
 
     /// Enters edit mode for `query_id` in `conversation_id`'s queue. If another row was being
@@ -900,6 +1148,7 @@ impl QueuedQueryModel {
             conversation_id,
             query_id,
         });
+        self.persist_queue(conversation_id, ctx);
     }
 
     /// Cancels the in-progress edit in `conversation_id` without modifying the row's text.

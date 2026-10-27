@@ -15,8 +15,8 @@ use super::schema::{
     current_user_information, env_var_collection_panes, folders, generic_string_objects,
     ignored_suggestions, mcp_environment_variables, mcp_server_installations, mcp_server_panes,
     notebook_panes, notebooks, object_actions, object_metadata, object_permissions, pane_branches,
-    pane_leaves, pane_nodes, panels, project_rules, projects, server_experiments, settings_panes,
-    tab_groups, tabs, team_members, team_settings, teams, terminal_panes, user_profiles,
+    pane_leaves, pane_nodes, panels, project_rules, projects, queued_prompts, server_experiments,
+    settings_panes, tab_groups, tabs, team_members, team_settings, teams, terminal_panes, user_profiles,
     welcome_panes, windows, workflow_panes, workflows, workspace_language_server,
     workspace_metadata, workspace_teams, workspaces,
 };
@@ -170,6 +170,20 @@ pub struct TeamSetting {
 pub struct NewTeamSettings {
     pub team_id: i32,
     pub settings_json: String,
+}
+
+/// One row of the `queued_prompts` table: a prompt or shell command waiting in a
+/// conversation's queue (#1027). `kind` is `"prompt"` or `"command"`.
+#[derive(Clone, Debug, PartialEq, Eq, Identifiable, Insertable, Queryable)]
+#[diesel(table_name = queued_prompts)]
+pub struct QueuedPromptRow {
+    pub id: String,
+    pub conversation_id: String,
+    pub position: i32,
+    pub kind: String,
+    pub text: String,
+    pub origin: String,
+    pub created_at: NaiveDateTime,
 }
 
 #[derive(Clone, Identifiable, Insertable, Queryable, AsChangeset)]

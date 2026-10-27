@@ -76,7 +76,7 @@ pub(crate) use queued_query::{
     AutofireAction, QueuedQuery, QueuedQueryId, QueuedQueryOrigin, is_lrc_auto_queue_active,
 };
 #[cfg_attr(not(feature = "tui"), allow(unused_imports))]
-pub use queued_query::{QueuedQueryEvent, QueuedQueryModel};
+pub use queued_query::{QueuedQueryEvent, QueuedQueryModel, RestoredQueueSession};
 pub(crate) use input_model::{
     BlocklistAIInputEvent, BlocklistAIInputModel, GuiInputModePolicy, InputConfig, InputType,
 };

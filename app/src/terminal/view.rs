@@ -3362,6 +3362,9 @@ impl TerminalView {
         // into the input instead of vanishing (#1026). The panel needs the model under the same
         // flag, so it is registered whenever this is.
         if FeatureFlag::QueueSlashCommand.is_enabled() {
+            // Prompts left in the queue by the previous session (#1027). Deferred one tick so
+            // the view is in a window before the notice toast is added.
+            ctx.spawn(async {}, |me, _, ctx| me.claim_restored_queue_session(ctx));
             let queued_query_model = QueuedQueryModel::handle(ctx);
             ctx.subscribe_to_model(&queued_query_model, |me, _, event, ctx| {
                 if let QueuedQueryEvent::DroppedUnsent {
@@ -5489,7 +5492,9 @@ impl TerminalView {
         let rows: Vec<(QueuedQueryId, String)> = QueuedQueryModel::as_ref(ctx)
             .queue(conversation_id)
             .iter()
-            .take_while(|row| row.origin() == QueuedQueryOrigin::LrcAutoQueue)
+            .take_while(|row| {
+                row.origin() == QueuedQueryOrigin::LrcAutoQueue && !row.is_suspended()
+            })
             .map(|row| (row.id(), row.text().to_owned()))
             .collect();
         for (query_id, text) in rows {
@@ -23806,6 +23811,22 @@ impl TerminalView {
         if rows.is_empty() {
             return;
         }
+        let notice = format!(
+            "The conversation was removed with {} unsent queued prompt(s); \
+             their text is back in the input.",
+            rows.len()
+        );
+        self.put_queue_rows_in_input(rows, notice, ctx);
+    }
+
+    /// Appends the text (and prompt attachments) of `rows` to this view's input and shows
+    /// `notice`.
+    fn put_queue_rows_in_input(
+        &mut self,
+        rows: &[QueuedQuery],
+        notice: String,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let restored = rows
             .iter()
             .map(QueuedQuery::text)
@@ -23825,15 +23846,31 @@ impl TerminalView {
                 context_model.append_pending_attachments(row.attachments().to_vec(), ctx);
             });
         }
-        self.notify_queue_notice(
-            None,
-            format!(
-                "The conversation was removed with {} unsent queued prompt(s); \
-                 their text is back in the input.",
-                rows.len()
-            ),
-            ctx,
-        );
+        self.notify_queue_notice(None, notice, ctx);
+    }
+
+    /// Claims what the previous session left in the queue (#1027), once per launch: the first
+    /// terminal view to ask gets it. Rows whose conversation still exists are already back in
+    /// its queue, suspended, so this only announces them; rows whose conversation is gone have
+    /// no queue to return to, so their text goes into this view's input. Either way the user
+    /// is told, and nothing is sent.
+    fn claim_restored_queue_session(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.suspended_for_close || !ctx.has_singleton_model::<QueuedQueryModel>() {
+            return;
+        }
+        let session = QueuedQueryModel::handle(ctx)
+            .update(ctx, |model, ctx| model.take_restored_session(ctx));
+        if !session.orphans.is_empty() {
+            let notice = restored_orphans_notice(session.orphans.len());
+            self.put_queue_rows_in_input(&session.orphans, notice, ctx);
+        }
+        if session.suspended_count > 0 {
+            self.notify_queue_notice(
+                None,
+                restored_suspended_notice(session.suspended_count),
+                ctx,
+            );
+        }
     }
 
     /// Restores the head of a stopped or failed conversation's queue when the user comes back to
@@ -32572,6 +32609,30 @@ fn scoped_queue_notice(scope: Option<&str>, text: String) -> String {
         Some(scope) => format!("In \"{}\": {text}", truncate_from_end(scope, 40)),
         None => text,
     }
+}
+
+/// The notice shown at startup when `count` queued prompts from the last session were put back
+/// in their conversations' queues, paused (#1027).
+fn restored_suspended_notice(count: usize) -> String {
+    if count == 1 {
+        "1 queued prompt was restored from your last session. It will not be sent until you \
+         send it from the queue."
+            .to_owned()
+    } else {
+        format!(
+            "{count} queued prompts were restored from your last session. They will not be sent \
+             until you send them from the queue."
+        )
+    }
+}
+
+/// The notice shown at startup when `count` queued prompts from the last session had no
+/// conversation left and were put in the input instead (#1027).
+fn restored_orphans_notice(count: usize) -> String {
+    format!(
+        "{count} queued prompt(s) from your last session had no conversation to return to; \
+         their text is in the input."
+    )
 }
 
 /// The notice shown when a queued prompt or command is put back in the input because the turn

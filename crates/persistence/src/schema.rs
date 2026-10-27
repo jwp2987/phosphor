@@ -370,6 +370,18 @@ diesel::table! {
 }
 
 diesel::table! {
+    queued_prompts (id) {
+        id -> Text,
+        conversation_id -> Text,
+        position -> Integer,
+        kind -> Text,
+        text -> Text,
+        origin -> Text,
+        created_at -> Timestamp,
+    }
+}
+
+diesel::table! {
     projects (path) {
         path -> Text,
         added_ts -> Timestamp,
