@@ -1,8 +1,17 @@
 use super::SetupEchoFilter;
 
-/// What the grid would see after the filter: the characters not swallowed.
+/// What the grid would see after the filter, as the model outputs it: characters released by the
+/// filter first, then each character not swallowed.
 fn visible(filter: &mut SetupEchoFilter, output: &str) -> String {
-    output.chars().filter(|c| !filter.swallow(*c)).collect()
+    let mut shown = String::new();
+    for c in output.chars() {
+        let swallowed = filter.swallow(c);
+        shown.extend(filter.take_unmatched());
+        if !swallowed {
+            shown.push(c);
+        }
+    }
+    shown
 }
 
 #[test]
@@ -108,13 +117,47 @@ fn a_stall_part_way_through_a_line_is_mid_line() {
 }
 
 #[test]
-fn a_diverging_line_clear_echo_stands_the_filter_down() {
-    // A shell whose line editor already runs echoes the prefix itself, differently: nothing
-    // after the divergence is hidden.
+fn a_missing_line_clear_echo_hides_nothing_and_never_counts_as_mid_line() {
+    // A shell whose line editor already runs echoes the prefix itself, differently: all of it is
+    // shown, in order, and the filter keeps waiting for the prefix (`InitShell` disarms it).
     let mut filter = SetupEchoFilter::default();
     filter.expect_line_clear_prefix();
     filter.expect_line(" x");
-    assert_eq!(visible(&mut filter, " \u{8} x\r\n"), "\u{8} x\r\n");
-    assert!(!filter.is_armed());
+    assert_eq!(visible(&mut filter, " \u{8} x\r\n"), " \u{8} x\r\n");
     assert!(!filter.is_mid_line());
+}
+
+#[test]
+fn the_prefix_echo_after_unterminated_rc_output_is_still_swallowed() {
+    // #1038: an rc printed `Loading plugins...` without a newline. Its space looks like the start
+    // of the prefix echo; it is shown once `p` shows it is not.
+    let mut filter = SetupEchoFilter::default();
+    filter.expect_line_clear_prefix();
+    filter.expect_line(" first");
+    filter.expect_line(" second");
+    let output = format!("Loading plugins...{CAPTURED_LINE_CLEAR_ECHO} first\r\n second");
+    assert_eq!(visible(&mut filter, &output), "Loading plugins...");
+    assert!(filter.is_mid_line());
+}
+
+#[test]
+fn the_prefix_echo_after_rc_output_ending_in_a_space_is_still_swallowed() {
+    // The rc's trailing space is held as a possible prefix start, released when the echo's own
+    // space follows it, and the echo is matched from there.
+    let mut filter = SetupEchoFilter::default();
+    filter.expect_line_clear_prefix();
+    filter.expect_line(" first");
+    let output = format!("Loading plugins... {CAPTURED_LINE_CLEAR_ECHO} first\r\n");
+    assert_eq!(visible(&mut filter, &output), "Loading plugins... ");
+    assert!(!filter.is_armed());
+}
+
+#[test]
+fn a_disarm_hands_back_what_was_held_as_a_possible_prefix() {
+    let mut filter = SetupEchoFilter::default();
+    filter.expect_line_clear_prefix();
+    filter.expect_line(" first");
+    assert_eq!(visible(&mut filter, "Password: "), "Password:");
+    filter.disarm();
+    assert_eq!(filter.take_unmatched(), vec![' ']);
 }

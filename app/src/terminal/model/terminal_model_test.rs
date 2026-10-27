@@ -3157,6 +3157,23 @@ fn unterminated_rc_output_before_a_stalled_setup_echo_is_not_a_prompt() {
     terminal.process_bytes(echo.as_bytes());
     let (contents, cursor_col) = running_block_output(&terminal);
     assert_eq!(contents.trim_end(), "Loading plugins...");
-    assert!(cursor_col > 0);
+    assert_eq!(cursor_col, "Loading plugins...".len());
+    assert!(terminal.is_setup_echo_mid_line());
+}
+
+/// As above, with the rc's line ending in a space (`Loading plugins... `): the space is shown and
+/// the echo that follows it is still hidden.
+#[test]
+fn rc_output_ending_in_a_space_before_a_stalled_setup_echo_keeps_the_echo_hidden() {
+    let mut terminal = stalled_zsh_setup();
+    let cut = ZSH_SETUP_SECOND_LINE.find("[##").unwrap() + 3;
+    let echo = format!(
+        "Loading plugins...  ^K\x08 \x08\x08 \x08\x08 \x08{ZSH_SETUP_FIRST_LINE}\r\n{}",
+        &ZSH_SETUP_SECOND_LINE[..cut]
+    );
+    terminal.process_bytes(echo.as_bytes());
+    let (contents, cursor_col) = running_block_output(&terminal);
+    assert_eq!(contents.trim_end(), "Loading plugins...");
+    assert_eq!(cursor_col, "Loading plugins... ".len());
     assert!(terminal.is_setup_echo_mid_line());
 }
