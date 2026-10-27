@@ -134,7 +134,10 @@ fn test_tab_free_prefix_fast_path_still_expands_tabs() {
                 after.to_buffer_point(map, Bias::Left, ctx).unwrap(),
                 Point::new(0, 3500)
             );
-            assert_eq!(map.line_len(0, ctx).unwrap(), 5003);
+            // The row is 5000 'x' plus the inserted tab = 5001 buffer chars. The tab at column
+            // 3000 expands to 4 display columns (3 more than one char), so 5001 + 3 = 5004.
+            // (The 3500 case above is 3500 chars + 3 = 3503; it stops before the row end.)
+            assert_eq!(map.line_len(0, ctx).unwrap(), 5004);
         });
     })
 }
