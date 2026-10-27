@@ -767,3 +767,13 @@ fn turn_has_tool_calls_only_counts_the_new_turn() {
     assert!(!turn_has_tool_calls(&msgs, |id| id == "a1"));
     assert!(!turn_has_tool_calls(&msgs, |_| false));
 }
+
+#[test]
+fn auto_compaction_is_limited_to_one_per_turn() {
+    use super::{auto_compaction_decision as d, AutoCompactionDecision as D};
+    assert_eq!(d(false, false), D::None);
+    assert_eq!(d(false, true), D::None);
+    assert_eq!(d(true, false), D::Compact);
+    // Second overflow in the same turn: fail rather than loop.
+    assert_eq!(d(true, true), D::GiveUp);
+}
