@@ -306,3 +306,7 @@ fn serialize_variables_internal<'s, I: IntoIterator<Item = (&'s str, &'s EnvVarV
         .collect_vec()
         .join(delimiter)
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;

@@ -1404,6 +1404,9 @@ fn is_interactive_shell_invocation(command: &str) -> bool {
 /// match (returns None) — worst case it just falls back to the old 120s wait, with
 /// no incorrect behavior introduced.
 fn in_band_generator_command(command: &str) -> Option<String> {
+    if let Some(inner) = nu_in_band_generator_command(command) {
+        return Some(inner);
+    }
     let tokens = shell_words::split(command.trim_start()).ok()?;
     if tokens.len() >= 3
         && (tokens[0].eq_ignore_ascii_case(POWERSHELL_GENERATOR_WRAPPER)
@@ -1413,6 +1416,24 @@ fn in_band_generator_command(command: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// [`in_band_generator_command`] for nushell, whose call passes the command as a raw string
+/// (`warp_run_generator_command 7 r#'echo hi'#`) because a nushell single-quoted string cannot
+/// hold a `'`. `shell_words` would read that as the word `r#echo hi#`, so it is unwrapped here.
+fn nu_in_band_generator_command(command: &str) -> Option<String> {
+    let rest = command.trim_start().strip_prefix(POSIX_GENERATOR_WRAPPER)?;
+    let rest = rest.strip_prefix(' ')?.trim_start();
+    let (_id, rest) = rest.split_once(' ')?;
+    let rest = rest.trim();
+    let after_r = rest.strip_prefix('r')?;
+    let hashes = after_r.len() - after_r.trim_start_matches('#').len();
+    if hashes == 0 {
+        return None;
+    }
+    let body = after_r[hashes..].strip_prefix('\'')?;
+    let closing = format!("'{}", "#".repeat(hashes));
+    body.strip_suffix(closing.as_str()).map(str::to_owned)
 }
 
 /// When the command's executable entry is ssh with a path or `.exe` suffix, rewrites
