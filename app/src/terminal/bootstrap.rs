@@ -311,6 +311,12 @@ pub(crate) fn subshell_bootstrap_line_delay(shell_type: Option<ShellType>) -> st
     }
 }
 
+/// How long keys held through a PowerShell subshell setup wait after its first prompt is drawn
+/// before they are written (#1048): PSReadLine starts reading input after the prompt function
+/// has run, and an Enter that arrives before then is lost.
+pub(crate) const POWERSHELL_FIRST_PROMPT_SETTLE: std::time::Duration =
+    std::time::Duration::from_millis(500);
+
 /// Splits `script` into the paced writes of [`SUBSHELL_BOOTSTRAP_CHUNK_SIZE`] bytes each.
 pub(crate) fn subshell_bootstrap_chunks(script: &[u8]) -> Vec<Vec<u8>> {
     script
