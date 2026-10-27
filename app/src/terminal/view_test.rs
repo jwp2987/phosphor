@@ -14459,8 +14459,35 @@ fn keys_held_through_a_stall_are_released_once_when_the_subshell_precmd_complete
                 pty_writes.borrow().is_empty(),
                 "echoed bootstrap text is not a prompt: the keys are held"
             );
-            view.release_held_setup_input_if_subshell_ready(ctx);
-            view.release_held_setup_input_if_subshell_ready(ctx);
+            // The waiting notice is showing (as if the stall ceiling had passed).
+            view.subshell_setup_waiting_toast_id = Some("subshell-setup-waiting-test".to_string());
+            // The model's `AfterBlockCompleted` comes before the view has reinitialized the
+            // editor for the new block: nothing is released from it (#1014, the Mac case where
+            // the released command's block never showed).
+            view.handle_terminal_event(
+                &ModelEvent::AfterBlockCompleted(AfterBlockCompletedEvent {
+                    command_finished_to_precmd_delay: None,
+                    block_type: BlockType::BootstrapHidden,
+                    num_secrets_obfuscated: 0,
+                    cloud_workflow_id: None,
+                    cloud_env_var_collection_id: None,
+                }),
+                ctx,
+            );
+            assert_eq!(view.subshell_setup_held_bytes.len(), 2, "still held");
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "AfterBlockCompleted must not release the held keys"
+        );
+        terminal.update(&mut app, |view, ctx| {
+            // The prompt is drawn and the editor reinitialized: now they are delivered, once.
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert!(
+                view.subshell_setup_waiting_toast_id.is_none(),
+                "the waiting notice goes away once setup is over"
+            );
         });
         let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
         assert_eq!(written, b"ls\r".to_vec(), "delivered once, in order");

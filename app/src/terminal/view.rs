@@ -2857,6 +2857,10 @@ pub struct TerminalView {
     /// are delivered once setup completes, is abandoned or aborted, or after
     /// `SUBSHELL_SETUP_TYPED_HOLD_LIMIT`; never dropped.
     subshell_setup_held_bytes: Vec<Vec<u8>>,
+    /// Object id of the persistent "Phosphor setup is waiting..." toast while it is showing
+    /// (#1014). The wait is a state, not an event: the toast stays until setup completes, is
+    /// skipped or is abandoned.
+    subshell_setup_waiting_toast_id: Option<String>,
     /// A subshell setup that was not written because the shell was showing a prompt for input
     /// (`Password:`, a passphrase or `read -p` prompt, #1032). Nothing of the setup is written
     /// while this is `Some`; typing goes straight to the pty, where it answers the prompt.
@@ -4510,6 +4514,7 @@ impl TerminalView {
             subshell_bootstrap_in_flight: None,
             subshell_bootstrap_announced: None,
             subshell_setup_held_bytes: Vec::new(),
+            subshell_setup_waiting_toast_id: None,
             subshell_setup_deferred: None,
             subshell_bootstrap_generation: 0,
             show_snackbar: true,
@@ -10552,6 +10557,10 @@ impl TerminalView {
         // delays it): text written now would sit in the tty ahead of the late bootstrap and run
         // inside it or vanish. Hold it here and deliver it, in order, once setup is over. Ctrl-C /
         // Ctrl-D pass at once and then release what is held.
+        if is_abort_key(&bytes) {
+            // Ctrl-C / Ctrl-D skips the setup: the waiting notice no longer applies.
+            self.dismiss_subshell_setup_waiting_toast(ctx);
+        }
         if is_abort_key(&bytes) && !self.subshell_setup_held_bytes.is_empty() {
             // The user aborts the setup: the abort goes first, then what they typed meanwhile.
             let held = std::mem::take(&mut self.subshell_setup_held_bytes);
@@ -14177,12 +14186,11 @@ impl TerminalView {
                 cloud_workflow_id,
                 cloud_env_var_collection_id,
             }) => {
-                // #1014: the first precmd of a subshell that has earlier blocks announces itself
-                // with this event, never `BootstrapPrecmdDone` (that one only fires when the
-                // block list has no previous block). Keys held through a stalled setup are
-                // delivered here, once the subshell is bootstrapped and its precmd (which clears
-                // the typeahead model) has run.
-                self.release_held_setup_input_if_subshell_ready(ctx);
+                // #1014: keys held through a stalled setup are NOT released here. This event is
+                // sent from inside the model's precmd handling, before the view has reinitialized
+                // the editor for the new block and handed typeahead ownership back
+                // (`Handler(Precmd)` below does that). Keys written now race that reinit, and
+                // when the view loses the race the command's block never shows (macOS).
                 // To automatically warpify a subshell, we run the relevant command to open the
                 // subshell and create a future to delay bootstrapping the subshell long enough for
                 // the command to complete. We receive AfterBlockCompleted if the subshell command
@@ -14860,16 +14868,22 @@ impl TerminalView {
                     );
                 }
             }
-            ModelEvent::Handler(AnsiHandlerEvent::Precmd)
-                if FeatureFlag::TypeaheadHandoff.is_enabled() =>
-            {
-                // The block this prompt finished has been handled (the editor is reinitialized);
-                // only now may the editor take keys without them being erased (#934).
-                self.model
-                    .lock()
-                    .typeahead_handoff_mut()
-                    .on_precmd_viewed();
-                self.commit_typeahead_handoff_at_prompt(ctx);
+            ModelEvent::Handler(AnsiHandlerEvent::Precmd) => {
+                if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                    // The block this prompt finished has been handled (the editor is
+                    // reinitialized); only now may the editor take keys without them being
+                    // erased (#934).
+                    self.model.lock().typeahead_handoff_mut().on_precmd_viewed();
+                    self.commit_typeahead_handoff_at_prompt(ctx);
+                }
+                // #1014: the subshell's first prompt is drawn and the block list is in its normal
+                // state: only now are the keys held through a stalled setup delivered, so the
+                // command they spell starts an ordinary visible block. (Setup still pending:
+                // nothing is released; the notice is dropped once setup is over.)
+                self.release_held_setup_input_if_subshell_ready(ctx);
+                if !self.subshell_bootstrap_pending() {
+                    self.dismiss_subshell_setup_waiting_toast(ctx);
+                }
             }
             ModelEvent::Handler(AnsiHandlerEvent::Preexec)
                 if FeatureFlag::TypeaheadHandoff.is_enabled() =>
@@ -14929,9 +14943,8 @@ impl TerminalView {
                 );
             }
             ModelEvent::BootstrapPrecmdDone => {
-                if !self.subshell_setup_held_bytes.is_empty() {
-                    self.release_subshell_setup_held_bytes(ctx);
-                }
+                // The held keys follow on the `Precmd` handler event that comes right after this
+                // one, once the editor is reinitialized (#1014).
                 self.execute_pending_command((), ctx);
             }
             ModelEvent::AgentTaggedInChanged { is_tagged_in } => {
@@ -17267,14 +17280,33 @@ impl TerminalView {
             return;
         }
         let window_id = ctx.window_id();
+        let toast_id = format!("subshell-setup-waiting-{}", ctx.view_id());
+        self.subshell_setup_waiting_toast_id = Some(toast_id.clone());
         ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
             let toast = DismissibleToast::new(
                 "Phosphor setup is waiting for the shell to finish starting. Your input will run \
                  after it (Ctrl-C skips setup)."
                     .to_string(),
                 ToastFlavor::Default,
-            );
-            toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+            )
+            .with_object_id(toast_id);
+            // Persistent: the wait is a state, shown for as long as it lasts (#1014).
+            toast_stack.add_persistent_toast(toast, window_id, ctx);
+        });
+    }
+
+    /// Removes the "setup is waiting" notice, if it is showing. Called whenever setup is over:
+    /// finished, skipped (Ctrl-C), abandoned or timed out.
+    fn dismiss_subshell_setup_waiting_toast(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(toast_id) = self.subshell_setup_waiting_toast_id.take() else {
+            return;
+        };
+        if !ctx.has_singleton_model::<ToastStack>() {
+            return;
+        }
+        let window_id = ctx.window_id();
+        ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+            toast_stack.remove_toast_by_identifier(toast_id, window_id, ctx);
         });
     }
 
@@ -17332,6 +17364,7 @@ impl TerminalView {
     /// (finished, abandoned, aborted or timed out) whenever this runs.
     fn release_subshell_setup_held_bytes(&mut self, ctx: &mut ViewContext<Self>) {
         self.subshell_bootstrap_announced = None;
+        self.dismiss_subshell_setup_waiting_toast(ctx);
         for bytes in std::mem::take(&mut self.subshell_setup_held_bytes) {
             self.write_user_bytes_to_pty(bytes, ctx);
         }
