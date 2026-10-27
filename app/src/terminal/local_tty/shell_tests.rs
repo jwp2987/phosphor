@@ -253,3 +253,41 @@ fn fish_tab_config_pane_shell_starter_args_emit_init_shell() {
         }
     });
 }
+
+/// #1035: the app exports an absolute `SSH_SOCKET_DIR`, so ssh's ControlPath, the wrapper's socket
+/// test, `ssh -O exit` and the app's registry all name the same file whatever `$HOME` is.
+#[test]
+fn ssh_socket_dir_is_exported_absolute() {
+    use std::path::Path;
+    assert_eq!(
+        absolute_ssh_socket_dir("~/.ssh", Some(Path::new("/Users/winters"))),
+        "/Users/winters/.ssh"
+    );
+    assert_eq!(
+        absolute_ssh_socket_dir("~/.ssh", Some(Path::new("/home/me/"))),
+        "/home/me/.ssh"
+    );
+    // Already absolute (Integration channel): untouched.
+    assert_eq!(
+        absolute_ssh_socket_dir("/abs/.ssh", Some(Path::new("/Users/winters"))),
+        "/abs/.ssh"
+    );
+    // No home, a home too long for a socket path, or one the hook JSON cannot carry: keep `~`.
+    assert_eq!(absolute_ssh_socket_dir("~/.ssh", None), "~/.ssh");
+    let long = format!("/{}", "x".repeat(70));
+    assert_eq!(
+        absolute_ssh_socket_dir("~/.ssh", Some(Path::new(&long))),
+        "~/.ssh"
+    );
+    assert_eq!(
+        absolute_ssh_socket_dir("~/.ssh", Some(Path::new("/Users/a b"))),
+        "~/.ssh"
+    );
+    assert_eq!(
+        absolute_ssh_socket_dir("~/.ssh", Some(Path::new("/Users/a\"b"))),
+        "~/.ssh"
+    );
+    // A typical macOS home leaves room for `/<20-digit id>` plus ssh's 17-byte temp suffix.
+    let dir = absolute_ssh_socket_dir("~/.ssh", Some(Path::new("/Users/winters")));
+    assert!(dir.len() + 1 + 20 + 17 < 104);
+}

@@ -833,6 +833,45 @@ pub fn ssh_socket_dir() -> String {
     socket_dir
 }
 
+/// Longest absolute `SSH_SOCKET_DIR` we export. A control socket path is
+/// `<dir>/<20-digit session id>`, and ssh binds it through a `.XXXXXXXXXXXXXXXX` temp name, all of
+/// which must fit a unix socket path (104 bytes on macOS).
+const MAX_ABSOLUTE_SSH_SOCKET_DIR_LEN: usize = 60;
+
+/// `literal` (see [`ssh_socket_dir`]) with a leading `~` replaced by `home`, so ssh's
+/// `ControlPath`, the wrapper's socket test, `ssh -O exit` and the app all see ONE absolute path
+/// regardless of whether `$HOME` equals the passwd home (ssh itself expands `~` from the passwd
+/// database, a shell from `$HOME`). Falls back to `literal` when there is no home or the result
+/// is too long for a socket path or contains characters the SSH hook JSON cannot carry unescaped.
+fn absolute_ssh_socket_dir(literal: &str, home: Option<&std::path::Path>) -> String {
+    let Some(rest) = literal.strip_prefix('~') else {
+        return literal.to_owned();
+    };
+    let Some(home) = home.and_then(|home| home.to_str()) else {
+        return literal.to_owned();
+    };
+    let absolute = format!("{}{rest}", home.trim_end_matches('/'));
+    let safe = absolute.starts_with('/')
+        && absolute.len() <= MAX_ABSOLUTE_SSH_SOCKET_DIR_LEN
+        && absolute
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._/+@:,-".contains(c));
+    if safe { absolute } else { literal.to_owned() }
+}
+
+/// The `SSH_SOCKET_DIR` to export to unix shells: [`ssh_socket_dir`] made absolute from the home
+/// the app uses (#1035). The directory is created if missing (ssh does not create the parent of a
+/// ControlPath, and an isolated `$HOME` may have no `.ssh`).
+pub fn ssh_socket_dir_absolute() -> String {
+    let dir = absolute_ssh_socket_dir(&ssh_socket_dir(), dirs::home_dir().as_deref());
+    if dir.starts_with('/') {
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            log::warn!("could not create SSH_SOCKET_DIR {dir}: {e}");
+        }
+    }
+    dir
+}
+
 /// Take the output of a wsl.exe subcommand and try to decode it while reporting errors.
 /// NOTE: The empty string Some("") may be returned.
 fn decode_wsl_path_result(result: io::Result<process::Output>) -> Option<UnixPathBuf> {
