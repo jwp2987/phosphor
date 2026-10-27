@@ -361,6 +361,8 @@ build-windows-x86_64:
     - foreach ($t in "cargo","rustc","perl","cmake","ISCC") { if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { Write-Error "$t is missing on this runner; install it by hand (not done automatically)"; exit 1 } }
     - if (-not (Test-Path "$env:PROTOC")) { Write-Error "PROTOC is not set to an existing protoc.exe on this runner"; exit 1 }
     - $version = (Select-String -Path app\Cargo.toml -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+    # cargo-about generates the bundled third-party licenses (same pin as script/install_cargo_release_deps).
+    - if (-not ((Get-Command cargo-about -ErrorAction SilentlyContinue) -and ((cargo-about --version) -match "0\.8\.4"))) { cargo install cargo-about --version 0.8.4 --locked --force; if ($LASTEXITCODE) { exit $LASTEXITCODE } }
     - .\script\windows\bundle.ps1 -CHANNEL oss -ARCH x64 -RELEASE_TAG "v$version-dev"
     - if ($LASTEXITCODE) { exit $LASTEXITCODE }
     - |
@@ -853,6 +855,8 @@ release-windows-x86_64:
         Set-Item -Path "env:$($pin[0])" -Value $digest
         "$($pin[0])=$digest"
       }
+    # cargo-about generates the bundled third-party licenses (same pin as script/install_cargo_release_deps).
+    - if (-not ((Get-Command cargo-about -ErrorAction SilentlyContinue) -and ((cargo-about --version) -match "0\.8\.4"))) { cargo install cargo-about --version 0.8.4 --locked --force; if ($LASTEXITCODE) { exit $LASTEXITCODE } }
     - .\script\windows\bundle.ps1 -CHANNEL $env:CHANNEL -ARCH x64 -RELEASE_TAG $env:RELEASE_TAG
     - if ($LASTEXITCODE) { exit $LASTEXITCODE }
     - |
