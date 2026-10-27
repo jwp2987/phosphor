@@ -1328,6 +1328,162 @@ fn ssh_wrapper_job_text_is_short_and_remote_script_still_arrives() {
     }
 }
 
+/// #1035: a Windows OpenSSH server (default shell cmd.exe / PowerShell) cannot run the POSIX
+/// remote bootstrap ("'export' is not recognized", then the connection closes). The wrapper reads
+/// the server's version banner first (a stub `ssh` answers the `-v` probe) and, for
+/// `OpenSSH_for_Windows_*`, runs a plain `ssh <args>`: no `-t`, no ControlMaster, no remote
+/// command. A POSIX remote (or an inconclusive probe) gets the managed session exactly as before.
+#[test]
+#[cfg(unix)]
+fn ssh_wrapper_gives_a_windows_remote_a_plain_session() {
+    use std::process::Command;
+
+    // (case, banner lines the probe's stderr shows, expect a plain session)
+    let cases: [(&str, &[&str], bool); 5] = [
+        (
+            "windows",
+            &["OpenSSH_for_Windows_10.4 Win32-OpenSSH-GitHub"],
+            true,
+        ),
+        ("posix", &["OpenSSH_9.6p1 Ubuntu-3ubuntu13"], false),
+        ("inconclusive", &[], false),
+        // ProxyJump: -v traces the jump hop first, the destination last.
+        (
+            "windows-behind-posix-jump",
+            &["OpenSSH_9.6p1 Ubuntu", "OpenSSH_for_Windows_9.5"],
+            true,
+        ),
+        (
+            "posix-behind-windows-jump",
+            &["OpenSSH_for_Windows_9.5", "OpenSSH_9.6p1 Ubuntu"],
+            false,
+        ),
+    ];
+
+    for (name, source, kind) in [
+        (
+            "bash",
+            include_str!("../../assets/bundled/bootstrap/bash_body.sh"),
+            0,
+        ),
+        (
+            "zsh",
+            include_str!("../../assets/bundled/bootstrap/zsh_body.sh"),
+            1,
+        ),
+        (
+            "fish",
+            include_str!("../../assets/bundled/bootstrap/fish.sh"),
+            2,
+        ),
+    ] {
+        if Command::new(name).arg("--version").output().is_err() {
+            eprintln!("skipping {name}: not installed");
+            continue;
+        }
+        let (open, close) = match kind {
+            0 => (
+                "        function warp_ssh_helper() {",
+                "\n        function __warp_ssh_impl",
+            ),
+            1 => (
+                "      function warp_ssh_helper() {",
+                "\n      function ssh() {",
+            ),
+            _ => ("    function warp_ssh_helper", "\n    end\n"),
+        };
+        let from = source.find(open).unwrap();
+        let to = from + source[from..].find(close).unwrap();
+        let function = if kind == 2 {
+            source[from..to + close.len()].to_owned()
+        } else {
+            source[from..to].to_owned()
+        };
+        let prelude = match kind {
+            2 => {
+                "function warp_init_shell; echo init-$argv; end; function warp_send_json_message; end; set -g SSH_SOCKET_DIR /tmp/s; set -g WARP_SESSION_ID 77; set -g WARP_HONOR_PS1 1;"
+            }
+            _ => {
+                "init_shell_hook(){ echo hook-$1; }; warp_send_json_message(){ :; }; SSH_SOCKET_DIR=/tmp/s; WARP_SESSION_ID=77; WARP_HONOR_PS1=1;"
+            }
+        };
+
+        for (case, banners, plain) in cases {
+            let dir = std::env::temp_dir().join(format!(
+                "phosphor-ssh-win-{name}-{case}-{}",
+                std::process::id()
+            ));
+            std::fs::remove_dir_all(&dir).ok();
+            std::fs::create_dir_all(&dir).unwrap();
+            // The stub answers the probe (`-v`) on stderr like ssh does, fails -G/-O, and records
+            // every other invocation: its arguments one per line, after a `CALL` marker.
+            let mut probe = String::new();
+            for banner in banners {
+                probe.push_str(&format!(
+                    "echo 'debug1: Remote protocol version 2.0, remote software version {banner}' >&2\n"
+                ));
+            }
+            let stub = dir.join("ssh");
+            std::fs::write(
+                &stub,
+                format!(
+                    "#!/bin/sh\ncase \"$1\" in\n-v) {probe}exit 255;;\n-G|-O) exit 1;;\nesac\nprintf 'CALL\\n' >> \"$OUT\"\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> \"$OUT\"; done\n"
+                ),
+            )
+            .unwrap();
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let script = format!("{prelude}\n{function}\nwarp_ssh_helper -p 22 user@host");
+            let mut command = Command::new(name);
+            if kind == 2 {
+                command.args(["--no-config", "-c", &script]);
+            } else {
+                command.args(["-c", &script]);
+            }
+            let out_file = dir.join("out");
+            let status = command
+                .env(
+                    "PATH",
+                    format!(
+                        "{}:{}",
+                        dir.display(),
+                        std::env::var("PATH").unwrap_or_default()
+                    ),
+                )
+                .env("OUT", &out_file)
+                .status()
+                .unwrap();
+            assert!(status.success(), "{name}/{case}: helper failed");
+            let recorded = std::fs::read_to_string(&out_file).unwrap_or_default();
+            let calls: Vec<&str> = recorded
+                .split("CALL\n")
+                .filter(|call| !call.is_empty())
+                .collect();
+            assert_eq!(
+                calls.len(),
+                1,
+                "{name}/{case}: exactly one real ssh: {recorded:?}"
+            );
+            if plain {
+                assert_eq!(
+                    calls[0], "-p\n22\nuser@host\n",
+                    "{name}/{case}: a Windows remote must get a plain `ssh <args>`"
+                );
+            } else {
+                assert!(
+                    calls[0].contains("-t\n")
+                        && calls[0].contains("ControlMaster=yes")
+                        && calls[0].contains("export TERM_PROGRAM='WarpTerminal'"),
+                    "{name}/{case}: a POSIX remote keeps the managed session: {recorded:?}"
+                );
+            }
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+}
+
 /// #960: `trap <fn> EXIT HUP` replaced bash's default hang-up handling, so a remote shell
 /// neither exited on SIGHUP nor, while a foreground child such as `sudo` ran, ever did --
 /// closing the tab left orphaned shells (and root shells under them). EXIT alone already runs
