@@ -10082,6 +10082,15 @@ impl TerminalView {
         true
     }
 
+    /// Whether the active block's output ends in a line the user is answering (a `Password:` or
+    /// `read -p` prompt) rather than in the tty's echo of the setup script (#1014). On macOS that
+    /// echo stops mid-line for as long as the shell is not reading (the tty input queue is full),
+    /// and keys passed through on the strength of it ran inside the hidden setup block.
+    fn active_output_awaits_an_answer(&self) -> bool {
+        self.active_output_ends_in_unterminated_text()
+            && !self.model.lock().is_setup_echo_mid_line()
+    }
+
     /// True when the active block's output has visible text and the cursor sits after text on
     /// its row (no trailing newline): the shape of a prompt, as opposed to banner output.
     fn active_output_ends_in_unterminated_text(&self) -> bool {
@@ -10618,7 +10627,7 @@ impl TerminalView {
         if subshell_setup_should_hold_typed_bytes(
             self.subshell_bootstrap_announced_age(),
             is_abort_key(&bytes),
-        ) && !self.active_output_ends_in_unterminated_text()
+        ) && !self.active_output_awaits_an_answer()
         {
             self.subshell_setup_held_bytes.push(bytes.into_owned());
             return true;
@@ -17279,6 +17288,10 @@ impl TerminalView {
             let mut model = self.model.lock();
             model.clear_setup_echo();
             if shell_type != Some(ShellType::PowerShell) {
+                // The first line goes out behind ` ^K ^U`, whose echo comes first.
+                if crate::terminal::bootstrap::subshell_bootstrap_clears_line_editor(shell_type) {
+                    model.expect_setup_line_clear_echo();
+                }
                 for line in &all_lines {
                     model.expect_setup_echo(line);
                 }
@@ -17314,11 +17327,12 @@ impl TerminalView {
         ctx.spawn(
             Timer::after(SUBSHELL_SETUP_TYPED_HOLD_LIMIT),
             move |me, _, ctx| {
-                let same_announcement = me
-                    .subshell_bootstrap_announced
-                    .as_ref()
-                    .is_some_and(|(_, at)| Some(*at) == announced_at);
-                if same_announcement || !me.subshell_setup_held_bytes.is_empty() {
+                let current = me.subshell_bootstrap_announced.as_ref().map(|(_, at)| *at);
+                if subshell_setup_hold_limit_releases(
+                    current,
+                    announced_at,
+                    !me.subshell_setup_held_bytes.is_empty(),
+                ) {
                     me.release_subshell_setup_held_bytes(ctx);
                 }
             },
@@ -32370,6 +32384,22 @@ fn subshell_setup_should_hold_typed_bytes(
     abort_key: bool,
 ) -> bool {
     !abort_key && announced_age.is_some_and(|age| age < SUBSHELL_SETUP_TYPED_HOLD_LIMIT)
+}
+
+/// Whether the hold-limit timer of the setup announced at `timer_announced_at` delivers the held
+/// keys now (#1014). Only its own setup's keys: a timer outliving its setup (the subshell was
+/// Phosphorized and exited, and another one is starting) must not release, and so un-hold, the
+/// keys typed during the next setup's stall, which then ran inside that hidden setup. Keys held
+/// with no setup announced at all (never expected) are delivered rather than kept.
+fn subshell_setup_hold_limit_releases(
+    current_announced_at: Option<Instant>,
+    timer_announced_at: Option<Instant>,
+    keys_held: bool,
+) -> bool {
+    match current_announced_at {
+        Some(current) => timer_announced_at == Some(current),
+        None => keys_held,
+    }
 }
 
 /// What an interrupt key does while the remote shell's bootstrap is pending (#1001).
