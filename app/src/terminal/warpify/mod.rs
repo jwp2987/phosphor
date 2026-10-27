@@ -147,6 +147,31 @@ pub fn subshell_bootstrap_success_block_bytes(
     (commands.join(&b"\n"[..]), is_executable)
 }
 
+/// The "Run the following to automatically Phosphorize" command for a PowerShell subshell
+/// whose shell runs on a Windows host (Windows PowerShell 5.1 or pwsh 7). Unlike the POSIX
+/// flavour it targets `$PROFILE` (whatever the running edition reads, and which does not
+/// live under `~/.config`), creates the profile first when absent (`Add-Content` fails if
+/// its directory is missing), and bakes in a constant `uname` instead of running `uname`,
+/// which does not exist on Windows. Kept free of `cfg` so it is testable on every host.
+pub(crate) fn windows_powershell_subshell_success_block_bytes(disable_tmux: bool) -> Vec<u8> {
+    let template = ASSETS
+        .get("bundled/bootstrap/pwsh_windows_subshell_bootstrap_block_output.txt")
+        .unwrap_or_else(|_| panic!("Failed to retrieve the Windows PowerShell success block."))
+        .to_vec();
+    replace_template_chars_with_arguments(
+        template.trim_ascii_end().to_vec(),
+        vec![
+            ShellType::PowerShell.name().to_owned(),
+            if disable_tmux {
+                ", \"tmux\": false"
+            } else {
+                ""
+            }
+            .to_owned(),
+        ],
+    )
+}
+
 /// Replaces each instance of '%' in the given `templated_bytes` vector with `String` in
 /// `arguments`, in order.
 ///
