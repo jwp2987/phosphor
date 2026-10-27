@@ -1566,6 +1566,13 @@ esac
   # First, not last (#974): a user preexec's output must come after our Preexec hook, or the app
   # draws it inside the command header.
   preexec_functions=(warp_preexec $preexec_functions)
+  # A plain `preexec() { ... }` function is not in preexec_functions: zsh runs it BEFORE every
+  # array hook, so its output would still land ahead of our Preexec hook, inside the command
+  # header (#974). Move a user-defined one in right after warp_preexec; it keeps its place ahead of
+  # the other array hooks and receives the same arguments. An autoload stub is left alone.
+  if (( ${+functions[preexec]} )) && [[ -n ${functions[preexec]} && ${functions[preexec]} != "builtin autoload"* ]]; then
+    functions -c preexec _warp_user_preexec && unfunction preexec && preexec_functions=(warp_preexec _warp_user_preexec ${preexec_functions:#warp_preexec})
+  fi
   _WARP_HOOKS_INSTALLED=1
 
   # Phosphor (#828): assigning the hook arrays at the prompt
