@@ -396,13 +396,15 @@ fn reported_typeahead_echo_is_stripped_from_the_end_of_the_finished_output() {
 
     report(&mut block_list, "echo next");
     assert!(block_list.strip_reported_typeahead_echo());
-    assert_eq!(finished_block(&block_list).output_to_string(), "hi\n");
+    // A finished block's output text carries no trailing newline.
+    assert_eq!(finished_block(&block_list).output_to_string(), "hi");
     assert_eq!(finished_block(&block_list).command_to_string(), "true");
     // The report itself is untouched: the editor still inserts all of it.
     assert_eq!(block_list.early_output().typeahead(), "echo next");
 }
 
-/// The whole reported line may be echoed, wrapped over several rows.
+/// The whole reported line may be echoed, wrapped over several rows. (The test grid is 7
+/// columns by 10 rows: an echo that scrolled into history cannot be rewound and is left alone.)
 #[test]
 fn reported_typeahead_echo_is_stripped_when_the_whole_line_was_echoed() {
     let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
@@ -410,13 +412,14 @@ fn reported_typeahead_echo_is_stripped_when_the_whole_line_was_echoed() {
         ChannelEventListener::new_for_test(),
         TypeaheadMode::ShellReported,
     );
-    let typed = "echo a-long-typed-ahead-line-that-wraps-the-grid-for-sure-because-it-is-long-enough-to-pass-the-width-of-the-test-terminal-by-quite-a-lot-of-characters-indeed";
+    let typed = "echo wrapped-typeahead-line";
     let output = format!("hi\n{typed}");
     run_command(&mut block_list, "true", "true", &output);
+    assert_eq!(finished_block(&block_list).output_to_string(), output);
 
     report(&mut block_list, typed);
     assert!(block_list.strip_reported_typeahead_echo());
-    assert_eq!(finished_block(&block_list).output_to_string(), "hi\n");
+    assert_eq!(finished_block(&block_list).output_to_string(), "hi");
 }
 
 /// Output that does not end with the reported text is never touched, even when it ends with
@@ -460,7 +463,7 @@ fn reported_typeahead_echo_is_removed_from_the_command_header() {
         finished_block(&block_list).command_to_string(),
         "echo BURST45"
     );
-    assert_eq!(finished_block(&block_list).output_to_string(), "BURST45\n");
+    assert_eq!(finished_block(&block_list).output_to_string(), "BURST45");
 }
 
 /// Header text that is not made of the reported line's characters is not a typeahead echo.
