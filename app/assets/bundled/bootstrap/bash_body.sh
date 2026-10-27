@@ -1233,6 +1233,20 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
                 return
             fi
 
+            # #1035: a Windows OpenSSH server (default shell cmd.exe or PowerShell) cannot run the
+            # POSIX bootstrap below ("'export' is not recognized", then the connection closes). Read
+            # the server's version banner before authenticating (BatchMode + no auth methods end the
+            # probe right after it); Win32-OpenSSH announces `OpenSSH_for_Windows_*`. The LAST match
+            # is the destination (-v also traces a ProxyJump hop). An inconclusive probe falls
+            # through to the managed session as before; a Windows host gets a plain session.
+            local warp_remote_software=$(command ssh -v -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=no -o ControlPath=none -o PreferredAuthentications=none "${@:1}" </dev/null 2>&1 | command -p sed -n 's/.*remote software version //p' | command -p tail -n 1)
+            case "$warp_remote_software" in
+                OpenSSH_for_Windows*)
+                    command ssh "${@:1}"
+                    return
+                    ;;
+            esac
+
             # Hex-encode the ZSH environment script we use to bootstrap remote zsh b/c it contains control characters
             # We decode on the SSH server using xxd if its available, otherwise fall back to a for-loop over each byte
             # and use printf to convert back to plaintext
