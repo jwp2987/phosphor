@@ -1400,7 +1400,7 @@ fn build_is_git_repository_command(absolute_path: &str, shell_type: ShellType) -
 /// Returns true if the given path is a regular file on the session's filesystem.
 /// Runs a shell command on the session so it works for both local and remote sessions.
 async fn is_file_path(path: &str, session: &Session) -> bool {
-    let command = build_is_file_path_command(path, session.shell().shell_type());
+    let command = build_is_file_path_command(path, session.shell().shell_type().executor_syntax());
     session
         .execute_command(&command, None, None, ExecuteCommandOptions::default())
         .await
@@ -1410,7 +1410,10 @@ async fn is_file_path(path: &str, session: &Session) -> bool {
 
 /// Returns true if git is installed and the given path is in a git repository.
 async fn is_git_repository(absolute_path: &str, session: &Session) -> anyhow::Result<bool> {
-    let git_command = build_is_git_repository_command(absolute_path, session.shell().shell_type());
+    let git_command = build_is_git_repository_command(
+        absolute_path,
+        session.shell().shell_type().executor_syntax(),
+    );
     let command_output = session
         .execute_command(
             git_command.as_str(),

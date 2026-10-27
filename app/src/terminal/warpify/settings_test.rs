@@ -508,3 +508,62 @@ fn test_enable_ssh_wrapper_default_does_not_affect_enable_ssh_warpification() {
         });
     });
 }
+
+/// A direct `nu` invocation, with or without flags that leave it interactive, is a known
+/// compatible subshell command: its shell type is known statically because the `sh` probe
+/// cannot be evaluated by nushell.
+#[test]
+fn test_nu_subshell_detection_success() {
+    [
+        "nu",
+        "nushell",
+        "nu.exe",
+        "/usr/bin/nu",
+        "/opt/homebrew/bin/nu",
+        "./nu",
+        "nu -l",
+        "nu --login",
+        "nu --login --no-history",
+        "nu -n",
+        "nu --no-config-file",
+        "/opt/homebrew/bin/nu --no-config-file --no-std-lib",
+        "nu -i",
+    ]
+    .iter()
+    .for_each(|cmd| {
+        assert!(
+            WarpifySettings::is_built_in_subshell_match(cmd),
+            "{} failed to match",
+            *cmd
+        )
+    });
+}
+
+/// A `nu` that runs code or a script and exits has no interactive subshell to Phosphorize, and
+/// words that merely contain "nu" are not nushell.
+#[test]
+fn test_nu_subshell_detection_fail() {
+    [
+        "nu -c 'ls'",
+        "nu --commands 'ls'",
+        "nu script.nu",
+        "nu -e 'ls'",
+        "nu --execute 'ls'",
+        "nu --version",
+        "nu -h",
+        "menu",
+        "gnu",
+        "nushell-plugin",
+        "echo nu",
+        "ls /usr/bin/nu",
+        "nu | cat",
+    ]
+    .iter()
+    .for_each(|cmd| {
+        assert!(
+            !WarpifySettings::is_built_in_subshell_match(cmd),
+            "{} accidentally matched",
+            *cmd
+        )
+    });
+}

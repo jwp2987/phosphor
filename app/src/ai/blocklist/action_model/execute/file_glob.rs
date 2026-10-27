@@ -248,7 +248,8 @@ async fn run_file_glob(
     let Some(session) = session else {
         return Err(anyhow::anyhow!("No session provided to file_glob"));
     };
-    let shell_type = session.shell().shell_type();
+    // These commands run through the session's command executor, not the user's prompt.
+    let shell_type = session.shell().shell_type().executor_syntax();
 
     let is_in_git_repo = is_git_repository(&absolute_path, session.as_ref())
         .await

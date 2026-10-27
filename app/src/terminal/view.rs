@@ -309,7 +309,7 @@ use crate::terminal::ssh::ssh_detection::SshInteractiveSessionDetected;
 use crate::terminal::view::block_onboarding::onboarding_prompt_block::OnboardingPromptBlock;
 use crate::terminal::warpify::{
     render::render_subshell_separator,
-    settings::{PWSH_SUBSHELL_COMMAND_REGEX, WarpifySettings},
+    settings::{NU_SUBSHELL_COMMAND_REGEX, PWSH_SUBSHELL_COMMAND_REGEX, WarpifySettings},
     SubshellSource,
 };
 use crate::terminal::ShellLaunchData;
@@ -11497,7 +11497,7 @@ impl TerminalView {
     /// text that made `is_compatible_subshell_command` show the banner/footer in the first
     /// place, and the probe is skipped for it entirely (#800).
     fn pending_subshell_shell_type(&self, ctx: &mut ViewContext<Self>) -> Option<ShellType> {
-        shell_type_for_recognized_powershell_subshell_command(
+        shell_type_for_recognized_static_subshell_command(
             &self.pending_subshell_warpify_command(ctx)?,
         )
     }
@@ -32575,6 +32575,18 @@ fn command_first_word_and_suffix(command: &str) -> Option<(&str, &str)> {
     let word_start = command.find(first_word)?;
     let rest = &command[word_start + first_word.len()..];
     Some((first_word, rest))
+}
+
+/// The shell type of a subshell command whose shell cannot run `unknown_init_subshell.sh`:
+/// `Some(PowerShell)` for a recognized `pwsh`/`powershell` invocation (#800) and `Some(Nu)` for
+/// a recognized `nu` invocation. `None` for every other command, which the `sh` probe resolves
+/// at runtime.
+fn shell_type_for_recognized_static_subshell_command(command: &str) -> Option<ShellType> {
+    shell_type_for_recognized_powershell_subshell_command(command).or_else(|| {
+        NU_SUBSHELL_COMMAND_REGEX
+            .is_match(command.trim())
+            .then_some(ShellType::Nu)
+    })
 }
 
 /// Returns `Some(ShellType::PowerShell)` if `command` is a recognized `pwsh`/`powershell`

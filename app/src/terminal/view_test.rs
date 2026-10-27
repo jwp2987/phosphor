@@ -17056,3 +17056,27 @@ fn restoring_a_conversation_scrolls_the_pane_to_the_end_of_the_transcript() {
         });
     });
 }
+
+#[test]
+fn test_static_subshell_commands_resolve_to_the_shell_type_without_the_sh_probe() {
+    for (command, expected) in [
+        ("pwsh", Some(ShellType::PowerShell)),
+        ("pwsh -NoLogo", Some(ShellType::PowerShell)),
+        ("nu", Some(ShellType::Nu)),
+        ("  nu  ", Some(ShellType::Nu)),
+        ("/opt/homebrew/bin/nu --login", Some(ShellType::Nu)),
+        ("nushell -n", Some(ShellType::Nu)),
+        // These need the probe (or are not subshells at all).
+        ("bash", None),
+        ("fish", None),
+        ("nu -c 'ls'", None),
+        ("nu script.nu", None),
+        ("menu", None),
+    ] {
+        assert_eq!(
+            shell_type_for_recognized_static_subshell_command(command),
+            expected,
+            "{command:?}"
+        );
+    }
+}

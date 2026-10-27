@@ -62,6 +62,30 @@ fn test_powershell_encoded_command_has_no_trailing_nul() {
 }
 
 #[test]
+fn test_nu_is_started_with_the_init_script_as_its_execute_argument() {
+    let session_id = crate::terminal::bootstrap::generate_session_id();
+    let args = arguments_for_session_spawning_command("/usr/bin/nu", ShellType::Nu, session_id);
+    let args: Vec<&str> = args.iter().map(|a| a.to_str().unwrap()).collect();
+    // `--execute` runs after env.nu / config.nu / login.nu and before the first prompt.
+    assert_eq!(&args[..2], ["--login", "--execute"]);
+    assert_eq!(args.len(), 3);
+    assert_eq!(
+        args[2],
+        init_shell_script_for_shell(ShellType::Nu, &crate::ASSETS, session_id)
+    );
+    assert!(args[2].contains(&session_id.as_u64().to_string()));
+    assert!(args[2].contains("InitShell"));
+}
+
+#[test]
+fn test_nu_is_a_supported_shell_by_name() {
+    assert_eq!(
+        parse_shell_type_from_path(Path::new("/opt/homebrew/bin/nu")),
+        Some((PathBuf::from("/opt/homebrew/bin/nu"), ShellType::Nu))
+    );
+}
+
+#[test]
 fn test_trim_wsl_err_from_output() {
     assert_eq!(
         take_until_utf16_crlf(b"/bin/bash\n".to_vec()),

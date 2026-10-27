@@ -106,6 +106,9 @@ fn detects_a_shell_left_at_its_prompt_as_a_non_terminating_session() {
         "bash --noprofile --norc -i",
         "-bash",
         "command bash",
+        "nu",
+        "nu --login",
+        "/opt/homebrew/bin/nu -l",
     ] {
         assert!(command_starts_non_terminating_session(command), "{command}");
         assert_eq!(
@@ -127,6 +130,8 @@ fn a_shell_that_runs_something_and_exits_is_not_a_non_terminating_session() {
         "bash script.sh",
         "zsh -f -c ls",
         "bash --version",
+        "nu -c 'ls'",
+        "nu script.nu",
         "echo bash",
         "bashful",
         "bash 'unterminated",
@@ -883,5 +888,38 @@ fn pager_closed_note_is_appended_to_finished_output_only() {
     assert!(matches!(
         with_pager_closed_note(ActionResult::Cancelled),
         ActionResult::Cancelled
+    ));
+}
+
+/// nushell's in-band call passes the command as a raw string, which `shell_words` would read
+/// as one mangled word (`r#ssh host#`), so it is unwrapped on its own.
+#[test]
+fn unwraps_nushell_in_band_generator_calls() {
+    assert_eq!(
+        in_band_generator_command(" warp_run_generator_command 42 r#'ssh host'#").as_deref(),
+        Some("ssh host")
+    );
+    assert_eq!(
+        in_band_generator_command("warp_run_generator_command 42 r##'echo '#' done'##").as_deref(),
+        Some("echo '#' done")
+    );
+    // Not a raw string, or one that is not closed: left to the POSIX reading.
+    assert_eq!(
+        nu_in_band_generator_command("warp_run_generator_command 42 r#'ssh host'"),
+        None
+    );
+    assert_eq!(
+        nu_in_band_generator_command("warp_run_generator_command 42 'ssh host'"),
+        None
+    );
+    assert_eq!(
+        in_band_generator_command("warp_run_generator_command 42 'ssh host'").as_deref(),
+        Some("ssh host")
+    );
+    assert!(command_starts_non_terminating_session(
+        " warp_run_generator_command 42 r#'ssh host'#"
+    ));
+    assert!(!command_starts_non_terminating_session(
+        " warp_run_generator_command 42 r#'git status'#"
     ));
 }

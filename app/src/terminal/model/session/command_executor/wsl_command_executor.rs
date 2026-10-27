@@ -38,6 +38,7 @@ impl WslCommandExecutor {
             ShellType::Bash => "--norc",
             ShellType::Fish => "--no-config",
             ShellType::PowerShell => "-NoProfile",
+            ShellType::Nu => "--no-config-file",
         };
 
         let mut command_process = Command::new("wsl");

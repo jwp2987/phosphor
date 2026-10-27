@@ -38,7 +38,8 @@ pub use noop_command_executor::NoOpCommandExecutor;
 #[cfg(feature = "local_tty")]
 pub use remote_command_executor::RemoteCommandExecutor;
 pub use shared::{
-    sh_script_quote_arg, shell_escape_single_quotes, shell_quote_arg, ExecutorCommandEvent,
+    nu_raw_string, sh_script_quote_arg, shell_escape_single_quotes, shell_quote_arg,
+    ExecutorCommandEvent,
 };
 
 #[derive(Copy, Clone, Debug)]

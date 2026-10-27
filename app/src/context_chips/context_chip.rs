@@ -70,7 +70,13 @@ impl ShellCommand {
     pub fn for_shell(&self, shell_type: ShellType) -> Option<&str> {
         match self {
             Self::Portable(command) => Some(command.as_str()),
-            Self::ShellSpecific(commands) => commands.get(&shell_type).map(String::as_str),
+            // Chip commands are run for Phosphor by the session's command executors, which for
+            // nushell take POSIX syntax (see `ShellType::executor_syntax`), so nushell uses
+            // the entry for bash.
+            Self::ShellSpecific(commands) => commands
+                .get(&shell_type)
+                .or_else(|| commands.get(&shell_type.executor_syntax()))
+                .map(String::as_str),
         }
     }
 }

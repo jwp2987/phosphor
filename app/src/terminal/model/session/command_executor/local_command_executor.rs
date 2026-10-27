@@ -139,6 +139,11 @@ impl Drop for SpawnedChildCleanup {
     }
 }
 
+/// The `shell_config_flag` that selects "no user configuration" for nushell. For nushell it is
+/// also the marker that the command is POSIX syntax meant for `bash -c`, see
+/// [`CommandBuilder::build`].
+const NU_NO_CONFIG_FLAG: &str = "--no-config-file";
+
 enum CommandBuilder<'a> {
     #[cfg(windows)]
     CmdExe,
@@ -157,6 +162,26 @@ impl CommandBuilder<'_> {
                 let mut command = Command::new_with_process_group("cmd.exe");
                 command.args(["/Q", "/C"]);
                 command.raw_arg(command_string);
+                command
+            }
+            // Commands Phosphor runs for itself are POSIX syntax, which nushell cannot parse, so
+            // they go through `bash` (or `sh`). A login-shell command (`-l`) is the shell's own
+            // syntax and is run by nushell itself, below.
+            CommandBuilder::ShellType {
+                shell_type: ShellType::Nu,
+                ..
+            } if shell_config_flag == NU_NO_CONFIG_FLAG => {
+                let bash = warp_util::path::resolve_executable("bash");
+                let program = bash
+                    .as_deref()
+                    .and_then(|path| path.to_str())
+                    .unwrap_or("sh");
+                let mut command = Command::new_with_process_group(program);
+                if bash.is_some() {
+                    command.arg("--norc");
+                }
+                command.arg("-c");
+                command.arg(command_string);
                 command
             }
             CommandBuilder::ShellType {
@@ -227,6 +252,7 @@ impl LocalCommandExecutor {
             ShellType::Bash => "--norc",
             ShellType::Fish => "--no-config",
             ShellType::PowerShell => "-NoProfile",
+            ShellType::Nu => NU_NO_CONFIG_FLAG,
         };
 
         self.execute_local_command_internal(
@@ -246,7 +272,7 @@ impl LocalCommandExecutor {
         environment_variables: Option<HashMap<String, String>>,
     ) -> Result<CommandOutput> {
         let shell_config_flag = match self.shell_type {
-            ShellType::Bash | ShellType::Zsh | ShellType::Fish => "-l",
+            ShellType::Bash | ShellType::Zsh | ShellType::Fish | ShellType::Nu => "-l",
             ShellType::PowerShell => "-Login",
         };
 

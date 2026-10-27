@@ -1378,9 +1378,23 @@ fn nu_dialect_never_emits_raw_control_characters() {
 }
 
 #[test]
-fn nu_dialect_shell_escape_quotes_whole_tilde_path() {
-    // `~/"x y"` is not valid nu, so the whole word is quoted.
-    assert_eq!(ShellDialect::Nu.shell_escape("~/my dir/"), "\"~/my dir/\"");
+fn nu_dialect_shell_escape_keeps_tilde_expansion() {
+    // `~/"x y"` is not valid nu, and `ls "~/x y"` looks for a directory literally named `~`
+    // (checked against nu 0.116), so a quoted home-relative path is a backtick string, which
+    // nushell tilde-expands.
+    assert_eq!(ShellDialect::Nu.shell_escape("~/my dir/"), "`~/my dir/`");
+    assert_eq!(ShellDialect::Nu.shell_escape("~/it's"), "`~/it's`");
+    assert_eq!(ShellDialect::Nu.shell_escape("~/src"), "~/src");
+    assert_eq!(ShellDialect::Nu.shell_escape("~"), "~");
+    // A backtick string is also a glob, so a glob character falls back to the literal form.
+    assert_eq!(
+        ShellDialect::Nu.shell_escape("~/my dir/*.txt"),
+        "\"~/my dir/*.txt\""
+    );
+    // `escape` is for a literal name: a leading `~` must never be tilde-expanded.
+    assert_eq!(ShellDialect::Nu.escape("~"), "\"~\"");
+    assert_eq!(ShellDialect::Nu.escape("~x"), "\"~x\"");
+    assert_eq!(ShellDialect::Nu.escape("a~"), "a~");
 }
 
 #[test]
@@ -1389,4 +1403,175 @@ fn powershell_dialect_still_uses_backticks() {
         ShellDialect::PowerShell.escape("dir with spaces/"),
         "dir` with` spaces/"
     );
+}
+
+#[test]
+fn nu_dialect_quotes_words_nushell_would_read_as_values() {
+    // A bare `1` or `true` is an int or a bool, `0x1F` a hex int, `10kb` a filesize,
+    // `2020-01-01` a date: a file with such a name must be quoted to stay a path.
+    for word in [
+        "1",
+        "1.5",
+        "-3",
+        "1e3",
+        "0x1F",
+        "10kb",
+        "5sec",
+        "2020-01-01",
+        ".5",
+        "true",
+        "false",
+        "null",
+        "inf",
+        "nan",
+        "1_000",
+        "2024-notes.txt",
+    ] {
+        assert_eq!(
+            ShellDialect::Nu.escape(word),
+            format!("\"{word}\""),
+            "{word}"
+        );
+    }
+    // Ordinary names, including hidden files and names with digits inside, stay bare.
+    for word in [
+        ".bashrc",
+        "file1.txt",
+        "a-b_c.rs",
+        "README.md",
+        "x2",
+        ".config/nushell/",
+        "truefalse",
+    ] {
+        assert_eq!(ShellDialect::Nu.escape(word), word, "{word}");
+    }
+    assert_eq!(super::nu_quoted_string("1"), "\"1\"");
+    assert_eq!(super::nu_quoted_string("a\"b"), "\"a\\\"b\"");
+}
+
+/// Finds a nushell binary: `PATH`, then the Homebrew locations. `None` skips a test.
+fn find_nu() -> Option<std::path::PathBuf> {
+    let mut candidates: Vec<std::path::PathBuf> = std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join("nu"))
+                .collect()
+        })
+        .unwrap_or_default();
+    candidates.push("/home/linuxbrew/.linuxbrew/bin/nu".into());
+    candidates.push("/opt/homebrew/bin/nu".into());
+    candidates.push("/usr/local/bin/nu".into());
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+/// The quoting is only worth anything if nushell reads it back as the same string. Every name is
+/// spelled by `ShellDialect::Nu.escape` and printed by a real `nu`. Skipped, visibly, without nu.
+#[cfg(unix)]
+#[test]
+fn nu_dialect_escape_round_trips_through_a_real_nushell() {
+    let Some(nu) = find_nu() else {
+        eprintln!("skipping: nu is not installed");
+        return;
+    };
+    let names = [
+        "plain",
+        "dir with spaces/",
+        "a;b",
+        "a(b)c",
+        "$HOME",
+        "$(echo hi)",
+        "it's",
+        "say \"hi\"",
+        "back\\slash",
+        "tab\there",
+        "new\nline",
+        "carriage\rreturn",
+        "esc\u{1b}[31m",
+        "1",
+        "1.5",
+        "0x1F",
+        "10kb",
+        "2020-01-01",
+        "true",
+        "null",
+        "a..b",
+        "../up",
+        "~",
+        "~x",
+        "~/x y",
+        "ünïcode dir/",
+        "a|b",
+        "a>b",
+        "{x}",
+        "[x]",
+        "#comment",
+        "a #b",
+        "back`tick",
+        "a*b",
+        "a?b",
+        "",
+        "  leading",
+        "trailing  ",
+    ];
+    for name in names {
+        let word = ShellDialect::Nu.escape(name).into_owned();
+        let output = std::process::Command::new(&nu)
+            .args(["--no-config-file", "-c", &format!("print -n {word}")])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            name,
+            "{name:?} was spelled {word:?}; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+/// `shell_escape` keeps `~` meaning the home directory, and the word it produces is one argument
+/// that really finds the file, for the spellings that matter: bare, double-quoted and backtick.
+#[cfg(unix)]
+#[test]
+fn nu_dialect_shell_escape_finds_files_in_a_real_nushell() {
+    let Some(nu) = find_nu() else {
+        eprintln!("skipping: nu is not installed");
+        return;
+    };
+    let home = std::env::temp_dir().join(format!("phosphor-nu-escape-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join("my dir")).unwrap();
+    std::fs::create_dir_all(home.join("src")).unwrap();
+    for file in [
+        "my dir/it's here",
+        "my dir/plain.txt",
+        "src/main.rs",
+        "my dir/q\"uote",
+    ] {
+        std::fs::write(home.join(file), "x").unwrap();
+    }
+    let cases = [
+        ("~/src/main.rs", "~/src/main.rs"),
+        ("~/my dir/plain.txt", "`~/my dir/plain.txt`"),
+        ("~/my dir/it's here", "`~/my dir/it's here`"),
+        ("~/my dir/q\"uote", "`~/my dir/q\"uote`"),
+        ("my dir/it's here", "\"my dir/it's here\""),
+        ("my dir/q\"uote", "\"my dir/q\\\"uote\""),
+    ];
+    for (path, expected_word) in cases {
+        let word = ShellDialect::Nu.shell_escape(path);
+        assert_eq!(word, expected_word);
+        let output = std::process::Command::new(&nu)
+            .args(["--no-config-file", "-c", &format!("ls {word} | length")])
+            .env("HOME", &home)
+            .current_dir(&home)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "1",
+            "{path:?} was spelled {word:?}; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let _ = std::fs::remove_dir_all(&home);
 }

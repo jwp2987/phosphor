@@ -1,0 +1,1 @@
+[ '' '# Auto-Phosphorize' (r#'if $nu.is-interactive { print -n $'(char -i 27)P$f{"hook": "SourcedRcFileForWarp", "value": { "shell": "%", "uname": "(^uname | str trim)"% }}'; print -n -r 0x[9c] }'#) '' ] | str join (char nl) | save --raw --append $nu.config-path # %

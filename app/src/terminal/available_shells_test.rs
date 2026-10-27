@@ -263,3 +263,36 @@ fn test_command_name_matches_windows() {
     assert!(!command_name_matches("pwsh.exe", "powershell.exe", true));
     assert!(!command_name_matches("bash.exe", "zsh", true));
 }
+
+#[test]
+fn test_nu_is_a_selectable_shell_with_a_friendly_name() {
+    let nu_path = PathBuf::from("/opt/homebrew/bin/nu");
+    let shell =
+        AvailableShell::new_local_executable("nu".to_string(), nu_path.clone(), ShellType::Nu);
+    assert_eq!(shell.short_name(), "Nushell");
+    assert_eq!(
+        shell.id(),
+        Some(format!("local:{}", nu_path.display()).as_str())
+    );
+    // Saving the selection in the legacy startup-shell setting round-trips through `nu`.
+    assert_eq!(StartupShell::from(shell), StartupShell::Nu);
+    assert_eq!(StartupShell::Nu.shell_command(), Some("nu"));
+    assert_eq!(StartupShell::from(Some("nu".to_owned())), StartupShell::Nu);
+
+    let shells = make_available_shells(vec![AvailableShell::new_local_executable(
+        "nu".to_string(),
+        nu_path.clone(),
+        ShellType::Nu,
+    )]);
+    assert!(shells.find_by_command_name("nu").is_some());
+}
+
+#[test]
+fn test_nu_is_searched_for_by_name_when_loading_known_shells() {
+    let shell_types = AvailableShells::get_shell_types();
+    let expected = if cfg!(windows) { "nu.exe" } else { "nu" };
+    assert!(
+        shell_types.contains(&(ShellType::Nu, expected)),
+        "{shell_types:?}"
+    );
+}

@@ -14,7 +14,7 @@ use smol_str::SmolStr;
 use typed_path::{TypedPath, TypedPathBuf};
 use warp_command_signatures::IconType;
 use warp_core::command::ExitCode;
-use warp_util::path::{EscapeChar, ShellFamily, TEST_SESSION_HOME_DIR};
+use warp_util::path::{EscapeChar, ShellDialect, ShellFamily, TEST_SESSION_HOME_DIR};
 
 use crate::{
     completer::{
@@ -144,6 +144,7 @@ pub struct MockPathCompletionContext {
     cdpath: Option<String>,
     pwd: TypedPathBuf,
     directory_to_entries: HashMap<PathBuf, Vec<EngineDirEntry>>,
+    shell_dialect: ShellDialect,
 }
 
 impl MockPathCompletionContext {
@@ -153,7 +154,14 @@ impl MockPathCompletionContext {
             cdpath: None,
             pwd,
             directory_to_entries: HashMap::new(),
+            shell_dialect: ShellDialect::Posix,
         }
+    }
+
+    /// Makes the mocked shell quote suggested paths in the given dialect.
+    pub fn with_shell_dialect(mut self, shell_dialect: ShellDialect) -> Self {
+        self.shell_dialect = shell_dialect;
+        self
     }
 
     pub fn with_home_directory(mut self, home_directory: String) -> Self {
@@ -233,7 +241,11 @@ impl PathCompletionContext for MockPathCompletionContext {
     }
 
     fn shell_family(&self) -> ShellFamily {
-        ShellFamily::Posix
+        self.shell_dialect.family()
+    }
+
+    fn shell_dialect(&self) -> ShellDialect {
+        self.shell_dialect
     }
 
     fn home_directory(&self) -> Option<&str> {

@@ -810,7 +810,8 @@ impl SessionInfo {
             // a separate line.
             let split = match &self.shell.shell_type() {
                 ShellType::Zsh | ShellType::PowerShell => names.split(' '),
-                ShellType::Bash | ShellType::Fish => names.split('\n'),
+                // `nu.nu` reports the names one per line.
+                ShellType::Bash | ShellType::Fish | ShellType::Nu => names.split('\n'),
             };
             split.map(Into::into).collect::<HashSet<_>>()
         });
@@ -1051,7 +1052,7 @@ impl Session {
     pub fn path_separators(&self) -> PathSeparators {
         match self.shell().shell_type() {
             ShellType::Zsh | ShellType::Bash | ShellType::Fish => PathSeparators::for_unix(),
-            ShellType::PowerShell => PathSeparators::for_os(),
+            ShellType::PowerShell | ShellType::Nu => PathSeparators::for_os(),
         }
     }
 
@@ -1795,7 +1796,8 @@ impl Session {
 
         // `shell_quote_arg`, not bare single quotes: a control character in the path must not
         // be typed into the PTY raw (#867).
-        let quoted_history_file = shell_quote_arg(history_file, self.info.shell.shell_type());
+        let quoted_history_file =
+            shell_quote_arg(history_file, self.info.shell.shell_type().executor_syntax());
         let output_in_bytes = self
             .execute_command(
                 format!("cat {quoted_history_file}").as_str(),

@@ -2396,3 +2396,670 @@ fn test_main_zsh_bootstrap_prints_no_exit_value_and_orders_user_preexec() {
         });
     });
 }
+
+// ---------------------------------------------------------------------------------------------
+// nushell
+// ---------------------------------------------------------------------------------------------
+
+/// The nushell shipped on this machine: `PATH`, then the Homebrew locations (Linuxbrew, Apple
+/// Silicon, Intel). `None` makes the real-shell tests below skip, visibly.
+#[cfg(unix)]
+fn find_nu() -> Option<std::path::PathBuf> {
+    let mut candidates: Vec<std::path::PathBuf> = std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join("nu"))
+                .collect()
+        })
+        .unwrap_or_default();
+    for fixed in [
+        "/home/linuxbrew/.linuxbrew/bin/nu",
+        "/opt/homebrew/bin/nu",
+        "/usr/local/bin/nu",
+    ] {
+        candidates.push(fixed.into());
+    }
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+/// Drives a real interactive `nu` on a pty (python3's `pty`, like the other real-shell tests): sends
+/// every step of the spec in order, answers nushell's cursor-position queries the way a terminal
+/// would, and prints a JSON object with the decoded Phosphor hooks (`hooks`) and the raw output.
+/// argv[1] is a JSON spec: `{nu, args, home, steps: [str | {"wait": secs}]}`.
+#[cfg(unix)]
+const NU_PTY_DRIVER: &str = r#"
+import json, os, pty, re, select, sys, time, fcntl, termios, struct
+spec = json.load(open(sys.argv[1]))
+home = spec["home"]
+env = dict(os.environ)
+env.update({"HOME": home, "XDG_CONFIG_HOME": home + "/cfg", "XDG_DATA_HOME": home + "/data",
+            "TERM": "xterm-256color", "LANG": "C.UTF-8", "WARP_IS_LOCAL_SHELL_SESSION": "1"})
+env.update(spec.get("env", {}))
+os.makedirs(home + "/cfg/nushell", exist_ok=True)
+open(home + "/cfg/nushell/env.nu", "w").write("")
+open(home + "/cfg/nushell/config.nu", "w").write(spec.get("config", ""))
+pid, fd = pty.fork()
+if pid == 0:
+    os.chdir(home)
+    os.execve(spec["nu"], [spec["nu"]] + spec["args"], env)
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+out = b""
+seen = 0
+def drain(t):
+    global out, seen
+    end = time.time() + t
+    while time.time() < end:
+        r, _, _ = select.select([fd], [], [], 0.05)
+        if r:
+            try:
+                data = os.read(fd, 65536)
+            except OSError:
+                return
+            if not data:
+                return
+            out += data
+            while seen < out.count(b"\x1b[6n"):
+                os.write(fd, b"\x1b[1;1R")
+                seen += 1
+drain(2.0)
+for step in spec["steps"]:
+    if isinstance(step, dict):
+        drain(step["wait"])
+        continue
+    os.write(fd, step.encode())
+    drain(0.5 + 0.012 * len(step))
+drain(1.0)
+try:
+    os.kill(pid, 9)
+    os.waitpid(pid, 0)
+except OSError:
+    pass
+text = out.decode("latin-1")
+hooks = []
+for m in re.finditer(r"\x1bP\$d([0-9a-f]*)\x9c", text):
+    try:
+        hooks.append(json.loads(bytes.fromhex(m.group(1)).decode()))
+    except Exception as e:
+        hooks.append({"hook": "UNPARSEABLE", "error": str(e), "hex": m.group(1)[:200]})
+for m in re.finditer(r"\x1b\]9277;A\x07(\d+);([0-9a-f]*)\x1b\]9277;B\x07", text):
+    hooks.append({"hook": "GeneratorOutput", "length": int(m.group(1)), "text": bytes.fromhex(m.group(2)).decode("utf-8", "replace")})
+print(json.dumps({"hooks": hooks, "raw": text}))
+"#;
+
+/// Result of one [`run_nu_session`].
+#[cfg(unix)]
+struct NuSession {
+    hooks: Vec<serde_json::Value>,
+    raw: String,
+    home: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+impl NuSession {
+    fn hook_names(&self) -> Vec<String> {
+        self.hooks
+            .iter()
+            .map(|hook| hook["hook"].as_str().unwrap_or("?").to_owned())
+            .collect()
+    }
+
+    fn hooks_named(&self, name: &str) -> Vec<&serde_json::Value> {
+        self.hooks
+            .iter()
+            .filter(|hook| hook["hook"] == name)
+            .collect()
+    }
+
+    fn history(&self) -> String {
+        std::fs::read_to_string(self.home.join("cfg/nushell/history.txt")).unwrap_or_default()
+    }
+}
+
+/// Runs `nu` with `args` and `config` (its config.nu) in a scratch home, sends `steps`, and
+/// returns what it printed. `None` when nu or python3 is missing.
+#[cfg(unix)]
+fn run_nu_session(
+    tag: &str,
+    args: &[String],
+    config: &str,
+    env: &[(&str, &str)],
+    steps: &[String],
+) -> Option<NuSession> {
+    use std::process::Command;
+
+    let Some(nu) = find_nu() else {
+        eprintln!("skipping: nu is not installed");
+        return None;
+    };
+    let python_ok = Command::new("python3")
+        .args(["-c", "import pty"])
+        .status()
+        .is_ok_and(|status| status.success());
+    if !python_ok {
+        eprintln!("skipping: python3 is not installed");
+        return None;
+    }
+    // The caller may already have written the bootstrap file into this directory.
+    let home = std::env::temp_dir().join(format!("phosphor-nu-{tag}-{}", std::process::id()));
+    for stale in ["cfg", "data"] {
+        let _ = std::fs::remove_dir_all(home.join(stale));
+    }
+    std::fs::create_dir_all(&home).unwrap();
+    let spec = serde_json::json!({
+        "nu": nu,
+        "args": args,
+        "home": home,
+        "config": config,
+        "env": env.iter().cloned().collect::<std::collections::HashMap<_, _>>(),
+        "steps": steps,
+    });
+    let spec_path = home.join("spec.json");
+    std::fs::write(&spec_path, spec.to_string()).unwrap();
+    let driver_path = home.join("driver.py");
+    std::fs::write(&driver_path, NU_PTY_DRIVER).unwrap();
+    let output = Command::new("python3")
+        .arg(&driver_path)
+        .arg(&spec_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "driver failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    Some(NuSession {
+        hooks: result["hooks"].as_array().cloned().unwrap_or_default(),
+        raw: result["raw"].as_str().unwrap_or_default().to_owned(),
+        home,
+    })
+}
+
+/// The temp file the app would write the full bootstrap script to and `source`.
+#[cfg(unix)]
+fn write_nu_bootstrap_file(home: &std::path::Path) -> String {
+    let path = home.join("bootstrap.nu");
+    std::fs::create_dir_all(home).unwrap();
+    std::fs::write(&path, script_for_shell(ShellType::Nu, &crate::ASSETS)).unwrap();
+    path.display().to_string()
+}
+
+#[test]
+fn test_nu_scripts_are_loaded_and_have_no_leftover_placeholders() {
+    let bootstrap = decode_script(&script_for_shell(ShellType::Nu, &crate::ASSETS));
+    assert!(bootstrap.ends_with('\n'));
+    // Comments and blank lines are dropped to keep the file small.
+    assert!(
+        !bootstrap
+            .lines()
+            .any(|line| line.trim_start().starts_with('#'))
+    );
+    assert!(!bootstrap.lines().any(|line| line.trim().is_empty()));
+    // The generator wrapper's name is a protocol surface shared with the Rust app.
+    assert!(
+        bootstrap.contains(&format!(
+            "def --env {} [",
+            crate::terminal::model::session::command_executor::POSIX_GENERATOR_WRAPPER
+        )),
+        "nu.nu must define the generator wrapper the in-band executor calls"
+    );
+
+    let init = init_shell_script_for_shell(ShellType::Nu, &crate::ASSETS, SessionId::from(4242u64));
+    assert!(init.contains("\"4242\""), "{init}");
+    assert!(!init.contains("@@"), "{init}");
+    assert!(
+        !init.contains('\n'),
+        "the init script is one --execute argument line: {init}"
+    );
+    // Every statement ends in the DCS hook; nothing is deleted from history.
+    assert!(init.contains("InitShell") && init.contains("\"shell\": \"nu\""));
+    assert!(!init.contains("history -c") && !init.contains("history.txt"));
+}
+
+#[test]
+#[cfg(feature = "local_fs")]
+fn test_nu_is_bootstrapped_through_a_sourced_file() {
+    use crate::terminal::model::session::SessionInfo;
+
+    // nushell cannot eval a string, so the temp-file route is not optional for it.
+    let info = SessionInfo::new_for_test().with_shell_type(ShellType::Nu);
+    assert!(should_use_rc_file_bootstrap_method(ShellType::Nu, &info));
+}
+
+#[test]
+fn test_nu_init_subshell_lines_are_short_independent_lines() {
+    use crate::env_vars::{EnvVar, EnvVarValue};
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let hostile = EnvVar {
+                name: "WEIRD NAME".to_owned(),
+                value: EnvVarValue::Constant(
+                    "it's a '# \"quoted\" \\ value\nwith a newline".to_owned(),
+                ),
+                description: None,
+            };
+            let lines = init_subshell_command_lines(
+                Some(ShellType::Nu),
+                &[hostile],
+                SessionId::from(4242u64),
+                ctx,
+            );
+            assert!(lines.len() >= 5, "{lines:?}");
+            for line in &lines {
+                assert!(
+                    line.starts_with(' '),
+                    "history.ignore_space_prefixed needs a space: {line:?}"
+                );
+                assert!(
+                    !line.contains('\n') && !line.contains('\r'),
+                    "each typed line must be one line: {line:?}"
+                );
+                assert!(
+                    line.len() <= MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES,
+                    "{} bytes: {line:?}",
+                    line.len()
+                );
+            }
+            // Only the first line may touch the history setting, and it saves the prior value.
+            assert!(lines[0].contains("$env.__wbh = $env.config.history.ignore_space_prefixed"));
+            assert!(
+                lines[1..].iter().all(|l| !l.contains("history.")),
+                "{lines:?}"
+            );
+            // Nothing ever deletes a history entry (#967).
+            assert!(
+                !lines
+                    .iter()
+                    .any(|l| l.contains("history -") || l.contains("history.txt"))
+            );
+            // The raw string delimiter has more `#`s than the longest run in the script.
+            assert!(lines[1].starts_with(" $env._wbs = r##'"), "{}", lines[1]);
+            // The last lines write, source and clean up the stage-one file.
+            let n = lines.len();
+            assert!(lines[n - 3].contains("save -f $_wbf"));
+            assert_eq!(lines[n - 2], " source $_wbf");
+            assert!(lines[n - 1].starts_with(" rm -f $_wbf"));
+            assert!(lines[n - 3].contains("phosphor-nu-4242.nu"));
+            assert!(
+                !lines[n - 3].contains("/tmp"),
+                "the file lives in the user's cache dir"
+            );
+        });
+    });
+}
+
+/// The whole local flow in a real nushell: `--execute <init>` prints InitShell, the bootstrap file
+/// is sourced by a space-led line, and every hook arrives with the payload shape fish.sh uses.
+#[test]
+#[cfg(unix)]
+fn test_nu_real_local_bootstrap_emits_hooks_and_keeps_history_clean() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let init = app.read(|_| {
+            init_shell_script_for_shell(ShellType::Nu, &crate::ASSETS, SessionId::from(4242u64))
+        });
+        let home = std::env::temp_dir().join(format!("phosphor-nu-local-{}", std::process::id()));
+        let bootstrap = write_nu_bootstrap_file(&home);
+        let steps = vec![
+            format!(" source '{bootstrap}'\r"),
+            "echo hi\r".to_owned(),
+            "^sh -c 'exit 7'\r".to_owned(),
+            // A user command with a control character and quotes in it.
+            "echo \"a\\tb\"\r".to_owned(),
+            "ls /definitely/not/here\r".to_owned(),
+            "cd /tmp\r".to_owned(),
+            // Typeahead report (Alt-i) while text is in the buffer, then the kill-buffer chord.
+            "half typed".to_owned(),
+            "\x1bi".to_owned(),
+            "\x10".to_owned(),
+            "echo after\r".to_owned(),
+            // A multi-line command through bracketed paste, as the app sends it.
+            "\x10\x1b[200~if true {\n    echo multi\n}\x1b[201~\r".to_owned(),
+            "clear\r".to_owned(),
+        ];
+        let Some(session) = run_nu_session(
+            "local",
+            &["--login".to_owned(), "--execute".to_owned(), init],
+            // A user config that records space-led lines: the init script must still hide ours.
+            "$env.config.history.ignore_space_prefixed = false\n",
+            &[("WARP_HONOR_PS1", "1")],
+            &steps,
+        ) else {
+            return;
+        };
+
+        let names = session.hook_names();
+        assert_eq!(names[0], "InitShell", "{names:?}\n{}", session.raw);
+        assert_eq!(session.hooks[0]["value"]["shell"], "nu");
+        assert_eq!(session.hooks[0]["value"]["session_id"], 4242);
+
+        // CommandFinished, Precmd, Bootstrapped come from the sourced file, in that order.
+        assert_eq!(
+            &names[1..4],
+            ["CommandFinished", "Precmd", "Bootstrapped"],
+            "{names:?}"
+        );
+        let bootstrapped = &session.hooks[3]["value"];
+        assert_eq!(bootstrapped["shell"], "nu");
+        assert_eq!(bootstrapped["session_id"], 4242);
+        for key in [
+            "histfile",
+            "home_dir",
+            "path",
+            "aliases",
+            "function_names",
+            "env_var_names",
+            "builtins",
+            "shell_version",
+            "os_category",
+            "shell_path",
+        ] {
+            assert!(
+                bootstrapped[key].as_str().is_some_and(|v| !v.is_empty()),
+                "Bootstrapped.{key} is empty: {bootstrapped}"
+            );
+        }
+        let builtins: Vec<&str> = bootstrapped["builtins"].as_str().unwrap().lines().collect();
+        for builtin in ["ls", "where", "each", "open", "get", "select", "http"] {
+            assert!(
+                builtins.contains(&builtin),
+                "{builtin} missing from builtins"
+            );
+        }
+        assert_eq!(bootstrapped["shell_options"], "ignore_space_prefixed");
+
+        // Each command: Preexec with the exact text, then CommandFinished + Precmd with its code.
+        let preexec: Vec<&str> = session
+            .hooks_named("Preexec")
+            .iter()
+            .map(|hook| hook["value"]["command"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            preexec,
+            [
+                "echo hi",
+                "^sh -c 'exit 7'",
+                "echo \"a\\tb\"",
+                "ls /definitely/not/here",
+                "cd /tmp",
+                "echo after",
+                "if true {\n    echo multi\n}",
+                "clear",
+            ]
+        );
+        let exit_codes: Vec<i64> = session
+            .hooks_named("CommandFinished")
+            .iter()
+            .map(|hook| hook["value"]["exit_code"].as_i64().unwrap())
+            .collect();
+        // the bootstrap (twice: its own report and the prompt after it), echo hi, exit 7, echo,
+        // ls (an error is 1), cd, echo after, multi, clear
+        assert_eq!(exit_codes, [0, 0, 0, 7, 0, 1, 0, 0, 0, 0], "{exit_codes:?}");
+        let precmds = session.hooks_named("Precmd");
+        assert_eq!(precmds.last().unwrap()["value"]["pwd"], "/tmp");
+        assert_eq!(
+            precmds.last().unwrap()["value"]["ignore_prompt_markers"],
+            false
+        );
+        // Block ids chain: each CommandFinished names the block its Precmd starts.
+        for (finished, precmd) in session
+            .hooks_named("CommandFinished")
+            .iter()
+            .zip(session.hooks_named("Precmd"))
+        {
+            assert_eq!(
+                finished["value"]["next_block_id"],
+                precmd["value"]["next_block_id"]
+            );
+        }
+
+        // The typeahead report carries the buffer and is not itself a command.
+        let input = session.hooks_named("InputBuffer");
+        assert_eq!(input.len(), 1, "{:?}", session.hook_names());
+        assert_eq!(input[0]["value"]["buffer"], "half typed");
+        assert_eq!(session.hooks_named("Clear").len(), 1);
+
+        // History: the user's commands only. The `source` line and the key-bound helpers were
+        // typed with a leading space, and the init script switched the option on even though
+        // this user's config has it off.
+        let history = session.history();
+        for command in ["echo hi", "echo after", "cd /tmp"] {
+            assert!(history.contains(command), "{history:?}");
+        }
+        assert!(
+            !history.contains("source")
+                && !history.contains("__warp")
+                && !history.contains("bootstrap.nu"),
+            "bootstrap text reached the history: {history:?}"
+        );
+        assert!(
+            history.contains("if true {<\\n>    echo multi<\\n>}"),
+            "{history:?}"
+        );
+        std::fs::remove_dir_all(&session.home).ok();
+    });
+}
+
+/// With `WARP_HONOR_PS1=0` Precmd tells the app to ignore nushell's own OSC 133 markers, the
+/// prompt is blank, and the user's prompt text travels hex-encoded for the preview.
+#[test]
+#[cfg(unix)]
+fn test_nu_real_warp_prompt_mode_blanks_the_prompt_and_previews_the_users() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let init = app.read(|_| {
+            init_shell_script_for_shell(ShellType::Nu, &crate::ASSETS, SessionId::from(9u64))
+        });
+        let home = std::env::temp_dir().join(format!("phosphor-nu-warp-{}", std::process::id()));
+        let bootstrap = write_nu_bootstrap_file(&home);
+        let steps = vec![
+            format!(" source '{bootstrap}'\r"),
+            "echo one\r".to_owned(),
+            // Alt-p switches to the user's prompt, Alt-w back; neither is a command.
+            "\x1bp".to_owned(),
+            "echo two\r".to_owned(),
+            "\x1bw".to_owned(),
+            "echo three\r".to_owned(),
+        ];
+        let Some(session) = run_nu_session(
+            "warp",
+            &["--login".to_owned(), "--execute".to_owned(), init],
+            "$env.PROMPT_COMMAND = {|| 'MYPROMPT' }\n$env.PROMPT_INDICATOR = '$$ '\n",
+            &[("WARP_HONOR_PS1", "0")],
+            &steps,
+        ) else {
+            return;
+        };
+        let precmds = session.hooks_named("Precmd");
+        let ignore: Vec<bool> = precmds
+            .iter()
+            .map(|p| p["value"]["ignore_prompt_markers"].as_bool().unwrap())
+            .collect();
+        // The bootstrap's own report, the prompt after it, one, two (the user's prompt, switched
+        // on by Alt-p before it ran), three (back to Warp's after Alt-w).
+        assert_eq!(ignore, [true, true, true, false, true], "{ignore:?}");
+        let preview = |p: &serde_json::Value| -> String {
+            let hex = p["value"]["ps1"].as_str().unwrap();
+            let bytes: Vec<u8> = (0..hex.len() / 2)
+                .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap())
+                .collect();
+            String::from_utf8(bytes).unwrap()
+        };
+        assert_eq!(preview(precmds[2]), "MYPROMPT$$ ");
+        assert_eq!(precmds[3]["value"]["ps1"], "");
+        let preexec: Vec<&str> = session
+            .hooks_named("Preexec")
+            .iter()
+            .map(|hook| hook["value"]["command"].as_str().unwrap())
+            .collect();
+        assert_eq!(preexec, ["echo one", "echo two", "echo three"]);
+        std::fs::remove_dir_all(&session.home).ok();
+    });
+}
+
+/// The in-band generator wrapper in a real nushell: the POSIX command runs under bash with stderr
+/// merged, its output and status come back in the OSC 9277 envelope, the call is not recorded,
+/// and the prompt after it is flagged as following an in-band command.
+#[test]
+#[cfg(unix)]
+fn test_nu_real_generator_wrapper_round_trip() {
+    use crate::terminal::model::session::command_executor::POSIX_GENERATOR_WRAPPER;
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let init = app.read(|_| {
+            init_shell_script_for_shell(ShellType::Nu, &crate::ASSETS, SessionId::from(11u64))
+        });
+        let home = std::env::temp_dir().join(format!("phosphor-nu-gen-{}", std::process::id()));
+        let bootstrap = write_nu_bootstrap_file(&home);
+        // The same text the in-band executor builds, including a quote and a `'#` in the command.
+        let command = "echo \"it's out\"; echo '#' err >&2; echo \"a'#b\"; exit 3";
+        let call = format!(
+            " {POSIX_GENERATOR_WRAPPER} 77 {}",
+            crate::terminal::model::session::command_executor::nu_raw_string(command)
+        );
+        let steps = vec![format!(" source '{bootstrap}'\r"), format!("{call}\r")];
+        let Some(session) = run_nu_session(
+            "gen",
+            &["--login".to_owned(), "--execute".to_owned(), init],
+            "",
+            &[("WARP_HONOR_PS1", "1")],
+            &steps,
+        ) else {
+            return;
+        };
+        let output = session.hooks_named("GeneratorOutput");
+        assert_eq!(output.len(), 1, "{:?}", session.hook_names());
+        assert_eq!(
+            output[0]["text"], "77;it's out\n# err\na'#b\n;3",
+            "id;output;status"
+        );
+        let last_precmd = session.hooks_named("Precmd").pop().unwrap();
+        assert_eq!(last_precmd["value"]["is_after_in_band_command"], true);
+        assert!(
+            !session.history().contains(POSIX_GENERATOR_WRAPPER),
+            "{:?}",
+            session.history()
+        );
+        std::fs::remove_dir_all(&session.home).ok();
+    });
+}
+
+/// The subshell flow in a real nushell: the typed lines rebuild the stage-one script (with a
+/// hostile env var in it), write it to the cache dir, source it and clean up. It announces the
+/// subshell, the full bootstrap is sourced after InitShell, and with a config that records
+/// space-led lines only the first, short, line reaches the history (#967).
+#[test]
+#[cfg(unix)]
+fn test_nu_real_subshell_bootstrap_keeps_all_but_one_line_out_of_history() {
+    use crate::env_vars::{EnvVar, EnvVarValue};
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let home = std::env::temp_dir().join(format!("phosphor-nu-sub-{}", std::process::id()));
+        let bootstrap = write_nu_bootstrap_file(&home);
+        let weird_value = "it's a '# \"quoted\" \\ value";
+        let lines = app.read(|ctx| {
+            init_subshell_command_lines(
+                Some(ShellType::Nu),
+                &[EnvVar {
+                    name: "PHOSPHOR_WEIRD".to_owned(),
+                    value: EnvVarValue::Constant(weird_value.to_owned()),
+                    description: None,
+                }],
+                SessionId::from(4242u64),
+                ctx,
+            )
+        });
+        let out_file = home.join("weird.txt");
+        let mut steps: Vec<String> = lines.iter().map(|line| format!("{line}\r")).collect();
+        steps.push(format!(" source '{bootstrap}'\r"));
+        steps.push(format!(
+            "$env.PHOSPHOR_WEIRD | save -f '{}'\r",
+            out_file.display()
+        ));
+        let Some(session) = run_nu_session(
+            "sub",
+            &[],
+            "$env.config.show_banner = false\n$env.config.history.ignore_space_prefixed = false\n",
+            &[("WARP_HONOR_PS1", "1")],
+            &steps,
+        ) else {
+            return;
+        };
+        let names = session.hook_names();
+        assert_eq!(names[0], "InitShell", "{names:?}\n{}", session.raw);
+        let init = &session.hooks[0]["value"];
+        assert_eq!(init["is_subshell"], true);
+        assert_eq!(init["session_id"], 4242);
+        assert_eq!(init["shell"], "nu");
+        assert!(names.contains(&"Bootstrapped".to_owned()), "{names:?}");
+        assert_eq!(
+            std::fs::read_to_string(&out_file).unwrap_or_default(),
+            weird_value,
+            "the env var survived the raw-string chunking"
+        );
+        // The script arrived whole, so the "skipped" notice was never printed (the typed line
+        // that holds its text is echoed, but the printed notice starts a new line).
+        assert!(
+            !session.raw.contains("\r\nPhosphor: subshell setup skipped"),
+            "{}",
+            session.raw
+        );
+        // User config records space-led lines; only the first prelude line may be in history,
+        // and the user's setting is back afterwards.
+        let history = session.history();
+        assert!(
+            history.contains("$env.__wbh = $env.config.history.ignore_space_prefixed"),
+            "{history:?}"
+        );
+        assert!(
+            !history.contains("_wbs") && !history.contains("_wbf") && !history.contains("source"),
+            "bootstrap text reached the history: {history:?}"
+        );
+        std::fs::remove_dir_all(&session.home).ok();
+    });
+}
+
+/// A script that arrives incomplete is not run: the file holds a notice instead, and the shell
+/// carries on.
+#[test]
+#[cfg(unix)]
+fn test_nu_real_subshell_bootstrap_with_a_lost_chunk_is_skipped_with_a_notice() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let lines = app.read(|ctx| {
+            init_subshell_command_lines(Some(ShellType::Nu), &[], SessionId::from(5u64), ctx)
+        });
+        // Drop the accumulating line(s): the length check must fail.
+        let chunk_lines: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.starts_with(" $env._wbs = "))
+            .map(|(index, _)| index)
+            .collect();
+        let dropped = *chunk_lines.last().unwrap();
+        let mut steps: Vec<String> = lines
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != dropped || chunk_lines.len() == 1)
+            .map(|(_, line)| format!("{line}\r"))
+            .collect();
+        steps.push("echo still-alive\r".to_owned());
+        let Some(session) = run_nu_session("lost", &[], "", &[], &steps) else {
+            return;
+        };
+        if chunk_lines.len() > 1 {
+            assert!(
+                session.raw.contains("\r\nPhosphor: subshell setup skipped"),
+                "{}",
+                session.raw
+            );
+            assert!(!session.hook_names().contains(&"InitShell".to_owned()));
+        }
+        assert!(session.raw.contains("still-alive"), "{}", session.raw);
+        std::fs::remove_dir_all(&session.home).ok();
+    });
+}

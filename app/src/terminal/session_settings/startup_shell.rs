@@ -8,7 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 #[derive(Debug, Clone, Default, PartialEq, Eq, schemars::JsonSchema)]
 #[schemars(
     with = "Option<String>",
-    description = "Shell to start terminal sessions with. Use null for the system default, or one of \"bash\", \"zsh\", \"fish\", \"pwsh\", or a custom shell command/path."
+    description = "Shell to start terminal sessions with. Use null for the system default, or one of \"bash\", \"zsh\", \"fish\", \"nu\", \"pwsh\", or a custom shell command/path."
 )]
 pub enum StartupShell {
     #[default]
@@ -17,6 +17,7 @@ pub enum StartupShell {
     Fish,
     Zsh,
     PowerShell,
+    Nu,
     Custom(String),
 }
 
@@ -29,6 +30,7 @@ impl StartupShell {
             StartupShell::Fish => Some("fish"),
             StartupShell::Zsh => Some("zsh"),
             StartupShell::PowerShell => Some("pwsh"),
+            StartupShell::Nu => Some("nu"),
             StartupShell::Custom(shell) => Some(shell),
         }
     }
@@ -63,6 +65,7 @@ impl From<Option<String>> for StartupShell {
             Some(shell) if shell == "zsh" => StartupShell::Zsh,
             Some(shell) if shell == "fish" => StartupShell::Fish,
             Some(shell) if shell == "pwsh" => StartupShell::PowerShell,
+            Some(shell) if shell == "nu" => StartupShell::Nu,
             Some(shell) => StartupShell::Custom(shell),
         }
     }

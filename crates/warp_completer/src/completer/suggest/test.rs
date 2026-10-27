@@ -18,7 +18,8 @@ use crate::signatures::CommandRegistry;
 
 use super::CompleterOptions;
 use super::{
-    open_quote, suggestions, CompletionsFallbackStrategy, SuggestionResults, SuggestionType,
+    open_quote, requote_nu_path_replacement, suggestions, CompletionsFallbackStrategy,
+    SuggestionResults, SuggestionType,
 };
 
 cfg_if::cfg_if! {
@@ -2476,4 +2477,107 @@ fn test_powershell_parser_directives_for_case_insensitivity() {
         ),
         vec!["-Force"]
     );
+}
+
+/// #984 + #1017: inside a quote the user already opened, a nushell replacement is the text for the
+/// inside of THAT quote (`wiki dir/`), not a second quoted word (`"wiki dir/`), and nushell's own
+/// string escapes are decoded and spelled again for the quote in use.
+#[cfg(unix)]
+#[test]
+pub fn test_nu_completes_inside_open_quote() {
+    use warp_util::path::ShellDialect;
+
+    let registry = create_test_command_registry([test_signature(), cd_signature()]);
+    let pwd = TypedPathBuf::from(TEST_WORK_DIR);
+    let path_ctx = MockPathCompletionContext::new(pwd.clone())
+        .with_shell_dialect(ShellDialect::Nu)
+        .with_entries_in_pwd([
+            EngineDirEntry::test_dir("wiki dir"),
+            EngineDirEntry::test_file("wiki$.txt"),
+            EngineDirEntry::test_file("wiki\"q.txt"),
+        ]);
+    let ctx = FakeCompletionContext::new(registry)
+        .with_supports_autocd(true)
+        .with_top_level_commands(["cd", "test"])
+        .with_path_completion_context(path_ctx);
+    let options = || CompleterOptions {
+        match_strategy: MatchStrategy::CaseInsensitive,
+        fallback_strategy: CompletionsFallbackStrategy::FilePaths,
+        suggest_file_path_completions_only: false,
+        parse_quotes_as_literals: false,
+    };
+    for (line, expected) in [
+        ("cd 'wi", vec!["wiki dir/"]),
+        ("cd \"wi", vec!["wiki dir/"]),
+        // A single-quoted nushell string is literal: `$` and `"` go in as they are.
+        ("cat 'wi", vec!["wiki dir/", "wiki$.txt'", "wiki\"q.txt'"]),
+        // A double-quoted one escapes `"` and `\`, and not `$`.
+        (
+            "cat \"wi",
+            vec!["wiki dir/", "wiki$.txt\"", "wiki\\\"q.txt\""],
+        ),
+    ] {
+        let results = suggestions_for_test(line, line.len(), options(), &ctx)
+            .unwrap_or_else(|| panic!("{line:?} should offer completions"));
+        // The query is the word inside the quote, without the quote itself.
+        let query = results.replacement_span.slice(line).to_owned();
+        assert_eq!(query, "wi", "{line:?}");
+        let mut replacements: Vec<String> = results
+            .filter_by_query(&query, &['/'])
+            .map(|s| s.suggestion.replacement.to_string())
+            .collect();
+        replacements.sort();
+        let mut expected: Vec<String> = expected.into_iter().map(String::from).collect();
+        expected.sort();
+        assert_eq!(replacements, expected, "{line:?}");
+    }
+}
+
+#[test]
+pub fn test_requote_nu_path_replacement() {
+    // A directory keeps the quote open; a file closes it.
+    assert_eq!(
+        requote_nu_path_replacement("\"my dir/", '"', false).as_deref(),
+        Some("my dir/")
+    );
+    assert_eq!(
+        requote_nu_path_replacement("\"my dir/", '\'', false).as_deref(),
+        Some("my dir/")
+    );
+    assert_eq!(
+        requote_nu_path_replacement("\"a b.txt\"", '"', true).as_deref(),
+        Some("a b.txt\"")
+    );
+    assert_eq!(
+        requote_nu_path_replacement("\"a b.txt\"", '\'', true).as_deref(),
+        Some("a b.txt'")
+    );
+    // A bare word has nothing to decode.
+    assert_eq!(
+        requote_nu_path_replacement("src/main.rs", '"', true).as_deref(),
+        Some("src/main.rs\"")
+    );
+    // Escapes are decoded and written again for the quote in use.
+    assert_eq!(
+        requote_nu_path_replacement("\"say \\\"hi\\\".txt\"", '"', true).as_deref(),
+        Some("say \\\"hi\\\".txt\"")
+    );
+    assert_eq!(
+        requote_nu_path_replacement("\"back\\\\slash\"", '\'', true).as_deref(),
+        Some("back\\slash'")
+    );
+    // An escaped quote at the end is not the closing quote.
+    assert_eq!(
+        requote_nu_path_replacement("\"a\\\"", '"', false).as_deref(),
+        Some("a\\\"")
+    );
+    // Single-quoted nushell strings are literal: no `'`, no control characters.
+    assert_eq!(requote_nu_path_replacement("\"it's\"", '\'', true), None);
+    assert_eq!(requote_nu_path_replacement("\"a\\nb\"", '\'', true), None);
+    assert_eq!(
+        requote_nu_path_replacement("\"a\\nb\"", '"', true).as_deref(),
+        Some("a\\nb\"")
+    );
+    // An escape the decoder does not know is left alone rather than guessed at.
+    assert_eq!(requote_nu_path_replacement("\"a\\qb\"", '"', true), None);
 }
