@@ -7340,6 +7340,66 @@ fn test_enter_waiting_for_verdict_queues_input_typed_behind_it() {
     });
 }
 
+/// #1036: a buffer over the background-job cap is never parsed, so no verdict can ever land for
+/// it. The first Enter must submit rather than wait for one (it used to be swallowed, and only a
+/// second Enter submitted).
+#[test]
+fn test_enter_on_oversized_buffer_does_not_wait_for_a_verdict() {
+    use crate::ai::blocklist::InputConfig;
+    use crate::terminal::input::decorations::MAX_BACKGROUND_JOB_BUFFER_CHARS;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+
+        initialize_app(&mut app);
+
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        let line = format!(
+            "is it true {}",
+            "x".repeat(MAX_BACKGROUND_JOB_BUFFER_CHARS + 1)
+        );
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false,
+                    },
+                    false, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("x", ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(&line, ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(input.buffer_exceeds_background_job_cap(ctx));
+        });
+
+        // The first Enter must not park itself waiting for a verdict that cannot come.
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        input.read(&app, |input, _| {
+            assert!(
+                input.verdict_wait.is_none(),
+                "an oversized buffer has no verdict to wait for"
+            );
+        });
+    });
+}
+
 /// #1016: a burst of lines typed with no gaps behind an Enter that waits for its verdict queues
 /// every line and every Enter, in typed order, and the waiting Enter still submits only the first
 /// line.

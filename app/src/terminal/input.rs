@@ -12890,6 +12890,12 @@ impl Input {
         // before: an unambiguous command or a known head settles to Shell at once (#906, #956),
         // a request to the agent settles to AI. Settling clears the pending verdict, so only
         // text those rules leave undecided waits below.
+        // #1036: text over the background-job cap is never parsed, so no verdict can land;
+        // the debounced job that would clear the request may not have run before this Enter.
+        if self.buffer_exceeds_background_job_cap(ctx) {
+            self.ai_input_model
+                .update(ctx, |model, _| model.abandon_pending_detection());
+        }
         self.settle_pending_input_detection_for_submit(ctx);
         let text = self.editor.as_ref(ctx).buffer_text(ctx);
         let model = self.ai_input_model.as_ref(ctx);

@@ -1011,6 +1011,13 @@ impl BlocklistAIInputModel {
             .any(|entry| entry == first_word)
     }
 
+    /// Abandons the pending detection outright: the classifier will never answer for the
+    /// current buffer (it is over the background-job size cap, #1036), so Enter must not wait
+    /// for a verdict. Whatever the input type is now stands.
+    pub fn abandon_pending_detection(&mut self) {
+        self.pending_detection_buffer = None;
+    }
+
     /// Marks detection for `buffer_text` as settled: whatever the input type is now is the
     /// verdict for that text.
     fn settle_detection(&mut self, buffer_text: &str) {

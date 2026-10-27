@@ -239,6 +239,12 @@ impl Input {
         }
     }
 
+    /// Whether the buffer is over [`MAX_BACKGROUND_JOB_BUFFER_CHARS`], so no background parse
+    /// (and so no input-type verdict) will run for it. Reads the cached length, no copy.
+    pub(super) fn buffer_exceeds_background_job_cap(&self, ctx: &AppContext) -> bool {
+        self.editor.as_ref(ctx).buffer_size(ctx).as_usize() > MAX_BACKGROUND_JOB_BUFFER_CHARS
+    }
+
     /// Computes information about the currently-entered command in a background
     /// task and then uses it to decorate the input, specifically applying
     /// styles for syntax highlighting and error underlining.
@@ -260,8 +266,12 @@ impl Input {
         // whole buffer on every edit and can start completion commands over it, so skip
         // the jobs and leave the text plain. The size check reads the buffer's cached
         // length, so an oversized buffer is never copied out here.
-        if self.editor.as_ref(ctx).buffer_size(ctx).as_usize() > MAX_BACKGROUND_JOB_BUFFER_CHARS {
+        if self.buffer_exceeds_background_job_cap(ctx) {
             self.cancel_decorations_job();
+            // No verdict will ever come for this text: a request left pending would make
+            // Enter wait for one and swallow the first Enter (#1036).
+            self.ai_input_model
+                .update(ctx, |model, _| model.abandon_pending_detection());
             // Clearing walks the whole buffer's styles, so do it once per oversized
             // stretch, not on every edit.
             if !self.decorations_cleared_for_oversized_buffer {
