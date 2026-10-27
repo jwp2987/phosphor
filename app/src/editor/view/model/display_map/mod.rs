@@ -400,6 +400,12 @@ impl DisplayPoint {
     }
 
     fn expand_tabs(mut self, map: &DisplayMap, app: &AppContext) -> Result<Self> {
+        if map
+            .fold_map
+            .is_tab_free_prefix(self.row(), self.column() as usize, app)
+        {
+            return Ok(self);
+        }
         let chars = map
             .fold_map
             .chars_at(DisplayPoint(Point::new(self.row(), 0)), app)?;
@@ -415,6 +421,12 @@ impl DisplayPoint {
         bias: Bias,
         app: &AppContext,
     ) -> Result<(Self, usize)> {
+        if map
+            .fold_map
+            .is_tab_free_prefix(self.0.row, self.column() as usize, app)
+        {
+            return Ok((self, 0));
+        }
         let chars = map
             .fold_map
             .chars_at(DisplayPoint(Point::new(self.0.row, 0)), app)?;
@@ -435,6 +447,13 @@ pub trait ToDisplayPoint {
 impl ToDisplayPoint for Point {
     fn to_display_point(self, map: &DisplayMap, app: &AppContext) -> Result<DisplayPoint> {
         let mut display_point = map.fold_map.to_display_point(self);
+        if map.fold_map.is_tab_free_prefix(
+            display_point.row(),
+            display_point.column() as usize,
+            app,
+        ) {
+            return Ok(display_point);
+        }
         let chars = map
             .fold_map
             .chars_at(DisplayPoint::new(display_point.row(), 0), app)?;

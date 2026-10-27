@@ -84,6 +84,36 @@ impl FoldMap {
         })
     }
 
+    /// True only when the first `len` display chars of `row` are provably all present and
+    /// tab-free, so tab expansion/collapse over them is the identity (#955). It answers
+    /// without walking the row char by char, which on a multi-megabyte row cost hundreds of
+    /// milliseconds per call. Any doubt (a fold in the way, a short row, an error) returns
+    /// `false` and the caller takes the exact per-char path.
+    pub fn is_tab_free_prefix(&self, row: u32, len: usize, app: &AppContext) -> bool {
+        if len < TAB_SCAN_FAST_PATH_MIN_CHARS {
+            return false;
+        }
+        let Ok(offset) = self.to_display_offset(DisplayPoint::new(row, 0), app) else {
+            return false;
+        };
+        let mut cursor = self.transforms.cursor::<DisplayOffset, TransformSummary>();
+        cursor.seek(&offset, SeekBias::Right);
+        let Some(transform) = cursor.item() else {
+            return false;
+        };
+        let start_display = cursor.start().display.chars.as_usize();
+        if transform.display_text.is_some()
+            || offset.0 < start_display
+            || cursor.end().display.chars.as_usize() < offset.0 + len
+        {
+            return false;
+        }
+        let buffer_start = cursor.start().buffer.chars + CharOffset::from(offset.0 - start_display);
+        self.buffer
+            .as_ref(app)
+            .is_tab_free_for_chars(buffer_start, len)
+    }
+
     pub fn chars_at<'a>(&'a self, point: DisplayPoint, app: &'a AppContext) -> Result<Chars<'a>> {
         Ok(Chars(self.chars_with_style_at(point, app)?))
     }
@@ -406,6 +436,9 @@ impl Iterator for BufferRows<'_> {
         }
     }
 }
+
+/// Rows shorter than this keep using the exact per-char tab scan.
+const TAB_SCAN_FAST_PATH_MIN_CHARS: usize = 1024;
 
 pub struct Chars<'a>(CharsWithStyle<'a>);
 
