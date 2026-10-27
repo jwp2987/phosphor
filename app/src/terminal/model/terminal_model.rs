@@ -1799,7 +1799,7 @@ impl TerminalModel {
             return false;
         }
         log::warn!("Abandoning a subshell bootstrap that never reported Bootstrapped (#1014)");
-        self.setup_echo_filter.disarm();
+        self.disarm_setup_echo();
         self.abandoned_subshell_session = self.pending_session_info.take();
         self.block_list.set_bootstrapped();
         true
@@ -1881,7 +1881,7 @@ impl TerminalModel {
 
     /// Stops hiding the setup echo.
     pub fn clear_setup_echo(&mut self) {
-        self.setup_echo_filter.disarm();
+        self.disarm_setup_echo();
     }
 
     /// The ledger of query replies and pty writes, shared with the pty event loop.
@@ -2702,6 +2702,60 @@ macro_rules! delegate {
 }
 
 impl TerminalModel {
+    /// Runs `c` (printed text, `\r`, `\n` or a backspace) through the setup echo filter (#1038).
+    /// Returns whether it is the setup's echo and must not be output. Characters the filter held
+    /// back and has now released as foreign output are output first, in order.
+    fn swallow_setup_echo(&mut self, c: char) -> bool {
+        if !self.setup_echo_filter.is_armed() {
+            return false;
+        }
+        let swallowed = self.setup_echo_filter.swallow(c);
+        self.output_unmatched_setup_echo();
+        swallowed
+    }
+
+    /// Stops hiding the setup echo, outputting anything the filter still held back.
+    fn disarm_setup_echo(&mut self) {
+        self.setup_echo_filter.disarm();
+        self.output_unmatched_setup_echo();
+    }
+
+    /// Outputs characters the setup echo filter held back as a possible line-clear prefix echo and
+    /// released (` `, `^`, `K` and backspaces: the only characters it holds back).
+    fn output_unmatched_setup_echo(&mut self) {
+        for c in self.setup_echo_filter.take_unmatched() {
+            if c == '\u{8}' {
+                delegate!(self.backspace());
+            } else {
+                self.input_unfiltered(c);
+            }
+        }
+    }
+
+    /// Prints `c` without the setup echo filter.
+    fn input_unfiltered(&mut self, c: char) {
+        // TODO: we should figure out what it means to be simultaneously expecting
+        // in-band command output and completions data, which is technically possible
+        // with the current data structures.
+        if let IsReceivingInBandCommandOutput::Yes { output } =
+            &mut self.is_receiving_in_band_command_output
+        {
+            let is_receiving_prompt_chars = self.block_list.active_block().is_receiving_prompt();
+            if !is_receiving_prompt_chars {
+                output.input(c);
+                return;
+            }
+        } else if let IsReceivingCompletionsOutput::Yes {
+            pending: CompletionsShellData::Raw { output },
+        } = &mut self.is_receiving_completions_output
+        {
+            output.push(c);
+            return;
+        }
+
+        delegate!(self.input(c))
+    }
+
     /// Registers a client-generated session ID so that DCS hooks carrying
     /// this ID will be accepted by the integrity check.
     pub fn register_session_id(&mut self, session_id: SessionId) {
@@ -3035,29 +3089,10 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn input(&mut self, c: char) {
-        if self.setup_echo_filter.is_armed() && self.setup_echo_filter.swallow(c) {
+        if self.swallow_setup_echo(c) {
             return;
         }
-        // TODO: we should figure out what it means to be simultaneously expecting
-        // in-band command output and completions data, which is technically possible
-        // with the current data structures.
-        if let IsReceivingInBandCommandOutput::Yes { output } =
-            &mut self.is_receiving_in_band_command_output
-        {
-            let is_receiving_prompt_chars = self.block_list.active_block().is_receiving_prompt();
-            if !is_receiving_prompt_chars {
-                output.input(c);
-                return;
-            }
-        } else if let IsReceivingCompletionsOutput::Yes {
-            pending: CompletionsShellData::Raw { output },
-        } = &mut self.is_receiving_completions_output
-        {
-            output.push(c);
-            return;
-        }
-
-        delegate!(self.input(c))
+        self.input_unfiltered(c);
     }
 
     fn goto(&mut self, row: VisibleRow, column: usize) {
@@ -3124,14 +3159,14 @@ impl ansi::Handler for TerminalModel {
 
     fn backspace(&mut self) {
         // The kill character's rub-out of the ` ^K` echoed before the first setup line (#1038).
-        if self.setup_echo_filter.is_armed() && self.setup_echo_filter.swallow('\u{8}') {
+        if self.swallow_setup_echo('\u{8}') {
             return;
         }
         delegate!(self.backspace());
     }
 
     fn carriage_return(&mut self) {
-        if self.setup_echo_filter.is_armed() && self.setup_echo_filter.swallow('\r') {
+        if self.swallow_setup_echo('\r') {
             return;
         }
         if let IsReceivingInBandCommandOutput::Yes { output: cursor, .. } =
@@ -3144,7 +3179,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn linefeed(&mut self) -> ScrollDelta {
-        if self.setup_echo_filter.is_armed() && self.setup_echo_filter.swallow('\n') {
+        if self.swallow_setup_echo('\n') {
             return ScrollDelta::zero();
         }
         if matches!(
@@ -3487,7 +3522,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn bootstrapped(&mut self, value: BootstrappedValue) {
-        self.setup_echo_filter.disarm();
+        self.disarm_setup_echo();
         self.block_list.bootstrapped(value.clone());
 
         let pending_session_info = match self
@@ -3593,7 +3628,7 @@ impl ansi::Handler for TerminalModel {
     fn init_shell(&mut self, data: InitShellValue) {
         if !self.ignore_bootstrapping_messages {
             // The setup script has been read and run: its echo is over (#1038).
-            self.setup_echo_filter.disarm();
+            self.disarm_setup_echo();
             let hook_session_id = Some(data.session_id.as_u64());
             let transition = self.plan_lifecycle_transition(
                 LifecycleInput::InitShell,
