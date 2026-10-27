@@ -2857,11 +2857,6 @@ pub struct TerminalView {
     /// are delivered once setup completes, is abandoned or aborted, or after
     /// `SUBSHELL_SETUP_TYPED_HOLD_LIMIT`; never dropped.
     subshell_setup_held_bytes: Vec<Vec<u8>>,
-    /// Shell the last subshell setup was typed into, and whether a delayed release of the held
-    /// keys is already scheduled (#1048: PSReadLine is not reading yet when the first prompt's
-    /// `Precmd` arrives, and drops an Enter delivered at that instant).
-    subshell_setup_shell_type: Option<ShellType>,
-    subshell_setup_release_scheduled: bool,
     /// Object id of the persistent "Phosphor setup is waiting..." toast while it is showing
     /// (#1014). The wait is a state, not an event: the toast stays until setup completes, is
     /// skipped or is abandoned.
@@ -4531,8 +4526,6 @@ impl TerminalView {
             subshell_bootstrap_in_flight: None,
             subshell_bootstrap_announced: None,
             subshell_setup_held_bytes: Vec::new(),
-            subshell_setup_shell_type: None,
-            subshell_setup_release_scheduled: false,
             subshell_setup_waiting_toast_id: None,
             subshell_setup_deferred: None,
             subshell_bootstrap_generation: 0,
@@ -17254,7 +17247,6 @@ impl TerminalView {
     ) {
         let session_id = generate_session_id();
         self.model.lock().register_session_id(session_id);
-        self.subshell_setup_shell_type = shell_type;
         // The bootstrap is several short lines (#962: a canonical tty truncates a line longer
         // than MAX_CANON, 1024 bytes on macOS). The first goes out now; the rest follow at a
         // short pace so a shell that has not started reading yet is never handed more than its
@@ -17431,30 +17423,9 @@ impl TerminalView {
     /// pending any more. Safe to call at any block completion: it does nothing while the setup
     /// is still pending or when nothing is held, so the keys are delivered exactly once.
     fn release_held_setup_input_if_subshell_ready(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.subshell_setup_held_bytes.is_empty() || self.subshell_bootstrap_pending() {
-            return;
+        if !self.subshell_setup_held_bytes.is_empty() && !self.subshell_bootstrap_pending() {
+            self.release_subshell_setup_held_bytes(ctx);
         }
-        if self.subshell_setup_shell_type == Some(ShellType::PowerShell) {
-            // #1048: `Precmd` comes from the prompt function, before PSReadLine reads its first
-            // key; text plus Enter written at that instant lose the Enter. The keys stay held
-            // (the announcement is still set, so later typing queues behind them) and are
-            // delivered, once and in order, after the editor has settled.
-            if !self.subshell_setup_release_scheduled {
-                self.subshell_setup_release_scheduled = true;
-                ctx.spawn(
-                    Timer::after(crate::terminal::bootstrap::POWERSHELL_FIRST_PROMPT_SETTLE),
-                    |me, _, ctx| me.release_scheduled_subshell_setup_held_bytes(ctx),
-                );
-            }
-            return;
-        }
-        self.release_subshell_setup_held_bytes(ctx);
-    }
-
-    /// The delayed release scheduled by [`Self::release_held_setup_input_if_subshell_ready`].
-    fn release_scheduled_subshell_setup_held_bytes(&mut self, ctx: &mut ViewContext<Self>) {
-        self.subshell_setup_release_scheduled = false;
-        self.release_subshell_setup_held_bytes(ctx);
     }
 
     /// Delivers, in order, the keystrokes held while a subshell setup was unfinished (#1014).
