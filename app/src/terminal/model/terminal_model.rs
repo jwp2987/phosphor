@@ -57,6 +57,7 @@ use super::session::{BootstrapSessionType, InBandCommandOutputReceiver, SessionI
 use super::tmux::commands::TmuxCommand;
 use super::early_output::TypeaheadMode;
 use super::reply_ledger::SharedReplyLedger;
+use super::setup_echo_filter::SetupEchoFilter;
 use super::typeahead_handoff::TypeaheadHandoff;
 use super::{
     super::{AltScreen, BlockList},
@@ -493,6 +494,9 @@ pub struct TerminalModel {
     /// Replies written to the pty and text the user wrote, so a reply that leaks into the
     /// shell's line can be told from typed text (#921).
     reply_ledger: SharedReplyLedger,
+    /// Hides the tty's echo of the typed subshell setup script while the shell has not read it
+    /// yet (#1038).
+    setup_echo_filter: SetupEchoFilter,
     /// The command the user should see for an agent command typed into the shell in a wrapped
     /// form, by the action that requested it (#904). Consumed at preexec.
     agent_display_commands: HashMap<AIAgentActionId, String>,
@@ -1216,6 +1220,7 @@ impl TerminalModel {
             lifecycle_coordinator: BlockLifecycleCoordinator::default(),
             typeahead_handoff: TypeaheadHandoff::default(),
             reply_ledger: SharedReplyLedger::default(),
+            setup_echo_filter: SetupEchoFilter::default(),
             agent_display_commands: HashMap::new(),
             command_display_overrides: HashMap::new(),
             blocklist_has_been_cleared: false,
@@ -1794,6 +1799,7 @@ impl TerminalModel {
             return false;
         }
         log::warn!("Abandoning a subshell bootstrap that never reported Bootstrapped (#1014)");
+        self.setup_echo_filter.disarm();
         self.abandoned_subshell_session = self.pending_session_info.take();
         self.block_list.set_bootstrapped();
         true
@@ -1851,6 +1857,18 @@ impl TerminalModel {
 
     pub fn typeahead_handoff_mut(&mut self) -> &mut TypeaheadHandoff {
         &mut self.typeahead_handoff
+    }
+
+    /// Expects the tty to echo `line` (a subshell setup line the app is about to type) and keeps
+    /// that echo out of the grid. Cleared when the setup's `InitShell` arrives or the setup is
+    /// abandoned (#1038).
+    pub fn expect_setup_echo(&mut self, line: &str) {
+        self.setup_echo_filter.expect_line(line);
+    }
+
+    /// Stops hiding the setup echo.
+    pub fn clear_setup_echo(&mut self) {
+        self.setup_echo_filter.disarm();
     }
 
     /// The ledger of query replies and pty writes, shared with the pty event loop.
@@ -3004,6 +3022,9 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn input(&mut self, c: char) {
+        if self.setup_echo_filter.is_armed() && self.setup_echo_filter.swallow(c) {
+            return;
+        }
         // TODO: we should figure out what it means to be simultaneously expecting
         // in-band command output and completions data, which is technically possible
         // with the current data structures.
@@ -3093,6 +3114,9 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn carriage_return(&mut self) {
+        if self.setup_echo_filter.is_armed() && self.setup_echo_filter.swallow('\r') {
+            return;
+        }
         if let IsReceivingInBandCommandOutput::Yes { output: cursor, .. } =
             &mut self.is_receiving_in_band_command_output
         {
@@ -3103,6 +3127,9 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn linefeed(&mut self) -> ScrollDelta {
+        if self.setup_echo_filter.is_armed() && self.setup_echo_filter.swallow('\n') {
+            return ScrollDelta::zero();
+        }
         if matches!(
             self.is_receiving_completions_output,
             IsReceivingCompletionsOutput::Yes { .. }
@@ -3443,6 +3470,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn bootstrapped(&mut self, value: BootstrappedValue) {
+        self.setup_echo_filter.disarm();
         self.block_list.bootstrapped(value.clone());
 
         let pending_session_info = match self
@@ -3547,6 +3575,8 @@ impl ansi::Handler for TerminalModel {
 
     fn init_shell(&mut self, data: InitShellValue) {
         if !self.ignore_bootstrapping_messages {
+            // The setup script has been read and run: its echo is over (#1038).
+            self.setup_echo_filter.disarm();
             let hook_session_id = Some(data.session_id.as_u64());
             let transition = self.plan_lifecycle_transition(
                 LifecycleInput::InitShell,
