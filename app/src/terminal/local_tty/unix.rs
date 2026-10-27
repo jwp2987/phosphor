@@ -8,7 +8,7 @@ use crate::terminal::local_tty::docker_sandbox::{
     DockerSandboxShellStarter, DOCKER_SANDBOX_HOME_DIR,
 };
 use crate::terminal::local_tty::shell::{
-    extra_path_entries, ssh_socket_dir, DirectShellStarter, ShellStarter,
+    extra_path_entries, ssh_socket_dir_absolute, DirectShellStarter, ShellStarter,
 };
 use crate::terminal::model::session::command_executor::shell_escape_single_quotes;
 use crate::terminal::shell::ShellType;
@@ -387,7 +387,7 @@ fn build_host_shell_command(
     // home directory, as the length of the path to sockets placed in the
     // integration test home directory can exceed length limits.
     // See: https://stackoverflow.com/questions/35970686
-    builder.env("SSH_SOCKET_DIR", ssh_socket_dir());
+    builder.env("SSH_SOCKET_DIR", ssh_socket_dir_absolute());
 
     // We currently don't support bootstrapping recursive SSH sessions so we will only run the SSH
     // logic if this flag is set.
@@ -946,7 +946,7 @@ fn build_docker_sandbox_command(
         "WARP_SSH_REUSE_CONTROL_MASTER",
         if reuse_ssh_control_master { "1" } else { "0" },
     );
-    builder.env("SSH_SOCKET_DIR", ssh_socket_dir());
+    builder.env("SSH_SOCKET_DIR", ssh_socket_dir_absolute());
     builder.env("WARP_IS_LOCAL_SHELL_SESSION", "1");
     if FeatureFlag::HOANotifications.is_enabled() {
         builder.env(

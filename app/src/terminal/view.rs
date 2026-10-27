@@ -8786,7 +8786,7 @@ impl TerminalView {
             };
             for session_id in ids.into_iter().flatten() {
                 let socket = crate::terminal::ssh::wrapper_master::socket_path(
-                    &crate::terminal::local_tty::shell::ssh_socket_dir(),
+                    &crate::terminal::local_tty::shell::ssh_socket_dir_absolute(),
                     session_id.as_u64(),
                 );
                 crate::terminal::ssh::wrapper_master::unregister(&socket);
@@ -14770,7 +14770,7 @@ impl TerminalView {
                 {
                     crate::terminal::ssh::wrapper_master::register(
                         crate::terminal::ssh::wrapper_master::socket_path(
-                            &crate::terminal::local_tty::shell::ssh_socket_dir(),
+                            &crate::terminal::local_tty::shell::ssh_socket_dir_absolute(),
                             session_id.as_u64(),
                         ),
                     );

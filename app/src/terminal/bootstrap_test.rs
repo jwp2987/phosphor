@@ -1547,6 +1547,12 @@ exit 0
             let out_file = dir.join("out");
             if tilde {
                 command.env("HOME", dir.join("home"));
+            } else {
+                // The app exports an ABSOLUTE SSH_SOCKET_DIR: a $HOME that differs from where the
+                // socket lives (isolated HOME, sudo -E, containers) must change nothing, and the
+                // master/probe/session still make exactly one connection.
+                std::fs::create_dir_all(dir.join("unrelated-home")).unwrap();
+                command.env("HOME", dir.join("unrelated-home"));
             }
             let status = command
                 .env(
