@@ -173,10 +173,12 @@ pub fn write_histfiles_for_test<P>(
             ShellType::Zsh => path_ref.join(".zsh_history"),
             ShellType::Fish => path_ref.join("fish_history"),
             ShellType::PowerShell => path_ref.join("ConsoleHost_history.txt"),
+            ShellType::Nu => path_ref.join("history.txt"),
         };
 
         let histfile_contents = match shell_type {
-            ShellType::Bash | ShellType::PowerShell => {
+            // nushell's plaintext history is one command per line as well.
+            ShellType::Bash | ShellType::PowerShell | ShellType::Nu => {
                 let mut contents = "".to_owned();
                 for command in commands.clone() {
                     contents += format!("{command}\n").as_str();

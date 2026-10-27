@@ -107,6 +107,8 @@ impl LocalShellState {
             ShellType::Bash | ShellType::Zsh => "builtin echo $PATH",
             ShellType::Fish => "env | grep PATH",
             ShellType::PowerShell => "[Console]::Out.WriteLine($Env:PATH)",
+            // `$env.PATH` is a list once nushell has applied its env conversions, a string before.
+            ShellType::Nu => r#"print ($env.PATH | each { into string } | str join ":")"#,
         };
 
         // Execute a command to fetch the user's PATH var, and store it
@@ -307,6 +309,11 @@ async fn capture_interactive_shell_env(
         ShellType::PowerShell => {
             format!("Microsoft.PowerShell.Utility\\Write-Output \"{PATH_CAPTURE_START}$($env:PATH){PATH_CAPTURE_END}\"")
         }
+        ShellType::Nu => {
+            format!(
+                "print -n $\"{PATH_CAPTURE_START}(($env.PATH | each {{ into string }} | str join ':')){PATH_CAPTURE_END}\""
+            )
+        }
     };
 
     // With the `-i` flag, shells may try to set themselves as the foreground process for their
@@ -331,7 +338,7 @@ async fn capture_interactive_shell_env(
             // -l: login shell (sources .zprofile/.bash_profile)
             command.args(["-i", "-l", "-c", command_str.as_str()]);
         }
-        ShellType::Fish => {
+        ShellType::Fish | ShellType::Nu => {
             command.args(["-i", "-l", "-c", command_str.as_str()]);
         }
         ShellType::PowerShell => {

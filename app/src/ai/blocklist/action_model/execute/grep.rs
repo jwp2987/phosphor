@@ -383,7 +383,8 @@ async fn run_grep(
             log::error!("Failed to run command to check if in git repository: {e:?}");
             false
         });
-    let shell_type = session.shell().shell_type();
+    // These commands run through the session's command executor, not the user's prompt.
+    let shell_type = session.shell().shell_type().executor_syntax();
 
     // The most optimized tool to perform the search is `git grep`;
     // whether the session is local or remote, we can run `git grep` in the session.

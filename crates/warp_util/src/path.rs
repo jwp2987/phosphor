@@ -416,13 +416,46 @@ fn nu_bare_char(c: char) -> bool {
         || matches!(c, '_' | '.' | '/' | '-' | '+' | '@' | '%' | ':' | '=' | '~')
 }
 
+/// Whether nushell would read the bare word `word` as a value other than a string: `true`,
+/// `false`, `null`, a number (`12`, `1e3`, `0x1F`, `1_000`) or a filesize / duration such as
+/// `10kb` or `5sec`. A file with such a name must be quoted to stay a path.
+fn nu_bare_word_is_literal(word: &str) -> bool {
+    if matches!(word, "true" | "false" | "null" | "nothing") {
+        return true;
+    }
+    let unsigned = word.strip_prefix(['-', '+']).unwrap_or(word);
+    let digits_then_suffix = unsigned.starts_with(|c: char| c.is_ascii_digit() || c == '.')
+        && unsigned
+            .trim_start_matches(|c: char| c.is_ascii_digit() || matches!(c, '.' | '_'))
+            .chars()
+            .all(|c| c.is_ascii_alphabetic() || matches!(c, 'µ'));
+    digits_then_suffix || unsigned.parse::<f64>().is_ok()
+}
+
+/// A nushell double-quoted string literal for `input`, always quoted (never a bare word).
+///
+/// Use this where the value must stay a string: a bare `1` or `true` is an int or a bool in
+/// nushell (`$env.X = 1` stores an int), whereas [`ShellDialect::escape`] leaves such a safe
+/// word bare because a command argument is converted to a string anyway.
+pub fn nu_quoted_string(input: &str) -> String {
+    nu_double_quote(input)
+}
+
 /// nushell quoting: bare when every character is safe, otherwise a double-quoted string.
 fn nu_quote(input: &str) -> Cow<'_, str> {
-    use std::fmt::Write as _;
     // `..` makes a bare word a nushell range (`a..b`), so it must be quoted.
-    if !input.is_empty() && !input.contains("..") && input.chars().all(nu_bare_char) {
+    if !input.is_empty()
+        && !input.contains("..")
+        && input.chars().all(nu_bare_char)
+        && !nu_bare_word_is_literal(input)
+    {
         return Cow::Borrowed(input);
     }
+    Cow::Owned(nu_double_quote(input))
+}
+
+fn nu_double_quote(input: &str) -> String {
+    use std::fmt::Write as _;
     let mut out = String::with_capacity(input.len() + 2);
     out.push('"');
     for c in input.chars() {
@@ -439,7 +472,7 @@ fn nu_quote(input: &str) -> Cow<'_, str> {
         }
     }
     out.push('"');
-    Cow::Owned(out)
+    out
 }
 
 /// bash/zsh ANSI-C quoting of the whole word: `$'...'`.

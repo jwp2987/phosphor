@@ -291,6 +291,14 @@ pub(super) fn wrap_command(shell_type: Option<ShellType>, command: &str) -> Stri
                 }
             }
         }
+        // nushell scopes `cd` and `$env` changes to a block, so wrapping the command in a block
+        // (`with-env { ... } { <command> }`) would stop an agent's `cd` from taking effect, and
+        // setting the pager variables at the top level would leak them into the user's shell.
+        // The command goes through unwrapped, with a leading space that keeps it out of the
+        // history (`history.ignore_space_prefixed`, nushell's default); pager suppression is then
+        // ineffective and the long fallback timeout is the only protection, as for an unknown
+        // shell.
+        ShellType::Nu => format!(" {command}"),
         ShellType::PowerShell => {
             // `.` runs the block in the current scope (variables persist, like the venv
             // activation the agent may run). A command that would end the host (`exit`,
@@ -756,7 +764,11 @@ fn fish_command_needs_subshell(name: &str, args: &[String]) -> bool {
 /// signal the whole process group / every process. Refused with a tool error rather than run.
 /// bash / zsh only: in fish the command runs in a child fish whose own pid it names.
 pub(super) fn kills_own_shell(shell_type: Option<ShellType>, command: &str) -> Option<String> {
-    if matches!(shell_type, Some(ShellType::Fish | ShellType::PowerShell)) {
+    // nushell has no `$$` / `$PPID`; its own pid is `$nu.pid`, which this scan does not model.
+    if matches!(
+        shell_type,
+        Some(ShellType::Fish | ShellType::PowerShell | ShellType::Nu)
+    ) {
         return None;
     }
     const SELF_REFS: &[&str] = &["$$", "$PPID", "${PPID}", "${$}", "$BASHPID", "${BASHPID}"];

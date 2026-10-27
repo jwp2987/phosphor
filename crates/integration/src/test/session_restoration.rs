@@ -174,6 +174,9 @@ pub fn test_restored_blocks_on_different_hosts() -> Builder {
                                         "history item 2 for PowerShell"
                                     )
                                 }
+                                ShellType::Nu => {
+                                    panic!("this integration test has no nushell variant")
+                                }
                             }
                         })
                     })

@@ -36,6 +36,11 @@ pub fn shell_escape_single_quotes(command: &str, shell_type: ShellType) -> Strin
             // In powershell we escape single quotes using two single quotes ''
             command.replace('\'', "''")
         }
+        // A nushell single-quoted string is literal and cannot contain a single quote at all, so
+        // there is nothing to escape WITH. Nothing builds a single-quoted nushell word from
+        // this: nushell values go through `shell_quote_arg` / `nu_raw_string`, and the commands
+        // Phosphor runs for itself are written for `ShellType::executor_syntax` (bash).
+        ShellType::Nu => command.to_owned(),
         _ => {
             // For Bash and Zsh, replace each single quote with a '"'"' sequence.
             // The first single quote completes the single quoted string to the left,
@@ -67,7 +72,28 @@ pub fn shell_quote_arg(value: &str, shell_type: ShellType) -> String {
             .escape(value)
             .into_owned();
     }
+    if shell_type == ShellType::Nu {
+        // A single quote cannot be written inside a nushell single-quoted string; the
+        // double-quoted form escapes it (and anything else) and is always one word.
+        return if value.contains('\'') {
+            warp_util::path::nu_quoted_string(value)
+        } else {
+            format!("'{value}'")
+        };
+    }
     format!("'{}'", shell_escape_single_quotes(value, shell_type))
+}
+
+/// A nushell raw string literal for `value`: `r#'...'#`, with enough `#`s that no `'#` inside
+/// `value` can end it early. Used to pass arbitrary text (a command) as one argument.
+pub fn nu_raw_string(value: &str) -> String {
+    let longest_hash_run = value
+        .split(|c| c != '#')
+        .map(str::len)
+        .max()
+        .unwrap_or_default();
+    let hashes = "#".repeat(longest_hash_run + 1);
+    format!("r{hashes}'{value}'{hashes}")
 }
 
 /// Single-quotes a word for a POSIX `sh` script that is itself passed as one argument, e.g.

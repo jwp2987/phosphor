@@ -1330,8 +1330,8 @@ pub(crate) fn pty_write_for_target_command(
 }
 
 /// Shell binaries that sit at a prompt forever when started without a command or script.
-const INTERACTIVE_SHELL_NAMES: [&str; 9] = [
-    "bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "csh", "pwsh",
+const INTERACTIVE_SHELL_NAMES: [&str; 10] = [
+    "bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "csh", "pwsh", "nu",
 ];
 
 /// True iff `command` starts a shell that stays at its prompt: a bare `bash`, `zsh -f`,

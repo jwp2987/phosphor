@@ -7100,9 +7100,11 @@ impl Input {
             .model()
             .string_model;
 
-        if shell_type == ShellType::Fish {
-            // Zap currently doesn't support newlines in Fish, just prepend the vars
-            let mut command = env_vars.export_variables_for_shell(ShellType::Fish);
+        if matches!(shell_type, ShellType::Fish | ShellType::Nu) {
+            // Zap currently doesn't support newlines in Fish, just prepend the vars. nushell has
+            // no `NAME=value cmd` prefix and its `$env.NAME = value;` statements are valid
+            // anywhere, so it takes the same route.
+            let mut command = env_vars.export_variables_for_shell(shell_type);
             command.push(' ');
             Some(command)
         } else {
