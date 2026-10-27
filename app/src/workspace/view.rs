@@ -17642,7 +17642,7 @@ impl Workspace {
         ctx: &mut ViewContext<Self>,
     ) {
         self.multiline_submit_confirmation_dialog
-            .update(ctx, |view, _| view.set_line_count(line_count));
+            .update(ctx, |view, ctx| view.set_line_count(line_count, ctx));
         self.current_workspace_state
             .is_multiline_submit_confirmation_dialog_open = true;
         ctx.focus(&self.multiline_submit_confirmation_dialog);

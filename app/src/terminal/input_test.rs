@@ -10353,3 +10353,31 @@ fn multiline_submit_at_the_threshold_does_not_ask() {
         assert_eq!(executed.borrow().as_slice(), [text]);
     });
 }
+
+/// #1046: the line count the dialog states is the number of lines of the buffer submitted.
+#[test]
+fn submitted_line_count_matches_the_lines_submitted() {
+    for n in [51, 60, 119, 2500] {
+        assert_eq!(submitted_line_count(&comment_lines(n)), n);
+        assert_eq!(submitted_line_count(&format!("{}\n", comment_lines(n))), n);
+    }
+}
+
+/// The dispatched count is that of the buffer in the editor, for every size.
+#[test]
+fn multiline_confirmation_is_requested_for_the_buffer_it_holds() {
+    App::test((), |mut app| async move {
+        for n in [51, 60, 119] {
+            let text = comment_lines(n);
+            let (input, executed) = multiline_submit_fixture(&mut app, &text, false).await;
+            input.update(&mut app, |input, ctx| {
+                input.input_enter_as_shell_command(ctx);
+            });
+            assert!(executed.borrow().is_empty());
+            input.read(&app, |input, ctx| {
+                assert!(input.awaiting_multiline_submit_confirmation);
+                assert_eq!(submitted_line_count(&input.buffer_text(ctx)), n);
+            });
+        }
+    });
+}

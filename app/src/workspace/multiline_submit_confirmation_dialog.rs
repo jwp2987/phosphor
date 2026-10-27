@@ -61,8 +61,15 @@ impl MultilineSubmitConfirmationDialog {
         }
     }
 
-    pub fn set_line_count(&mut self, line_count: usize) {
+    /// Sets the count shown and schedules a re-render: without the notify the dialog's cached
+    /// render kept the previous count (0 on the first show, then the last one) (#1046).
+    pub fn set_line_count(&mut self, line_count: usize, ctx: &mut ViewContext<Self>) {
         self.line_count = line_count;
+        ctx.notify();
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.line_count
     }
 }
 

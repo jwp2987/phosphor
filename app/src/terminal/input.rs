@@ -500,6 +500,11 @@ const HISTORY_DETAILS_VIEW_WIDTH_REQUIREMENT: f32 = 1100.;
 
 const MIN_BUFFER_LEN_TO_SHOW_COMPLETIONS_WHILE_TYPING: usize = 2;
 
+/// The number of lines in a submitted buffer, as the confirmation dialog states it.
+pub(crate) fn submitted_line_count(command: &str) -> usize {
+    command.lines().count()
+}
+
 /// A shell command of more lines than this, going to a shell that runs each line as its own
 /// command (no bracketed paste), asks before it is submitted (#1046).
 pub(crate) const MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD: usize = 50;
@@ -6322,7 +6327,7 @@ impl Input {
         command: &str,
         ctx: &AppContext,
     ) -> bool {
-        command.lines().count() > MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD
+        submitted_line_count(command) > MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD
             && !self.can_execute_command(ctx).is_no()
             && !self
                 .model
@@ -12781,7 +12786,7 @@ impl Input {
                 self.awaiting_multiline_submit_confirmation = true;
                 ctx.dispatch_typed_action(
                     &WorkspaceAction::ShowMultilineSubmitConfirmationDialog {
-                        line_count: command.lines().count(),
+                        line_count: submitted_line_count(&command),
                     },
                 );
                 return;
