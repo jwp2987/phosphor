@@ -714,7 +714,8 @@ fn discard_queued_input_without_a_command_changes_nothing() {
     assert_eq!(
         drain(&mut state),
         vec![
-            b"strap\r".to_vec(),
+            // "boo" of "bootstrap\r" was already written.
+            b"tstrap\r".to_vec(),
             b"typed ahead".to_vec(),
             b"\x1b[?62c".to_vec()
         ]
