@@ -861,11 +861,16 @@ fn absolute_ssh_socket_dir(literal: &str, home: Option<&std::path::Path>) -> Str
 
 /// The `SSH_SOCKET_DIR` to export to unix shells: [`ssh_socket_dir`] made absolute from the home
 /// the app uses (#1035). The directory is created if missing (ssh does not create the parent of a
-/// ControlPath, and an isolated `$HOME` may have no `.ssh`).
+/// ControlPath, and an isolated `$HOME` may have no `.ssh`). A created directory is private (0700),
+/// as ssh itself creates `~/.ssh`; an existing one is left as it is.
 pub fn ssh_socket_dir_absolute() -> String {
     let dir = absolute_ssh_socket_dir(&ssh_socket_dir(), dirs::home_dir().as_deref());
-    if dir.starts_with('/') {
-        if let Err(e) = std::fs::create_dir_all(&dir) {
+    if dir.starts_with('/') && !std::path::Path::new(&dir).is_dir() {
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        if let Err(e) = builder.create(&dir) {
             log::warn!("could not create SSH_SOCKET_DIR {dir}: {e}");
         }
     }
