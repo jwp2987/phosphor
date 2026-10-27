@@ -721,3 +721,37 @@ fn test_unlaid_tail_noop_when_fully_laid_out() {
     assert_eq!(frame.lines().last().unwrap().end_index(), 3);
     assert_eq!(frame.lines().last().unwrap().runs[0].glyphs.len(), 3);
 }
+
+/// #1036: a row laid out from its head plus its tail reports TRUE offsets for the tail, so the
+/// cursor at the end of a huge row lands on the last laid glyph and typed text is visible.
+#[test]
+fn test_elided_middle_rebases_tail_offsets() {
+    let head = 10;
+    let tail = 4;
+    let total = 1_000;
+    let text = "a".repeat(head + tail);
+    let frame =
+        TextFrame::mock_with_positions(&text, 10.).with_elided_middle(head, head + tail, total);
+    let line = frame.lines().last().unwrap();
+    assert_eq!(line.first_index(), 0, "Home");
+    assert_eq!(line.end_index(), total, "End key / row end is the true end");
+    assert_eq!(
+        line.last_glyph().unwrap().index,
+        total - 1,
+        "the last laid glyph is the row's last char"
+    );
+    // Head offsets are untouched.
+    assert_eq!(line.x_for_index(3), 30.);
+    // The cursor at the true end sits after the last tail glyph; a char typed there is laid out.
+    assert_eq!(line.x_for_index(total - 1), 130.);
+    assert_eq!(line.x_for_index(total), line.width);
+    assert_eq!(line.caret_index_for_x_unbounded(line.width + 50.), total);
+    // The cursor at the end is on the last row of the frame.
+    assert_eq!(frame.row_within_frame(total, true), frame.lines().len() - 1);
+}
+
+#[test]
+fn test_elided_middle_noop_when_fully_laid_out() {
+    let frame = TextFrame::mock_with_positions("abcd", 10.).with_elided_middle(2, 4, 4);
+    assert_eq!(frame.lines().last().unwrap().end_index(), 4);
+}
