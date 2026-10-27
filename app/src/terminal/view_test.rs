@@ -14526,6 +14526,15 @@ fn announce_powershell_setup(view: &mut TerminalView) {
     view.powershell_setup_hold = PowerShellSetupHold::Setup;
 }
 
+/// Backdates the PowerShell setup announcement past the stall ceiling (#1051).
+fn stall_powershell_setup(view: &mut TerminalView) {
+    let block_id = view.model.lock().block_list().active_block().id().clone();
+    let long_ago = Instant::now()
+        .checked_sub(SUBSHELL_BOOTSTRAP_STALL_CEILING + Duration::from_secs(1))
+        .expect("the clock goes back far enough");
+    view.subshell_bootstrap_announced = Some((block_id, long_ago));
+}
+
 /// #1048: PSReadLine draws the bootstrap lines it reads and the prompt before each, so during a
 /// PowerShell setup the output ends in unterminated text (`PS C:\> ...`) most of the time. That
 /// is not a prompt asking for input: keys typed then are held, never written into the middle of
@@ -14585,7 +14594,11 @@ fn powershell_setup_holds_keys_and_enter_typed_after_its_first_precmd() {
                 view.input.as_ref(ctx).buffer_text(ctx).is_empty(),
                 "nothing reached the input editor"
             );
-            assert_eq!(view.powershell_setup_hold, PowerShellSetupHold::Setup);
+            // #1051: that Precmd says the script is running (sourcing the profiles).
+            assert_eq!(
+                view.powershell_setup_hold,
+                PowerShellSetupHold::ScriptRunning
+            );
         });
         assert!(
             delivered.borrow().is_empty(),
@@ -14658,8 +14671,77 @@ fn powershell_setup_keys_are_delivered_once_in_order_at_the_prompt_after_bootstr
     })
 }
 
-/// #1048 / #1014: Ctrl-C during a PowerShell setup skips it whatever block is active: the ^C
-/// reaches the shell first. The Windows console flushes its pending input as it processes a
+/// #1051: a Ctrl-C early in a PowerShell setup (Ctrl-C at ~0.5 s or ~2 s after the chip) is not
+/// written to the shell -- it stopped the bootstrap half-way and left the pane on "Starting
+/// shell..." with an editor that refused every command. It does what Ctrl-C does at a prompt:
+/// the line being typed is discarded, complete lines stay held, and setup carries on.
+/// Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn early_ctrl_c_in_a_powershell_setup_discards_the_line_being_typed_and_lets_setup_finish() {
+    for hold in [
+        PowerShellSetupHold::Setup,
+        PowerShellSetupHold::ScriptRunning,
+        PowerShellSetupHold::AwaitingPrompt,
+    ] {
+        App::test((), |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let delivered = collect_delivered_input(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                announce_powershell_setup(view);
+                view.powershell_setup_hold = hold;
+                view.typed_characters_on_terminal("echo 1", ctx);
+                view.keydown_on_terminal("\r", ctx);
+                view.typed_characters_on_terminal("ls", ctx);
+                view.ctrl_c(ctx);
+                assert_eq!(
+                    view.subshell_setup_held_bytes.concat(),
+                    b"echo 1\r".to_vec(),
+                    "only the line being typed is discarded"
+                );
+                assert_eq!(view.powershell_setup_hold, hold, "setup carries on");
+                view.typed_characters_on_terminal("pwd", ctx);
+                assert_eq!(
+                    view.subshell_setup_held_bytes.concat(),
+                    b"echo 1\rpwd".to_vec()
+                );
+            });
+            assert!(
+                delivered.borrow().is_empty(),
+                "nothing reaches the shell, the ^C included"
+            );
+        })
+    }
+}
+
+/// #1051: once the setup has stalled while the profiles are being sourced (a hanging profile; the
+/// waiting notice offers Ctrl-C), the ^C goes to the shell to stop them. `pwsh.ps1` still
+/// finishes setup, so the held keys stay held for the prompt after `Bootstrapped`.
+/// Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn ctrl_c_after_a_stalled_powershell_profile_stops_it_and_keeps_the_keys_held() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let delivered = collect_delivered_input(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            announce_powershell_setup(view);
+            stall_powershell_setup(view);
+            view.powershell_setup_hold = PowerShellSetupHold::ScriptRunning;
+            view.typed_characters_on_terminal("ls", ctx);
+            view.ctrl_c(ctx);
+            assert_eq!(
+                view.powershell_setup_hold,
+                PowerShellSetupHold::ScriptRunning
+            );
+            assert_eq!(view.subshell_setup_held_bytes.concat(), b"ls".to_vec());
+        });
+        assert_eq!(*delivered.borrow(), b"\x03".to_vec(), "only the ^C");
+    })
+}
+
+/// #1048 / #1014: Ctrl-C after a PowerShell setup stalled before its script ran skips setup: the
+/// ^C reaches the shell first. The Windows console flushes its pending input as it processes a
 /// Ctrl-C, so the keys held meanwhile -- and keys typed right after -- follow only once the
 /// settle time has passed, in order, and nothing is held afterwards.
 /// Not compiled/run when written (no builds in the fix pass).
@@ -14671,6 +14753,7 @@ fn ctrl_c_skips_a_powershell_setup_and_releases_the_held_keys_after_it() {
         let delivered = collect_delivered_input(&mut app, &terminal);
         let generation = terminal.update(&mut app, |view, ctx| {
             announce_powershell_setup(view);
+            stall_powershell_setup(view);
             view.typed_characters_on_terminal("ls", ctx);
             assert!(delivered.borrow().is_empty());
             view.ctrl_c(ctx);
@@ -14697,6 +14780,28 @@ fn ctrl_c_skips_a_powershell_setup_and_releases_the_held_keys_after_it() {
             "abort first, then the held keys, in order"
         );
     })
+}
+
+/// #1051: the Ctrl-C rule as a table, and the line a Ctrl-C discards.
+#[test]
+fn powershell_setup_ctrl_c_routes() {
+    use PowerShellSetupCtrlC::*;
+    use PowerShellSetupHold as H;
+    for hold in [H::Setup, H::ScriptRunning, H::AwaitingPrompt] {
+        assert_eq!(powershell_setup_ctrl_c_route(hold, false), CancelHeldLine);
+    }
+    assert_eq!(
+        powershell_setup_ctrl_c_route(H::ScriptRunning, true),
+        StopProfiles
+    );
+    assert_eq!(powershell_setup_ctrl_c_route(H::Setup, true), SkipSetup);
+    assert_eq!(
+        powershell_setup_ctrl_c_route(H::LineRunning { generation: 1 }, false),
+        SkipSetup
+    );
+    assert_eq!(held_bytes_through_last_enter(b"ls\rpw"), 3);
+    assert_eq!(held_bytes_through_last_enter(b"pw"), 0);
+    assert_eq!(held_bytes_through_last_enter(b"a\nb\r"), 4);
 }
 
 /// #1048: a held line ends at the first Enter (`\r`, `\n`, or `\r\n` as one), its text is what
