@@ -14664,6 +14664,40 @@ fn subshell_announcement_applies_to_the_bootstrapped_parent_block_before_initshe
     ));
 }
 
+/// #1014 (Mac, third stalled subshell in a row): the 90 s hold-limit timer of the first setup
+/// fired during the third setup's stall, released the keys typed so far and cleared the third
+/// announcement, so the rest of the line went straight to the tty and ran inside the hidden
+/// setup. A timer releases only its own setup's keys.
+#[test]
+fn a_stale_hold_limit_timer_does_not_release_a_later_setups_keys() {
+    let first = Instant::now();
+    let third = first + Duration::from_secs(82);
+    // The first setup's timer, the third setup announced and keys held for it.
+    assert!(!subshell_setup_hold_limit_releases(
+        Some(third),
+        Some(first),
+        true
+    ));
+    // Its own timer releases them, held or not (the announcement is cleared either way).
+    assert!(subshell_setup_hold_limit_releases(
+        Some(third),
+        Some(third),
+        true
+    ));
+    assert!(subshell_setup_hold_limit_releases(
+        Some(third),
+        Some(third),
+        false
+    ));
+    // No setup announced any more: keys still held are delivered, nothing else happens.
+    assert!(subshell_setup_hold_limit_releases(None, Some(first), true));
+    assert!(!subshell_setup_hold_limit_releases(
+        None,
+        Some(first),
+        false
+    ));
+}
+
 #[test]
 fn typeahead_handoff_ctrl_c_within_the_young_enter_window_reaches_the_pty() {
     App::test((), |mut app| async move {

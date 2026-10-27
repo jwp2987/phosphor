@@ -17311,11 +17311,12 @@ impl TerminalView {
         ctx.spawn(
             Timer::after(SUBSHELL_SETUP_TYPED_HOLD_LIMIT),
             move |me, _, ctx| {
-                let same_announcement = me
-                    .subshell_bootstrap_announced
-                    .as_ref()
-                    .is_some_and(|(_, at)| Some(*at) == announced_at);
-                if same_announcement || !me.subshell_setup_held_bytes.is_empty() {
+                let current = me.subshell_bootstrap_announced.as_ref().map(|(_, at)| *at);
+                if subshell_setup_hold_limit_releases(
+                    current,
+                    announced_at,
+                    !me.subshell_setup_held_bytes.is_empty(),
+                ) {
                     me.release_subshell_setup_held_bytes(ctx);
                 }
             },
@@ -32367,6 +32368,22 @@ fn subshell_setup_should_hold_typed_bytes(
     abort_key: bool,
 ) -> bool {
     !abort_key && announced_age.is_some_and(|age| age < SUBSHELL_SETUP_TYPED_HOLD_LIMIT)
+}
+
+/// Whether the hold-limit timer of the setup announced at `timer_announced_at` delivers the held
+/// keys now (#1014). Only its own setup's keys: a timer outliving its setup (the subshell was
+/// Phosphorized and exited, and another one is starting) must not release, and so un-hold, the
+/// keys typed during the next setup's stall, which then ran inside that hidden setup. Keys held
+/// with no setup announced at all (never expected) are delivered rather than kept.
+fn subshell_setup_hold_limit_releases(
+    current_announced_at: Option<Instant>,
+    timer_announced_at: Option<Instant>,
+    keys_held: bool,
+) -> bool {
+    match current_announced_at {
+        Some(current) => timer_announced_at == Some(current),
+        None => keys_held,
+    }
 }
 
 /// What an interrupt key does while the remote shell's bootstrap is pending (#1001).
