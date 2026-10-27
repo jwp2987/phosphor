@@ -1328,36 +1328,103 @@ fn ssh_wrapper_job_text_is_short_and_remote_script_still_arrives() {
     }
 }
 
-/// #1035: a Windows OpenSSH server (default shell cmd.exe / PowerShell) cannot run the POSIX
-/// remote bootstrap ("'export' is not recognized", then the connection closes). The wrapper reads
-/// the server's version banner first (a stub `ssh` answers the `-v` probe) and, for
-/// `OpenSSH_for_Windows_*`, runs a plain `ssh <args>`: no `-t`, no ControlMaster, no remote
-/// command. A POSIX remote (or an inconclusive probe) gets the managed session exactly as before.
+/// #1035 / #1039: the wrapper decides AFTER connecting, with ONE authentication. It starts the
+/// Phosphor-owned ControlMaster in the background (`-N -f`), asks the remote what shell family it
+/// runs over that master, then runs either the managed POSIX session or a plain interactive
+/// session over the same master, and finally takes the master down. A stub `ssh` records every
+/// invocation and simulates the master start, the probe answer and failures.
+///
+/// Every ssh the wrapper runs (master, probe, session, `-O exit`) must carry the user's own
+/// arguments (`-p 22 user@host` here): a helper ssh without them would not see the user's
+/// known_hosts / jump host / port (#1039).
 #[test]
 #[cfg(unix)]
-fn ssh_wrapper_gives_a_windows_remote_a_plain_session() {
+fn ssh_wrapper_decides_after_connecting_over_one_master() {
     use std::process::Command;
 
-    // (case, banner lines the probe's stderr shows, expect a plain session)
-    let cases: [(&str, &[&str], bool); 5] = [
-        (
-            "windows",
-            &["OpenSSH_for_Windows_10.4 Win32-OpenSSH-GitHub"],
-            true,
-        ),
-        ("posix", &["OpenSSH_9.6p1 Ubuntu-3ubuntu13"], false),
-        ("inconclusive", &[], false),
-        // ProxyJump: -v traces the jump hop first, the destination last.
-        (
-            "windows-behind-posix-jump",
-            &["OpenSSH_9.6p1 Ubuntu", "OpenSSH_for_Windows_9.5"],
-            true,
-        ),
-        (
-            "posix-behind-windows-jump",
-            &["OpenSSH_for_Windows_9.5", "OpenSSH_9.6p1 Ubuntu"],
-            false,
-        ),
+    if Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("skipping: python3 is needed to bind the stub's control socket");
+        return;
+    }
+
+    // (case, master behaviour, probe output, expected session: "plain" | "managed" | "none",
+    //  expected helper exit status, extra ssh args)
+    struct Case {
+        name: &'static str,
+        master: &'static str,
+        probe: &'static str,
+        session: &'static str,
+        status: i32,
+        extra: &'static [&'static str],
+    }
+    let cases = [
+        Case {
+            name: "windows-cmd",
+            master: "ok",
+            probe: "warp-probe-C:\\Windows\\system32\\cmd.exe-$PSVersionTable",
+            session: "plain",
+            status: 0,
+            extra: &[],
+        },
+        Case {
+            name: "windows-powershell",
+            master: "ok",
+            probe: "warp-probe-%COMSPEC%-System.Management.Automation.PSVersionHashTable",
+            session: "plain",
+            status: 0,
+            extra: &[],
+        },
+        Case {
+            name: "posix",
+            master: "ok",
+            probe: "warp-probe-%COMSPEC%-",
+            session: "managed",
+            status: 0,
+            extra: &[],
+        },
+        Case {
+            name: "inconclusive",
+            master: "ok",
+            probe: "",
+            session: "managed",
+            status: 0,
+            extra: &[],
+        },
+        Case {
+            name: "windows-behind-jump",
+            master: "ok",
+            probe: "warp-probe-C:\\Windows\\system32\\cmd.exe-$PSVersionTable",
+            session: "plain",
+            status: 0,
+            extra: &["-J", "jump"],
+        },
+        Case {
+            name: "posix-behind-jump",
+            master: "ok",
+            probe: "warp-probe-%COMSPEC%-",
+            session: "managed",
+            status: 0,
+            extra: &["-J", "jump"],
+        },
+        // The connection failed: ssh's own error and status come back, nothing else runs.
+        Case {
+            name: "auth-failure",
+            master: "fail255",
+            probe: "",
+            session: "none",
+            status: 255,
+            extra: &[],
+        },
+        // Ctrl-C while the master authenticates: ssh dies with 130, nothing else may run (no
+        // probe, no session) and no master is left to clean up.
+        Case {
+            name: "interrupted",
+            master: "fail130",
+            probe: "",
+            session: "none",
+            status: 130,
+            extra: &[],
+        },
     ];
 
     for (name, source, kind) in [
@@ -1381,6 +1448,7 @@ fn ssh_wrapper_gives_a_windows_remote_a_plain_session() {
             eprintln!("skipping {name}: not installed");
             continue;
         }
+        // From the helper through the probe / stop-master helpers that follow it.
         let (open, close) = match kind {
             0 => (
                 "        function warp_ssh_helper() {",
@@ -1390,52 +1458,68 @@ fn ssh_wrapper_gives_a_windows_remote_a_plain_session() {
                 "      function warp_ssh_helper() {",
                 "\n      function ssh() {",
             ),
-            _ => ("    function warp_ssh_helper", "\n    end\n"),
+            _ => ("    function warp_ssh_helper", "\n    function ssh\n"),
         };
         let from = source.find(open).unwrap();
         let to = from + source[from..].find(close).unwrap();
-        let function = if kind == 2 {
-            source[from..to + close.len()].to_owned()
-        } else {
-            source[from..to].to_owned()
-        };
-        let prelude = match kind {
-            2 => {
-                "function warp_init_shell; echo init-$argv; end; function warp_send_json_message; end; set -g SSH_SOCKET_DIR /tmp/s; set -g WARP_SESSION_ID 77; set -g WARP_HONOR_PS1 1;"
-            }
-            _ => {
-                "init_shell_hook(){ echo hook-$1; }; warp_send_json_message(){ :; }; SSH_SOCKET_DIR=/tmp/s; WARP_SESSION_ID=77; WARP_HONOR_PS1=1;"
-            }
-        };
+        let function = source[from..to].to_owned();
 
-        for (case, banners, plain) in cases {
+        for case in &cases {
             let dir = std::env::temp_dir().join(format!(
-                "phosphor-ssh-win-{name}-{case}-{}",
+                "p1035-{name}-{}-{}",
+                cases.iter().position(|c| c.name == case.name).unwrap(),
                 std::process::id()
             ));
             std::fs::remove_dir_all(&dir).ok();
-            std::fs::create_dir_all(&dir).unwrap();
-            // The stub answers the probe (`-v`) on stderr like ssh does, fails -G/-O, and records
-            // every other invocation: its arguments one per line, after a `CALL` marker.
-            let mut probe = String::new();
-            for banner in banners {
-                probe.push_str(&format!(
-                    "echo 'debug1: Remote protocol version 2.0, remote software version {banner}' >&2\n"
-                ));
-            }
+            std::fs::create_dir_all(dir.join("socks")).unwrap();
+            let socks = dir.join("socks");
+            let prelude = match kind {
+                2 => format!(
+                    "function warp_init_shell; echo init-$argv; end; function warp_send_json_message; end; set -g SSH_SOCKET_DIR {}; set -g WARP_SESSION_ID 77; set -g WARP_HONOR_PS1 1;",
+                    socks.display()
+                ),
+                _ => format!(
+                    "init_shell_hook(){{ echo hook-$1; }}; warp_send_json_message(){{ :; }}; SSH_SOCKET_DIR={}; WARP_SESSION_ID=77; WARP_HONOR_PS1=1;",
+                    socks.display()
+                ),
+            };
+            // The stub records every invocation (arguments one per line after a `CALL` marker),
+            // fails -G, and otherwise behaves like ssh would:
+            //   -O exit  -> removes the socket and records;
+            //   -N       -> master start: fail or bind the ControlPath socket;
+            //   probe    -> prints $PROBE;
+            //   other    -> the session.
             let stub = dir.join("ssh");
             std::fs::write(
                 &stub,
-                format!(
-                    "#!/bin/sh\ncase \"$1\" in\n-v) {probe}exit 255;;\n-G|-O) exit 1;;\nesac\nprintf 'CALL\\n' >> \"$OUT\"\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> \"$OUT\"; done\n"
-                ),
+                r#"#!/bin/sh
+printf 'CALL\n' >> "$OUT"
+for a in "$@"; do printf '%s\n' "$a" >> "$OUT"; done
+case " $* " in
+  *" -G "*) exit 1;;
+  *" -O exit "*) for a in "$@"; do case "$a" in ControlPath=*) rm -f "${a#ControlPath=}";; esac; done; exit 0;;
+  *" -N "*)
+    case "$MASTER" in
+      fail255) echo "ssh: connect to host failed" >&2; exit 255;;
+      fail130) exit 130;;
+    esac
+    for a in "$@"; do case "$a" in ControlPath=*) python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "${a#ControlPath=}";; esac; done
+    exit 0;;
+  *" -T "*) printf '%s\n' "$PROBE"; exit 0;;
+esac
+exit 0
+"#,
             )
             .unwrap();
             {
                 use std::os::unix::fs::PermissionsExt as _;
                 std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
-            let script = format!("{prelude}\n{function}\nwarp_ssh_helper -p 22 user@host");
+            let extra = case.extra.join(" ");
+            let exit_status = if kind == 2 { "$status" } else { "$?" };
+            let script = format!(
+                "{prelude}\n{function}\nwarp_ssh_helper -p 22 {extra} user@host\nexit {exit_status}"
+            );
             let mut command = Command::new(name);
             if kind == 2 {
                 command.args(["--no-config", "-c", &script]);
@@ -1453,34 +1537,137 @@ fn ssh_wrapper_gives_a_windows_remote_a_plain_session() {
                     ),
                 )
                 .env("OUT", &out_file)
+                .env("MASTER", case.master)
+                .env("PROBE", case.probe)
+                .stdin(std::process::Stdio::null())
                 .status()
                 .unwrap();
-            assert!(status.success(), "{name}/{case}: helper failed");
             let recorded = std::fs::read_to_string(&out_file).unwrap_or_default();
-            let calls: Vec<&str> = recorded
+            assert_eq!(
+                status.code(),
+                Some(case.status),
+                "{name}/{}: helper status; calls: {recorded:?}",
+                case.name
+            );
+            let all_calls: Vec<&str> = recorded
                 .split("CALL\n")
                 .filter(|call| !call.is_empty())
                 .collect();
-            assert_eq!(
-                calls.len(),
-                1,
-                "{name}/{case}: exactly one real ssh: {recorded:?}"
-            );
-            if plain {
-                assert_eq!(
-                    calls[0], "-p\n22\nuser@host\n",
-                    "{name}/{case}: a Windows remote must get a plain `ssh <args>`"
-                );
-            } else {
+            // `ssh -G` config lookups are local-only; they still must carry the user's arguments.
+            let calls: Vec<&str> = all_calls
+                .iter()
+                .copied()
+                .filter(|call| !call.starts_with("-G\n"))
+                .collect();
+            let mut user_args = String::from("-p\n22\n");
+            for extra in case.extra {
+                user_args.push_str(extra);
+                user_args.push('\n');
+            }
+            user_args.push_str("user@host\n");
+            // #1039: every helper ssh (master, probe, session, -O exit) carries the user's own
+            // arguments, so their known_hosts / port / jump host apply to it.
+            for call in &all_calls {
                 assert!(
-                    calls[0].contains("-t\n")
-                        && calls[0].contains("ControlMaster=yes")
-                        && calls[0].contains("export TERM_PROGRAM='WarpTerminal'"),
-                    "{name}/{case}: a POSIX remote keeps the managed session: {recorded:?}"
+                    call.contains(&user_args),
+                    "{name}/{}: an ssh call without the user's arguments: {call:?}",
+                    case.name
                 );
+            }
+            let is_master = |call: &&str| call.contains("-N\n") && call.contains("-f\n");
+            let masters = calls.iter().filter(is_master).count();
+            assert_eq!(
+                masters, 1,
+                "{name}/{}: exactly one master: {recorded:?}",
+                case.name
+            );
+            let master = calls.iter().find(is_master).unwrap();
+            assert!(
+                master.contains("ControlMaster=yes") && master.contains("ControlPersist="),
+                "{name}/{}: the master is Phosphor-owned with a safety-net persist: {master:?}",
+                case.name
+            );
+            let exits = calls.iter().filter(|c| c.contains("-O\nexit\n")).count();
+            let probes = calls.iter().filter(|c| c.contains("-T\n")).count();
+            let sessions: Vec<&&str> = calls
+                .iter()
+                .filter(|c| c.contains("-t\n") && !is_master(c))
+                .collect();
+            match case.session {
+                "none" => {
+                    assert_eq!(
+                        (calls.len(), probes, exits),
+                        (1, 0, 0),
+                        "{name}/{}: a failed connect runs nothing else: {recorded:?}",
+                        case.name
+                    );
+                    continue;
+                }
+                kind_of_session => {
+                    assert_eq!(probes, 1, "{name}/{}: one probe: {recorded:?}", case.name);
+                    assert_eq!(
+                        exits, 1,
+                        "{name}/{}: the master is taken down at the end: {recorded:?}",
+                        case.name
+                    );
+                    assert_eq!(sessions.len(), 1, "{name}/{}: {recorded:?}", case.name);
+                    let session = sessions[0];
+                    assert!(
+                        session.contains("ControlMaster=no")
+                            && session.contains(&format!("ControlPath={}/77\n", socks.display())),
+                        "{name}/{}: the session runs over the master: {session:?}",
+                        case.name
+                    );
+                    // The exit is the last call, after the session.
+                    assert!(
+                        calls.last().unwrap().contains("-O\nexit\n"),
+                        "{name}/{}: -O exit comes last: {recorded:?}",
+                        case.name
+                    );
+                    if kind_of_session == "plain" {
+                        assert!(
+                            !session.contains("export TERM_PROGRAM"),
+                            "{name}/{}: a non-POSIX remote must not get the POSIX bootstrap: {session:?}",
+                            case.name
+                        );
+                    } else {
+                        assert!(
+                            session.contains("export TERM_PROGRAM='WarpTerminal'"),
+                            "{name}/{}: a POSIX remote keeps the managed session: {session:?}",
+                            case.name
+                        );
+                    }
+                }
             }
             std::fs::remove_dir_all(&dir).ok();
         }
+    }
+}
+
+/// #1039: no ssh the wrapper itself runs may omit the user's arguments. The old pre-connect
+/// banner probe (ControlPath=none, its own option set) is gone; every remaining helper takes
+/// the original arguments through.
+#[test]
+fn ssh_wrappers_have_no_pre_connect_banner_probe() {
+    for (name, script) in [
+        (
+            "bash",
+            include_str!("../../assets/bundled/bootstrap/bash_body.sh"),
+        ),
+        (
+            "zsh",
+            include_str!("../../assets/bundled/bootstrap/zsh_body.sh"),
+        ),
+        (
+            "fish",
+            include_str!("../../assets/bundled/bootstrap/fish.sh"),
+        ),
+    ] {
+        assert!(
+            !script.contains("remote software version")
+                && !script.contains("PreferredAuthentications=none"),
+            "{name}: the unauthenticated pre-connect banner probe must stay removed"
+        );
     }
 }
 

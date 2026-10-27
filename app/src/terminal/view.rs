@@ -8726,6 +8726,30 @@ impl TerminalView {
     /// (nested ssh sessions are not tracked); the pty shutdown that follows in
     /// `on_view_detached` kills the shell's whole process group (#975), reaping the rest.
     pub fn shutdown_for_discard(&mut self, ctx: &mut ViewContext<Self>) {
+        // #1035: the ssh wrapper's background ControlMaster outlives its (killed) client and, for
+        // a plain session to a Windows server, is never registered with the remote-server
+        // manager, and Win32-OpenSSH never closes the abandoned session channel, so
+        // `ControlPersist` alone does not expire it. Its socket is always
+        // `$SSH_SOCKET_DIR/<local shell session id>`; `ssh -O exit` on a path with no master is
+        // a harmless no-op.
+        #[cfg(unix)]
+        {
+            let ids = {
+                let model = self.model.lock();
+                [
+                    model.block_list().active_block().session_id(),
+                    model.pending_session_id(),
+                ]
+            };
+            for session_id in ids.into_iter().flatten() {
+                let dir = crate::terminal::local_tty::shell::ssh_socket_dir();
+                let dir = shellexpand::tilde(&dir).into_owned();
+                let socket = std::path::PathBuf::from(dir).join(session_id.as_u64().to_string());
+                ctx.background_executor()
+                    .spawn(async move { remote_server::ssh::stop_control_master(&socket).await })
+                    .detach();
+            }
+        }
         #[cfg(not(target_family = "wasm"))]
         if FeatureFlag::SshRemoteServer.is_enabled() {
             // #1001: a remote session that never finished bootstrapping is registered with the
