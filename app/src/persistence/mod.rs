@@ -306,6 +306,9 @@ pub struct PersistedData {
     pub ignored_suggestions: Vec<(String, SuggestionType)>,
     pub mcp_server_installations: HashMap<Uuid, TemplatableMCPServerInstallation>,
     pub mcp_servers_to_restore: Vec<Uuid>,
+    /// Prompts and commands that were still queued when the app last ran, in queue order per
+    /// conversation (#1027). Restored by `QueuedQueryModel::restore_persisted`.
+    pub queued_prompts: Vec<model::QueuedPromptRow>,
 }
 
 #[derive(Clone, Debug)]
@@ -447,6 +450,13 @@ pub enum ModelEvent {
     },
     DeleteMultiAgentConversations {
         conversation_ids: Vec<String>,
+    },
+    /// Replaces the stored queued-prompt rows of one conversation with its current queue; an
+    /// empty `rows` clears them (#1027). The whole queue is rewritten on every change, so
+    /// ordering through the writer channel is all that is needed for the last write to win.
+    ReplaceQueuedPrompts {
+        conversation_id: String,
+        rows: Vec<model::QueuedPromptRow>,
     },
 
     UpsertCurrentUserInformation {

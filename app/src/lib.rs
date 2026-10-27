@@ -1471,6 +1471,7 @@ fn initialize_app(
         persisted_ignored_suggestions,
         persisted_mcp_server_installations,
         mcp_servers_to_restore,
+        persisted_queued_prompts,
     ) = sqlite_data
         .map(|sqlite_data| {
             (
@@ -1493,12 +1494,14 @@ fn initialize_app(
                 sqlite_data.ignored_suggestions,
                 sqlite_data.mcp_server_installations,
                 sqlite_data.mcp_servers_to_restore,
+                sqlite_data.queued_prompts,
             )
         })
         .unwrap_or_else(|| {
             // One `Default::default()` per binding above; adding a field to `PersistedData`
             // means adding one here too, or the tuple arms stop agreeing on arity.
             (
+                Default::default(),
                 Default::default(),
                 Default::default(),
                 Default::default(),
@@ -2098,6 +2101,12 @@ fn initialize_app(
     // Per-conversation queued prompts. Registered after the history model since it subscribes to
     // history events for cleanup.
     ctx.add_singleton_model(ai::blocklist::QueuedQueryModel::new);
+    // Queued prompts that were still waiting when the app last ran come back paused (#1027);
+    // never sent without the user seeing them first. Needs the history model for the
+    // does-this-conversation-still-exist check, hence after it.
+    ai::blocklist::QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+        model.restore_persisted(persisted_queued_prompts, ctx);
+    });
     // Conversations restore lazily from the local DB on demand: startup only
     // loads metadata (`read_agent_conversation_metadata` returns every record
     // with an empty `tasks` list), so converting those records here would yield
