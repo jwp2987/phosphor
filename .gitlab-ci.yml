@@ -549,7 +549,7 @@ usage-test-macos:
 # Release pipeline (ported from .github/workflows/phosphor_release.yml).
 #
 #   release-meta -> cli-linux / cli-macos -> release-macos-arm64 /
-#   release-linux-x86_64 -> release-publish
+#   release-linux-x86_64 / release-windows-x86_64 -> release-publish
 #
 # Runs automatically for a pushed `v*` TAG and as a manual dry run on main (version
 # `dev-<pipeline iid>`; nothing is published as a GitLab release in that case). The
@@ -561,8 +561,9 @@ usage-test-macos:
 # before either GUI client is built, and the digests are computed from the exact bytes
 # that get published, never from a rebuild (the build is not bit-reproducible).
 #
-# Scope today: Linux x86_64 and macOS arm64 only. No macOS Intel (digest left unset: an
-# install onto an Intel host fails closed), no Windows, no Linux aarch64 (same), and no
+# Scope today: Linux x86_64, macOS arm64 and Windows x86_64 (installer only; the remote
+# server CLI is never installed ON Windows). No macOS Intel (digest left unset: an
+# install onto an Intel host fails closed), no Linux aarch64 (same), and no
 # rpm/Arch packages (rpmbuild and docker are not installed on the build box).
 #
 # Big files go to the GENERIC PACKAGE REGISTRY (script/ci/upload_package), not job
@@ -821,6 +822,44 @@ release-linux-x86_64:
     paths: [manifest-linux.txt, dist/]
     expire_in: 3 days
 
+# Windows x86_64 installer (Inno Setup, unsigned) on the `windows` runner. Same pins as the
+# other GUI builds, computed from the downloaded CLI tarballs. The package-registry upload
+# goes through Git for Windows' bash so it shares script/ci/upload_package (and its
+# tag-only guard) with the other jobs.
+release-windows-x86_64:
+  extends: [.windows_job, .release_rules]
+  stage: build
+  needs: [release-meta, cli-linux, cli-macos]
+  timeout: 5h
+  variables:
+    CARGO_BUILD_JOBS: "8"
+    GIT_DEPTH: "0"
+  script:
+    - foreach ($t in "cargo","rustc","perl","cmake","ISCC") { if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { Write-Error "$t is missing on this runner"; exit 1 } }
+    - if (-not (Test-Path "$env:PROTOC")) { Write-Error "PROTOC is not set to an existing protoc.exe on this runner"; exit 1 }
+    - |
+      foreach ($pin in @(@("PHOSPHOR_CLI_SHA256_LINUX_X86_64", "phosphor-cli-linux-x86_64.tar.gz"), @("PHOSPHOR_CLI_SHA256_MACOS_AARCH64", "phosphor-cli-macos-aarch64.tar.gz"))) {
+        $file = "cli-artifacts\$($pin[1])"
+        if (-not (Test-Path $file)) { Write-Error "missing CLI tarball $file; the client would compile with no pinned digest and refuse every remote-server install"; exit 1 }
+        $digest = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
+        Set-Item -Path "env:$($pin[0])" -Value $digest
+        "$($pin[0])=$digest"
+      }
+    - .\script\windows\bundle.ps1 -CHANNEL $env:CHANNEL -ARCH x64 -RELEASE_TAG $env:RELEASE_TAG
+    - if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    - |
+      $installer = (Select-String -Path $env:GITHUB_OUTPUT -Pattern '^installer_path=(.*)$' | Select-Object -Last 1).Matches[0].Groups[1].Value
+      if (-not $installer -or -not (Test-Path $installer)) { Write-Error "no installer at '$installer'"; exit 1 }
+      New-Item -ItemType Directory -Force dist | Out-Null
+      Copy-Item $installer "dist\Phosphor-windows-x86_64-Setup.exe"
+      & "C:\Program Files\Git\bin\bash.exe" ./script/ci/upload_package "$env:RELEASE_VERSION" dist/Phosphor-windows-x86_64-Setup.exe
+      if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      Get-FileHash dist\* -Algorithm SHA256 | ForEach-Object { $_.Hash.ToLower() + "  " + (Split-Path $_.Path -Leaf) } | Set-Content -Encoding ascii manifest-windows.txt
+      Get-Content manifest-windows.txt
+  artifacts:
+    paths: [manifest-windows.txt, dist/]
+    expire_in: 3 days
+
 # Creates the GitLab release for a TAG: links to everything uploaded above, each with a
 # direct_asset_path so /-/releases/<tag>/downloads/<file> works. Skipped for dry runs on
 # main. Uses the job token (release creation by job token is allowed).
@@ -828,7 +867,7 @@ release-publish:
   extends: [.shim_github_env]
   stage: publish
   tags: [little-thing]
-  needs: [release-meta, cli-linux, cli-macos, release-macos-arm64, release-linux-x86_64]
+  needs: [release-meta, cli-linux, cli-macos, release-macos-arm64, release-linux-x86_64, release-windows-x86_64]
   timeout: 20m
   rules:
     - if: $CI_COMMIT_TAG
