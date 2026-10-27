@@ -2556,8 +2556,12 @@ struct SubshellBootstrapInFlight {
 enum PowerShellSetupHold {
     /// No PowerShell setup is holding keys (another shell, or the keys were delivered).
     Off,
-    /// The setup is announced and has not reported `Bootstrapped` yet.
+    /// The setup is announced; the shell has not started on the bootstrap script yet (its
+    /// lines are being typed or read, or it is loading the Phosphor module).
     Setup,
+    /// The bootstrap script reported its first `Precmd`: it is sourcing the user's profiles and
+    /// finishing setup (which `pwsh.ps1` does even when a Ctrl-C stops a profile, #1051).
+    ScriptRunning,
     /// `Bootstrapped` arrived; the keys are delivered at the prompt that follows it.
     AwaitingPrompt,
     /// A held line was submitted as a command; what was typed after it stays held until that
@@ -9285,10 +9289,8 @@ impl TerminalView {
     /// we perform the normal ctrl-c action.
     fn ctrl_c(&mut self, ctx: &mut ViewContext<Self>) {
         self.end_focus_reclaim();
-        // #1048 / #1014: Ctrl-C during a PowerShell subshell setup skips it, whatever block is
-        // active: the ^C reaches the shell first, then (once it is processed) what was typed.
         if self.powershell_setup_hold != PowerShellSetupHold::Off {
-            self.write_user_bytes_to_pty(vec![escape_sequences::C0::ETX], ctx);
+            self.ctrl_c_during_powershell_setup(ctx);
             return;
         }
         // Ctrl-C after an Enter that waits for the typeahead report cancels that Enter and the
@@ -9889,6 +9891,11 @@ impl TerminalView {
                 return;
             }
         }
+        // #1051: a Ctrl-C during a PowerShell subshell setup has its own rules.
+        if characters == "\u{3}" && self.powershell_setup_hold != PowerShellSetupHold::Off {
+            self.ctrl_c_during_powershell_setup(ctx);
+            return;
+        }
         // #1048: Enter (and every other non-abort key) typed during a PowerShell subshell setup
         // joins the held keys, whatever block is active; abort keys keep their own path below.
         if !is_abort_key(characters.as_bytes()) && self.holds_keys_for_powershell_subshell_setup() {
@@ -10338,7 +10345,9 @@ impl TerminalView {
             PowerShellSetupHold::LineRunning { .. } | PowerShellSetupHold::AfterAbort { .. } => {
                 true
             }
-            PowerShellSetupHold::Setup | PowerShellSetupHold::AwaitingPrompt => {
+            PowerShellSetupHold::Setup
+            | PowerShellSetupHold::ScriptRunning
+            | PowerShellSetupHold::AwaitingPrompt => {
                 !self.model.lock().is_read_only()
                     && self
                         .subshell_bootstrap_announced
@@ -15067,6 +15076,9 @@ impl TerminalView {
                     PowerShellSetupHold::AwaitingPrompt | PowerShellSetupHold::LineRunning { .. }
                 ) {
                     self.deliver_powershell_setup_keys(ctx);
+                } else if self.powershell_setup_hold == PowerShellSetupHold::Setup {
+                    // #1051: the bootstrap script's own first `Precmd`, before the profiles.
+                    self.powershell_setup_hold = PowerShellSetupHold::ScriptRunning;
                 } else if self.powershell_setup_hold == PowerShellSetupHold::Off {
                     self.release_held_setup_input_if_subshell_ready(ctx);
                 }
@@ -15078,7 +15090,10 @@ impl TerminalView {
                 is_subshell: true, ..
             }) => {
                 // #1048: the subshell is set up; its keys go out at the prompt that follows.
-                if self.powershell_setup_hold == PowerShellSetupHold::Setup {
+                if matches!(
+                    self.powershell_setup_hold,
+                    PowerShellSetupHold::Setup | PowerShellSetupHold::ScriptRunning
+                ) {
                     self.powershell_setup_hold = PowerShellSetupHold::AwaitingPrompt;
                 }
             }
@@ -17655,6 +17670,40 @@ impl TerminalView {
                 move |me, _, ctx| me.end_powershell_held_line_wait(generation, ctx),
             );
             return;
+        }
+    }
+
+    /// Ctrl-C during a PowerShell subshell setup (#1051).
+    ///
+    /// Before the setup has stalled it is not written to the shell: a ^C reaching PowerShell then
+    /// stopped the bootstrap half-way (and the Windows console flushed the bootstrap line still
+    /// queued in its input), leaving a shell that is neither plain nor set up -- the pane stayed
+    /// on "Starting shell..." and the editor refused every command. Instead it does what Ctrl-C
+    /// does at a prompt: the line being typed (held keys since the last Enter) is discarded, and
+    /// setup carries on. Once the stall ceiling has passed (the waiting notice offers "Ctrl-C
+    /// skips setup") it goes to the shell: while the profiles are being sourced it stops them and
+    /// `pwsh.ps1` still finishes setup, so the held keys stay held for the prompt after
+    /// `Bootstrapped`; earlier it skips setup as before, the held keys following the ^C.
+    fn ctrl_c_during_powershell_setup(&mut self, ctx: &mut ViewContext<Self>) {
+        let stalled = self
+            .subshell_bootstrap_announced
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() >= SUBSHELL_BOOTSTRAP_STALL_CEILING);
+        match powershell_setup_ctrl_c_route(self.powershell_setup_hold, stalled) {
+            PowerShellSetupCtrlC::CancelHeldLine => {
+                let mut held = std::mem::take(&mut self.subshell_setup_held_bytes).concat();
+                held.truncate(held_bytes_through_last_enter(&held));
+                if !held.is_empty() {
+                    self.subshell_setup_held_bytes.push(held);
+                }
+            }
+            PowerShellSetupCtrlC::StopProfiles => {
+                self.dismiss_subshell_setup_waiting_toast(ctx);
+                self.write_to_pty(vec![escape_sequences::C0::ETX], ctx);
+            }
+            PowerShellSetupCtrlC::SkipSetup => {
+                self.write_user_bytes_to_pty(vec![escape_sequences::C0::ETX], ctx);
+            }
         }
     }
 
@@ -32602,6 +32651,40 @@ fn subshell_setup_hold_limit_releases(
         Some(current) => timer_announced_at == Some(current),
         None => keys_held,
     }
+}
+
+/// What a Ctrl-C does during a PowerShell subshell setup (#1051); see
+/// `TerminalView::ctrl_c_during_powershell_setup`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PowerShellSetupCtrlC {
+    /// Discard the held line being typed; nothing reaches the shell.
+    CancelHeldLine,
+    /// Write ^C to stop a hanging profile; setup still finishes, the held keys stay held.
+    StopProfiles,
+    /// Skip setup: ^C to the shell, the held keys after it.
+    SkipSetup,
+}
+
+fn powershell_setup_ctrl_c_route(hold: PowerShellSetupHold, stalled: bool) -> PowerShellSetupCtrlC {
+    match hold {
+        PowerShellSetupHold::Setup
+        | PowerShellSetupHold::ScriptRunning
+        | PowerShellSetupHold::AwaitingPrompt
+            if !stalled =>
+        {
+            PowerShellSetupCtrlC::CancelHeldLine
+        }
+        PowerShellSetupHold::ScriptRunning => PowerShellSetupCtrlC::StopProfiles,
+        _ => PowerShellSetupCtrlC::SkipSetup,
+    }
+}
+
+/// How many of `held` bytes end with the last Enter (`\r` or `\n`): what a Ctrl-C at the prompt
+/// keeps when it discards the line being typed (#1051).
+fn held_bytes_through_last_enter(held: &[u8]) -> usize {
+    held.iter()
+        .rposition(|b| matches!(b, b'\r' | b'\n'))
+        .map_or(0, |enter| enter + 1)
 }
 
 /// Splits the first complete line off keys held through a PowerShell subshell setup (#1048):

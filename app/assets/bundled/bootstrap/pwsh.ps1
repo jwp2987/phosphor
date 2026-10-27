@@ -1085,51 +1085,57 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
 # inside Warp-Module) in order to obey the expected scoping in PowerShell's typical startup process.
 . {
     $rcStartTime = Get-EpochTime
-    # Source the user's RC files
-    # https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_profiles?view=powershell-7.4#profile-types-and-locations
-    # https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_profiles?view=powershell-7.4#the-profile-variable
-    foreach ($file in @($PROFILE.AllUsersAllHosts, $PROFILE.AllUsersCurrentHost, $PROFILE.CurrentUserAllHosts, $PROFILE.CurrentUserCurrentHost)) {
-        if ([System.IO.File]::Exists($file)) {
-            try {
-                . $file
-            } catch {
-                Microsoft.PowerShell.Utility\Write-Host -ForegroundColor Red $_.InvocationInfo.PositionMessage
-                Microsoft.PowerShell.Utility\Write-Host -ForegroundColor DarkRed $_.Exception
+    # Everything after the profiles runs in `finally` (#1051): a Ctrl-C that stops a profile (the
+    # setup-waiting notice offers it when a profile hangs) still finishes the bootstrap, so the
+    # session reports Bootstrapped instead of being left half set up on "Starting shell...".
+    # PowerShell runs a finally block even when the pipeline is stopped by Ctrl-C.
+    try {
+        # Source the user's RC files
+        # https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_profiles?view=powershell-7.4#profile-types-and-locations
+        # https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_profiles?view=powershell-7.4#the-profile-variable
+        foreach ($file in @($PROFILE.AllUsersAllHosts, $PROFILE.AllUsersCurrentHost, $PROFILE.CurrentUserAllHosts, $PROFILE.CurrentUserCurrentHost)) {
+            if ([System.IO.File]::Exists($file)) {
+                try {
+                    . $file
+                } catch {
+                    Microsoft.PowerShell.Utility\Write-Host -ForegroundColor Red $_.InvocationInfo.PositionMessage
+                    Microsoft.PowerShell.Utility\Write-Host -ForegroundColor DarkRed $_.Exception
+                }
             }
         }
-    }
 
-    # Append additional PATH entries if provided via WARP_PATH_APPEND.
-    # This happens after we source RC files in case they reset PATH.
-    if (-not [String]::IsNullOrEmpty($env:WARP_PATH_APPEND)) {
-        $env:PATH = '{0}{1}{2}' -f $env:PATH, [IO.Path]::PathSeparator, $env:WARP_PATH_APPEND
-        Microsoft.PowerShell.Management\Remove-Item -Path env:WARP_PATH_APPEND
-    }
+        # Append additional PATH entries if provided via WARP_PATH_APPEND.
+        # This happens after we source RC files in case they reset PATH.
+        if (-not [String]::IsNullOrEmpty($env:WARP_PATH_APPEND)) {
+            $env:PATH = '{0}{1}{2}' -f $env:PATH, [IO.Path]::PathSeparator, $env:WARP_PATH_APPEND
+            Microsoft.PowerShell.Management\Remove-Item -Path env:WARP_PATH_APPEND
+        }
 
-    # This is a workaround for oh-my-posh's "transient prompt" feature. When enabled, it causes the
-    # whole screen to clear on every command execution. It is implemented by overwriting the Enter
-    # and ctrl-c key handlers. Resetting those back to default effectively disables it.
-    # TODO(CORE-3234) - Find a workaround which allows transient prompt to work.
-    $enterHandler = PSReadLine\Get-PSReadLineKeyHandler | Microsoft.PowerShell.Core\Where-Object -Property Key -EQ -Value 'Enter'
-    if ($enterHandler -ne $null -and $enterHandler.Function -eq 'OhMyPoshEnterKeyHandler') {
-        PSReadLine\Set-PSReadLineKeyHandler -Chord Enter -Function AcceptLine
-    }
-    $ctrlcHandler = PSReadLine\Get-PSReadLineKeyHandler | Microsoft.PowerShell.Core\Where-Object -Property Key -EQ -Value 'Control+c'
-    if ($ctrlcHandler -ne $null -and $ctrlcHandler.Function -eq 'OhMyPoshCtrlCKeyHandler') {
-        PSReadLine\Set-PSReadLineKeyHandler -Chord 'Control+c' -Function CopyOrCancelLine
-    }
+        # This is a workaround for oh-my-posh's "transient prompt" feature. When enabled, it causes the
+        # whole screen to clear on every command execution. It is implemented by overwriting the Enter
+        # and ctrl-c key handlers. Resetting those back to default effectively disables it.
+        # TODO(CORE-3234) - Find a workaround which allows transient prompt to work.
+        $enterHandler = PSReadLine\Get-PSReadLineKeyHandler | Microsoft.PowerShell.Core\Where-Object -Property Key -EQ -Value 'Enter'
+        if ($enterHandler -ne $null -and $enterHandler.Function -eq 'OhMyPoshEnterKeyHandler') {
+            PSReadLine\Set-PSReadLineKeyHandler -Chord Enter -Function AcceptLine
+        }
+        $ctrlcHandler = PSReadLine\Get-PSReadLineKeyHandler | Microsoft.PowerShell.Core\Where-Object -Property Key -EQ -Value 'Control+c'
+        if ($ctrlcHandler -ne $null -and $ctrlcHandler.Function -eq 'OhMyPoshCtrlCKeyHandler') {
+            PSReadLine\Set-PSReadLineKeyHandler -Chord 'Control+c' -Function CopyOrCancelLine
+        }
+    } finally {
+        $rcEndTime = Get-EpochTime
 
-    $rcEndTime = Get-EpochTime
+        # Capture the current prompt (potentially modified by a profile),
+        # and then reset the prompt to our current noop prompt.
+        $global:_warpOriginalPrompt = $function:global:prompt
 
-    # Capture the current prompt (potentially modified by a profile),
-    # and then reset the prompt to our current noop prompt.
-    $global:_warpOriginalPrompt = $function:global:prompt
+        Warp-Finish-Bootstrap -rcStartTime $rcStartTime -rcEndTime $rcEndTime
+        Microsoft.PowerShell.Utility\Remove-Variable -Name enterHandler, ctrlcHandler, rcStartTime, rcEndTime -Scope global -ErrorAction Ignore
 
-    Warp-Finish-Bootstrap -rcStartTime $rcStartTime -rcEndTime $rcEndTime
-    Microsoft.PowerShell.Utility\Remove-Variable -Name enterHandler, ctrlcHandler, rcStartTime, rcEndTime -Scope global -ErrorAction Ignore
-
-    # Restore the process's original execution policy now that the user's RC files have been loaded.
-    if ($global:_warp_PSProcessExecPolicy -ne $null) {
-        Microsoft.PowerShell.Security\Set-ExecutionPolicy -Scope Process -ExecutionPolicy $global:_warp_PSProcessExecPolicy
+        # Restore the process's original execution policy now that the user's RC files have been loaded.
+        if ($global:_warp_PSProcessExecPolicy -ne $null) {
+            Microsoft.PowerShell.Security\Set-ExecutionPolicy -Scope Process -ExecutionPolicy $global:_warp_PSProcessExecPolicy
+        }
     }
 }
