@@ -1575,13 +1575,13 @@ exit 0
                 );
             }
             let is_master = |call: &&str| call.contains("-N\n") && call.contains("-f\n");
-            let masters = calls.iter().filter(is_master).count();
+            let masters = calls.iter().filter(|call| is_master(*call)).count();
             assert_eq!(
                 masters, 1,
                 "{name}/{}: exactly one master: {recorded:?}",
                 case.name
             );
-            let master = calls.iter().find(is_master).unwrap();
+            let master = calls.iter().find(|call| is_master(*call)).unwrap();
             assert!(
                 master.contains("ControlMaster=yes") && master.contains("ControlPersist="),
                 "{name}/{}: the master is Phosphor-owned with a safety-net persist: {master:?}",
