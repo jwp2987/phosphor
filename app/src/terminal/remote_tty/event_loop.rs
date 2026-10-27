@@ -124,7 +124,7 @@ impl EventLoop {
 
                 while let Ok(message) = receiver.recv().await {
                     match message {
-                        EventLoopMessage::Input(bytes) => {
+                        EventLoopMessage::Input(bytes) | EventLoopMessage::CommandInput(bytes) => {
                             if let Err(e) = sink.send(Message::new_binary(bytes.to_vec())).await {
                                 log::error!("Failed to send message to network-backed PTY {e:?}");
                             };
@@ -150,7 +150,10 @@ impl EventLoop {
                             };
                         }
                         // TODO(alokedesai): Implement shutdown on the network backed PTY.
-                        EventLoopMessage::Shutdown | EventLoopMessage::ChildExited => {}
+                        // Input is forwarded as soon as it arrives; nothing is queued here to discard.
+                        EventLoopMessage::DiscardQueuedInput
+                        | EventLoopMessage::Shutdown
+                        | EventLoopMessage::ChildExited => {}
                     }
                 }
             })

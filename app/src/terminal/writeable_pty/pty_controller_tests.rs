@@ -30,7 +30,9 @@ fn terminal_model() -> Arc<FairMutex<TerminalModel>> {
 }
 
 fn assert_input_matches(message: &Message, expected_bytes: Vec<u8>) {
-    assert!(matches!(message, Message::Input(bytes) if bytes.to_vec() == expected_bytes));
+    assert!(
+        matches!(message, Message::Input(bytes) | Message::CommandInput(bytes) if bytes.to_vec() == expected_bytes)
+    );
 }
 
 // Every test below builds its own `PtyController` wired to a fresh, idle `TerminalModel` and a
@@ -1547,7 +1549,7 @@ mod typeahead_handoff {
             .lock()
             .iter()
             .filter_map(|message| {
-                if let Message::Input(bytes) = message {
+                if let Message::Input(bytes) | Message::CommandInput(bytes) = message {
                     Some(bytes.to_vec())
                 } else {
                     None
@@ -2463,6 +2465,108 @@ fn nu_rc_file_bootstrap_sources_the_file_with_a_space_led_line_and_cr() {
             }
         }
         assert_eq!(written, b" source '/tmp/phosphor-bootstrap.nu'\r");
+
+        drop(model_events_tx);
+    });
+}
+
+/// #1046: a ^C written to the pty first tells the event loop to drop the input it has not
+/// written yet (the unwritten lines of a big multi-line submission), then goes out itself.
+#[test]
+fn ctrl_c_discards_queued_input_before_the_interrupt_is_written() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        controller.update(&mut app, |controller, ctx| {
+            controller.write_bytes(&b"echo not an interrupt\r"[..], ctx);
+            controller.write_bytes(&[escape_sequences::C0::ETX][..], ctx);
+        });
+
+        let messages = sender.messages.lock();
+        assert_eq!(messages.len(), 3, "{messages:?}");
+        assert_input_matches(&messages[0], b"echo not an interrupt\r".to_vec());
+        assert!(matches!(messages[1], Message::DiscardQueuedInput));
+        assert_input_matches(&messages[2], vec![escape_sequences::C0::ETX]);
+    });
+}
+
+/// #1046: only a user command's submitted buffer is tagged as cancellable by a ^C.
+#[test]
+fn user_command_is_sent_as_command_input_but_in_band_is_not() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        controller.update(&mut app, |controller, ctx| {
+            for in_band_command_id in [None, Some("in-band-1".to_owned())] {
+                controller.send_write_to_event_loop(
+                    PtyWrite::Command {
+                        command: "echo hi".to_owned(),
+                        shell_type: ShellType::Zsh,
+                        in_band_command_id,
+                        before_write_fn: None,
+                    },
+                    ctx,
+                );
+            }
+        });
+
+        let messages = sender.messages.lock();
+        assert!(
+            messages
+                .iter()
+                .any(|m| matches!(m, Message::CommandInput(_))),
+            "{messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| matches!(m, Message::Input(_))),
+            "{messages:?}"
+        );
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|m| matches!(m, Message::CommandInput(_)))
+                .count(),
+            1,
+            "{messages:?}"
+        );
 
         drop(model_events_tx);
     });

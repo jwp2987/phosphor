@@ -26,6 +26,8 @@ use crate::terminal::{
 };
 use crate::terminal::{model::terminal_model::ExitReason, writeable_pty::Message};
 
+use warp_terminal::model::escape_sequences::{BRACKETED_PASTE_END, BRACKETED_PASTE_START};
+
 use super::mio_channel::Receiver;
 
 /// The size of the buffer to read data into from the PTY.
@@ -63,6 +65,10 @@ pub struct EventLoop<T: local_tty::EventedPty> {
 struct Writing {
     source: Cow<'static, [u8]>,
     written: usize,
+    /// A reply to a terminal query rather than user input.
+    is_reply: bool,
+    /// See `QueuedWrite::discardable`.
+    discardable: bool,
 }
 
 /// All of the mutable state needed to run the event loop.
@@ -113,6 +119,8 @@ struct QueuedWrite {
     produced_while_executing: Option<BlockId>,
     /// A reply to a terminal query, as opposed to user input.
     is_reply: bool,
+    /// The submitted buffer of a user command (#1046); the only thing `DiscardQueuedInput` drops.
+    discardable: bool,
 }
 
 impl QueuedWrite {
@@ -162,7 +170,8 @@ impl State {
         if next.as_ref().is_some_and(QueuedWrite::is_gated) {
             self.gated_count -= 1;
         }
-        self.writing = next.map(|entry| Writing::new(entry.bytes));
+        self.writing =
+            next.map(|entry| Writing::new(entry.bytes, entry.is_reply, entry.discardable));
     }
 
     /// Whether any queued write is a reply that the gate may be withholding.
@@ -215,6 +224,17 @@ impl State {
             bytes,
             produced_while_executing: None,
             is_reply: false,
+            discardable: false,
+        });
+    }
+
+    /// Queues the submitted buffer of a user command, which a ^C may cancel while unwritten.
+    fn queue_command_input(&mut self, bytes: Cow<'static, [u8]>) {
+        self.write_list.push_back(QueuedWrite {
+            bytes,
+            produced_while_executing: None,
+            is_reply: false,
+            discardable: true,
         });
     }
 
@@ -236,6 +256,7 @@ impl State {
             bytes: Cow::Owned(bytes),
             produced_while_executing: executing_block,
             is_reply: true,
+            discardable: false,
         };
         if entry.is_gated() {
             self.gated_count += 1;
@@ -292,6 +313,31 @@ impl State {
         self.withheld_since = None;
     }
 
+    /// Drops the submitted user commands that have not reached the pty yet: queued writes tagged
+    /// `discardable`, and what is left of the write in progress if it is one (#1046). A big
+    /// multi-line paste is written a tty-buffer at a time, so a ^C queued behind it would
+    /// otherwise wait for all of it. Everything else (bootstrap scripts, typeahead, replies,
+    /// agent writes) stays queued in order. Edge: a command submitted after the interrupted work
+    /// and not yet started is dropped too. If the write in progress was cut inside a bracketed
+    /// paste, the paste is closed so the shell does not swallow what follows as pasted text.
+    fn discard_queued_input(&mut self) {
+        self.write_list.retain(|entry| !entry.discardable);
+        if self.writing.as_ref().is_some_and(|w| w.discardable) {
+            let cut_paste = self
+                .writing
+                .take()
+                .is_some_and(|w| w.cut_inside_bracketed_paste());
+            if cut_paste {
+                self.write_list.push_front(QueuedWrite {
+                    bytes: Cow::Borrowed(BRACKETED_PASTE_END),
+                    produced_while_executing: None,
+                    is_reply: false,
+                    discardable: false,
+                });
+            }
+        }
+    }
+
     #[inline]
     fn take_current(&mut self) -> Option<Writing> {
         self.writing.take()
@@ -318,10 +364,24 @@ fn executing_block_id(terminal: &TerminalModel) -> Option<BlockId> {
 
 impl Writing {
     #[inline]
-    fn new(c: Cow<'static, [u8]>) -> Writing {
+    fn new(c: Cow<'static, [u8]>, is_reply: bool, discardable: bool) -> Writing {
         Writing {
             source: c,
             written: 0,
+            is_reply,
+            discardable,
+        }
+    }
+
+    /// Whether the bytes written so far opened a bracketed paste that was not closed. Cutting the
+    /// write off there would leave the shell reading everything after as pasted text.
+    fn cut_inside_bracketed_paste(&self) -> bool {
+        let written = &self.source[..self.written.min(self.source.len())];
+        let last = |needle: &[u8]| written.windows(needle.len()).rposition(|w| w == needle);
+        match (last(BRACKETED_PASTE_START), last(BRACKETED_PASTE_END)) {
+            (Some(start), Some(end)) => start > end,
+            (Some(_), None) => true,
+            _ => false,
         }
     }
 
@@ -446,6 +506,11 @@ where
                         child_exited: false,
                     };
                 }
+                Message::CommandInput(input) => {
+                    self.reply_ledger.lock().note_input(&input);
+                    state.queue_command_input(input)
+                }
+                Message::DiscardQueuedInput => state.discard_queued_input(),
                 Message::Resize(size) => self.pty.on_resize(&size),
                 Message::ChildExited => return ChannelResult::TerminateLoop { child_exited: true },
             }
