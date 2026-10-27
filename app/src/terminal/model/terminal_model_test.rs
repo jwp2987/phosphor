@@ -3074,3 +3074,70 @@ fn late_init_shell_after_abandon_starts_a_fresh_pending_session() {
     assert!(terminal.pending_subshell_session().is_some());
     assert!(terminal.abandoned_subshell_session.is_none());
 }
+
+/// The first zsh subshell setup line, as typed (and echoed) in the #1038 captures.
+const ZSH_SETUP_FIRST_LINE: &str = r#" [ -n "${__whi-}" ] || { __whi=0; [[ -o hist_ignore_space ]] && __whi=1; }; setopt hist_ignore_space; [ -n "${__wpe-}" ] || { __wpe=0; [[ -o print_exit_value ]] && __wpe=1; }; unsetopt print_exit_value; [ -n "${__wee-}" ] || { __wee=0; [[ -o err_exit ]] && __wee=1; }; unsetopt err_exit err_return; [ -n "${__wpf-}" ] || { __wpf=0; [[ -o pipe_fail ]] && __wpf=1; }; unsetopt pipe_fail; [ -n "${__wnu-}" ] || { __wnu=0; [[ -o unset ]] || __wnu=1; }; setopt unset"#;
+const ZSH_SETUP_SECOND_LINE: &str = r#" _wbs='export WARP_HONOR_PS1=0;  setopt hist_ignore_space; unsetopt ZLE; WARP_IS_SUBSHELL=1; for _i in 1 2 3; do _c=${(#)_i}; _x=$(( [##16] _i )); done'"#;
+const ZSH_SETUP_LAST_LINE: &str =
+    r#" if [ "${__whi-}" = 1 ]; then WARP_HIST_IGNORE_SPACE_USER=1; fi; unset __whi"#;
+
+/// A `zsh` subshell whose rc file sleeps, with the three setup lines expected as the view arms
+/// them (line-clear prefix first).
+fn stalled_zsh_setup() -> TerminalModel {
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.simulate_long_running_block("zsh", "");
+    terminal.expect_setup_line_clear_echo();
+    for line in [
+        ZSH_SETUP_FIRST_LINE,
+        ZSH_SETUP_SECOND_LINE,
+        ZSH_SETUP_LAST_LINE,
+    ] {
+        terminal.expect_setup_echo(line);
+    }
+    terminal
+}
+
+fn running_block_output(terminal: &TerminalModel) -> (String, usize) {
+    let grid = terminal.block_list().active_block().output_grid();
+    (
+        grid.contents_to_string(false, None),
+        grid.grid_handler().cursor_point().col,
+    )
+}
+
+/// #1038 / #1014 on macOS: the tty echoes ` ^K ^U`, the first line, then stops part-way through
+/// the second (its input queue holds 1024 bytes) for as long as the rc sleeps. Shape of the
+/// capture from zsh 5.9 under a pty on macOS 26. None of it may reach the running block, and the
+/// block must not end in an unterminated line (which the view takes for a prompt and passes typed
+/// keys through to, where they ran inside the hidden setup).
+#[test]
+fn stalled_setup_echo_cut_off_mid_line_leaves_the_running_block_empty() {
+    let mut terminal = stalled_zsh_setup();
+    let cut = ZSH_SETUP_SECOND_LINE.find("[##").unwrap() + 3;
+    let echo = format!(
+        " ^K\x08 \x08\x08 \x08\x08 \x08{ZSH_SETUP_FIRST_LINE}\r\n{}",
+        &ZSH_SETUP_SECOND_LINE[..cut]
+    );
+    terminal.process_bytes(echo.as_bytes());
+    let (contents, cursor_col) = running_block_output(&terminal);
+    assert!(contents.trim().is_empty(), "setup echo shown: {contents:?}");
+    assert_eq!(cursor_col, 0);
+    assert!(terminal.is_setup_echo_mid_line());
+}
+
+/// #1038 on Linux: the queue takes every line, so the tty echoes all of them, each with CR LF.
+#[test]
+fn stalled_setup_echo_of_every_line_leaves_the_running_block_empty() {
+    let mut terminal = stalled_zsh_setup();
+    let echo = format!(
+        " ^K\x08 \x08\x08 \x08\x08 \x08{ZSH_SETUP_FIRST_LINE}\r\n{ZSH_SETUP_SECOND_LINE}\r\n{ZSH_SETUP_LAST_LINE}\r\n"
+    );
+    terminal.process_bytes(echo.as_bytes());
+    let (contents, cursor_col) = running_block_output(&terminal);
+    assert!(contents.trim().is_empty(), "setup echo shown: {contents:?}");
+    assert_eq!(cursor_col, 0);
+    assert!(!terminal.is_setup_echo_mid_line());
+    // The rc's own output after the echo is shown as usual.
+    terminal.process_bytes(&b"rc says hi\r\n"[..]);
+    assert!(running_block_output(&terminal).0.contains("rc says hi"));
+}

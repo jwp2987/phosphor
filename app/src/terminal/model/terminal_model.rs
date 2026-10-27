@@ -1866,6 +1866,19 @@ impl TerminalModel {
         self.setup_echo_filter.expect_line(line);
     }
 
+    /// Expects the tty's echo of the ` ^K ^U` line-clearing prefix written before the next setup
+    /// line (#1038). Call it right before [`Self::expect_setup_echo`] for that line.
+    pub fn expect_setup_line_clear_echo(&mut self) {
+        self.setup_echo_filter.expect_line_clear_prefix();
+    }
+
+    /// Whether the tty is part-way through echoing a setup line: the last text it printed is the
+    /// (hidden) setup script, so an unterminated line in the output is not a prompt waiting for
+    /// the user's answer (#1014).
+    pub fn is_setup_echo_mid_line(&self) -> bool {
+        self.setup_echo_filter.is_mid_line()
+    }
+
     /// Stops hiding the setup echo.
     pub fn clear_setup_echo(&mut self) {
         self.setup_echo_filter.disarm();
@@ -3110,6 +3123,10 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn backspace(&mut self) {
+        // The kill character's rub-out of the ` ^K` echoed before the first setup line (#1038).
+        if self.setup_echo_filter.is_armed() && self.setup_echo_filter.swallow('\u{8}') {
+            return;
+        }
         delegate!(self.backspace());
     }
 

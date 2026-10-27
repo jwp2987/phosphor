@@ -17263,6 +17263,10 @@ impl TerminalView {
             let mut model = self.model.lock();
             model.clear_setup_echo();
             if shell_type != Some(ShellType::PowerShell) {
+                // The first line goes out behind ` ^K ^U`, whose echo comes first.
+                if crate::terminal::bootstrap::subshell_bootstrap_clears_line_editor(shell_type) {
+                    model.expect_setup_line_clear_echo();
+                }
                 for line in &all_lines {
                     model.expect_setup_echo(line);
                 }
