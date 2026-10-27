@@ -17011,3 +17011,48 @@ fn queue_restore_notice_says_it_was_put_back_and_why() {
         "the reason must differ between a failure and a stop"
     );
 }
+
+/// Restoring a past conversation into a pane must leave the pane following the end of the
+/// transcript, not at whatever offset it had before (#1042). `create_and_insert_ai_block` never
+/// updated the scroll position, so a pane that had been scrolled up (or whose offset was computed
+/// against placeholder block heights) showed blank space until the user scrolled.
+///
+/// Fails without the fix: the position stays `FixedAtPosition`.
+#[test]
+fn restoring_a_conversation_scrolls_the_pane_to_the_end_of_the_transcript() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                for _ in 0..100 {
+                    model.simulate_block("ls", "foo");
+                }
+            }
+            view.update_scroll_position_locking(ScrollPositionUpdate::AfterHome, ctx);
+            assert!(
+                matches!(
+                    view.scroll_position(),
+                    ScrollPosition::FixedAtPosition { .. }
+                ),
+                "precondition: the pane starts scrolled away from the end"
+            );
+
+            view.restore_conversation_after_view_creation(
+                RestoredAIConversation::new(
+                    build_restored_conversation_without_cli_subagent_for_test(),
+                ),
+                true,
+                RestoreConversationEntryBehavior::EnterRestoredConversation,
+                ctx,
+            );
+            assert_eq!(
+                view.scroll_position(),
+                ScrollPosition::FollowsBottomOfMostRecentBlock,
+                "the restored transcript is shown from its end"
+            );
+        });
+    });
+}
