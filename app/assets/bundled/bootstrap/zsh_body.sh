@@ -1111,6 +1111,11 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
                       N) return 1;;
                       f) return 1;;
                       V) return 1;;
+                      # #1035: -w (tun device), -M (master) and -S (control socket) cannot ride the wrapper's multiplexed
+                      # session (it owns the master and the ControlPath), so they go to plain ssh as well.
+                      w) return 1;;
+                      M) return 1;;
+                      S) return 1;;
                       # The user provided an invalid option; kick it to real ssh.
                       \?) return 1;;
                       # The user omitted a required argument; kick it to real ssh.
@@ -1231,7 +1236,7 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
                   # The connection failed (ssh already printed why) or was interrupted.
                   return $warp_master_rc
               fi
-              if [[ -S "$control_path" ]]; then
+              if [[ -S "${control_path/#\~/$HOME}" ]]; then
                   warp_owns_master=1
                   control_master_mode="no"
               fi

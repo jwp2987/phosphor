@@ -60,7 +60,7 @@ pub async fn stop_control_master(socket_path: &Path) {
 /// to the pty. Only a real Unix socket is removed: the path is inspected with
 /// `symlink_metadata` (never following symlinks), and regular files, directories and symlinks
 /// are left alone.
-pub(crate) fn remove_stale_control_socket(socket_path: &Path) {
+pub fn remove_stale_control_socket(socket_path: &Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileTypeExt as _;

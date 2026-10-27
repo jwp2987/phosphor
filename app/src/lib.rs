@@ -2489,6 +2489,14 @@ impl WillTerminateSteps for AppWillTerminate<'_> {
     }
 
     fn tear_down_terminal_server(&mut self) {
+        // #1035: end the ssh wrapper's background ControlMasters first; they are detached from
+        // the shells, so tearing the ptys down does not reach them (and a Windows OpenSSH server
+        // never closes an abandoned channel, so ControlPersist would not either). Bounded.
+        #[cfg(unix)]
+        terminal::ssh::wrapper_master::stop_all_blocking(
+            terminal::ssh::wrapper_master::QUIT_STOP_BUDGET,
+        );
+
         // We want to tear down the terminal server before relaunching for
         // autoupdate, to ensure we're not running any extra Zap processes
         // when we bring up the new process.  Additionally, this must occur
