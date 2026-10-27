@@ -115,6 +115,8 @@ pub fn should_use_rc_file_bootstrap_method(
                 .is_some_and(|data| matches!(data, ShellLaunchData::MSYS2 { .. }));
             shell_type == ShellType::Fish
                 || shell_type == ShellType::PowerShell
+                // nushell cannot `eval` text, so its bootstrap is always a file it `source`s.
+                || shell_type == ShellType::Nu
                 || is_poetry_subshell
                 || ((is_pipenv_subshell
                     || (subshell_initialization_info.is_some() && cfg!(windows)))
@@ -146,6 +148,7 @@ pub fn script_for_shell(shell_type: ShellType, assets: &dyn AssetProvider) -> Co
         ShellType::Zsh => "zsh.sh",
         ShellType::Fish => "fish.sh",
         ShellType::PowerShell => "pwsh.ps1",
+        ShellType::Nu => "nu.nu",
     };
 
     BOOTSTRAP_CACHE
@@ -264,6 +267,9 @@ pub fn init_shell_script_for_shell(
             load_and_escape_fish_script("bundled/bootstrap/fish_init_shell.sh", assets)
         }
         ShellType::PowerShell => load_script("bundled/bootstrap/pwsh_init_shell.ps1", assets),
+        // One statement per line, joined with `;`, passed as the argument of `nu --execute`.
+        ShellType::Nu => load_script("bundled/bootstrap/nu_init_shell.nu", assets)
+            .replace("@@USING_CON_PTY_BOOLEAN@@", &(cfg!(windows).to_string())),
     };
     script.replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string())
 }
@@ -352,6 +358,11 @@ pub fn init_subshell_command_lines(
             let raw_script =
                 init_subshell_raw_script(shell_type, &crate::ASSETS, vars, session_id, ctx);
             chunked_eval_lines(shell_type, &raw_script)
+        }
+        Some(ShellType::Nu) => {
+            let raw_script =
+                init_subshell_raw_script(ShellType::Nu, &crate::ASSETS, vars, session_id, ctx);
+            nu_subshell_lines(&raw_script, session_id)
         }
         None => vec![
             UNKNOWN_SHELL_HISTORY_PRELUDE.to_owned(),
@@ -455,6 +466,74 @@ fn chunked_eval_lines(shell_type: ShellType, raw_script: &str) -> Vec<String> {
     lines
 }
 
+/// The notice the nushell stage-one file prints when the script arrived with the wrong length.
+const NU_SKIPPED_NOTICE: &str = "print $\"(char nl)Phosphor: subshell setup skipped, the script arrived incomplete. Type exit to leave this shell.(char nl)\"";
+
+/// Marks a newline / carriage return inside a nushell chunk, which is a single typed line.
+const NU_NEWLINE_TOKEN: &str = "@@NL@@";
+const NU_CARRIAGE_RETURN_TOKEN: &str = "@@CR@@";
+
+/// The lines typed into a running `nu` to run the stage-one subshell script `raw_script`.
+///
+/// Nushell cannot evaluate a string, only `source` a file whose path is known at parse time, so
+/// the script is rebuilt in `$env._wbs` over short lines (each a complete statement, as a
+/// canonical tty line is limited, #962), written by one line to a file in the user's own cache
+/// directory, and sourced by the next (the file must exist when that line is parsed). Every line
+/// starts with a space: `history.ignore_space_prefixed` (nushell's default) keeps it out of the
+/// history, and the first line switches that option on, saving the prior value in `$env.__wbh`
+/// (`nu.nu` puts it back once it has been sourced, so the line that sources it is hidden too).
+/// The only line that can ever be recorded is that short first one (#967). Nothing deletes a
+/// history entry.
+///
+/// The script is only run when it arrived whole (its byte length matches) and the shell is not
+/// already bootstrapped; otherwise the file holds a notice, or nothing.
+fn nu_subshell_lines(raw_script: &str, session_id: SessionId) -> Vec<String> {
+    let script = raw_script
+        .replace('\r', NU_CARRIAGE_RETURN_TOKEN)
+        .replace('\n', NU_NEWLINE_TOKEN);
+    // A raw string `r#'..'#` ends at the first `'#`; use more `#`s than any run in the script.
+    let longest_hash_run = script
+        .split(|c| c != '#')
+        .map(str::len)
+        .max()
+        .unwrap_or_default();
+    let hashes = "#".repeat(longest_hash_run + 1);
+
+    let mut chunks: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for ch in script.chars() {
+        if current.len() + ch.len_utf8() > SUBSHELL_CHUNK_PAYLOAD_BYTES {
+            chunks.push(std::mem::take(&mut current));
+        }
+        current.push(ch);
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+
+    let file = format!("phosphor-nu-{}.nu", session_id.as_u64());
+    let mut lines = Vec::with_capacity(chunks.len() + 4);
+    lines.push(
+        " $env.__wbh = $env.config.history.ignore_space_prefixed; $env.config.history.ignore_space_prefixed = true"
+            .to_owned(),
+    );
+    for (index, chunk) in chunks.iter().enumerate() {
+        let literal = format!("r{hashes}'{chunk}'{hashes}");
+        lines.push(if index == 0 {
+            format!(" $env._wbs = {literal}")
+        } else {
+            format!(" $env._wbs = ($env._wbs + {literal})")
+        });
+    }
+    let length = script.len();
+    lines.push(format!(
+        " const _wbf = ($nu.cache-dir | path join '{file}'); mkdir $nu.cache-dir; (if ($env.WARP_BOOTSTRAPPED? | default '' | is-not-empty) {{ '' }} else if (($env._wbs? | default '' | str length) == {length}) {{ $env._wbs | str replace -a '{NU_NEWLINE_TOKEN}' (char nl) | str replace -a '{NU_CARRIAGE_RETURN_TOKEN}' (char cr) }} else {{ {NU_SKIPPED_NOTICE} }}) | save -f $_wbf"
+    ));
+    lines.push(" source $_wbf".to_owned());
+    lines.push(" rm -f $_wbf; hide-env -i _wbs".to_owned());
+    lines
+}
+
 /// Returns the init subshell script for the given `shell_type` (e.g. the script that emits the
 /// subshell version of the InitShell DCS hook).
 ///
@@ -489,6 +568,9 @@ fn init_subshell_script_for_shell(
         ShellType::Bash | ShellType::Zsh | ShellType::Fish => {
             format!("export WARP_HONOR_PS1={honor_ps1_env_var_value}; {env_vars_init}")
         }
+        ShellType::Nu => {
+            format!("$env.WARP_HONOR_PS1 = '{honor_ps1_env_var_value}'; {env_vars_init}")
+        }
     };
 
     // Load and escape the shell-specific init script
@@ -501,6 +583,8 @@ fn init_subshell_script_for_shell(
             load_and_escape_fish_script("bundled/bootstrap/fish_init_subshell.sh", assets)
         }
         ShellType::PowerShell => load_script("bundled/bootstrap/pwsh_init_subshell.ps1", assets),
+        ShellType::Nu => load_script("bundled/bootstrap/nu_init_subshell.nu", assets)
+            .replace("@@USING_CON_PTY_BOOLEAN@@", &(cfg!(windows).to_string())),
     };
     let shell_init_script =
         shell_init_script.replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string());
@@ -530,10 +614,16 @@ fn init_subshell_raw_script(
         ShellType::Bash => "bundled/bootstrap/bash_init_subshell.sh",
         ShellType::Fish => "bundled/bootstrap/fish_init_subshell.sh",
         ShellType::PowerShell => "bundled/bootstrap/pwsh_init_subshell.ps1",
+        ShellType::Nu => "bundled/bootstrap/nu_init_subshell.nu",
     };
     let script = load_script(file, assets)
         .replace("@@USING_CON_PTY_BOOLEAN@@", &(cfg!(windows).to_string()))
         .replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string());
+    if shell_type == ShellType::Nu {
+        return format!(
+            "$env.WARP_HONOR_PS1 = '{honor_ps1_env_var_value}'; {env_vars_init} {script}"
+        );
+    }
     format!("export WARP_HONOR_PS1={honor_ps1_env_var_value}; {env_vars_init} {script}")
 }
 
@@ -597,6 +687,7 @@ pub fn raw_init_shell_script_for_shell(
         ShellType::Zsh => "bundled/bootstrap/zsh_init_shell.sh",
         ShellType::Fish => "bundled/bootstrap/fish_init_shell.sh",
         ShellType::PowerShell => "bundled/bootstrap/pwsh_init_shell.ps1",
+        ShellType::Nu => "bundled/bootstrap/nu_init_shell.nu",
     };
     load_script(file, assets)
         .replace("@@USING_CON_PTY_BOOLEAN@@", &(cfg!(windows).to_string()))

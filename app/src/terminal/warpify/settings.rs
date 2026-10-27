@@ -253,6 +253,15 @@ lazy_static! {
     // syntax and errors out when evaluated at a live PowerShell prompt (#800).
     pub static ref PWSH_SUBSHELL_COMMAND_REGEX: Regex = Regex::new(r"^/?([\w\.-]+/)*(pwsh|powershell)(\.exe)?(\s+-\w+)*$").expect("pwsh subshell regex invalid");
 
+    /// Matches "nu", "nushell", "/opt/homebrew/bin/nu", "nu.exe", each optionally followed by flags
+    /// that leave the shell interactive: "-l"/"--login", "-i"/"--interactive", "-n"/
+    /// "--no-config-file", "--no-history" and "--no-std-lib". Any other argument is a script path
+    /// or a value-taking flag ("-c <code>", "-e <code>", "<script>.nu"), which runs and exits
+    /// (or runs and then drops to a prompt that the setup text would race), so the trailing
+    /// anchor rejects it. Public for the same reason as `PWSH_SUBSHELL_COMMAND_REGEX`: the
+    /// `sh` probe cannot be evaluated by nushell, so the shell type is known statically.
+    pub static ref NU_SUBSHELL_COMMAND_REGEX: Regex = Regex::new(r"^/?([\w\.-]+/)*(nu|nushell)(\.exe)?(\s+(-l|--login|-i|--interactive|-n|--no-config-file|--no-history|--no-std-lib))*$").expect("nu subshell regex invalid");
+
     /// These are known compatible subshell commands
     static ref SUBSHELL_COMMAND_REGEXES: Vec<Regex> = vec![
         // Matches "bash", "/bin/bash", any "./any/path/to/bash", plus the zsh/fish equivalents
@@ -272,6 +281,9 @@ lazy_static! {
         // Matches a direct pwsh/powershell invocation. See the standalone regex's doc
         // comment above for why this one is public.
         PWSH_SUBSHELL_COMMAND_REGEX.clone(),
+
+        // Matches a direct nushell invocation. See the standalone regex's doc comment above.
+        NU_SUBSHELL_COMMAND_REGEX.clone(),
 
         // Matches commands that spawn a poetry subshell.
         POETRY_SUBSHELL_COMMAND_REGEX.clone(),

@@ -728,6 +728,17 @@ fn arguments_for_session_spawning_command(
                 .into(),
             ]
         }
+        ShellType::Nu => {
+            // `--execute` runs the init script after nushell has loaded env.nu / config.nu /
+            // login.nu (so it sees the user's configuration, as fish's `--init-command` does) and
+            // before the first prompt, then drops into the interactive shell. The init script
+            // prints the InitShell hook, which makes the app send the rest of the bootstrap.
+            vec![
+                "--login".to_owned().into(),
+                "--execute".to_owned().into(),
+                init_shell_script_for_shell(ShellType::Nu, &crate::ASSETS, session_id).into(),
+            ]
+        }
         ShellType::PowerShell => {
             // When PowerShell starts a session, it writes "PowerShell <version>" to the PTY. This
             // option suppresses that message.
@@ -808,6 +819,7 @@ fn msys2_arguments_for_session_spawning_command(shell_type: ShellType) -> Vec<Os
             ]
         }
         ShellType::PowerShell => panic!("MSYS2 not supported for PowerShell"),
+        ShellType::Nu => panic!("MSYS2 not supported for nushell"),
     }
 }
 
