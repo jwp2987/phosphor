@@ -6366,12 +6366,10 @@ impl Input {
     ) -> bool {
         submitted_line_count(command) > MULTILINE_SUBMIT_CONFIRM_LINE_THRESHOLD
             && !self.can_execute_command(ctx).is_no()
-            && !self
-                .model
-                .lock()
-                .block_list()
-                .active_block()
-                .needs_bracketed_paste()
+            && !crate::terminal::writeable_pty::pty_controller::command_is_sent_as_bracketed_paste(
+                self.model.lock().pty_bracketed_paste(),
+                command,
+            )
     }
 
     /// The user chose to run the waiting multi-line buffer line by line.

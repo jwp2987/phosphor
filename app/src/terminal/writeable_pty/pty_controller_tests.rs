@@ -2571,3 +2571,20 @@ fn user_command_is_sent_as_command_input_but_in_band_is_not() {
         drop(model_events_tx);
     });
 }
+
+/// #1046: the input's multi-line confirmation asks `command_is_sent_as_bracketed_paste`, the
+/// same decision `bytes_to_execute_command` wraps by, so the two cannot disagree.
+#[test]
+fn bracketed_paste_decision_is_shared_with_the_command_bytes() {
+    for (enabled, command) in [(true, "a\nb"), (false, "a\nb"), (true, "")] {
+        let bytes = bytes_to_execute_command(command, ShellType::Zsh, enabled);
+        let wrapped = bytes
+            .windows(escape_sequences::BRACKETED_PASTE_START.len())
+            .any(|w| w == escape_sequences::BRACKETED_PASTE_START);
+        assert_eq!(
+            wrapped,
+            command_is_sent_as_bracketed_paste(enabled, command),
+            "enabled={enabled} command={command:?}"
+        );
+    }
+}

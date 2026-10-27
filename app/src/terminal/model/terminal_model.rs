@@ -480,6 +480,9 @@ pub struct TerminalModel {
 
     /// True if the local user has made edits in the input editor since the last submit (shell or AI).
     is_input_dirty: bool,
+    /// Whether the pty controller writes user commands as a bracketed paste: a mirror of the
+    /// controller's own flag, kept in step with it (#1046).
+    pty_bracketed_paste: bool,
 
     /// List of blocks. All blocks are immutable except for the current block.
     /// Always non-empty (includes an invisible block).
@@ -1085,6 +1088,15 @@ pub enum TerminalInputState {
 }
 
 impl TerminalModel {
+    /// See the `pty_bracketed_paste` field.
+    pub fn pty_bracketed_paste(&self) -> bool {
+        self.pty_bracketed_paste
+    }
+
+    pub fn set_pty_bracketed_paste(&mut self, value: bool) {
+        self.pty_bracketed_paste = value;
+    }
+
     pub fn is_input_dirty(&self) -> bool {
         self.is_input_dirty
     }
@@ -1216,6 +1228,7 @@ impl TerminalModel {
         Self {
             alt_screen,
             is_input_dirty: false,
+            pty_bracketed_paste: false,
             block_list,
             lifecycle_coordinator: BlockLifecycleCoordinator::default(),
             typeahead_handoff: TypeaheadHandoff::default(),
