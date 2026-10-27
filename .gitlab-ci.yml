@@ -769,6 +769,8 @@ release-macos-arm64:
   variables:
     CARGO_BUILD_JOBS: "4"
     GIT_DEPTH: "0"
+    # The runner has no GUI session, so create-dmg's Finder AppleScript fails (-10810).
+    PHOSPHOR_DMG_SKIP_JENKINS: "1"
   script:
     - export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
     - for t in cargo rustc protoc hdiutil codesign lipo; do command -v $t >/dev/null || { echo "ERROR $t is missing on this runner" >&2; exit 1; }; done
