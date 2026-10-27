@@ -251,7 +251,8 @@ fn test_init_subshell_command_powershell_uses_powershell_guard_not_posix() {
 /// #839: the subshell guard is typed into a shell whose rcfiles already ran. Under bash
 /// `set -u` / zsh `setopt nounset` a bare `$WARP_BOOTSTRAPPED` aborts the whole line, so bash
 /// and zsh must use the nounset-safe `${WARP_BOOTSTRAPPED-}` -- and fish, which cannot parse
-/// `${...}`, must keep the bare form.
+/// `${...}`, must keep the bare form. (#962: the guard is on the last, short line, which evals
+/// the script the earlier lines accumulated.)
 #[test]
 fn test_init_subshell_command_guard_is_nounset_safe_for_bash_and_zsh_only() {
     App::test((), |mut app| async move {
@@ -259,26 +260,235 @@ fn test_init_subshell_command_guard_is_nounset_safe_for_bash_and_zsh_only() {
 
         app.read(|ctx| {
             for shell_type in [ShellType::Bash, ShellType::Zsh] {
-                let command =
-                    init_subshell_command(Some(shell_type), &[], SessionId::from(1u64), ctx);
+                let lines =
+                    init_subshell_command_lines(Some(shell_type), &[], SessionId::from(1u64), ctx);
+                let last = lines.last().unwrap();
                 assert!(
-                    command.starts_with(r#" [ -z "${WARP_BOOTSTRAPPED-}" ] && eval '"#),
-                    "expected a nounset-safe guard for {shell_type:?}: {command}"
+                    last.contains(r#"[ -z "${WARP_BOOTSTRAPPED-}" ]"#)
+                        && last.contains(r#"eval "$_wbs""#)
+                        && last.contains(r#""${#_wbs}" -eq "#),
+                    "expected a nounset-safe, length-checked guard for {shell_type:?}: {last}"
+                );
+                assert!(
+                    !lines.iter().any(|l| l.contains("history -d")),
+                    "{shell_type:?}: a numbered history deletion can remove the user's entry"
                 );
             }
 
-            let command =
-                init_subshell_command(Some(ShellType::Fish), &[], SessionId::from(1u64), ctx);
+            let lines =
+                init_subshell_command_lines(Some(ShellType::Fish), &[], SessionId::from(1u64), ctx);
+            let last = lines.last().unwrap();
             assert!(
-                command.starts_with(" [ -z $WARP_BOOTSTRAPPED ] && eval '"),
-                "fish cannot parse `${{...}}`, so its guard must stay bare: {command}"
+                last.starts_with(" [ -z $WARP_BOOTSTRAPPED ] && ") && last.contains("eval $_wbs"),
+                "fish cannot parse `${{...}}`, so its guard must stay bare: {last}"
             );
             assert!(
-                !command.contains("${"),
-                "fish cannot parse `${{...}}`: {command}"
+                !lines.iter().any(|l| l.contains("${")),
+                "fish cannot parse `${{...}}`: {lines:?}"
             );
         });
     });
+}
+
+/// Feeds the bash subshell bootstrap lines to a real bash on stdin under `locale`, optionally
+/// dropping one accumulated chunk (a paced line lost on the way), and returns its stdout.
+/// `extra` is a non-ASCII environment value so that characters and bytes differ.
+fn run_bash_subshell_bootstrap(locale: &str, drop_a_chunk: bool) -> Option<String> {
+    use crate::env_vars::{EnvVar, EnvVarValue};
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    // The test only needs a bash; a machine without one skips it.
+    Command::new("bash").arg("--version").output().ok()?;
+    let collected = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = collected.clone();
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let vars = [EnvVar {
+                name: "PHOSPHOR_TEST_NON_ASCII".to_owned(),
+                value: EnvVarValue::Constant("caf\u{e9} \u{2603}".to_owned()),
+                description: None,
+            }];
+            *sink.lock().unwrap() = init_subshell_command_lines(
+                Some(ShellType::Bash),
+                &vars,
+                SessionId::from(7u64),
+                ctx,
+            );
+        });
+    });
+    let mut lines = collected.lock().unwrap().clone();
+    if drop_a_chunk {
+        // Line 0 is the history prelude, the last is the guarded eval; drop the second chunk.
+        lines.remove(2);
+    }
+    let mut child = Command::new("bash")
+        .args(["--norc", "--noprofile"])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", "/nonexistent")
+        .env("LC_ALL", locale)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdin = child.stdin.take()?;
+    for line in &lines {
+        writeln!(stdin, "{line}").ok()?;
+    }
+    // A shell whose eval was skipped must still come back to its prompt and run this.
+    writeln!(stdin, "echo PROMPT-REACHED").ok()?;
+    drop(stdin);
+    let output = child.wait_with_output().ok()?;
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// #960: the length check on the last line compares `${#_wbs}` with the script's character count
+/// or byte count, so it must pass whichever one the shell's locale counts: C counts bytes, a
+/// UTF-8 locale counts characters. The script here has non-ASCII text so the two differ.
+#[test]
+fn bash_subshell_bootstrap_runs_under_c_and_utf8_locales() {
+    for locale in ["C", "C.UTF-8", "POSIX"] {
+        let Some(out) = run_bash_subshell_bootstrap(locale, false) else {
+            return;
+        };
+        assert!(
+            out.contains("\u{1b}P$d") && out.contains("PROMPT-REACHED"),
+            "LC_ALL={locale}: the InitShell hook was not emitted: {out:?}"
+        );
+    }
+}
+
+/// #960: when a line was lost the script is not evaluated, but the shell is not left hanging: it
+/// says why and returns to the prompt (the app also stops holding input, see view.rs).
+#[test]
+fn bash_subshell_bootstrap_with_a_lost_chunk_reports_and_does_not_hang() {
+    for locale in ["C", "C.UTF-8"] {
+        let Some(out) = run_bash_subshell_bootstrap(locale, true) else {
+            return;
+        };
+        assert!(
+            !out.contains("\u{1b}P$d"),
+            "LC_ALL={locale}: an incomplete script must not be evaluated: {out:?}"
+        );
+        assert!(
+            out.contains("subshell setup skipped") && out.contains("PROMPT-REACHED"),
+            "LC_ALL={locale}: no notice / the shell never returned: {out:?}"
+        );
+    }
+}
+
+/// #962: the subshell bootstrap is written while the new shell's tty may still be canonical,
+/// where a line over MAX_CANON (1024 bytes on macOS) is truncated and the shell is left at a
+/// continuation prompt. Every line written -- for every shell, with and without a large
+/// environment, and for the shell-agnostic probe -- must stay under that limit, and must start
+/// with a space so it is kept out of history (#967).
+#[test]
+fn test_init_subshell_lines_fit_in_a_canonical_tty_line_and_start_with_a_space() {
+    use crate::env_vars::{EnvVar, EnvVarValue};
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        app.read(|ctx| {
+            let many_vars: Vec<EnvVar> = (0..30)
+                .map(|i| EnvVar {
+                    name: format!("PHOSPHOR_TEST_VAR_{i}"),
+                    value: EnvVarValue::Constant(format!("it's a value with 'quotes' {i}")),
+                    description: None,
+                })
+                .collect();
+            let shells = [
+                Some(ShellType::Bash),
+                Some(ShellType::Zsh),
+                Some(ShellType::Fish),
+                Some(ShellType::PowerShell),
+                None,
+            ];
+            for shell_type in shells {
+                for vars in [&[][..], &many_vars[..]] {
+                    // The generated session id is 20 digits at most; use one.
+                    let id = SessionId::from(u64::MAX);
+                    let lines = init_subshell_command_lines(shell_type, vars, id, ctx);
+                    assert!(!lines.is_empty());
+                    // PowerShell's PSReadLine line editor is not a canonical tty; it is the
+                    // one shell exempt from the line limit when the user adds variables.
+                    let limit_applies = shell_type != Some(ShellType::PowerShell) || vars.is_empty();
+                    for line in &lines {
+                        assert!(
+                            line.starts_with(' '),
+                            "{shell_type:?}: a line without the leading space lands in history: {line}"
+                        );
+                        assert!(
+                            !line.contains('\n') && !line.contains('\r'),
+                            "{shell_type:?}: a line must not embed line breaks: {line}"
+                        );
+                        if limit_applies {
+                            assert!(
+                                line.len() < MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES,
+                                "{shell_type:?}: {} byte line exceeds the canonical-mode limit: {line}",
+                                line.len()
+                            );
+                        }
+                    }
+                }
+            }
+        });
+    });
+}
+
+/// Splitting must not change the script: concatenating the quoted chunks (as the shell does)
+/// and undoing the quoting gives back exactly the raw script, for every character that needs
+/// escaping, including a single quote or backslash landing on a chunk boundary.
+#[test]
+fn test_chunked_eval_lines_round_trip() {
+    let mut raw = String::new();
+    for i in 0..400 {
+        raw.push_str(&format!("echo '{i}' \\ \"q\" é;"));
+    }
+    for shell_type in [ShellType::Bash, ShellType::Zsh, ShellType::Fish] {
+        let lines = chunked_eval_lines(shell_type, &raw);
+        let mut rebuilt = String::new();
+        for line in &lines {
+            let Some(start) = line.find('\'') else {
+                continue;
+            };
+            if !line.contains("_wbs") || line.contains("eval") {
+                continue;
+            }
+            let end = line.len() - 1;
+            let quoted = &line[start + 1..end];
+            // Undo the shell's quoting: `'"'"'` is a literal quote; for fish `\\` is a backslash.
+            let mut un = quoted.replace(r#"'"'"'"#, "'");
+            if shell_type == ShellType::Fish {
+                un = un.replace(r"\\", r"\");
+            }
+            rebuilt.push_str(&un);
+        }
+        assert_eq!(rebuilt, raw, "{shell_type:?}");
+        // The first chunk assigns (a stale $_wbs must never be prepended), the others append.
+        let chunk_lines: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.contains("_wbs") && !l.contains("eval"))
+            .collect();
+        assert!(
+            chunk_lines[0].starts_with(" _wbs='") || chunk_lines[0].starts_with(" set -g _wbs '"),
+            "{shell_type:?}: {}",
+            chunk_lines[0]
+        );
+        assert!(chunk_lines[1..].iter().all(|l| l.contains("$_wbs")));
+        let last = lines.last().unwrap();
+        assert!(
+            last.contains(&raw.len().to_string()),
+            "{shell_type:?}: the final line must check the script length: {last}"
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|l| l.len() < MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES)
+        );
+    }
 }
 
 fn bundled_script(path: &str) -> String {
@@ -423,10 +633,12 @@ fn bash_warp_title_joins_multiline_commands_with_a_separator() {
 #[test]
 fn powershell_bootstrap_native_calls_redirect_stdin() {
     // Callees that are PowerShell script blocks, not native processes: the user's own prompt
-    // and the PSConsoleHostReadLine wrapper. A user's prompt that runs native commands is theirs.
-    const NOT_NATIVE: [&str; 2] = [
+    // the PSConsoleHostReadLine wrapper, and the user's previous AddToHistoryHandler script block
+    // (#967). A user's prompt that runs native commands is theirs.
+    const NOT_NATIVE: [&str; 3] = [
         "& $global:_warpOriginalPrompt",
         "& $script:oldPSConsoleHostReadLine",
+        "& $global:_warpPrevHistoryHandler",
     ];
     // Generator commands arrive as text and run through Invoke-Expression; they are not a
     // fixed call site, so they cannot take a pipe here.
@@ -520,4 +732,1151 @@ fn typed_bootstrap_lines_fit_macos_max_canon() {
             );
         }
     }
+}
+
+/// Runs the real lines in a real interactive shell (stdin is a pipe, so no tty, but readline-less
+/// `-i` shells still keep history) and checks the InitShell hook arrives and that nothing from the
+/// bootstrap reaches the history file (#967). Skipped for a shell that is not installed.
+#[test]
+#[cfg(unix)]
+fn test_init_subshell_lines_run_in_real_shells_and_stay_out_of_history() {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let cases: [(ShellType, &str, &[&str]); 3] = [
+                (ShellType::Bash, "bash", &["--norc", "-i"]),
+                (ShellType::Zsh, "zsh", &["-f", "-i"]),
+                (ShellType::Fish, "fish", &["--no-config", "-i"]),
+            ];
+            for (shell_type, bin, args) in cases {
+                let Ok(path) = Command::new("sh")
+                    .args(["-c", &format!("command -v {bin}")])
+                    .output()
+                else {
+                    continue;
+                };
+                let path = String::from_utf8_lossy(&path.stdout).trim().to_owned();
+                if path.is_empty() {
+                    eprintln!("skipping {bin}: not installed");
+                    continue;
+                }
+                for hc in [None, Some("ignorespace"), Some("ignoreboth")] {
+                    let dir = std::env::temp_dir().join(format!(
+                        "phosphor-subshell-{bin}-{}-{}",
+                        std::process::id(),
+                        hc.unwrap_or("unset")
+                    ));
+                    std::fs::remove_dir_all(&dir).ok();
+                    std::fs::create_dir_all(dir.join("data/fish")).unwrap();
+                    let histfile = dir.join("history");
+                    // The user's own history must survive byte for byte, whatever HISTCONTROL says.
+                    std::fs::write(&histfile, "keep1\nkeep2\n").unwrap();
+                    std::fs::write(
+                        dir.join("data/fish/fish_history"),
+                        "- cmd: keep1\n  when: 1\n- cmd: keep2\n  when: 2\n",
+                    )
+                    .unwrap();
+                    let lines = init_subshell_command_lines(
+                        Some(shell_type),
+                        &[],
+                        SessionId::from(4242u64),
+                        ctx,
+                    );
+                    let mut command = Command::new(&path);
+                    command.args(args).env_clear();
+                    if let Some(hc) = hc {
+                        command.env("HISTCONTROL", hc);
+                    }
+                    let mut child = command
+                        .env("PATH", std::env::var("PATH").unwrap_or_default())
+                        .env("HOME", &dir)
+                        .env("HISTFILE", &histfile)
+                        .env("HISTSIZE", "1000")
+                        .env("SAVEHIST", "1000")
+                        .env("XDG_DATA_HOME", dir.join("data"))
+                        .env("XDG_CONFIG_HOME", dir.join("cfg"))
+                        .env("TERM", "dumb")
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::null())
+                        .spawn()
+                        .unwrap();
+                    {
+                        let stdin = child.stdin.as_mut().unwrap();
+                        for line in &lines {
+                            stdin.write_all(line.as_bytes()).unwrap();
+                            stdin.write_all(b"\n").unwrap();
+                        }
+                        stdin.write_all(b" echo done-marker\nexit\n").unwrap();
+                    }
+                    let out = child.wait_with_output().unwrap();
+                    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+                    assert!(
+                        stdout.contains("\u{1b}P$d"),
+                        "{bin}: no DCS hook in the output: {stdout:?}"
+                    );
+                    let hex: String = stdout
+                        .split("\u{1b}P$d")
+                        .nth(1)
+                        .unwrap()
+                        .chars()
+                        .take_while(|c| c.is_ascii_hexdigit())
+                        .collect();
+                    let payload: Vec<u8> = (0..hex.len() / 2)
+                        .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap())
+                        .collect();
+                    let payload = String::from_utf8(payload).unwrap();
+                    assert!(
+                        payload.contains("InitShell") && payload.contains("\"is_subshell\": true"),
+                        "{bin}: {payload}"
+                    );
+                    assert!(
+                        payload.contains("4242"),
+                        "{bin}: wrong session id in {payload}"
+                    );
+                    let mut history = std::fs::read_to_string(&histfile).unwrap_or_default();
+                    history.push_str(
+                        &std::fs::read_to_string(dir.join("data/fish/fish_history"))
+                            .unwrap_or_default(),
+                    );
+                    assert!(
+                        history.contains("keep1") && history.contains("keep2"),
+                        "{bin} (HISTCONTROL={hc:?}): the user's history entries were lost: {history:?}"
+                    );
+                    assert!(
+                        !history.contains("_wbs") && !history.contains("WARP_"),
+                        "{bin} (HISTCONTROL={hc:?}): bootstrap lines reached the history file: {history:?}"
+                    );
+                    std::fs::remove_dir_all(&dir).ok();
+                }
+            }
+        });
+    });
+}
+
+/// #967: the shell-agnostic probe is typed into a shell nobody knows yet. Its first line turns
+/// history-ignores-space on in bash and zsh (the one short line a shell can still record), so the
+/// long probe line is not recorded, and the probe's tail puts the option back. Nothing in the
+/// user's history file is lost, and fish and POSIX sh parse the lines without noise.
+#[test]
+#[cfg(unix)]
+fn test_unknown_shell_probe_stays_out_of_history_and_restores_the_options() {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let cases: [(&str, &[&str]); 4] = [
+                ("bash", &["--norc", "-i"]),
+                ("zsh", &["-f", "-i"]),
+                ("fish", &["--no-config", "-i"]),
+                ("dash", &["-i"]),
+            ];
+            for (bin, args) in cases {
+                let Ok(path) = Command::new("sh")
+                    .args(["-c", &format!("command -v {bin}")])
+                    .output()
+                else {
+                    continue;
+                };
+                let path = String::from_utf8_lossy(&path.stdout).trim().to_owned();
+                if path.is_empty() {
+                    eprintln!("skipping {bin}: not installed");
+                    continue;
+                }
+                let lines = init_subshell_command_lines(None, &[], SessionId::from(4242u64), ctx);
+                assert_eq!(lines.len(), 2, "a history prelude, then the probe");
+                let dir = std::env::temp_dir()
+                    .join(format!("phosphor-probe-{bin}-{}", std::process::id()));
+                std::fs::remove_dir_all(&dir).ok();
+                std::fs::create_dir_all(dir.join("data/fish")).unwrap();
+                let histfile = dir.join("history");
+                std::fs::write(&histfile, "keep1\nkeep2\n").unwrap();
+                let mut child = Command::new(&path)
+                    .args(args)
+                    .env_clear()
+                    .env("PATH", std::env::var("PATH").unwrap_or_default())
+                    .env("HOME", &dir)
+                    .env("HISTFILE", &histfile)
+                    .env("HISTSIZE", "1000")
+                    .env("SAVEHIST", "1000")
+                    .env("HISTCONTROL", "ignoredups")
+                    .env("XDG_DATA_HOME", dir.join("data"))
+                    .env("XDG_CONFIG_HOME", dir.join("cfg"))
+                    .env("TERM", "dumb")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                {
+                    let stdin = child.stdin.as_mut().unwrap();
+                    for line in &lines {
+                        stdin.write_all(line.as_bytes()).unwrap();
+                        stdin.write_all(b"\n").unwrap();
+                    }
+                    // A bash or zsh the probe names is followed by the known-shell stage, whose
+                    // last line puts the options back (the probe keeps them on until then so that
+                    // stage's first line is not recorded either).
+                    let known = match bin {
+                        "bash" => Some(ShellType::Bash),
+                        "zsh" => Some(ShellType::Zsh),
+                        _ => None,
+                    };
+                    if let Some(known) = known {
+                        for line in chunked_eval_lines(known, "echo STAGE2-RAN") {
+                            stdin.write_all(line.as_bytes()).unwrap();
+                            stdin.write_all(b"\n").unwrap();
+                        }
+                    }
+                    // `HISTCONTROL` must be back to the user's value after the probe.
+                    stdin
+                        .write_all(b" echo \"hc-after=[$HISTCONTROL]\"\n")
+                        .unwrap();
+                    if bin == "zsh" {
+                        stdin
+                            .write_all(
+                                b" [[ -o hist_ignore_space ]] && echo whi-after=on || echo whi-after=off\n",
+                            )
+                            .unwrap();
+                    }
+                    stdin.write_all(b"exit\n").unwrap();
+                }
+                let out = child.wait_with_output().unwrap();
+                let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+                let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+                assert!(
+                    stdout.contains("\u{1b}]9278;f;") && stdout.contains("InitSubshell"),
+                    "{bin}: no probe hook in the output: {stdout:?}"
+                );
+                if bin == "bash" {
+                    assert!(
+                        stdout.contains("hc-after=[ignoredups]"),
+                        "{bin}: HISTCONTROL was not restored: {stdout:?}"
+                    );
+                }
+                if bin == "zsh" {
+                    assert!(
+                        stdout.contains("STAGE2-RAN") && stdout.contains("whi-after=off"),
+                        "{bin}: hist_ignore_space was not restored: {stdout:?}"
+                    );
+                }
+                for noise in ["not a valid", "nknown command", "syntax error", "unbound"] {
+                    assert!(
+                        !stderr.contains(noise) && !stdout.contains(noise),
+                        "{bin}: the probe printed an error ({noise}): {stderr:?}"
+                    );
+                }
+                let mut history = std::fs::read_to_string(&histfile).unwrap_or_default();
+                history.push_str(
+                    &std::fs::read_to_string(dir.join("data/fish/fish_history"))
+                        .unwrap_or_default(),
+                );
+                if bin == "bash" {
+                    assert!(
+                        history.contains("keep1") && history.contains("keep2"),
+                        "{bin}: the user's history entries were lost: {history:?}"
+                    );
+                }
+                assert!(
+                    !history.contains("WARP_BOOTSTRAPPED") && !history.contains("InitSubshell"),
+                    "{bin}: the probe line reached the history file: {history:?}"
+                );
+                std::fs::remove_dir_all(&dir).ok();
+            }
+        });
+    });
+}
+
+/// #967: the real probe-then-known-shell line stream, typed into real interactive bash and zsh
+/// under every history setting that matters, leaves at most ONE Phosphor line in the history file
+/// (the prelude that switches ignore-space on: a shell records a line before it runs it, so no
+/// line can keep itself out of history) and none when the shell already ignored space. The user's
+/// own entries survive byte for byte and the settings are exactly as they were afterwards.
+#[test]
+#[cfg(unix)]
+fn test_probe_and_known_stage_leave_at_most_the_prelude_in_history() {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let probe = init_subshell_command_lines(None, &[], SessionId::from(4242u64), ctx);
+            // (shell, shell type, env HISTCONTROL / zshrc lines, ignores space already)
+            let mut cases: Vec<(&str, ShellType, String, bool)> = Vec::new();
+            for hc in ["", "ignoredups", "ignorespace", "ignoreboth", "erasedups"] {
+                cases.push((
+                    "bash",
+                    ShellType::Bash,
+                    hc.to_owned(),
+                    hc.contains("ignorespace") || hc.contains("ignoreboth"),
+                ));
+            }
+            for (rc, ignores) in [
+                ("", false),
+                ("setopt hist_ignore_space", true),
+                ("setopt inc_append_history", false),
+                ("setopt share_history", false),
+            ] {
+                cases.push(("zsh", ShellType::Zsh, rc.to_owned(), ignores));
+            }
+            for (bin, shell_type, setting, ignores_space) in cases {
+                let Ok(path) = Command::new("sh")
+                    .args(["-c", &format!("command -v {bin}")])
+                    .output()
+                else {
+                    continue;
+                };
+                let path = String::from_utf8_lossy(&path.stdout).trim().to_owned();
+                if path.is_empty() {
+                    eprintln!("skipping {bin}: not installed");
+                    continue;
+                }
+                let dir = std::env::temp_dir().join(format!(
+                    "phosphor-prelude-{bin}-{}-{}",
+                    std::process::id(),
+                    setting.replace(' ', "_")
+                ));
+                std::fs::remove_dir_all(&dir).ok();
+                std::fs::create_dir_all(&dir).unwrap();
+                let histfile = dir.join("history");
+                std::fs::write(&histfile, "keep1\nkeep2\n").unwrap();
+                std::fs::write(
+                    dir.join(".zshrc"),
+                    format!("HISTSIZE=1000\nSAVEHIST=1000\n{setting}\n"),
+                )
+                .unwrap();
+                let mut command = Command::new(&path);
+                command
+                    .args(if bin == "bash" {
+                        &["--norc", "-i"][..]
+                    } else {
+                        &["-i"][..]
+                    })
+                    .env_clear()
+                    .env("PATH", std::env::var("PATH").unwrap_or_default())
+                    .env("HOME", &dir)
+                    .env("ZDOTDIR", &dir)
+                    .env("HISTFILE", &histfile)
+                    .env("HISTSIZE", "1000")
+                    .env("TERM", "dumb");
+                if bin == "bash" && !setting.is_empty() {
+                    command.env("HISTCONTROL", &setting);
+                }
+                let mut child = command
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                {
+                    let stdin = child.stdin.as_mut().unwrap();
+                    let mut stream = vec!["echo user1".to_owned()];
+                    stream.extend(probe.iter().cloned());
+                    stream.extend(chunked_eval_lines(shell_type, "echo STAGE2-RAN"));
+                    stream.push("echo user2".to_owned());
+                    stream.push(if bin == "bash" {
+                        "echo \"hc-after=[$HISTCONTROL] set=${HISTCONTROL+y}\"".to_owned()
+                    } else {
+                        "[[ -o hist_ignore_space ]] && echo whi-after=on || echo whi-after=off"
+                            .to_owned()
+                    });
+                    stream.push("exit".to_owned());
+                    for line in stream {
+                        stdin.write_all(line.as_bytes()).unwrap();
+                        stdin.write_all(b"\n").unwrap();
+                    }
+                }
+                let out = child.wait_with_output().unwrap();
+                let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+                let why = format!("{bin} [{setting}]");
+                assert!(
+                    stdout.contains("STAGE2-RAN"),
+                    "{why}: stage two did not run: {stdout:?}"
+                );
+                if bin == "bash" {
+                    // Unset stays "set but empty" (the stage cannot tell the two apart); a set
+                    // value comes back exactly.
+                    assert!(
+                        stdout.contains(&format!("hc-after=[{setting}]")),
+                        "{why}: HISTCONTROL not restored: {stdout:?}"
+                    );
+                } else {
+                    let expect = if ignores_space {
+                        "whi-after=on"
+                    } else {
+                        "whi-after=off"
+                    };
+                    assert!(
+                        stdout.contains(expect),
+                        "{why}: option not restored: {stdout:?}"
+                    );
+                }
+                let history = std::fs::read_to_string(&histfile).unwrap_or_default();
+                for kept in ["keep1", "keep2", "echo user1", "echo user2"] {
+                    assert!(history.contains(kept), "{why}: lost {kept}: {history:?}");
+                }
+                let bootstrap_lines: Vec<&str> = history
+                    .lines()
+                    .filter(|l| {
+                        l.contains("__hc0")
+                            || l.contains("__whi")
+                            || l.contains("_wbs")
+                            || l.contains("WARP_")
+                            || l.contains("InitSubshell")
+                            || l.contains("STAGE2")
+                    })
+                    .collect();
+                if ignores_space {
+                    assert!(
+                        bootstrap_lines.is_empty(),
+                        "{why}: bootstrap lines recorded: {bootstrap_lines:?}"
+                    );
+                } else {
+                    assert!(
+                        bootstrap_lines.len() <= 1
+                            && bootstrap_lines
+                                .iter()
+                                .all(|l| l.trim_start()
+                                    == UNKNOWN_SHELL_HISTORY_PRELUDE.trim_start()),
+                        "{why}: more than the one prelude line recorded: {bootstrap_lines:?}"
+                    );
+                }
+                std::fs::remove_dir_all(&dir).ok();
+            }
+        });
+    });
+}
+
+/// #967: no bootstrap line deletes a history entry by number (the entry could be the user's own
+/// when the shell never recorded our space-led line), and PowerShell keeps the big line out of
+/// PSReadLine's history with a chained AddToHistoryHandler instead of rewriting the history file.
+#[test]
+fn test_init_subshell_never_deletes_or_rewrites_history() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            for shell_type in [
+                Some(ShellType::Bash),
+                Some(ShellType::Zsh),
+                Some(ShellType::Fish),
+                Some(ShellType::PowerShell),
+                None,
+            ] {
+                let lines =
+                    init_subshell_command_lines(shell_type, &[], SessionId::from(1u64), ctx);
+                for line in &lines {
+                    assert!(
+                        !line.contains("history -d") && !line.contains("HISTCMD"),
+                        "{shell_type:?}: {line}"
+                    );
+                    assert!(
+                        !line.contains("BASH_VERSION"),
+                        "{shell_type:?}: the unknown-shell probe must not use a bare $BASH_VERSION: {line}"
+                    );
+                }
+            }
+            let lines = init_subshell_command_lines(
+                Some(ShellType::PowerShell),
+                &[],
+                SessionId::from(1u64),
+                ctx,
+            );
+            assert!(lines.len() >= 2 && lines[0].contains("-AddToHistoryHandler"));
+            assert!(lines[0].contains("_warpPrevHistoryHandler"), "must chain: {}", lines[0]);
+
+            // #967: the handler also refuses the line that later sources the temp bootstrap file,
+            // and the line that installs it carries the word PSReadLine's default handler keeps
+            // out of the history file.
+            assert!(lines[0].contains(r"\.tmp[A-Za-z0-9]{6}\.ps1"), "{}", lines[0]);
+            assert!(lines[0].trim_end().ends_with("# apikey"), "{}", lines[0]);
+            // The pattern in the handler matches the line `source_bootstrap_script` types for a
+            // `tempfile` path (same regex dialect for this subset), and not an ordinary command.
+            let tmp_path = "/var/folders/ab/c_d/T/.tmpAbC123.ps1";
+            let typed = format!(
+                " . {}",
+                warp_util::path::ShellFamily::PowerShell.escape(tmp_path)
+            );
+            let pattern = lines[0]
+                .split("-match '")
+                .nth(1)
+                .and_then(|rest| rest.split("')").next())
+                .expect("the handler has a bootstrap-file pattern");
+            let regex = regex::Regex::new(pattern).unwrap();
+            assert!(regex.is_match(typed.trim_start()), "{pattern} vs {typed}");
+            assert!(!regex.is_match(". ./build.ps1"));
+            assert!(!regex.is_match("Get-ChildItem .tmpAbC123.ps1"));
+        });
+    });
+}
+
+/// #995: the ssh wrapper hands the remote bootstrap to ssh through a variable, so the job text a
+/// shell prints for a stopped ssh (Ctrl-Z during connect) is a short command line, not the whole
+/// embedded script. The remote command itself is unchanged: a stub `ssh` on PATH receives it.
+#[test]
+#[cfg(unix)]
+fn ssh_wrapper_job_text_is_short_and_remote_script_still_arrives() {
+    use std::process::Command;
+
+    for (name, source, fish) in [
+        (
+            "bash",
+            include_str!("../../assets/bundled/bootstrap/bash_body.sh"),
+            false,
+        ),
+        (
+            "fish",
+            include_str!("../../assets/bundled/bootstrap/fish.sh"),
+            true,
+        ),
+    ] {
+        // The statement that runs `command ssh ... -t <args>` with the remote script.
+        let start = source
+            .find(if fish {
+                "command ssh $warp_ipqos_args -o ControlMaster"
+            } else {
+                "command ssh ${warp_ipqos_args[@]+"
+            })
+            .unwrap_or_else(|| panic!("{name}: the wrapper's ssh invocation moved"));
+        let statement: String = source[start..]
+            .lines()
+            .take(2)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            statement.len() < 400 && !statement.contains("TERM_PROGRAM"),
+            "{name}: the ssh invocation must not carry the script inline (#995): {statement}"
+        );
+        assert!(
+            statement.contains("warp_remote_bootstrap"),
+            "{name}: {statement}"
+        );
+
+        // Run the real helper with a stub ssh: the last argument must still be the whole script.
+        let have = Command::new(name).arg("--version").output().is_ok();
+        if !have {
+            eprintln!("skipping {name}: not installed");
+            continue;
+        }
+        let dir =
+            std::env::temp_dir().join(format!("phosphor-ssh-stub-{name}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let stub = dir.join("ssh");
+        std::fs::write(
+            &stub,
+            "#!/bin/sh\ncase \"$1\" in -G|-O) exit 1;; esac\nfor a in \"$@\"; do last=\"$a\"; done\nprintf '%s' \"$last\" > \"$OUT\"\n",
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let (open, close) = if fish {
+            ("    function warp_ssh_helper", "\n    end\n")
+        } else {
+            (
+                "        function warp_ssh_helper() {",
+                "\n        function __warp_ssh_impl",
+            )
+        };
+        let from = source.find(open).unwrap();
+        let to = from + source[from..].find(close).unwrap() + close.len();
+        let function = if fish {
+            source[from..to].to_owned()
+        } else {
+            source[from..to - "\n        function __warp_ssh_impl".len()].to_owned()
+        };
+        let out_file = dir.join("out");
+        let prelude = if fish {
+            "function warp_init_shell; echo init-$argv; end; function warp_send_json_message; end; set -g SSH_SOCKET_DIR /tmp/s; set -g WARP_SESSION_ID 77; set -g WARP_HONOR_PS1 1;"
+        } else {
+            "init_shell_hook(){ echo hook-$1; }; warp_send_json_message(){ :; }; SSH_SOCKET_DIR=/tmp/s; WARP_SESSION_ID=77; WARP_HONOR_PS1=1;"
+        };
+        let script = format!("{prelude}\n{function}\nwarp_ssh_helper -p 22 user@host");
+        let mut command = Command::new(name);
+        if fish {
+            command.args(["--no-config", "-c", &script]);
+        } else {
+            command.args(["-c", &script]);
+        }
+        let status = command
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    dir.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env("OUT", &out_file)
+            .status()
+            .unwrap();
+        assert!(status.success(), "{name}: helper failed");
+        let remote = std::fs::read_to_string(&out_file).unwrap_or_default();
+        assert!(
+            remote.contains("export TERM_PROGRAM='WarpTerminal'")
+                && remote.contains("exec -l zsh -g"),
+            "{name}: the remote script did not reach ssh intact: {remote:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// #960: `trap <fn> EXIT HUP` replaced bash's default hang-up handling, so a remote shell
+/// neither exited on SIGHUP nor, while a foreground child such as `sudo` ran, ever did --
+/// closing the tab left orphaned shells (and root shells under them). EXIT alone already runs
+/// on a SIGHUP death.
+#[test]
+fn bash_body_does_not_trap_sighup() {
+    let body = include_str!("../../assets/bundled/bootstrap/bash_body.sh");
+    for line in body.lines() {
+        let code = line.trim_start();
+        if code.starts_with('#') {
+            continue;
+        }
+        assert!(
+            !(code.starts_with("trap ")
+                && code.split_whitespace().any(|w| w == "HUP" || w == "SIGHUP")),
+            "bash_body.sh must not trap HUP: {line}"
+        );
+    }
+}
+
+/// #960: a literal XOFF (0x13) or XON (0x11) in anything typed at a shell would, on a tty with
+/// `IXON` set (the default on the pty `sudo -i` allocates), be eaten by the line discipline and
+/// stop the shell's output. Nothing the app types may contain either byte, for any shell: the
+/// scripts, the init-shell scripts and the paced subshell lines.
+#[test]
+fn typed_bootstrap_never_contains_xoff_or_xon_bytes() {
+    fn assert_clean(what: &str, bytes: &[u8]) {
+        for (index, byte) in bytes.iter().enumerate() {
+            assert!(
+                *byte != 0x13 && *byte != 0x11,
+                "{what} contains flow-control byte {byte:#04x} at offset {index}"
+            );
+        }
+    }
+    for shell in [
+        ShellType::Zsh,
+        ShellType::Bash,
+        ShellType::Fish,
+        ShellType::PowerShell,
+    ] {
+        assert_clean(
+            &format!("{shell:?} bootstrap script"),
+            &script_for_shell(shell, &crate::ASSETS),
+        );
+        assert_clean(
+            &format!("{shell:?} init-shell script"),
+            init_shell_script_for_shell(shell, &crate::ASSETS, SessionId::from(1u64)).as_bytes(),
+        );
+    }
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            for shell_type in [
+                Some(ShellType::Bash),
+                Some(ShellType::Zsh),
+                Some(ShellType::Fish),
+                Some(ShellType::PowerShell),
+                None,
+            ] {
+                for line in
+                    init_subshell_command_lines(shell_type, &[], SessionId::from(u64::MAX), ctx)
+                {
+                    assert_clean(&format!("{shell_type:?} subshell line"), line.as_bytes());
+                }
+            }
+        });
+    });
+}
+
+/// #960: the full script reaches a subshell in writes small enough that a blocking user-space
+/// pty relay (`sudo -i`) never has more pending than the inner tty can queue, and pacing never
+/// reorders or drops a byte.
+#[test]
+fn subshell_bootstrap_chunks_are_small_and_lossless() {
+    for shell in [ShellType::Zsh, ShellType::Bash, ShellType::Fish] {
+        let script = script_for_shell(shell, &crate::ASSETS);
+        let chunks = subshell_bootstrap_chunks(&script);
+        assert!(chunks.len() > 1, "{shell:?}: the script should need pacing");
+        assert!(SUBSHELL_BOOTSTRAP_CHUNK_SIZE < 4095);
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.len() <= SUBSHELL_BOOTSTRAP_CHUNK_SIZE)
+        );
+        assert_eq!(chunks.concat(), script.to_vec(), "{shell:?}");
+    }
+    assert!(subshell_bootstrap_chunks(b"").is_empty());
+}
+
+/// Extracts `is_interactive_ssh_session` from a bundled bootstrap script: from its `function`
+/// line to the first later line that is just `}` (bash/zsh) or `end` (fish) at the same indent.
+fn extract_ssh_gate_function(script: &str, closer: &str) -> String {
+    let mut out = Vec::new();
+    let mut indent = None;
+    for line in script.lines() {
+        if indent.is_none() {
+            if line
+                .trim_start()
+                .starts_with("function is_interactive_ssh_session")
+            {
+                indent = Some(line.len() - line.trim_start().len());
+                out.push(line);
+            }
+            continue;
+        }
+        out.push(line);
+        if line.trim() == closer && line.len() - line.trim_start().len() == indent.unwrap() {
+            break;
+        }
+    }
+    assert!(indent.is_some(), "is_interactive_ssh_session not found");
+    out.join("\n")
+}
+
+/// #999: the ssh wrapper must only wrap an interactive login. `-O <cmd>`, `-N`, `-f` (also in
+/// clusters), `-V`, `-G`, `-Q`, `-T`, `-W` and any remote command pass straight to real ssh,
+/// while plain `ssh host` and option-with-argument forms still get the wrapper. Runs the real
+/// function text from every bundled shell body, in that shell.
+#[test]
+fn ssh_wrapper_only_wraps_interactive_logins() {
+    let sources = [
+        (
+            "bash",
+            include_str!("../../assets/bundled/bootstrap/bash_body.sh"),
+            "}",
+        ),
+        (
+            "zsh",
+            include_str!("../../assets/bundled/bootstrap/zsh_body.sh"),
+            "}",
+        ),
+        (
+            "fish",
+            include_str!("../../assets/bundled/bootstrap/fish.sh"),
+            "end",
+        ),
+    ];
+    let wrapped: &[&[&str]] = &[
+        &["host"],
+        &["-p", "22", "host"],
+        &["-p22", "host"],
+        &["-o", "X=Y", "host"],
+        &["-i", "key", "-l", "user", "host"],
+        &["-L", "1:h:2", "-F", "cfg", "host"],
+        &["-tt", "host"],
+        &["-A", "-v", "host"],
+        &["user@host"],
+    ];
+    let passthrough: &[&[&str]] = &[
+        &["-O", "check", "host"],
+        &["-O", "exit", "host"],
+        &["-O", "stop", "host"],
+        &["-O", "forward", "-L", "1:h:2", "host"],
+        &["-p", "22", "-O", "check", "host"],
+        &["-N", "host"],
+        &["-f", "host"],
+        &["-fN", "host"],
+        &["-Nf", "-L", "1:h:2", "host"],
+        &["-V"],
+        &["-G", "host"],
+        &["-Q", "cipher"],
+        &["-W", "h:22", "host"],
+        &["-T", "host"],
+        &["host", "ls"],
+        &["-p", "22", "host", "uptime"],
+    ];
+    for (shell, source, closer) in sources {
+        if std::process::Command::new(shell)
+            .arg("-c")
+            .arg("true")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipping {shell}: not installed");
+            continue;
+        }
+        let function = extract_ssh_gate_function(source, closer);
+        let run = |args: &[&str]| -> bool {
+            let quoted = args
+                .iter()
+                .map(|a| format!("'{a}'"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let status_var = if shell == "fish" { "$status" } else { "$?" };
+            let script = format!(
+                "{function}\nis_interactive_ssh_session {quoted}\necho RESULT=={status_var}"
+            );
+            let out = std::process::Command::new(shell)
+                .args(["-c", &script])
+                .output()
+                .expect("run shell");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            stdout.contains("RESULT==0")
+        };
+        for args in wrapped {
+            assert!(run(args), "{shell}: {args:?} must still get the wrapper");
+        }
+        for args in passthrough {
+            assert!(
+                !run(args),
+                "{shell}: {args:?} must pass straight through to ssh"
+            );
+        }
+    }
+}
+
+/// #1014: the probe and the known-shell stage are typed into a shell whose rc files already ran,
+/// so they must survive hostile settings: `set -euo pipefail` (bash), `ERR_EXIT NO_UNSET
+/// PIPE_FAIL PRINT_EXIT_VALUE` (zsh) and `set -eu` (POSIX sh). The shell must stay alive, print
+/// nothing extra (zsh's PRINT_EXIT_VALUE reports every non-zero line), run the staged script and
+/// get its own options back. The old prelude counted `setopt | grep -c histignorespace`, which
+/// exits 1 when the option is off and killed a zsh with ERR_EXIT.
+#[test]
+#[cfg(unix)]
+fn test_bootstrap_lines_survive_errexit_nounset_pipefail_rc_settings() {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let probe = init_subshell_command_lines(None, &[], SessionId::from(4242u64), ctx);
+            // (shell, args, rc file name, rc text, known-shell stage, extra zsh setting)
+            let cases: [(&str, &[&str], &str, &str, Option<ShellType>); 4] = [
+                ("bash", &["-i"], "rc", "set -euo pipefail\n", Some(ShellType::Bash)),
+                (
+                    "zsh",
+                    &["-i"],
+                    ".zshrc",
+                    "setopt ERR_EXIT NO_UNSET PIPE_FAIL PRINT_EXIT_VALUE\n",
+                    Some(ShellType::Zsh),
+                ),
+                (
+                    "zsh",
+                    &["-i"],
+                    ".zshrc",
+                    "setopt ERR_EXIT NO_UNSET PIPE_FAIL PRINT_EXIT_VALUE HIST_IGNORE_SPACE\n",
+                    Some(ShellType::Zsh),
+                ),
+                ("dash", &["-i"], "rc", "set -eu\n", None),
+            ];
+            for (bin, args, rc_name, rc, known) in cases {
+                let Ok(path) = Command::new("sh")
+                    .args(["-c", &format!("command -v {bin}")])
+                    .output()
+                else {
+                    continue;
+                };
+                let path = String::from_utf8_lossy(&path.stdout).trim().to_owned();
+                if path.is_empty() {
+                    eprintln!("skipping {bin}: not installed");
+                    continue;
+                }
+                let dir = std::env::temp_dir().join(format!(
+                    "phosphor-hostile-{bin}-{}-{}",
+                    std::process::id(),
+                    rc.len()
+                ));
+                std::fs::remove_dir_all(&dir).ok();
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join(rc_name), rc).unwrap();
+                let mut command = Command::new(&path);
+                if bin == "bash" {
+                    // GNU long options must come before `-i`.
+                    command.arg("--rcfile").arg(dir.join(rc_name));
+                }
+                command.args(args);
+                let mut child = command
+                    .env_clear()
+                    .env("PATH", std::env::var("PATH").unwrap_or_default())
+                    .env("HOME", &dir)
+                    .env("ZDOTDIR", &dir)
+                    .env("ENV", dir.join(rc_name))
+                    .env("HISTFILE", dir.join("history"))
+                    .env("TERM", "dumb")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                {
+                    let stdin = child.stdin.as_mut().unwrap();
+                    let mut lines = probe.clone();
+                    if let Some(known) = known {
+                        lines.extend(chunked_eval_lines(known, "echo STAGE2-RAN"));
+                    }
+                    lines.push(" echo ALIVE-AFTER".to_owned());
+                    if bin == "zsh" {
+                        lines.push(
+                            " print -r -- \"OPTS ee=$options[errexit] nu=$options[unset] pf=$options[pipefail] pev=$options[printexitvalue] hand=${WARP_RESTORE_PRINT_EXIT_VALUE-} whi=$options[histignorespace] residue=[${__whi-}${__wpe-}${_wbs-}]\""
+                                .to_owned(),
+                        );
+                    }
+                    if bin == "bash" {
+                        lines.push(" echo \"OPTS $- residue=[${__hc0-}${_wbs-}]\"".to_owned());
+                    }
+                    for line in lines {
+                        stdin.write_all(line.as_bytes()).unwrap();
+                        stdin.write_all(b"\n").unwrap();
+                    }
+                    stdin.write_all(b"exit\n").unwrap();
+                }
+                let out = child.wait_with_output().unwrap();
+                let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+                let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+                let all = format!("{stdout}{stderr}");
+                assert!(
+                    all.contains("ALIVE-AFTER"),
+                    "{bin} ({rc:?}): the shell died during the bootstrap: {all:?}"
+                );
+                assert!(
+                    all.contains("InitSubshell"),
+                    "{bin} ({rc:?}): the probe never reported: {all:?}"
+                );
+                if known.is_some() {
+                    assert!(
+                        all.contains("STAGE2-RAN"),
+                        "{bin} ({rc:?}): the staged script did not run: {all:?}"
+                    );
+                }
+                for noise in ["exit 1", "not found", "unbound", "parameter not set", "invalid"] {
+                    assert!(
+                        !all.contains(noise),
+                        "{bin} ({rc:?}): bootstrap noise ({noise}): {all:?}"
+                    );
+                }
+                if bin == "zsh" {
+                    // print_exit_value is handed to the tail of zsh.sh (WARP_RESTORE_PRINT_EXIT_VALUE),
+                    // not put back by the stage: the next typed line would print `zsh: exit 1`.
+                    let hist_ignore_space = rc.contains("HIST_IGNORE_SPACE");
+                    let expect = format!(
+                        "OPTS ee=on nu=off pf=on pev=off hand=1 whi={} residue=[]",
+                        if hist_ignore_space { "on" } else { "off" }
+                    );
+                    assert!(
+                        stdout.contains(&expect),
+                        "{bin} ({rc:?}): the user's options were not put back: {stdout:?}"
+                    );
+                }
+                if bin == "bash" {
+                    let opts = stdout
+                        .lines()
+                        .find_map(|l| l.strip_prefix("OPTS "))
+                        .unwrap_or_default();
+                    assert!(
+                        stdout.contains("residue=[]")
+                            && opts.split_whitespace().next().is_some_and(|f| {
+                                f.contains('e') && f.contains('u')
+                            }),
+                        "{bin}: the user's options were not put back: {stdout:?}"
+                    );
+                }
+                std::fs::remove_dir_all(&dir).ok();
+            }
+        });
+    });
+}
+
+/// Drives a real interactive shell on a pty (python3's `pty`, so no extra dependency): types each
+/// line of argv[3] followed by CR, then the contents of argv[4] (the full bootstrap script), then
+/// the commands of argv[5], and prints everything the shell wrote, hex-escaped as `\xNN` for ESC
+/// only so the assertions can match plain text. argv[1] is the shell binary, argv[2] the rc dir.
+#[cfg(unix)]
+const PTY_DRIVER: &str = r#"
+import os, pty, select, sys, time, fcntl
+shell, home, lines_file, script_file, cmds_file = sys.argv[1:6]
+env = {"PATH": os.environ.get("PATH", ""), "HOME": home, "ZDOTDIR": home, "TERM": "xterm",
+       "HISTFILE": os.path.join(home, "history")}
+args = [shell, "-i"]
+if os.path.basename(shell) == "bash":
+    args = [shell, "--rcfile", os.path.join(home, "rc"), "-i"]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execve(shell, args, env)
+fcntl.fcntl(fd, fcntl.F_SETFL, os.O_NONBLOCK | fcntl.fcntl(fd, fcntl.F_GETFL))
+buf = b""
+def pump(t):
+    global buf
+    end = time.time() + t
+    while time.time() < end:
+        r, _, _ = select.select([fd], [], [], 0.05)
+        if r:
+            try:
+                x = os.read(fd, 65536)
+            except OSError:
+                return
+            if not x:
+                return
+            buf += x
+def send(data):
+    for i in range(0, len(data), 1000):
+        chunk = data[i:i + 1000]
+        while chunk:
+            try:
+                n = os.write(fd, chunk)
+                chunk = chunk[n:]
+            except BlockingIOError:
+                pump(0.05)
+            except OSError:
+                return
+        time.sleep(0.03)
+pump(1.5)
+for line in open(lines_file, "rb").read().split(b"\n"):
+    if line:
+        send(line + b"\r")
+        pump(0.15)
+pump(1.0)
+send(open(script_file, "rb").read())
+pump(0.5)
+send(b"\r")
+pump(6)
+for cmd in open(cmds_file, "rb").read().split(b"\n"):
+    if cmd:
+        send(cmd + b"\r")
+        pump(0.8)
+sys.stdout.write(buf.decode("utf-8", "replace").replace("\x1b", "<ESC>").replace("\r", ""))
+"#;
+
+/// #1014 (round 2): the REAL bootstrap -- the probe, the real known-shell stage that emits
+/// InitShell, and the real `zsh.sh` / `bash.sh` body -- typed into a real interactive shell on a
+/// pty whose rc sets errexit / nounset / pipefail / print_exit_value. The first fix was checked
+/// with a stub stage (`echo STAGE2-RAN`) and the real body still died on `$WARP_BOOTSTRAPPED`
+/// under NO_UNSET, leaving the pane on "Starting shell...". The shell must survive, print no
+/// bootstrap noise, report InitShell and Bootstrapped, run later commands, and the user's options
+/// must be theirs again afterwards.
+#[test]
+#[cfg(unix)]
+fn test_real_bootstrap_body_survives_errexit_nounset_pipefail_rc_settings() {
+    use std::process::Command;
+
+    let which = |bin: &str| -> Option<String> {
+        let out = Command::new("sh")
+            .args(["-c", &format!("command -v {bin}")])
+            .output()
+            .ok()?;
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        (!path.is_empty()).then_some(path)
+    };
+    let Some(python) = which("python3") else {
+        eprintln!("skipping: python3 not installed");
+        return;
+    };
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let probe = init_subshell_command_lines(None, &[], SessionId::from(4242u64), ctx);
+            // (shell, rc file name, rc text, shell type)
+            let cases = [
+                ("zsh", ".zshrc", "setopt ERR_EXIT NO_UNSET PIPE_FAIL PRINT_EXIT_VALUE\n", ShellType::Zsh),
+                (
+                    "zsh",
+                    ".zshrc",
+                    "setopt ERR_EXIT ERR_RETURN NO_UNSET PIPE_FAIL PRINT_EXIT_VALUE HIST_IGNORE_SPACE\n",
+                    ShellType::Zsh,
+                ),
+                ("bash", "rc", "set -euo pipefail\n", ShellType::Bash),
+            ];
+            for (bin, rc_name, rc, shell_type) in cases {
+                let Some(shell) = which(bin) else {
+                    eprintln!("skipping {bin}: not installed");
+                    continue;
+                };
+                let dir = std::env::temp_dir().join(format!(
+                    "phosphor-realbody-{bin}-{}-{}",
+                    std::process::id(),
+                    rc.len()
+                ));
+                std::fs::remove_dir_all(&dir).ok();
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join(rc_name), rc).unwrap();
+
+                let mut lines = probe.clone();
+                lines.extend(init_subshell_command_lines(
+                    Some(shell_type),
+                    &[],
+                    SessionId::from(4242u64),
+                    ctx,
+                ));
+                std::fs::write(dir.join("lines.txt"), lines.join("\n")).unwrap();
+                std::fs::write(
+                    dir.join("script.txt"),
+                    &*script_for_shell(shell_type, &crate::ASSETS),
+                )
+                .unwrap();
+                let cmds = if bin == "zsh" {
+                    " echo ALIVE=$((40+2)).\n print -r -- \"OPT pf=$options[pipefail] unset=$options[unset] pev=$options[printexitvalue]\"\n echo $phosphor_undefined_var_zz\n echo STILL=$((1+1)).\n"
+                } else {
+                    " echo ALIVE=$((40+2)).\n echo \"OPT $-\"\n echo STILL=$((1+1)).\n"
+                };
+                std::fs::write(dir.join("cmds.txt"), cmds).unwrap();
+
+                let out = Command::new(&python)
+                    .arg("-I")
+                    .arg("-c")
+                    .arg(PTY_DRIVER)
+                    .arg(&shell)
+                    .arg(&dir)
+                    .arg(dir.join("lines.txt"))
+                    .arg(dir.join("script.txt"))
+                    .arg(dir.join("cmds.txt"))
+                    .output()
+                    .unwrap();
+                let all = String::from_utf8_lossy(&out.stdout).into_owned();
+                let case = format!("{bin} ({rc:?})");
+                assert!(
+                    all.contains("ALIVE=42."),
+                    "{case}: the shell died during the real bootstrap: {all:?}"
+                );
+                assert!(
+                    all.contains("<ESC>P$d"),
+                    "{case}: no InitShell hook was emitted: {all:?}"
+                );
+                // The Bootstrapped hook is DCS-hex-encoded JSON; "Bootstrapped" in hex.
+                assert!(
+                    all.contains("426f6f747374726170706564"),
+                    "{case}: the body never reported Bootstrapped: {all:?}"
+                );
+                let before_user_commands = all.split("ALIVE=42.").next().unwrap_or_default();
+                for noise in ["\nzsh: exit ", ": parameter not set\n", ": unbound variable\n"] {
+                    assert!(
+                        !before_user_commands.contains(noise),
+                        "{case}: bootstrap noise {noise:?}: {all:?}"
+                    );
+                }
+                assert!(
+                    all.contains("STILL=2."),
+                    "{case}: the shell stopped accepting commands: {all:?}"
+                );
+                if bin == "zsh" {
+                    assert!(
+                        all.contains("OPT pf=on unset=off pev=on"),
+                        "{case}: the user's options were not put back: {all:?}"
+                    );
+                    // Their NO_UNSET stays theirs: the undefined name is reported, the shell lives.
+                    assert!(
+                        all.contains("phosphor_undefined_var_zz: parameter not set"),
+                        "{case}: the user's NO_UNSET was not restored: {all:?}"
+                    );
+                } else {
+                    // `OPT <flags>` (the typed line echoes `OPT $-`, which starts with `$`).
+                    let restored = all.match_indices("OPT ").any(|(at, _)| {
+                        let flags = all[at + 4..].split_whitespace().next().unwrap_or_default();
+                        !flags.starts_with('$') && flags.contains('e') && flags.contains('u')
+                    });
+                    assert!(restored, "{case}: set -eu was not put back: {all:?}");
+                }
+                std::fs::remove_dir_all(&dir).ok();
+            }
+        });
+    });
 }

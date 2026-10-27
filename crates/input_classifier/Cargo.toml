@@ -63,4 +63,6 @@ tokenizers = { version = "0.21.4", optional = true }
 warp_completer.workspace = true
 
 [dev-dependencies]
-warp_features.workspace = true
+# `test-util` disables the feature-flag init assertion for standalone test runs (the parser
+# reads `FeatureFlag::ProviderCommand`); same as warp_completer.
+warp_features = { workspace = true, features = ["test-util"] }

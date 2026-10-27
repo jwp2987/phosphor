@@ -32,9 +32,47 @@ enum LockState {
 static SOLE_INSTANCE_LOCK: LazyLock<Mutex<LockState>> =
     LazyLock::new(|| Mutex::new(try_acquire_lock()));
 
-pub(super) fn uri_socket_name() -> String {
+/// Legacy relative socket name. Kept as the file name (unchanged) so the channel naming stays
+/// stable; it must never be bound relative to the cwd (under LaunchServices cwd is `/`,
+/// which is read-only -- #970).
+fn uri_socket_file_name() -> String {
     format!("Zap{:?}_URI_CHANNEL", ChannelState::channel())
 }
+
+/// Unix domain socket paths are limited to ~104 bytes on macOS (`sun_path`); stay below.
+const MAX_SOCKET_PATH_LEN: usize = 100;
+
+/// Picks an absolute socket path: the app state dir when it fits, otherwise the (per-user on
+/// macOS) temp dir.
+fn resolve_socket_path(
+    state_dir: &std::path::Path,
+    temp_dir: &std::path::Path,
+    file_name: &str,
+) -> std::path::PathBuf {
+    if state_dir.is_absolute() {
+        let candidate = state_dir.join(file_name);
+        if candidate.as_os_str().len() <= MAX_SOCKET_PATH_LEN {
+            return candidate;
+        }
+    }
+    temp_dir.join(file_name)
+}
+
+/// Absolute filesystem path of the URI-forwarding socket. Used by both the server and the
+/// client so they always agree.
+pub(super) fn uri_socket_name() -> String {
+    resolve_socket_path(
+        &warp_core::paths::state_dir(),
+        &std::env::temp_dir(),
+        &uri_socket_file_name(),
+    )
+    .to_string_lossy()
+    .into_owned()
+}
+
+#[cfg(test)]
+#[path = "single_instance_manager_tests.rs"]
+mod tests;
 
 fn lock_file_path() -> std::io::Result<std::path::PathBuf> {
     let dir = warp_core::paths::state_dir();
@@ -93,9 +131,17 @@ impl SingleInstanceManager {
             return Self { _server: None };
         }
 
+        // We hold the exclusive single-instance lock, so any socket file left behind is stale
+        // (previous crash); binding would otherwise fail with AddrInUse.
+        let socket_path = uri_socket_name();
+        if let Some(parent) = std::path::Path::new(&socket_path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::remove_file(&socket_path);
+
         let (tx, rx) = async_channel::unbounded();
         let server = match ServerBuilder::default()
-            .with_fixed_address(uri_socket_name())
+            .with_fixed_address(socket_path)
             .with_service(UriServiceImpl::new(tx))
             .build_and_run(ctx.background_executor())
         {

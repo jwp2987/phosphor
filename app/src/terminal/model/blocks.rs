@@ -360,6 +360,10 @@ pub struct BlockList {
 
     honor_ps1: bool,
 
+    /// Whether the shell's own OSC 133 prompt markers are ignored (#966). Updated by every
+    /// populated Precmd that carries `ignore_prompt_markers`.
+    ignore_shell_prompt_markers: bool,
+
     is_restored_session: bool,
 
     restored_session_ts: Option<DateTime<Local>>,
@@ -783,6 +787,7 @@ impl BlockList {
             show_in_band_command_blocks,
             show_memory_stats,
             honor_ps1,
+            ignore_shell_prompt_markers: false,
             is_restored_session: false,
             restored_session_ts: None,
             latest_block_finished_time: None,
@@ -979,6 +984,11 @@ impl BlockList {
             .grid_of_type_mut(secret.grid)
             .ok_or_else(|| anyhow!("error finding block grid"))?;
         Ok(block_grid.grid_handler_mut())
+    }
+
+    /// Whether the shell's own OSC 133 prompt markers are being ignored (#966).
+    pub fn ignores_shell_prompt_markers(&self) -> bool {
+        self.ignore_shell_prompt_markers
     }
 
     pub fn set_honor_ps1(&mut self, honor_ps1: bool) {
@@ -3785,6 +3795,7 @@ impl BlockList {
             kube_config: None,
             rprompt: block.rprompt.clone(),
             ps1_is_encoded: None,
+            ignore_prompt_markers: None,
             is_after_in_band_command: false,
         };
 
@@ -3961,6 +3972,15 @@ impl BlockList {
     /// This is the costly-per-block path: the fast `complete_active_block_and_advance` shows the
     /// finished block immediately, and this runs afterwards on the following prompt.
     pub(super) fn apply_precmd_to_active(&mut self, data: PromptMetadata) {
+        // The setting belongs to the shell that sent the Precmd. A populated Precmd that omits the
+        // field (zsh, bash, pwsh, ...) means "do not ignore", so it clears a flag left behind by a
+        // fish subshell that has since exited; otherwise the parent's prompt markers stay ignored
+        // and its editor never returns. Unpopulated (in-band) Precmds carry no information.
+        if let Some(ignore) = data.ignore_prompt_markers {
+            self.ignore_shell_prompt_markers = ignore;
+        } else if !data.was_sent_after_in_band_command() {
+            self.ignore_shell_prompt_markers = false;
+        }
         let latest_block_finished_time = self.latest_block_finished_time.take();
         // We don't need to log this delay during the bootstrapping process, since these
         // are not blocks that the user has created. The delay here also can be very high
@@ -4691,6 +4711,13 @@ impl ansi::Handler for BlockList {
         // these shouldn't be interpreted as actual characters that affect the presentation of the
         // active block. (They should be just treated as regular shell output).
         if self.active_block().state() != BlockState::BeforeExecution {
+            return;
+        }
+
+        // #966: fish 4.x writes its own `133;A` after Phosphor's Precmd, with no `133;B` because
+        // Phosphor's prompt is empty. Treating it as a prompt start made the next command's output
+        // part of an unterminated prompt, so the finished block never rendered.
+        if self.ignore_shell_prompt_markers {
             return;
         }
 

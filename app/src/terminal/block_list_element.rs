@@ -196,6 +196,23 @@ const CLI_SUBAGENT_MAX_WIDTH_RATIO: f32 = 0.98;
 // current block's available height.
 const CLI_SUBAGENT_MAX_HEIGHT_RATIO: f32 = 0.98;
 
+/// Whether a left-button drag selects blocks (as opposed to text). Cmd selects blocks; Shift does
+/// too, unless Shift is being used to take the mouse back from a running program that reports it
+/// (`shift_reclaims_mouse`), where it must select text inside the running block instead.
+fn drag_selects_blocks(
+    modifiers: &ModifiersState,
+    rect_selection_enabled: bool,
+    shift_reclaims_mouse: bool,
+) -> bool {
+    let shift = modifiers.shift && !shift_reclaims_mouse;
+    if rect_selection_enabled {
+        // If cmd and alt are both active, this should be treated as a rect selection.
+        !(modifiers.cmd && modifiers.alt) && (modifiers.cmd || shift)
+    } else {
+        modifiers.cmd || shift
+    }
+}
+
 fn cli_subagent_layout_max_size(
     available_size: Vector2F,
     block_height: f32,
@@ -699,6 +716,8 @@ pub struct BlockListElement {
     input_mode: InputMode,
     scroll_position: ScrollPosition,
     is_terminal_focused: bool,
+    /// See `TerminalViewRenderContext::approval_card_view_id` (#1028).
+    approval_card_view_id: Option<EntityId>,
     is_terminal_selecting: bool,
     /// See `TerminalViewRenderContext::rich_content_drag_selecting` (#890).
     rich_content_drag_selecting: Arc<AtomicBool>,
@@ -1061,6 +1080,7 @@ impl BlockListElement {
             size_info: terminal_view_render_context.size_info,
             scroll_position: terminal_view_render_context.scroll_position,
             is_terminal_focused: terminal_view_render_context.is_terminal_focused,
+            approval_card_view_id: terminal_view_render_context.approval_card_view_id,
             is_terminal_selecting: terminal_view_render_context.is_terminal_selecting,
             rich_content_drag_selecting: terminal_view_render_context.rich_content_drag_selecting,
             subshell_sessions: terminal_view_render_context.spawning_command_for_subshell_sessions,
@@ -1471,7 +1491,12 @@ impl BlockListElement {
     }
 
     fn typed_characters(&mut self, chars: &str, ctx: &mut EventContext) -> bool {
-        if self.terminal_focused_now(ctx) && !chars.is_empty() {
+        // #1028: with focus on a pending approval card, printable keys are meant for the agent
+        // input (the card has no use for them), not the void.
+        let on_approval_card = self
+            .approval_card_view_id
+            .is_some_and(|card| ctx.live_focus_is_exactly(card) == Some(true));
+        if (self.terminal_focused_now(ctx) || on_approval_card) && !chars.is_empty() {
             ctx.dispatch_typed_action(TerminalAction::TypedCharacters(chars.to_string()));
         }
         true
@@ -1925,9 +1950,11 @@ impl BlockListElement {
         ctx: &mut EventContext,
         app: &AppContext,
     ) -> bool {
-        if self.is_terminal_selecting {
-            ctx.dispatch_typed_action(TerminalAction::BlockTextSelect(BlockTextSelectAction::End));
-        }
+        // Always dispatch: `is_terminal_selecting` is a snapshot from the last render, so a quick
+        // double/triple-click whose mouse-up lands before a re-render would otherwise never end
+        // its selection (and so never honour copy-on-select, #1012). The view knows whether a
+        // selection is really pending and ignores the action otherwise.
+        ctx.dispatch_typed_action(TerminalAction::BlockTextSelect(BlockTextSelectAction::End));
 
         let handled = if self.is_mouse_position_within_bounds(position) {
             if let Some(point) = self.coord_to_point(
@@ -4674,6 +4701,21 @@ impl Element for BlockListElement {
         // that region — breaking selection auto-scroll when dragging downward.
         // This matches the pattern used by SelectableArea, Draggable, Resizable,
         // and both Scrollable variants, which all use `raw_event()` for drags.
+        // #988 diagnostics: drag-select is lost in sidebar-opened conversations; trace where.
+        if matches!(
+            event.raw_event(),
+            Event::LeftMouseDown { .. } | Event::LeftMouseDragged { .. }
+        ) {
+            log::debug!(
+                "#988 block_list drag: event={:?} focused={} rich_drag={} term_sel={} \
+                 at_z={}",
+                event.raw_event(),
+                self.pane_state.is_focused(),
+                self.rich_content_drag_selecting.load(Ordering::Relaxed),
+                self.is_terminal_selecting,
+                event.at_z_index(z_index, ctx).is_some()
+            );
+        }
         let event_at_z_index = if (self.is_terminal_selecting
             || self.rich_content_drag_selecting.load(Ordering::Relaxed))
             && matches!(
@@ -4891,13 +4933,25 @@ impl Element for BlockListElement {
                 if !*is_composing
                     || (handle_keystroke_despite_composing(keystroke) && in_long_running_command)
                 {
-                    if let Some(escape_sequence) = (KeystrokeWithDetails {
+                    let escape_sequence = (KeystrokeWithDetails {
                         keystroke,
                         key_without_modifiers: details.key_without_modifiers.as_deref(),
                         chars: Some(chars.as_str()),
                     })
-                    .to_escape_sequence(self.model.lock().deref())
+                    .to_escape_sequence(self.model.lock().deref());
+                    if is_agent_shortcut_enter(keystroke)
+                        && (escape_sequence.is_some()
+                            || (!chars.is_empty() && chars.chars().all(|c| c.is_control())))
                     {
+                        // Same acceptance rule as the plain paths below; the view decides
+                        // whether this is the SSH banner's "Use agent" shortcut (#976).
+                        ctx.dispatch_typed_action(TerminalAction::AgentShortcutEnter {
+                            chars: chars.clone(),
+                            fallback_sequence: escape_sequence,
+                        });
+                        return true;
+                    }
+                    if let Some(escape_sequence) = escape_sequence {
                         ctx.dispatch_typed_action(TerminalAction::ControlSequence(escape_sequence));
                         return true;
                     }
@@ -4954,12 +5008,21 @@ impl Element for BlockListElement {
                 modifiers,
                 ..
             } if !handled || self.is_terminal_selecting => {
-                let is_selecting_blocks = if FeatureFlag::RectSelection.is_enabled() {
-                    // If cmd and alt are both active, this should be treated as a rect selection.
-                    !(modifiers.cmd && modifiers.alt) && (modifiers.cmd || modifiers.shift)
-                } else {
-                    modifiers.cmd || modifiers.shift
+                // Shift also means "take the mouse back from the running program", in which
+                // case the drag is a text selection inside that block, not a block selection.
+                let shift_reclaims_mouse = modifiers.shift && {
+                    let model = self.model.lock();
+                    model
+                        .block_list()
+                        .active_block()
+                        .is_active_and_long_running()
+                        && !should_intercept_mouse(&model, false, app)
                 };
+                let is_selecting_blocks = drag_selects_blocks(
+                    modifiers,
+                    FeatureFlag::RectSelection.is_enabled(),
+                    shift_reclaims_mouse,
+                );
                 self.mouse_dragged(*position, is_selecting_blocks, modifiers, ctx, app)
             }
             Event::MouseMoved { position, .. } => self.mouse_moved(*position, app, ctx),
@@ -5190,6 +5253,37 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #987: Shift-drag over a program that reports the mouse selects text, not blocks.
+    #[test]
+    fn shift_drag_selects_text_when_it_reclaims_the_mouse() {
+        let shift = ModifiersState {
+            shift: true,
+            ..Default::default()
+        };
+        let cmd = ModifiersState {
+            cmd: true,
+            ..Default::default()
+        };
+        for rect in [false, true] {
+            assert!(drag_selects_blocks(&shift, rect, false));
+            assert!(!drag_selects_blocks(&shift, rect, true));
+            // Cmd keeps selecting blocks regardless.
+            assert!(drag_selects_blocks(&cmd, rect, false));
+            assert!(drag_selects_blocks(&cmd, rect, true));
+            assert!(!drag_selects_blocks(
+                &ModifiersState::default(),
+                rect,
+                false
+            ));
+        }
+        let cmd_alt = ModifiersState {
+            cmd: true,
+            alt: true,
+            ..Default::default()
+        };
+        assert!(!drag_selects_blocks(&cmd_alt, true, false));
+    }
 
     /// #934: right after a command from the editor is written, focus moves to the terminal but
     /// the elements still hold the snapshot of the frame before. Keys typed in that gap were
@@ -5521,4 +5615,12 @@ mod tests {
             ));
         }
     }
+}
+
+/// Whether `keystroke` is the shortcut the SSH Warpifying banner (and the "Use agent" footer)
+/// displays: Cmd-Enter on macOS, Ctrl-Shift-Enter elsewhere. It is derived from the displayed
+/// keystroke itself, so the label and the behaviour cannot diverge (#976).
+pub(crate) fn is_agent_shortcut_enter(keystroke: &warpui::keymap::Keystroke) -> bool {
+    keystroke.key == "enter"
+        && crate::terminal::view::use_agent_footer::is_use_agent_keystroke(keystroke)
 }

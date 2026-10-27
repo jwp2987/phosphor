@@ -1,7 +1,14 @@
 //! Zap input editor logic related to decorating the input's text, such as
 //! applying syntax highlighting and error underlining.
 
-use std::{collections::HashMap, ops::Range};
+use std::{
+    collections::HashMap,
+    ops::Range,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use settings::Setting as _;
 use string_offset::{ByteOffset, CharOffset};
@@ -17,6 +24,7 @@ use crate::{
 };
 
 use super::Input;
+use warp_completer::util::parse_current_commands_and_tokens_cancellable;
 
 pub use warp_completer::{
     completer::SuggestionTypeName, util::parse_current_commands_and_tokens, ParsedTokenData,
@@ -24,8 +32,10 @@ pub use warp_completer::{
 };
 
 /// Input buffers with more chars than this get no background parse: no syntax
-/// highlighting, error underlining or input-type detection (#868).
-pub(super) const MAX_BACKGROUND_JOB_BUFFER_CHARS: usize = 1024 * 1024;
+/// highlighting, error underlining or input-type detection (#868). Lowered from 1 MiB to
+/// 150_000 (#1009): a ~786 KB paste was still under the old cap and re-parsed the whole
+/// buffer on every keystroke. This is the only thing that keys off the constant.
+pub(super) const MAX_BACKGROUND_JOB_BUFFER_CHARS: usize = 150_000;
 
 /// Options to enable/disable command decoration and/or AI input background tasks spawned on input
 /// edits.
@@ -216,6 +226,19 @@ impl Input {
         true
     }
 
+    /// Stops the in-flight decoration/detection job, if any, and returns once the stale job
+    /// has been told to stop. Aborting the future alone is not enough: the parse is CPU-bound
+    /// and only notices an abort at a poll boundary, so the job also gets a cooperative
+    /// cancel flag that its loops check between tokens (#1031).
+    pub(super) fn cancel_decorations_job(&mut self) {
+        if let Some(cancel) = self.decorations_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some(handle) = self.decorations_future_handle.take() {
+            handle.abort_handle().abort();
+        }
+    }
+
     /// Computes information about the currently-entered command in a background
     /// task and then uses it to decorate the input, specifically applying
     /// styles for syntax highlighting and error underlining.
@@ -238,9 +261,7 @@ impl Input {
         // the jobs and leave the text plain. The size check reads the buffer's cached
         // length, so an oversized buffer is never copied out here.
         if self.editor.as_ref(ctx).buffer_size(ctx).as_usize() > MAX_BACKGROUND_JOB_BUFFER_CHARS {
-            if let Some(handle) = self.decorations_future_handle.take() {
-                handle.abort_handle().abort();
-            }
+            self.cancel_decorations_job();
             // Clearing walks the whole buffer's styles, so do it once per oversized
             // stretch, not on every edit.
             if !self.decorations_cleared_for_oversized_buffer {
@@ -268,6 +289,8 @@ impl Input {
 
             // Return early because there are no input background jobs to run.
             if mode.no_jobs_to_run() {
+                // A job started for earlier text would only decorate text that is gone.
+                self.cancel_decorations_job();
                 return;
             }
         }
@@ -279,6 +302,9 @@ impl Input {
 
                 if matches!(&self.last_parsed_tokens, Some(last_parsed_tokens) if buffer_text == last_parsed_tokens.buffer_text)
                 {
+                    // The cached parse already describes this text, so any in-flight job
+                    // is for different (stale) text and must not overwrite it.
+                    self.cancel_decorations_job();
                     if mode.ai_input_detection {
                         self.run_input_mode_detection(completion_context, ctx);
                     }
@@ -290,21 +316,34 @@ impl Input {
                     return;
                 }
 
-                if let Some(handle) = self.decorations_future_handle.take() {
-                    handle.abort_handle().abort();
-                }
+                self.cancel_decorations_job();
+                let cancel = Arc::new(AtomicBool::new(false));
+                self.decorations_cancel = Some(cancel.clone());
 
                 let completion_session = completion_context.session.clone();
 
                 self.decorations_future_handle = Some(ctx.spawn_abortable(
                     async move {
+                        // #1019: a program installed since the bootstrap scan is a command.
+                        completion_context
+                            .session
+                            .discover_command_word_in_buffer(&buffer_text);
                         (
-                            parse_current_commands_and_tokens(buffer_text, &completion_context)
-                                .await,
+                            parse_current_commands_and_tokens_cancellable(
+                                buffer_text,
+                                &completion_context,
+                                &cancel,
+                            )
+                            .await,
                             completion_context,
                         )
                     },
                     move |input, (parsed_tokens, completion_context), ctx| {
+                        // A cancelled parse was superseded (or the buffer was cleared); its
+                        // newer replacement owns the decorations.
+                        let Some(parsed_tokens) = parsed_tokens else {
+                            return;
+                        };
                         input.last_parsed_tokens = Some(parsed_tokens);
 
                         if mode.ai_input_detection {
@@ -326,11 +365,24 @@ impl Input {
                     // Use a dedicated detection context that does not expose top-level commands.
                     let buffer_text = self.editor.as_ref(ctx).buffer_text(ctx);
                     let ai_input_model = self.ai_input_model.clone();
+                    // No abort handle is kept for this job, but it still gets the cancel
+                    // flag so the next edit stops it (#1031).
+                    self.cancel_decorations_job();
+                    let cancel = Arc::new(AtomicBool::new(false));
+                    self.decorations_cancel = Some(cancel.clone());
                     ctx.spawn(
                         async move {
-                            parse_current_commands_and_tokens(buffer_text, &detection_ctx).await
+                            parse_current_commands_and_tokens_cancellable(
+                                buffer_text,
+                                &detection_ctx,
+                                &cancel,
+                            )
+                            .await
                         },
                         move |input, parsed_tokens, ctx| {
+                            let Some(parsed_tokens) = parsed_tokens else {
+                                return;
+                            };
                             // Stale or already-submitted parse: see `run_input_mode_detection`.
                             let buffer_text = input.editor.as_ref(ctx).buffer_text(ctx);
                             if parsed_tokens.buffer_text != buffer_text

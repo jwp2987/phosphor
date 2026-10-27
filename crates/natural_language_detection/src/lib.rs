@@ -124,3 +124,59 @@ fn token_preprocessing(token: &str) -> String {
 
     token
 }
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+
+    use super::*;
+
+    /// #965: `fish`/`ksh` are real binaries but also Stack Overflow tags / English words. They are
+    /// deliberately NOT in the overlap list: a leading one is skipped as a command only when the
+    /// caller says the program is installed (or a known builtin/function/alias), so
+    /// `fish is great` stays prose when fish is absent.
+    #[test]
+    fn leading_binary_name_is_a_command_only_when_installed() {
+        for word in ["fish", "ksh"] {
+            assert!(!is_word(word, WordDb::Command), "{word}");
+            let line = || {
+                vec![
+                    Cow::Borrowed(word),
+                    Cow::Borrowed("is"),
+                    Cow::Borrowed("great"),
+                ]
+            };
+            assert_eq!(natural_language_words_score(line(), false), 3, "{word}");
+            assert_eq!(natural_language_words_score(line(), true), 2, "{word}");
+        }
+    }
+
+    /// Prose words must stay out of the overlap list (a first-word hit is skipped when scoring).
+    #[test]
+    fn overlap_list_excludes_sentence_openers() {
+        for word in [
+            "file", "date", "set", "wait", "return", "history", "cut", "patch", "ruby", "swift",
+            "java", "fish", "ksh",
+        ] {
+            assert!(!is_word(word, WordDb::Command), "{word}");
+        }
+    }
+
+    /// #964: `swift vs kotlin?` is prose; `vs` must score as an ordinary word so a three-word
+    /// comparison of tool names is not left one point short (thresholds are 1.0 up to 3 tokens).
+    #[test]
+    fn vs_is_an_ordinary_word() {
+        assert!(is_word("vs", WordDb::English));
+        assert_eq!(
+            natural_language_words_score(
+                vec![
+                    Cow::Borrowed("swift"),
+                    Cow::Borrowed("vs"),
+                    Cow::Borrowed("kotlin")
+                ],
+                false
+            ),
+            3
+        );
+    }
+}

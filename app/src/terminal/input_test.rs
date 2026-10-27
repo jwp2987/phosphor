@@ -3226,8 +3226,11 @@ fn test_new_conversation_keybinding_requires_double_press_in_non_empty_agent_vie
     });
 }
 
+/// #1022 (owner decision 2026-10-26): Cmd-Enter / Ctrl-Shift-Enter with text already typed in a
+/// plain terminal input enters the agent view AND sends the text. This test previously asserted
+/// the old pre-fill-without-send behaviour (buffer still "draft"); the spec changed.
 #[test]
-fn test_cmd_enter_enters_agent_view_when_input_is_focused() {
+fn test_cmd_enter_enters_agent_view_and_sends_typed_text_when_input_is_focused() {
     App::test((), |mut app| async move {
         let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
         initialize_app(&mut app);
@@ -3240,16 +3243,99 @@ fn test_cmd_enter_enters_agent_view_when_input_is_focused() {
             input.handle_editor_event(&EditorEvent::CmdEnter, ctx);
         });
 
-        terminal.read(&app, |view, ctx| {
-            assert!(view
-                .agent_view_controller()
+        let conversation_id = terminal.read(&app, |view, ctx| {
+            let state = view.agent_view_controller().as_ref(ctx).agent_view_state();
+            assert!(state.is_fullscreen());
+            state
+                .active_conversation_id()
+                .expect("agent view should be active")
+        });
+        // The prompt was sent: the conversation holds an exchange and nothing is left to
+        // re-send in the input.
+        let is_non_empty = BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
+            history
+                .conversation(&conversation_id)
+                .is_some_and(|conversation| !conversation.is_empty())
+        });
+        assert!(is_non_empty, "Cmd-Enter with typed text must send it");
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "");
+        });
+    });
+}
+
+/// #1022: on the real Mac key path `EditorAction::CmdEnter` finds `/agent` bound to cmd-enter
+/// and runs it as a keybinding-triggered slash command with the typed buffer as its argument.
+/// That path must send the text too, not just pre-fill the agent input.
+#[test]
+fn test_agent_slash_command_via_keybinding_sends_typed_text() {
+    App::test((), |mut app| async move {
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+        initialize_app(&mut app);
+
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        let command = COMMAND_REGISTRY
+            .get_command_with_name(commands::AGENT.name)
+            .expect("/agent command should exist");
+        let argument = "draft".to_owned();
+        input.update(&mut app, |input, ctx| {
+            let handled = input.execute_slash_command(
+                command,
+                Some(&argument),
+                SlashCommandTrigger::keybinding(),
+                /*is_queued_prompt*/ false,
+                /*queued_conversation_id*/ None,
+                /*queued_query_id*/ None,
+                ctx,
+            );
+            assert!(handled);
+        });
+
+        let conversation_id = terminal.read(&app, |view, ctx| {
+            view.agent_view_controller()
                 .as_ref(ctx)
                 .agent_view_state()
-                .is_fullscreen());
+                .active_conversation_id()
+                .expect("agent view should be active")
         });
-        input.read(&app, |input, ctx| {
-            assert_eq!(input.buffer_text(ctx), "draft");
+        let is_non_empty = BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
+            history
+                .conversation(&conversation_id)
+                .is_some_and(|conversation| !conversation.is_empty())
         });
+        assert!(is_non_empty, "keybinding-triggered /agent with text must send it");
+    });
+}
+
+/// Empty-buffer Cmd-Enter is unchanged: enters the agent view without sending anything.
+#[test]
+fn test_cmd_enter_with_empty_buffer_enters_agent_view_without_sending() {
+    App::test((), |mut app| async move {
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+        initialize_app(&mut app);
+
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.handle_editor_event(&EditorEvent::CmdEnter, ctx);
+        });
+
+        let conversation_id = terminal.read(&app, |view, ctx| {
+            let state = view.agent_view_controller().as_ref(ctx).agent_view_state();
+            assert!(state.is_fullscreen());
+            state
+                .active_conversation_id()
+                .expect("agent view should be active")
+        });
+        let is_empty = BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
+            history
+                .conversation(&conversation_id)
+                .is_none_or(|conversation| conversation.is_empty())
+        });
+        assert!(is_empty);
     });
 }
 
@@ -7173,6 +7259,144 @@ fn test_enter_settles_pending_unambiguous_command_as_shell() {
     });
 }
 
+/// #1016: text typed behind an Enter that waits for its verdict must not join the text that
+/// Enter submits, and a second Enter must not be dropped or submit the joined line. Both queue,
+/// in order, behind the waiting Enter.
+#[test]
+fn test_enter_waiting_for_verdict_queues_input_typed_behind_it() {
+    use crate::ai::blocklist::InputConfig;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+
+        initialize_app(&mut app);
+
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        let line = "is it true";
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false,
+                    },
+                    false, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("x", ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(line, ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(
+                input
+                    .ai_input_model()
+                    .as_ref(ctx)
+                    .is_detection_pending_for(line, ctx),
+                "precondition: the line's own verdict has not landed"
+            );
+        });
+
+        // The first Enter waits for the verdict.
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        input.read(&app, |input, ctx| {
+            assert!(input.verdict_wait.is_some(), "the Enter must be waiting");
+            assert_eq!(input.buffer_text(ctx), line);
+        });
+
+        // Typed straight after it, with no gap, then a second Enter.
+        input.update(&mut app, |input, ctx| input.user_insert("echo hi", ctx));
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                line,
+                "what was typed after the Enter must not join the line it submits"
+            );
+            let wait = input.verdict_wait.as_ref().expect("still waiting");
+            assert_eq!(wait.text, line);
+            assert_eq!(
+                wait.queued,
+                vec![
+                    AfterEnterInput::Text("echo hi".to_string()),
+                    AfterEnterInput::Enter
+                ]
+            );
+        });
+    });
+}
+
+/// #1016: a burst of lines typed with no gaps behind an Enter that waits for its verdict queues
+/// every line and every Enter, in typed order, and the waiting Enter still submits only the first
+/// line.
+#[test]
+fn test_burst_of_lines_behind_a_waiting_enter_keeps_every_line_and_enter_in_order() {
+    use crate::ai::blocklist::InputConfig;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+        initialize_app(&mut app);
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        let line = "is it true";
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false,
+                    },
+                    false,
+                    ctx,
+                );
+            });
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("x", ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(line, ctx);
+        });
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+
+        let mut expected = Vec::new();
+        for n in 0..10 {
+            let command = format!("echo {n}");
+            input.update(&mut app, |input, ctx| input.user_insert(&command, ctx));
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            expected.push(AfterEnterInput::Text(command));
+            expected.push(AfterEnterInput::Enter);
+        }
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), line);
+            let wait = input.verdict_wait.as_ref().expect("still waiting");
+            assert_eq!(wait.text, line);
+            assert_eq!(wait.queued, expected);
+        });
+    });
+}
+
 /// #886: inserting shell typeahead records its provenance in the input model, and the edit
 /// handler drops it when the buffer is emptied or the typeahead is replaced.
 #[test]
@@ -8189,6 +8413,84 @@ fn prompt_submission_is_not_queued_during_lrc_when_set_to_send_immediately() {
 
         QueuedQueryModel::handle(&app).read(&app, |model, _| {
             assert!(model.queue(conversation_id).is_empty());
+        });
+    });
+}
+
+/// #1023 (owner decision 2026-10-26): with default settings a prompt submitted with plain Enter
+/// while the agent is still replying steers the running agent -- it is NOT queued -- and nothing
+/// in the decision depends on the platform. Queueing is an explicit opt-in: the per-conversation
+/// toggle (`Cmd-Shift-J` / `Ctrl-Shift-J`) or the `Queue` default-submission setting.
+#[test]
+fn prompt_submission_while_agent_replies_steers_by_default_and_queues_only_when_asked() {
+    App::test((), |mut app| async move {
+        let _agent_view = FeatureFlag::AgentView.override_enabled(false);
+        let _queue_flag = FeatureFlag::QueueSlashCommand.override_enabled(true);
+        initialize_app(&mut app);
+
+        // The shipped defaults: interrupt (steer), not queue.
+        assert_eq!(
+            PromptSubmissionMode::default(),
+            PromptSubmissionMode::Interrupt
+        );
+        AISettings::handle(&app).read(&app, |settings, _| {
+            assert_eq!(
+                settings.default_prompt_submission_mode,
+                PromptSubmissionMode::Interrupt
+            );
+        });
+
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        // A plain streaming conversation: no long-running command, no approval pending.
+        let conversation_id = seed_in_progress_conversation(&mut app, &terminal);
+        select_conversation(&mut app, &terminal, conversation_id);
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert!(!model.is_queue_next_prompt_toggle_enabled(conversation_id));
+        });
+
+        input.update(&mut app, |input, ctx| {
+            input.set_input_mode_agent(/* ensure_input_is_focused */ false, ctx);
+            input.replace_buffer_content("steer me", ctx);
+            input.input_enter(ctx);
+        });
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert!(
+                model.queue(conversation_id).is_empty(),
+                "plain Enter during a reply must steer, not queue"
+            );
+        });
+
+        // Explicit opt-in: the toggle queues the next prompt.
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.toggle_queue_next_prompt(conversation_id, ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            input.set_input_mode_agent(/* ensure_input_is_focused */ false, ctx);
+            input.replace_buffer_content("queue me", ctx);
+            input.input_enter(ctx);
+        });
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            let queue = model.queue(conversation_id);
+            assert_eq!(queue.len(), 1);
+            assert_eq!(queue[0].text(), "queue me");
+            // #1030: the toggle is one-shot; it cleared when that prompt was queued.
+            assert!(!model.is_queue_next_prompt_toggle_enabled(conversation_id));
+        });
+
+        // So the prompt after it steers again instead of queueing.
+        input.update(&mut app, |input, ctx| {
+            input.set_input_mode_agent(/* ensure_input_is_focused */ false, ctx);
+            input.replace_buffer_content("steer again", ctx);
+            input.input_enter(ctx);
+        });
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert_eq!(
+                model.queue(conversation_id).len(),
+                1,
+                "the prompt after a one-shot queued prompt must not queue"
+            );
         });
     });
 }
@@ -9767,4 +10069,109 @@ fn newer_than_submission_rules() {
     assert_eq!(newer_than_submission(Some("ls"), "other"), Some("other"));
     assert_eq!(newer_than_submission(None, "typed"), Some("typed"));
     assert_eq!(newer_than_submission(None, ""), None);
+}
+
+// #1013: the completer must not produce a ghost suggestion (e.g. `-E`) for a multi-line paste.
+#[test]
+fn completer_autosuggestion_is_skipped_for_multi_line_buffers() {
+    assert!(super::completer_autosuggestion_allowed("grep -"));
+    assert!(!super::completer_autosuggestion_allowed("echo a\ngrep -"));
+    assert!(!super::completer_autosuggestion_allowed("echo a\n"));
+}
+
+/// #1016: an Enter pressed while the replay of input typed behind a deferred Enter is pending
+/// queues behind that input; it never submits the editor ahead of it.
+#[test]
+fn test_enter_while_after_enter_replay_pending_queues_in_order() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.open_after_enter_replay_for_test(
+                vec![AfterEnterInput::Text("echo X".to_string())],
+                true,
+            );
+            input.input_enter(ctx);
+            input.queue_after_enter_replay(AfterEnterInput::Text("ls".to_string()));
+            input.input_enter(ctx);
+        });
+        input.read(&app, |input, _| {
+            assert_eq!(
+                input.after_enter_replay_for_test(),
+                [
+                    AfterEnterInput::Text("echo X".to_string()),
+                    AfterEnterInput::Enter,
+                    AfterEnterInput::Text("ls".to_string()),
+                    AfterEnterInput::Enter,
+                ]
+            );
+        });
+    })
+}
+
+/// #1016: the Enter that waited for its verdict runs as the submit of what was typed BEFORE it.
+/// With keys typed behind it, the replay is open ahead of that submit; the submit used to see the
+/// open replay, queue itself behind the text and submit nothing, so the replay then inserted the
+/// text and ran the Enter on 'trueec' (`true` + Enter + `echo ...` typed with no gap).
+#[test]
+fn test_waiting_enter_with_keys_typed_behind_it_submits_instead_of_queueing_itself() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("true", ctx);
+            // The Enter is waiting; two characters typed behind it are still in the buffer, for
+            // the wait's reconcile to take out (it moves them into the queue, never both).
+            input.verdict_wait = Some(VerdictWait {
+                text: "true".to_string(),
+                queued: Vec::new(),
+            });
+            input.user_insert("ec", ctx);
+            input.wait_for_verdict_then_enter("true".to_string(), Instant::now(), ctx);
+        });
+        input.read(&app, |input, _| {
+            assert!(
+                input.last_enter_submitted_shell_command,
+                "the waiting Enter must submit the line it waited for"
+            );
+            assert_eq!(
+                input.after_enter_replay_for_test(),
+                [AfterEnterInput::Text("ec".to_string())],
+                "only the keys typed behind the Enter replay; the Enter itself already ran"
+            );
+        });
+    })
+}
+
+/// #1017: a quote completion consumes the editor's auto-paired closing quote instead of doubling it.
+#[test]
+fn completion_consumes_auto_paired_closing_quote() {
+    use super::end_past_auto_paired_closing_quote as end;
+    // `cat "wild|"` (auto-paired): the file completion closes the quote itself.
+    for q in ['"', '\''] {
+        let buffer = format!("cat {q}wild{q}");
+        let completion = format!("wild thing.txt{q}");
+        assert_eq!(end(&completion, &buffer, 9), 10, "auto-paired {q}");
+        // No auto-pairing: cursor at the end of the buffer, nothing to consume.
+        let buffer = format!("cat {q}wild");
+        assert_eq!(end(&completion, &buffer, 9), 9, "unpaired {q}");
+        // A different quote after the cursor is not the closer.
+        let other = if q == '"' { '\'' } else { '"' };
+        let buffer = format!("cat {q}wild{other}");
+        assert_eq!(end(&completion, &buffer, 9), 9, "mismatched {q}");
+        // A directory completion keeps the quote open; the auto-paired closer stays.
+        let buffer = format!("cat {q}wild{q}");
+        assert_eq!(end("wild dir/", &buffer, 9), 9, "directory {q}");
+    }
+    // An escaped quote at the end of the completion is part of the name, not a closer.
+    assert_eq!(end("foo\\\"", "cat foo\"", 7), 7);
+    // Out-of-range / non-boundary offsets never panic.
+    assert_eq!(end("a\"", "a", 5), 5);
 }

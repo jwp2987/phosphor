@@ -1,3 +1,4 @@
+use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::AIAgentActionId;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::blocklist::SerializedBlockListItem;
@@ -113,6 +114,10 @@ pub enum ConversationTranscriptViewerStatus {
     ViewingLocalConversation,
     /// Viewing an ambient agent conversation with the associated task ID.
     ViewingAmbientConversation(AmbientAgentTaskId),
+    /// A read-only view of a conversation that is still live in another terminal view
+    /// (opened while a command runs there, #988). The viewer renders from the shared in-memory
+    /// conversation: it never registers a second live copy of it.
+    ViewingLiveConversationReadOnly(AIConversationId),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -463,6 +468,11 @@ impl TmuxControlModeContext {
     }
 }
 
+/// How long a command display override (#952) waits for its command to run before it is dropped.
+const COMMAND_DISPLAY_OVERRIDE_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+/// Upper bound on pending command display overrides.
+const MAX_COMMAND_DISPLAY_OVERRIDES: usize = 32;
+
 pub struct TerminalModel {
     /// For fullscreen programs like vim.
     alt_screen: AltScreen,
@@ -486,6 +496,9 @@ pub struct TerminalModel {
     /// The command the user should see for an agent command typed into the shell in a wrapped
     /// form, by the action that requested it (#904). Consumed at preexec.
     agent_display_commands: HashMap<AIAgentActionId, String>,
+    /// Wrapped command text typed into the shell -> the command to show for it (tab config
+    /// panes, #952). Consumed at preexec.
+    command_display_overrides: HashMap<String, (String, std::time::Instant)>,
     /// Whether the blocklist has been cleared in the lifetime of this terminal model.
     pub blocklist_has_been_cleared: bool,
 
@@ -537,6 +550,10 @@ pub struct TerminalModel {
     /// This is used to construct a final, populated `SessionInfo` after the session is
     /// bootstrapped.
     pending_session_info: Option<SessionInfo>,
+    /// The pending subshell session that `abandon_stalled_subshell_bootstrap` gave up on. Kept so
+    /// a shell that was only slow (an rc file sleeping before it reads the script) still gets
+    /// its session when the late `Bootstrapped` finally arrives (#1014).
+    abandoned_subshell_session: Option<SessionInfo>,
 
     /// If true, the terminal was bootstrapping but received a ^D from the user. We cannot stop the
     /// shell from sending us bootstrapping messages, but we can ignore them. This value is always
@@ -1200,6 +1217,7 @@ impl TerminalModel {
             typeahead_handoff: TypeaheadHandoff::default(),
             reply_ledger: SharedReplyLedger::default(),
             agent_display_commands: HashMap::new(),
+            command_display_overrides: HashMap::new(),
             blocklist_has_been_cleared: false,
             alt_screen_active: false,
             title_stack: Vec::new(),
@@ -1212,6 +1230,7 @@ impl TerminalModel {
             pending_shell_launch_data: None,
             active_shell_launch_data: None,
             pending_session_info: None,
+            abandoned_subshell_session: None,
             ignore_bootstrapping_messages: false,
             session_startup_path,
             is_receiving_in_band_command_output: IsReceivingInBandCommandOutput::No,
@@ -1611,6 +1630,17 @@ impl TerminalModel {
         self.conversation_transcript_viewer_status.is_some()
     }
 
+    /// The conversation this model is a read-only window onto, when it is a read-only view of a
+    /// conversation that is live in another terminal view (#988).
+    pub fn read_only_live_viewer_conversation_id(&self) -> Option<AIConversationId> {
+        match self.conversation_transcript_viewer_status {
+            Some(ConversationTranscriptViewerStatus::ViewingLiveConversationReadOnly(id)) => {
+                Some(id)
+            }
+            _ => None,
+        }
+    }
+
     pub fn is_loading_conversation_transcript(&self) -> bool {
         matches!(
             self.conversation_transcript_viewer_status,
@@ -1740,6 +1770,33 @@ impl TerminalModel {
 
     pub fn shell_launch_state(&self) -> &ShellLaunchState {
         &self.shell_launch_state
+    }
+
+    /// Whether an ssh-style remote session was announced but has not finished bootstrapping
+    /// (#1001). See [`remote_session_unbootstrapped`].
+    pub fn has_unbootstrapped_remote_session(&self) -> bool {
+        remote_session_unbootstrapped(
+            self.has_pending_ssh_session(),
+            self.pending_session_id().is_some(),
+            self.block_list.is_bootstrapped(),
+            self.pending_subshell_session().is_some(),
+        )
+    }
+
+    /// Gives up on a subshell bootstrap that was announced (`InitShell`) but never reported
+    /// `Bootstrapped` (#1014): the shell died or lost the script half-way. Without this the pane
+    /// shows "Starting shell..." forever, because only `Bootstrapped` ends that stage. The pending
+    /// session is dropped and the block list marked bootstrapped, as the `Bootstrapped` hook would
+    /// have; the next prompt moves it on as usual. No session is created for the abandoned shell,
+    /// so the parent's stays the active one. Returns whether anything changed.
+    pub fn abandon_stalled_subshell_bootstrap(&mut self) -> bool {
+        if self.pending_subshell_session().is_none() || self.block_list.is_bootstrapped() {
+            return false;
+        }
+        log::warn!("Abandoning a subshell bootstrap that never reported Bootstrapped (#1014)");
+        self.abandoned_subshell_session = self.pending_session_info.take();
+        self.block_list.set_bootstrapped();
+        true
     }
 
     pub fn pending_subshell_session(&self) -> Option<&SubshellInitializationInfo> {
@@ -2760,17 +2817,79 @@ impl TerminalModel {
         self.agent_display_commands.insert(action_id, command);
     }
 
+    /// Records that the command `wrapped`, typed into the shell by the app (a tab config pane's
+    /// startup command rewritten to bypass aliases, #884), is shown as `display` in the block
+    /// header, tab title and history instead (#952).
+    ///
+    /// This only changes what Phosphor shows: the shell's own history file (`~/.zsh_history`,
+    /// PowerShell's PSReadLine file, ...) still records the wrapper text that was actually typed.
+    ///
+    /// An override is consumed at preexec. One whose command never ran (the pending input was
+    /// edited or cleared) expires after [`COMMAND_DISPLAY_OVERRIDE_TTL`]; the table is also
+    /// bounded, evicting the oldest entry rather than dropping every pending override.
+    pub fn set_command_display_override(&mut self, wrapped: String, display: String) {
+        self.set_command_display_override_at(wrapped, display, std::time::Instant::now());
+    }
+
+    fn set_command_display_override_at(
+        &mut self,
+        wrapped: String,
+        display: String,
+        now: std::time::Instant,
+    ) {
+        // Keyed trimmed, because preexec looks the typed command up trimmed.
+        let wrapped = wrapped.trim().to_owned();
+        if wrapped == display {
+            return;
+        }
+        self.command_display_overrides.retain(|_, (_, set_at)| {
+            now.saturating_duration_since(*set_at) < COMMAND_DISPLAY_OVERRIDE_TTL
+        });
+        while self.command_display_overrides.len() >= MAX_COMMAND_DISPLAY_OVERRIDES {
+            let Some(oldest) = self
+                .command_display_overrides
+                .iter()
+                .min_by_key(|(_, (_, set_at))| *set_at)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            self.command_display_overrides.remove(&oldest);
+        }
+        self.command_display_overrides
+            .insert(wrapped, (display, now));
+    }
+
     fn apply_preexec(&mut self, mut data: PreexecValue) {
         let display_command = self
             .block_list
             .active_block()
             .requested_command_action_id()
-            .and_then(|action_id| self.agent_display_commands.remove(action_id));
+            .and_then(|action_id| self.agent_display_commands.remove(action_id))
+            .or_else(|| {
+                self.command_display_overrides
+                    .remove(data.command.trim())
+                    .map(|(display, _)| display)
+            });
         if let Some(display_command) = display_command {
             self.block_list
                 .active_block_mut()
                 .replace_command_text(&display_command);
             data.command = display_command;
+        } else if !data.command.trim().is_empty()
+            && self
+                .block_list
+                .active_block()
+                .command_to_string()
+                .trim()
+                .is_empty()
+        {
+            // The command grid is filled from the shell's echo, so a tty with echo off (e.g.
+            // `stty -echo; cat` leaving it off for the next command) yields a blank header.
+            // The preexec payload carries the submitted command: show that instead (#998).
+            self.block_list
+                .active_block_mut()
+                .replace_command_text(&data.command);
         }
         if FeatureFlag::TypeaheadHandoff.is_enabled() {
             // A block nobody started is a line the shell read from the tty itself: typeahead.
@@ -2844,6 +2963,15 @@ impl ansi::Handler for TerminalModel {
     /// which lands in the user's command input line.
     fn should_validate_dcs_hook_session_id(&self) -> bool {
         !self.shared_session_status().is_viewer()
+    }
+
+    fn allows_tmux_control_mode(&self) -> bool {
+        // Phosphor's own SSH tmux bootstrap, or a `tmux -CC` command the user ran in the active
+        // block. Anything else (e.g. `cat` of a hostile file) is untrusted output (#996).
+        self.pending_warp_initiated_control_mode.is_some()
+            || tmux::command_starts_tmux_control_mode(
+                &self.block_list.active_block().command_to_string(),
+            )
     }
 
     fn set_title(&mut self, title: Option<String>) {
@@ -3202,6 +3330,12 @@ impl ansi::Handler for TerminalModel {
             self.end_completions_output();
         }
 
+        // #966: the shell's own markers are not Phosphor's; neither the grids nor the view should
+        // see them (see `BlockList::prompt_marker`).
+        if self.block_list.ignores_shell_prompt_markers() {
+            return;
+        }
+
         let event = match &marker {
             ansi::PromptMarker::StartPrompt { kind } => match kind {
                 ansi::PromptKind::Initial => HandlerEvent::PromptStart,
@@ -3249,6 +3383,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn precmd_with_completion_metadata(&mut self, data: PrecmdValue) {
+        self.reset_stale_in_band_command_output();
         let disposition = self
             .block_list
             .classify_next_block_id(&data.completion_metadata.next_block_id);
@@ -3275,6 +3410,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn prompt_only_precmd(&mut self, data: PromptMetadata) {
+        self.reset_stale_in_band_command_output();
         let transition = self.plan_lifecycle_transition(
             LifecycleInput::PromptOnlyPrecmd,
             None,
@@ -3309,7 +3445,11 @@ impl ansi::Handler for TerminalModel {
     fn bootstrapped(&mut self, value: BootstrappedValue) {
         self.block_list.bootstrapped(value.clone());
 
-        let pending_session_info = match self.pending_session_info.take() {
+        let pending_session_info = match self
+            .pending_session_info
+            .take()
+            .or_else(|| self.abandoned_subshell_session.take())
+        {
             Some(session_info) => session_info,
             None => {
                 // Not being able to read the value should not cause a full-app crash. Instead,
@@ -3388,6 +3528,18 @@ impl ansi::Handler for TerminalModel {
             "Received ExitShell hook from shell for session_id: {:?}",
             data.session_id
         );
+        // A pending session that exits before bootstrapping must not linger (#983): it would
+        // make later input handling believe a bootstrap is still in flight.
+        if self.pending_session_id() == Some(data.session_id) {
+            self.pending_session_info = None;
+        }
+        if self
+            .abandoned_subshell_session
+            .as_ref()
+            .is_some_and(|info| info.session_id == data.session_id)
+        {
+            self.abandoned_subshell_session = None;
+        }
         self.event_proxy.send_terminal_event(Event::ExitShell {
             session_id: data.session_id,
         });
@@ -3441,6 +3593,8 @@ impl ansi::Handler for TerminalModel {
                 self.block_list().active_block().session_id(),
             );
             self.pending_session_info = Some(pending_session_info.clone());
+            // A newer shell supersedes whatever was abandoned earlier.
+            self.abandoned_subshell_session = None;
 
             if self.block_list().is_bootstrapped() {
                 self.block_list_mut().reinit_shell();
@@ -3606,7 +3760,14 @@ impl ansi::Handler for TerminalModel {
                 self.is_receiving_in_band_command_output = IsReceivingInBandCommandOutput::No;
             }
             IsReceivingInBandCommandOutput::No => {
-                log::warn!("Received 'end_in_band_command_output' while not expecting to read in-band command output.");
+                // The pty controller calls this with `from_osc_sequence == false` before
+                // every command it writes, purely to make sure nothing is left open, so
+                // "not receiving" is the normal case there and not worth a warning.
+                if from_osc_sequence {
+                    log::warn!("Received 'end_in_band_command_output' while not expecting to read in-band command output.");
+                } else {
+                    log::debug!("No in-band command output was open when a command was written.");
+                }
             }
         }
 
@@ -4147,6 +4308,26 @@ impl ansi::Handler for TerminalModel {
     }
 }
 
+impl TerminalModel {
+    /// An in-band command's end marker always precedes the shell's next precmd. If a precmd
+    /// arrives while we are still capturing in-band output, the end marker was lost (the
+    /// shell was killed or a nested subshell exited mid-generator). Left open, `input`,
+    /// `goto` and `carriage_return` would keep diverting everything the shell prints into
+    /// the capture buffer, so the prompt and the user's echo would never reach the grid.
+    fn reset_stale_in_band_command_output(&mut self) {
+        if matches!(
+            self.is_receiving_in_band_command_output,
+            IsReceivingInBandCommandOutput::Yes { .. }
+        ) {
+            log::warn!(
+                "Received a precmd while still reading in-band command output; \
+                 discarding the unterminated output."
+            );
+            self.is_receiving_in_band_command_output = IsReceivingInBandCommandOutput::No;
+        }
+    }
+}
+
 impl ModeProvider for TerminalModel {
     fn is_term_mode_set(&self, mode: TermMode) -> bool {
         self.is_term_mode_set(mode)
@@ -4210,6 +4391,20 @@ pub enum ExitReason {
     ProcessKilled,
     /// Shell could not be found/determined
     ShellNotFound,
+}
+
+/// Pure rule for [`TerminalModel::has_unbootstrapped_remote_session`]. The SSH hook was seen
+/// (`ssh_hook_seen`) but no InitShell followed, or a session is pending (`session_pending`) on
+/// top of an already bootstrapped local shell that is not a subshell (`su -`, `sudo -i`): that is
+/// a remote shell whose bootstrap never finished. A pending session on a not yet bootstrapped
+/// local shell is just the local shell starting.
+pub(crate) fn remote_session_unbootstrapped(
+    ssh_hook_seen: bool,
+    session_pending: bool,
+    local_bootstrapped: bool,
+    subshell_pending: bool,
+) -> bool {
+    ssh_hook_seen || (session_pending && local_bootstrapped && !subshell_pending)
 }
 
 #[cfg(test)]

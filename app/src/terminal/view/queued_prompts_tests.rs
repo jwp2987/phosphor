@@ -1909,3 +1909,290 @@ fn subagent_finish_mid_turn_defers_only_for_the_block_completion_auto_resume() {
         assert_eq!(queue_len(&app), 0);
     });
 }
+
+// ---- #1026: queued prompts that had no remaining drain trigger ------------------------------
+
+fn approval_follow_up_query(text: &str) -> QueuedQuery {
+    QueuedQuery::new(text.to_owned(), QueuedQueryOrigin::ApprovalFollowUp)
+}
+
+/// Enters agent view on a fresh conversation (the cancel restore only runs for the conversation
+/// in view) and registers the model-event provider a fired row needs.
+fn enter_agent_view_with_provider(
+    app: &mut App,
+    terminal: &ViewHandle<super::TerminalView>,
+) -> AIConversationId {
+    let global_resource_handles = crate::GlobalResourceHandles::mock(app);
+    app.add_singleton_model(move |_| {
+        crate::GlobalResourceHandlesProvider::new(global_resource_handles.clone())
+    });
+    terminal.update(app, |view, ctx| {
+        view.agent_view_controller().update(ctx, |controller, ctx| {
+            controller
+                .try_enter_agent_view(
+                    None,
+                    AgentViewEntryOrigin::Input {
+                        was_prompt_autodetected: false,
+                    },
+                    ctx,
+                )
+                .expect("should enter agent view")
+        })
+    })
+}
+
+fn set_status(
+    app: &mut App,
+    terminal: &ViewHandle<super::TerminalView>,
+    conversation_id: AIConversationId,
+    status: ConversationStatus,
+) {
+    terminal.update(app, |view, ctx| {
+        let terminal_view_id = view.view_id;
+        BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+            history
+                .conversation_mut(&conversation_id)
+                .expect("conversation exists")
+                .update_status(status, terminal_view_id, ctx);
+        });
+    });
+}
+
+fn input_text(app: &App, terminal: &ViewHandle<super::TerminalView>) -> String {
+    terminal.read(app, |view, ctx| view.input().as_ref(ctx).buffer_text(ctx))
+}
+
+fn queue_len(app: &App, conversation_id: AIConversationId) -> usize {
+    QueuedQueryModel::handle(app).read(app, |model, _| model.queue(conversation_id).len())
+}
+
+#[test]
+fn a_blocked_action_resolved_without_a_follow_up_restores_the_queued_prompt() {
+    // Rejecting (or stopping) a blocked command sends no follow-up request, so no turn end ever
+    // drained the follow-up the user queued behind the card: it was unlocked and then sat there.
+    // The controller now announces the release and the view runs the cancel drain.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let ai_query_count = count_ai_queries(&mut app, &terminal);
+        let conversation_id = enter_agent_view_with_provider(&mut app, &terminal);
+        set_status(
+            &mut app,
+            &terminal,
+            conversation_id,
+            ConversationStatus::Cancelled,
+        );
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(
+                conversation_id,
+                approval_follow_up_query("after the card"),
+                ctx,
+            );
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_ai_controller_event(
+                view.ai_controller.clone(),
+                &BlocklistAIControllerEvent::QueuedPromptsReleased { conversation_id },
+                ctx,
+            );
+        });
+
+        assert_eq!(input_text(&app, &terminal), "after the card");
+        assert_eq!(queue_len(&app, conversation_id), 0);
+        assert_eq!(
+            *ai_query_count.borrow(),
+            0,
+            "nothing is sent on the user's behalf"
+        );
+    });
+}
+
+#[test]
+fn a_stream_end_with_no_block_finish_reason_still_drains_by_conversation_status() {
+    // `FinishedReceivingOutput` looked the reason up on the conversation's AI block; a
+    // conversation with no block (or one whose block has not recorded its reason yet) produced
+    // `None` and the drain was skipped with no later trigger. The conversation's terminal status
+    // is the fallback.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let ai_query_count = count_ai_queries(&mut app, &terminal);
+        let conversation_id = enter_agent_view_with_provider(&mut app, &terminal);
+
+        // An errored stream restores the head into the empty input.
+        set_status(
+            &mut app,
+            &terminal,
+            conversation_id,
+            ConversationStatus::Error,
+        );
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(conversation_id, user_query("after the error"), ctx);
+        });
+        finish_turn(&mut app, &terminal, conversation_id);
+        assert_eq!(input_text(&app, &terminal), "after the error");
+        assert_eq!(queue_len(&app, conversation_id), 0);
+        assert_eq!(*ai_query_count.borrow(), 0);
+
+        // A finished turn fires the head.
+        set_status(
+            &mut app,
+            &terminal,
+            conversation_id,
+            ConversationStatus::Success,
+        );
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(conversation_id, user_query("after the success"), ctx);
+        });
+        finish_turn(&mut app, &terminal, conversation_id);
+        assert_eq!(*ai_query_count.borrow(), 1);
+        assert_eq!(queue_len(&app, conversation_id), 0);
+
+        // A turn that is still running is not drained.
+        set_status(
+            &mut app,
+            &terminal,
+            conversation_id,
+            ConversationStatus::InProgress,
+        );
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(conversation_id, user_query("mid turn"), ctx);
+        });
+        finish_turn(&mut app, &terminal, conversation_id);
+        assert_eq!(*ai_query_count.borrow(), 1);
+        assert_eq!(queue_len(&app, conversation_id), 1);
+    });
+}
+
+#[test]
+fn subagent_finish_after_a_stop_with_no_owed_drain_restores_the_head() {
+    // Stop during a long-running command with no stream in flight leaves no
+    // `FinishedReceivingOutput` (so no owed drain). The subagent finishing took the unlock-only branch and nothing ever
+    // restored the auto-queued prompt.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let ai_query_count = count_ai_queries(&mut app, &terminal);
+        let conversation_id = enter_agent_view_with_provider(&mut app, &terminal);
+        let command_block_id = BlockId::new();
+        let task_id = BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, _| {
+            history
+                .conversation_mut(&conversation_id)
+                .expect("conversation exists")
+                .create_optimistic_cli_subagent_task_for_test(&command_block_id)
+        });
+        set_status(
+            &mut app,
+            &terminal,
+            conversation_id,
+            ConversationStatus::Cancelled,
+        );
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(
+                conversation_id,
+                lrc_auto_query("queued during the command"),
+                ctx,
+            );
+        });
+
+        BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, _| {
+            history
+                .conversation_mut(&conversation_id)
+                .expect("conversation exists")
+                .clear_optimistic_cli_subagent_task_for_test();
+        });
+        finish_cli_subagent(
+            &mut app,
+            &terminal,
+            conversation_id,
+            &command_block_id,
+            &task_id,
+        );
+
+        assert_eq!(input_text(&app, &terminal), "queued during the command");
+        assert_eq!(queue_len(&app, conversation_id), 0);
+        assert_eq!(
+            *ai_query_count.borrow(),
+            0,
+            "a stopped conversation never auto-sends"
+        );
+    });
+}
+
+#[test]
+fn returning_to_a_stopped_conversation_restores_the_prompt_left_in_its_queue() {
+    // The cancel drain leaves the queue alone while the conversation is not in view, so that
+    // re-entering shows what the user left. Nothing then drained it.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let terminal_view_id = terminal.read(&app, |view, _| view.view_id);
+        let conversation_id = BlocklistAIHistoryModel::handle(&app)
+            .update(&mut app, |history, ctx| {
+                history.start_new_conversation(terminal_view_id, false, false, ctx)
+            });
+        set_status(
+            &mut app,
+            &terminal,
+            conversation_id,
+            ConversationStatus::Cancelled,
+        );
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(conversation_id, user_query("left behind"), ctx);
+        });
+        assert_eq!(
+            input_text(&app, &terminal),
+            "",
+            "precondition: nothing restored yet"
+        );
+
+        terminal.update(&mut app, |view, ctx| {
+            view.agent_view_controller().update(ctx, |controller, ctx| {
+                controller
+                    .try_enter_agent_view(
+                        Some(conversation_id),
+                        AgentViewEntryOrigin::Input {
+                            was_prompt_autodetected: false,
+                        },
+                        ctx,
+                    )
+                    .expect("should enter agent view");
+            });
+        });
+
+        assert_eq!(input_text(&app, &terminal), "left behind");
+        assert_eq!(queue_len(&app, conversation_id), 0);
+    });
+}
+
+#[test]
+fn queued_prompts_of_a_removed_conversation_come_back_into_the_input() {
+    // Removing, deleting or clearing a conversation dropped its queue without a word.
+    App::test((), |mut app| async move {
+        // The view only listens for dropped rows (and the model exists) under this flag.
+        let _queue_flag = FeatureFlag::QueueSlashCommand.override_enabled(true);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let terminal_view_id = terminal.read(&app, |view, _| view.view_id);
+        let conversation_id = BlocklistAIHistoryModel::handle(&app)
+            .update(&mut app, |history, ctx| {
+                history.start_new_conversation(terminal_view_id, false, false, ctx)
+            });
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(conversation_id, user_query("first"), ctx);
+            model.append(conversation_id, user_query("second"), ctx);
+        });
+
+        BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
+            history.remove_conversation(conversation_id, terminal_view_id, ctx);
+        });
+
+        assert_eq!(input_text(&app, &terminal), "first\nsecond");
+        assert_eq!(queue_len(&app, conversation_id), 0);
+    });
+}

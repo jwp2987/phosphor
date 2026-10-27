@@ -43,6 +43,9 @@ pub enum PtyIntent {
     CtrlD,
     #[cfg(not(target_family = "wasm"))]
     Interrupt,
+    /// SIGINT to the pty's foreground process group instead of a ^C byte (#1001); falls back
+    /// to the byte where no signal path exists.
+    SigintForeground,
     ShutdownPty,
     /// Drop any command still parked in the PTY controller's write queue (written by the
     /// shell only once its line editor is ready), so it never runs (#848).

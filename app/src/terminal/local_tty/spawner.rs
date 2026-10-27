@@ -52,6 +52,12 @@ impl PtyHandle for DirectPtyHandle {
     }
 
     fn kill(&mut self) -> Result<()> {
+        // Kill the whole tree, not just the shell, so ssh clients and sudo chains do not outlive
+        // the session (#975); see `process_tree`. Skipped once the shell has been reaped, as its
+        // pid may have been recycled. `Child::kill` then hits the shell itself regardless.
+        if matches!(self.child.try_wait(), Ok(None)) {
+            local_tty::process_tree::terminate_shell_tree(self.child.id());
+        }
         self.child.kill()?;
         match self.child.wait() {
             Ok(_) => Ok(()),

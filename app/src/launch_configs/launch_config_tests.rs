@@ -257,7 +257,8 @@ windows:
         PaneTemplateType::PaneTemplate {
             cwd: PathBuf::from("/tmp"),
             commands: vec![CommandTemplate {
-                exec: "echo hello".to_string()
+                exec: "echo hello".to_string(),
+                display: None,
             }],
             is_focused: None,
             pane_mode: PaneMode::Terminal,
@@ -303,7 +304,8 @@ windows:
                 PaneTemplateType::PaneTemplate {
                     cwd: PathBuf::from("/tmp/right"),
                     commands: vec![CommandTemplate {
-                        exec: "echo focused".to_string()
+                        exec: "echo focused".to_string(),
+                        display: None,
                     }],
                     is_focused: Some(true),
                     pane_mode: PaneMode::Terminal,
@@ -342,7 +344,8 @@ windows:
                 PaneTemplateType::PaneTemplate {
                     cwd: PathBuf::from("/tmp/left"),
                     commands: vec![CommandTemplate {
-                        exec: "echo first".to_string()
+                        exec: "echo first".to_string(),
+                        display: None,
                     }],
                     is_focused: None,
                     pane_mode: PaneMode::Terminal,

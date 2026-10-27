@@ -22,3 +22,17 @@ fn test_parse_generator_output() {
     let result = parse_generator_output(input);
     assert!(result.is_none());
 }
+
+#[test]
+fn control_mode_command_detection() {
+    assert!(command_starts_tmux_control_mode("tmux -CC"));
+    assert!(command_starts_tmux_control_mode("tmux -CC attach -t x"));
+    assert!(command_starts_tmux_control_mode("/usr/bin/tmux -u -CC new"));
+    assert!(command_starts_tmux_control_mode(
+        "ssh -t host \"tmux -CC attach\""
+    ));
+    assert!(!command_starts_tmux_control_mode("cat evil.txt"));
+    assert!(!command_starts_tmux_control_mode("tmux attach"));
+    assert!(!command_starts_tmux_control_mode("echo -CC tmux"));
+    assert!(!command_starts_tmux_control_mode(""));
+}

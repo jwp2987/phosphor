@@ -260,6 +260,42 @@ def scenario(title, zshrc, zshenv="", failing=True):
         sh.close()
 
 
+def scenario_print_exit_value_and_user_preexec_output():
+    """#974: `setopt PRINT_EXIT_VALUE` in the user's rc made the bootstrap itself print
+    `zsh: exit 1`; and a user preexec's stderr was written BEFORE warp_preexec's Preexec hook,
+    so the app drew it inside the command header. Types the real zsh.sh (heredoc + eval), the
+    way the app writes it, rather than sourcing the body."""
+    print("setopt print_exit_value + a user preexec that writes to stderr (#974)")
+    sh = Shell("setopt print_exit_value\n"
+               "_user_preexec() { print -u2 USERPREEXEC-MARKER; }\n"
+               "preexec_functions+=(_user_preexec)")
+    try:
+        sh.pump(1.5)
+        with open(os.path.join(ASSETS, "bundled", "bootstrap", "zsh.sh")) as f:
+            script = assemble(f.read()).replace("@@USING_CON_PTY_BOOLEAN@@", "false")
+        pre = "unsetopt ZLE\n WARP_SESSION_ID=4242\n WARP_USING_WINDOWS_CON_PTY=false\n"
+        # Write line by line while draining output: one big write blocks once the pty fills.
+        for line in (pre + script + "\n builtin echo boot$((20+22))done\n").split("\n"):
+            os.write(sh.fd, (line + "\n").encode())
+            sh.pump(0.01)
+        ok = sh.pump(30, lambda: "boot42done" in sh.text() and "Bootstrapped" in sh.names())
+        sh.broken = not ok
+        check(ok, "bootstraps", sh)
+        sh.pump(1.5)
+        check("zsh: exit" not in sh.text(), "the bootstrap prints no `zsh: exit N`", sh)
+        n = len(sh.buf)
+        got = sh.cycle("false", timeout=8)
+        check("zsh: exit 1" in sh.text()[len(sh.text()) - 400:], "the user's own `false` still prints its exit value", sh)
+        n = len(sh.buf)
+        sh.cycle("echo hi", timeout=8)
+        seg = sh.buf[n:]
+        pre_at = seg.find(b"\x1bP$d")
+        mark_at = seg.find(b"USERPREEXEC-MARKER")
+        check(0 <= pre_at < mark_at, "the user preexec's stderr comes AFTER the Preexec hook", sh)
+    finally:
+        sh.close()
+
+
 def scenario_hostile_home():
     print("a $HOME containing backslash-t reaches the hooks as a backslash, not a tab")
     # #879: home_dir was printed raw, so a valid-looking escape like \\t decoded as a tab.
@@ -441,6 +477,7 @@ def main():
     scenario_err_exit()
     scenario_errexit_repair_agent_rc()
     scenario_hostile_home()
+    scenario_print_exit_value_and_user_preexec_output()
     if failures:
         print(f"\ntest_zsh_bootstrap_strict_options: {len(failures)} check(s) FAILED")
         return 1

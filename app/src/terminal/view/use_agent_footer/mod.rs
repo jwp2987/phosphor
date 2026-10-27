@@ -159,8 +159,16 @@ fn rich_input_submit_strategy(agent: CLIAgent) -> RichInputSubmitStrategy {
     }
 }
 
-static USE_AGENT_KEYSTROKE: LazyLock<Keystroke> =
+/// The "Use agent" shortcut the footer and the SSH Warpifying banner display. This is the one
+/// place it is defined: the key handler that switches to agent mode (#976) compares against it
+/// via [`is_use_agent_keystroke`], so what is displayed is exactly what works.
+pub(crate) static USE_AGENT_KEYSTROKE: LazyLock<Keystroke> =
     LazyLock::new(|| Keystroke::parse(cmd_or_ctrl_shift("enter")).expect("valid keystroke"));
+
+/// Whether `keystroke` is the displayed "Use agent" shortcut (exact match, modifiers included).
+pub(crate) fn is_use_agent_keystroke(keystroke: &Keystroke) -> bool {
+    keystroke == &*USE_AGENT_KEYSTROKE
+}
 
 impl TerminalView {
     pub(super) fn register_subscriptions_for_use_agent_footer(
@@ -490,9 +498,11 @@ impl TerminalView {
             .set_is_agent_tagged_in(true);
 
         if !self.model.lock().is_alt_screen_active() {
-            self.use_agent_footer.update(ctx, |footer, ctx| {
-                footer.clear_warpify_mode(ctx);
-            });
+            // Only hide the footer. The warpify mode (the "Phosphorize subshell" chip) is
+            // deliberately kept: clearing it here meant that after tagging the agent out the
+            // banner came back as a plain "Use agent" footer and the subshell could no longer
+            // be Phosphorized from it (#1004). It is cleared when the subshell is
+            // Phosphorized (`dismiss_warpify_banner`) or its block completes.
             self.suppress_use_agent_footer(ctx);
         }
 

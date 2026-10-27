@@ -2280,6 +2280,7 @@ menu-block-scroll-to-bottom-of-blocks = ブロックの末尾へスクロール
 menu-block-save-as-workflow = ワークフローとして保存
 menu-block-ask-warp-ai = Phosphor AI に質問
 menu-block-copy-output = 出力をコピー
+menu-block-copy-selected-text = 選択したテキストをコピー
 menu-block-copy-filtered-output = フィルタ済み出力をコピー
 menu-block-toggle-block-filter = ブロックフィルタを切り替え
 menu-block-toggle-bookmark = ブックマークを切り替え

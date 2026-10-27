@@ -45,6 +45,7 @@ use warpui::{
 };
 
 use crate::ai::agent::{AIAgentPtyWriteMode, CancellationReason};
+use crate::ai::blocklist::pty_write_for_target_command;
 use crate::ai::blocklist::block::view_impl::common::{
     render_query_text, UserQueryProps, BLOCKED_ACTION_MESSAGE_FOR_GREP_OR_FILE_GLOB,
     BLOCKED_ACTION_MESSAGE_FOR_READING_FILES,
@@ -54,6 +55,7 @@ use crate::ai::blocklist::block::view_impl::common::{
 };
 use crate::ai::blocklist::permissions::is_agent_mode_autonomy_allowed;
 use crate::ai::control_code_parser::{parse_control_codes_from_bytes, ParsedControlCodeOutput};
+use crate::ai::execution_profiles::WriteToPtyPermission;
 use crate::code::editor::view::{CodeEditorEvent, CodeEditorRenderOptions};
 use crate::menu::MenuItemFields;
 use crate::send_telemetry_from_ctx;
@@ -118,6 +120,8 @@ use super::{
     },
     EmbeddedCodeEditorView, SecretRedactionState,
 };
+/// How far outside a bubble's text areas a press is still taken by that area (#1021).
+const CLI_BUBBLE_CAPTURE_SLOP: f32 = 6.0;
 const MENU_WIDTH: f32 = 200.0;
 const MAX_HEIGHT: f32 = 320.0;
 // Minimum width of the CLI agent floating window, so content doesn't get dragged
@@ -672,15 +676,16 @@ impl CLISubagentView {
             MenuEvent::ItemSelected | MenuEvent::ItemHovered => {}
         });
 
-        // We want to default the checkbox to true when rendering the speedbump for the first time.
-        // Otherwise, update it when the permission changes.
-        let always_allow_write_to_pty_checked = if should_show_write_to_pty_speedbump(ctx) {
-            true
-        } else {
-            BlocklistAIPermissions::as_ref(ctx)
-                .can_write_to_pty(&conversation_id, Some(ctx.view_id()), ctx)
-                .is_always_allow()
-        };
+        // #979: the checkbox reflects the CURRENT permission and is never pre-ticked. It used to
+        // default to true on first show, and `maybe_update_speedbump` committed that default on
+        // any approval -- so pressing Enter on a card silently turned write-to-PTY into
+        // AlwaysAllow. Only an explicit toggle (`ToggleAlwaysAllowWriteToPty`) changes it now.
+        let always_allow_write_to_pty_checked =
+            write_to_pty_checkbox_checked(BlocklistAIPermissions::as_ref(ctx).can_write_to_pty(
+                &conversation_id,
+                Some(ctx.view_id()),
+                ctx,
+            ));
 
         let always_allow_read_files_checked = if should_show_read_files_speedbump(ctx) {
             true
@@ -1151,26 +1156,9 @@ impl CLISubagentView {
     // This is called on any user action instead of on render time to ensure the state is updated correctly.
     fn maybe_update_speedbump(&mut self, action: &AIAgentActionType, ctx: &mut ViewContext<Self>) {
         match action {
-            AIAgentActionType::WriteToLongRunningShellCommand { .. }
-                if should_show_write_to_pty_speedbump(ctx) =>
-            {
-                AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                    let _ = settings
-                        .should_show_agent_mode_write_to_pty_speedbump
-                        .set_value(false, ctx);
-                });
-
-                BlocklistAIPermissions::handle(ctx).update(ctx, |permissions, ctx| {
-                    if let Err(e) = permissions.set_always_allow_write_to_pty(
-                        self.always_allow_write_to_pty_checked,
-                        self.terminal_view_id,
-                        ctx,
-                    ) {
-                        report_error!(e);
-                    }
-                });
-                ctx.notify();
-            }
+            // #979: approving a write must not dismiss the write-to-PTY speedbump or touch the
+            // permission. The checkbox persists its own toggles immediately.
+            AIAgentActionType::WriteToLongRunningShellCommand { .. } => {}
             AIAgentActionType::ReadFiles(_)
             | AIAgentActionType::Grep { .. }
             | AIAgentActionType::FileGlobV2 { .. } => {
@@ -1683,7 +1671,7 @@ impl View for CLISubagentView {
                     // See issue #793: a click genuinely inside this floating bubble must not
                     // leak through to the terminal's own grid selection underneath, even if this
                     // area's own selection start fails for some reason.
-                    .capture_clicks_within_bounds();
+                    .capture_clicks_within_bounds_with_slop(CLI_BUBBLE_CAPTURE_SLOP);
 
                     if FeatureFlag::RectSelection.is_enabled() {
                         selectable_text = selectable_text.should_support_rect_select();
@@ -1997,7 +1985,7 @@ impl View for CLISubagentView {
                 // position momentarily lags the terminal's row bookkeeping while the agent is
                 // in control of a long-running command), the click must not leak through to the
                 // terminal's own grid selection underneath. See issue #793.
-                .capture_clicks_within_bounds();
+                .capture_clicks_within_bounds_with_slop(CLI_BUBBLE_CAPTURE_SLOP);
 
                 if FeatureFlag::RectSelection.is_enabled() {
                     output = output.should_support_rect_select();
@@ -2019,16 +2007,33 @@ impl View for CLISubagentView {
                 if let Some(rendered_action) =
                     blocked_action.and_then(|action| match action.action {
                         AIAgentActionType::WriteToLongRunningShellCommand {
-                            input, mode, ..
+                            block_id,
+                            input,
+                            mode,
                         } => Some(render_blocked_action(
                             BlockedActionProps {
                                 header:
                                     BLOCKED_ACTION_MESSAGE_FOR_WRITE_TO_LONG_RUNNING_SHELL_COMMAND
                                         .to_string(),
                                 description: Some(render_write_to_pty_input(
-                                    WriteToPtyInputProps {
-                                        input: input.clone(),
-                                        mode,
+                                    {
+                                        // The keys shown are the keys sent: for a shell prompt
+                                        // that includes the clear-line prefix (#979). Uses the
+                                        // guard `render` already holds: the terminal model's
+                                        // mutex isn't reentrant, so locking it again here hung
+                                        // the app whenever this card was shown.
+                                        let target_command = terminal_model
+                                            .block_list()
+                                            .block_with_id(&block_id)
+                                            .map(|block| {
+                                                block.command_with_secrets_unobfuscated(false)
+                                            });
+                                        let (input, mode) = pty_write_for_target_command(
+                                            target_command.as_deref(),
+                                            &input,
+                                            mode,
+                                        );
+                                        WriteToPtyInputProps { input, mode }
                                     },
                                     app,
                                 )),
@@ -2154,7 +2159,7 @@ impl View for CLISubagentView {
                     // See issue #793: a click genuinely inside this floating bubble must not
                     // leak through to the terminal's own grid selection underneath, even if this
                     // area's own selection start fails for some reason.
-                    .capture_clicks_within_bounds();
+                    .capture_clicks_within_bounds_with_slop(CLI_BUBBLE_CAPTURE_SLOP);
 
                     if FeatureFlag::RectSelection.is_enabled() {
                         selectable_action = selectable_action.should_support_rect_select();
@@ -2341,6 +2346,13 @@ impl TypedActionView for CLISubagentView {
                         report_error!(e);
                     }
                 });
+                // #979: an explicit toggle is the only thing that dismisses the speedbump
+                // (approval no longer does), so it does not show forever.
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let _ = settings
+                        .should_show_agent_mode_write_to_pty_speedbump
+                        .set_value(false, ctx);
+                });
                 ctx.notify();
             }
             CLISubagentAction::ToggleAlwaysAllowReadFiles => {
@@ -2400,6 +2412,13 @@ impl TypedActionView for CLISubagentView {
             }
         }
     }
+}
+
+/// Whether the "always allow" checkbox on a write-to-PTY card starts ticked. Only an existing
+/// AlwaysAllow permission ticks it; the speedbump being shown for the first time must not
+/// (#979: it used to default to true and any approval then persisted AlwaysAllow).
+fn write_to_pty_checkbox_checked(permission: WriteToPtyPermission) -> bool {
+    permission.is_always_allow()
 }
 
 fn should_show_write_to_pty_speedbump(app: &AppContext) -> bool {
@@ -3025,6 +3044,19 @@ mod tests {
         AIAgentTextSection::PlainText {
             text: AgentOutputText::from(text.to_string()),
         }
+    }
+
+    #[test]
+    fn write_to_pty_checkbox_is_never_preticked() {
+        assert!(!write_to_pty_checkbox_checked(
+            WriteToPtyPermission::AlwaysAsk
+        ));
+        assert!(!write_to_pty_checkbox_checked(
+            WriteToPtyPermission::AskOnFirstWrite
+        ));
+        assert!(write_to_pty_checkbox_checked(
+            WriteToPtyPermission::AlwaysAllow
+        ));
     }
 
     #[test]

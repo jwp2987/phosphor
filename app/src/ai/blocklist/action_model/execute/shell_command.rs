@@ -552,6 +552,9 @@ impl ShellCommandExecutor {
                         ),
                     );
                 }
+                let target_command = block.command_with_secrets_unobfuscated(false);
+                let (input, mode) =
+                    pty_write_for_target_command(Some(&target_command), input, *mode);
                 // Drop immutable borrow.
                 drop(model);
 
@@ -561,10 +564,7 @@ impl ShellCommandExecutor {
                 }
                 drop(model);
 
-                ctx.emit(ShellCommandExecutorEvent::WriteToPty {
-                    input: input.clone(),
-                    mode: *mode,
-                });
+                ctx.emit(ShellCommandExecutorEvent::WriteToPty { input, mode });
 
                 let block_selector = BlockSelector::Id(block_id.clone());
                 ActionExecution::new_async(
@@ -1308,6 +1308,82 @@ fn command_starts_non_terminating_session(command: &str) -> bool {
                 "mosh" | "mosh.exe" | "sftp" | "sftp.exe" | "telnet" | "telnet.exe"
             )
         })
+        || is_interactive_shell_invocation(command)
+}
+
+/// The bytes and mode an agent write to a running command actually uses. When the command is a
+/// shell sitting at its prompt (an unmanaged `bash --norc`, #979), a model-chosen `Raw` one-line
+/// write is made a Line write, which clears whatever the user had already typed on that line
+/// before the input and Enter. The executor and the approval card both call this, so the card
+/// shows the keys that will be sent.
+pub(crate) fn pty_write_for_target_command(
+    target_command: Option<&str>,
+    input: &Bytes,
+    mode: AIAgentPtyWriteMode,
+) -> (Bytes, AIAgentPtyWriteMode) {
+    if target_command.is_some_and(is_interactive_shell_invocation) {
+        let (bytes, mode) = mode.normalized_for_shell_prompt(input);
+        (Bytes::from(bytes), mode)
+    } else {
+        (input.clone(), mode)
+    }
+}
+
+/// Shell binaries that sit at a prompt forever when started without a command or script.
+const INTERACTIVE_SHELL_NAMES: [&str; 9] = [
+    "bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "csh", "pwsh",
+];
+
+/// True iff `command` starts a shell that stays at its prompt: a bare `bash`, `zsh -f`,
+/// `HISTFILE=/dev/null bash --norc`, `exec fish`, `env FOO=1 sh`. A shell that is given `-c`, a
+/// script or a file to run is not (it exits on its own), and neither is anything this cannot
+/// tokenize (#979: the agent's `read_shell_command_output` on an unmanaged `bash --norc` waited
+/// the full 120 s for an exit that never comes).
+fn is_interactive_shell_invocation(command: &str) -> bool {
+    let Ok(tokens) = shell_words::split(command.trim_start()) else {
+        return false;
+    };
+    let mut tokens = tokens.into_iter().peekable();
+    // Leading `NAME=value` words and the `command` / `exec` / `env` prefixes.
+    while let Some(token) = tokens.peek() {
+        let is_assignment = token.split_once('=').is_some_and(|(name, _)| {
+            !name.is_empty()
+                && name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric())
+                && !name.starts_with(|c: char| c.is_ascii_digit())
+        });
+        if is_assignment || matches!(token.as_str(), "command" | "exec" | "env") {
+            tokens.next();
+        } else {
+            break;
+        }
+    }
+    let Some(shell) = tokens.next() else {
+        return false;
+    };
+    let name = command_basename(&shell).to_ascii_lowercase();
+    let name = name.trim_start_matches('-').trim_end_matches(".exe");
+    if !INTERACTIVE_SHELL_NAMES.contains(&name) {
+        return false;
+    }
+    while let Some(arg) = tokens.next() {
+        match arg.as_str() {
+            // Options that take a value of their own.
+            "--rcfile" | "--init-file" | "-o" | "+o" | "-O" | "+O" | "-C" | "--init-command" => {
+                tokens.next();
+            }
+            "--version" | "--help" | "-h" => return false,
+            long if long.starts_with("--") => {}
+            short if short.starts_with(['-', '+']) => {
+                // `-c` (alone or inside a cluster like `-lc`) runs a command and exits.
+                if short.starts_with('-') && short.chars().skip(1).any(|c| c == 'c') {
+                    return false;
+                }
+            }
+            // A script or file to run.
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// Unwraps Zap's own generator wrapper to extract the command that's actually meant

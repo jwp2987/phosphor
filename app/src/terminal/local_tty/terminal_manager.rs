@@ -172,6 +172,12 @@ impl<S> Drop for TerminalManager<S> {
 }
 
 impl TerminalManager<TerminalView> {
+    /// Test-only: whether this manager's pty controller was asked to shut the pty down (#980).
+    #[cfg(test)]
+    pub fn pty_shutdown_requested(&self, app: &AppContext) -> bool {
+        self.pty_controller.as_ref(app).shutdown_requested()
+    }
+
     /// Creates a terminal manager model for the GUI `TerminalView` surface, and
     /// returns the view alongside the boxed, view-agnostic manager handle.
     ///
@@ -961,6 +967,11 @@ fn on_shell_determined<S: TerminalSurface>(
         );
 
         manager.terminal_attributes_poller = Some(terminal_attributes_poller);
+        manager.pty_controller.update(ctx, |controller, _| {
+            controller.set_foreground_sigint(Arc::new(move || {
+                super::terminal_attributes::sigint_foreground_group(fd)
+            }));
+        });
     }
 }
 
@@ -1245,16 +1256,58 @@ impl TerminalManagerTrait for TerminalManager<TerminalView> {
 
     fn on_view_detached(
         &self,
-        // The detach type is intentionally ignored: a sharer always stops sharing immediately,
-        // even on a reversible `HiddenForClose` detach. This is desirable for security — a sharer
-        // should not continue accepting commands from viewers while the session is not visible.
-        _detach_type: crate::pane_group::pane::DetachType,
+        // The detach type is ignored for the sharer check below: a sharer always stops sharing
+        // immediately, even on a reversible `HiddenForClose` detach. This is desirable for
+        // security — a sharer should not continue accepting commands from viewers while the
+        // session is not visible.
+        detach_type: crate::pane_group::pane::DetachType,
         app: &mut AppContext,
     ) {
+        // #980: a permanently discarded pane must stop its pty (and with it the shell's whole
+        // process tree, incl. an ssh client / ControlMaster). Done synchronously here rather
+        // than via `Event::ShutdownPty`: that is a queued effect delivered through a weak-handle
+        // subscription, and the pane drops its handles in the same update, so it can be lost.
+        if matches!(detach_type, crate::pane_group::pane::DetachType::Closed) {
+            self.pty_controller.update(app, |pty_controller, ctx| {
+                pty_controller.shutdown_pty(ctx);
+            });
+        }
         let shared_session_status = self.model.lock().shared_session_status().clone();
         if shared_session_status.is_sharer() {
             cleanup_shared_session(&self.view, self.model.clone(), app);
         }
+    }
+
+    fn view_window_id(&self, app: &AppContext) -> Option<warpui::WindowId> {
+        // Falls back to the window the view was created in, so it still answers once that
+        // window was closed and its views moved into the undo-close stack.
+        Some(self.view.window_id(app))
+    }
+
+    fn discard_now(&self, app: &mut AppContext) {
+        // The pane's own `shutdown_for_discard` cannot run for a window that is gone (its
+        // views are not updatable), so deregister the remote-server sessions from the model:
+        // that stops the `ssh ... remote-server-proxy` and exits an owned ControlMaster.
+        #[cfg(not(target_family = "wasm"))]
+        if crate::features::FeatureFlag::SshRemoteServer.is_enabled() {
+            let session_ids = {
+                let model = self.model.lock();
+                [
+                    model.block_list().active_block().session_id(),
+                    model.pending_session_id(),
+                ]
+            };
+            for session_id in session_ids.into_iter().flatten() {
+                use crate::remote_server::manager::RemoteServerManager;
+                RemoteServerManager::handle(app).update(
+                    app,
+                    |mgr: &mut RemoteServerManager, ctx| {
+                        mgr.deregister_session(session_id, ctx);
+                    },
+                );
+            }
+        }
+        self.on_view_detached(crate::pane_group::pane::DetachType::Closed, app);
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

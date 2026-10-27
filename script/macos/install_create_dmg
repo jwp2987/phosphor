@@ -1,16 +1,27 @@
 #!/usr/bin/env bash
 # Installs create-dmg into the invoking user's home (no brew, no sudo). The release is
-# pinned by SHA-256. create-dmg finds its `support/` directory relative to itself, so the
-# whole tree is kept and only the entry point is symlinked into ~/.local/bin.
+# pinned by SHA-256. create-dmg finds its `support/` directory relative to the path it was
+# started from (BASH_SOURCE, symlinks not resolved), so the whole tree is kept and
+# ~/.local/bin gets a small wrapper that execs the real script — a symlink there would
+# make it look for ~/.local/share/create-dmg/support and fail (#1002).
 set -euo pipefail
 
 VERSION=1.2.2
 SHA256=18e8dd7db06c9d6fb590c7877e1714b79b709f17d1d138bd65e4910cc82391bc
 DEST="$HOME/.local/create-dmg-$VERSION"
+WRAPPER="$HOME/.local/bin/create-dmg"
 
-if command -v create-dmg >/dev/null 2>&1; then
-  echo "create-dmg already on PATH: $(command -v create-dmg)"
-  exit 0
+if existing=$(command -v create-dmg 2>/dev/null); then
+  # The npm package of the same name (sindresorhus/create-dmg) is a Node CLI with different
+  # arguments; it makes the bundle fail with "Could not find `500`" (#1002).
+  if head -n 1 "$existing" | grep -q node; then
+    echo "ignoring $existing: it is the npm create-dmg, not github.com/create-dmg/create-dmg"
+  elif [ "$existing" = "$WRAPPER" ]; then
+    : # ours; rewritten below so an older symlink install gets replaced
+  else
+    echo "create-dmg already on PATH: $existing"
+    exit 0
+  fi
 fi
 
 if [ ! -x "$DEST/create-dmg" ]; then
@@ -23,5 +34,8 @@ if [ ! -x "$DEST/create-dmg" ]; then
 fi
 
 mkdir -p "$HOME/.local/bin"
-ln -sf "$DEST/create-dmg" "$HOME/.local/bin/create-dmg"
-echo "installed create-dmg $VERSION to $HOME/.local/bin"
+# Remove first: writing through an existing symlink would overwrite the real script.
+rm -f "$WRAPPER"
+printf '#!/usr/bin/env bash\nexec "%s/create-dmg" "$@"\n' "$DEST" > "$WRAPPER"
+chmod +x "$WRAPPER"
+echo "installed create-dmg $VERSION to $DEST (wrapper $WRAPPER)"

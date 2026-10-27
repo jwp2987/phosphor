@@ -366,6 +366,13 @@ pub enum BlocklistAIControllerEvent {
         conversation_id: AIConversationId,
     },
 
+    /// A blocked action was resolved without a follow-up request (the user rejected it, or
+    /// pressed Stop), so no turn will end to drain the conversation's queued prompts (#1026).
+    /// The terminal view restores the queue head into the input, as every other cancel does:
+    /// a Reject and a Stop both arrive as `CancellationReason::ManuallyCancelled`, so they cannot
+    /// be told apart here, and the conservative reading is never to send on the user's behalf.
+    QueuedPromptsReleased { conversation_id: AIConversationId },
+
     /// Emitted when the export-to-file slash command is executed.
     ExportConversationToFile { filename: Option<String> },
 }
@@ -846,6 +853,22 @@ impl BlocklistAIController {
                     QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
                         model.unlock_pending_approval_rows(*conversation_id, ctx)
                     });
+
+                    // Unlocking alone left the row queued with nothing left to drain it (#1026):
+                    // the conversation is idle now and no `FinishedReceivingOutput` is coming.
+                    // Tell the view to restore it. Only for a reject/Stop (`None` or
+                    // `ManuallyCancelled`); other reasons (a follow-up submitted, a revert, a
+                    // delete) are driven by their own paths, and draining from here would
+                    // re-enter them.
+                    if matches!(
+                        cancellation_reason,
+                        None | Some(CancellationReason::ManuallyCancelled)
+                    ) && QueuedQueryModel::as_ref(ctx).has_queue(*conversation_id)
+                    {
+                        ctx.emit(BlocklistAIControllerEvent::QueuedPromptsReleased {
+                            conversation_id: *conversation_id,
+                        });
+                    }
                 }
                 return;
             }

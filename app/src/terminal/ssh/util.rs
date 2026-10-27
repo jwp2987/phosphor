@@ -98,6 +98,11 @@ impl InteractiveSshCommand {
         } else {
             command
         };
+        // A glued or separate shell operator (`ssh host&`, `ssh host;`, a pipe) is not an
+        // interactive session on the pty.
+        if command.contains(['&', ';', '|']) {
+            return None;
+        }
         let tokens = parse_ssh_command_tokens(command)?;
         let mut host: Option<String> = None;
         let mut port: Option<String> = None;
@@ -107,6 +112,9 @@ impl InteractiveSshCommand {
             match tokens[i].as_str() {
                 // -T or -W imply a non-interactive session.
                 "-T" | "-W" => return None,
+
+                // -O (control command), -Q (query): never an interactive session.
+                "-O" | "-Q" => return None,
 
                 "-p" => {
                     i += 1;
@@ -119,11 +127,26 @@ impl InteractiveSshCommand {
 
                 // SSH option that doesn't change interactivity and require an argument: Skip the next item.
                 "-B" | "-b" | "-c" | "-D" | "-E" | "-e" | "-F" | "-I" | "-i" | "-J" | "-L"
-                | "-l" | "-m" | "-O" | "-o" | "-P" | "-Q" | "-R" | "-S" | "-w" => {
+                | "-l" | "-m" | "-o" | "-P" | "-R" | "-S" | "-w" => {
                     i += 1;
                 }
 
                 // SSH option(s) that don't change interactivity.
+                // A cluster of flags is scanned up to the first option that takes an argument.
+                // -N (no command), -f (background), -G (print config), -V (version), -T, -W, -O
+                // and -Q never open an interactive session.
+                arg if arg.starts_with('-') && !arg.starts_with("--") => {
+                    for flag in arg.chars().skip(1) {
+                        match flag {
+                            'N' | 'f' | 'G' | 'V' | 'T' | 'W' | 'O' | 'Q' => return None,
+                            'B' | 'b' | 'c' | 'D' | 'E' | 'e' | 'F' | 'I' | 'i' | 'J' | 'L'
+                            | 'l' | 'm' | 'o' | 'P' | 'p' | 'R' | 'S' | 'w' => break,
+                            _ => {}
+                        }
+                    }
+                }
+
+                // Long-form or otherwise unknown options don't change interactivity.
                 arg if arg.starts_with('-') => {}
 
                 // Otherwise, it's a positional argument (e.g., hostname, command to run)
@@ -275,6 +298,38 @@ pub fn transfer_file_sftp_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssh_non_interactive_forms_are_not_interactive() {
+        for cmd in [
+            "ssh -N host",
+            "ssh -f host",
+            "ssh -fN host",
+            "ssh -Nf host",
+            "ssh -vN host",
+            "ssh -O check host",
+            "ssh -q -O exit host",
+            "ssh -Q cipher",
+            "ssh -G host",
+            "ssh -V",
+            "ssh host&",
+            "ssh host;",
+            "ssh host | cat",
+        ] {
+            assert!(parse_interactive_ssh_command(cmd).is_none(), "{cmd}");
+        }
+        for cmd in [
+            "ssh host",
+            "ssh -v host",
+            "ssh -p 22 host",
+            "ssh -p22 host",
+            "ssh -o Foo=Nf host",
+            "ssh -i key_Nf host",
+            "ssh -lNick host",
+        ] {
+            assert!(parse_interactive_ssh_command(cmd).is_some(), "{cmd}");
+        }
+    }
 
     #[test]
     fn ssh_gcloud_ssh_parsing() {

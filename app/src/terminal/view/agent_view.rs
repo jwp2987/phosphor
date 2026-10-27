@@ -26,13 +26,38 @@ use crate::{
         TerminalView,
     },
     view_components::DismissibleToast,
-    workspace::ToastStack,
+    workspace::{ToastStack, WorkspaceAction},
     TelemetryEvent,
 };
 
 pub const ENTER_AGAIN_TO_SEND_MESSAGE_ID: &str = "enter_again_to_send";
 
+/// What to do when clicking an earlier agent response is refused because a command is running
+/// (#988). The pane's PTY and keyboard belong to that program, so the conversation is NOT
+/// entered in-pane; instead it opens in a separate read-only viewer (no PTY, no input, no second
+/// live copy of the conversation). Only the user's click on an existing agent entry card
+/// qualifies; every other error or origin keeps its toast so nothing is silently redirected.
+pub(super) fn long_running_entry_viewer_action(
+    error: EnterAgentViewError,
+    origin: AgentViewEntryOrigin,
+    conversation_id: AIConversationId,
+) -> Option<WorkspaceAction> {
+    (error == EnterAgentViewError::LongRunningCommand
+        && matches!(origin, AgentViewEntryOrigin::AgentViewBlock))
+    .then_some(WorkspaceAction::OpenLiveConversationReadOnlyViewer { conversation_id })
+}
+
 impl TerminalView {
+    /// Mirrors the long-running check in `AgentViewController::try_enter_agent_view`.
+    fn is_long_running_command_blocking_agent_view_entry(&self) -> bool {
+        let model = self.model.lock();
+        model
+            .block_list()
+            .active_block()
+            .is_active_and_long_running()
+            && !model.is_conversation_transcript_viewer()
+    }
+
     pub fn enter_agent_view(
         &mut self,
         initial_prompt: Option<String>,
@@ -110,6 +135,19 @@ impl TerminalView {
         conversation_id: AIConversationId,
         ctx: &mut ViewContext<Self>,
     ) {
+        // A click on an earlier agent response while a command runs always opens the read-only
+        // viewer. Decide that up front: otherwise a conversation that is not live in this pane
+        // is first restored into it, and that restore's own attempt to enter agent view fails
+        // with the long-running error (logged at ERROR) before the viewer finally opens (#988).
+        if origin == AgentViewEntryOrigin::AgentViewBlock
+            && self.is_long_running_command_blocking_agent_view_entry()
+        {
+            ctx.dispatch_typed_action_deferred(
+                WorkspaceAction::OpenLiveConversationReadOnlyViewer { conversation_id },
+            );
+            return;
+        }
+
         let history_model = BlocklistAIHistoryModel::handle(ctx).as_ref(ctx);
 
         let is_conversation_in_memory = history_model.conversation(&conversation_id).is_some();
@@ -124,6 +162,11 @@ impl TerminalView {
                 Some(conversation_id),
                 ctx,
             ) {
+                if let Some(action) = long_running_entry_viewer_action(e, origin, conversation_id) {
+                    // The running pane (focus, keyboard routing, PTY) is left untouched.
+                    ctx.dispatch_typed_action_deferred(action);
+                    return;
+                }
                 log::error!(
                     "Failed to enter agent view for existing conversation ({:?}) from origin {:?}: {:?}",
                     conversation_id,

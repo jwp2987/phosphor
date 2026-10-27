@@ -17,8 +17,8 @@ use crate::ai::blocklist::controller::response_stream::{
     PendingResume, RecoveryBudget, ResponseStream, ResponseStreamId,
 };
 use crate::ai::blocklist::{
-    BlocklistAIHistoryModel, PendingAttachment, PendingFile, QueuedQuery, QueuedQueryModel,
-    QueuedQueryOrigin,
+    BlocklistAIControllerEvent, BlocklistAIHistoryModel, PendingAttachment, PendingFile,
+    QueuedQuery, QueuedQueryModel, QueuedQueryOrigin,
 };
 use crate::ai::llms::LLMId;
 use crate::test_util::terminal::{add_window_with_terminal, initialize_app_for_terminal_view};
@@ -582,8 +582,21 @@ fn reject_of_a_blocked_command_with_no_follow_up_unlocks_the_queued_row() {
             )
         });
 
-        let action_model = terminal.read(&app, |view, _| view.ai_controller().clone());
-        let action_model = action_model.read(&app, |controller, _| controller.action_model.clone());
+        let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
+        // #1026: the reject must also tell the view to restore the row, since no turn end will.
+        let released_events = std::rc::Rc::new(std::cell::RefCell::new(0usize));
+        let released_events_sub = released_events.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&controller, move |_, event, _| {
+                if matches!(
+                    event,
+                    BlocklistAIControllerEvent::QueuedPromptsReleased { .. }
+                ) {
+                    *released_events_sub.borrow_mut() += 1;
+                }
+            });
+        });
+        let action_model = controller.read(&app, |controller, _| controller.action_model.clone());
 
         let action_id = AIAgentActionId::from("reject-me".to_owned());
         action_model.update(&mut app, |action_model, ctx| {
@@ -686,6 +699,11 @@ fn reject_of_a_blocked_command_with_no_follow_up_unlocks_the_queued_row() {
             );
             assert!(!queue[0].is_locked());
         });
+        assert_eq!(
+            *released_events.borrow(),
+            1,
+            "a reject with no follow-up must release the queue to the view exactly once (#1026)"
+        );
     });
 }
 

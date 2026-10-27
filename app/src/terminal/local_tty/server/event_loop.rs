@@ -63,8 +63,13 @@ impl std::ops::Drop for Children {
             // sends) so that the shell process can properly clean up
             // foreground jobs.  SIGKILL cannot be ignored or caught, and kills
             // the receiving process immediately.
-            let pid = nix::unistd::Pid::from_raw(child.id() as i32);
-            let _ = nix::sys::signal::kill(pid, nix::sys::signal::SIGHUP);
+            // Hang up the foreground program too, not just the shell: ssh clients and `sudo`
+            // chains sit in a job-control process group of their own, so they would otherwise
+            // outlive the session (#975). Background jobs are left alone. Skipped for a shell that has already been
+            // reaped, since its pid -- and so its group id -- may have been recycled.
+            if matches!(child.try_wait(), Ok(None)) {
+                local_tty::process_tree::signal_shell_tree(child.id(), libc::SIGHUP);
+            }
             // Ensure we consume the child's exit code to avoid it becoming
             // a zombie.
             // See: https://doc.rust-lang.org/std/process/struct.Child.html#warning
@@ -316,7 +321,15 @@ impl EventLoop {
                 }
                 api::Message::KillChildRequest { pid } => {
                     let result = match self.children.remove(&pid) {
-                        Some(mut child) => child.kill().and_then(|_| child.wait()),
+                        Some(mut child) => {
+                            // Kill the whole tree first (#975; see `Children::drop`), then the
+                            // shell itself directly so it dies even if the group signal failed
+                            // and `wait` below cannot block forever.
+                            if matches!(child.try_wait(), Ok(None)) {
+                                local_tty::process_tree::terminate_shell_tree(pid);
+                            }
+                            child.kill().and_then(|_| child.wait())
+                        }
                         None => {
                             log::info!("Did not find child shell process with pid {pid}; assuming it has already terminated.");
                             Ok(std::process::ExitStatus::default())

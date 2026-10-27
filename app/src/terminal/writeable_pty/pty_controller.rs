@@ -163,6 +163,9 @@ pub struct PtyController<T: EventLoopSender> {
     /// the life of the shell -- the un-phosphorized shell that causes this answers no Tab, ever,
     /// and a toast on every keystroke would be worse than the silence it replaces.
     has_reported_native_completions_unavailable: bool,
+    /// Delivers SIGINT to the pty's foreground process group (local ptys on Unix only); `None`
+    /// where that is unavailable, in which case the ^C byte is written instead (#1001).
+    foreground_sigint: Option<std::sync::Arc<dyn Fn() -> bool>>,
     /// When the current unbroken stretch of the PTY write gate being shut *with writes queued*
     /// began, if we are in one. Diagnostic-only bookkeeping for the still-unexplained field lockup
     /// in TODO.md ("The shell lockup"): the watchdog above only ever fires for the (currently
@@ -188,6 +191,10 @@ pub struct PtyController<T: EventLoopSender> {
     /// Typeahead hand-off: a command from the editor was written or queued while one was held,
     /// so `is_user_command_executing` belongs to it and dropping the held one must leave it.
     handoff_command_written_since_hold: bool,
+    /// Test-only: whether `shutdown_pty` was called (#980 tests; the real event loop is not
+    /// running under test, so the sent `Message::Shutdown` is otherwise unobservable).
+    #[cfg(test)]
+    shutdown_requested: bool,
 }
 
 impl<T: EventLoopSender> PtyController<T> {
@@ -402,6 +409,7 @@ impl<T: EventLoopSender> PtyController<T> {
             in_flight_native_completions_state: None,
             native_completions_generation: 0,
             has_reported_native_completions_unavailable: false,
+            foreground_sigint: None,
             pty_write_gate_blocked_since: None,
             has_logged_current_pty_write_stall: false,
             handoff_command_pending: false,
@@ -409,6 +417,8 @@ impl<T: EventLoopSender> PtyController<T> {
             handoff_request_waiting: false,
             handoff_held_command_pending: false,
             handoff_command_written_since_hold: false,
+            #[cfg(test)]
+            shutdown_requested: false,
         }
     }
 
@@ -1035,6 +1045,31 @@ impl<T: EventLoopSender> PtyController<T> {
                     move |me, _, ctx| me.write_bytes(chunk, ctx),
                 );
             }
+        } else if pending_session_info.subshell_info.is_some() {
+            // #960: a subshell started through a user-space pty relay (`sudo -i`, `sudo su -`,
+            // `script`, ...) deadlocks when ~120KB of script is flooded at it in one burst. The
+            // relay blocks writing the input into the inner pty (its 4KB input queue is full)
+            // while the inner shell, which echoes every byte it reads, blocks writing that echo
+            // because the relay is not reading the output -- observed as the root bash stuck in
+            // `n_tty_write`/`wait_woken` and `sudo` stuck in a 4097-byte `write`. Reproduced with a
+            // blocking relay (`scratchpad/relay_repro.py`): an unpaced flood hangs forever, the same
+            // bytes paced in 2KB writes finish in about a second. Pacing keeps the relay's pending
+            // write below what the inner tty can queue. No bracketed paste here: the shell is a
+            // line-editing bash/zsh that already receives this script raw.
+            const SUBSHELL_BOOTSTRAP_CHUNK_DELAY: Duration = Duration::from_millis(25);
+            for (index, chunk) in bootstrap::subshell_bootstrap_chunks(&bootstrap)
+                .into_iter()
+                .enumerate()
+            {
+                if index == 0 {
+                    self.write_bytes(chunk, ctx);
+                    continue;
+                }
+                ctx.spawn(
+                    Timer::after(SUBSHELL_BOOTSTRAP_CHUNK_DELAY * index as u32),
+                    move |me, _, ctx| me.write_bytes(chunk, ctx),
+                );
+            }
         } else {
             self.write_bytes(bootstrap, ctx);
         }
@@ -1437,8 +1472,31 @@ impl<T: EventLoopSender> PtyController<T> {
         );
     }
 
+    pub fn set_foreground_sigint(&mut self, f: std::sync::Arc<dyn Fn() -> bool>) {
+        self.foreground_sigint = Some(f);
+    }
+
+    /// Interrupts the pty's foreground program with SIGINT rather than a ^C byte, which a raw
+    /// tty would hand to the program as data (#1001). Falls back to the byte.
+    pub fn sigint_foreground_or_write_etx(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.foreground_sigint.as_ref().is_some_and(|f| f()) {
+            return;
+        }
+        self.write_bytes(&[escape_sequences::C0::ETX][..], ctx);
+    }
+
+    /// Test-only: whether `shutdown_pty` has been called.
+    #[cfg(test)]
+    pub fn shutdown_requested(&self) -> bool {
+        self.shutdown_requested
+    }
+
     /// Shuts down the pty and event loop.
     pub fn shutdown_pty(&mut self, ctx: &mut ModelContext<Self>) {
+        #[cfg(test)]
+        {
+            self.shutdown_requested = true;
+        }
         self.send_message_to_event_loop(Message::Shutdown, ctx);
     }
 

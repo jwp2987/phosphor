@@ -616,6 +616,32 @@ impl TypeaheadHandoff {
         )
     }
 
+    /// Whether an Enter pressed in the editor is deferred and the keys typed since are held
+    /// behind it (#1016). False once the report arrived and the deferred submit runs: that
+    /// submit is itself an Enter reaching the editor, and must not be held again.
+    pub fn holds_keys_behind_deferred_enter(&self) -> bool {
+        matches!(
+            self.state,
+            HandoffState::HoldAfterEnter {
+                released: false,
+                ..
+            }
+        )
+    }
+
+    /// Puts `bytes` in front of the keys held behind the deferred Enter (#1016): they reached
+    /// the editor after the Enter was pressed but before the terminal took the keys, so they
+    /// precede everything held. Returns whether an Enter is deferred; if not, nothing changed.
+    pub fn prepend_held_keys(&mut self, bytes: &[u8]) -> bool {
+        match &mut self.state {
+            HandoffState::HoldAfterEnter { held, .. } => {
+                held.splice(0..0, bytes.iter().copied());
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Whether an Enter is held, for tests.
     #[cfg(test)]
     pub(crate) fn has_young_hold(&self) -> bool {

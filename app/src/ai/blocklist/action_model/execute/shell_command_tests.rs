@@ -14,6 +14,51 @@ use crate::terminal::model::session::Sessions;
 use crate::terminal::model::terminal_model::BlockIndex;
 use crate::test_util::terminal::initialize_app_for_terminal_view;
 
+// #979: an agent write into an unmanaged interactive shell must clear the user's pending line
+// first, whichever mode the model picked, and the approval card must show it.
+#[test]
+fn a_one_line_write_to_an_interactive_shell_clears_the_pending_line() {
+    let input = Bytes::from_static(b"echo unmanaged-ok\n");
+    for command in [
+        "bash --norc",
+        "bash",
+        "env HISTFILE=/dev/null zsh -f",
+        "exec fish",
+    ] {
+        let (bytes, mode) =
+            pty_write_for_target_command(Some(command), &input, AIAgentPtyWriteMode::Raw);
+        assert_eq!(mode, AIAgentPtyWriteMode::Line, "{command}");
+        assert_eq!(
+            mode.decorate_bytes(bytes.to_vec(), false),
+            b"\x01\x0becho unmanaged-ok\r",
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn writes_to_other_targets_keep_the_model_chosen_bytes() {
+    let input = Bytes::from_static(b"echo unmanaged-ok\n");
+    for command in [
+        Some("python3"),
+        Some("bash -c 'sleep 9'"),
+        Some("vim x"),
+        None,
+    ] {
+        let (bytes, mode) = pty_write_for_target_command(command, &input, AIAgentPtyWriteMode::Raw);
+        assert_eq!(
+            (bytes, mode),
+            (input.clone(), AIAgentPtyWriteMode::Raw),
+            "{command:?}"
+        );
+    }
+    // A shell prompt target, but not a plain one-line submit: untouched.
+    let ctrl_c = Bytes::from_static(b"\x03");
+    let (bytes, mode) =
+        pty_write_for_target_command(Some("bash --norc"), &ctrl_c, AIAgentPtyWriteMode::Raw);
+    assert_eq!((bytes, mode), (ctrl_c, AIAgentPtyWriteMode::Raw));
+}
+
 #[test]
 fn detects_interactive_session_commands_across_platforms() {
     for command in [
@@ -39,6 +84,55 @@ fn detects_interactive_session_commands_across_platforms() {
         assert_eq!(
             command_starts_non_terminating_session(command),
             true,
+            "{command}"
+        );
+    }
+}
+
+/// #979: the agent's `read_shell_command_output` on an unmanaged interactive shell (`bash
+/// --norc` typed by the user) waited the whole 120 s for an exit that never comes, with nothing on
+/// screen. A shell left at its prompt is a never-ending session like ssh.
+#[test]
+fn detects_a_shell_left_at_its_prompt_as_a_non_terminating_session() {
+    for command in [
+        "bash",
+        "bash --norc",
+        "HISTFILE=/dev/null bash --norc",
+        "zsh -f",
+        "/bin/zsh",
+        "exec fish",
+        "env FOO=1 sh",
+        "bash --rcfile /tmp/rc",
+        "bash --noprofile --norc -i",
+        "-bash",
+        "command bash",
+    ] {
+        assert!(command_starts_non_terminating_session(command), "{command}");
+        assert_eq!(
+            effective_read_shell_command_delay(command, Some(ShellCommandDelay::OnCompletion)),
+            ActionResultDelay::OnCompletion {
+                timeout: ShellCommandExecutor::MAX_WAIT_DURATION
+            },
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn a_shell_that_runs_something_and_exits_is_not_a_non_terminating_session() {
+    for command in [
+        "bash -c 'sleep 30'",
+        "bash -lc 'make'",
+        "sh ./build.sh",
+        "bash script.sh",
+        "zsh -f -c ls",
+        "bash --version",
+        "echo bash",
+        "bashful",
+        "bash 'unterminated",
+    ] {
+        assert!(
+            !command_starts_non_terminating_session(command),
             "{command}"
         );
     }

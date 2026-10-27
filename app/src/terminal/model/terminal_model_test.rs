@@ -201,6 +201,217 @@ fn ssh_bootstraps_if_blocklist_empty_and_reconciles_parent_return() {
     );
 }
 
+/// #966: the exact hook order a fish subshell emits (`fish.sh`): InitShell (is_subshell), then
+/// the explicit `warp_precmd` (CommandFinished + Precmd, same id), `Bootstrapped`, the first
+/// `fish_prompt` precmd (CommandFinished + Precmd), then per user command Preexec, and at the
+/// next prompt CommandFinished + Precmd. The user's commands must produce finished, visible
+/// blocks. Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn fish_subshell_hook_order_yields_visible_finished_blocks() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    command_finished_and_precmd(&mut terminal);
+    command_finished_and_precmd(&mut terminal);
+    // The parent shell's long-running `fish` block.
+    terminal.start_command_execution();
+    terminal.preexec(PreexecValue {
+        command: "fish".to_owned(),
+        session_id: None,
+    });
+
+    terminal.init_shell(InitShellValue {
+        shell: "fish".into(),
+        user: "u".to_owned(),
+        hostname: "h".to_owned(),
+        session_id: 0.into(),
+        is_subshell: true,
+        ..Default::default()
+    });
+    command_finished_and_precmd(&mut terminal);
+    terminal.bootstrapped(BootstrappedValue {
+        shell: String::from("fish"),
+        ..Default::default()
+    });
+    command_finished_and_precmd(&mut terminal);
+    assert!(terminal.is_active_block_bootstrapped());
+
+    for command in ["echo x", "exit"] {
+        let before = terminal.block_list().blocks().len();
+        terminal.start_command_execution();
+        terminal.preexec(PreexecValue {
+            command: command.to_owned(),
+            session_id: None,
+        });
+        let running_id = terminal.active_block_id().clone();
+        command_finished_and_precmd(&mut terminal);
+        let finished = terminal
+            .block_list()
+            .block_with_id(&running_id)
+            .expect("the user's command block must exist");
+        assert_eq!(finished.state(), BlockState::DoneWithExecution, "{command}");
+        assert!(!finished.is_hidden(), "{command}");
+        assert!(terminal.block_list().blocks().len() > before, "{command}");
+    }
+}
+
+/// #966 (root cause): fish 4.x writes its own `OSC 133;A` right after every Precmd. In a
+/// Phosphorized fish subshell Phosphor's prompt is empty, so there is no `133;B`, and handling the
+/// `A` as a prompt start left the just-started block "receiving prompt chars" forever, hiding the
+/// user's command output. `fish.sh` now tags its Precmd with `ignore_prompt_markers`; the shell's
+/// own markers must then never reach the grids. Not compiled/run when written (no builds).
+#[test]
+fn fish_native_prompt_marker_after_precmd_does_not_hide_blocks() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    command_finished_and_precmd(&mut terminal);
+    command_finished_and_precmd(&mut terminal);
+    terminal.start_command_execution();
+    terminal.preexec(PreexecValue {
+        command: "fish".to_owned(),
+        session_id: None,
+    });
+    terminal.init_shell(InitShellValue {
+        shell: "fish".into(),
+        user: "u".to_owned(),
+        hostname: "h".to_owned(),
+        session_id: 0.into(),
+        is_subshell: true,
+        ..Default::default()
+    });
+    command_finished_and_precmd(&mut terminal);
+    terminal.bootstrapped(BootstrappedValue {
+        shell: String::from("fish"),
+        ..Default::default()
+    });
+    command_finished_and_precmd(&mut terminal);
+
+    for command in ["echo x", "exit"] {
+        terminal.start_command_execution();
+        terminal.preexec(PreexecValue {
+            command: command.to_owned(),
+            session_id: None,
+        });
+        let running_id = terminal.active_block_id().clone();
+
+        // fish.sh's honor-PS1-off Precmd, followed by fish's own `OSC 133;A`.
+        let completion_metadata = CompletionMetadata {
+            exit_code: ExitCode::from(0),
+            next_block_id: BlockId::new(),
+        };
+        terminal.command_finished(CommandFinishedValue {
+            completion_metadata: completion_metadata.clone(),
+            session_id: None,
+        });
+        terminal.precmd_with_completion_metadata(PrecmdValue {
+            completion_metadata,
+            prompt_metadata: PromptMetadata {
+                pwd: Some("/tmp".to_owned()),
+                ignore_prompt_markers: Some(true),
+                ..Default::default()
+            },
+        });
+        terminal.prompt_marker(ansi::PromptMarker::StartPrompt {
+            kind: ansi::PromptKind::Initial,
+        });
+
+        assert!(
+            terminal
+                .block_list()
+                .active_block()
+                .receiving_chars_for_prompt()
+                .is_none(),
+            "the shell's own prompt start must not open a prompt that never ends ({command})"
+        );
+        let finished = terminal
+            .block_list()
+            .block_with_id(&running_id)
+            .expect("the user's command block must exist");
+        assert_eq!(finished.state(), BlockState::DoneWithExecution, "{command}");
+        assert!(!finished.is_hidden(), "{command}");
+    }
+
+    // Without the tag (honor-PS1 on / other shells) Phosphor's own markers still work.
+    let completion_metadata = CompletionMetadata {
+        exit_code: ExitCode::from(0),
+        next_block_id: BlockId::new(),
+    };
+    terminal.command_finished(CommandFinishedValue {
+        completion_metadata: completion_metadata.clone(),
+        session_id: None,
+    });
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata,
+        prompt_metadata: PromptMetadata {
+            ignore_prompt_markers: Some(false),
+            ..Default::default()
+        },
+    });
+    terminal.prompt_marker(ansi::PromptMarker::StartPrompt {
+        kind: ansi::PromptKind::Initial,
+    });
+    assert!(
+        terminal
+            .block_list()
+            .active_block()
+            .receiving_chars_for_prompt()
+            .is_some()
+    );
+}
+
+/// Exiting a Phosphorized fish subshell must hand the parent shell back a working prompt: fish's
+/// Precmd sets `ignore_prompt_markers`, and the parent zsh's Precmd (which omits the field) must
+/// clear it so zsh's own prompt markers are honoured again. Not compiled/run when written.
+#[test]
+fn fish_subshell_exit_restores_parent_prompt_markers() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    command_finished_and_precmd(&mut terminal);
+    command_finished_and_precmd(&mut terminal);
+
+    let finish_with = |terminal: &mut TerminalModel, ignore: Option<bool>| {
+        terminal.start_command_execution();
+        terminal.preexec(PreexecValue {
+            command: "x".to_owned(),
+            session_id: None,
+        });
+        let completion_metadata = CompletionMetadata {
+            exit_code: ExitCode::from(0),
+            next_block_id: BlockId::new(),
+        };
+        terminal.command_finished(CommandFinishedValue {
+            completion_metadata: completion_metadata.clone(),
+            session_id: None,
+        });
+        terminal.precmd_with_completion_metadata(PrecmdValue {
+            completion_metadata,
+            prompt_metadata: PromptMetadata {
+                pwd: Some("/tmp".to_owned()),
+                ignore_prompt_markers: ignore,
+                ..Default::default()
+            },
+        });
+    };
+
+    // fish subshell Precmd, then `exit` returns to zsh whose Precmd has no such field.
+    finish_with(&mut terminal, Some(true));
+    assert!(terminal.block_list().ignores_shell_prompt_markers());
+    finish_with(&mut terminal, None);
+    assert!(
+        !terminal.block_list().ignores_shell_prompt_markers(),
+        "the parent shell's populated Precmd must clear the fish subshell's setting"
+    );
+    terminal.prompt_marker(ansi::PromptMarker::StartPrompt {
+        kind: ansi::PromptKind::Initial,
+    });
+    assert!(
+        terminal
+            .block_list()
+            .active_block()
+            .receiving_chars_for_prompt()
+            .is_some()
+    );
+}
+
 #[test]
 // An empty block that is restored should have a nonzero height and it should not get deleted.
 pub fn test_restored_empty_command_block() {
@@ -2601,4 +2812,265 @@ fn display_command_controls_are_shown_not_executed() {
         visible_command_text("a\x1b]0;x\x07b\tc\r\nd\re\x7f\u{9b}"),
         "a\u{241b}]0;x\u{2407}b\u{2409}c\nd\u{240d}e\u{2421}\u{fffd}"
     );
+}
+
+/// #952: a tab config pane's rewritten startup command is shown as the configured command.
+#[test]
+fn command_display_override_replaces_the_echoed_wrapper_at_preexec() {
+    let wrapped = "& (Microsoft.PowerShell.Core\\Get-Command -CommandType Cmdlet,Application,ExternalScript -TotalCount 1 Write-Output) hi";
+    let mut size = block_size();
+    size.size = crate::terminal::SizeInfo::new_without_font_metrics(40, 200);
+    let mut model = TerminalModel::new_for_test(
+        size,
+        crate::terminal::color::List::from(&crate::terminal::color::Colors::default()),
+        crate::terminal::event_listener::ChannelEventListener::new_for_test(),
+        std::sync::Arc::new(warpui::r#async::executor::Background::default()),
+        false,
+        None,
+        false,
+        false,
+        None,
+    );
+    model.block_list_mut().active_block_mut().start();
+    model.set_command_display_override(wrapped.to_owned(), "echo hi".to_owned());
+    model.process_bytes(format!("{wrapped}\r\n").as_str());
+    model.preexec(PreexecValue {
+        command: wrapped.to_owned(),
+        session_id: None,
+    });
+    let shown = model.block_list().active_block().command_to_string();
+    assert_eq!(shown, "echo hi");
+    assert!(!shown.contains("Get-Command"));
+}
+
+/// #998: with tty echo off (`stty -echo; cat`), nothing is echoed into the command grid, but the
+/// block header must still show the command preexec reports.
+#[test]
+fn preexec_command_fills_a_blank_echoed_command() {
+    let mut model = TerminalModel::mock(None, None);
+    model.block_list_mut().active_block_mut().start();
+    // No echo at all: the shell printed nothing for the submitted line.
+    assert_eq!(model.block_list().active_block().command_to_string(), "");
+    model.preexec(PreexecValue {
+        command: "ls".to_owned(),
+        session_id: None,
+    });
+    assert_eq!(model.block_list().active_block().command_to_string(), "ls");
+}
+
+/// #998: an echoed command is never overwritten by the preexec payload.
+#[test]
+fn preexec_command_does_not_replace_echoed_command() {
+    let mut model = TerminalModel::mock(None, None);
+    model.block_list_mut().active_block_mut().start();
+    model.simulate_cmd("ls -la\r\n");
+    model.preexec(PreexecValue {
+        command: "something else".to_owned(),
+        session_id: None,
+    });
+    assert_eq!(
+        model.block_list().active_block().command_to_string(),
+        "ls -la"
+    );
+}
+
+/// #952: overrides are keyed trimmed, expire when their command never ran, and the table evicts
+/// the oldest entry instead of forgetting every pending override.
+#[test]
+fn command_display_overrides_are_trimmed_expiring_and_bounded() {
+    let mut size = block_size();
+    size.size = crate::terminal::SizeInfo::new_without_font_metrics(40, 200);
+    let mut model = TerminalModel::new_for_test(
+        size,
+        crate::terminal::color::List::from(&crate::terminal::color::Colors::default()),
+        crate::terminal::event_listener::ChannelEventListener::new_for_test(),
+        std::sync::Arc::new(warpui::r#async::executor::Background::default()),
+        false,
+        None,
+        false,
+        false,
+        None,
+    );
+    let t0 = std::time::Instant::now();
+    model.set_command_display_override_at("  wrapped one \n".to_owned(), "one".to_owned(), t0);
+    assert!(model.command_display_overrides.contains_key("wrapped one"));
+
+    // Filling past the bound evicts only the oldest.
+    for i in 0..super::MAX_COMMAND_DISPLAY_OVERRIDES {
+        model.set_command_display_override_at(
+            format!("w{i}"),
+            format!("d{i}"),
+            t0 + std::time::Duration::from_secs(1 + i as u64),
+        );
+    }
+    assert!(model.command_display_overrides.len() <= super::MAX_COMMAND_DISPLAY_OVERRIDES);
+    assert!(!model.command_display_overrides.contains_key("wrapped one"));
+    assert!(model.command_display_overrides.contains_key("w1"));
+
+    // A stale entry whose command never ran is dropped on the next registration.
+    model.set_command_display_override_at(
+        "later".to_owned(),
+        "l".to_owned(),
+        t0 + super::COMMAND_DISPLAY_OVERRIDE_TTL + std::time::Duration::from_secs(1000),
+    );
+    assert_eq!(model.command_display_overrides.len(), 1);
+}
+
+/// #1001: a remote session that was announced but never bootstrapped is detected (so closing it
+/// skips the undo-close grace); a local shell that is merely starting, a bootstrapped session and
+/// a subshell bootstrap are not.
+#[test]
+fn remote_session_unbootstrapped_rule() {
+    // (ssh_hook_seen, session_pending, local_bootstrapped, subshell_pending)
+    assert!(remote_session_unbootstrapped(true, false, true, false));
+    assert!(remote_session_unbootstrapped(false, true, true, false));
+    // The local shell is itself still starting: its own pending session.
+    assert!(!remote_session_unbootstrapped(false, true, false, false));
+    // `su -` / `sudo -i` bootstrap.
+    assert!(!remote_session_unbootstrapped(false, true, true, true));
+    // Nothing pending.
+    assert!(!remote_session_unbootstrapped(false, false, true, false));
+}
+
+/// #997: an in-band command whose end marker never arrives (shell killed, nested subshell
+/// exited mid-generator) must not keep diverting pty output away from the grid once the
+/// shell draws its next prompt.
+#[test]
+fn precmd_discards_unterminated_in_band_command_output() {
+    let mut terminal = TerminalModel::mock(None, None);
+    normal_command_finished_and_precmd(&mut terminal, PromptMetadata::default());
+
+    terminal.start_in_band_command_output();
+    assert!(terminal.is_receiving_in_band_command_output());
+
+    let completion_metadata = CompletionMetadata {
+        exit_code: ExitCode::from(0),
+        next_block_id: BlockId::new(),
+    };
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata,
+        prompt_metadata: PromptMetadata::default(),
+    });
+    assert!(!terminal.is_receiving_in_band_command_output());
+
+    terminal.start_in_band_command_output();
+    terminal.prompt_only_precmd(PromptMetadata::default());
+    assert!(!terminal.is_receiving_in_band_command_output());
+}
+
+/// #1014: a subshell whose bootstrap never reports `Bootstrapped` (the shell died on the script,
+/// or the script failed) used to leave the pane on "Starting shell..." for good: only the
+/// `Bootstrapped` hook ends that stage. Abandoning the stalled bootstrap drops the pending
+/// session and marks the block list bootstrapped, once; a finished bootstrap is never touched.
+/// Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn stalled_subshell_bootstrap_can_be_abandoned_once() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    command_finished_and_precmd(&mut terminal);
+    command_finished_and_precmd(&mut terminal);
+    assert!(
+        !terminal.abandon_stalled_subshell_bootstrap(),
+        "no subshell is pending"
+    );
+    // The parent shell's long-running `zsh` block, then the subshell announces itself.
+    terminal.start_command_execution();
+    terminal.preexec(PreexecValue {
+        command: "zsh".to_owned(),
+        session_id: None,
+    });
+    terminal.init_shell(InitShellValue {
+        shell: "zsh".into(),
+        user: "u".to_owned(),
+        hostname: "h".to_owned(),
+        session_id: 0.into(),
+        is_subshell: true,
+        ..Default::default()
+    });
+    assert!(terminal.pending_subshell_session().is_some());
+    assert!(
+        !terminal.block_list().is_bootstrapped(),
+        "the pane is on 'Starting shell...'"
+    );
+
+    // The script never ran to the end: no Bootstrapped hook arrives.
+    assert!(terminal.abandon_stalled_subshell_bootstrap());
+    assert!(terminal.pending_subshell_session().is_none());
+    assert!(terminal.pending_session_id().is_none());
+    assert!(
+        terminal.block_list().is_bootstrapped(),
+        "the pane must leave 'Starting shell...'"
+    );
+    assert!(
+        !terminal.abandon_stalled_subshell_bootstrap(),
+        "nothing left to abandon"
+    );
+}
+
+/// #1014: a shell whose rc file sleeps only *looks* stalled; when it finally reads the script the
+/// `Bootstrapped` hook arrives after the ceiling abandoned the pending session. The late hook must
+/// still produce the session (a `Bootstrapped` event), not be dropped as "no pending session".
+/// Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn late_bootstrapped_after_abandon_still_completes_the_session() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    command_finished_and_precmd(&mut terminal);
+    command_finished_and_precmd(&mut terminal);
+    terminal.start_command_execution();
+    terminal.preexec(PreexecValue {
+        command: "zsh".to_owned(),
+        session_id: None,
+    });
+    terminal.init_shell(InitShellValue {
+        shell: "zsh".into(),
+        user: "u".to_owned(),
+        hostname: "h".to_owned(),
+        session_id: 0.into(),
+        is_subshell: true,
+        ..Default::default()
+    });
+    assert!(terminal.abandon_stalled_subshell_bootstrap());
+    assert!(terminal.pending_session_id().is_none());
+
+    terminal.bootstrapped(BootstrappedValue {
+        shell: "zsh".to_string(),
+        ..Default::default()
+    });
+    assert!(
+        terminal.abandoned_subshell_session.is_none(),
+        "the abandoned session was consumed by the late Bootstrapped"
+    );
+    assert!(terminal.block_list().is_bootstrapped());
+}
+
+/// #1014: a late `InitShell` after an abandon (the slow shell finally ran the first stage) starts
+/// a fresh pending session as usual and supersedes the abandoned one.
+/// Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn late_init_shell_after_abandon_starts_a_fresh_pending_session() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    command_finished_and_precmd(&mut terminal);
+    command_finished_and_precmd(&mut terminal);
+    terminal.start_command_execution();
+    terminal.preexec(PreexecValue {
+        command: "zsh".to_owned(),
+        session_id: None,
+    });
+    let init = || InitShellValue {
+        shell: "zsh".into(),
+        user: "u".to_owned(),
+        hostname: "h".to_owned(),
+        session_id: 0.into(),
+        is_subshell: true,
+        ..Default::default()
+    };
+    terminal.init_shell(init());
+    assert!(terminal.abandon_stalled_subshell_bootstrap());
+    assert!(terminal.abandoned_subshell_session.is_some());
+
+    terminal.init_shell(init());
+    assert!(terminal.pending_subshell_session().is_some());
+    assert!(terminal.abandoned_subshell_session.is_none());
 }

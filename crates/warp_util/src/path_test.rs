@@ -1335,3 +1335,58 @@ fn test_resolve_command_uses_pathext() {
         command_path.to_string_lossy().to_ascii_lowercase()
     );
 }
+
+#[test]
+fn nu_dialect_quotes_instead_of_backslash_escaping() {
+    // #984: nu has no backslash escaping of bare words.
+    assert_eq!(
+        ShellDialect::Nu.escape("dir with spaces/"),
+        "\"dir with spaces/\""
+    );
+    assert_eq!(
+        ShellDialect::Posix.escape("dir with spaces/"),
+        "dir\\ with\\ spaces/"
+    );
+    // Plain paths stay bare.
+    assert_eq!(ShellDialect::Nu.escape("src/main.rs"), "src/main.rs");
+    assert_eq!(ShellDialect::Nu.shell_escape("~/src"), "~/src");
+    assert_eq!(ShellDialect::Nu.escape(""), "\"\"");
+    // `..` would make a bare word a nushell range.
+    assert_eq!(ShellDialect::Nu.escape("a..b"), "\"a..b\"");
+    assert_eq!(ShellDialect::Nu.escape("../up"), "\"../up\"");
+    // Metacharacters that would otherwise be nu syntax.
+    assert_eq!(ShellDialect::Nu.escape("a(b)"), "\"a(b)\"");
+    assert_eq!(ShellDialect::Nu.escape("a$b"), "\"a$b\"");
+    assert_eq!(ShellDialect::Nu.escape("a;b"), "\"a;b\"");
+    assert_eq!(
+        ShellDialect::Nu.escape("say \"hi\"\\"),
+        "\"say \\\"hi\\\"\\\\\""
+    );
+}
+
+#[test]
+fn nu_dialect_never_emits_raw_control_characters() {
+    assert_eq!(ShellDialect::Nu.escape("a\rexit"), "\"a\\rexit\"");
+    assert_eq!(ShellDialect::Nu.escape("a\nb"), "\"a\\nb\"");
+    assert_eq!(ShellDialect::Nu.escape("a\u{1b}b"), "\"a\\u{1B}b\"");
+    assert!(
+        !ShellDialect::Nu
+            .escape("a\u{3}b\u{2028}")
+            .chars()
+            .any(needs_control_char_quoting)
+    );
+}
+
+#[test]
+fn nu_dialect_shell_escape_quotes_whole_tilde_path() {
+    // `~/"x y"` is not valid nu, so the whole word is quoted.
+    assert_eq!(ShellDialect::Nu.shell_escape("~/my dir/"), "\"~/my dir/\"");
+}
+
+#[test]
+fn powershell_dialect_still_uses_backticks() {
+    assert_eq!(
+        ShellDialect::PowerShell.escape("dir with spaces/"),
+        "dir` with` spaces/"
+    );
+}

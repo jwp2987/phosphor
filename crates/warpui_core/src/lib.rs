@@ -15,6 +15,7 @@ pub mod elements;
 pub mod event;
 pub mod fonts;
 pub mod image_cache;
+pub mod input_order;
 pub mod integration;
 pub mod keymap;
 pub mod modals;

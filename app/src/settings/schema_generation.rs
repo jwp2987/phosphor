@@ -42,7 +42,7 @@ use serde_json::{Map, Value};
 use settings::schema::SettingSchemaEntry;
 use warp_core::features::{DEBUG_FLAGS, DOGFOOD_FLAGS, FeatureFlag, PREVIEW_FLAGS, RELEASE_FLAGS};
 
-/// Builds the settings JSON schema for `channel` (`dev`, `preview`, or
+/// Builds the settings JSON schema for `channel` (`oss`, `dev`, `preview`, or
 /// `stable`, defaulting to `dev`) and writes it to `output_path`, or prints
 /// it to standard output when no path is given.
 ///
@@ -172,6 +172,12 @@ fn active_flags_for_channel(channel: &str) -> HashSet<FeatureFlag> {
     let mut flags = HashSet::new();
 
     let flag_lists: &[&[FeatureFlag]] = match channel {
+        // This fork's own channel (#993): the bundle runs `phosphor-oss dump-settings-schema
+        // --channel oss`, so the schema is generated inside the very binary it ships with.
+        // Its real flag set (release flags, the always-on and cargo-feature extras, IME
+        // marked text) is what `enabled_features()` returns there, so use that rather than
+        // a hand-kept copy that would drift.
+        "oss" => return crate::enabled_features(),
         "stable" => &[RELEASE_FLAGS],
         "preview" => &[RELEASE_FLAGS, PREVIEW_FLAGS],
         "dev" => &[RELEASE_FLAGS, PREVIEW_FLAGS, DOGFOOD_FLAGS, DEBUG_FLAGS],

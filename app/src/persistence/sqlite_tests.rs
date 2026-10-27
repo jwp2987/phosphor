@@ -355,16 +355,28 @@ fn reconstruct_after_pause_keeps_the_new_databases_wal() {
     assert!(wal.exists(), "the new database's WAL must still exist");
 
     let mut reader = setup_database(&database_path).expect("a fresh connection should open");
+    // The writer has just rebuilt the database, so the reader can briefly see it before its
+    // schema exists; since #1010 that surfaces as an error instead of an empty read. Wait it out
+    // like an empty read, and fail with the last error if the row never becomes readable.
     let mut restored = Vec::new();
+    let mut last_error = None;
     for _ in 0..100 {
-        restored =
-            get_all_codebase_index_metadata(&mut reader).expect("row should be readable");
-        if !restored.is_empty() {
-            break;
+        match get_all_codebase_index_metadata(&mut reader) {
+            Ok(rows) => {
+                restored = rows;
+                if !restored.is_empty() {
+                    break;
+                }
+            }
+            Err(error) => last_error = Some(error),
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    assert_eq!(restored.len(), 1);
+    assert_eq!(
+        restored.len(),
+        1,
+        "row should be readable (last error: {last_error:?})"
+    );
     assert_eq!(restored[0].path, metadata.path);
     assert!(wal.exists(), "the WAL must still exist after the read");
 
@@ -2395,4 +2407,748 @@ fn insert_command_under_the_cap_does_not_trim() {
     let mut small = commands_test_connection(5);
     super::insert_command(&mut small, started_command("new")).expect("insert");
     assert_eq!(command_stats(&mut small), (6, 1, 6));
+}
+
+/// #971: a lock held by another process past the busy timeout must not lose
+/// the snapshot: the writer keeps it and retries until the lock is released.
+#[test]
+fn writer_retries_snapshot_blocked_by_external_exclusive_lock() {
+    use diesel::{Connection as _, connection::SimpleConnection as _, sqlite::SqliteConnection};
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let conn = setup_database(&database_path).expect("database should initialize");
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+
+    // Another "process" takes the exclusive lock.
+    let mut locker =
+        SqliteConnection::establish(database_path.to_str().unwrap()).expect("locker connects");
+    locker
+        .batch_execute("BEGIN EXCLUSIVE;")
+        .expect("exclusive lock should be taken");
+
+    writer
+        .sender
+        .send(ModelEvent::Snapshot(AppState {
+            windows: vec![test_terminal_window_snapshot(false)],
+            active_window_index: Some(0),
+            block_lists: Default::default(),
+            running_mcp_servers: Default::default(),
+        }))
+        .expect("snapshot should send");
+
+    // Long enough for the first attempt to fail on the 1 s busy timeout.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let mut reader = SqliteConnection::establish(database_path.to_str().unwrap()).unwrap();
+    // The first attempt must really have failed: the snapshot is not saved while
+    // the lock is held, so what lands after the release came from the retry path
+    // (the event is never sent again).
+    let while_locked = read_sqlite_data(&mut reader, None).expect("data should load");
+    assert_eq!(while_locked.app_state.windows.len(), 0);
+    locker.batch_execute("COMMIT;").expect("lock released");
+
+    let mut landed = false;
+    for _ in 0..100 {
+        let restored = read_sqlite_data(&mut reader, None).expect("data should load");
+        if restored.app_state.windows.len() == 1 {
+            landed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    writer.sender.send(ModelEvent::Terminate).ok();
+    writer.handle.join().expect("writer should terminate");
+    assert!(
+        landed,
+        "the blocked snapshot must be saved after the lock is released"
+    );
+}
+
+/// #971: events other than snapshots (conversation updates, blocks, upserts)
+/// that hit a lock were reported and dropped. They are now kept and replayed in
+/// order, together with the snapshot.
+#[test]
+fn writer_replays_non_snapshot_events_in_order_after_lock_release() {
+    use diesel::{Connection as _, connection::SimpleConnection as _, sqlite::SqliteConnection};
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let conn = setup_database(&database_path).expect("database should initialize");
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+
+    let mut locker =
+        SqliteConnection::establish(database_path.to_str().unwrap()).expect("locker connects");
+    locker
+        .batch_execute("BEGIN EXCLUSIVE;")
+        .expect("exclusive lock should be taken");
+
+    let kept = test_workspace_metadata("/tmp/kept-repo");
+    let upserted_then_deleted = test_workspace_metadata("/tmp/upsert-then-delete");
+    for event in [
+        ModelEvent::UpsertCodebaseIndexMetadata {
+            index_metadata: Box::new(kept.clone()),
+        },
+        ModelEvent::UpsertCodebaseIndexMetadata {
+            index_metadata: Box::new(upserted_then_deleted.clone()),
+        },
+        // Executed out of order (ahead of the upsert), this delete would be a
+        // no-op and the row would survive.
+        ModelEvent::DeleteCodebaseIndexMetadata {
+            repo_path: upserted_then_deleted.path.clone(),
+        },
+        ModelEvent::Snapshot(AppState {
+            windows: vec![test_terminal_window_snapshot(false)],
+            active_window_index: Some(0),
+            block_lists: Default::default(),
+            running_mcp_servers: Default::default(),
+        }),
+    ] {
+        writer.sender.send(event).expect("event should send");
+    }
+
+    // The first attempts fail on the 1 s busy timeout.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let mut reader = SqliteConnection::establish(database_path.to_str().unwrap()).unwrap();
+    assert!(
+        get_all_codebase_index_metadata(&mut reader)
+            .expect("metadata should load")
+            .is_empty(),
+        "nothing may be written while the lock is held"
+    );
+    locker.batch_execute("COMMIT;").expect("lock released");
+
+    let mut landed = false;
+    for _ in 0..150 {
+        let metadata = get_all_codebase_index_metadata(&mut reader).expect("metadata");
+        let snapshot = read_sqlite_data(&mut reader, None).expect("data should load");
+        if metadata.len() == 1 && snapshot.app_state.windows.len() == 1 {
+            assert_eq!(metadata[0].path, kept.path);
+            landed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    writer.sender.send(ModelEvent::Terminate).ok();
+    writer.handle.join().expect("writer should terminate");
+    assert!(
+        landed,
+        "the blocked events and the snapshot must land, in order, after the lock is released"
+    );
+}
+
+/// #971: the lock probe must never issue `ROLLBACK` for a `BEGIN` that failed
+/// (SQLite logged "cannot rollback - no transaction is active" as an ERROR on
+/// every probe), and must report a held lock as blocked.
+#[test]
+fn write_lock_probe_never_rolls_back_without_a_transaction() {
+    use diesel::{
+        Connection as _,
+        connection::{InstrumentationEvent, SimpleConnection as _},
+        sqlite::SqliteConnection,
+    };
+    use std::sync::{Arc, Mutex};
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+    let mut locker =
+        SqliteConnection::establish(database_path.to_str().unwrap()).expect("locker connects");
+    locker
+        .batch_execute("BEGIN EXCLUSIVE;")
+        .expect("exclusive lock should be taken");
+
+    let errors: Arc<Mutex<Vec<String>>> = Arc::default();
+    let sink = errors.clone();
+    conn.set_instrumentation(move |event: InstrumentationEvent<'_>| {
+        if let InstrumentationEvent::FinishQuery {
+            error: Some(error), ..
+        } = event
+        {
+            sink.lock().unwrap().push(error.to_string());
+        }
+    });
+
+    assert!(
+        super::write_lock_blocked(&mut conn),
+        "a held exclusive lock must read as blocked"
+    );
+    let errors_while_locked = errors.lock().unwrap().clone();
+    assert!(
+        errors_while_locked
+            .iter()
+            .all(|message| !message.contains("no transaction")),
+        "ROLLBACK was issued without a transaction: {errors_while_locked:?}"
+    );
+
+    locker.batch_execute("COMMIT;").expect("lock released");
+    errors.lock().unwrap().clear();
+    assert!(
+        !super::write_lock_blocked(&mut conn),
+        "a released lock must read as free"
+    );
+    assert!(
+        errors.lock().unwrap().is_empty(),
+        "the probe must leave no failed statement and no open transaction: {:?}",
+        errors.lock().unwrap()
+    );
+    // No transaction may be left open by the probe.
+    conn.batch_execute("BEGIN IMMEDIATE; ROLLBACK;")
+        .expect("no transaction is left open");
+}
+
+/// #971: after a lock that outlasts the busy timeout several times over is
+/// released, both a queued non-snapshot event and the snapshot land within a
+/// few seconds (the fast retry interval), not only at the next quit.
+#[test]
+fn queued_event_and_snapshot_land_promptly_after_a_long_lock_is_released() {
+    use diesel::{Connection as _, connection::SimpleConnection as _, sqlite::SqliteConnection};
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let conn = setup_database(&database_path).expect("database should initialize");
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+    let mut locker =
+        SqliteConnection::establish(database_path.to_str().unwrap()).expect("locker connects");
+    locker.batch_execute("BEGIN EXCLUSIVE;").expect("lock");
+
+    let kept = test_workspace_metadata("/tmp/long-lock-repo");
+    writer
+        .sender
+        .send(ModelEvent::UpsertCodebaseIndexMetadata {
+            index_metadata: Box::new(kept.clone()),
+        })
+        .expect("event should send");
+    writer
+        .sender
+        .send(ModelEvent::Snapshot(AppState {
+            windows: vec![test_terminal_window_snapshot(false)],
+            active_window_index: Some(0),
+            block_lists: Default::default(),
+            running_mcp_servers: Default::default(),
+        }))
+        .expect("snapshot should send");
+
+    // Several failed probe/retry rounds, as in a real minute-long lock.
+    std::thread::sleep(std::time::Duration::from_secs(7));
+    locker.batch_execute("COMMIT;").expect("lock released");
+    let released_at = std::time::Instant::now();
+
+    let mut reader = SqliteConnection::establish(database_path.to_str().unwrap()).unwrap();
+    let mut landed_after = None;
+    while released_at.elapsed() < std::time::Duration::from_secs(8) {
+        let metadata = get_all_codebase_index_metadata(&mut reader).expect("metadata");
+        let snapshot = read_sqlite_data(&mut reader, None).expect("data should load");
+        if metadata.len() == 1 && snapshot.app_state.windows.len() == 1 {
+            landed_after = Some(released_at.elapsed());
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    writer.sender.send(ModelEvent::Terminate).ok();
+    writer.handle.join().expect("writer should terminate");
+    assert!(
+        landed_after.is_some(),
+        "the queued event and the snapshot must land within 8 s of the release, without a quit"
+    );
+}
+
+/// #971: the lock is still held when the app quits; Terminate makes one last
+/// attempt, which succeeds if the lock was released in the meantime.
+#[test]
+fn terminate_flushes_queued_events_once_the_lock_is_gone() {
+    use diesel::{Connection as _, connection::SimpleConnection as _, sqlite::SqliteConnection};
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let conn = setup_database(&database_path).expect("database should initialize");
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+    let mut locker =
+        SqliteConnection::establish(database_path.to_str().unwrap()).expect("locker connects");
+    locker.batch_execute("BEGIN EXCLUSIVE;").expect("lock");
+
+    let metadata = test_workspace_metadata("/tmp/flush-on-terminate");
+    writer
+        .sender
+        .send(ModelEvent::UpsertCodebaseIndexMetadata {
+            index_metadata: Box::new(metadata.clone()),
+        })
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    locker.batch_execute("COMMIT;").expect("release");
+    // Before the 2 s retry timer fires again.
+    writer.sender.send(ModelEvent::Terminate).unwrap();
+    writer.handle.join().expect("writer should terminate");
+
+    let mut reader = setup_database(&database_path).expect("reopen");
+    let restored = get_all_codebase_index_metadata(&mut reader).expect("metadata");
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].path, metadata.path);
+}
+
+/// #971: pausing (logout) must drop queued events so they are not replayed into
+/// the next user's database; so must reconstructing.
+#[test]
+fn pause_and_reconstruct_discard_queued_events() {
+    use diesel::{Connection as _, connection::SimpleConnection as _, sqlite::SqliteConnection};
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let conn = setup_database(&database_path).expect("database should initialize");
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+    let mut locker =
+        SqliteConnection::establish(database_path.to_str().unwrap()).expect("locker connects");
+    locker.batch_execute("BEGIN EXCLUSIVE;").expect("lock");
+
+    let stale = test_workspace_metadata("/tmp/previous-users-repo");
+    writer
+        .sender
+        .send(ModelEvent::UpsertCodebaseIndexMetadata {
+            index_metadata: Box::new(stale),
+        })
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    // The pause closes the connection and unlinks the file (the locker keeps its
+    // own handle open on the old inode).
+    writer
+        .sender
+        .send(ModelEvent::PauseAndRemoveDatabase)
+        .unwrap();
+    writer
+        .sender
+        .send(ModelEvent::ReconstructAndResume)
+        .unwrap();
+    let fresh = test_workspace_metadata("/tmp/new-users-repo");
+    writer
+        .sender
+        .send(ModelEvent::UpsertCodebaseIndexMetadata {
+            index_metadata: Box::new(fresh.clone()),
+        })
+        .unwrap();
+    locker.batch_execute("ROLLBACK;").ok();
+    drop(locker);
+    // Past the 2 s retry timer: a surviving queue would have been replayed.
+    std::thread::sleep(std::time::Duration::from_millis(3000));
+    writer.sender.send(ModelEvent::Terminate).unwrap();
+    writer.handle.join().expect("writer should terminate");
+
+    let mut reader = setup_database(&database_path).expect("reopen");
+    let restored = get_all_codebase_index_metadata(&mut reader).expect("metadata");
+    assert_eq!(
+        restored.len(),
+        1,
+        "only the post-reconstruct event may land"
+    );
+    assert_eq!(restored[0].path, fresh.path);
+}
+
+/// #971: the retry queue is bounded; the oldest event is dropped, newest kept.
+#[test]
+fn retry_queue_is_bounded_and_drops_the_oldest() {
+    let mut queue = super::RetryQueue::default();
+    let event = |n: usize| ModelEvent::DeleteCodebaseIndexMetadata {
+        repo_path: PathBuf::from(format!("/tmp/{n}")),
+    };
+    for n in 0..super::MAX_QUEUED_RETRY_EVENTS {
+        assert!(!queue.push(event(n)), "within the cap nothing is dropped");
+    }
+    assert!(queue.push(event(super::MAX_QUEUED_RETRY_EVENTS)));
+    assert_eq!(queue.len(), super::MAX_QUEUED_RETRY_EVENTS);
+    let first = queue.events.front().expect("non-empty");
+    assert!(
+        matches!(first, ModelEvent::DeleteCodebaseIndexMetadata { repo_path } if repo_path == &PathBuf::from("/tmp/1"))
+    );
+    queue.clear();
+    assert!(queue.is_empty());
+}
+
+/// #971: giving up after the fast retries must not be final; the interval just
+/// slows down.
+#[test]
+fn lock_retry_slows_down_instead_of_giving_up() {
+    assert_eq!(super::lock_retry_interval(0), super::LOCK_RETRY_INTERVAL);
+    assert_eq!(
+        super::lock_retry_interval(super::MAX_SNAPSHOT_LOCK_RETRIES),
+        super::LOCK_RETRY_INTERVAL
+    );
+    assert_eq!(
+        super::lock_retry_interval(super::MAX_SNAPSHOT_LOCK_RETRIES + 1),
+        super::LOCK_SLOW_RETRY_INTERVAL
+    );
+}
+
+/// A rollback-journal file database whose writer connection `a` has a short busy
+/// timeout, plus `t(x)`; used to make `COMMIT` fail with `SQLITE_BUSY` (a reader
+/// on another connection holds a SHARED lock), which diesel's `transaction()`
+/// reports without ending the transaction (#971).
+fn stray_transaction_fixture() -> (
+    tempfile::TempDir,
+    String,
+    diesel::sqlite::SqliteConnection,
+    diesel::sqlite::SqliteConnection,
+) {
+    use diesel::{Connection as _, connection::SimpleConnection as _, sqlite::SqliteConnection};
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let url = tempdir
+        .path()
+        .join("stray.sqlite")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let mut a = SqliteConnection::establish(&url).expect("writer connects");
+    a.batch_execute(
+        "PRAGMA journal_mode=DELETE; PRAGMA busy_timeout=50; CREATE TABLE t (x INTEGER);",
+    )
+    .expect("schema");
+    let mut reader = SqliteConnection::establish(&url).expect("reader connects");
+    reader
+        .batch_execute("BEGIN; SELECT * FROM t;")
+        .expect("reader holds a SHARED lock");
+    (tempdir, url, a, reader)
+}
+
+fn count_rows_from_fresh_connection(url: &str) -> i64 {
+    use diesel::{Connection as _, RunQueryDsl as _, sql_types::BigInt, sqlite::SqliteConnection};
+
+    #[derive(diesel::QueryableByName)]
+    struct Count {
+        #[diesel(sql_type = BigInt)]
+        n: i64,
+    }
+    let mut fresh = SqliteConnection::establish(url).expect("fresh connection");
+    diesel::sql_query("SELECT COUNT(*) AS n FROM t")
+        .get_result::<Count>(&mut fresh)
+        .expect("count")
+        .n
+}
+
+/// #971: a failed COMMIT left the writer inside an open transaction with diesel
+/// counting depth 1, so every later write was a SAVEPOINT in a transaction that
+/// never committed: "saved" in the log, invisible to every other connection.
+#[test]
+fn blocked_commit_does_not_leave_the_writer_inside_a_transaction() {
+    use diesel::{Connection as _, RunQueryDsl as _, connection::SimpleConnection as _};
+
+    let (_dir, url, mut a, mut reader) = stray_transaction_fixture();
+
+    let result = a.transaction::<_, diesel::result::Error, _>(|conn| {
+        diesel::sql_query("INSERT INTO t VALUES (1)").execute(conn)?;
+        Ok(())
+    });
+    assert!(
+        result.is_err(),
+        "COMMIT must be blocked by the reader's SHARED lock"
+    );
+    assert!(
+        super::in_open_transaction(&mut a),
+        "precondition: diesel's early return leaves SQLite inside the transaction"
+    );
+
+    reader.batch_execute("ROLLBACK;").expect("reader released");
+    assert!(
+        super::settle_stray_transaction(&mut a),
+        "a stray transaction was open"
+    );
+    assert!(
+        !super::in_open_transaction(&mut a),
+        "the writer must be back in autocommit"
+    );
+    assert_eq!(
+        count_rows_from_fresh_connection(&url),
+        1,
+        "the intended write must be committed, not lost"
+    );
+
+    // And later writes commit promptly instead of nesting in the old transaction.
+    a.transaction::<_, diesel::result::Error, _>(|conn| {
+        diesel::sql_query("INSERT INTO t VALUES (2)").execute(conn)?;
+        Ok(())
+    })
+    .expect("a later write commits");
+    assert_eq!(count_rows_from_fresh_connection(&url), 2);
+    assert!(
+        !super::settle_stray_transaction(&mut a),
+        "nothing left to settle"
+    );
+}
+
+/// #971: the lock probe must see a stray transaction as such (not as "no lock"
+/// or "locked"), end it, and leave the connection in autocommit after every call.
+#[test]
+fn write_lock_probe_ends_a_stray_transaction_and_leaves_autocommit() {
+    use diesel::{Connection as _, RunQueryDsl as _, connection::SimpleConnection as _};
+
+    let (_dir, url, mut a, mut reader) = stray_transaction_fixture();
+    let _ = a.transaction::<_, diesel::result::Error, _>(|conn| {
+        diesel::sql_query("INSERT INTO t VALUES (1)").execute(conn)?;
+        Ok(())
+    });
+    assert!(super::in_open_transaction(&mut a));
+    reader.batch_execute("ROLLBACK;").expect("reader released");
+
+    assert!(
+        !super::write_lock_blocked(&mut a),
+        "no lock is held any more"
+    );
+    assert!(
+        !super::in_open_transaction(&mut a),
+        "the probe must leave the connection in autocommit"
+    );
+    assert_eq!(count_rows_from_fresh_connection(&url), 1);
+
+    // Under a real external lock the probe reports blocked and still leaves autocommit.
+    let mut locker = diesel::sqlite::SqliteConnection::establish(&url).expect("locker");
+    locker.batch_execute("BEGIN EXCLUSIVE;").expect("lock");
+    assert!(super::write_lock_blocked(&mut a));
+    assert!(!super::in_open_transaction(&mut a));
+    locker.batch_execute("ROLLBACK;").expect("unlock");
+    assert!(!super::write_lock_blocked(&mut a));
+    assert!(!super::in_open_transaction(&mut a));
+}
+
+/// #971 (real-app Linux report): after a lock episode, a queued event lands, and
+/// events written AFTER the release are visible from a third, fresh connection
+/// within a few seconds, not only when the writer's connection closes.
+#[test]
+fn writes_after_a_lock_episode_are_visible_to_a_fresh_connection() {
+    use diesel::{Connection as _, connection::SimpleConnection as _, sqlite::SqliteConnection};
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let conn = setup_database(&database_path).expect("database should initialize");
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+    let url = database_path.to_str().unwrap().to_owned();
+    let mut locker = SqliteConnection::establish(&url).expect("locker connects");
+    locker.batch_execute("BEGIN EXCLUSIVE;").expect("lock");
+
+    let send = |path: &str| {
+        writer
+            .sender
+            .send(ModelEvent::UpsertCodebaseIndexMetadata {
+                index_metadata: Box::new(test_workspace_metadata(path)),
+            })
+            .expect("event should send");
+    };
+    send("/tmp/episode-during-lock");
+    std::thread::sleep(std::time::Duration::from_millis(3500));
+    locker.batch_execute("ROLLBACK;").expect("lock released");
+    let after: Vec<String> = (0..5).map(|i| format!("/tmp/episode-after-{i}")).collect();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    for path in &after {
+        send(path);
+    }
+
+    let mut third = SqliteConnection::establish(&url).expect("third connection");
+    let started = std::time::Instant::now();
+    let mut seen = 0;
+    while started.elapsed() < std::time::Duration::from_secs(8) {
+        seen = get_all_codebase_index_metadata(&mut third)
+            .expect("metadata")
+            .len();
+        if seen == 6 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    // Checked before Terminate: closing the connection would flush anything stuck.
+    assert_eq!(
+        seen, 6,
+        "all six writes must be visible before the writer shuts down"
+    );
+    writer.sender.send(ModelEvent::Terminate).ok();
+    writer.handle.join().expect("writer should terminate");
+}
+
+/// #1000: a conversation write with no event after it must be committed and
+/// visible from a separate fresh connection within a few seconds, without
+/// waiting for another conversation to be saved or for the writer to close.
+#[test]
+fn lone_conversation_write_is_visible_to_a_fresh_connection_promptly() {
+    use diesel::{Connection as _, sqlite::SqliteConnection};
+    use warp_multi_agent_api as api;
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let conn = setup_database(&database_path).expect("database should initialize");
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+
+    let task = api::Task {
+        id: "root".to_string(),
+        description: "finished exchange".to_string(),
+        dependencies: None,
+        messages: vec![api::Message {
+            id: "root-user-query".to_string(),
+            task_id: "root".to_string(),
+            message: Some(api::message::Message::UserQuery(api::message::UserQuery {
+                query: "hello".to_string(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }],
+        summary: String::new(),
+        server_data: String::new(),
+    };
+    writer
+        .sender
+        .send(ModelEvent::UpdateMultiAgentConversation {
+            conversation_id: "conversation-lone".to_string(),
+            updated_tasks: vec![task],
+            conversation_data: serde_json::from_str(r#"{"server_conversation_token":null}"#)
+                .expect("minimal conversation data"),
+            task_retention: crate::persistence::PersistedTaskRetention::DeleteMissing,
+        })
+        .expect("event should send");
+
+    let url = database_path.to_str().unwrap().to_owned();
+    let mut fresh = SqliteConnection::establish(&url).expect("fresh connection");
+    let started = std::time::Instant::now();
+    let mut found = false;
+    while started.elapsed() < std::time::Duration::from_secs(3) {
+        found = crate::persistence::agent::read_agent_conversation_by_id(
+            &mut fresh,
+            "conversation-lone",
+        )
+        .expect("read")
+        .is_some();
+        if found {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // Checked before Terminate: closing the connection would flush anything stuck.
+    assert!(
+        found,
+        "a lone conversation write must be committed without a follow-up event"
+    );
+    writer.sender.send(ModelEvent::Terminate).ok();
+    writer.handle.join().expect("writer should terminate");
+}
+
+#[derive(diesel::QueryableByName)]
+struct SingleInt {
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    value: i64,
+}
+
+/// A database with an intact header whose later pages (everything after the
+/// schema's own root pages, i.e. the row data) are damaged. Returns the path.
+fn database_with_damaged_data_pages(dir: &std::path::Path) -> std::path::PathBuf {
+    use diesel::{connection::SimpleConnection, RunQueryDsl};
+    use std::io::{Seek, SeekFrom, Write};
+
+    let database_path = dir.join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+    conn.batch_execute(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 4000) \
+         INSERT INTO commands (command) \
+         SELECT 'echo ' || i || ' ' || hex(randomblob(100)) FROM n;",
+    )
+    .expect("commands should insert");
+    conn.batch_execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        .expect("checkpoint");
+    let page_size = diesel::sql_query("SELECT page_size AS value FROM pragma_page_size")
+        .get_result::<SingleInt>(&mut conn)
+        .expect("page size")
+        .value as u64;
+    let max_root = diesel::sql_query("SELECT max(rootpage) AS value FROM sqlite_master")
+        .get_result::<SingleInt>(&mut conn)
+        .expect("max root page")
+        .value as u64;
+    drop(conn);
+
+    let length = std::fs::metadata(&database_path).expect("metadata").len();
+    let pages = length / page_size;
+    assert!(
+        pages > max_root + 20,
+        "the inserted rows must span data pages past the schema ({pages} pages, root {max_root})"
+    );
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&database_path)
+        .expect("open");
+    let mut seed: u32 = 0x1234_5678;
+    for page in (max_root + 1)..pages {
+        // 2 KB of pseudo-random bytes at the start of the page, the first one
+        // not a valid b-tree page type, so SQLite reports SQLITE_CORRUPT as
+        // soon as it initialises the page.
+        let mut garbage = vec![0u8; 2048];
+        for byte in garbage.iter_mut() {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *byte = (seed >> 24) as u8;
+        }
+        garbage[0] = 0xFF;
+        file.seek(SeekFrom::Start(page * page_size)).expect("seek");
+        file.write_all(&garbage).expect("write");
+    }
+    file.sync_all().expect("sync");
+    database_path
+}
+
+/// #1010: a database with an intact header but damaged data pages passes
+/// `setup_database` and used to hang the startup read forever (a
+/// `filter_map(Result::ok)` over a `load_iter` whose step keeps failing,
+/// allocating an error each time). The read must now stop on the first
+/// SQLite error, report it as an unusable database, and recovery must leave a
+/// readable fresh database plus a quarantined copy.
+#[test]
+fn damaged_interior_pages_end_the_startup_read_and_are_quarantined() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = database_with_damaged_data_pages(tempdir.path());
+    assert_eq!(
+        super::has_valid_sqlite_header(&database_path),
+        Some(true),
+        "the header must be intact for this scenario"
+    );
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let path_for_thread = database_path.clone();
+    std::thread::spawn(move || {
+        let outcome = (|| -> Result<String, String> {
+            let mut conn = setup_database(&path_for_thread)
+                .map_err(|err| format!("setup failed: {err:#}"))?;
+            match read_sqlite_data(&mut conn, None) {
+                Ok(_) => Ok(String::new()),
+                Err(err) => Ok(super::diesel_database_error_message(&err)),
+            }
+        })();
+        let _ = tx.send(outcome);
+    });
+    let message = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the startup read must return promptly, not spin on a damaged page")
+        .expect("setup of a database with an intact header succeeds");
+    assert!(
+        super::error_means_unusable_database(&message),
+        "the read must fail with an error that leads to quarantine, got: {message:?}"
+    );
+
+    // The recovery `initialize` performs on that error.
+    let moved_to = super::quarantine_unusable_database(&database_path)
+        .expect("a damaged database is moved aside");
+    assert!(moved_to.exists());
+    let mut fresh = setup_database(&database_path).expect("a fresh database is created");
+    read_sqlite_data(&mut fresh, None).expect("the fresh database reads back");
+    assert_eq!(corrupt_copies(tempdir.path()).len(), 1);
+}
+
+/// The row-collecting helper stops at a SQLite error instead of retrying it.
+#[test]
+fn collect_rows_stops_at_the_first_sqlite_error() {
+    use diesel::result::{DatabaseErrorKind, Error};
+    let mut yielded = 0;
+    let rows = std::iter::from_fn(|| {
+        yielded += 1;
+        // Like a statement that keeps failing: never ends on its own.
+        Some(if yielded == 1 {
+            Ok(1)
+        } else {
+            Err(Error::DatabaseError(
+                DatabaseErrorKind::Unknown,
+                Box::new("database disk image is malformed".to_string()),
+            ))
+        })
+    });
+    let result = super::collect_rows(rows);
+    assert!(result.is_err());
+    assert_eq!(yielded, 2, "no further rows are pulled after the error");
 }

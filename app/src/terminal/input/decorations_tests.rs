@@ -157,6 +157,19 @@ fn test_oversized_buffer_skips_background_jobs() {
             assert!(!input.decorations_cleared_for_oversized_buffer);
 
             // An oversized one is not.
+            assert_eq!(MAX_BACKGROUND_JOB_BUFFER_CHARS, 150_000);
+            // Boundary (#1009): 149_999 and exactly 150_000 chars are parsed, 150_001 is not.
+            for (len, parsed) in [(149_999, true), (150_000, true), (150_001, false)] {
+                let text = format!("echo {}", "x".repeat(len - 5));
+                input.clear_buffer_and_reset_undo_stack(ctx);
+                input.user_insert(&text, ctx);
+                input.run_input_background_jobs(decorate, ctx);
+                assert_eq!(
+                    input.decorations_future_handle.is_some(),
+                    parsed,
+                    "{len} chars"
+                );
+            }
             let huge = format!("echo {}", "x".repeat(MAX_BACKGROUND_JOB_BUFFER_CHARS));
             input.clear_buffer_and_reset_undo_stack(ctx);
             input.user_insert(&huge, ctx);
@@ -189,6 +202,69 @@ fn test_oversized_buffer_skips_background_jobs() {
             input.run_input_background_jobs(decorate, ctx);
             assert!(input.decorations_future_handle.is_some());
             assert!(!input.decorations_cleared_for_oversized_buffer);
+        });
+    });
+}
+
+/// #1031: a new edit, a clear, and an oversized buffer each cancel the previous in-flight
+/// decoration job cooperatively (its cancel flag is set, so the CPU-bound parse stops at its
+/// next token), and only the newest job stays live.
+#[test]
+fn test_superseded_decoration_job_is_cancelled() {
+    use std::sync::atomic::Ordering;
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        InputSettings::handle(&app).update(&mut app, |input_settings, ctx| {
+            let _ = input_settings.syntax_highlighting.set_value(true, ctx);
+            let _ = input_settings.error_underlining.set_value(true, ctx);
+        });
+
+        let session_info = SessionInfo::new_for_test();
+        let session_id = session_info.session_id;
+        let terminal =
+            add_window_with_bootstrapped_terminal(&mut app, None, Some(session_info)).await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+        simulate_directory_for_completion(session_id, &terminal, &mut app, "/usr/bin");
+
+        let decorate = InputBackgroundJobOptions::default().with_command_decoration();
+
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("echo one", ctx);
+            input.run_input_background_jobs(decorate, ctx);
+            let first = input
+                .decorations_cancel
+                .clone()
+                .expect("a normal buffer should start a cancellable job");
+            assert!(!first.load(Ordering::Relaxed));
+
+            // The next keystroke supersedes it.
+            input.user_insert(" two", ctx);
+            input.run_input_background_jobs(decorate, ctx);
+            let second = input.decorations_cancel.clone().expect("second job");
+            assert!(
+                first.load(Ordering::Relaxed),
+                "the superseded job must be told to stop"
+            );
+            assert!(!second.load(Ordering::Relaxed));
+
+            // Clearing the editor stops the live job too.
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.run_input_background_jobs(decorate, ctx);
+            let third = input.decorations_cancel.clone().expect("third job");
+            assert!(
+                second.load(Ordering::Relaxed),
+                "clearing the buffer must cancel the job for the old text"
+            );
+
+            // An oversized paste cancels the live job and starts none.
+            let huge = format!("echo {}", "x".repeat(MAX_BACKGROUND_JOB_BUFFER_CHARS));
+            input.user_insert(&huge, ctx);
+            input.run_input_background_jobs(decorate, ctx);
+            assert!(third.load(Ordering::Relaxed));
+            assert!(input.decorations_cancel.is_none());
+            assert!(input.decorations_future_handle.is_none());
         });
     });
 }

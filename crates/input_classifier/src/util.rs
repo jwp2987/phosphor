@@ -276,6 +276,20 @@ fn buffer_has_prose_colon_shape(buffer_text: &str) -> bool {
     words.any(|word| word.ends_with(':'))
 }
 
+/// Shell program names that are not dictionary words (`ksh`, `tcsh`, `xonsh`...), so
+/// [`is_ordinary_english_word`] cannot recognise them. They still open sentences ("ksh is great")
+/// and, like `fish`, count as a command only when the program is installed (#965, #1018); the
+/// ordinary-English gate in [`first_token_forces_ai_override`] would otherwise let the model's
+/// Shell verdict stand for them when they are known-absent.
+fn is_non_english_shell_name(word: &str) -> bool {
+    const NAMES: [&str; 12] = [
+        "ksh", "mksh", "pdksh", "tcsh", "csh", "zsh", "pwsh", "xonsh", "elvish", "nu", "nushell",
+        "yash",
+    ];
+    let lower = word.to_ascii_lowercase();
+    NAMES.contains(&lower.as_str())
+}
+
 /// Returns true iff a Shell classification should be overridden back to AI for this buffer.
 ///
 /// This is intentionally narrow: it only fires when the buffer's *effective* first token (the
@@ -325,7 +339,9 @@ pub fn first_token_forces_ai_override(
         return false;
     }
 
-    if !is_ordinary_english_word(token.token.as_str()) {
+    if !is_ordinary_english_word(token.token.as_str())
+        && !is_non_english_shell_name(token.token.as_str())
+    {
         return false;
     }
 
@@ -1401,11 +1417,16 @@ pub fn reads_as_command_headed_prose(buffer_text: &str) -> bool {
     let Some(first) = words.get(first_index) else {
         return false;
     };
-    if first.quoted || COMPOUND_COMMAND_HEADS.contains(&first.text.as_str()) {
+    if first.quoted {
         return false;
     }
     let remaining = &words[first_index + 1..];
-    if remaining.is_empty() {
+    // Checked ahead of the compound-head exemption: `do it` is the reserved word `do` only inside
+    // a loop, which has `;` or a newline before it and never reaches here.
+    if first_index == 0 && collision_head_reads_as_sentence(&first.text, remaining) {
+        return true;
+    }
+    if COMPOUND_COMMAND_HEADS.contains(&first.text.as_str()) || remaining.is_empty() {
         return false;
     }
     if remaining.len() == 1
@@ -1435,7 +1456,14 @@ pub fn reads_as_command_headed_prose(buffer_text: &str) -> bool {
             || REQUEST_OPENER_PAIRS
                 .iter()
                 .any(|(head, next)| first.text == *head && remaining[0].text == *next);
-        if opener || distinct_request_words.len() >= 2 {
+        // Two distinct request words alone are not a request (#964): `ls this that it`,
+        // `cat this that`, `cp it that` are ordinary commands whose arguments happen to be
+        // pronouns. Without an opener the pair must be joined by a word that addresses someone
+        // (`tell me how`, `chatgpt can you`): [`STRONG_PROSE_WORDS`].
+        let has_strong_prose_word = remaining.iter().any(|word| {
+            !word.quoted && STRONG_PROSE_WORDS.contains(&word.text.to_lowercase().as_str())
+        });
+        if opener || (distinct_request_words.len() >= 2 && has_strong_prose_word) {
             return true;
         }
     }
@@ -1457,6 +1485,81 @@ pub fn reads_as_command_headed_prose(buffer_text: &str) -> bool {
     }
     false
 }
+
+/// Greetings that `say` is overwhelmingly typed with as a message to the agent rather than a
+/// request to speak (#965).
+const SAY_GREETING_WORDS: [&str; 5] = ["hello", "hi", "hey", "hola", "thanks"];
+
+/// Rarely used commands and shell words that collide with English sentence openers: macOS
+/// `/usr/bin/say`, `/usr/bin/what`, `/usr/bin/write`, the zsh `where` builtin and the `do`
+/// reserved word (#965). Prose evidence wins for these heads when the rest of the line reads as a
+/// sentence ([`collision_head_reads_as_sentence`]); a path, quote, assignment or glob among the
+/// arguments keeps them commands (`what /usr/bin/ls`, `say "build done"`, `write user`).
+const COLLISION_HEADS: [&str; 5] = ["say", "what", "write", "where", "do"];
+
+/// True iff `head` is a [`COLLISION_HEADS`] member and `remaining` reads as a sentence: no quoted
+/// word and no path, home, assignment, glob or variable word, and either (for `say`) a lone
+/// greeting, or at least one unquoted [`PROSE_FUNCTION_WORDS`] member (`where is the config`,
+/// `write a script that counts lines`, `what does ls -la do`, `do it`).
+fn collision_head_reads_as_sentence(head: &str, remaining: &[ShellWord]) -> bool {
+    let head = head.to_lowercase();
+    let head = head.as_str();
+    if !COLLISION_HEADS.contains(&head)
+        || remaining.is_empty()
+        || remaining.iter().any(|word| {
+            word.quoted
+                || word
+                    .text
+                    .contains(['/', '~', '=', '$', '*', '[', ']', '{', '}'])
+        })
+    {
+        return false;
+    }
+    // `where is git`, `what is ls`, `where git`: a head plus one word (optionally via `is`) is a
+    // lookup, not a sentence. `do it` is the exception: `do` is never a command by itself.
+    if !head.eq("do")
+        && !head.eq("say")
+        && (remaining.len() == 1 || (remaining.len() == 2 && remaining[0].text == "is"))
+    {
+        return false;
+    }
+    if head.eq("say") {
+        let is_greeting = |word: &ShellWord| {
+            SAY_GREETING_WORDS.contains(
+                &strip_sentence_punctuation(&word.text)
+                    .to_lowercase()
+                    .as_str(),
+            )
+        };
+        if remaining.len() == 1 {
+            return is_greeting(&remaining[0]);
+        }
+        // Owner decision 2026-10-26 (#965): `say hello world` goes to the agent like `say hello`.
+        // Prose after `say` is plain words only (no flag, operator, substitution or digit-led
+        // token), opening with a greeting or carrying a sentence function word (`say how are
+        // you`). `say build done` has neither signal and stays a command.
+        let plain_words = remaining.iter().all(|word| {
+            // Raw text, so `hello;` (a command separator) is not mistaken for `hello`.
+            let text = word.text.trim_end_matches(['.', ',', '!', '?', ':']);
+            !text.is_empty()
+                && text
+                    .chars()
+                    .all(|c| c.is_alphabetic() || c == '\'' || c == '’')
+        });
+        return plain_words
+            && (is_greeting(&remaining[0]) || remaining.iter().any(is_function_word));
+    }
+    remaining.iter().any(|word| {
+        is_function_word(word)
+            || (!word.quoted
+                && COLLISION_SENTENCE_WORDS.contains(&strip_sentence_punctuation(&word.text)))
+    })
+}
+
+/// Extra sentence words (beyond [`PROSE_FUNCTION_WORDS`]) that carry a [`COLLISION_HEADS`] line:
+/// `what does ls -la do`, `write a script`, `where have you put it`.
+const COLLISION_SENTENCE_WORDS: [&str; 8] =
+    ["a", "does", "do", "did", "has", "have", "will", "about"];
 
 /// [`reads_as_command_headed_prose`] with the one-off shell keyword exemption applied: a buffer
 /// headed by `echo`, `sudo`... (after any `VAR=x` prefixes) carries English arguments as a matter

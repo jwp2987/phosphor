@@ -17,7 +17,9 @@ use crate::signatures::testing::{
 use crate::signatures::CommandRegistry;
 
 use super::CompleterOptions;
-use super::{suggestions, CompletionsFallbackStrategy, SuggestionResults, SuggestionType};
+use super::{
+    open_quote, suggestions, CompletionsFallbackStrategy, SuggestionResults, SuggestionType,
+};
 
 cfg_if::cfg_if! {
     if #[cfg(not(feature = "v2"))] {
@@ -310,6 +312,60 @@ pub fn test_completes_paths_with_space() {
         complete_at_end_of_line("test --template-args-for-opt foo\\ bar\\ bazz/", &ctx),
         vec!["test/"],
     );
+}
+
+/// #1017: completing inside a still-open quote (`ls 'wi<Tab>`) used to offer nothing in the app,
+/// because the replacement span started at the quote, so the typed prefix was `'wi`.
+#[cfg(unix)]
+#[test]
+pub fn test_completes_inside_open_quote() {
+    let registry = create_test_command_registry([test_signature(), cd_signature()]);
+    let pwd = TypedPathBuf::from(TEST_WORK_DIR);
+    let path_ctx = MockPathCompletionContext::new(pwd.clone()).with_entries_in_pwd([
+        EngineDirEntry::test_dir("wiki dir"),
+        EngineDirEntry::test_file("wiki$.txt"),
+    ]);
+    let ctx = FakeCompletionContext::new(registry)
+        .with_supports_autocd(true)
+        .with_top_level_commands(["cd", "test"])
+        .with_path_completion_context(path_ctx);
+
+    let options = || CompleterOptions {
+        match_strategy: MatchStrategy::CaseInsensitive,
+        fallback_strategy: CompletionsFallbackStrategy::FilePaths,
+        suggest_file_path_completions_only: false,
+        parse_quotes_as_literals: false,
+    };
+    // (line, expected replacements for the partial word typed inside the quote). `cd` only
+    // completes directories; `cat` (no signature, file-path fallback) also offers files, which
+    // exercises the per-quote escaping and the closing quote after a file.
+    for (line, expected) in [
+        ("cd 'wi", vec!["wiki dir/"]),
+        ("cd \"wi", vec!["wiki dir/"]),
+        ("cat 'wi", vec!["wiki dir/", "wiki$.txt'"]),
+        ("cat \"wi", vec!["wiki dir/", "wiki\\$.txt\""]),
+    ] {
+        let results = suggestions_for_test(line, line.len(), options(), &ctx)
+            .unwrap_or_else(|| panic!("{line:?} should offer completions"));
+        // The query is the word inside the quote, without the quote itself.
+        let query = results.replacement_span.slice(line).to_owned();
+        assert_eq!(query, "wi", "{line:?}");
+        let mut replacements: Vec<String> = results
+            .filter_by_query(&query, &['/'])
+            .map(|s| s.suggestion.replacement.to_string())
+            .collect();
+        replacements.sort();
+        let mut expected: Vec<String> = expected.into_iter().map(String::from).collect();
+        expected.sort();
+        assert_eq!(replacements, expected, "{line:?}");
+    }
+
+    // A closed quote is a finished word: nothing to adjust.
+    assert_eq!(open_quote("'wi"), Some('\''));
+    assert_eq!(open_quote("'wi'"), None);
+    assert_eq!(open_quote("\"wi\\\"x"), Some('"'));
+    assert_eq!(open_quote("\"wi\""), None);
+    assert_eq!(open_quote("wi"), None);
 }
 
 #[cfg_attr(

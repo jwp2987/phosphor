@@ -328,6 +328,43 @@ async fn first_token_forces_ai_override_for(buffer: &str, commands_fully_loaded:
     first_token_forces_ai_override(&token, commands_fully_loaded)
 }
 
+// #1018: a shell name that is not a dictionary word (`ksh`, `tcsh`, `xonsh`...) is a command only
+// when installed, like `fish` (#965). With no command evidence and a complete command index, a
+// model's Shell verdict for a sentence opened by one must be overridden back to AI.
+#[test]
+fn test_first_token_forces_ai_override_for_absent_non_english_shell_names() {
+    futures::executor::block_on(async move {
+        for buffer in [
+            "ksh is great",
+            "ksh is old",
+            "tcsh vs csh?",
+            "zsh is great",
+            "xonsh is fun",
+            "elvish is great",
+            "nu is great",
+            "KSH is great",
+        ] {
+            assert!(
+                first_token_forces_ai_override_for(buffer, true).await,
+                "{buffer:?}"
+            );
+            assert!(
+                !first_token_forces_ai_override_for(buffer, false).await,
+                "index not loaded: {buffer:?}"
+            );
+        }
+        // Installed (a description is present): no override.
+        let mut installed = mock_parsed_input_token("ksh is great".to_string()).await;
+        clear_all_token_descriptions(&mut installed);
+        installed.parsed_tokens[0].token_description = Some(Description {
+            token: installed.parsed_tokens[0].token.clone(),
+            description_text: Some("installed program".to_string()),
+            suggestion_type: SuggestionType::Command(TopLevelCommandCaseSensitivity::CaseSensitive),
+        });
+        assert!(!first_token_forces_ai_override(&installed, true));
+    });
+}
+
 #[test]
 fn test_first_token_forces_ai_override_for_english_words_when_commands_fully_loaded() {
     futures::executor::block_on(async move {
@@ -996,7 +1033,10 @@ fn test_reads_as_command_headed_prose_leaves_shell_alone() {
         "ls the -la",
         "npm install fails with EACCES",
         "install docker and run it",
-        "do it",
+        // Compound heads keep their body (`then`/`if` + a command). (`do ls the` is NOT here:
+        // `do` is a #965 collision head, and `do` plus a prose function word reads as a request.)
+        "then ls",
+        "if ls the",
     ] {
         assert!(!reads_as_command_headed_prose(text), "{text:?}");
     }
@@ -1167,4 +1207,65 @@ fn transparent_prefixes_are_looked_through_for_the_effective_head() {
     // A bare prefix has no effective head yet (a prefix of a line being typed).
     assert_eq!(effective_head_word("nice"), None);
     assert_eq!(effective_head_word("nice -n 5"), None);
+}
+
+#[test]
+fn test_964_pronoun_arguments_do_not_make_a_request() {
+    for text in [
+        "ls this that it",
+        "ls that is it",
+        "cat this that",
+        "cp it that",
+        "rm this that it",
+    ] {
+        assert!(!reads_as_request_to_agent(text), "{text:?}");
+    }
+    // Two request words joined by a word that addresses someone still read as a request.
+    assert!(reads_as_request_to_agent("tell me how to deploy"));
+    assert!(reads_as_request_to_agent("could you fix this"));
+}
+
+#[test]
+fn test_965_collision_words_read_as_prose_only_as_a_sentence() {
+    for text in [
+        "say hello",
+        "say hello world",
+        "say how are you",
+        "Say hello world!",
+        "what does ls -la do",
+        "write a script that counts lines",
+        "where is the config",
+        "what is the capital of France",
+        "do it",
+        "Say hello",
+        "Where is the config?",
+        "Do it",
+    ] {
+        assert!(reads_as_request_to_agent(text), "{text:?}");
+    }
+    for text in [
+        "say \"build done\"",
+        "say -v Alex hello",
+        "say -f file",
+        "say -v Alex hello world",
+        "say \"$x\"",
+        "say $x",
+        "say $(date)",
+        "say hello $(whoami)",
+        "say hello; ls",
+        "say hello | cat",
+        "say hello > out.txt",
+        "say build done",
+        "what /usr/bin/ls",
+        "write user",
+        "where git",
+        "where is git",
+        "what is ls",
+        "where is foo.txt",
+        "Where is git",
+        "do ls",
+        "say",
+    ] {
+        assert!(!reads_as_request_to_agent(text), "{text:?}");
+    }
 }

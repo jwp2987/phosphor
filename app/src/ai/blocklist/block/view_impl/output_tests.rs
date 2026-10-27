@@ -5,7 +5,8 @@ use warp_util::remote_path::RemotePath;
 use warp_util::standardized_path::StandardizedPath;
 
 use super::{
-    attachment_caps::AttachmentCaps, parsed_skill_for_common_locations, read_skill_display_text,
+    COLLAPSIBLE_TEXT_BLOCK_SELECTABLE, attachment_caps::AttachmentCaps,
+    parsed_skill_for_common_locations, read_skill_display_text,
     should_decorate_blind_use_computer_screenshot,
 };
 use crate::ai::skills::SkillManager;
@@ -378,4 +379,11 @@ mod is_orphaned_by_finished_output_tests {
             "a statusless action must consult the block status exactly once"
         );
     }
+}
+
+// #1011: reasoning text was rendered with `selectable = false`, so it was excluded from the
+// SelectableArea's selection model while the answer text was not.
+#[test]
+fn collapsible_reasoning_text_is_selectable() {
+    assert!(COLLAPSIBLE_TEXT_BLOCK_SELECTABLE);
 }

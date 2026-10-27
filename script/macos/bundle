@@ -126,7 +126,7 @@ trap 'cleanup_dmg_files "$DMG_DIR"; cleanup_codesign_keychain' EXIT
 
 # Define a helper function that uses Python to compute a relative path.
 function relpath() {
-  python -c "import os,sys;print(os.path.relpath(*(sys.argv[1:])))" "$@";
+  python3 -c "import os,sys;print(os.path.relpath(*(sys.argv[1:])))" "$@";
 }
 
 # Defaults for command-line flags.
@@ -837,7 +837,21 @@ if [[ "$ARTIFACT" = app ]]; then
 
     args+=("$DMG_DIR/$DMG_NAME" "$source_folder")
 
-    create-dmg "${args[@]}"
+    # Pick the shell-script create-dmg explicitly: the npm package of the same name takes
+    # different arguments and can be first on PATH (#1002).
+    local create_dmg="" candidate
+    for candidate in "${CREATE_DMG:-}" "$(command -v create-dmg 2>/dev/null)" "$HOME/.local/bin/create-dmg"; do
+      [[ -n "$candidate" && -x "$candidate" ]] || continue
+      head -n 1 "$candidate" | grep -q node && continue
+      create_dmg="$candidate"
+      break
+    done
+    if [[ -z "$create_dmg" ]]; then
+      echo "ERROR: github.com/create-dmg/create-dmg not found; run script/macos/install_create_dmg" >&2
+      return 1
+    fi
+
+    "$create_dmg" "${args[@]}"
   }
 
   # If we're codesigning, stage the signed app and use that to create the DMG.

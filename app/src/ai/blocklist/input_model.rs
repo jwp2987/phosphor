@@ -1231,6 +1231,15 @@ impl BlocklistAIInputModel {
             self.explicit_input_type_set = None;
         }
 
+        // #968: a huge buffer is a paste, not a prompt. Never spend classifier time on it, and
+        // never flip the input type either way: forcing Shell would run pasted prose or logs
+        // (`$(..)`, `;`, `>`) on Enter, and forcing AI would send it all to the model. Leave
+        // whatever type the user is in.
+        if exceeds_autodetect_limit(&input.buffer_text) {
+            self.settle_detection(&input.buffer_text);
+            return;
+        }
+
         let first_token_str = input.parsed_tokens.first().map(|t| t.token.clone());
         let Some(first_token_str) = first_token_str else {
             // If the buffer is empty, short-circuit and leave input type unchanged.
@@ -1791,8 +1800,21 @@ fn shell_history_candidates<'a>(
     entries: impl Iterator<Item = &'a HistoryEntry>,
     buffer_text: &str,
 ) -> Vec<(String, Option<DateTime<Local>>)> {
+    // #965: a line the safety gate reads as a request to the agent (`say hello`, `where is the
+    // config`, `watch the logs for errors`) is the agent's whatever the history holds. An entry
+    // that ran it in the shell once (macOS speaks `say hello` and exits 0) must not pin the line
+    // and its near-variants to the shell from then on: the gate would send the classifier verdict
+    // to the agent, but a history match returns before the classifier is ever consulted.
+    if input_classifier::util::reads_as_request_to_agent(buffer_text) {
+        return Vec::new();
+    }
     let buffer_reads_as_prose = input_classifier::util::reads_as_prose(buffer_text);
     entries
+        // The same rule for the entry: a request-shaped line in history (`say hello`) must not pin
+        // its own *prefixes* (`say hell` is 0.94 similar) to the shell while the user types it.
+        // Those pins land before the full line's verdict does and are what an Enter that arrives
+        // first routes on.
+        .filter(|entry| !input_classifier::util::reads_as_request_to_agent(&entry.command))
         .filter(|entry| match entry.exit_code {
             Some(code) if code.was_command_not_found() => false,
             _ if !buffer_reads_as_prose => true,
@@ -1858,6 +1880,13 @@ fn resolve_history_match(
             Some((InputType::AI, InputTypeAutoDetectionSource::HistoryMatch))
         }
     }
+}
+
+/// Buffers longer than this many bytes are never autodetected as an agent prompt (#968).
+pub(crate) const MAX_AUTODETECT_BUFFER_BYTES: usize = 16 * 1024;
+
+pub(crate) fn exceeds_autodetect_limit(buffer_text: &str) -> bool {
+    buffer_text.len() > MAX_AUTODETECT_BUFFER_BYTES
 }
 
 #[cfg(test)]

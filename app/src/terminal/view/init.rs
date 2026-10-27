@@ -1063,8 +1063,32 @@ pub fn init(app: &mut AppContext) {
     .with_context_predicate(id!("Workspace") & id!(flags::IS_ANY_AI_ENABLED))]);
 }
 
-/// Registers bindings related to input modes.
-fn register_input_mode_bindings(app: &mut AppContext) {
+/// Matches while the agent is driving a long-running command and the user has not taken it back:
+/// the state the footer's "Take over" button is shown in. `AGENT_MODE_INPUT` is set by the Input
+/// view's keymap context, so with the terminal focused it is never set and Ctrl-I / Cmd-I did
+/// nothing while the button worked (#1020). Once the user has taken over, the key must still
+/// reach the pty, hence the `USER_TOOK_OVER` exclusion.
+fn take_over_agent_control_predicate(base_context: ContextPredicate) -> ContextPredicate {
+    use warpui::keymap::macros::*;
+
+    base_context
+        & id!(LONG_RUNNING_AGENT_REQUESTED_COMMAND_CONTEXT_KEY)
+        & !id!(LONG_RUNNING_AGENT_REQUESTED_COMMAND_USER_TOOK_OVER_CONTEXT_KEY)
+}
+
+/// The context predicates behind the input-mode bindings; a function so a test can evaluate them.
+struct InputModePredicates {
+    base_context: ContextPredicate,
+    command_predicate: ContextPredicate,
+    /// When the user can switch input to agent mode (cmd-enter while a command runs, the Input
+    /// editor's toggle).
+    agent_mode_predicate: ContextPredicate,
+    /// [`Self::agent_mode_predicate`] for the Ctrl-I / Cmd-I key: never while the pty has focus
+    /// during a running command (#1024).
+    agent_mode_key_predicate: ContextPredicate,
+}
+
+fn input_mode_predicates() -> InputModePredicates {
     use warpui::keymap::macros::*;
 
     // A context predicate that matches when the input mode bindings are
@@ -1092,6 +1116,33 @@ fn register_input_mode_bindings(app: &mut AppContext) {
             )),
         );
 
+    // Ctrl-I is also the Tab character. With the pty focused (the Terminal, not the Input editor)
+    // while a command or full-screen program runs, the key belongs to that program: `zsh -f`,
+    // `ZOPT=1 zsh` (an env-prefixed command is not detected as a subshell, so nothing is offered
+    // to Phosphorize), vim. It is only taken from the pty when something is offered for it: the
+    // Phosphorize / SSH banners bind it separately, and take-over has its own predicate (#1024).
+    let agent_mode_key_predicate = agent_mode_predicate.clone()
+        & !(id!("Terminal") & !id!("Input") & command_predicate.clone());
+
+    InputModePredicates {
+        base_context,
+        command_predicate,
+        agent_mode_predicate,
+        agent_mode_key_predicate,
+    }
+}
+
+/// Registers bindings related to input modes.
+fn register_input_mode_bindings(app: &mut AppContext) {
+    use warpui::keymap::macros::*;
+
+    let InputModePredicates {
+        base_context,
+        command_predicate,
+        agent_mode_predicate,
+        agent_mode_key_predicate,
+    } = input_mode_predicates();
+
     // A context predicate that is active when a user can start a new agent conversation.
     //
     // Deliberately does NOT require `TERMINAL_MODE_INPUT`: that flag is set by the
@@ -1115,12 +1166,13 @@ fn register_input_mode_bindings(app: &mut AppContext) {
     // - AgentView feature is disabled, OR
     // - In an active agent view, OR
     // - Input is unlocked (autodetected) (implying the input is autodetected as AI in terminal mode)
-    let terminal_mode_predicate = base_context.clone()
+    let terminal_mode_predicate = (base_context.clone()
         & id!(flags::AGENT_MODE_INPUT)
         & (!id!(flags::AGENT_VIEW_ENABLED)
             | id!(flags::ACTIVE_AGENT_VIEW)
             | id!(flags::ACTIVE_INLINE_AGENT_VIEW)
-            | !id!(flags::LOCKED_INPUT));
+            | !id!(flags::LOCKED_INPUT)))
+        | take_over_agent_control_predicate(base_context.clone());
 
     app.register_fixed_bindings([
         // No long-running command: cmd-enter starts a new agent conversation.
@@ -1152,7 +1204,7 @@ fn register_input_mode_bindings(app: &mut AppContext) {
             TerminalAction::SetInputModeAgent,
         )
         .with_group(bindings::BindingGroup::WarpAi.as_str())
-        .with_context_predicate(agent_mode_predicate)
+        .with_context_predicate(agent_mode_key_predicate)
         .with_mac_key_binding("cmd-i")
         .with_linux_or_windows_key_binding("ctrl-i"),
         EditableBinding::new(
@@ -1175,4 +1227,92 @@ fn register_input_mode_bindings(app: &mut AppContext) {
             id!(flags::IS_ANY_AI_ENABLED) & !id!(LONG_RUNNING_AGENT_REQUESTED_COMMAND_CONTEXT_KEY),
         ),
     ]);
+}
+
+#[cfg(test)]
+mod take_over_binding_tests {
+    use super::*;
+    use warpui::keymap::{Context, macros::*};
+
+    fn ctx_with(keys: &[&'static str]) -> Context {
+        let mut context = Context::default();
+        for key in keys {
+            context.set.insert(*key);
+        }
+        context
+    }
+
+    fn predicate() -> ContextPredicate {
+        take_over_agent_control_predicate(id!(flags::IS_ANY_AI_ENABLED) & id!("Terminal"))
+    }
+
+    /// #1020: the terminal is focused (no Input context, so no `AGENT_MODE_INPUT`) while the agent
+    /// drives the running command: Ctrl-I / Cmd-I must be live, like the "Take over" button.
+    #[test]
+    fn take_over_key_is_live_while_the_agent_drives_a_command() {
+        let context = ctx_with(&[
+            flags::IS_ANY_AI_ENABLED,
+            "Terminal",
+            "LongRunningCommand",
+            LONG_RUNNING_AGENT_REQUESTED_COMMAND_CONTEXT_KEY,
+        ]);
+        assert!(predicate().eval(&context));
+    }
+
+    /// #1024: Ctrl-I / Cmd-I must not leave the pty (it is Tab) when the terminal has focus during
+    /// a running command or a full-screen program and nothing is offered to Phosphorize: `zsh -f`,
+    /// `ZOPT=1 zsh`, vim. Cmd-Enter's own predicate is a different one and keeps tagging the agent in.
+    #[test]
+    fn ctrl_i_passes_through_to_the_pty_during_a_command_with_nothing_offered() {
+        let predicates = input_mode_predicates();
+        for running in ["LongRunningCommand", "AltScreen"] {
+            let pty_focused = ctx_with(&[flags::IS_ANY_AI_ENABLED, "Terminal", running]);
+            assert!(
+                !predicates.agent_mode_key_predicate.eval(&pty_focused),
+                "{running}: Ctrl-I must reach the pty as Tab"
+            );
+            assert!(
+                predicates.agent_mode_predicate.eval(&pty_focused),
+                "{running}: the Cmd-Enter / tag-in predicate is unchanged"
+            );
+        }
+    }
+
+    /// The Input editor's own toggle keeps working, and the Phosphorize banner still wins the key
+    /// (the input-mode predicate is off while `SubshellBanner` is up, and the banner binding is
+    /// registered for it).
+    #[test]
+    fn ctrl_i_still_toggles_the_input_editor_and_leaves_the_banner_alone() {
+        let predicates = input_mode_predicates();
+        let editor = ctx_with(&[
+            flags::IS_ANY_AI_ENABLED,
+            "Terminal",
+            "Input",
+            flags::TERMINAL_MODE_INPUT,
+        ]);
+        assert!(predicates.agent_mode_key_predicate.eval(&editor));
+        let banner = ctx_with(&[
+            flags::IS_ANY_AI_ENABLED,
+            "Terminal",
+            "LongRunningCommand",
+            "SubshellBanner",
+        ]);
+        assert!(!predicates.agent_mode_key_predicate.eval(&banner));
+    }
+
+    /// Once the user owns the command the key belongs to the pty (Ctrl-I is Tab), and without an
+    /// agent-run command there is nothing to take over.
+    #[test]
+    fn take_over_key_passes_through_when_the_user_owns_the_command_or_no_agent_runs_it() {
+        let user_owns = ctx_with(&[
+            flags::IS_ANY_AI_ENABLED,
+            "Terminal",
+            "LongRunningCommand",
+            LONG_RUNNING_AGENT_REQUESTED_COMMAND_CONTEXT_KEY,
+            LONG_RUNNING_AGENT_REQUESTED_COMMAND_USER_TOOK_OVER_CONTEXT_KEY,
+        ]);
+        assert!(!predicate().eval(&user_owns));
+        let plain_command = ctx_with(&[flags::IS_ANY_AI_ENABLED, "Terminal", "LongRunningCommand"]);
+        assert!(!predicate().eval(&plain_command));
+    }
 }

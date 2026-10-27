@@ -510,6 +510,7 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
       \"exit_code\": $exit_code,
       \"next_block_id\": \"$next_block_id\",
       \"pwd\": \"$escaped_pwd\",
+      \"ignore_prompt_markers\": false,
       \"ps1\": \"\",
       \"rprompt\": \"\",
       \"git_head\": \"$escaped_git_head\",
@@ -525,6 +526,7 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
       \"exit_code\": $exit_code,
       \"next_block_id\": \"$next_block_id\",
       \"pwd\": \"$escaped_pwd\",
+      \"ignore_prompt_markers\": true,
       \"ps1\": \"$escaped_prompt\",
       \"rprompt\": \"\",
       \"git_head\": \"$escaped_git_head\",
@@ -728,6 +730,13 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
             # -W implies -T
             return 1
         end
+        # #999: -O (control-master command), -N (no command), -f (background) and -V (version)
+        # never start an interactive login, so the wrapper must not touch them. -G and -Q are
+        # not declared above, so argparse already rejects them and they go to real ssh. Keep in
+        # step with InteractiveSshCommand::parse_ssh_command (ssh/util.rs).
+        if set -q _flag_O; or set -q _flag_N; or set -q _flag_f; or set -q _flag_V
+            return 1
+        end
 
         # If there is more than one positional argument, the user is attempting to
         # run a command, not start an interactive session.  If there is less than
@@ -801,15 +810,25 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
             end
         end
 
+        # #985: pin both IPQoS classes to the interactive one (the remote-server-proxy channel
+        # would otherwise mark the connection "bulk"), but ONLY when `ssh -G` reports exactly
+        # OpenSSH's current default (`af21 cs1`): a user-configured IPQoS is never overridden,
+        # and an older OpenSSH is left alone.
+        set -l warp_ipqos_args
+        set -l warp_ipqos_default (command ssh -G $argv 2>/dev/null | command sed -n 's/^ipqos //p')
+        if test "$warp_ipqos_default" = "af21 cs1"
+            set warp_ipqos_args -o "IPQoS=af21 af21"
+        end
+
         # Note that in this command, we're passing a string to the remote shell. Any variable expansions need to be
         # escaped with "''" to avoid the local shell from expanding them before they're passed to the remote shell.
         # We check the SHELL env var and use shell string manipulation to get the contents after the last slash to
         # determine what shell is the login shell on the remote machine.  We perform a preliminary check to see if
         # the remote shell is the Bourne shell to avoid asking it to parse later lines that use syntax it doesn't
         # support.
-        command ssh -o ControlMaster=$control_master_mode -o ControlPath="$control_path" \
-        -t $argv \
-"
+        # The remote script goes through a variable, not the ssh argument list: `jobs` shows the
+        # command as written, and the whole script in it was dumped into the scrollback (#995).
+        set -l warp_remote_bootstrap "
 export TERM_PROGRAM='WarpTerminal'
 test -n '$WARP_CLIENT_VERSION' && export WARP_CLIENT_VERSION='$WARP_CLIENT_VERSION'
 # Only forward the protocol version if it was set locally (i.e. the HOANotifications feature flag is on).
@@ -878,6 +897,8 @@ TMPPREFIX="'$HOME/.zshtmp-'" WARP_SSH_RCFILES="'${ZDOTDIR:-$HOME}'" ZDOTDIR="'$W
     ;;
 esac
 "
+        command ssh $warp_ipqos_args -o ControlMaster=$control_master_mode -o ControlPath="$control_path" \
+        -t $argv $warp_remote_bootstrap
     end
 
     function ssh

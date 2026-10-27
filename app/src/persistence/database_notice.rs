@@ -28,6 +28,11 @@ pub enum DatabaseProblem {
     /// missing table, or tabs whose rows do not read back. `skipped_tabs` is
     /// 0 when the whole read failed.
     PartialRestore { skipped_tabs: usize },
+    /// Another process (or connection) holds a lock on the database (#971).
+    /// Nothing is damaged. At startup persistence is disabled for the session;
+    /// while running, the writer keeps the latest snapshot and the other
+    /// events that hit the lock (bounded queue) and retries them in order.
+    Locked,
     /// Anything else; carries SQLite's or the OS's message.
     Other(String),
 }
@@ -95,6 +100,17 @@ fn location_rejects_writes(db_path: &Path) -> bool {
     }
 }
 
+/// Whether a lowercased SQLite error message means another connection holds a
+/// lock past the busy timeout (`SQLITE_BUSY` / `SQLITE_LOCKED`).
+pub fn is_lock_error(message: &str) -> bool {
+    const LOCKED: &[&str] = &[
+        "database is locked",
+        "database table is locked",
+        "database schema is locked",
+    ];
+    LOCKED.iter().any(|needle| message.contains(needle))
+}
+
 /// Classifies a lowercased SQLite or OS error message about the database at
 /// `db_path`.
 pub fn classify_database_problem(message: &str, db_path: &Path) -> DatabaseProblem {
@@ -113,6 +129,8 @@ pub fn classify_database_problem(message: &str, db_path: &Path) -> DatabaseProbl
     ];
     if READ_ONLY.iter().any(|needle| message.contains(needle)) {
         DatabaseProblem::ReadOnly
+    } else if is_lock_error(message) {
+        DatabaseProblem::Locked
     } else if FULL.iter().any(|needle| message.contains(needle)) {
         DatabaseProblem::DiskFull
     } else if CORRUPT.iter().any(|needle| message.contains(needle)) {
@@ -146,9 +164,35 @@ fn set_notice(notice: DatabaseProblemNotice) {
     if let Ok(mut pending) = PROBLEM_NOTICE.lock() {
         pending.push(notice);
     }
-    if let Ok(wake) = NOTICE_WAKE.lock() && let Some(tx) = wake.as_ref() {
+    wake_ui();
+}
+
+fn wake_ui() {
+    if let Ok(wake) = NOTICE_WAKE.lock()
+        && let Some(tx) = wake.as_ref()
+    {
         let _ = tx.try_send(());
     }
+}
+
+/// Set while the "can't save, the database is locked" notice is outstanding, so
+/// the UI can withdraw it once writes succeed again (#971). Only the lock
+/// notice is withdrawn: damage does not heal, and other failures keep their
+/// existing behaviour.
+static LOCK_NOTICE_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Set when a write succeeded after [`LOCK_NOTICE_ACTIVE`] was raised.
+static LOCK_RECOVERED: AtomicBool = AtomicBool::new(false);
+
+/// Whether a success ends an outstanding lock notice: writes were failing and
+/// the lock notice was the one raised.
+fn lock_notice_ended(lock_notice_active: &AtomicBool, writes_were_failing: bool) -> bool {
+    writes_were_failing && lock_notice_active.swap(false, Ordering::Relaxed)
+}
+
+/// Returns (once) whether writes recovered after a lock notice was raised, so
+/// the UI can dismiss the toast.
+pub fn take_lock_recovered() -> bool {
+    LOCK_RECOVERED.swap(false, Ordering::Relaxed)
 }
 
 /// Whether startup could not open the database, so this session runs without
@@ -188,7 +232,11 @@ pub enum WriteFailureLog {
 /// write errors are bugs for the log, not something the user can act on.
 pub fn record_write_outcome(db_path: &Path, failure_message: Option<&str>) -> WriteFailureLog {
     let Some(message) = failure_message else {
-        WRITES_FAILING.store(false, Ordering::Relaxed);
+        let was_failing = WRITES_FAILING.swap(false, Ordering::Relaxed);
+        if lock_notice_ended(&LOCK_NOTICE_ACTIVE, was_failing) {
+            LOCK_RECOVERED.store(true, Ordering::Relaxed);
+            wake_ui();
+        }
         return WriteFailureLog::Always;
     };
     record_write_problem(db_path, classify_database_problem(message, db_path))
@@ -204,6 +252,10 @@ pub fn record_write_problem(db_path: &Path, problem: DatabaseProblem) -> WriteFa
     }
     if WRITES_FAILING.swap(true, Ordering::Relaxed) && problem != DatabaseProblem::Corrupt {
         return WriteFailureLog::Repeat;
+    }
+    if problem == DatabaseProblem::Locked {
+        LOCK_NOTICE_ACTIVE.store(true, Ordering::Relaxed);
+        LOCK_RECOVERED.store(false, Ordering::Relaxed);
     }
     set_notice(DatabaseProblemNotice {
         path: db_path.to_path_buf(),

@@ -2720,6 +2720,17 @@ impl AIBlock {
             return false;
         }
 
+        // A read-only view of a live conversation never enters an agent view, so without this
+        // every one of its blocks counted as "no active agent view, not passive" and rendered
+        // as an empty zero-height element: a blank pane (#992).
+        // Read from the history model, never the terminal model: callers hold the model lock.
+        if BlocklistAIHistoryModel::as_ref(app)
+            .read_only_live_viewer_conversation_id(self.terminal_view_id)
+            == Some(self.client_ids.conversation_id)
+        {
+            return false;
+        }
+
         if let Some(active_conversation_id) = self
             .agent_view_controller
             .as_ref(app)
@@ -4185,6 +4196,17 @@ impl AIBlock {
             .iter()
             .filter_map(|id| self.action_model.as_ref(app).get_action_status(id))
             .any(|status| status.is_blocked())
+    }
+
+    /// The view id of the pending approval card for a requested command when the card itself
+    /// (not its edit-mode editor) is what would receive printable keys (#1028).
+    ///
+    /// Typed characters aimed at such a card have nowhere to go, and the card's Enter binding is
+    /// Run; the terminal reroutes them to the agent input instead.
+    pub fn pending_command_card_view_id(&self, app: &AppContext) -> Option<EntityId> {
+        let pending_id = self.action_model.as_ref(app).get_pending_action(app)?.id.clone();
+        let command = self.requested_commands.get(&pending_id)?;
+        (!command.view.as_ref(app).is_editing()).then(|| command.view.id())
     }
 
     /// Returns the server output ID for this AI block, if available.
@@ -6074,6 +6096,14 @@ impl TypedActionView for AIBlock {
             AIBlockAction::CopyAIBlockCodeSnippet(text) => {
                 ctx.clipboard()
                     .write(ClipboardContent::plain_text(text.clone()));
+                // Also fill the Linux PRIMARY selection (no-op elsewhere / when disabled) so
+                // middle-click pastes the copied snippet rather than a stale selection (#988).
+                SelectionSettings::handle(ctx).update(ctx, |selection_settings, ctx| {
+                    selection_settings.maybe_write_to_linux_selection_clipboard(
+                        |_| ClipboardContent::plain_text(text.clone()),
+                        ctx,
+                    );
+                });
                 let window_id = ctx.window_id();
                 ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
                     toast_stack.add_ephemeral_toast(

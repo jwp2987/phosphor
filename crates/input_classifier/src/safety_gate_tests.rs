@@ -795,3 +795,56 @@ fn test_gate_vetoes_ai_for_a_bare_prefix_still_being_typed() {
         assert_eq!(result.input_type, InputType::AI);
     });
 }
+
+/// #965 on a Mac, where `say`, `write` and `what` are installed commands with completion
+/// descriptions. The owner's rules must not depend on install status: a lone greeting after `say`
+/// and a sentence headed by a collision word go to the agent; a quoted message, a flag, a path or
+/// a bare lookup (`where is git`) stay shell. Every verdict is checked for each inner classifier
+/// answer, so neither a Shell nor an AI verdict from the model can change the outcome.
+#[test]
+fn test_965_described_collision_heads_follow_the_owner_rules() {
+    futures::executor::block_on(async move {
+        let to_agent = [
+            "say hello",
+            "say hey",
+            "say hi",
+            "say hello world",
+            "say how are you",
+            "Say hello",
+            "where is the config",
+            "what does ls -la do",
+            "write a script that counts lines",
+        ];
+        let to_shell = [
+            "say \"build done\"",
+            "say -v Alex hi",
+            "say -v Alex hello world",
+            "say hello $(whoami)",
+            "where is git",
+            "what is ls",
+            "what /usr/bin/ls",
+        ];
+        let gated_shell = SafetyGatedClassifier::new(AlwaysShellClassifier);
+        let gated_ai = SafetyGatedClassifier::new(AlwaysAIClassifier);
+        let gated_heuristic = SafetyGatedClassifier::new(HeuristicClassifier);
+        for (buffer, expected) in to_agent
+            .iter()
+            .map(|b| (*b, InputType::AI))
+            .chain(to_shell.iter().map(|b| (*b, InputType::Shell)))
+        {
+            for (name, gated) in [
+                ("shell", &gated_shell as &dyn InputClassifier),
+                ("ai", &gated_ai),
+                ("heuristic", &gated_heuristic),
+            ] {
+                let result = gated
+                    .detect_input_type(snapshot_with_first_token_described(buffer), &context(true))
+                    .await;
+                assert_eq!(
+                    result.input_type, expected,
+                    "{buffer:?} with a described head and inner={name}"
+                );
+            }
+        }
+    });
+}

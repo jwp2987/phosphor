@@ -414,6 +414,17 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             if ($line -match '^Warp-Run-GeneratorCommand' -or $line.StartsWith('. { $__phosphor_ap = @{}; foreach ($__phosphor_ap_v in @(', [System.StringComparison]::Ordinal)) {
                 return $false
             }
+            # The bootstrap's own lines (#967): the guarded init line and the line that sourced this
+            # file. The subshell bootstrap's first line installs a handler with the same filter
+            # before either is typed; this one keeps them out once it has replaced that handler.
+            $trimmed = $line.TrimStart()
+            if ($trimmed.StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal) -or $global:_warpBootstrapHistoryLines -contains $trimmed -or $trimmed -match '^\.\s+[^\r\n]*[\\/]\.tmp[A-Za-z0-9]{6}\.ps1\s*$') {
+                return $false
+            }
+            # Keep honouring the handler the user had before the subshell bootstrap replaced it.
+            if ($global:_warpPrevHistoryHandler) {
+                return (& $global:_warpPrevHistoryHandler $line)
+            }
             return $true
         }
 

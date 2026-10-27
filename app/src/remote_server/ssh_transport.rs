@@ -1064,6 +1064,54 @@ mod tests {
         ))
     }
 
+    /// #985: the interactive ssh owns the connection the remote-server-proxy channel is
+    /// multiplexed onto. A second, non-tty channel makes OpenSSH mark the whole connection
+    /// "bulk" (IPQoS default `af21 cs1`), which Wi-Fi queues penalise by 40-200 ms per
+    /// keystroke. Every bootstrap wrapper pins both classes before ControlMaster, but only
+    /// when `ssh -G` reports exactly that default, so a user-configured IPQoS (or an older
+    /// OpenSSH with a different default) is never overridden.
+    #[test]
+    fn interactive_ssh_wrappers_pin_ipqos_only_for_the_default() {
+        for (name, script) in [
+            (
+                "bash",
+                include_str!("../../assets/bundled/bootstrap/bash_body.sh"),
+            ),
+            (
+                "zsh",
+                include_str!("../../assets/bundled/bootstrap/zsh_body.sh"),
+            ),
+            (
+                "fish",
+                include_str!("../../assets/bundled/bootstrap/fish.sh"),
+            ),
+        ] {
+            assert!(
+                !script.contains("command ssh -o IPQoS"),
+                "{name}: IPQoS must not be passed unconditionally"
+            );
+            let line = script
+                .lines()
+                .find(|l| l.contains("command ssh") && l.contains("warp_ipqos_args"))
+                .unwrap_or_else(|| panic!("{name}: ssh invocation does not use warp_ipqos_args"));
+            let ipqos = line.find("warp_ipqos_args").unwrap();
+            let control = line.find("-o ControlMaster=").expect("ControlMaster");
+            assert!(ipqos < control, "{name}: IPQoS must precede ControlMaster");
+            assert!(
+                script.contains("s/^ipqos //p"),
+                "{name}: must read the configured IPQoS with ssh -G"
+            );
+            assert!(
+                script.contains("\"af21 cs1\""),
+                "{name}: must compare against the OpenSSH default"
+            );
+            assert!(
+                script.contains("IPQoS=af21 af21"),
+                "{name}: must pin the interactive class"
+            );
+        }
+    }
+
     #[test]
     fn remote_proxy_command_quotes_identity_key() {
         let transport = SshTransport::new(

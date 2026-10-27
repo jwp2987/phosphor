@@ -100,6 +100,9 @@ pub enum Mode {
     SwapScreen { save_cursor_and_clear_screen: bool },
     /// ?2004
     BracketedPaste,
+    /// ?2027 -- grapheme clustering (ZWJ emoji sequences and emoji modifiers share one cell).
+    /// See https://github.com/contour-terminal/terminal-unicode-core.
+    GraphemeClustering,
     /// ?2026
     /// See https://gist.github.com/christianparpart/d8a62cc1ab659194337d73e399004036.
     SyncOutput,
@@ -145,6 +148,7 @@ impl Mode {
                 },
                 2004 => Mode::BracketedPaste,
                 2026 => Mode::SyncOutput,
+                2027 => Mode::GraphemeClustering,
                 _ => {
                     trace!("[unimplemented] primitive mode: {num}");
                     return None;

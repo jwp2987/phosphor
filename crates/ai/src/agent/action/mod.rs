@@ -664,6 +664,34 @@ pub enum AIAgentPtyWriteMode {
 }
 
 impl AIAgentPtyWriteMode {
+    /// For a write whose target is an interactive shell's own prompt (`bash --norc`, a
+    /// non-warpified `zsh`/`fish`): a `Raw` write that is exactly one printable line plus its
+    /// terminating Enter is rewritten as a [`Self::Line`] write of that line. The model picks
+    /// the mode, and `Raw` leaves whatever the user had typed on the shell's line in front of the
+    /// command, so Enter submits both (`echo unmanaged-okecho unmanaged-ok`, #979). Line mode
+    /// clears the editor line first. Writes that are not a single plain line (control bytes,
+    /// escape sequences, several lines, no Enter) and the other modes are returned unchanged.
+    pub fn normalized_for_shell_prompt(self, input: &[u8]) -> (Vec<u8>, Self) {
+        if self != AIAgentPtyWriteMode::Raw {
+            return (input.to_vec(), self);
+        }
+        let line = input
+            .strip_suffix(b"\r\n")
+            .or_else(|| input.strip_suffix(b"\n"))
+            .or_else(|| input.strip_suffix(b"\r"));
+        match line {
+            Some(line)
+                if !line.is_empty()
+                    && line
+                        .iter()
+                        .all(|&byte| byte == b'\t' || (byte >= 0x20 && byte != 0x7f)) =>
+            {
+                (line.to_vec(), AIAgentPtyWriteMode::Line)
+            }
+            _ => (input.to_vec(), self),
+        }
+    }
+
     /// Decorates input bytes according to the write mode.
     pub fn decorate_bytes(
         self,
@@ -676,11 +704,27 @@ impl AIAgentPtyWriteMode {
         match self {
             AIAgentPtyWriteMode::Raw => bytes,
             AIAgentPtyWriteMode::Line => {
-                // Move to beginning of line, write input, then submit (Enter).
-                let mut v = Vec::with_capacity(bytes.len() + 2);
+                // Move to beginning of line, clear the rest of it, write input, then submit
+                // (Enter).
+                //
+                // Line mode adds the Enter itself, so one the input already ends with (the model
+                // writing `cmd\n` in Line mode) is dropped: exactly one Enter is sent and shown
+                // (#1029).
+                let bytes = bytes
+                    .strip_suffix(b"\r\n")
+                    .or_else(|| bytes.strip_suffix(b"\n"))
+                    .or_else(|| bytes.strip_suffix(b"\r"))
+                    .unwrap_or(&bytes);
+                let mut v = Vec::with_capacity(bytes.len() + 3);
                 // ^A (SOH) is "beginning of line" for readline/prompt-toolkit style editors.
                 v.push(escape_sequences::C0::SOH);
-                v.extend_from_slice(&bytes);
+                // ^K (VT) kills to the end of the line. Without it the input lands in front of
+                // whatever is already in the editor's buffer, and Enter submits both: in an
+                // unmanaged `bash --norc` the user's own prompt text, typed into the shell before
+                // the agent took over, ran as `echo agent-in-norc-okrun the shell command: ...`
+                // (#979).
+                v.push(escape_sequences::C0::VT);
+                v.extend_from_slice(bytes);
                 // Submit with CR, which is what the Enter key sends on every platform. A
                 // cooked-mode tty maps it to LF (ICRNL), but raw-mode line editors do not:
                 // PSReadLine reads LF as Ctrl+J and leaves the line unsubmitted.
@@ -934,7 +978,73 @@ mod pty_write_mode_tests {
     #[test]
     fn line_mode_submits_with_carriage_return() {
         let bytes = AIAgentPtyWriteMode::Line.decorate_bytes(b"'hi'".to_vec(), false);
-        assert_eq!(bytes, [&[C0::SOH][..], b"'hi'", &[C0::CR]].concat());
+        assert_eq!(bytes, [&[C0::SOH, C0::VT][..], b"'hi'", &[C0::CR]].concat());
+    }
+
+    /// #979: text already in the line editor (the user's prompt, typed into an unmanaged shell)
+    /// is cleared before the input, so exactly the approved command is what Enter submits.
+    #[test]
+    fn line_mode_clears_the_rest_of_the_line_after_moving_to_its_start() {
+        let bytes = AIAgentPtyWriteMode::Line.decorate_bytes(b"echo ok ".to_vec(), false);
+        assert_eq!(&bytes[..2], &[C0::SOH, C0::VT]);
+        assert_eq!(bytes.last(), Some(&C0::CR));
+    }
+
+    /// #979: a model-chosen `Raw` write of one command line plus Enter, aimed at a shell prompt,
+    /// becomes a Line write, so the editor line is cleared first and the approval card shows it.
+    #[test]
+    fn a_raw_single_line_write_to_a_shell_prompt_becomes_a_line_write() {
+        for input in [
+            &b"echo unmanaged-ok\n"[..],
+            b"echo unmanaged-ok\r",
+            b"echo unmanaged-ok\r\n",
+        ] {
+            let (line, mode) = AIAgentPtyWriteMode::Raw.normalized_for_shell_prompt(input);
+            assert_eq!(mode, AIAgentPtyWriteMode::Line);
+            assert_eq!(line, b"echo unmanaged-ok");
+            assert_eq!(
+                mode.decorate_bytes(line, false),
+                [&[C0::SOH, C0::VT][..], b"echo unmanaged-ok", &[C0::CR]].concat()
+            );
+        }
+    }
+
+    /// #1029: Line mode sends exactly one Enter even when the input already ends with a newline.
+    #[test]
+    fn line_mode_with_a_trailing_newline_sends_a_single_enter() {
+        for input in [&b"echo ok\n"[..], b"echo ok\r", b"echo ok\r\n", b"echo ok"] {
+            assert_eq!(
+                AIAgentPtyWriteMode::Line.decorate_bytes(input.to_vec(), false),
+                [&[C0::SOH, C0::VT][..], b"echo ok", &[C0::CR]].concat(),
+                "{input:?}"
+            );
+        }
+    }
+
+    /// Anything that is not one plain line is left exactly as the model wrote it.
+    #[test]
+    fn other_shell_prompt_writes_are_left_alone() {
+        for input in [
+            &b"echo no-enter"[..],
+            b"\n",
+            b"",
+            b"a\nb\n",
+            b"\x03",
+            b"q\x1b[A\n",
+            b"\x01echo x\n",
+        ] {
+            assert_eq!(
+                AIAgentPtyWriteMode::Raw.normalized_for_shell_prompt(input),
+                (input.to_vec(), AIAgentPtyWriteMode::Raw),
+                "{input:?}"
+            );
+        }
+        for mode in [AIAgentPtyWriteMode::Line, AIAgentPtyWriteMode::Block] {
+            assert_eq!(
+                mode.normalized_for_shell_prompt(b"echo x\n"),
+                (b"echo x\n".to_vec(), mode)
+            );
+        }
     }
 
     #[test]

@@ -141,6 +141,196 @@ diesel::define_sql_function! {
 // Choose a power of 2 that seems to be a reasonable upper bound for how many
 // events to queue.
 const CHANNEL_SIZE: usize = 1024;
+
+/// How often the writer retries a snapshot that failed on a lock held by
+/// another process (#971).
+const LOCK_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+/// Retries at the fast interval (about a minute). A lock that outlasts this is
+/// not a reason to drop the data: the writer keeps retrying, but at
+/// `LOCK_SLOW_RETRY_INTERVAL`, until the lock is released (#971).
+const MAX_SNAPSHOT_LOCK_RETRIES: u32 = 30;
+/// Retry interval once `MAX_SNAPSHOT_LOCK_RETRIES` fast attempts have failed.
+const LOCK_SLOW_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+/// Most non-snapshot events kept for retry while a lock is held (#971). When
+/// full, the oldest is dropped (and reported).
+const MAX_QUEUED_RETRY_EVENTS: usize = 1000;
+
+fn lock_retry_interval(attempts: u32) -> std::time::Duration {
+    if attempts > MAX_SNAPSHOT_LOCK_RETRIES {
+        LOCK_SLOW_RETRY_INTERVAL
+    } else {
+        LOCK_RETRY_INTERVAL
+    }
+}
+
+/// Non-snapshot events that hit a lock held by another process, kept in arrival
+/// order and replayed once the lock clears (#971). `ModelEvent` is not `Clone`,
+/// so an event is queued *instead of* being executed (the lock is probed first,
+/// see [`write_lock_blocked`]) and is never consumed by a failed attempt.
+#[derive(Default)]
+struct RetryQueue {
+    events: std::collections::VecDeque<ModelEvent>,
+}
+
+impl RetryQueue {
+    /// Appends `event`; returns whether the oldest event had to be dropped to
+    /// stay within [`MAX_QUEUED_RETRY_EVENTS`].
+    fn push(&mut self, event: ModelEvent) -> bool {
+        let dropped = self.events.len() >= MAX_QUEUED_RETRY_EVENTS;
+        if dropped {
+            self.events.pop_front();
+        }
+        self.events.push_back(event);
+        dropped
+    }
+
+    fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    fn clear(&mut self) {
+        self.events.clear();
+    }
+}
+
+/// Whether `conn` is inside a transaction that is still open, asked of SQLite
+/// itself (diesel keeps its own depth counter, which can disagree).
+///
+/// A deferred `BEGIN` takes no lock, so this never waits; it fails only when a
+/// transaction is already open.
+fn in_open_transaction(conn: &mut SqliteConnection) -> bool {
+    match conn.batch_execute("BEGIN;") {
+        Ok(()) => {
+            if let Err(err) = conn.batch_execute("ROLLBACK;") {
+                log::warn!("Could not end the open-transaction probe: {err}");
+            }
+            false
+        }
+        Err(err) => err.to_string().contains("within a transaction"),
+    }
+}
+
+/// Leaves `conn` in autocommit mode, returning whether it was not.
+///
+/// diesel's `transaction()` returns early when `COMMIT` fails (a lock held by
+/// another process makes it `SQLITE_BUSY`) without a rollback: SQLite keeps the
+/// transaction open, and diesel keeps counting depth 1. Every later
+/// `transaction()` is then a `SAVEPOINT` inside it, which is released but
+/// never committed: the writer logs success while nothing reaches the file
+/// until the connection closes (#971). The lingering transaction is the intended
+/// write, so it is committed again through diesel (keeping its depth in step);
+/// only if that keeps failing is it rolled back.
+fn settle_stray_transaction(conn: &mut SqliteConnection) -> bool {
+    use diesel::connection::{AnsiTransactionManager, TransactionManager};
+
+    if !in_open_transaction(conn) {
+        return false;
+    }
+    log::error!(
+        "The SQLite writer was left inside an open transaction (a COMMIT was blocked by a \
+         lock); committing it now"
+    );
+    for _ in 0..8 {
+        match AnsiTransactionManager::commit_transaction(conn) {
+            Ok(()) if !in_open_transaction(conn) => return true,
+            Ok(()) => {}
+            // diesel believes nothing is open, SQLite disagrees: nothing to commit through.
+            Err(Error::NotInTransaction) => break,
+            Err(err) => log::warn!("Retrying the blocked COMMIT failed: {err}"),
+        }
+    }
+    for _ in 0..8 {
+        if !in_open_transaction(conn) {
+            return true;
+        }
+        if AnsiTransactionManager::rollback_transaction(conn).is_err() {
+            break;
+        }
+    }
+    if in_open_transaction(conn) {
+        if let Err(err) = conn.batch_execute("ROLLBACK;") {
+            log::error!("Could not roll back the stray transaction: {err}");
+        } else {
+            log::error!("The stray transaction could not be committed and was rolled back");
+        }
+    }
+    true
+}
+
+/// Whether another connection currently blocks writes to the database (waits
+/// out the connection's busy timeout). Checked before an event is consumed.
+///
+/// `BEGIN IMMEDIATE` and `ROLLBACK` are separate statements: a failed `BEGIN`
+/// left no transaction, and a `ROLLBACK` then errors with "cannot rollback - no
+/// transaction is active", which SQLite's log hook printed as an ERROR every
+/// probe (#971). Only a transaction that was actually opened is rolled back.
+///
+/// A `BEGIN` refused because a transaction is already open is not a lock: it
+/// means an earlier write left one behind, which is ended first.
+fn write_lock_blocked(conn: &mut SqliteConnection) -> bool {
+    match conn.batch_execute("BEGIN IMMEDIATE;") {
+        Ok(()) => {
+            if let Err(err) = conn.batch_execute("ROLLBACK;") {
+                log::warn!("Could not end the database write-lock probe: {err}");
+            }
+            false
+        }
+        Err(err) => {
+            let message = err.to_string().to_lowercase();
+            if message.contains("within a transaction") {
+                settle_stray_transaction(conn);
+                return write_lock_blocked_once(conn);
+            }
+            super::database_notice::is_lock_error(&message)
+        }
+    }
+}
+
+/// The probe without the stray-transaction recovery (so it cannot recurse).
+fn write_lock_blocked_once(conn: &mut SqliteConnection) -> bool {
+    match conn.batch_execute("BEGIN IMMEDIATE;") {
+        Ok(()) => {
+            if let Err(err) = conn.batch_execute("ROLLBACK;") {
+                log::warn!("Could not end the database write-lock probe: {err}");
+            }
+            false
+        }
+        Err(err) => super::database_notice::is_lock_error(&err.to_string().to_lowercase()),
+    }
+}
+
+enum DrainOutcome {
+    Done,
+    Locked,
+}
+
+/// Replays queued events in order; stops at the first one that is still blocked.
+fn drain_retry_queue(
+    queue: &mut RetryQueue,
+    conn: &mut SqliteConnection,
+    database_path: &Path,
+) -> DrainOutcome {
+    while !queue.is_empty() {
+        if write_lock_blocked(conn) {
+            return DrainOutcome::Locked;
+        }
+        let Some(event) = queue.events.pop_front() else {
+            break;
+        };
+        if let Err(err) = handle_model_event(event, conn) {
+            // Not a retryable lock (the probe just succeeded): report and move on.
+            report_db_error("Model", err, database_path);
+        }
+    }
+    DrainOutcome::Done
+}
+/// Consecutive lock failures (each already waited out the busy timeout) before
+/// the user is told saves are blocked.
+const LOCK_NOTICE_THRESHOLD: u32 = 3;
 const COMMANDS_COUNT_LIMIT: i64 = 10000;
 
 use crate::persistence::cloud_objects::{upsert_stored_object, StoredObjectId};
@@ -1659,23 +1849,133 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
             // `retire_abandoned_connection`).
             let mut abandoned = false;
             let mut suppressed_errors: u32 = 0;
+            // #971: a snapshot that failed on a lock held by another process is
+            // kept and retried (off the UI thread) until it lands, a newer
+            // snapshot supersedes it, or the retry budget runs out.
+            let mut pending_snapshot: Option<AppState> = None;
+            let mut snapshot_retries: u32 = 0;
+            // Consecutive writes that failed on a lock; the user is told only
+            // once this passes `LOCK_NOTICE_THRESHOLD`, so a lock that clears in
+            // a few seconds stays silent.
+            let mut lock_failures: u32 = 0;
+            // When the pending snapshot is next retried. A deadline rather than
+            // a per-wait timeout, so unrelated events do not push it back.
+            let mut retry_deadline: Option<std::time::Instant> = None;
+            // #971: non-snapshot events blocked by a lock, replayed in order.
+            let mut retry_queue = RetryQueue::default();
             loop {
-                let events = match rx.recv() {
-                    Ok(event) => {
+                // Whether this iteration is a retry of the pending snapshot.
+                let mut timed_out = false;
+                let retrying = pending_snapshot.is_some() || !retry_queue.is_empty();
+                let received: Result<Option<ModelEvent>, ()> = if retrying {
+                    let wait = retry_deadline
+                        .unwrap_or_else(|| {
+                            std::time::Instant::now() + lock_retry_interval(snapshot_retries)
+                        })
+                        .saturating_duration_since(std::time::Instant::now());
+                    match rx.recv_timeout(wait) {
+                        Ok(event) => Ok(Some(event)),
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            snapshot_retries += 1;
+                            if snapshot_retries == MAX_SNAPSHOT_LOCK_RETRIES + 1 {
+                                log::warn!(
+                                    "The database is still locked after \
+                                     {MAX_SNAPSHOT_LOCK_RETRIES} attempts; continuing to \
+                                     retry every {}s until it is released",
+                                    LOCK_SLOW_RETRY_INTERVAL.as_secs()
+                                );
+                            }
+                            timed_out = true;
+                            // The attempts below set the next deadline.
+                            retry_deadline = None;
+                            Ok(None)
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(()),
+                    }
+                } else {
+                    rx.recv().map(Some).map_err(|_| ())
+                };
+                // True only when the event being handled is the retried snapshot
+                // itself; a newer snapshot that supersedes it is a fresh one and
+                // gets a fresh retry budget.
+                let (events, is_retry) = match received {
+                    Ok(Some(event)) => {
                         // Wait for there to be at least one event, but collect any other pending
                         // events too. This way, we can start dropping redundant events if the
                         // writer thread is falling behind.
                         let mut events = vec![event];
                         events.extend(rx.try_iter());
-                        deduplicate_events(events)
+                        let is_retry = timed_out
+                            && !events[1..]
+                                .iter()
+                                .any(|event| matches!(event, ModelEvent::Snapshot(_)));
+                        (deduplicate_events(events), is_retry)
                     }
-                    Err(_) => {
+                    // Retry timer fired: re-attempt the pending snapshot.
+                    Ok(None) => (
+                        pending_snapshot
+                            .take()
+                            .map(ModelEvent::Snapshot)
+                            .into_iter()
+                            .collect(),
+                        true,
+                    ),
+                    Err(()) => {
                         log::warn!(
                             "SQLite event sender has closed; terminating SQLite writer thread."
                         );
+                        if !paused
+                            && !abandoned
+                            && let Some(conn) = current_conn.as_mut()
+                        {
+                            drain_retry_queue(&mut retry_queue, conn, &database_path);
+                        }
                         return;
                     }
                 };
+
+                // #971: replay blocked events first, so later events never
+                // overtake them.
+                if !retry_queue.is_empty()
+                    && !paused
+                    && !abandoned
+                    && let Some(conn) = current_conn.as_mut()
+                {
+                    match drain_retry_queue(&mut retry_queue, conn, &database_path) {
+                        DrainOutcome::Done => {
+                            log::info!("Saved the events that were blocked by a database lock");
+                            lock_failures = 0;
+                            suppressed_errors = 0;
+                            super::database_notice::record_write_outcome(&database_path, None);
+                            if pending_snapshot.is_none() && events.is_empty() {
+                                snapshot_retries = 0;
+                                retry_deadline = None;
+                            }
+                        }
+                        DrainOutcome::Locked => {
+                            retry_deadline.get_or_insert_with(|| {
+                                std::time::Instant::now() + lock_retry_interval(snapshot_retries)
+                            });
+                            // Events in this batch count their own failures when
+                            // they are queued behind these; a bare timer tick
+                            // would otherwise never raise the notice.
+                            if events.is_empty() {
+                                lock_failures += 1;
+                                if lock_failures >= LOCK_NOTICE_THRESHOLD {
+                                    let err = anyhow::anyhow!(
+                                        "database is locked ({} writes waiting)",
+                                        retry_queue.len()
+                                    );
+                                    report_write_failure(
+                                        &database_path,
+                                        err,
+                                        &mut suppressed_errors,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
 
                 for event in events {
                     match event {
@@ -1685,6 +1985,13 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                     current_conn = Some(conn);
                                     paused = false;
                                     abandoned = false;
+                                    // #920: nothing from the previous session may be
+                                    // replayed into the new database.
+                                    pending_snapshot = None;
+                                    retry_queue.clear();
+                                    snapshot_retries = 0;
+                                    lock_failures = 0;
+                                    retry_deadline = None;
                                     // A new database can be damaged again later.
                                     super::database_notice::reset_damage_reports();
                                     opened_identity =
@@ -1705,6 +2012,13 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                         ModelEvent::PauseAndRemoveDatabase => {
                             paused = true;
                             log::info!("SQLite Writer is paused");
+                            // #920: a quick re-login must not replay the previous
+                            // user's snapshot into the next database.
+                            pending_snapshot = None;
+                            retry_queue.clear();
+                            snapshot_retries = 0;
+                            lock_failures = 0;
+                            retry_deadline = None;
 
                             // Close the connection while the file still exists, so
                             // the close checkpoints into the real database and
@@ -1727,6 +2041,39 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                             }
                         }
                         ModelEvent::Terminate => {
+                            // One last attempt at what a lock blocked: the queued
+                            // events (stops at the first still-blocked one, so at
+                            // most one busy timeout), then the snapshot.
+                            if !paused
+                                && !abandoned
+                                && let Some(conn) = current_conn.as_mut()
+                                && !retry_queue.is_empty()
+                            {
+                                match drain_retry_queue(&mut retry_queue, conn, &database_path) {
+                                    DrainOutcome::Done => {
+                                        log::info!("Saved the blocked events on shutdown")
+                                    }
+                                    DrainOutcome::Locked => log::warn!(
+                                        "Could not save {} blocked events on shutdown: the \
+                                         database is still locked",
+                                        retry_queue.len()
+                                    ),
+                                }
+                            }
+                            if let Some(state) = pending_snapshot.take()
+                                && !paused
+                                && !abandoned
+                                && let Some(conn) = current_conn.as_mut()
+                            {
+                                let saved = save_app_state(conn, &state);
+                                settle_stray_transaction(conn);
+                                match saved {
+                                    Ok(()) => log::info!("Saved the pending app state on shutdown"),
+                                    Err(err) => log::warn!(
+                                        "Could not save the pending app state on shutdown: {err:#}"
+                                    ),
+                                }
+                            }
                             // Proactively checkpoint the entire WAL back into the
                             // main database and clear it before exiting, to avoid
                             // sqlite3_open triggering a "WAL mode database file
@@ -1761,6 +2108,7 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                 )
                             }) {
                                 abandoned = true;
+                                retry_queue.clear();
                                 let leaked = current_conn
                                     .take()
                                     .is_some_and(|conn| retire_abandoned_connection(conn, &database_path));
@@ -1776,32 +2124,133 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                 );
                                 continue;
                             }
-                            match handle_model_event(event, conn) {
+                            let is_snapshot = matches!(event, ModelEvent::Snapshot(_));
+                            // Set when the event was parked behind a lock instead of
+                            // being executed.
+                            let mut deferred = false;
+                            let result = match event {
+                                ModelEvent::Snapshot(state) => {
+                                    if !is_retry {
+                                        // A new snapshot supersedes any pending one.
+                                        snapshot_retries = 0;
+                                    }
+                                    if !retry_queue.is_empty() {
+                                        // Earlier writes are still blocked; the lock is
+                                        // evidently still held.
+                                        pending_snapshot = Some(state);
+                                        retry_deadline.get_or_insert_with(|| {
+                                            std::time::Instant::now()
+                                                + lock_retry_interval(snapshot_retries)
+                                        });
+                                        deferred = true;
+                                        Err(anyhow::anyhow!(
+                                            "database is locked (earlier writes are waiting)"
+                                        ))
+                                    } else {
+                                        let result = save_app_state(conn, &state)
+                                            .context("error saving app state");
+                                        settle_stray_transaction(conn);
+                                        match &result {
+                                            Err(err)
+                                                if super::database_notice::is_lock_error(
+                                                    &underlying_error_message(err),
+                                                ) =>
+                                            {
+                                                pending_snapshot = Some(state);
+                                                retry_deadline = Some(
+                                                    std::time::Instant::now()
+                                                        + lock_retry_interval(snapshot_retries),
+                                                );
+                                            }
+                                            Ok(()) | Err(_) => {
+                                                pending_snapshot = None;
+                                                snapshot_retries = 0;
+                                                retry_deadline = None;
+                                            }
+                                        }
+                                        result
+                                    }
+                                }
+                                event => {
+                                    // #971: park the event while a lock is held (or
+                                    // while older events wait), keeping order.
+                                    if !retry_queue.is_empty() || write_lock_blocked(conn) {
+                                        if retry_queue.push(event) {
+                                            log::error!(
+                                                "The database has been locked for too long: the \
+                                                 retry queue is full ({MAX_QUEUED_RETRY_EVENTS}), \
+                                                 so the oldest queued write was dropped"
+                                            );
+                                        }
+                                        retry_deadline.get_or_insert_with(|| {
+                                            std::time::Instant::now()
+                                                + lock_retry_interval(snapshot_retries)
+                                        });
+                                        deferred = true;
+                                        Err(anyhow::anyhow!("database is locked"))
+                                    } else {
+                                        // #1000: leave a trace of when a conversation write
+                                        // actually reached the database, to tell sender-side
+                                        // lag from writer-side lag in a real-app log.
+                                        let conversation_write = match &event {
+                                            ModelEvent::UpdateMultiAgentConversation {
+                                                conversation_id,
+                                                ..
+                                            } => Some(conversation_id.clone()),
+                                            _ => None,
+                                        };
+                                        let started = std::time::Instant::now();
+                                        let result = handle_model_event(event, conn);
+                                        if let Some(conversation_id) = conversation_write {
+                                            log::debug!(
+                                                "Conversation {conversation_id} write finished \
+                                                 in {:?} (ok: {})",
+                                                started.elapsed(),
+                                                result.is_ok()
+                                            );
+                                        }
+                                        result
+                                    }
+                                }
+                            };
+                            // A blocked snapshot is kept in `pending_snapshot` and a
+                            // blocked event in `retry_queue`; both are retried. An
+                            // event that fails on a lock *during* execution (it won
+                            // the probe, then lost a race) is lost, so it is
+                            // reported as a failure at once.
+                            let lock_blocked = deferred
+                                || (is_snapshot
+                                    && result.as_ref().err().is_some_and(|err| {
+                                        super::database_notice::is_lock_error(
+                                            &underlying_error_message(err),
+                                        )
+                                    }));
+                            if lock_blocked {
+                                lock_failures += 1;
+                            }
+                            match result {
                                 Ok(()) => {
+                                    lock_failures = 0;
                                     suppressed_errors = 0;
                                     super::database_notice::record_write_outcome(
                                         &database_path,
                                         None,
                                     );
                                 }
-                                Err(err) => {
-                                    let log_mode = super::database_notice::record_write_outcome(
-                                        &database_path,
-                                        Some(&underlying_error_message(&err)),
+                                Err(_) if lock_blocked
+                                    && lock_failures < LOCK_NOTICE_THRESHOLD =>
+                                {
+                                    log::info!(
+                                        "SQLite write blocked by a lock held elsewhere \
+                                         (failure {lock_failures}); the write will be retried"
                                     );
-                                    // Once per failing stretch, then a count
-                                    // now and then, not a line per event.
-                                    if log_mode == super::database_notice::WriteFailureLog::Repeat {
-                                        suppressed_errors += 1;
-                                        if suppressed_errors.is_power_of_two() {
-                                            log::warn!(
-                                                "SQLite writes are still failing \
-                                                 ({suppressed_errors} repeats not logged)"
-                                            );
-                                        }
-                                    } else {
-                                        report_db_error("Model", err, &database_path);
-                                    }
+                                }
+                                Err(err) => {
+                                    report_write_failure(
+                                        &database_path,
+                                        err,
+                                        &mut suppressed_errors,
+                                    );
                                 }
                             }
                         }
@@ -1810,6 +2259,23 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
             }
         })?;
     Ok(WriterHandles { handle, sender: tx })
+}
+
+/// Records a failed write and logs it: in full the first time in a failing
+/// stretch, then only a count now and then, not a line per event.
+fn report_write_failure(database_path: &Path, err: anyhow::Error, suppressed_errors: &mut u32) {
+    let log_mode = super::database_notice::record_write_outcome(
+        database_path,
+        Some(&underlying_error_message(&err)),
+    );
+    if log_mode == super::database_notice::WriteFailureLog::Repeat {
+        *suppressed_errors += 1;
+        if suppressed_errors.is_power_of_two() {
+            log::warn!("SQLite writes are still failing ({suppressed_errors} repeats not logged)");
+        }
+    } else {
+        report_db_error("Model", err, database_path);
+    }
 }
 
 /// Retires the writer's connection once its database file turned out to be
@@ -1846,6 +2312,16 @@ fn retire_abandoned_connection(conn: SqliteConnection, db_path: &Path) -> bool {
 /// * [`ModelEvent::ReconstructAndResume`]
 /// * [`ModelEvent::Terminate`]
 fn handle_model_event(event: ModelEvent, connection: &mut SqliteConnection) -> anyhow::Result<()> {
+    let result = handle_model_event_unsettled(event, connection);
+    // Whatever the outcome, the next write must start from autocommit (#971).
+    settle_stray_transaction(connection);
+    result
+}
+
+fn handle_model_event_unsettled(
+    event: ModelEvent,
+    connection: &mut SqliteConnection,
+) -> anyhow::Result<()> {
     match event {
         ModelEvent::PauseAndRemoveDatabase
         | ModelEvent::ReconstructAndResume
@@ -2777,10 +3253,12 @@ fn get_all_codebase_index_metadata(
 ) -> Result<Vec<ai::workspace::WorkspaceMetadata>, diesel::result::Error> {
     use schema::workspace_metadata::dsl::*;
 
-    Ok(workspace_metadata
-        .load_iter::<WorkspaceMetadataModel, DefaultLoadingMode>(conn)?
-        .filter_map(|item| item.ok().map(ai::workspace::WorkspaceMetadata::from))
-        .collect_vec())
+    Ok(collect_rows(
+        workspace_metadata.load_iter::<WorkspaceMetadataModel, DefaultLoadingMode>(conn)?,
+    )?
+    .into_iter()
+    .map(ai::workspace::WorkspaceMetadata::from)
+    .collect_vec())
 }
 
 /// Reads every persisted language-server enablement back at startup, grouped by
@@ -3162,13 +3640,32 @@ fn save_project(conn: &mut SqliteConnection, project: Project) -> Result<()> {
     Ok(())
 }
 
+/// Drains a diesel row iterator, skipping rows that fail to *decode* but
+/// stopping at the first error from SQLite itself.
+///
+/// `load_iter` yields a `Result` per row and a failed `sqlite3_step` does not
+/// advance the statement: on a damaged page the next call fails again, so a
+/// `filter_map(Result::ok)` over it never terminates and the error values pile
+/// up (#1010). A step error therefore ends the read, and the caller treats a
+/// "malformed" one as an unusable database.
+fn collect_rows<T>(rows: impl Iterator<Item = Result<T, Error>>) -> Result<Vec<T>, Error> {
+    let mut collected = Vec::new();
+    for row in rows {
+        match row {
+            Ok(row) => collected.push(row),
+            Err(Error::DeserializationError(err)) => {
+                log::warn!("Skipping a saved row that could not be decoded: {err}");
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(collected)
+}
+
 fn get_all_projects(conn: &mut SqliteConnection) -> Result<Vec<Project>, diesel::result::Error> {
     use schema::projects::dsl::*;
 
-    Ok(projects
-        .load_iter::<Project, DefaultLoadingMode>(conn)?
-        .filter_map(|item| item.ok())
-        .collect_vec())
+    collect_rows(projects.load_iter::<Project, DefaultLoadingMode>(conn)?)
 }
 
 fn delete_project(conn: &mut SqliteConnection, project_path: &str) -> Result<()> {
@@ -3184,14 +3681,11 @@ fn get_all_project_rules(
 ) -> Result<Vec<ProjectRulePath>, diesel::result::Error> {
     use schema::project_rules::dsl::*;
 
-    Ok(project_rules
-        .load_iter::<ProjectRules, DefaultLoadingMode>(conn)?
-        .filter_map(|item| match item {
-            Ok(rule) => Some(ProjectRulePath {
-                path: PathBuf::from(rule.path),
-                project_root: PathBuf::from(rule.project_root),
-            }),
-            Err(_) => None,
+    Ok(collect_rows(project_rules.load_iter::<ProjectRules, DefaultLoadingMode>(conn)?)?
+        .into_iter()
+        .map(|rule| ProjectRulePath {
+            path: PathBuf::from(rule.path),
+            project_root: PathBuf::from(rule.project_root),
         })
         .collect_vec())
 }
@@ -4296,6 +4790,7 @@ fn read_sqlite_data_counting(
     let db_windows = windows.load::<Window>(conn)?;
 
     let mut active_window_index: Option<usize> = None;
+    let unusable_read = std::cell::Cell::new(false);
 
     let db_tabs = Tab::belonging_to(&db_windows)
         .order_by(schema::tabs::columns::id.asc())
@@ -4344,9 +4839,18 @@ fn read_sqlite_data_counting(
             let saved_tabs: Vec<_> = tabs_for_window
                 .into_iter()
                 .filter_map(|tab| {
+                    if unusable_read.get() {
+                        return None;
+                    }
                     let root = match read_root_node(conn, tab.id) {
                         Ok(root) => root,
-                        Err(_) => {
+                        Err(err) => {
+                            if error_means_unusable_database(&underlying_error_message(&err)) {
+                                // Damaged pages, not a tab that merely lacks
+                                // rows: stop reading and let the caller move
+                                // the file aside instead of limping on (#1010).
+                                unusable_read.set(true);
+                            }
                             skipped_tabs.set(skipped_tabs.get() + 1);
                             return None;
                         }
@@ -4485,6 +4989,13 @@ fn read_sqlite_data_counting(
             }
         })
         .collect();
+
+    if unusable_read.get() {
+        return Err(Error::DatabaseError(
+            diesel::result::DatabaseErrorKind::Unknown,
+            Box::new("database disk image is malformed".to_string()),
+        ));
+    }
 
     let object_metadata =
         schema::object_metadata::dsl::object_metadata.load::<model::ObjectMetadata>(conn)?;
@@ -4788,37 +5299,37 @@ fn read_sqlite_data_counting(
         })
         .collect();
 
-    let workspace_teams: Vec<model::WorkspaceTeam> = schema::workspace_teams::dsl::workspace_teams
-        .load_iter::<model::WorkspaceTeam, DefaultLoadingMode>(conn)?
-        .filter_map(|workspace_team| workspace_team.ok())
-        .collect();
+    let workspace_teams: Vec<model::WorkspaceTeam> = collect_rows(
+        schema::workspace_teams::dsl::workspace_teams
+            .load_iter::<model::WorkspaceTeam, DefaultLoadingMode>(conn)?,
+    )?;
 
-    let workspaces: Vec<WorkspaceMetadata> = schema::workspaces::dsl::workspaces
-        .load_iter::<model::Workspace, DefaultLoadingMode>(conn)?
-        .filter_map(|workspace| {
-            workspace.ok().map(|workspace| {
-                let teams_for_workspace = workspace_teams
-                    .iter()
-                    .filter_map(|workspace_team| {
-                        if workspace_team.workspace_server_uid == workspace.server_uid {
-                            teams.iter().find(|team| {
-                                team.uid
-                                    == ServerId::from_string_lossy(&workspace_team.team_server_uid)
-                            })
-                        } else {
-                            None
-                        }
+    let workspaces: Vec<WorkspaceMetadata> = collect_rows(
+        schema::workspaces::dsl::workspaces
+            .load_iter::<model::Workspace, DefaultLoadingMode>(conn)?,
+    )?
+    .into_iter()
+    .map(|workspace| {
+        let teams_for_workspace = workspace_teams
+            .iter()
+            .filter_map(|workspace_team| {
+                if workspace_team.workspace_server_uid == workspace.server_uid {
+                    teams.iter().find(|team| {
+                        team.uid == ServerId::from_string_lossy(&workspace_team.team_server_uid)
                     })
-                    .cloned()
-                    .collect();
-                WorkspaceMetadata::from_local_cache(
-                    workspace.server_uid.into(),
-                    workspace.name,
-                    Some(teams_for_workspace),
-                )
+                } else {
+                    None
+                }
             })
-        })
-        .collect();
+            .cloned()
+            .collect();
+        WorkspaceMetadata::from_local_cache(
+            workspace.server_uid.into(),
+            workspace.name,
+            Some(teams_for_workspace),
+        )
+    })
+    .collect();
 
     let current_workspace_uid: Option<WorkspaceUid> = schema::workspaces::dsl::workspaces
         .filter(schema::workspaces::dsl::is_selected.eq(true))
@@ -4827,36 +5338,44 @@ fn read_sqlite_data_counting(
         .optional()?
         .map(|uid| uid.into());
 
-    let commands = schema::commands::dsl::commands
-        // Newest first (`id DESC`); `History::new` relies on this to keep the most recent
-        // metadata for each distinct command.
-        .order(schema::commands::columns::id.desc())
-        // Inserts already trim the table to COMMANDS_COUNT_LIMIT, so this only bites a database
-        // above that threshold (e.g. 1M rows from before the trim existed) and is normally a
-        // no-op. In that case only the newest N rows are loaded, so the per-command `count` in
-        // `History::command_summaries` covers those rows rather than the whole table (#863).
-        .limit(COMMANDS_COUNT_LIMIT)
-        .load_iter::<model::Command, DefaultLoadingMode>(conn)?
-        .filter_map(|command| command.ok())
-        .map(PersistedCommand::from)
+    let commands = collect_rows(
+        schema::commands::dsl::commands
+            // Newest first (`id DESC`); `History::new` relies on this to keep the most recent
+            // metadata for each distinct command.
+            .order(schema::commands::columns::id.desc())
+            // Inserts already trim the table to COMMANDS_COUNT_LIMIT, so this only bites a database
+            // above that threshold (e.g. 1M rows from before the trim existed) and is normally a
+            // no-op. In that case only the newest N rows are loaded, so the per-command `count` in
+            // `History::command_summaries` covers those rows rather than the whole table (#863).
+            .limit(COMMANDS_COUNT_LIMIT)
+            .load_iter::<model::Command, DefaultLoadingMode>(conn)?,
+    )?
+    .into_iter()
+    .map(PersistedCommand::from)
+    .collect();
+
+    let user_profiles = collect_rows(
+        schema::user_profiles::dsl::user_profiles
+            .load_iter::<model::UserProfile, DefaultLoadingMode>(conn)?,
+    )?
+    .into_iter()
+    .map(UserProfileWithUID::from)
         .collect();
 
-    let user_profiles = schema::user_profiles::dsl::user_profiles
-        .load_iter::<model::UserProfile, DefaultLoadingMode>(conn)?
-        .filter_map(|user_profile| user_profile.ok())
-        .map(UserProfileWithUID::from)
+    let object_actions: Vec<ObjectAction> = collect_rows(
+        schema::object_actions::dsl::object_actions
+            .load_iter::<model::PersistedObjectAction, DefaultLoadingMode>(conn)?,
+    )? // parse into PersistedObjectAction
+    .into_iter()
+    .filter_map(|action| action.try_into().ok())
         .collect();
 
-    let object_actions: Vec<ObjectAction> = schema::object_actions::dsl::object_actions
-        .load_iter::<model::PersistedObjectAction, DefaultLoadingMode>(conn)?
-        .filter_map(|object_action| object_action.ok()) // parse into PersistedObjectAction
-        .filter_map(|action| action.try_into().ok())
-        .collect();
-
-    let server_experiments = schema::server_experiments::dsl::server_experiments
-        .load_iter::<model::ServerExperiment, DefaultLoadingMode>(conn)?
-        .filter_map(|server_experiment| server_experiment.ok())
-        .filter_map(|server_experiment| {
+    let server_experiments = collect_rows(
+        schema::server_experiments::dsl::server_experiments
+            .load_iter::<model::ServerExperiment, DefaultLoadingMode>(conn)?,
+    )?
+    .into_iter()
+    .filter_map(|server_experiment| {
             ServerExperiment::from_string(server_experiment.experiment).ok()
         })
         .collect();
@@ -4876,8 +5395,9 @@ fn read_sqlite_data_counting(
     // Find the smallest refresh timestamp to pass into ObjectStoreModel.
     let time_of_next_force_object_refresh: Option<DateTime<Utc>> =
         schema::cloud_objects_refreshes::dsl::cloud_objects_refreshes
-            .load_iter::<model::ObjectStoreRefresh, DefaultLoadingMode>(conn)?
-            .filter_map(|refresh| refresh.ok())
+            .load_iter::<model::ObjectStoreRefresh, DefaultLoadingMode>(conn)
+            .and_then(collect_rows)?
+            .into_iter()
             .map(|refresh| refresh.time_of_next_refresh.and_utc())
             .min();
 

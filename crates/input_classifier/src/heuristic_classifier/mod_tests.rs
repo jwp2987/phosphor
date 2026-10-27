@@ -1,3 +1,4 @@
+use warp_completer::completer::{Description, SuggestionType, TopLevelCommandCaseSensitivity};
 use warp_completer::meta::SpannedItem;
 use warp_completer::util::parse_current_commands_and_tokens;
 use warp_completer::{ParsedTokenData, ParsedTokensSnapshot};
@@ -34,6 +35,21 @@ fn mock_parsed_input_token_without_descriptions(buffer_text: &str) -> ParsedToke
         buffer_text: buffer_text.to_string(),
         parsed_tokens,
     }
+}
+
+/// Like [`mock_parsed_input_token_without_descriptions`], but the first token carries a
+/// `token_description`, which is how an installed program (or a known builtin/function/alias)
+/// reaches the classifier.
+fn mock_parsed_input_token_first_installed(buffer_text: &str) -> ParsedTokensSnapshot {
+    let mut snapshot = mock_parsed_input_token_without_descriptions(buffer_text);
+    if let Some(first) = snapshot.parsed_tokens.first_mut() {
+        first.token_description = Some(Description {
+            token: first.token.clone(),
+            description_text: Some("installed program".to_string()),
+            suggestion_type: SuggestionType::Command(TopLevelCommandCaseSensitivity::CaseSensitive),
+        });
+    }
+    snapshot
 }
 
 #[test]
@@ -260,6 +276,96 @@ fn test_real_shell_commands_still_classify_as_shell() {
                 InputType::Shell,
                 "expected {command:?} to classify as Shell"
             );
+        }
+    });
+}
+
+/// #964: short prose that opens with a language/tool name must stay AI when that program is not
+/// installed (the overlap list is trimmed to words that are never prose openers), while a bare
+/// `fish` is a shell.
+#[test]
+fn test_prose_opening_with_tool_name_stays_ai_when_not_installed() {
+    futures::executor::block_on(async move {
+        let classifier = HeuristicClassifier;
+        let context = Context {
+            current_input_type: InputType::AI,
+            is_agent_follow_up: false,
+            commands_fully_loaded: true,
+            in_active_agent_view: false,
+            command_data_current: false,
+        };
+        for text in ["swift vs kotlin?", "ruby is great", "java is slow"] {
+            let token = mock_parsed_input_token_without_descriptions(text);
+            assert_eq!(
+                classifier
+                    .detect_input_type(token, &context)
+                    .await
+                    .input_type,
+                InputType::AI,
+                "expected {text:?} to stay AI"
+            );
+        }
+        let token = mock_parsed_input_token_without_descriptions("fish");
+        assert_eq!(
+            classifier
+                .detect_input_type(token, &context)
+                .await
+                .input_type,
+            InputType::Shell,
+        );
+    });
+}
+
+/// #965 owner decision: a leading command-name word is a command only when that program is
+/// installed. Absent, short prose goes to the agent (including `fish is great`); installed, the
+/// same line is a shell command; and a line with command-shaped arguments is Shell either way.
+#[test]
+fn test_leading_tool_name_is_a_command_only_when_installed() {
+    futures::executor::block_on(async move {
+        let classifier = HeuristicClassifier;
+        let context = Context {
+            current_input_type: InputType::AI,
+            is_agent_follow_up: false,
+            commands_fully_loaded: true,
+            in_active_agent_view: false,
+            command_data_current: false,
+        };
+        let classify = |token| classifier.detect_input_type(token, &context);
+
+        for text in ["fish is great", "ksh is old"] {
+            assert_eq!(
+                classify(mock_parsed_input_token_without_descriptions(text))
+                    .await
+                    .input_type,
+                InputType::AI,
+                "{text:?} with the program absent"
+            );
+        }
+        for text in [
+            "ruby is great",
+            "swift vs kotlin?",
+            "java is slow",
+            "fish is great",
+        ] {
+            assert_eq!(
+                classify(mock_parsed_input_token_first_installed(text))
+                    .await
+                    .input_type,
+                InputType::Shell,
+                "{text:?} with the program installed"
+            );
+        }
+        for text in ["ruby script.rb", "java -jar x.jar"] {
+            for token in [
+                mock_parsed_input_token_without_descriptions(text),
+                mock_parsed_input_token_first_installed(text),
+            ] {
+                assert_eq!(
+                    classify(token).await.input_type,
+                    InputType::Shell,
+                    "{text:?}"
+                );
+            }
         }
     });
 }

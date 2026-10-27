@@ -164,13 +164,16 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             fi
         }
         # Bash allows only one handler per signal, so compose with the
-        # already-installed generator cleanup. Cover both normal exit (exit,
-        # logout, Ctrl-D) and SIGHUP (connection drop).
+        # already-installed generator cleanup. Only EXIT is trapped: bash runs the
+        # EXIT trap for a SIGHUP death too (connection drop), but a trap on HUP
+        # itself replaces bash's default hang-up handling, so the shell neither
+        # exited on hang-up nor ever did while a foreground child (sudo, ssh) ran,
+        # leaving orphaned shells behind (#960).
         __warp_on_exit() {
             __warp_emit_exit_shell
             __warp_generator_pid_file_cleanup
         }
-        trap __warp_on_exit EXIT HUP
+        trap __warp_on_exit EXIT
     fi
 
     warp_maybe_send_reset_grid_osc () {
@@ -1168,6 +1171,15 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
                         T) return 1;;
                         # -W implies -T
                         W) return 1;;
+                        # #999: -O (control-master command: check/exit/stop/forward/cancel), -N (no command),
+                        # -f (background) and -V (version) never start an interactive login, so the wrapper
+                        # (ControlMaster=yes, -t, a remote export command) must not touch them. -G and -Q are not
+                        # in the optstring above, so they already fail as invalid options and go to real ssh.
+                        # Keep in step with InteractiveSshCommand::parse_ssh_command (ssh/util.rs).
+                        O) return 1;;
+                        N) return 1;;
+                        f) return 1;;
+                        V) return 1;;
                         # The user provided an invalid option; kick it to real ssh.
                         \?) return 1;;
                         # The user omitted a required argument; kick it to real ssh.
@@ -1259,6 +1271,16 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
                 esac
             fi
 
+            # #985: the remote-server-proxy channel makes OpenSSH mark the connection "bulk"
+            # (IPQoS second class `cs1`), which delays keystrokes on some networks. Pin both
+            # classes to the interactive one, but ONLY when `ssh -G` reports exactly OpenSSH's
+            # current default (`af21 cs1`): a user-configured IPQoS is never overridden, and an
+            # older OpenSSH (different default / no two-value form) is left alone.
+            local warp_ipqos_args=()
+            if [[ "$(command ssh -G "${@:1}" 2>/dev/null | command -p sed -n 's/^ipqos //p')" == "af21 cs1" ]]; then
+                warp_ipqos_args=(-o "IPQoS=af21 af21")
+            fi
+
             # Keep remote commands up-to-date with shell.rs & bash.sh.
             # Note that in this command, we're passing a string to the remote shell. Any variable expansions need to be
             # escaped with "''" to avoid the local shell from expanding them before they're passed to the remote shell.
@@ -1266,9 +1288,11 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             # determine what shell is the login shell on the remote machine.  We perform a preliminary check to see if
             # the remote shell is the Bourne shell to avoid asking it to parse later lines that use syntax it doesn't
             # support.
-            command ssh -o ControlMaster=$control_master_mode -o ControlPath="$control_path" \
-            -t "${@:1}" \
-"
+            # The remote script goes through a variable, not the ssh argument list: the job text
+            # the shell prints for a stopped ssh (Ctrl-Z while connecting) is the command as written,
+            # and the whole script in it was dumped into the scrollback (#995).
+            local warp_remote_bootstrap
+            warp_remote_bootstrap="
 export TERM_PROGRAM='WarpTerminal'
 # Mark the remote side of a Warp-managed SSH session so the bootstrap
 # body can distinguish it from local shells. Used to gate the ExitShell
@@ -1341,6 +1365,8 @@ TMPPREFIX="'$HOME/.zshtmp-'" WARP_SSH_RCFILES="'${ZDOTDIR:-$HOME}'" ZDOTDIR="'$W
       ;;
 esac
 "
+            command ssh ${warp_ipqos_args[@]+"${warp_ipqos_args[@]}"} -o ControlMaster=$control_master_mode -o ControlPath="$control_path" \
+            -t "${@:1}" "$warp_remote_bootstrap"
         }
 
         function __warp_ssh_impl() {

@@ -2,7 +2,7 @@ use parking_lot::FairMutex;
 use pathfinder_geometry::vector::Vector2F;
 use settings::Setting as _;
 use std::{any::Any, path::PathBuf, sync::Arc};
-use warpui::{AppContext, SingletonEntity};
+use warpui::{AppContext, SingletonEntity, WindowId};
 
 use crate::PrivacySettings;
 use crate::{
@@ -40,6 +40,26 @@ pub trait TerminalManager: Any {
     /// Implementations should preserve state on [`DetachType::HiddenForClose`] or
     /// [`DetachType::Moved`] and clean up only on [`DetachType::Closed`].
     fn on_view_detached(&self, _detach_type: DetachType, _app: &mut AppContext) {}
+
+    /// The window this manager's terminal view belongs to, also after that window was closed
+    /// (its views then live on in the undo-close stack). `None` for managers without a view.
+    fn view_window_id(&self, _app: &AppContext) -> Option<WindowId> {
+        None
+    }
+
+    /// Whether this session is a remote (ssh) one that was announced but never finished
+    /// bootstrapping (#1001): a wedged or abandoned connect. There is nothing worth restoring in
+    /// it, so closing it skips the undo-close grace period.
+    fn has_unbootstrapped_remote_session(&self) -> bool {
+        self.model().lock().has_unbootstrapped_remote_session()
+    }
+
+    /// Ends this session now (pty, process tree, remote-server session) instead of waiting for
+    /// the pane to be discarded. Used when the undo-close grace of a closed window expires, and
+    /// at once for a session that never bootstrapped (#1001, #980).
+    fn discard_now(&self, app: &mut AppContext) {
+        self.on_view_detached(DetachType::Closed, app);
+    }
 
     /// Returns this [`TerminalManager`] as an [`Any`], to support downcasting.
     fn as_any(&self) -> &dyn Any;

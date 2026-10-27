@@ -33,8 +33,6 @@ pub(crate) const REAL_COMMANDS_WITH_ENGLISH_ARGS: &[&str] = &[
     "man the ls",
     "apropos what is",
     "apropos the file",
-    "say this is it",
-    "say how are you",
     "espeak what the",
     "notify-send the build finished",
     "notify-send why it failed",
@@ -111,6 +109,28 @@ pub(crate) const REAL_COMMANDS_WITH_ENGLISH_ARGS: &[&str] = &[
     "watch ls the dir",
     "watch -n 1 ls the dir",
     "watch echo what is this",
+    // #964: installed commands whose ordinary arguments are pronouns / function words.
+    "ls this that it",
+    "ls that is it",
+    "cat this that",
+    "cp it that",
+    "rm this that it",
+    "ls it",
+    "ls this",
+    "git add this that it",
+    "ls -la this that it",
+    // #965: real uses of the macOS / zsh collision words.
+    "say \"build done\"",
+    "what /usr/bin/ls",
+    "what ls",
+    "write user",
+    "write user tty1",
+    "where git",
+    "where is git",
+    "what is ls",
+    "where is foo.txt",
+    "where ./script.sh",
+    "do ls",
 ];
 
 /// #897: prose whose head is a real command; it must still route to the agent.
@@ -142,6 +162,16 @@ pub(crate) const PROSE_WITH_COMMAND_HEADS: &[&str] = &[
     "why is the build slow?",
     "docker vs podman?",
     "describe the failing test",
+    // #965: sentences opened by a macOS / zsh collision word. Owner decision 2026-10-26: `say`
+    // followed by prose goes to the agent, so these moved here from the real-command corpus.
+    "say hello",
+    "say hello world",
+    "say how are you",
+    "say this is it",
+    "what does ls -la do",
+    "write a script that counts lines",
+    "where is the config",
+    "do it",
 ];
 
 /// #933 follow-up: transparent prefixes that run the command after them.
