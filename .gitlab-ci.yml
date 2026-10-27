@@ -689,6 +689,12 @@ cli-linux:
       fi
       export PATH="${ZIG_DIR}:$PATH"
       command -v cargo-zigbuild >/dev/null || cargo binstall --no-confirm "cargo-zigbuild@^0.19"
+      # The box has glibc dev packages (libbz2, liblzma, freetype) that the GitHub
+      # runner never had; pkg-config would hand their glibc static libs to the musl
+      # link (undefined __fprintf_chk). An empty search dir for the musl target makes
+      # every probe miss, so the -sys crates build their bundled sources with zig.
+      mkdir -p "$CI_PROJECT_DIR/.musl-pkgconfig-empty"
+      export PKG_CONFIG_LIBDIR_x86_64_unknown_linux_musl="$CI_PROJECT_DIR/.musl-pkgconfig-empty" PKG_CONFIG_PATH_x86_64_unknown_linux_musl=""
       export USE_ZIGBUILD=true PKG_CONFIG_ALLOW_CROSS=1 GIT_RELEASE_TAG="$RELEASE_TAG"
       script/bundle --channel "$CHANNEL" --arch x86_64 --artifact cli --packages none --target x86_64-unknown-linux-musl
       EXE=$(grep '^executable_path=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
