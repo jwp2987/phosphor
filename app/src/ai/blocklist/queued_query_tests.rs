@@ -1446,6 +1446,10 @@ fn persisted_rows_come_back_suspended_in_order_and_never_autofire() {
             assert!(queue.iter().all(|r| r.is_suspended()));
             assert!(queue[2].is_command(), "a command stays a command");
             assert!(
+                !queue[0].is_command() && !queue[1].is_command(),
+                "a prompt stays a prompt: the queue panel draws `!` only for commands"
+            );
+            assert!(
                 queue.iter().all(|r| !r.is_locked()),
                 "the lock described an action snapshot that no longer exists"
             );
