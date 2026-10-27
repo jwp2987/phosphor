@@ -265,3 +265,22 @@ mod ssh_payload_only {
         assert!(!ssh_output_is_payload_only("anything", &[]));
     }
 }
+
+#[test]
+fn subshell_display_name_skips_env_assignments_and_env_prefix() {
+    use super::subshell_display_name as n;
+    assert_eq!(n("zsh"), Some("zsh"));
+    assert_eq!(n("AUTOP=1 zsh"), Some("zsh"));
+    assert_eq!(n("ZDOTDIR=/x zsh"), Some("zsh"));
+    assert_eq!(n("ZDOTDIR=$HOME/x A_1=b  zsh -i"), Some("zsh"));
+    assert_eq!(n("env -i FOO=1 zsh"), Some("zsh"));
+    assert_eq!(n("env -u FOO zsh"), Some("zsh"));
+    assert_eq!(n("bash --rcfile x"), Some("bash"));
+    assert_eq!(n("docker exec -it c bash"), Some("docker"));
+    // Not assignments: no valid name before `=`.
+    assert_eq!(n("1A=b zsh"), Some("1A=b"));
+    assert_eq!(n("--x=1 zsh"), Some("--x=1"));
+    assert_eq!(n("env"), Some("env"));
+    assert_eq!(n("   "), None);
+    assert_eq!(n("A=1"), None);
+}

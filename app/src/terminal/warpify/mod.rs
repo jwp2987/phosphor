@@ -21,6 +21,43 @@ pub enum SubshellSource {
     EnvVarCollection(String),
 }
 
+/// The word that names a subshell in the chip, tab, flag and separator: the first word of the
+/// spawning command that is not a leading `NAME=value` assignment or an `env` prefix
+/// (`AUTOP=1 zsh`, `ZDOTDIR=/x zsh`, `env -i FOO=1 zsh` all name `zsh`) (#1037).
+pub fn subshell_display_name(spawning_command: &str) -> Option<&str> {
+    let mut words = spawning_command.split_whitespace().peekable();
+    let mut in_env = false;
+    while let Some(word) = words.peek().copied() {
+        if is_env_assignment_word(word) {
+            words.next();
+        } else if !in_env && word == "env" && words.clone().nth(1).is_some() {
+            in_env = true;
+            words.next();
+        } else if in_env && (word.starts_with('-') && word != "-") {
+            // `env` options such as `-i`. Options taking a value (`-u NAME`, `-C dir`) also
+            // consume the next word.
+            words.next();
+            if matches!(word, "-u" | "-C" | "-S") {
+                words.next();
+            }
+        } else {
+            break;
+        }
+    }
+    words.next()
+}
+
+fn is_env_assignment_word(word: &str) -> bool {
+    let Some((name, _)) = word.split_once('=') else {
+        return false;
+    };
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c == '_' || c.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
 /// This template is for the snippet that appears in the output grid for the success block if the
 /// subshell is local.
 fn get_subshell_bootstrap_success_block_path(shell_type: ShellType) -> Option<&'static str> {
