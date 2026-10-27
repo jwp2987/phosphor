@@ -14,6 +14,7 @@ use crate::ai::blocklist::block::cli::CLISubagentViewMode;
 use crate::ai::blocklist::block::cli_controller::CLISubagentController;
 use crate::ai::blocklist::history_model::{CLIAgentConversation, LoadedConversationData};
 use crate::ai::blocklist::{BlocklistAIContextModel, SerializedBlockListItem};
+use crate::terminal::block_list_viewport::ScrollPositionUpdate;
 use crate::terminal::input::message_bar::Message as InputMessage;
 use crate::terminal::input::message_bar::MessageItem;
 use crate::terminal::model::block::SerializedBlock;
@@ -639,6 +640,26 @@ impl TerminalView {
         // index in the block list has mouse states so the label hover tooltip, bookmark button,
         // and filter button work for these blocks.
         self.ensure_mouse_states_for_all_blocks();
+
+        // Unlike `insert_rich_content`, `create_and_insert_ai_block` never touches the scroll
+        // position, so the restored transcript was laid out against whatever position the pane
+        // had before (a stale fixed offset, or one computed against the placeholder AI block
+        // heights), and the pane showed blank space until the user scrolled (#1042). Follow the
+        // end of the transcript, as entering an agent view does, and re-measure the new blocks.
+        if blocks_created > 0 {
+            {
+                let mut model = self.model.lock();
+                for rich_content in &self.rich_content_views {
+                    if rich_content.ai_block_metadata().is_some() {
+                        model
+                            .block_list_mut()
+                            .mark_rich_content_dirty(rich_content.view_id());
+                    }
+                }
+            }
+            self.update_scroll_position_locking(ScrollPositionUpdate::AfterEnterAgentView, ctx);
+            ctx.notify();
+        }
 
         blocks_created
     }

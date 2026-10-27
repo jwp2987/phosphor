@@ -2196,3 +2196,46 @@ fn queued_prompts_of_a_removed_conversation_come_back_into_the_input() {
         assert_eq!(queue_len(&app, conversation_id), 0);
     });
 }
+
+/// Queued prompts whose conversation is gone belong in the input the user is looking at, not
+/// in whichever terminal view was built first (#1041). A view that is not focused (a background
+/// tab) must leave the restored session alone; the focused view claims it.
+///
+/// Fails without the fix: `claim_restored_queue_session` took the session unconditionally, so
+/// the background view consumed it and the focused view's input stayed empty.
+#[test]
+fn restored_orphans_go_to_the_focused_view_not_a_background_one() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _queue_flag = FeatureFlag::QueueSlashCommand.override_enabled(true);
+
+        let (window_id, focused) =
+            crate::test_util::terminal::add_window_with_id_and_terminal(&mut app, None);
+        let tips_model = app.add_model(|_| Default::default());
+        let background = app.add_view(window_id, |ctx| {
+            super::TerminalView::new_for_test(tips_model, None, ctx)
+        });
+        focused.update(&mut app, |_, ctx| ctx.focus_self());
+        assert_eq!(app.focused_view_id(window_id), Some(focused.id()));
+
+        let row = crate::persistence::model::QueuedPromptRow {
+            id: "orphan-row".to_owned(),
+            conversation_id: AIConversationId::new().to_string(),
+            position: 0,
+            kind: "prompt".to_owned(),
+            text: "lost prompt".to_owned(),
+            origin: "queue_slash_command".to_owned(),
+            created_at: chrono::Utc::now().naive_utc(),
+        };
+        QueuedQueryModel::handle(&app)
+            .update(&mut app, |model, ctx| model.restore_persisted(vec![row], ctx));
+
+        background.update(&mut app, |view, ctx| view.claim_restored_queue_session(ctx));
+        assert_eq!(input_text(&app, &background), "");
+        assert_eq!(input_text(&app, &focused), "");
+
+        focused.update(&mut app, |view, ctx| view.claim_restored_queue_session(ctx));
+        assert_eq!(input_text(&app, &focused), "lost prompt");
+        assert_eq!(input_text(&app, &background), "");
+    });
+}
