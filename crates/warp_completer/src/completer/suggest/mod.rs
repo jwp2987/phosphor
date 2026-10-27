@@ -18,6 +18,7 @@ use async_recursion::async_recursion;
 use itertools::Itertools;
 use smol_str::SmolStr;
 use warp_command_signatures::IconType;
+use warp_util::path::ShellDialect;
 
 use crate::parsers::simple::parse_for_completions;
 use crate::{completer::describe::OptionCaseSensitivity, parsers::classify_command};
@@ -665,7 +666,10 @@ pub async fn suggestions<T: CompletionContext>(
     if options.parse_quotes_as_literals {
         return results;
     }
-    results.map(|results| adjust_for_open_quote(line, results))
+    let dialect = ctx
+        .path_completion_context()
+        .map_or(ShellDialect::Posix, |path_ctx| path_ctx.shell_dialect());
+    results.map(|results| adjust_for_open_quote(line, results, dialect))
 }
 
 /// The quote character if `token` starts an unterminated quoted string (`'wi`, `"wi`), i.e. the
@@ -710,11 +714,82 @@ fn requote_path_replacement(replacement: &str, quote: char, is_file: bool) -> Op
     Some(out)
 }
 
+/// [`requote_path_replacement`] for nushell, whose path replacements are a bare word
+/// (`src/main.rs`) or ONE double-quoted word (`"my dir/my file.txt"`, closing quote left off for
+/// a directory), never backslash escapes. The text between the quotes is decoded from nushell's
+/// string escapes (`\\`, `\"`, `\n`, `\r`, `\t`, `\u{..}`) and spelled again for the open
+/// `quote`: a double quote escapes `\` and `"` (and control characters); nushell's single-quoted
+/// string is literal, so it cannot hold a `'`, a control character, or anything else that
+/// needs an escape, in which case `None` leaves the replacement alone.
+fn requote_nu_path_replacement(replacement: &str, quote: char, is_file: bool) -> Option<String> {
+    let raw = match replacement.strip_prefix('"') {
+        Some(inner) => {
+            // The final quote closes the string unless an odd number of backslashes precedes it.
+            let closed = inner
+                .strip_suffix('"')
+                .filter(|before| before.chars().rev().take_while(|c| *c == '\\').count() % 2 == 0);
+            let inner = closed.unwrap_or(inner);
+            nu_unescape_double_quoted(inner)?
+        }
+        None => replacement.to_owned(),
+    };
+    let mut out = String::with_capacity(raw.len() + 1);
+    match quote {
+        '\'' => {
+            if raw.chars().any(|c| c == '\'' || c.is_control()) {
+                return None;
+            }
+            out.push_str(&raw);
+        }
+        _ => {
+            let quoted = warp_util::path::nu_quoted_string(&raw);
+            // `nu_quoted_string` wraps the escaped text in quotes; only the inside is wanted.
+            out.push_str(&quoted[1..quoted.len() - 1]);
+        }
+    }
+    if is_file {
+        out.push(quote);
+    }
+    Some(out)
+}
+
+/// Decodes the inside of a nushell double-quoted string; `None` for an escape it does not know.
+fn nu_unescape_double_quoted(inner: &str) -> Option<String> {
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next()? {
+            '\\' => out.push('\\'),
+            '"' => out.push('"'),
+            'n' => out.push('\n'),
+            'r' => out.push('\r'),
+            't' => out.push('\t'),
+            'u' => {
+                if chars.next()? != '{' {
+                    return None;
+                }
+                let hex: String = chars.by_ref().take_while(|c| *c != '}').collect();
+                out.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
+            }
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
 /// Completing inside an open quote (`ls 'wi<Tab>`): the span the parser reports starts at the
 /// quote, so the typed prefix would be `'wi` and match nothing. Exclude the quote from the
 /// replacement span and spell path replacements for the quoted context instead of the
 /// unquoted one (#1017).
-fn adjust_for_open_quote(line: &str, mut results: SuggestionResults) -> SuggestionResults {
+fn adjust_for_open_quote(
+    line: &str,
+    mut results: SuggestionResults,
+    dialect: ShellDialect,
+) -> SuggestionResults {
     let Some(quote) = open_quote(results.replacement_span.slice(line)) else {
         return results;
     };
@@ -727,9 +802,12 @@ fn adjust_for_open_quote(line: &str, mut results: SuggestionResults) -> Suggesti
         let suggestion = &mut matched.suggestion;
         if let Some(file_type) = suggestion.file_type {
             let is_file = !matches!(file_type, EngineFileType::Directory);
-            if let Some(requoted) =
+            let requoted = if dialect == ShellDialect::Nu {
+                requote_nu_path_replacement(&suggestion.replacement, quote, is_file)
+            } else {
                 requote_path_replacement(&suggestion.replacement, quote, is_file)
-            {
+            };
+            if let Some(requoted) = requoted {
                 suggestion.replacement = requoted.into();
             }
         }
