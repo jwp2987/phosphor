@@ -1615,3 +1615,43 @@ fn explicit_arm_requires_user_toggle() {
         });
     });
 }
+
+/// #1043: queue mode stays armed across queued prompts; only an explicit toggle-off or the
+/// end-of-turn consume disarms it.
+#[test]
+fn queue_mode_stays_armed_across_queued_prompts_until_turn_end() {
+    with_model(|mut app, model, _events| {
+        let conv = AIConversationId::new();
+        model.update(&mut app, |m, ctx| m.toggle_queue_next_prompt(conv, ctx));
+        for text in ["first", "second"] {
+            model.update(&mut app, |m, ctx| {
+                m.append(
+                    conv,
+                    QueuedQuery::new(text.to_owned(), QueuedQueryOrigin::AutoQueueToggle),
+                    ctx,
+                );
+            });
+            model.read(&app, |m, _| {
+                assert!(
+                    m.is_queue_next_prompt_explicitly_armed(conv),
+                    "after {text}"
+                )
+            });
+        }
+        // Turn ends.
+        let cleared = model.update(&mut app, |m, ctx| {
+            m.consume_queue_next_prompt_toggle(conv, ctx)
+        });
+        assert!(cleared);
+        model.read(&app, |m, _| {
+            assert!(!m.is_queue_next_prompt_explicitly_armed(conv))
+        });
+
+        // Explicit toggle off also disarms.
+        model.update(&mut app, |m, ctx| m.toggle_queue_next_prompt(conv, ctx));
+        model.update(&mut app, |m, ctx| m.toggle_queue_next_prompt(conv, ctx));
+        model.read(&app, |m, _| {
+            assert!(!m.is_queue_next_prompt_explicitly_armed(conv))
+        });
+    });
+}
