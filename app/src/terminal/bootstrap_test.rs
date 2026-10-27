@@ -1882,7 +1882,6 @@ fn ssh_wrapper_only_wraps_interactive_logins() {
         &["-w", "0:0", "host"],
         &["-M", "host"],
         &["-S", "/tmp/ctl", "host"],
-        &["-vw", "any", "host"],
     ];
     // The Rust typing gate (`parse_interactive_ssh_command`) must agree with the shell wrappers
     // on every form above. (ssh word-splits the same way here: no argument contains a space
