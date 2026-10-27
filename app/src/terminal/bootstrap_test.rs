@@ -1238,11 +1238,14 @@ fn ssh_wrapper_job_text_is_short_and_remote_script_still_arrives() {
         // The statement that runs `command ssh ... -t <args>` with the remote script.
         let start = source
             .find(if fish {
-                "command ssh $warp_ipqos_args -o ControlMaster"
+                "$warp_ipqos_args -o ControlMaster=$control_master_mode"
             } else {
-                "command ssh ${warp_ipqos_args[@]+"
+                "-o ControlMaster=$control_master_mode"
             })
             .unwrap_or_else(|| panic!("{name}: the wrapper's ssh invocation moved"));
+        // (#1035: the background-master start before it, `... -N -f "$@"`, is a separate short
+        // ssh call with no remote script; this is the session invocation that carries it.)
+        let start = source[..start].rfind("command ssh").unwrap();
         let statement: String = source[start..]
             .lines()
             .take(2)
