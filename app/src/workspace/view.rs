@@ -3549,6 +3549,12 @@ impl Workspace {
         };
 
         ws.configure_new_workspace(workspace_setting, ctx);
+        // Queued prompts left by the previous session go to the active tab's session, claimed
+        // here once every tab is restored and the active one chosen (#1041). Deferred one tick
+        // so the views are in a window before the notice toast is added.
+        if FeatureFlag::QueueSlashCommand.is_enabled() {
+            ctx.spawn(async {}, |ws, _, ctx| ws.claim_restored_queue_session(ctx));
+        }
         ws.sync_panel_positions_from_config(ctx);
         ws.sync_window_button_visibility(ctx);
         ws.update_titlebar_height(ctx);
@@ -8374,6 +8380,19 @@ impl Workspace {
 
     // Zap Wave 7-3: `open_environment_management_pane` was physically removed
     // along with the ambient-agent UI subsystem.
+
+    /// Hands the previous session's leftover queued prompts to the active tab's focused terminal
+    /// session (#1041). A no-op once claimed, or when the active tab has no terminal session.
+    pub(crate) fn claim_restored_queue_session(&mut self, ctx: &mut ViewContext<Self>) {
+        let target = self.active_tab_pane_group().read(ctx, |pane_group, ctx| {
+            pane_group
+                .focused_session_view(ctx)
+                .or_else(|| pane_group.active_session_view(ctx))
+        });
+        if let Some(target) = target {
+            target.update(ctx, |view, ctx| view.claim_restored_queue_session(ctx));
+        }
+    }
 
     pub(super) fn active_session_view(
         &self,
