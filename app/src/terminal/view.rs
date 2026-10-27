@@ -11153,8 +11153,9 @@ impl TerminalView {
     /// A non-printable key (Backspace, Delete, an arrow, Home/End) that reached the terminal just
     /// after the typeahead hand-off gave the editor input, before focus followed: apply it to the
     /// editor, as a printable key is, instead of dropping it. The window ends early once the
-    /// editor gains focus or the user clicks on the terminal. Enter is not among them: a stray
-    /// Enter must not submit. Returns whether it did.
+    /// editor gains focus or the user clicks on the terminal. Enter submits only when the editor
+    /// holds text (#1016): a stray Enter on an empty editor does nothing. Returns whether it
+    /// applied the key.
     fn apply_key_to_editor_after_handoff(
         &mut self,
         bytes: &[u8],
@@ -11174,6 +11175,17 @@ impl TerminalView {
             .editor_took_over_within(EDITOR_TAKEOVER_KEY_WINDOW, Instant::now());
         if !just_took_over || !self.selected_blocks.is_empty() {
             return false;
+        }
+        // #1016: an Enter typed after a complete line, in the window where the editor has just
+        // taken the line over, is the user's: dropping it left the line unsubmitted in the editor
+        // while the keys before it had run. It submits what the editor holds. With nothing in the
+        // editor it stays a stray Enter and does nothing.
+        if matches!(bytes, b"\r" | b"\n") {
+            if self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
+                return false;
+            }
+            self.input.update(ctx, |input, ctx| input.input_enter(ctx));
+            return true;
         }
         let action = match bytes {
             b"\x7f" | b"\x08" => EditorAction::Backspace,

@@ -15105,6 +15105,42 @@ fn typeahead_handoff_applies_a_key_that_beat_the_focus_change_to_the_editor() {
     })
 }
 
+/// #1016: an Enter typed after a complete line that reaches the terminal just after the editor
+/// took input over (CGEvent injection at ~1 ms/key beats the focus change) submits the line. It
+/// used to be dropped, leaving the line unsubmitted in the editor. With nothing in the editor it
+/// is still a stray Enter and does nothing.
+#[test]
+fn typeahead_handoff_an_enter_that_beat_the_focus_change_submits_the_editor_line() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            awaiting_typeahead_report(view);
+            view.note_editor_took_over();
+            // Nothing to submit: a stray Enter is ignored, the report is still awaited.
+            view.keydown_on_terminal("\r", ctx);
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::AwaitingReport
+            );
+
+            view.input.update(ctx, |input, ctx| {
+                input.replace_buffer_content("echo LOCAL-OK-42", ctx)
+            });
+            view.keydown_on_terminal("\r", ctx);
+            assert!(
+                matches!(
+                    view.model.lock().typeahead_handoff().state(),
+                    HandoffState::HoldAfterEnter { .. }
+                ),
+                "the Enter reached the editor's submit path instead of being dropped"
+            );
+        });
+    })
+}
+
 /// Without the flag a key on the terminal at the prompt is still dropped.
 #[test]
 fn without_typeahead_handoff_a_key_on_the_terminal_at_the_prompt_is_dropped() {
