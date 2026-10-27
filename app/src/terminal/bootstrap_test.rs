@@ -2586,7 +2586,8 @@ fn write_nu_bootstrap_file(home: &std::path::Path) -> String {
 
 #[test]
 fn test_nu_scripts_are_loaded_and_have_no_leftover_placeholders() {
-    let bootstrap = decode_script(&script_for_shell(ShellType::Nu, &crate::ASSETS));
+    let script = script_for_shell(ShellType::Nu, &crate::ASSETS);
+    let bootstrap = decode_script(&script);
     assert!(bootstrap.ends_with('\n'));
     // Comments and blank lines are dropped to keep the file small.
     assert!(

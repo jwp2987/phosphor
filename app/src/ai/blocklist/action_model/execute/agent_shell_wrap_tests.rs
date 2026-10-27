@@ -1043,6 +1043,7 @@ mod real_shells {
             ShellType::Zsh => "zsh",
             ShellType::Fish => "fish",
             ShellType::PowerShell => "pwsh",
+            ShellType::Nu => "nu",
         };
         let mut candidates = vec![name.to_owned()];
         if let Ok(home) = std::env::var("HOME") {
@@ -1079,6 +1080,7 @@ mod real_shells {
                 "-Command",
                 script,
             ]),
+            ShellType::Nu => cmd.args(["--no-config-file", "-c", script]),
         };
         let mut child = cmd
             .stdin(Stdio::null())
