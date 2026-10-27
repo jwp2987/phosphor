@@ -1093,7 +1093,7 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
               # Initialize this to 1 before each call, as per getopts documentation.
               OPTIND=1
               # Parse through all ssh options, as defined in the ssh man pages.
-              while getopts :1246AaCfgKkMNnqsTtVvXxYyb:c:D:e:F:i:L:l:m:O:o:p:R:S:W:w: OPTION; do
+              while getopts :1246AaCfgKkMNnqsTtVvXxYyb:c:D:e:F:i:J:L:l:m:O:o:p:R:S:W:w: OPTION; do
                   case $OPTION in
                       # -T disables pty allocation (aka a non-interactive session)
                       T) return 1;;
@@ -1103,6 +1103,9 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
                       # -f (background) and -V (version) never start an interactive login, so the wrapper
                       # (ControlMaster=yes, -t, a remote export command) must not touch them. -G and -Q are not
                       # in the optstring above, so they already fail as invalid options and go to real ssh.
+                      #1003: -J <jump[,jump2]> is an option WITH an argument (it is in the optstring), so a jump-host login is
+                      # still wrapped. Every probe and the wrapped ssh get the original arguments, so `ssh -G`/`ssh -O check`
+                      # resolve the jump chain, and the multiplexed follow-up ssh calls reuse the master (and so its jump).
                       # Keep in step with InteractiveSshCommand::parse_ssh_command (ssh/util.rs).
                       O) return 1;;
                       N) return 1;;
