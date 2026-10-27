@@ -2106,6 +2106,72 @@ impl GridHandler {
         true
     }
 
+    /// Removes the tty echo of typed-ahead keys from the end of this grid (#1033).
+    ///
+    /// `typed` is the text the shell reported as the user's typed-ahead line. The shell echoed
+    /// those keys into whatever block was running when they arrived, so the grid may end with
+    /// all of `typed`, or with only its first `k` characters (the rest arrived after the grid
+    /// was finished). The longest tail of the grid's content (following soft wraps) that is
+    /// byte-identical to a prefix of `typed` is removed and the cursor is moved back to where
+    /// it started. Nothing else is touched: if the tail differs from every prefix of `typed`,
+    /// or `typed` or the tail contains anything but plain single-cell characters, the grid is
+    /// left unchanged and `false` is returned.
+    pub fn strip_trailing_echo_of(&mut self, typed: &str) -> bool {
+        let want: Vec<char> = typed.chars().collect();
+        let columns = self.grid.columns();
+        if want.is_empty() || columns == 0 || want.iter().any(|c| c.is_control()) {
+            return false;
+        }
+        let cursor = self.grid.cursor.point;
+        let mut row = cursor.row.0;
+        // A cursor with a pending wrap sits on the last written cell, not after it.
+        let mut end_col = if cursor.input_needs_wrap {
+            (cursor.col + 1).min(columns)
+        } else {
+            cursor.col.min(columns)
+        };
+
+        // The grid's last cells, newest first, as (char, visible row, col).
+        let mut tail: Vec<(char, usize, usize)> = Vec::new();
+        loop {
+            while end_col > 0 && tail.len() < want.len() {
+                end_col -= 1;
+                let cell = &self.grid[VisibleRow(row)][end_col];
+                if cell.flags.intersects(
+                    Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER,
+                ) {
+                    return false;
+                }
+                let CharOrStr::Char(c) = cell.raw_content() else {
+                    return false;
+                };
+                tail.push((c, row, end_col));
+            }
+            if tail.len() >= want.len() || row == 0 {
+                break;
+            }
+            let wraps = self.grid[VisibleRow(row - 1)][columns - 1]
+                .flags
+                .contains(Flags::WRAPLINE);
+            if !wraps {
+                break;
+            }
+            row -= 1;
+            end_col = columns;
+        }
+
+        // Longest `k` such that the last `k` cells equal the first `k` characters of `typed`.
+        let echoed: Vec<char> = tail.iter().rev().map(|(c, _, _)| *c).collect();
+        let Some(k) = (1..=echoed.len())
+            .rev()
+            .find(|k| echoed[echoed.len() - k..] == want[..*k])
+        else {
+            return false;
+        };
+        let (_, start_row, start_col) = tail[k - 1];
+        self.truncate_from_point(Point::new(self.history_size() + start_row, start_col))
+    }
+
     /// Resets all cells after the cursor in the cursor row to the default cell.
     fn reset_trailing_cells_in_cursor_row(&mut self) {
         let cursor_point = self.grid.cursor.point;
