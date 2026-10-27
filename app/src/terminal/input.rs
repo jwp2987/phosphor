@@ -3081,15 +3081,18 @@ impl Input {
         });
         // Re-render the placeholder when queue mode is toggled (#1043) so the "Queue mode on"
         // hint appears and disappears immediately.
-        ctx.subscribe_to_model(&QueuedQueryModel::handle(ctx), move |me, _, event, ctx| {
-            if matches!(
-                event,
-                QueuedQueryEvent::QueueNextPromptToggled { .. }
-                    | QueuedQueryEvent::DefaultModeChanged
-            ) {
-                me.set_zero_state_hint_text(ctx);
-            }
-        });
+        // Guarded: some harnesses build an input without registering the queue model.
+        if ctx.has_singleton_model::<QueuedQueryModel>() {
+            ctx.subscribe_to_model(&QueuedQueryModel::handle(ctx), move |me, _, event, ctx| {
+                if matches!(
+                    event,
+                    QueuedQueryEvent::QueueNextPromptToggled { .. }
+                        | QueuedQueryEvent::DefaultModeChanged
+                ) {
+                    me.set_zero_state_hint_text(ctx);
+                }
+            });
+        }
         // Re-render the input's placeholder/hint text when any history event that could
         // change `selected_conversation_status_for_hint` fires — the selected conversation
         // swapping, its status changing, its title being set/unset, it becoming non-empty,
@@ -5482,6 +5485,12 @@ impl Input {
                     app,
                 )
             });
+        // The "Queue mode on" indicator is only for a toggle the user actually armed: not the
+        // standing `Queue` default setting and not the automatic agent-requested-LRC queueing.
+        let is_queue_mode_armed = is_queue_next_prompt_enabled
+            && selected_conversation_id.is_some_and(|conversation_id| {
+                QueuedQueryModel::as_ref(app).is_queue_next_prompt_explicitly_armed(conversation_id)
+            });
 
         let key = match (
             input_model.input_type(),
@@ -5501,7 +5510,7 @@ impl Input {
                 {
                     // Queue mode armed (#1043): say so unmistakably and say how to turn it off,
                     // whether or not a reply is streaming right now.
-                    Some(_) if is_queue_next_prompt_enabled => {
+                    Some(_) if is_queue_mode_armed => {
                         return crate::ai::blocklist::queued_query::queue_mode_armed_hint(
                             bindings::keybinding_name_to_display_string(
                                 crate::terminal::TOGGLE_QUEUE_NEXT_PROMPT_KEYBINDING,

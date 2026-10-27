@@ -721,6 +721,21 @@ impl QueuedQueryModel {
             .unwrap_or(self.default_mode == PromptSubmissionMode::Queue)
     }
 
+    /// True only when the user explicitly toggled queue mode on for this conversation and the
+    /// persistent `Queue` default is not what is making it on (#1043). Drives the "Queue mode
+    /// on" indicator.
+    pub(crate) fn is_queue_next_prompt_explicitly_armed(
+        &self,
+        conversation_id: AIConversationId,
+    ) -> bool {
+        self.default_mode != PromptSubmissionMode::Queue
+            && self
+                .queues
+                .get(&conversation_id)
+                .and_then(|state| state.queue_next_prompt_override)
+                == Some(true)
+    }
+
     /// Toggles the per-conversation auto-queue state. Computes the effective
     /// current value (which may come from the cached default) before writing
     /// its inverse as an explicit override, so toggling from the setting-driven
