@@ -3371,15 +3371,24 @@ impl TerminalView {
             ctx.spawn(async {}, |me, _, ctx| me.claim_restored_queue_session(ctx));
             let queued_query_model = QueuedQueryModel::handle(ctx);
             ctx.subscribe_to_model(&queued_query_model, |me, _, event, ctx| {
-                if let QueuedQueryEvent::DroppedUnsent {
-                    terminal_view_id,
-                    rows,
-                    ..
-                } = event
-                {
-                    if *terminal_view_id == Some(me.view_id) && !me.suspended_for_close {
-                        me.restore_dropped_queue_rows(rows, ctx);
+                match event {
+                    QueuedQueryEvent::DroppedUnsent {
+                        terminal_view_id,
+                        rows,
+                        ..
+                    } => {
+                        if *terminal_view_id == Some(me.view_id) && !me.suspended_for_close {
+                            me.restore_dropped_queue_rows(rows, ctx);
+                        }
                     }
+                    // The "restored from your last session" notice is moot once the user sends,
+                    // removes, or clears queued prompts (#1040).
+                    QueuedQueryEvent::Removed { .. } | QueuedQueryEvent::Cleared { .. } => {
+                        if !me.suspended_for_close {
+                            me.dismiss_restored_queue_notice(ctx);
+                        }
+                    }
+                    _ => {}
                 }
             });
         }
@@ -23909,13 +23918,20 @@ impl TerminalView {
     }
 
     /// Appends the text (and prompt attachments) of `rows` to this view's input and shows
-    /// `notice`.
+    /// `notice` as a persistent toast.
     fn put_queue_rows_in_input(
         &mut self,
         rows: &[QueuedQuery],
         notice: String,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.append_queue_rows_to_input(rows, ctx);
+        self.notify_queue_notice(None, notice, ctx);
+    }
+
+    /// Appends the text (and prompt attachments) of `rows` to this view's input, without a
+    /// notice.
+    fn append_queue_rows_to_input(&mut self, rows: &[QueuedQuery], ctx: &mut ViewContext<Self>) {
         let restored = rows
             .iter()
             .map(QueuedQuery::text)
@@ -23935,7 +23951,39 @@ impl TerminalView {
                 context_model.append_pending_attachments(row.attachments().to_vec(), ctx);
             });
         }
-        self.notify_queue_notice(None, notice, ctx);
+    }
+
+    /// Shows the startup "restored from your last session" info notice (#1040). Unlike the
+    /// error-flavored [`Self::notify_queue_notice`], it is informational: it times out like
+    /// other info toasts and has one fixed object id so a second notice replaces the first and
+    /// [`Self::dismiss_restored_queue_notice`] can remove it.
+    fn notify_restored_queue_info(&self, text: String, ctx: &mut ViewContext<Self>) {
+        if ctx.has_singleton_model::<ToastStack>() {
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(
+                    DismissibleToast::default(text)
+                        .with_object_id(RESTORED_QUEUE_NOTICE_TOAST_ID.to_owned()),
+                    window_id,
+                    ctx,
+                );
+            });
+        }
+    }
+
+    /// Removes the restored-queue info notice once it is moot: the user sent, removed, or
+    /// cleared queued prompts (#1040).
+    fn dismiss_restored_queue_notice(&self, ctx: &mut ViewContext<Self>) {
+        if ctx.has_singleton_model::<ToastStack>() {
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                toast_stack.remove_toast_by_identifier(
+                    RESTORED_QUEUE_NOTICE_TOAST_ID.to_owned(),
+                    window_id,
+                    ctx,
+                );
+            });
+        }
     }
 
     /// Claims what the previous session left in the queue (#1027), once per launch: the first
@@ -23947,15 +23995,20 @@ impl TerminalView {
         if self.suspended_for_close || !ctx.has_singleton_model::<QueuedQueryModel>() {
             return;
         }
+        // Only the view the user is looking at may claim: the first view built at startup is
+        // often a background tab, and the orphaned text would land in an input nobody sees
+        // (#1041). An unfocused view leaves the session for `on_focus` to claim.
+        if !ctx.is_self_or_child_focused() {
+            return;
+        }
         let session = QueuedQueryModel::handle(ctx)
             .update(ctx, |model, ctx| model.take_restored_session(ctx));
         if !session.orphans.is_empty() {
-            let notice = restored_orphans_notice(session.orphans.len());
-            self.put_queue_rows_in_input(&session.orphans, notice, ctx);
+            self.append_queue_rows_to_input(&session.orphans, ctx);
+            self.notify_restored_queue_info(restored_orphans_notice(session.orphans.len()), ctx);
         }
         if session.suspended_count > 0 {
-            self.notify_queue_notice(
-                None,
+            self.notify_restored_queue_info(
                 restored_suspended_notice(session.suspended_count),
                 ctx,
             );
@@ -31712,6 +31765,11 @@ impl View for TerminalView {
     }
 
     fn on_focus(&mut self, focus_ctx: &FocusContext, ctx: &mut ViewContext<Self>) {
+        // A restored queue session is claimed by the first view the user actually focuses
+        // (#1041); a no-op once claimed.
+        if FeatureFlag::QueueSlashCommand.is_enabled() {
+            self.claim_restored_queue_session(ctx);
+        }
         if focus_ctx.is_self_focused() {
             self.maybe_report_focus_in(ctx);
             ctx.dispatch_typed_action(&PaneGroupAction::HandleFocusChange);
@@ -32700,6 +32758,9 @@ fn scoped_queue_notice(scope: Option<&str>, text: String) -> String {
     }
 }
 
+/// Object id of the startup "restored from your last session" info toast (#1040).
+const RESTORED_QUEUE_NOTICE_TOAST_ID: &str = "queued-prompts-restored-notice";
+
 /// The notice shown at startup when `count` queued prompts from the last session were put back
 /// in their conversations' queues, paused (#1027).
 fn restored_suspended_notice(count: usize) -> String {
@@ -32720,7 +32781,7 @@ fn restored_suspended_notice(count: usize) -> String {
 fn restored_orphans_notice(count: usize) -> String {
     format!(
         "{count} queued prompt(s) from your last session had no conversation to return to; \
-         their text is in the input."
+         their text is in the input of this tab."
     )
 }
 
