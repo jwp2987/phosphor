@@ -2125,7 +2125,7 @@ impl GridHandler {
         let cursor = self.grid.cursor.point;
         let mut row = cursor.row.0;
         // A cursor with a pending wrap sits on the last written cell, not after it.
-        let mut end_col = if cursor.input_needs_wrap {
+        let mut end_col = if self.grid.cursor.input_needs_wrap {
             (cursor.col + 1).min(columns)
         } else {
             cursor.col.min(columns)
