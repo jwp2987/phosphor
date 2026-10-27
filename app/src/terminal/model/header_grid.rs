@@ -684,12 +684,50 @@ impl HeaderGrid {
     /// the model as context should show the command the agent actually asked for. Does nothing
     /// once the grid is finished or when the command start is unknown.
     pub fn replace_command_text(&mut self, text: &str) {
+        self.replace_command_text_impl(text, false);
+    }
+
+    /// Replaces the command text of a finished grid with `text`, when the grid shows `real`
+    /// plus nothing but characters of the typed-ahead line `typed` (#1033).
+    ///
+    /// The shell echoes keys typed while a command finishes into that command's grid, around
+    /// the command itself ("BURSecho BURST45"). Whitespace aside, the shown text must contain
+    /// `real` exactly once, and everything around it must be a subsequence of `typed`; any
+    /// other text is left alone. Returns whether the header was changed.
+    pub fn repair_typeahead_echo(&mut self, real: &str, typed: &str) -> bool {
+        let squash = |s: &str| -> String { s.chars().filter(|c| !c.is_whitespace()).collect() };
+        let shown = squash(&self.command_to_string());
+        let real_squashed = squash(real);
+        let typed = squash(typed);
+        if real_squashed.is_empty() || typed.is_empty() || shown == real_squashed {
+            return false;
+        }
+        let mut occurrences = shown.match_indices(&real_squashed);
+        let Some((at, _)) = occurrences.next() else {
+            return false;
+        };
+        if occurrences.next().is_some() {
+            return false;
+        }
+        let residue = shown[..at]
+            .chars()
+            .chain(shown[at + real_squashed.len()..].chars());
+        let mut typed_chars = typed.chars();
+        for r in residue {
+            if !typed_chars.any(|t| t == r) {
+                return false;
+            }
+        }
+        self.replace_command_text_impl(real, true)
+    }
+
+    fn replace_command_text_impl(&mut self, text: &str, allow_finished: bool) -> bool {
         let Some(CommandStartPoint::CommandStart { point }) = self.cached_command_start_point
         else {
-            return;
+            return false;
         };
-        if self.prompt_and_command_grid.finished() {
-            return;
+        if self.prompt_and_command_grid.finished() && !allow_finished {
+            return false;
         }
         // The shell's echo of Enter leaves the cursor at column 0 of a later row; keep that shape.
         let cursor = self.prompt_and_command_grid.grid_handler().cursor_point();
@@ -699,7 +737,7 @@ impl HeaderGrid {
             .grid_handler_mut()
             .truncate_from_point(point)
         {
-            return;
+            return false;
         }
         let mut bytes = visible_command_text(text)
             .replace('\n', "\r\n")
@@ -708,6 +746,10 @@ impl HeaderGrid {
             bytes.extend_from_slice(b"\r\n");
         }
         Processor::new().parse_bytes(&mut self.prompt_and_command_grid, &bytes, &mut io::sink());
+        if allow_finished {
+            self.prompt_and_command_grid.reset_finished_caches();
+        }
+        true
     }
 
     pub fn is_command_finished(&self) -> bool {
