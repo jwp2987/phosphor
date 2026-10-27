@@ -3067,3 +3067,53 @@ fn test_nu_real_subshell_bootstrap_with_a_lost_chunk_is_skipped_with_a_notice() 
         std::fs::remove_dir_all(&session.home).ok();
     });
 }
+
+/// #1047: PSReadLine (Windows PowerShell 5.1) crashed with `SetCursorPosition ... Actual value was
+/// -2` on one Phosphorize in two. The ^K/^U line-clearing prefix is POSIX-line-editor only, and
+/// the PowerShell lines need a real gap between them.
+#[test]
+fn powershell_bootstrap_is_psreadline_safe() {
+    assert!(!subshell_bootstrap_clears_line_editor(Some(
+        ShellType::PowerShell
+    )));
+    for shell in [
+        None,
+        Some(ShellType::Bash),
+        Some(ShellType::Zsh),
+        Some(ShellType::Fish),
+        Some(ShellType::Nu),
+    ] {
+        assert!(subshell_bootstrap_clears_line_editor(shell), "{shell:?}");
+        assert_eq!(
+            subshell_bootstrap_line_delay(shell),
+            std::time::Duration::from_millis(30),
+            "{shell:?}"
+        );
+    }
+    assert!(
+        subshell_bootstrap_line_delay(Some(ShellType::PowerShell))
+            >= std::time::Duration::from_millis(200)
+    );
+}
+
+#[test]
+fn powershell_bootstrap_lines_carry_no_control_characters() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let lines = init_subshell_command_lines(
+                Some(ShellType::PowerShell),
+                &[],
+                SessionId::from(1u64),
+                ctx,
+            );
+            assert!(lines.len() >= 2);
+            for line in &lines {
+                assert!(
+                    !line.chars().any(char::is_control),
+                    "a control character would reach PSReadLine as typed input: {line:?}"
+                );
+            }
+        });
+    });
+}

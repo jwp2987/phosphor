@@ -289,6 +289,28 @@ pub(crate) const MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES: usize = 900;
 /// echo.
 pub(crate) const SUBSHELL_BOOTSTRAP_CHUNK_SIZE: usize = 2048;
 
+/// Whether the first bootstrap line is preceded by `^K ^U` to clear whatever the shell's line
+/// editor holds. Not for PowerShell (#1047): PSReadLine has no `^K`/`^U` binding in its default
+/// Windows edit mode, so it takes them as typed characters and lays out the line with control
+/// glyphs whose width its cursor arithmetic does not agree with. On Windows PowerShell 5.1
+/// (PSReadLine 2.0) that surfaced as `SetCursorPosition ... Actual value was -2` and a dead line
+/// editor, on one launch in two.
+pub(crate) fn subshell_bootstrap_clears_line_editor(shell_type: Option<ShellType>) -> bool {
+    shell_type != Some(ShellType::PowerShell)
+}
+
+/// Pause between consecutive typed bootstrap lines. PSReadLine redraws on every line it reads and
+/// the first PowerShell line runs PSReadLine cmdlets (cold on Windows PowerShell 5.1); input that
+/// arrives while it is mid-redraw is what its cursor bookkeeping cannot survive (#1047), so
+/// PowerShell gets a much longer gap than the tty-queue-driven 30 ms the other shells use.
+pub(crate) fn subshell_bootstrap_line_delay(shell_type: Option<ShellType>) -> std::time::Duration {
+    if shell_type == Some(ShellType::PowerShell) {
+        std::time::Duration::from_millis(300)
+    } else {
+        std::time::Duration::from_millis(30)
+    }
+}
+
 /// Splits `script` into the paced writes of [`SUBSHELL_BOOTSTRAP_CHUNK_SIZE`] bytes each.
 pub(crate) fn subshell_bootstrap_chunks(script: &[u8]) -> Vec<Vec<u8>> {
     script

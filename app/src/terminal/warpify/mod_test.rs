@@ -410,3 +410,41 @@ fn nu_bootstrap_snippet_appends_a_valid_auto_phosphorize_block_to_config_nu() {
     assert!(printed.contains(r#""tmux": false }}"#), "{printed:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #1047: the "Session Phosphorized" advice for a PowerShell on a Windows host must target
+/// `$PROFILE` (not `~/.config/powershell/...`), must not run `uname`, and must create the
+/// profile when it does not exist yet.
+#[test]
+fn windows_powershell_success_block_uses_profile_and_no_uname() {
+    let bytes = super::windows_powershell_subshell_success_block_bytes(false);
+    let command = String::from_utf8(bytes).expect("utf8");
+    assert!(command.contains("-Path $PROFILE"), "{command}");
+    assert!(command.contains("New-Item -ItemType File -Force -Path $PROFILE"));
+    assert!(!command.contains("uname)"), "{command}");
+    assert!(!command.contains(".config"), "{command}");
+    assert!(command.contains("\"shell`\": `\"pwsh"), "{command}");
+    assert!(!command.contains('%'), "unfilled template char: {command}");
+    let bytes = super::windows_powershell_subshell_success_block_bytes(true);
+    let no_tmux = String::from_utf8(bytes).expect("utf8");
+    assert!(no_tmux.contains("\"tmux\": false"), "{no_tmux}");
+}
+
+/// The unix flavour is unchanged: pwsh on Linux/macOS keeps the XDG profile path and `uname`.
+#[test]
+fn unix_powershell_success_block_keeps_xdg_profile_and_uname() {
+    let info = SubshellInitializationInfo {
+        spawning_command: "pwsh".to_owned(),
+        was_triggered_by_rc_file_snippet: false,
+        env_var_collection_name: None,
+        ssh_connection_info: None,
+    };
+    let (bytes, _) = subshell_bootstrap_success_block_bytes(
+        &info,
+        ShellType::PowerShell,
+        TargetOS::Linux,
+        false,
+    );
+    let command = String::from_utf8(bytes).expect("utf8");
+    assert!(command.contains(".config/powershell/Microsoft.PowerShell_profile.ps1"));
+    assert!(command.contains("$(uname)"));
+}

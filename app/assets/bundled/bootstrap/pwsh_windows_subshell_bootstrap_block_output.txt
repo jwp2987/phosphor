@@ -1,0 +1,4 @@
+if (-not (Microsoft.PowerShell.Management\Test-Path -LiteralPath $PROFILE)) { Microsoft.PowerShell.Management\New-Item -ItemType File -Force -Path $PROFILE | Microsoft.PowerShell.Core\Out-Null }; Microsoft.PowerShell.Management\Add-Content -Value ('
+# Auto-Phosphorize
+if ([Environment]::UserInteractive) { Microsoft.PowerShell.Utility\Write-Host "$([char]0x1b)]9278;f;{`"hook`": `"SourcedRcFileForWarp`", `"value`": { `"shell`": `"%`", `"uname`": `"Windows`"% }}`a" -NoNewline }
+') -Path $PROFILE

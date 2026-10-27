@@ -17251,7 +17251,7 @@ impl TerminalView {
         // than MAX_CANON, 1024 bytes on macOS). The first goes out now; the rest follow at a
         // short pace so a shell that has not started reading yet is never handed more than its
         // tty input queue holds.
-        const SUBSHELL_BOOTSTRAP_LINE_DELAY: Duration = Duration::from_millis(30);
+        let line_delay = crate::terminal::bootstrap::subshell_bootstrap_line_delay(shell_type);
         let all_lines = init_subshell_command_lines(shell_type, &self.env_vars, session_id, ctx);
         // A bootstrap still in flight belongs to an older shell: release what it held first.
         self.finish_subshell_bootstrap(ctx);
@@ -17276,7 +17276,12 @@ impl TerminalView {
             self.model.lock().block_list().active_block().id().clone(),
             Instant::now(),
         ));
-        self.clear_line_editor_and_write_to_pty(first.into_bytes(), ctx);
+        if crate::terminal::bootstrap::subshell_bootstrap_clears_line_editor(shell_type) {
+            self.clear_line_editor_and_write_to_pty(first.into_bytes(), ctx);
+        } else {
+            // PSReadLine (#1047): no ^K/^U prefix, the first line already starts with a space.
+            self.write_to_pty(first.into_bytes(), ctx);
+        }
         self.write_to_pty(vec![escape_sequences::C0::CR], ctx);
         // The lines sit in the tty (and are echoed by it) until the shell reads them, which an rc
         // file that sleeps delays. Once the ceiling passes with setup still unfinished, say so
@@ -17316,7 +17321,7 @@ impl TerminalView {
         });
         for (index, line) in rest.into_iter().enumerate() {
             ctx.spawn(
-                Timer::after(SUBSHELL_BOOTSTRAP_LINE_DELAY * (index as u32 + 1)),
+                Timer::after(line_delay * (index as u32 + 1)),
                 move |me, _, ctx| me.write_subshell_bootstrap_line(generation, line, ctx),
             );
         }
