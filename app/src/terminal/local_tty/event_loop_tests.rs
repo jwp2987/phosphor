@@ -647,3 +647,81 @@ fn a_fatal_read_error_still_stops_the_loop() {
             .is_err()
     );
 }
+
+/// A multi-line command as `bytes_to_execute_command` writes it: one bracketed paste of `n`
+/// lines plus the submit CR.
+fn big_paste(n: usize) -> Vec<u8> {
+    let mut bytes = BRACKETED_PASTE_START.to_vec();
+    for i in 0..n {
+        bytes.extend_from_slice(format!("# comment line {i}\n").as_bytes());
+    }
+    bytes.extend_from_slice(BRACKETED_PASTE_END);
+    bytes.push(b'\r');
+    bytes
+}
+
+/// #1046: a big multi-line submission is written a tty-buffer at a time, and a ^C queued behind
+/// it waited for all of it. Discarding the queued input drops the unwritten lines and whatever is
+/// queued after them, closes the half-written bracketed paste, and keeps query replies.
+#[test]
+fn discard_queued_input_drops_the_unwritten_lines_of_a_big_paste() {
+    let mut state = State::default();
+    let paste = big_paste(2500);
+    assert!(paste.len() > 40_000);
+    state.queue_input(Cow::Owned(paste));
+    state.queue_input(Cow::Borrowed(b"echo typed ahead\r"));
+    state.queue_response(b"\x1b[?62c".to_vec(), None);
+
+    // The tty accepts only the first 4 KiB.
+    state.ensure_next();
+    let mut current = state.take_current().expect("the paste is being written");
+    current.advance(4096);
+    state.set_current(Some(current));
+
+    state.discard_queued_input();
+    state.queue_input(Cow::Borrowed(&[0x03]));
+
+    let rest = drain(&mut state);
+    assert_eq!(
+        rest,
+        vec![
+            BRACKETED_PASTE_END.to_vec(),
+            b"\x1b[?62c".to_vec(),
+            vec![0x03]
+        ],
+        "only the paste's close, the query reply and the ^C may still be written"
+    );
+}
+
+/// A write that had not started, or was cut outside a paste (a raw multi-line write to a shell
+/// without bracketed paste), is dropped without a stray paste-close.
+#[test]
+fn discard_queued_input_adds_no_paste_close_outside_a_paste() {
+    let mut state = State::default();
+    let raw: Vec<u8> = (0..2500)
+        .flat_map(|i| format!("# comment line {i}\r").into_bytes())
+        .collect();
+    state.queue_input(Cow::Owned(raw));
+    state.ensure_next();
+    let mut current = state.take_current().unwrap();
+    current.advance(4096);
+    state.set_current(Some(current));
+    state.queue_input(Cow::Owned(big_paste(10)));
+
+    state.discard_queued_input();
+
+    assert!(drain(&mut state).is_empty());
+}
+
+/// A paste that was fully written before the discard is not closed a second time.
+#[test]
+fn discard_queued_input_does_not_double_close_a_finished_paste() {
+    let mut state = State::default();
+    let mut writing = Writing::new(Cow::Owned(big_paste(3)), false);
+    let end_of_paste = writing.source.len() - 1;
+    writing.advance(end_of_paste);
+    assert!(!writing.cut_inside_bracketed_paste());
+    state.set_current(Some(writing));
+    state.discard_queued_input();
+    assert!(drain(&mut state).is_empty());
+}

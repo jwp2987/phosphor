@@ -1493,6 +1493,8 @@ impl<T: EventLoopSender> PtyController<T> {
     /// Interrupts the pty's foreground program with SIGINT rather than a ^C byte, which a raw
     /// tty would hand to the program as data (#1001). Falls back to the byte.
     pub fn sigint_foreground_or_write_etx(&mut self, ctx: &mut ModelContext<Self>) {
+        // Whatever of a big paste is still waiting to be written must not outlive the interrupt.
+        self.send_message_to_event_loop(Message::DiscardQueuedInput, ctx);
         if self.foreground_sigint.as_ref().is_some_and(|f| f()) {
             return;
         }
@@ -1530,6 +1532,12 @@ impl<T: EventLoopSender> PtyController<T> {
             | PtyWrite::TmuxCommand(_)
             | PtyWrite::RunNativeShellCompletions(_) => None,
         };
+
+        // A lone ^C is an interrupt: it cancels what is still queued for the pty (#1046).
+        let is_interrupt = matches!(
+            &write,
+            PtyWrite::Bytes { bytes } if bytes.as_ref() == [escape_sequences::C0::ETX]
+        );
 
         let (bytes_to_write, is_for_command, on_write_fn, raw_tmux_command) = match write {
             PtyWrite::Command {
@@ -1618,6 +1626,9 @@ impl<T: EventLoopSender> PtyController<T> {
             return true;
         }
 
+        if is_interrupt {
+            self.send_message_to_event_loop(Message::DiscardQueuedInput, ctx);
+        }
         self.send_message_to_event_loop(Message::Input(bytes_to_write), ctx);
         true
     }

@@ -2467,3 +2467,44 @@ fn nu_rc_file_bootstrap_sources_the_file_with_a_space_led_line_and_cr() {
         drop(model_events_tx);
     });
 }
+
+/// #1046: a ^C written to the pty first tells the event loop to drop the input it has not
+/// written yet (the unwritten lines of a big multi-line submission), then goes out itself.
+#[test]
+fn ctrl_c_discards_queued_input_before_the_interrupt_is_written() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        controller.update(&mut app, |controller, ctx| {
+            controller.write_bytes(&b"echo not an interrupt\r"[..], ctx);
+            controller.write_bytes(&[escape_sequences::C0::ETX][..], ctx);
+        });
+
+        let messages = sender.messages.lock();
+        assert_eq!(messages.len(), 3, "{messages:?}");
+        assert_input_matches(&messages[0], b"echo not an interrupt\r".to_vec());
+        assert!(matches!(messages[1], Message::DiscardQueuedInput));
+        assert_input_matches(&messages[2], vec![escape_sequences::C0::ETX]);
+
+        drop(model_events_tx);
+    });
+}
