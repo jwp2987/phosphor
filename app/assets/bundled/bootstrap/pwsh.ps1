@@ -243,8 +243,8 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
     }
 
     function Warp-Preexec([string]$command) {
-        # Phosphor (#935): keep a multi-line command's lines apart in the title.
-        $HOST.UI.RawUI.WindowTitle = ($command -replace "\r?\n", ' ; ')
+        # Phosphor (#935): title a multi-line command with its first line and an ellipsis.
+        $HOST.UI.RawUI.WindowTitle = ($command -replace "(?s)\r?\n.*", [string][char]0x2026)
         $preexecMsg = @{
             hook = 'Preexec'
             value = @{

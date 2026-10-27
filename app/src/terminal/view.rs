@@ -3398,9 +3398,9 @@ impl TerminalView {
         // into the input instead of vanishing (#1026). The panel needs the model under the same
         // flag, so it is registered whenever this is.
         if FeatureFlag::QueueSlashCommand.is_enabled() {
-            // Prompts left in the queue by the previous session (#1027). Deferred one tick so
-            // the view is in a window before the notice toast is added.
-            ctx.spawn(async {}, |me, _, ctx| me.claim_restored_queue_session(ctx));
+            // Prompts left in the queue by the previous session (#1027) are claimed by the
+            // workspace for its active tab's session (#1041), not by whichever view is built or
+            // focused first.
             let queued_query_model = QueuedQueryModel::handle(ctx);
             ctx.subscribe_to_model(&queued_query_model, |me, _, event, ctx| {
                 match event {
@@ -24222,19 +24222,15 @@ impl TerminalView {
         }
     }
 
-    /// Claims what the previous session left in the queue (#1027), once per launch: the first
-    /// terminal view to ask gets it. Rows whose conversation still exists are already back in
+    /// Claims what the previous session left in the queue (#1027), once per launch. Called by
+    /// the workspace on its active tab's focused session once restore has finished (#1041): a
+    /// view cannot tell on its own whether it is the tab the user will land on, since focus
+    /// moves through the restored tabs while they are built. Rows whose conversation still exists are already back in
     /// its queue, suspended, so this only announces them; rows whose conversation is gone have
     /// no queue to return to, so their text goes into this view's input. Either way the user
     /// is told, and nothing is sent.
-    fn claim_restored_queue_session(&mut self, ctx: &mut ViewContext<Self>) {
+    pub(crate) fn claim_restored_queue_session(&mut self, ctx: &mut ViewContext<Self>) {
         if self.suspended_for_close || !ctx.has_singleton_model::<QueuedQueryModel>() {
-            return;
-        }
-        // Only the view the user is looking at may claim: the first view built at startup is
-        // often a background tab, and the orphaned text would land in an input nobody sees
-        // (#1041). An unfocused view leaves the session for `on_focus` to claim.
-        if !ctx.is_self_or_child_focused() {
             return;
         }
         let session = QueuedQueryModel::handle(ctx)
@@ -32024,11 +32020,6 @@ impl View for TerminalView {
     }
 
     fn on_focus(&mut self, focus_ctx: &FocusContext, ctx: &mut ViewContext<Self>) {
-        // A restored queue session is claimed by the first view the user actually focuses
-        // (#1041); a no-op once claimed.
-        if FeatureFlag::QueueSlashCommand.is_enabled() {
-            self.claim_restored_queue_session(ctx);
-        }
         if focus_ctx.is_self_focused() {
             self.maybe_report_focus_in(ctx);
             ctx.dispatch_typed_action(&PaneGroupAction::HandleFocusChange);
@@ -33084,7 +33075,7 @@ fn restored_suspended_notice(count: usize) -> String {
 fn restored_orphans_notice(count: usize) -> String {
     format!(
         "{count} queued prompt(s) from your last session had no conversation to return to; \
-         their text is in the input of this tab."
+         their text is in the input of the tab that was active."
     )
 }
 

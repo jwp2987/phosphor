@@ -582,12 +582,12 @@ fn test_zsh_hooks_survive_strict_options_and_failing_precmd() {
     );
 }
 
-/// #935: a pasted multi-line command must title the tab with a visible separator instead of
-/// running the lines together ("gradle onegradle two"). Runs the real `warp_title` of the bash
-/// bootstrap with a stub `__warp_emit`; skipped, visibly, when bash is missing.
+/// #935: a pasted multi-line command must title the tab with its first line and an ellipsis
+/// instead of running the lines together ("gradle onegradle two"). Runs the real `warp_title`
+/// of the bash bootstrap with a stub `__warp_emit`; skipped, visibly, when bash is missing.
 #[cfg(unix)]
 #[test]
-fn bash_warp_title_joins_multiline_commands_with_a_separator() {
+fn bash_warp_title_shows_first_line_and_ellipsis_for_multiline_commands() {
     use std::process::Command;
 
     let bash = include_str!("../../assets/bundled/bootstrap/bash_body.sh");
@@ -602,8 +602,9 @@ fn bash_warp_title_joins_multiline_commands_with_a_separator() {
     let function = &bash[start..end];
     let script = format!("__warp_emit() {{ printf \"$@\"; }}\n{function}\nwarp_title \"$1\"\n");
     for (input, expected) in [
-        ("gradle one\ngradle two", "gradle one ; gradle two"),
-        ("a\r\nb", "a ; b"),
+        ("gradle one\ngradle two", "gradle one…"),
+        ("a\r\nb", "a…"),
+        ("echo PL1\necho PL2\necho PL3", "echo PL1…"),
         ("ls -la", "ls -la"),
     ] {
         let output = match Command::new("bash")

@@ -434,9 +434,12 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
       # truncating the title's len to 25 characters and leading ".."
       local title_text=${1-}
       # Phosphor (#935): a pasted multi-line command would otherwise lose its newlines in the
-      # terminal and run the lines together ("gradle onegradle two"); show a visible separator.
+      # terminal and run the lines together ("gradle onegradle two"); title the tab with the
+      # first line and an ellipsis instead (a ';' separator would also split the OSC title).
       title_text=${title_text//$'\r'/}
-      title_text=${title_text//$'\n'/ ; }
+      if [[ "$title_text" == *$'\n'* ]]; then
+        title_text="${title_text%%$'\n'*}…"
+      fi
       tmp_len=$((${#title_text}-25)) # starting character's position
       len=$((tmp_len>0 ? tmp_len : 0)) # account for the shorter strings
       if [[ $len -ne 0 ]]; then

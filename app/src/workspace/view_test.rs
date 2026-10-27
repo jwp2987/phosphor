@@ -7637,3 +7637,57 @@ fn live_conversation_read_only_viewer_opens_once_and_never_duplicates_the_conver
         });
     });
 }
+
+/// Queued prompts whose conversation is gone belong in the active tab's input, not in the
+/// first restored tab's (#1041). Fails without the fix: each view claimed on its own, so the
+/// first restored tab (which holds focus while the tabs are built) took the text even though the
+/// last-active tab was another one.
+#[test]
+fn restored_orphan_queue_goes_to_the_active_tab_not_the_first() {
+    let _queue_flag = FeatureFlag::QueueSlashCommand.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
+
+        let workspace = mock_workspace(&mut app);
+        let mut snapshot = workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            workspace.snapshot(ctx.window_id(), false, ctx)
+        });
+        assert_eq!(snapshot.tabs.len(), 3);
+        snapshot.active_tab_index = 1;
+
+        let row = crate::persistence::model::QueuedPromptRow {
+            id: "orphan-row".to_owned(),
+            conversation_id: crate::ai::agent::conversation::AIConversationId::new().to_string(),
+            position: 0,
+            kind: "prompt".to_owned(),
+            text: "lost prompt".to_owned(),
+            origin: "queue_slash_command".to_owned(),
+            created_at: chrono::Utc::now().naive_utc(),
+        };
+        crate::ai::blocklist::QueuedQueryModel::handle(&app)
+            .update(&mut app, |model, ctx| model.restore_persisted(vec![row], ctx));
+
+        let restored = restored_workspace(&mut app, snapshot);
+        restored.update(&mut app, |workspace, ctx| {
+            assert_eq!(workspace.active_tab_index(), 1);
+            workspace.claim_restored_queue_session(ctx);
+        });
+
+        let input_of_tab = |app: &App, index: usize| {
+            restored.read(app, |workspace, ctx| {
+                let view = workspace.tabs[index]
+                    .pane_group
+                    .read(ctx, |pane_group, ctx| pane_group.active_session_view(ctx))
+                    .expect("tab should have a terminal session");
+                view.read(ctx, |view, ctx| view.input().as_ref(ctx).buffer_text(ctx))
+            })
+        };
+        assert_eq!(input_of_tab(&app, 1), "lost prompt");
+        assert_eq!(input_of_tab(&app, 0), "");
+        assert_eq!(input_of_tab(&app, 2), "");
+    });
+}

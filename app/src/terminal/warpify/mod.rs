@@ -47,6 +47,17 @@ pub fn subshell_display_name(spawning_command: &str) -> Option<&str> {
     words.next()
 }
 
+/// What the block-side subshell flag shows for `source`: a command is reduced to its
+/// [`subshell_display_name`], so `AUTOP=1 zsh` is flagged `zsh`, matching the chip (#1037).
+pub fn subshell_flag_source(source: &SubshellSource) -> SubshellSource {
+    match source {
+        SubshellSource::Command(cmd) => subshell_display_name(cmd)
+            .map(|name| SubshellSource::Command(name.to_owned()))
+            .unwrap_or_else(|| source.clone()),
+        SubshellSource::EnvVarCollection(_) => source.clone(),
+    }
+}
+
 fn is_env_assignment_word(word: &str) -> bool {
     let Some((name, _)) = word.split_once('=') else {
         return false;

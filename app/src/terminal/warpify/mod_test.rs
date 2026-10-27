@@ -289,6 +289,27 @@ fn subshell_display_name_skips_env_assignments_and_env_prefix() {
     assert_eq!(n("A=1"), None);
 }
 
+#[test]
+fn subshell_flag_source_uses_the_display_name() {
+    use super::{SubshellSource, subshell_flag_source as f};
+    assert_eq!(
+        f(&SubshellSource::Command("AUTOP=1 zsh".to_owned())),
+        SubshellSource::Command("zsh".to_owned())
+    );
+    assert_eq!(
+        f(&SubshellSource::Command("docker exec -it c bash".to_owned())),
+        SubshellSource::Command("docker".to_owned())
+    );
+    assert_eq!(
+        f(&SubshellSource::Command("A=1".to_owned())),
+        SubshellSource::Command("A=1".to_owned())
+    );
+    assert_eq!(
+        f(&SubshellSource::EnvVarCollection("c".to_owned())),
+        SubshellSource::EnvVarCollection("c".to_owned())
+    );
+}
+
 fn nu_subshell_info() -> SubshellInitializationInfo {
     SubshellInitializationInfo {
         spawning_command: "nu".to_owned(),
