@@ -14387,6 +14387,51 @@ fn text_typed_during_a_stalled_subshell_setup_is_held_then_delivered_in_order() 
     })
 }
 
+/// #1048: keys (text and Enter) typed during a PowerShell subshell setup are not written when the
+/// first prompt's `Precmd` arrives (PSReadLine is not reading yet and drops the Enter); they stay
+/// held, with later typing queued behind them, and arrive once, in order, when the settle timer
+/// fires. Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn powershell_setup_keys_are_released_after_the_first_prompt_settles_in_order() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            let block_id = view.model.lock().block_list().active_block().id().clone();
+            view.subshell_setup_shell_type = Some(ShellType::PowerShell);
+            view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+            for key in [b"echo T1".to_vec(), b"\r".to_vec()] {
+                assert!(view.write_user_bytes_to_pty(key, ctx));
+            }
+            // The first prompt is drawn: nothing may be written yet.
+            view.release_held_setup_input_if_subshell_ready(ctx);
+            assert!(view.subshell_setup_release_scheduled);
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "PSReadLine is not reading yet: the Enter would be lost"
+            );
+            // Typed during the settle window: queued behind, not written ahead.
+            assert!(view.write_user_bytes_to_pty(b"x".to_vec(), ctx));
+            assert!(pty_writes.borrow().is_empty());
+            // A second Precmd does not schedule a second release.
+            view.release_held_setup_input_if_subshell_ready(ctx);
+            view.release_scheduled_subshell_setup_held_bytes(ctx);
+            assert!(!view.subshell_setup_release_scheduled);
+        });
+        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(written, b"echo T1\rx".to_vec(), "held keys arrive once, in order");
+    })
+}
+
 /// #1014: the typed-input hold must not swallow an answer to a prompt the shell is showing. With
 /// `Password: ` as the last visible output, typing reaches the pty at once; with silent output it
 /// is held. Not compiled/run when written (no builds in the fix pass).
