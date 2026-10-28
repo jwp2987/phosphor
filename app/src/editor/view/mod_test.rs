@@ -3705,6 +3705,41 @@ fn test_autocomplete_symbols_veto_inserts_literally() {
     });
 }
 
+/// #1112: the opening quote can sit in text the editor did not type (a typeahead report
+/// inserted in front). A quote typed while that quote is open is the closing one and must
+/// not pair, even after a bracket pair (`echo "a b ` + `(d)"`).
+#[test]
+fn test_autocomplete_symbols_closing_quote_after_bracket_does_not_pair() {
+    for (base, typed, want) in [
+        ("echo \"a b ", "(d)\"", "echo \"a b (d)\""),
+        ("echo \"a b ", "[d]\"", "echo \"a b [d]\""),
+        ("echo 'a b ", "(d)'", "echo 'a b (d)'"),
+    ] {
+        App::test((), |mut app| async move {
+            initialize_app(&mut app);
+            let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+                let mut editor = EditorView::new_with_base_text(base, Default::default(), ctx);
+                editor.set_autocomplete_symbols_allowed(true);
+                let end = DisplayPoint::new(0, base.chars().count() as u32);
+                editor.select_ranges(vec![end..end], ctx).unwrap();
+                editor
+            });
+            for c in typed.chars() {
+                view.update(&mut app, |editor, ctx| {
+                    editor.user_insert(&c.to_string(), ctx)
+                });
+            }
+            view.read(&app, |editor, ctx| {
+                assert_eq!(
+                    editor.buffer_text(ctx),
+                    want,
+                    "base {base:?} typed {typed:?}"
+                );
+            });
+        });
+    }
+}
+
 #[test]
 fn test_autocomplete_symbols() {
     App::test((), |mut app| async move {

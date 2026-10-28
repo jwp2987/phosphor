@@ -1173,6 +1173,30 @@ impl EditorModel {
                 }
             }
 
+            // A quote typed while that same quote is already open is the closing one (the opener
+            // may sit in text the editor did not type, e.g. a typeahead report inserted in
+            // front, #1112), so it never pairs: `echo "a b (d)` + `"` must not become `...""`.
+            if matches!(text, "\"" | "'") {
+                let open = if text == "\"" {
+                    QuoteState::Double
+                } else {
+                    QuoteState::Single
+                };
+                let buffer_text = self.buffer_text(ctx);
+                let closing = self
+                    .selection_to_char_offset_ranges(ctx)
+                    .iter()
+                    .any(|range| {
+                        let prefix: String =
+                            buffer_text.chars().take(range.start.as_usize()).collect();
+                        quote_state(&prefix) == open
+                    });
+                if closing {
+                    self.insert_internal(text, None, SelectionInsertion::No, ctx);
+                    return;
+                }
+            }
+
             let buffer = self.buffer(ctx);
             // Check whether all of the current cursors are not immediately next to any alphanumeric characters.
             let not_alphanumeric = self.selections(ctx).iter().all(|selection| {
