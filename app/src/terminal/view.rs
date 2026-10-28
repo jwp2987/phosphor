@@ -13790,6 +13790,16 @@ impl TerminalView {
                     gate.managed = true;
                 }
             }
+            // #1085: a precmd after an EARLIER event saw the remote bootstrap end is the remote
+            // shell's first prompt, where the gate hands input over. (The bootstrap's own
+            // precmd, before its MOTD and rc files, can be handled after the model already
+            // finished bootstrapping; it comes before that observation, so it never counts.)
+            if matches!(event, ModelEvent::Handler(AnsiHandlerEvent::Precmd))
+                && let Some(gate) = self.ssh_connect_gate.as_mut()
+                && gate.bootstrap_done_at.is_some()
+            {
+                gate.first_prompt_seen = true;
+            }
             self.refresh_ssh_connect_gate();
         }
         match event {
@@ -32861,6 +32871,10 @@ fn choice_block_owns_input(
 /// How long after the ssh block ended cleanly (the remote shell's first precmd) the gate keeps
 /// holding keys while it waits for the remote session to register (#983).
 const SSH_CONNECT_POST_BLOCK_GRACE: Duration = Duration::from_secs(5);
+/// Longest the gate keeps holding after the announced remote session finished bootstrapping
+/// while it waits for that shell's first prompt (#1085). The prompt is one precmd away; this
+/// only bounds a remote whose prompt never comes, so it cannot own the keyboard.
+const SSH_CONNECT_FIRST_PROMPT_GRACE: Duration = Duration::from_secs(2);
 
 /// State of one ssh connect window (#983). Pure so the transitions are unit-testable.
 #[derive(Debug, Clone)]
@@ -32881,6 +32895,12 @@ struct SshConnectGate {
     managed: bool,
     /// The block the armed command runs in; only its completion applies to the gate.
     block_id: Option<BlockId>,
+    /// When the announced remote session was first seen gone (bootstrapped, or exited) (#1085).
+    /// From then until the first prompt the remote bootstrap is still running: a key written to
+    /// the tty now is remote typeahead, which the shell hands back in pieces at that prompt.
+    bootstrap_done_at: Option<Instant>,
+    /// The first prompt (precmd) after the bootstrap ended has been handled (#1085).
+    first_prompt_seen: bool,
 }
 
 impl SshConnectGate {
@@ -32894,6 +32914,8 @@ impl SshConnectGate {
             failed: false,
             managed: false,
             block_id: None,
+            bootstrap_done_at: None,
+            first_prompt_seen: false,
         }
     }
 
@@ -32917,9 +32939,14 @@ impl SshConnectGate {
         {
             return true;
         }
-        // The announced session came up (or exited): the remote shell owns input now.
+        // The announced session came up (or exited). The remote shell owns input once it shows
+        // its first prompt, not at `Bootstrapped`: the bootstrap is still finishing then, and a
+        // key written to the tty in that gap became remote typeahead that the shell reported back
+        // at the prompt in pieces, merged with the keys the editor took meanwhile (#1085).
         if self.saw_pending && !pending {
-            return true;
+            let done_at = *self.bootstrap_done_at.get_or_insert(now);
+            return self.first_prompt_seen
+                || now.saturating_duration_since(done_at) >= SSH_CONNECT_FIRST_PROMPT_GRACE;
         }
         // The ssh block ended cleanly but no remote session ever registered.
         !pending
@@ -32928,10 +32955,13 @@ impl SshConnectGate {
                 .is_some_and(|at| now.saturating_duration_since(at) >= SSH_CONNECT_POST_BLOCK_GRACE)
     }
 
-    /// The no-session half: hold keys until something visible was printed, or for the whole
-    /// post-block bootstrap wait. Full-screen programs never hold.
+    /// The no-session half: hold keys until something visible was printed, for the whole
+    /// post-block bootstrap wait, and from the end of the remote bootstrap to its first prompt
+    /// (#1085). Full-screen programs never hold.
     fn drops_keys(&self, alt_screen: bool) -> bool {
-        !alt_screen && !self.failed && (self.block_done || !self.output_seen)
+        !alt_screen
+            && !self.failed
+            && (self.block_done || !self.output_seen || self.bootstrap_done_at.is_some())
     }
 }
 
