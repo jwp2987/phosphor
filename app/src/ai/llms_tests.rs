@@ -785,6 +785,46 @@ fn an_unset_profile_slot_shows_the_profile_base_model_not_the_first_model() {
     });
 }
 
+/// #1114: with a `/model` choice (gpt-oss) in effect, a new profile (base unset) must show
+/// the same model on its unset slots as on its Base row (gemma); the override is reported
+/// separately by `get_effective_base_model_for_profile`. Fails before the fix: the slots
+/// resolved through the override and showed gpt-oss.
+#[test]
+fn unset_slots_match_the_base_row_when_a_model_override_is_in_effect() {
+    App::test((), |mut app| async move {
+        install_profile_model_singletons(&mut app);
+        let (gemma, gpt_oss, preferences) = gemma_first_preferences();
+        let preferences = app.add_singleton_model(|_| preferences);
+        app.update(|ctx| {
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                settings
+                    .byop_last_used_model_id
+                    .set_value(gpt_oss.to_string(), ctx)
+                    .expect("setting the last-used model id should succeed");
+            });
+        });
+
+        preferences.read(&app, |preferences, ctx| {
+            assert_eq!(
+                preferences.get_slot_model_for_profile(ctx, None, None).id,
+                gemma,
+                "an unset slot on a base-less profile shows what the Base row shows"
+            );
+            assert_eq!(
+                preferences.get_configured_base_model_for_profile(None).id,
+                gemma
+            );
+            assert_eq!(
+                preferences
+                    .get_effective_base_model_for_profile(ctx, None)
+                    .id,
+                gpt_oss,
+                "the /model override is still what the card's 'Currently using' line reports"
+            );
+        });
+    });
+}
+
 /// #1099: the title request for a conversation already on gpt-oss must also go to gpt-oss
 /// when the profile has no title model of its own. Fails before the fix: the title was
 /// resolved with no terminal view, so it fell through the (default) profile's unset base
