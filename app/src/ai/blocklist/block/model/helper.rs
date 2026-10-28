@@ -4,14 +4,15 @@ use crate::{
     ai::{
         agent::{
             conversation::AIConversation, AIAgentAction, AIAgentActionId, AIAgentActionType,
-            AIAgentInput, AIAgentOutputMessageType, SummarizationType,
+            AIAgentInput, AIAgentOutputMessageType, MessageId, SummarizationType,
         },
         blocklist::BlocklistAIActionModel,
+        byop_compaction::marker::{CompactionMarker, SummaryStreamStatus, compaction_marker},
     },
     BlocklistAIHistoryModel,
 };
 
-use super::AIBlockModel;
+use super::{AIBlockModel, AIBlockOutputStatus};
 
 // Helper methods for accessing data on an impl of `AIBlockModel`.
 //
@@ -36,6 +37,15 @@ pub trait AIBlockModelHelper {
     ) -> bool;
 
     fn is_conversation_summarization_active(&self, app: &AppContext) -> bool;
+
+    /// Whether the output message `message_id` is a BYOP compaction summary, and how to
+    /// label its collapsed marker (#1060). `status` is this block's output status.
+    fn compaction_marker(
+        &self,
+        message_id: &MessageId,
+        status: &AIBlockOutputStatus,
+        app: &AppContext,
+    ) -> Option<CompactionMarker>;
 
     fn blocked_action(
         &self,
@@ -142,6 +152,35 @@ impl<T: ?Sized + AIBlockModel> AIBlockModelHelper for T {
                 }
             )
         })
+    }
+
+    fn compaction_marker(
+        &self,
+        message_id: &MessageId,
+        status: &AIBlockOutputStatus,
+        app: &AppContext,
+    ) -> Option<CompactionMarker> {
+        let summarize_request_overflow =
+            self.inputs_to_render(app)
+                .iter()
+                .find_map(|input| match input {
+                    AIAgentInput::SummarizeConversation { overflow, .. } => Some(*overflow),
+                    _ => None,
+                });
+        let stream = if status.is_streaming() {
+            SummaryStreamStatus::Streaming
+        } else if status.is_complete() {
+            SummaryStreamStatus::Complete
+        } else {
+            SummaryStreamStatus::Stopped
+        };
+        compaction_marker(
+            self.conversation(app)
+                .map(|conversation| &conversation.compaction_state),
+            message_id,
+            summarize_request_overflow,
+            stream,
+        )
     }
 
     fn blocked_action(

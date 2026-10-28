@@ -11,6 +11,7 @@
 pub mod algorithm;
 pub mod commit;
 pub mod config;
+pub mod marker;
 pub mod message_view;
 pub mod overflow;
 pub mod prompt;

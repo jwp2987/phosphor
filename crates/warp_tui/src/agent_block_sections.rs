@@ -159,6 +159,18 @@ pub(crate) fn render_summarization_section(
     )
 }
 
+/// A BYOP compaction summary (#1060): collapsed by default under its marker `header`
+/// ("Conversation compacted", ...), with the summary text as the expandable body.
+pub(crate) fn render_compaction_summary_section(
+    states: &CollapsibleSectionStates,
+    message_id: &MessageId,
+    header: String,
+    body: Box<dyn TuiElement>,
+    app: &AppContext,
+) -> Box<dyn TuiElement> {
+    render_collapsible_message_section(states, message_id, header, true, body, app)
+}
+
 fn render_collapsible_message_section(
     states: &CollapsibleSectionStates,
     message_id: &MessageId,

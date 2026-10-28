@@ -102,6 +102,7 @@ pub use crate::ai::blocklist::input_mode_policy::{
     InputModePolicy, InputModePolicyHandle, PolicyConfigUpdate,
 };
 pub use crate::ai::blocklist::input_model::{BlocklistAIInputModel, InputConfig, InputType};
+pub use crate::ai::byop_compaction::marker::CompactionMarker;
 // Local-only orchestration topology helpers (no remote-worker execution path in
 // this fork -- see `orchestration_topology`'s module doc). Feeds the TUI's
 // orchestration tab bar snapshot; kept separate from the (unported)

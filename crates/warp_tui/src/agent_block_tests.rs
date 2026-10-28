@@ -15,10 +15,11 @@ use warp::tui_export::{
     AIAgentOutputMessageType, AIAgentText, AIAgentTextSection, AIAgentTodo, AIAgentTodoList,
     AIBlockModel, AIBlockOutputStatus, AIConversationId, AIRequestType, AgentOutputImage,
     AgentOutputImageLayout, AgentOutputMermaidDiagram, AgentOutputTable, Appearance,
-    FailedOutputPresentation, LLMId, MessageId, OutputStatusUpdateCallback, ReceivedMessageDisplay,
-    RejectedToolCallKind, RenderableAIError, RequestCommandOutputResult, ServerOutputId, Shared,
-    SummarizationType, TaskId, TerminalModel, TodoOperation, TodoStatus, UserQueryMode,
-    queue_tui_permission_action, rejected_tool_call_text, should_show_failed_output_usage_notice,
+    CompactionMarker, FailedOutputPresentation, LLMId, MessageId, OutputStatusUpdateCallback,
+    ReceivedMessageDisplay, RejectedToolCallKind, RenderableAIError, RequestCommandOutputResult,
+    ServerOutputId, Shared, SummarizationType, TaskId, TerminalModel, TodoOperation, TodoStatus,
+    UserQueryMode, queue_tui_permission_action, rejected_tool_call_text,
+    should_show_failed_output_usage_notice,
 };
 use warp_core::ui::color::blend::Blend;
 use warp_core::ui::theme::Fill as ThemeFill;
@@ -1788,6 +1789,85 @@ fn expanded_conversation_summary_shows_its_body() {
                 .expect("conversation summary header rendered");
             assert_eq!(rendered[header + 1], "");
             assert_eq!(rendered[header + 2], "condensed context");
+        });
+    });
+}
+
+/// A BYOP compaction summary arrives as ordinary agent text in a
+/// `SummarizeConversation` exchange; it renders as a collapsed marker rather than as
+/// the agent's answer (#1060).
+#[test]
+fn byop_compaction_summary_renders_as_collapsed_marker() {
+    App::test((), |mut app| async move {
+        warp::i18n::init(Some("en"));
+        app.add_singleton_model(|_| Appearance::mock());
+        let block = test_agent_block(
+            &mut app,
+            FakeAgentBlockModel {
+                inputs: vec![AIAgentInput::SummarizeConversation {
+                    prompt: None,
+                    overflow: true,
+                }],
+                status: complete_output_messages(vec![plain_text_message(
+                    "summary-1",
+                    "compacted summary body",
+                )]),
+            },
+        );
+        app.read(|app_ctx| {
+            let block = block.as_ref(app_ctx);
+            assert_eq!(
+                block.sections(app_ctx),
+                vec![TuiAIBlockSection::CompactionSummary {
+                    message_id: MessageId::new("summary-1".to_owned()),
+                    marker: CompactionMarker::Compacted { auto: true },
+                    body: rich_body("compacted summary body"),
+                }]
+            );
+            assert_eq!(
+                render_block_lines(block, 40, app_ctx),
+                vec!["Conversation compacted automatically ▸"]
+            );
+
+            block
+                .collapsible_states
+                .set_collapsed(MessageId::new("summary-1".to_owned()), false);
+            let rendered = render_block_lines_including_blank(block, 40, app_ctx);
+            let header = rendered
+                .iter()
+                .position(|line| line == "Conversation compacted automatically ▾")
+                .expect("compaction marker header rendered");
+            assert_eq!(rendered[header + 2], "compacted summary body");
+        });
+    });
+}
+
+#[test]
+fn streaming_manual_compaction_summary_shows_in_progress_marker() {
+    App::test((), |mut app| async move {
+        warp::i18n::init(Some("en"));
+        app.add_singleton_model(|_| Appearance::mock());
+        let block = test_agent_block(
+            &mut app,
+            FakeAgentBlockModel {
+                inputs: vec![AIAgentInput::SummarizeConversation {
+                    prompt: None,
+                    overflow: false,
+                }],
+                status: AIBlockOutputStatus::PartiallyReceived {
+                    output: Shared::new(AIAgentOutput {
+                        messages: vec![plain_text_message("summary-1", "## Goal")],
+                        ..Default::default()
+                    }),
+                },
+            },
+        );
+        app.read(|app_ctx| {
+            let block = block.as_ref(app_ctx);
+            assert_eq!(
+                render_block_lines(block, 40, app_ctx),
+                vec!["Compacting conversation… ▸"]
+            );
         });
     });
 }

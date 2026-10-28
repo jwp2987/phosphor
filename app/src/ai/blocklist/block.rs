@@ -2101,8 +2101,24 @@ impl AIBlock {
                 .or_default();
         }
 
+        // A BYOP compaction summary renders as a marker that starts collapsed (#1060). The
+        // status is read once here: it decides whether the summary is still streaming.
+        let block_status = self.model.status(ctx);
+
         // Register element state for reasoning messages and track summarization timing.
         for message in &output.messages {
+            if matches!(&message.message, AIAgentOutputMessageType::Text(_))
+                && self
+                    .model
+                    .compaction_marker(&message.id, &block_status, ctx)
+                    .is_some()
+            {
+                self.collapsible_block_states
+                    .entry(message.id.clone())
+                    .or_insert_with(CollapsibleElementState::collapsed)
+                    .sync_finished_state(!block_status.is_streaming());
+            }
+
             if let AIAgentOutputMessageType::Reasoning {
                 finished_duration, ..
             } = &message.message
