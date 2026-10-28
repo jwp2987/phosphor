@@ -18055,6 +18055,10 @@ fn typeahead_handoff_key_behind_an_outstanding_request_keeps_the_editor_literal(
                 // The hand-off's request is outstanding...
                 let handoff = model.typeahead_handoff_mut();
                 handoff.on_command_written();
+                // Typeahead for a command that has been running a while: a line begun within
+                // `YOUNG_ENTER_WINDOW` of the command being written is young (#933), and its
+                // report would be `InsertYoung`.
+                handoff.age_last_activity_for_test();
                 handoff.on_user_bytes(b"echo \"a b");
                 handoff.on_user_write_flushed();
                 handoff.on_precmd();
