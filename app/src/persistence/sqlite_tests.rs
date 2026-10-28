@@ -3226,3 +3226,107 @@ fn collect_rows_stops_at_the_first_sqlite_error() {
     assert!(result.is_err());
     assert_eq!(yielded, 2, "no further rows are pulled after the error");
 }
+
+/// #1109: a sharing violation at launch (Windows error 32) is retried with a
+/// bounded backoff instead of costing the session its persistence.
+#[test]
+fn transient_open_failure_is_retried_until_it_succeeds() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    std::fs::write(&database_path, b"x").expect("write");
+    let clock = std::cell::Cell::new(std::time::Duration::ZERO);
+    let mut failures_left = 3;
+    let result = super::open_with_transient_retry(
+        &database_path,
+        std::time::Duration::from_secs(3),
+        || clock.get(),
+        || {
+            if failures_left > 0 {
+                failures_left -= 1;
+                Err(anyhow::anyhow!("unable to open database file"))
+            } else {
+                Ok(7)
+            }
+        },
+        |d| clock.set(clock.get() + d),
+    );
+    assert_eq!(result.expect("should succeed after retries"), 7);
+}
+
+/// The retry is bounded in wall-clock time, attempt cost included.
+#[test]
+fn transient_open_retry_is_bounded_including_attempt_time() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    std::fs::write(&database_path, b"x").expect("write");
+    let budget = std::time::Duration::from_secs(3);
+    let clock = std::cell::Cell::new(std::time::Duration::ZERO);
+    let result: anyhow::Result<()> = super::open_with_transient_retry(
+        &database_path,
+        budget,
+        || clock.get(),
+        || {
+            // Each failed attempt itself costs 500 ms.
+            clock.set(clock.get() + std::time::Duration::from_millis(500));
+            Err(anyhow::anyhow!("unable to open database file"))
+        },
+        |d| clock.set(clock.get() + d),
+    );
+    assert!(result.is_err());
+    assert!(clock.get() >= budget);
+    assert!(clock.get() < budget + std::time::Duration::from_millis(600));
+}
+
+/// Corruption, a missing file and lock/busy errors (which setup already waits
+/// on under its own deadline) are not retried here.
+#[test]
+fn corrupt_missing_or_locked_database_is_not_retried() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let present = tempdir.path().join("warp.sqlite");
+    std::fs::write(&present, b"x").expect("write");
+    let missing = tempdir.path().join("nope").join("warp.sqlite");
+    for (path, message) in [
+        (&present, "database disk image is malformed"),
+        (&present, "file is not a database"),
+        (&present, "database is locked"),
+        (&present, "database is busy"),
+        (&missing, "unable to open database file"),
+    ] {
+        let mut attempts = 0;
+        let result: anyhow::Result<()> = super::open_with_transient_retry(
+            path,
+            std::time::Duration::from_secs(3),
+            || std::time::Duration::ZERO,
+            || {
+                attempts += 1;
+                Err(anyhow::anyhow!(message.to_string()))
+            },
+            |_| panic!("must not sleep"),
+        );
+        assert!(result.is_err());
+        assert_eq!(attempts, 1);
+    }
+}
+
+/// The old one-shot retry for a flaky disk is kept.
+#[test]
+fn disk_io_error_is_retried() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let path = tempdir.path().join("warp.sqlite");
+    let mut attempts = 0;
+    let result = super::open_with_transient_retry(
+        &path,
+        std::time::Duration::from_secs(3),
+        || std::time::Duration::ZERO,
+        || {
+            attempts += 1;
+            if attempts < 2 {
+                Err(anyhow::anyhow!("disk I/O error"))
+            } else {
+                Ok(())
+            }
+        },
+        |_| {},
+    );
+    assert!(result.is_ok());
+}
