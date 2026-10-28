@@ -773,3 +773,22 @@ fn user_boundary_still_terminates_group() {
         report.state
     );
 }
+
+/// #1066: persistence turned off no longer blocks, so the remaining preflight persistence
+/// failures must not tell the user to enable it. A shared session gets its own explanation.
+#[test]
+fn byop_preflight_persistence_blocked_message_distinguishes_shared_sessions() {
+    let shared = byop_preflight_persistence_blocked_message(true);
+    let local = byop_preflight_persistence_blocked_message(false);
+
+    assert_eq!(shared, BYOP_PREFLIGHT_SHARED_SESSION_MESSAGE);
+    assert_eq!(local, BYOP_PREFLIGHT_STORAGE_UNAVAILABLE_MESSAGE);
+    assert!(shared.contains("shared session"));
+    assert!(local.contains("local conversation storage is unavailable"));
+    for message in [shared, local] {
+        assert!(
+            !message.contains("persistence is enabled"),
+            "persistence off is not a failure any more: {message}"
+        );
+    }
+}

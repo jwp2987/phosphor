@@ -971,3 +971,235 @@ fn lrc_cli_subagent_turn_only_for_tag_in_or_the_subagent_task() {
     ));
     assert!(!super::is_lrc_cli_subagent_turn(false, None, Some("root")));
 }
+
+/// Sets up a terminal whose controller holds a restored BYOP conversation. The root task
+/// (`root-task`) holds a user query and one tool call (`call_1`) whose result has not been
+/// committed, and the active model is a usable BYOP provider pointed at a closed local port, so a
+/// dispatched stream can never reach a real server. Returns the controller, the conversation, and
+/// the follow-up `RequestInput` that carries `call_1`'s result, which is what
+/// `send_follow_up_for_conversation` builds after a tool finishes.
+fn byop_conversation_awaiting_tool_result(
+    app: &mut App,
+    persist_conversations: bool,
+) -> (
+    warpui::ModelHandle<super::BlocklistAIController>,
+    crate::ai::agent::conversation::AIConversationId,
+    super::RequestInput,
+) {
+    use settings::Setting as _;
+    use warp_multi_agent_api as api;
+
+    use crate::ai::agent_providers::llm_id;
+    use crate::settings::{AISettings, AgentProvider, AgentProviderApiType, AgentProviderModel};
+    use crate::terminal::general_settings::GeneralSettings;
+
+    initialize_app_for_terminal_view(app);
+    // `GlobalResourceHandles::mock` has no SQLite sender.
+    let global_resource_handles = crate::GlobalResourceHandles::mock(app);
+    app.add_singleton_model(|_| crate::GlobalResourceHandlesProvider::new(global_resource_handles));
+
+    let provider_id = "provider-1066";
+    app.update(|ctx| {
+        AISettings::handle(ctx).update(ctx, |settings, ctx| {
+            let provider = AgentProvider {
+                id: provider_id.to_owned(),
+                name: "Test Ollama".to_owned(),
+                kind: Default::default(),
+                api_type: AgentProviderApiType::Ollama,
+                // Port 9 (discard) on loopback: nothing listens, so the spawned stream fails fast
+                // instead of reaching a real model server on the test host.
+                base_url: "http://127.0.0.1:9".to_owned(),
+                models: vec![AgentProviderModel::from_id("llama3.2".to_owned())],
+                extra_headers: Vec::new(),
+                vertex_project: String::new(),
+                vertex_location: String::new(),
+                disabled: false,
+                token_price: None,
+            };
+            settings
+                .agent_providers
+                .set_value(vec![provider], ctx)
+                .expect("setting should update");
+        });
+        GeneralSettings::handle(ctx).update(ctx, |settings, ctx| {
+            settings
+                .persist_conversations
+                .set_value(persist_conversations, ctx)
+                .expect("setting should update");
+        });
+    });
+    let model_id = llm_id::encode(provider_id, "llama3.2");
+    app.read(|ctx| {
+        assert!(
+            crate::ai::agent_providers::lookup_byop(ctx, &model_id).is_some(),
+            "the test provider must resolve, or the BYOP preflight is skipped"
+        );
+    });
+
+    let message = |id: &str, message: api::message::Message| api::Message {
+        id: id.to_owned(),
+        task_id: "root-task".to_owned(),
+        server_message_data: String::new(),
+        citations: vec![],
+        fetched_memories: vec![],
+        message: Some(message),
+        request_id: "request-1".to_owned(),
+        timestamp: None,
+    };
+    let root_task = api::Task {
+        id: "root-task".to_owned(),
+        messages: vec![
+            message(
+                "user-query-1",
+                api::message::Message::UserQuery(api::message::UserQuery {
+                    query: "list files".to_owned(),
+                    context: None,
+                    referenced_attachments: Default::default(),
+                    mode: None,
+                    intended_agent: Default::default(),
+                }),
+            ),
+            message(
+                "tool-call-1",
+                api::message::Message::ToolCall(api::message::ToolCall {
+                    tool_call_id: "call_1".to_owned(),
+                    tool: None,
+                }),
+            ),
+        ],
+        dependencies: None,
+        description: String::new(),
+        summary: String::new(),
+        server_data: String::new(),
+    };
+    let conversation_id = crate::ai::agent::conversation::AIConversationId::new();
+    let conversation = crate::ai::agent::conversation::AIConversation::new_restored(
+        conversation_id,
+        vec![root_task],
+        None,
+    )
+    .expect("conversation should restore");
+
+    let terminal = add_window_with_terminal(app, None);
+    let terminal_view_id = terminal.read(app, |view, _| view.id());
+    let controller = terminal.read(app, |view, _| view.ai_controller().clone());
+    BlocklistAIHistoryModel::handle(app).update(app, |history, ctx| {
+        history.restore_conversations(terminal_view_id, vec![conversation], ctx);
+    });
+
+    let task_id = TaskId::new("root-task".to_owned());
+    let request_input = super::RequestInput {
+        conversation_id,
+        input_messages: HashMap::from([(
+            task_id.clone(),
+            vec![AIAgentInput::ActionResult {
+                result: crate::ai::agent::AIAgentActionResult {
+                    id: AIAgentActionId::from("call_1".to_owned()),
+                    task_id,
+                    result: crate::ai::agent::AIAgentActionResultType::InitProject,
+                },
+                context: std::sync::Arc::from(Vec::<AIAgentContext>::new()),
+            }],
+        )]),
+        working_directory: None,
+        model_id: model_id.clone(),
+        coding_model_id: model_id.clone(),
+        cli_agent_model_id: model_id.clone(),
+        computer_use_model_id: model_id,
+        shared_session_response_initiator: None,
+        request_start_ts: chrono::Local::now(),
+        supported_tools_override: None,
+    };
+    (controller, conversation_id, request_input)
+}
+
+/// How many `ToolCallResult`s for `call_1` the conversation's history holds.
+fn call_1_result_count(
+    app: &App,
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+) -> usize {
+    BlocklistAIHistoryModel::handle(app).read(app, |history, _| {
+        history
+            .conversation(&conversation_id)
+            .expect("conversation should exist")
+            .all_tasks()
+            .flat_map(|task| task.messages())
+            .filter(|msg| {
+                matches!(
+                    msg.message.as_ref(),
+                    Some(warp_multi_agent_api::message::Message::ToolCallResult(result))
+                        if result.tool_call_id == "call_1"
+                )
+            })
+            .count()
+    })
+}
+
+/// #1066 end to end: with conversation persistence off, the follow-up that carries a tool result
+/// passes the BYOP preflight, commits the result to history exactly once, and is dispatched. The
+/// old gate refused the commit, so no stream opened and the turn stalled.
+#[test]
+fn byop_follow_up_with_tool_result_is_dispatched_when_persistence_is_off() {
+    App::test((), |mut app| async move {
+        let (controller, conversation_id, request_input) =
+            byop_conversation_awaiting_tool_result(&mut app, false);
+
+        controller.update(&mut app, |controller, ctx| {
+            controller
+                .send_request_input(
+                    request_input,
+                    None,
+                    /*default_to_follow_up_on_success*/ false,
+                    RecoveryBudget::fresh(),
+                    /*is_queued_prompt*/ false,
+                    ctx,
+                )
+                .expect("the follow-up should be sent");
+            assert!(
+                controller.has_active_stream_for_conversation(conversation_id, ctx),
+                "the follow-up request must be dispatched"
+            );
+        });
+        assert_eq!(
+            call_1_result_count(&app, conversation_id),
+            1,
+            "the tool result must be in history exactly once"
+        );
+    });
+}
+
+/// #1066: persistence on but SQLite unavailable still blocks dispatch, and the controller now
+/// renders the blocked request instead of returning an error that the follow-up path discarded.
+/// (The old handler's `downcast_ref::<UpdateConversationError>()` missed the error, which arrives
+/// wrapped in `UpdateHistoryError`.)
+#[test]
+fn byop_follow_up_is_blocked_and_rendered_when_expected_persistence_is_unavailable() {
+    App::test((), |mut app| async move {
+        let (controller, conversation_id, request_input) =
+            byop_conversation_awaiting_tool_result(&mut app, true);
+
+        controller.update(&mut app, |controller, ctx| {
+            let sent = controller.send_request_input(
+                request_input,
+                None,
+                /*default_to_follow_up_on_success*/ false,
+                RecoveryBudget::fresh(),
+                /*is_queued_prompt*/ false,
+                ctx,
+            );
+            assert!(
+                sent.is_ok(),
+                "a persistence failure must render as a blocked request, got {sent:?}"
+            );
+            assert!(
+                !controller.has_active_stream_for_conversation(conversation_id, ctx),
+                "nothing may be dispatched on an in-memory-only result while persistence is on"
+            );
+        });
+        assert_eq!(
+            call_1_result_count(&app, conversation_id),
+            0,
+            "the refused commit must leave no result behind"
+        );
+    });
+}
