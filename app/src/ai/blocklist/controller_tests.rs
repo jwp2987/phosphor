@@ -1281,3 +1281,979 @@ fn skill_resolution_failures_are_recognised_by_their_reason() {
     let intercepted = serde_json::json!({ "_byop_intercepted": true, "status": "ok" }).to_string();
     assert!(!super::is_skill_resolution_failure(&intercepted));
 }
+
+// -- #1059: tool-loop auto-compaction -------------------------------------------------------
+//
+// Most of these drive the controller from the point the agent loop sends a step's tool
+// results (`send_follow_up_for_conversation`, what the `FinishedAction` subscriber calls)
+// with the conversation's compaction state set as `handle_response_stream_finished` leaves it
+// after a tool-call step over the threshold. No BYOP provider is configured for them, so the
+// BYOP preflight is skipped and they see the request *as the controller builds it*, with its
+// `ActionResult` inputs. What production actually sends — the preflight records the results
+// in history and strips them from the input — is covered end to end, with a BYOP provider
+// configured and the real stream-finished wiring, by
+// `tool_loop_over_the_window_compacts_with_its_results_through_the_byop_path`.
+
+/// Sets up a controller with a fresh conversation, as `suspended_controller_sends_no_request_
+/// until_lifted` does (the request path needs the global resource handles).
+fn tool_loop_controller(
+    app: &mut App,
+) -> (
+    warpui::ModelHandle<super::BlocklistAIController>,
+    crate::ai::agent::conversation::AIConversationId,
+    TaskId,
+) {
+    initialize_app_for_terminal_view(app);
+    let global_resource_handles = crate::GlobalResourceHandles::mock(app);
+    app.add_singleton_model(|_| crate::GlobalResourceHandlesProvider::new(global_resource_handles));
+    let terminal = add_window_with_terminal(app, None);
+    let terminal_view_id = terminal.read(&*app, |view, _| view.id());
+    let controller = terminal.read(&*app, |view, _| view.ai_controller().clone());
+    let (conversation_id, root_task_id) =
+        BlocklistAIHistoryModel::handle(&*app).update(app, |history, ctx| {
+            let conversation_id =
+                history.start_new_conversation(terminal_view_id, false, false, ctx);
+            let root_task_id = history
+                .conversation(&conversation_id)
+                .expect("conversation should exist")
+                .get_root_task_id()
+                .clone();
+            (conversation_id, root_task_id)
+        });
+    (controller, conversation_id, root_task_id)
+}
+
+/// The state `handle_response_stream_finished` leaves after a tool-call step that ended over
+/// the threshold with the allowance unspent.
+fn defer_compaction_to_tool_results(
+    controller: &mut super::BlocklistAIController,
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+) {
+    let plan = controller.update_compaction_turn_state(conversation_id, |state| {
+        state.on_stream_finished(crate::ai::byop_compaction::FinishedStream::Turn {
+            requested_tool_calls: true,
+            overflowing: Some(true),
+        })
+    });
+    assert!(
+        plan.compact_after_tool_results,
+        "precondition: the step deferred its compaction"
+    );
+}
+
+fn command_result(id: &str, task_id: &TaskId) -> crate::ai::agent::AIAgentActionResult {
+    crate::ai::agent::AIAgentActionResult {
+        id: AIAgentActionId::from(id.to_owned()),
+        task_id: task_id.clone(),
+        result: crate::ai::agent::AIAgentActionResultType::RequestCommandOutput(
+            crate::ai::agent::RequestCommandOutputResult::Denylisted {
+                command: format!("echo {id}"),
+            },
+        ),
+    }
+}
+
+/// `summarization_overflow()` of every in-flight stream: `Some(true)` is an automatic summary,
+/// `None` an ordinary request.
+fn in_flight_summarization_flags(
+    controller: &super::BlocklistAIController,
+    app: &warpui::AppContext,
+) -> Vec<Option<bool>> {
+    controller
+        .in_flight_response_streams
+        .streams_for_test()
+        .map(|stream| stream.as_ref(app).summarization_overflow())
+        .collect()
+}
+
+/// The inputs of the exchange that a request carrying `SummarizeConversation` created, if any.
+fn summary_exchange_inputs(
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+    app: &warpui::AppContext,
+) -> Option<Vec<AIAgentInput>> {
+    BlocklistAIHistoryModel::as_ref(app)
+        .conversation(&conversation_id)?
+        .all_exchanges()
+        .into_iter()
+        .find(|exchange| {
+            exchange
+                .input
+                .iter()
+                .any(|input| matches!(input, AIAgentInput::SummarizeConversation { .. }))
+        })
+        .map(|exchange| exchange.input.clone())
+}
+
+fn action_result_ids(inputs: &[AIAgentInput]) -> Vec<String> {
+    let mut ids: Vec<String> = inputs
+        .iter()
+        .filter_map(|input| match input {
+            AIAgentInput::ActionResult { result, .. } => Some(result.id.to_string()),
+            _ => None,
+        })
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// #1059: the controller builds ONE request carrying the step's results (here two parallel
+/// calls) together with the automatic summary, instead of a plain follow-up that keeps
+/// growing. Every result is the real `ActionResult` (none dropped, none replaced by a
+/// cancellation), and the request is an automatic summary (`overflow: true`), which is what
+/// the #1060 marker and the continue-after-commit logic key on. (Without a BYOP provider the
+/// preflight does not run, so the results are still inputs here; in production they are in
+/// task history by the time the request is built — see the BYOP end-to-end test below.)
+#[test]
+fn deferred_compaction_builds_one_request_with_the_results_and_the_auto_summary() {
+    use crate::features::FeatureFlag;
+
+    App::test((), |mut app| async move {
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let (controller, conversation_id, root_task_id) = tool_loop_controller(&mut app);
+
+        controller.update(&mut app, |controller, ctx| {
+            defer_compaction_to_tool_results(controller, conversation_id);
+            controller.action_model.update(ctx, |action_model, _| {
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    command_result("call-a", &root_task_id),
+                );
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    command_result("call-b", &root_task_id),
+                );
+            });
+
+            controller.send_follow_up_for_conversation(
+                conversation_id,
+                super::FollowUpTrigger::Auto,
+                ctx,
+            );
+
+            assert_eq!(
+                in_flight_summarization_flags(controller, ctx),
+                vec![Some(true)],
+                "exactly one request, and it is the automatic summary"
+            );
+            let inputs = summary_exchange_inputs(conversation_id, ctx)
+                .expect("the summary request appended an exchange");
+            assert!(inputs.iter().any(|input| matches!(
+                input,
+                AIAgentInput::SummarizeConversation {
+                    prompt: None,
+                    overflow: true
+                }
+            )));
+            assert_eq!(
+                action_result_ids(&inputs),
+                vec!["call-a".to_owned(), "call-b".to_owned()],
+                "both parallel results travel with the summary"
+            );
+            let state = controller
+                .compaction_turn_state
+                .get(&conversation_id)
+                .copied()
+                .unwrap_or_default();
+            assert!(state.auto_compacted(), "the turn's allowance is spent");
+            assert!(
+                !state.compaction_deferred_to_tool_results(),
+                "the deferral is consumed"
+            );
+        });
+    });
+}
+
+/// Without a deferral the results go out as the ordinary follow-up (positive control for the
+/// test above: the summary comes from the deferral, not from the setup).
+#[test]
+fn tool_results_without_a_deferral_go_as_a_plain_follow_up() {
+    use crate::features::FeatureFlag;
+
+    App::test((), |mut app| async move {
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let (controller, conversation_id, root_task_id) = tool_loop_controller(&mut app);
+
+        controller.update(&mut app, |controller, ctx| {
+            controller.action_model.update(ctx, |action_model, _| {
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    command_result("call-a", &root_task_id),
+                );
+            });
+            controller.send_follow_up_for_conversation(
+                conversation_id,
+                super::FollowUpTrigger::Auto,
+                ctx,
+            );
+            assert_eq!(in_flight_summarization_flags(controller, ctx), vec![None]);
+            assert!(summary_exchange_inputs(conversation_id, ctx).is_none());
+        });
+    });
+}
+
+/// Stop / Ctrl-C while the step's tools run drops the deferral: the results that come in
+/// afterwards are not turned into a summary behind the user's back.
+#[test]
+fn stop_drops_a_deferred_tool_loop_compaction() {
+    use crate::features::FeatureFlag;
+
+    App::test((), |mut app| async move {
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let (controller, conversation_id, root_task_id) = tool_loop_controller(&mut app);
+
+        controller.update(&mut app, |controller, ctx| {
+            defer_compaction_to_tool_results(controller, conversation_id);
+            controller.cancel_conversation_progress(
+                conversation_id,
+                CancellationReason::ManuallyCancelled,
+                ctx,
+            );
+            assert!(
+                !controller
+                    .compaction_turn_state
+                    .contains_key(&conversation_id),
+                "nothing left to remember: no deferral, allowance unspent"
+            );
+
+            controller.action_model.update(ctx, |action_model, _| {
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    command_result("call-a", &root_task_id),
+                );
+            });
+            controller.send_follow_up_for_conversation(
+                conversation_id,
+                super::FollowUpTrigger::Auto,
+                ctx,
+            );
+            assert_eq!(in_flight_summarization_flags(controller, ctx), vec![None]);
+        });
+    });
+}
+
+/// Results of a subagent task (not the conversation's root task) never carry the summary:
+/// the summary input belongs to the root task, and a request spanning two tasks would append
+/// one exchange per task. They go as a plain follow-up and the deferral is dropped.
+#[test]
+fn subagent_task_results_never_carry_the_auto_summary() {
+    use crate::features::FeatureFlag;
+
+    App::test((), |mut app| async move {
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let (controller, conversation_id, _root_task_id) = tool_loop_controller(&mut app);
+
+        controller.update(&mut app, |controller, ctx| {
+            defer_compaction_to_tool_results(controller, conversation_id);
+            controller.action_model.update(ctx, |action_model, _| {
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    command_result("subagent-call", &TaskId::new("subagent-task".to_owned())),
+                );
+            });
+            controller.send_follow_up_for_conversation(
+                conversation_id,
+                super::FollowUpTrigger::Auto,
+                ctx,
+            );
+            assert!(
+                in_flight_summarization_flags(controller, ctx)
+                    .iter()
+                    .all(Option::is_none),
+                "no summary request for a subagent's results"
+            );
+            assert!(
+                !controller
+                    .compaction_turn_state
+                    .contains_key(&conversation_id),
+                "deferral dropped, allowance unspent"
+            );
+        });
+    });
+}
+
+/// The user rejects the step's only tool call: no follow-up is sent, and the deferral is
+/// dropped with it (otherwise it would summarize the next, unrelated follow-up).
+#[test]
+fn rejecting_the_only_tool_call_drops_the_deferred_compaction() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let terminal_view_id = terminal.read(&app, |view, _| view.id());
+        let conversation_id = BlocklistAIHistoryModel::handle(&app)
+            .update(&mut app, |history, ctx| {
+                history.start_new_conversation(terminal_view_id, false, false, ctx)
+            });
+        let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
+        let action_model = controller.read(&app, |controller, _| controller.action_model.clone());
+
+        let action_id = AIAgentActionId::from("reject-me".to_owned());
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model.queue_action_for_test(
+                AIAgentAction {
+                    id: action_id.clone(),
+                    task_id: TaskId::new("task".to_owned()),
+                    action: shell_command(),
+                    requires_result: false,
+                },
+                conversation_id,
+                ctx,
+            );
+        });
+        for _ in 0..64 {
+            let is_blocked = action_model.read(&app, |action_model, _| {
+                action_model
+                    .get_action_status(&action_id)
+                    .is_some_and(|status| status.is_blocked())
+            });
+            if is_blocked {
+                break;
+            }
+            futures_lite::future::yield_now().await;
+        }
+        action_model.read(&app, |action_model, _| {
+            assert!(
+                action_model
+                    .get_action_status(&action_id)
+                    .is_some_and(|status| status.is_blocked()),
+                "precondition: the command is blocked on confirmation"
+            );
+        });
+
+        controller.update(&mut app, |controller, _| {
+            defer_compaction_to_tool_results(controller, conversation_id);
+        });
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model.cancel_action_with_id(
+                conversation_id,
+                &action_id,
+                CancellationReason::ManuallyCancelled,
+                ctx,
+            );
+        });
+        for _ in 0..64 {
+            let dropped = controller.read(&app, |controller, _| {
+                !controller
+                    .compaction_turn_state
+                    .contains_key(&conversation_id)
+            });
+            if dropped {
+                break;
+            }
+            futures_lite::future::yield_now().await;
+        }
+
+        controller.read(&app, |controller, ctx| {
+            assert!(
+                !controller
+                    .compaction_turn_state
+                    .contains_key(&conversation_id),
+                "the reject sent no follow-up, so the deferral must be gone"
+            );
+            assert!(!controller.has_active_stream_for_conversation(conversation_id, ctx));
+        });
+    });
+}
+
+fn timestamped_message(
+    id: &str,
+    message: warp_multi_agent_api::message::Message,
+    seconds: i64,
+) -> warp_multi_agent_api::Message {
+    warp_multi_agent_api::Message {
+        id: id.to_owned(),
+        task_id: "root".to_owned(),
+        request_id: "req".to_owned(),
+        message: Some(message),
+        timestamp: Some(prost_types::Timestamp { seconds, nanos: 0 }),
+        ..Default::default()
+    }
+}
+
+fn run_shell_tool_call(id: &str, call_id: &str, seconds: i64) -> warp_multi_agent_api::Message {
+    use warp_multi_agent_api::message::{Message, ToolCall, tool_call};
+    timestamped_message(
+        id,
+        Message::ToolCall(ToolCall {
+            tool_call_id: call_id.to_owned(),
+            tool: Some(tool_call::Tool::RunShellCommand(
+                tool_call::RunShellCommand {
+                    command: format!("cat file-{call_id}"),
+                    ..Default::default()
+                },
+            )),
+        }),
+        seconds,
+    )
+}
+
+fn stream_done(prompt_tokens: u32) -> warp_multi_agent_api::response_event::StreamFinished {
+    use warp_multi_agent_api::response_event::stream_finished;
+    warp_multi_agent_api::response_event::StreamFinished {
+        reason: Some(stream_finished::Reason::Done(stream_finished::Done {})),
+        token_usage: vec![stream_finished::TokenUsage {
+            model_id: "mock-model".to_owned(),
+            total_input: prompt_tokens,
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
+/// #1059 end to end through the BYOP path, on the issue's scenario: a provider with a
+/// 32_000-token window, a step reporting 20_000 prompt tokens that asks for two (parallel)
+/// tool calls.
+///
+/// 1. The real stream-finished wiring (`handle_response_stream_finished`, reading the tool
+///    calls off the stream's own exchange and the window off the configured model) defers
+///    the compaction instead of summarizing — no request, the calls are not cancelled.
+/// 2. The step's results go out with the automatic summary. With a BYOP provider configured
+///    the preflight runs: each tool call has exactly ONE real result in task history before
+///    the summarize request is built (none synthesized, none cancelled), the request carries
+///    no `ActionResult` any more, and the recorded summarization head covers the calls and
+///    their results.
+/// 3. The summary stream finishes with its own text: the commit records it (head included),
+///    and exactly ONE continue request goes out.
+///
+/// No network: the BYOP requests are opened but their futures are never polled (this test
+/// never awaits after sending).
+#[test]
+fn tool_loop_over_the_window_compacts_with_its_results_through_the_byop_path() {
+    drive_tool_loop_through_the_byop_path(SummaryStreamOutcome::Summary);
+}
+
+/// #1059 refute round 3: a summarize stream that streams a sentence of narration and then a
+/// tool call (providers whose genai adapter ignores `tool_choice`). The call is dropped, and
+/// the narration is this stream's own AgentOutput — but it is not a summary, so nothing is
+/// committed: the head (the step's calls and results included) stays visible. The deferred
+/// summary still resumes the task: exactly one continue request.
+#[test]
+fn narration_before_a_dropped_tool_call_is_not_committed_as_the_summary() {
+    drive_tool_loop_through_the_byop_path(SummaryStreamOutcome::NarrationThenToolCall);
+}
+
+/// #1078: an older turn (a question and a large answer) precedes the tool-loop turn, so the
+/// summary covers only the older turn and the current one is the kept tail. The current
+/// turn's instruction, calls and results must reach the continue request, after the summary.
+/// Before the fix the summary was anchored at the current turn's user message, which was then
+/// hidden although it was never summarized.
+#[test]
+fn the_kept_current_turn_survives_the_compaction_after_the_summary() {
+    drive_tool_loop_through_the_byop_path(SummaryStreamOutcome::SummaryOfAnOlderTurn);
+}
+
+/// What the summarize stream answers in [`drive_tool_loop_through_the_byop_path`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SummaryStreamOutcome {
+    /// A real summary.
+    Summary,
+    /// "Let me check" followed by a tool call, which the stream drops.
+    NarrationThenToolCall,
+    /// A real summary, of an older turn that precedes the tool-loop turn (#1078).
+    SummaryOfAnOlderTurn,
+}
+
+fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
+    use crate::ai::agent_providers::{AgentProviderSecrets, llm_id, lookup_byop};
+    use crate::ai::byop_compaction::CompactionConfig;
+    use crate::ai::llms::LLMPreferences;
+    use crate::features::FeatureFlag;
+    use crate::settings::{AISettings, AgentProvider, AgentProviderApiType, AgentProviderModel};
+    use settings::Setting;
+    use warp_multi_agent_api as api;
+
+    const PROVIDER_ID: &str = "tool-loop-provider";
+    const MODEL_ID: &str = "tool-loop-model";
+
+    App::test((), |mut app| async move {
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        initialize_app_for_terminal_view(&mut app);
+        // The BYOP preflight persists the results it records; it refuses without a sender.
+        let (sender, _persisted_events) = std::sync::mpsc::sync_channel(4096);
+        let mut global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        global_resource_handles.model_event_sender = Some(sender);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
+        let terminal = add_window_with_terminal(&mut app, None);
+        let terminal_view_id = terminal.read(&app, |view, _| view.id());
+        let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
+
+        // A BYOP provider whose model has the issue's 32_000-token window, selected.
+        let model_llm_id = llm_id::encode(PROVIDER_ID, MODEL_ID);
+        app.update(|ctx| {
+            let mut model = AgentProviderModel::from_id(MODEL_ID.to_owned());
+            model.context_window = 32_000;
+            let provider = AgentProvider {
+                id: PROVIDER_ID.to_owned(),
+                name: "Tool loop provider".to_owned(),
+                kind: Default::default(),
+                api_type: AgentProviderApiType::OpenAi,
+                // Never contacted: the request futures are not polled.
+                base_url: "http://127.0.0.1:9/v1".to_owned(),
+                models: vec![model],
+                extra_headers: Vec::new(),
+                vertex_project: String::new(),
+                vertex_location: String::new(),
+                disabled: false,
+                token_price: None,
+            };
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                let _ = settings.agent_providers.set_value(vec![provider], ctx);
+                let _ = settings
+                    .byop_last_used_model_id
+                    .set_value(model_llm_id.to_string(), ctx);
+            });
+            AgentProviderSecrets::handle(ctx).update(ctx, |secrets, ctx| {
+                secrets.set(PROVIDER_ID, "not-a-real-key".to_owned(), ctx);
+            });
+        });
+        app.read(|ctx| {
+            let active = LLMPreferences::as_ref(ctx)
+                .get_active_base_model(ctx, Some(terminal_view_id))
+                .id
+                .clone();
+            assert_eq!(
+                active, model_llm_id,
+                "precondition: the BYOP model is selected"
+            );
+            assert!(
+                lookup_byop(ctx, &active).is_some(),
+                "precondition: BYOP resolves"
+            );
+            assert_eq!(
+                CompactionConfig::model_limit(ctx).context,
+                32_000,
+                "precondition: the window comes from the configured model"
+            );
+        });
+
+        // The tool-call step: a user query, then a stream that adds two tool calls, exactly
+        // as the BYOP stream applies them (StreamInit, CreateTask upgrading the optimistic
+        // root, AddMessagesToTask).
+        // #1078: an older, large turn the summary will cover, ahead of the tool-loop turn.
+        let older_turn: Vec<api::Message> = if outcome == SummaryStreamOutcome::SummaryOfAnOlderTurn
+        {
+            vec![
+                timestamped_message(
+                    "u0",
+                    api::message::Message::UserQuery(api::message::UserQuery {
+                        query: "explain the build".to_owned(),
+                        ..Default::default()
+                    }),
+                    -2,
+                ),
+                timestamped_message(
+                    "a0",
+                    api::message::Message::AgentOutput(api::message::AgentOutput {
+                        // Over the summarize request's 8_000-token preserve budget, so the
+                        // older turn is summarized and the tool-loop turn is kept.
+                        text: "the build works like this. ".repeat(2_000),
+                    }),
+                    -1,
+                ),
+            ]
+        } else {
+            Vec::new()
+        };
+        let step_stream = ResponseStreamId::new_for_test();
+        let conversation_id =
+            BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
+                let conversation_id =
+                    history.start_new_conversation(terminal_view_id, false, false, ctx);
+                let conversation = history
+                    .conversation_mut(&conversation_id)
+                    .expect("conversation should exist");
+                let optimistic_root = conversation.get_root_task_id().clone();
+                conversation
+                    .update_for_new_request_input(
+                        super::RequestInput {
+                            conversation_id,
+                            input_messages: HashMap::from([(
+                                optimistic_root,
+                                vec![AIAgentInput::UserQuery {
+                                    query: "read both files".to_owned(),
+                                    context: Default::default(),
+                                    static_query_type: None,
+                                    referenced_attachments: Default::default(),
+                                    user_query_mode: UserQueryMode::default(),
+                                    running_command: None,
+                                    intended_agent: None,
+                                }],
+                            )]),
+                            working_directory: None,
+                            model_id: model_llm_id.clone(),
+                            coding_model_id: model_llm_id.clone(),
+                            cli_agent_model_id: model_llm_id.clone(),
+                            computer_use_model_id: model_llm_id.clone(),
+                            shared_session_response_initiator: None,
+                            request_start_ts: chrono::Local::now(),
+                            supported_tools_override: None,
+                        },
+                        step_stream.clone(),
+                        terminal_view_id,
+                        ctx,
+                    )
+                    .expect("the step's request should be accepted");
+                conversation
+                    .initialize_output_for_response_stream(
+                        &step_stream,
+                        api::response_event::StreamInit {
+                            request_id: String::new(),
+                            conversation_id: String::new(),
+                            run_id: String::new(),
+                        },
+                        terminal_view_id,
+                        ctx,
+                    )
+                    .expect("stream init should succeed");
+                history
+                    .apply_client_actions(
+                        &step_stream,
+                        vec![
+                            api::ClientAction {
+                                action: Some(api::client_action::Action::CreateTask(
+                                    api::client_action::CreateTask {
+                                        task: Some(api::Task {
+                                            id: "root".to_owned(),
+                                            ..Default::default()
+                                        }),
+                                    },
+                                )),
+                            },
+                            api::ClientAction {
+                                action: Some(api::client_action::Action::AddMessagesToTask(
+                                    api::client_action::AddMessagesToTask {
+                                        task_id: "root".to_owned(),
+                                        messages: older_turn
+                                            .clone()
+                                            .into_iter()
+                                            .chain([
+                                                timestamped_message(
+                                                    "q1",
+                                                    api::message::Message::UserQuery(
+                                                        api::message::UserQuery {
+                                                            query: "read both files".to_owned(),
+                                                            ..Default::default()
+                                                        },
+                                                    ),
+                                                    1,
+                                                ),
+                                                run_shell_tool_call("c1", "call-1", 2),
+                                                run_shell_tool_call("c2", "call-2", 3),
+                                            ])
+                                            .collect(),
+                                    },
+                                )),
+                            },
+                        ],
+                        conversation_id,
+                        terminal_view_id,
+                        &ai::skills::SkillPathOrigin::Unavailable,
+                        ctx,
+                    )
+                    .expect("the step's messages should apply");
+                conversation_id
+            });
+        let root_task_id = TaskId::new("root".to_owned());
+
+        controller.update(&mut app, |controller, ctx| {
+            // 1. The step finishes over the threshold (20_000 of 32_000 with the default
+            //    reserve) asking for tool calls.
+            controller.handle_response_stream_finished(
+                &step_stream,
+                stream_done(20_000),
+                conversation_id,
+                /*did_request_contain_user_query*/ true,
+                /*summarize_overflow*/ None,
+                ctx,
+            );
+            assert!(
+                controller
+                    .compaction_turn_state
+                    .get(&conversation_id)
+                    .is_some_and(|state| state.compaction_deferred_to_tool_results()),
+                "the real stream-finished wiring defers the compaction to the step's results"
+            );
+            assert_eq!(
+                controller.in_flight_response_streams.streams_for_test().count(),
+                0,
+                "nothing is summarized while the step's calls are pending"
+            );
+
+            // 2. Both calls ran; their results go out.
+            controller.action_model.update(ctx, |action_model, _| {
+                for call_id in ["call-1", "call-2"] {
+                    action_model
+                        .push_finished_action_result_for_test(conversation_id, command_result(call_id, &root_task_id));
+                }
+            });
+            controller.send_follow_up_for_conversation(
+                conversation_id,
+                super::FollowUpTrigger::Auto,
+                ctx,
+            );
+
+            let streams: Vec<_> = controller
+                .in_flight_response_streams
+                .streams_for_test()
+                .cloned()
+                .collect();
+            assert_eq!(streams.len(), 1, "one request: the summary with the results");
+            let summary_stream = streams[0].clone();
+            assert_eq!(summary_stream.as_ref(ctx).summarization_overflow(), Some(true));
+            let summary_params = summary_stream.as_ref(ctx).params_for_test().clone();
+            assert!(
+                !summary_params
+                    .input
+                    .iter()
+                    .any(|input| matches!(input, AIAgentInput::ActionResult { .. })),
+                "the preflight recorded the results in history and took them out of the input"
+            );
+
+            let history = BlocklistAIHistoryModel::as_ref(ctx);
+            let conversation = history.conversation(&conversation_id).unwrap();
+            let messages: Vec<&warp_multi_agent_api::Message> = conversation
+                .get_task(&root_task_id)
+                .expect("root task")
+                .messages()
+                .collect();
+            let call_ids: Vec<String> = messages
+                .iter()
+                .filter_map(|msg| match msg.message.as_ref() {
+                    Some(api::message::Message::ToolCall(call)) => Some(call.tool_call_id.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(call_ids, ["call-1", "call-2"]);
+            let mut result_message_ids = Vec::new();
+            for call_id in &call_ids {
+                let results: Vec<&&warp_multi_agent_api::Message> = messages
+                    .iter()
+                    .filter(|msg| {
+                        matches!(
+                            msg.message.as_ref(),
+                            Some(api::message::Message::ToolCallResult(result))
+                                if &result.tool_call_id == call_id
+                        )
+                    })
+                    .collect();
+                assert_eq!(results.len(), 1, "{call_id}: exactly one result in history");
+                assert!(
+                    !results[0].server_message_data.contains("interrupted_by_user")
+                        && !results[0].server_message_data.contains("\"cancelled\""),
+                    "{call_id}: the real result, not a synthesized cancellation"
+                );
+                result_message_ids.push(results[0].id.clone());
+            }
+            assert_eq!(
+                messages
+                    .iter()
+                    .filter(|msg| matches!(
+                        msg.message.as_ref(),
+                        Some(api::message::Message::ToolCallResult(_))
+                    ))
+                    .count(),
+                2,
+                "no other (orphan or cancellation) results"
+            );
+            // The summarize request is built from that history: its recorded head covers
+            // the calls and their results.
+            crate::ai::agent_providers::chat_stream::build_chat_request_for_test(&summary_params)
+                .expect("the summarize request builds");
+            let head = crate::ai::agent_providers::chat_stream::take_last_summarization_head(
+                conversation_id,
+            )
+            .expect("the summarize request recorded its head");
+            if outcome == SummaryStreamOutcome::SummaryOfAnOlderTurn {
+                assert_eq!(head.head_message_ids, ["u0", "a0"], "only the older turn");
+                assert_eq!(head.tail_start_id.as_deref(), Some("q1"));
+            } else {
+                for id in ["c1", "c2"]
+                    .iter()
+                    .map(|id| id.to_string())
+                    .chain(result_message_ids.iter().cloned())
+                {
+                    assert!(head.head_message_ids.contains(&id), "{id} is summarized");
+                }
+            }
+            // Re-record it for the commit below, as the stream itself would have.
+            crate::ai::agent_providers::chat_stream::build_chat_request_for_test(&summary_params)
+                .expect("the summarize request builds");
+
+            // 3. The summary stream answers and finishes.
+            let summary_text = match outcome {
+                SummaryStreamOutcome::Summary => "## Goal\n- read both files",
+                SummaryStreamOutcome::SummaryOfAnOlderTurn => "## Goal\n- explain the build",
+                SummaryStreamOutcome::NarrationThenToolCall => "Let me check the next file.",
+            };
+            if outcome == SummaryStreamOutcome::NarrationThenToolCall {
+                // What `generate_byop_output` does with the call at the end of the stream.
+                let dispatched = crate::ai::agent_providers::chat_stream::tool_calls_to_dispatch_for_test(
+                    &summary_params,
+                    vec!["call-3"],
+                );
+                assert_eq!(dispatched, 0, "a summarize stream dispatches no tool call");
+            }
+            let summary_stream_id = summary_stream.as_ref(ctx).id().clone();
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                history
+                    .conversation_mut(&conversation_id)
+                    .unwrap()
+                    .initialize_output_for_response_stream(
+                        &summary_stream_id,
+                        api::response_event::StreamInit {
+                            request_id: String::new(),
+                            conversation_id: String::new(),
+                            run_id: String::new(),
+                        },
+                        terminal_view_id,
+                        ctx,
+                    )
+                    .expect("summary stream init should succeed");
+                history
+                    .apply_client_actions(
+                        &summary_stream_id,
+                        vec![api::ClientAction {
+                            action: Some(api::client_action::Action::AddMessagesToTask(
+                                api::client_action::AddMessagesToTask {
+                                    task_id: "root".to_owned(),
+                                    messages: vec![timestamped_message(
+                                        "s1",
+                                        api::message::Message::AgentOutput(
+                                            api::message::AgentOutput {
+                                                text: summary_text.to_owned(),
+                                            },
+                                        ),
+                                        4,
+                                    )],
+                                },
+                            )),
+                        }],
+                        conversation_id,
+                        terminal_view_id,
+                        &ai::skills::SkillPathOrigin::Unavailable,
+                        ctx,
+                    )
+                    .expect("the summary text should apply");
+            });
+            controller.handle_response_stream_finished(
+                &summary_stream_id,
+                stream_done(3_000),
+                conversation_id,
+                /*did_request_contain_user_query*/ false,
+                /*summarize_overflow*/ Some(true),
+                ctx,
+            );
+
+            let history = BlocklistAIHistoryModel::as_ref(ctx);
+            let completed = history
+                .conversation(&conversation_id)
+                .unwrap()
+                .compaction_state
+                .completed()
+                .last()
+                .cloned();
+            match outcome {
+                SummaryStreamOutcome::Summary => {
+                    let completed = completed.expect("the summary committed");
+                    assert_eq!(completed.assistant_msg_id, "s1", "the stream's own text");
+                    assert!(completed.auto);
+                    for id in ["c1", "c2"]
+                        .iter()
+                        .map(|id| id.to_string())
+                        .chain(result_message_ids.iter().cloned())
+                    {
+                        assert!(completed.head_message_ids.contains(&id), "{id} is compacted");
+                    }
+                }
+                SummaryStreamOutcome::SummaryOfAnOlderTurn => {
+                    let completed = completed.expect("the summary committed");
+                    assert_eq!(completed.head_message_ids, ["u0", "a0"]);
+                    assert_eq!(
+                        completed.user_msg_id, "u0",
+                        "anchored inside the head it summarizes"
+                    );
+                    let hidden = history
+                        .conversation(&conversation_id)
+                        .unwrap()
+                        .compaction_state
+                        .hidden_message_ids();
+                    for kept in ["q1", "c1", "c2"]
+                        .iter()
+                        .map(|id| id.to_string())
+                        .chain(result_message_ids.iter().cloned())
+                    {
+                        assert!(!hidden.contains(&kept), "{kept} is kept and stays visible");
+                    }
+                }
+                SummaryStreamOutcome::NarrationThenToolCall => {
+                    assert!(
+                        completed.is_none(),
+                        "narration before a dropped tool call is not a summary"
+                    );
+                    assert!(
+                        crate::ai::agent_providers::chat_stream::take_last_summarization_head(
+                            conversation_id
+                        )
+                        .is_none(),
+                        "the uncommitted summary's recorded head is dropped"
+                    );
+                }
+            }
+
+            let continue_text = crate::ai::byop_compaction::prompt::build_continue_message(false);
+            let continue_requests = controller
+                .in_flight_response_streams
+                .streams_for_test()
+                .filter(|stream| {
+                    stream.as_ref(ctx).params_for_test().input.iter().any(|input| {
+                        matches!(input, AIAgentInput::UserQuery { query, .. } if *query == continue_text)
+                    })
+                })
+                .count();
+            assert_eq!(continue_requests, 1, "exactly one continue request after the commit");
+
+            if outcome == SummaryStreamOutcome::SummaryOfAnOlderTurn {
+                // What the continue request sends: the summary first, then the kept turn's
+                // instruction, then the continue message.
+                let continue_params = controller
+                    .in_flight_response_streams
+                    .streams_for_test()
+                    .map(|stream| stream.as_ref(ctx).params_for_test().clone())
+                    .find(|params| {
+                        params.input.iter().any(|input| {
+                            matches!(input, AIAgentInput::UserQuery { query, .. } if *query == continue_text)
+                        })
+                    })
+                    .expect("the continue request");
+                let request =
+                    crate::ai::agent_providers::chat_stream::build_chat_request_for_test(
+                        &continue_params,
+                    )
+                    .expect("the continue request builds");
+                let texts: Vec<String> = request
+                    .messages
+                    .iter()
+                    .map(|m| m.content.first_text().unwrap_or_default().to_owned())
+                    .collect();
+                let position = |needle: &str| {
+                    texts
+                        .iter()
+                        .position(|text| text.contains(needle))
+                        .unwrap_or_else(|| panic!("{needle:?} is not in the continue request"))
+                };
+                let summary_at = position("explain the build");
+                let instruction_at = position("read both files");
+                let continue_at = position(&continue_text);
+                assert!(
+                    summary_at < instruction_at && instruction_at < continue_at,
+                    "summary ({summary_at}) < kept instruction ({instruction_at}) < continue ({continue_at})"
+                );
+                assert!(
+                    !texts.iter().any(|text| text.contains("the build works like this")),
+                    "the summarized answer itself is hidden"
+                );
+            }
+        });
+    });
+}

@@ -49,6 +49,70 @@ pub trait MessageRef {
 
     /// All tool outputs within this message (used for prune); only assistant messages have these.
     fn tool_outputs(&self) -> Vec<ToolOutputRef<Self::CallId>>;
+
+    /// The tool calls this message opens. Used by `split_turn` so a cut never separates a
+    /// call from its result (#1061). Default: none.
+    fn tool_call_ids(&self) -> Vec<Self::CallId> {
+        Vec::new()
+    }
+
+    /// The tool calls this message answers. Default: the call ids of [`Self::tool_outputs`].
+    fn tool_result_call_ids(&self) -> Vec<Self::CallId> {
+        self.tool_outputs()
+            .into_iter()
+            .map(|output| output.call_id)
+            .collect()
+    }
+}
+
+/// For every index `i` of `messages`, whether a cut at `i` (head `..i`, tail `i..`) keeps each
+/// tool call together with its result: no call before `i` has its result at or after `i`
+/// (#1061).
+///
+/// In this fork a `ToolCall` and its `ToolCallResult` are separate messages, unlike opencode,
+/// where they are parts of one assistant message and a message-level cut cannot split them.
+/// A cut between them leaves the summarize request a call without its result, and after the
+/// commit hides the head, every later request an orphan result.
+///
+/// A result is paired with the nearest preceding still-unanswered call with the same id, not
+/// with "the" call of that id: providers reuse ids across steps (Kimi's `functions.<name>:0`),
+/// and pairing a late result with the first call of the conversation would make every cut in
+/// between unsafe, so every compaction would summarize everything. A call that never got a
+/// result, and a result with no unanswered call before it, constrain nothing. (Safe on the
+/// deferred tool-loop path: the BYOP preflight records every result of the step before the
+/// summary request is built, so a call left unanswered there has no result that could later
+/// land in the tail as an orphan.)
+pub fn tool_pair_safe_cuts<M: MessageRef>(messages: &[M]) -> Vec<bool> {
+    use std::collections::HashMap;
+
+    let n = messages.len();
+    let mut unanswered: HashMap<M::CallId, Vec<usize>> = HashMap::new();
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    for (i, msg) in messages.iter().enumerate() {
+        // Results first: a message never answers a call it opens itself.
+        for id in msg.tool_result_call_ids() {
+            if let Some(call) = unanswered.get_mut(&id).and_then(Vec::pop) {
+                pairs.push((call, i));
+            }
+        }
+        for id in msg.tool_call_ids() {
+            unanswered.entry(id).or_default().push(i);
+        }
+    }
+    // A pair (call at c, result at r > c) makes every cut in c+1..=r unsafe. Difference
+    // array over cut positions 0..=n.
+    let mut delta = vec![0i64; n + 2];
+    for (call, result) in pairs {
+        delta[call + 1] += 1;
+        delta[result + 1] -= 1;
+    }
+    let mut open = 0i64;
+    (0..n)
+        .map(|i| {
+            open += delta[i];
+            open == 0
+        })
+        .collect()
 }
 
 /// Corresponds to the `compaction.ts:76-80` type.
@@ -105,6 +169,7 @@ fn split_turn<M, EstFn>(
     turn: &Turn<M::Id>,
     budget: usize,
     estimate: &EstFn,
+    safe_cuts: &[bool],
 ) -> Option<Tail<M::Id>>
 where
     M: MessageRef,
@@ -116,8 +181,14 @@ where
     if turn.end.saturating_sub(turn.start) <= 1 {
         return None;
     }
+    // Divergence from opencode (#1061): skip cut points that would separate a tool call from
+    // its result; see [`tool_pair_safe_cuts`].
     let mut start = turn.start + 1;
     while start < turn.end {
+        if !safe_cuts[start] {
+            start += 1;
+            continue;
+        }
         let size = estimate(&messages[start..turn.end]);
         if size > budget {
             start += 1;
@@ -169,6 +240,9 @@ where
         .map(|t| estimate_slice(&messages[t.start..t.end]))
         .collect();
 
+    // #1061: a cut must never separate a tool call from its result, at a turn boundary as
+    // well as inside a turn.
+    let safe_cuts = tool_pair_safe_cuts(messages);
     let mut total: usize = 0;
     let mut keep: Option<Tail<M::Id>> = None;
     for i in (0..recent.len()).rev() {
@@ -176,14 +250,18 @@ where
         let size = sizes[i];
         if total + size <= budget {
             total += size;
-            keep = Some(Tail {
-                start: turn.start,
-                id: turn.id.clone(),
-            });
+            // A boundary that would split a pair is not a cut point; the turn still counts
+            // toward the kept tail, which may then start at an older (safe) boundary.
+            if safe_cuts[turn.start] {
+                keep = Some(Tail {
+                    start: turn.start,
+                    id: turn.id.clone(),
+                });
+            }
             continue;
         }
         let remaining = budget.saturating_sub(total);
-        let split = split_turn(messages, turn, remaining, &estimate_slice);
+        let split = split_turn(messages, turn, remaining, &estimate_slice, &safe_cuts);
         if split.is_some() {
             keep = split;
         }

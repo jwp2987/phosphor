@@ -284,6 +284,8 @@ struct M {
     is_summary: bool,
     size: usize,
     tools: Vec<ToolOutputRef<u32>>,
+    /// Tool calls this message opens (a `ToolCall` message).
+    calls: Vec<u32>,
 }
 
 impl M {
@@ -295,6 +297,7 @@ impl M {
             is_summary: false,
             size,
             tools: vec![],
+            calls: vec![],
         }
     }
     fn user_compaction(id: u32) -> Self {
@@ -305,6 +308,7 @@ impl M {
             is_summary: false,
             size: 0,
             tools: vec![],
+            calls: vec![],
         }
     }
     fn assistant(id: u32, size: usize) -> Self {
@@ -315,6 +319,7 @@ impl M {
             is_summary: false,
             size,
             tools: vec![],
+            calls: vec![],
         }
     }
     fn summary(id: u32) -> Self {
@@ -325,6 +330,7 @@ impl M {
             is_summary: true,
             size: 100,
             tools: vec![],
+            calls: vec![],
         }
     }
     fn assistant_with_tools(id: u32, size: usize, tools: Vec<ToolOutputRef<u32>>) -> Self {
@@ -335,6 +341,37 @@ impl M {
             is_summary: false,
             size,
             tools,
+            calls: vec![],
+        }
+    }
+    /// An assistant `ToolCall` message opening `call_id`.
+    fn tool_call(id: u32, size: usize, call_id: u32) -> Self {
+        Self {
+            id,
+            role: Role::Assistant,
+            is_compaction: false,
+            is_summary: false,
+            size,
+            tools: vec![],
+            calls: vec![call_id],
+        }
+    }
+    /// A `ToolCallResult` message answering `call_id`.
+    fn tool_result(id: u32, size: usize, call_id: u32) -> Self {
+        Self {
+            id,
+            role: Role::Tool,
+            is_compaction: false,
+            is_summary: false,
+            size,
+            tools: vec![ToolOutputRef {
+                call_id,
+                tool_name: "run_shell_command".to_string(),
+                output_size: size,
+                completed: true,
+                already_compacted: false,
+            }],
+            calls: vec![],
         }
     }
 }
@@ -359,6 +396,9 @@ impl MessageRef for M {
     }
     fn tool_outputs(&self) -> Vec<ToolOutputRef<u32>> {
         self.tools.clone()
+    }
+    fn tool_call_ids(&self) -> Vec<u32> {
+        self.calls.clone()
     }
 }
 
@@ -469,6 +509,189 @@ fn select_tail_turns_zero_keeps_full() {
     let r = select(&msgs, &cfg, ModelLimit::FALLBACK, sum_size);
     assert_eq!(r.head_end, msgs.len());
     assert_eq!(r.tail_start_id, None);
+}
+
+// -- select never separates a tool call from its result (#1061) ------------
+//
+// A `ToolCall` and its `ToolCallResult` are separate messages here (one assistant message in
+// opencode). A cut between them gives the summarize request a call without its result and,
+// once the head is hidden, every later request an orphan result.
+
+#[test]
+fn tool_pair_safe_cuts_marks_cuts_inside_a_pair_unsafe() {
+    use super::algorithm::tool_pair_safe_cuts;
+    let msgs = vec![
+        M::user(1, 10),            // 0
+        M::tool_call(2, 10, 20),   // 1
+        M::tool_result(3, 10, 20), // 2: between call 20 and its result
+        M::assistant(4, 10),       // 3
+        M::tool_call(5, 10, 21),   // 4: parallel calls 21 and 22
+        M::tool_call(6, 10, 22),   // 5: 21 is open
+        M::tool_result(7, 10, 21), // 6: 22 is open
+        M::tool_result(8, 10, 22), // 7: 22 is open
+        M::tool_call(9, 10, 23),   // 8: a call that never got a result constrains nothing
+        M::assistant(10, 10),      // 9
+    ];
+    assert_eq!(
+        tool_pair_safe_cuts(&msgs),
+        vec![
+            true, true, false, true, true, false, false, false, true, true
+        ]
+    );
+}
+
+/// The oversized turn is a tool loop. The first suffix that fits the budget starts at the
+/// first call's *result*; the cut must move on to the next call instead.
+#[test]
+fn select_split_turn_never_cuts_between_a_call_and_its_result() {
+    let msgs = vec![
+        M::user(1, 100),
+        M::tool_call(2, 100, 20),
+        M::tool_result(3, 100, 20),
+        M::tool_call(4, 10, 21),
+        M::tool_result(5, 100, 21),
+    ];
+    let cfg = CompactionConfig {
+        tail_turns: 1,
+        preserve_recent_tokens: Some(250),
+        ..Default::default()
+    };
+    let r = select(&msgs, &cfg, ModelLimit::FALLBACK, sum_size);
+    // [1..5)=310 > 250; [2..5)=210 fits but starts at the result of call 20 (the old cut);
+    // [3..5)=110 fits and starts at a call.
+    assert_eq!(
+        r.head_end, 3,
+        "the cut must not leave result 3 without call 2"
+    );
+    assert_eq!(r.tail_start_id, Some(4));
+}
+
+/// Parallel calls: every cut inside the call/result group is unsafe, so when no safe cut fits
+/// the budget the whole turn goes to the summarizer rather than a split pair.
+#[test]
+fn select_split_turn_keeps_parallel_calls_together() {
+    let msgs = vec![
+        M::user(1, 100),
+        M::tool_call(2, 50, 20),
+        M::tool_call(3, 50, 21),
+        M::tool_result(4, 100, 20),
+        M::tool_result(5, 100, 21),
+    ];
+    let cfg = CompactionConfig {
+        tail_turns: 1,
+        preserve_recent_tokens: Some(260),
+        ..Default::default()
+    };
+    let r = select(&msgs, &cfg, ModelLimit::FALLBACK, sum_size);
+    // The old cut was at index 2 ([2..5)=250 fits): call 20 in the head, its result in the
+    // tail.
+    assert_eq!(r.head_end, msgs.len());
+    assert_eq!(r.tail_start_id, None);
+}
+
+/// Providers reuse call ids across steps (Kimi's `functions.<name>:0`). Pairing a result with
+/// "the" call of its id (the first one) made every cut between the first call and the last
+/// result unsafe, so an oversized last turn could never be split and every compaction
+/// summarized everything. Each result pairs with the nearest preceding unanswered call.
+#[test]
+fn select_split_turn_handles_reused_tool_call_ids() {
+    let msgs = vec![
+        M::user(1, 10),
+        M::tool_call(2, 10, 7),
+        M::tool_result(3, 10, 7),
+        M::user(4, 100),
+        M::tool_call(5, 10, 7), // the same id again, one turn later
+        M::tool_result(6, 10, 7),
+    ];
+    let cfg = CompactionConfig {
+        tail_turns: 1,
+        preserve_recent_tokens: Some(60),
+        ..Default::default()
+    };
+    let r = select(&msgs, &cfg, ModelLimit::FALLBACK, sum_size);
+    // The last turn (120) is over the budget; [4..6)=20 fits and starts at a call whose result
+    // is inside the tail.
+    assert_eq!(r.head_end, 4);
+    assert_eq!(r.tail_start_id, Some(5));
+}
+
+/// A turn boundary inside a call/result pair (a result recorded after a later user message)
+/// is not a cut point either: the tail extends to an older safe boundary.
+#[test]
+fn select_turn_boundary_never_cuts_between_a_call_and_its_result() {
+    let msgs = vec![
+        M::user(1, 10),
+        M::tool_call(2, 10, 20),
+        M::user(3, 10),
+        M::tool_result(4, 10, 20),
+        M::assistant(5, 10),
+    ];
+    let cfg = CompactionConfig {
+        tail_turns: 2,
+        preserve_recent_tokens: Some(1_000),
+        ..Default::default()
+    };
+    let r = select(&msgs, &cfg, ModelLimit::FALLBACK, sum_size);
+    // The old cut was at the second turn's user message (index 2): call 2 in the head, its
+    // result in the tail. The only safe boundary that fits is the first turn's, i.e. no cut.
+    assert_eq!(r.head_end, msgs.len());
+    assert_eq!(r.tail_start_id, None);
+}
+
+/// The same reused-id split over real `api::Message` views (`WarpMessageView`'s
+/// `tool_call_ids` / `tool_result_call_ids`, keyed by task and call id), sized through the
+/// real `estimate_message`.
+#[test]
+fn select_over_real_messages_splits_a_tool_loop_turn_with_reused_ids() {
+    use super::message_view::{build_tool_name_lookup, project};
+    use super::state::CompactionState;
+
+    let msgs = vec![
+        user_query("u1", "root", "r1", 1),
+        tool_call_with_id("c1", "root", "functions.read:0", 2),
+        tool_result("t1", "root", "functions.read:0", 32, 3),
+        // A long user message forces the last turn over the budget.
+        user_query(&format!("u2{}", "a".repeat(400)), "root", "r2", 4),
+        tool_call_with_id("c2", "root", "functions.read:0", 5),
+        tool_result("t2", "root", "functions.read:0", 32, 6),
+    ];
+    let refs: Vec<&api::Message> = msgs.iter().collect();
+    let state = CompactionState::default();
+    let tool_names = build_tool_name_lookup(refs.iter().copied());
+    let views = project(&refs, &state, &tool_names);
+    let cfg = CompactionConfig {
+        tail_turns: 1,
+        preserve_recent_tokens: Some(60),
+        ..Default::default()
+    };
+    let r = select(&views, &cfg, ModelLimit::FALLBACK, |slice| {
+        slice.iter().map(MessageRef::estimate_size).sum()
+    });
+    // Last turn: u2 (~102) + c2 (16) + t2 (8) > 60. [c2, t2] = 24 fits and keeps the pair.
+    assert_eq!(r.head_end, 4);
+    assert_eq!(r.tail_start_id.as_deref(), Some("c2"));
+}
+
+/// The pairing is per task: a call in one task is never answered by another task's result
+/// with the same id.
+#[test]
+fn real_message_views_pair_tool_calls_within_their_task() {
+    use super::algorithm::tool_pair_safe_cuts;
+    use super::message_view::{build_tool_name_lookup, project};
+    use super::state::CompactionState;
+
+    let msgs = vec![
+        user_query("u1", "root", "r1", 1),
+        tool_call_with_id("c1", "root", "x:0", 2),
+        tool_result("t-sub", "subtask", "x:0", 32, 3), // another task's result, same id
+        tool_result("t1", "root", "x:0", 32, 4),
+    ];
+    let refs: Vec<&api::Message> = msgs.iter().collect();
+    let state = CompactionState::default();
+    let tool_names = build_tool_name_lookup(refs.iter().copied());
+    let views = project(&refs, &state, &tool_names);
+    // c1 is answered by t1 (index 3), not t-sub: cuts at 2 and 3 are unsafe.
+    assert_eq!(tool_pair_safe_cuts(&views), vec![true, true, false, false]);
 }
 
 // -- prune ---------------------------------------------------------------
@@ -706,10 +929,79 @@ fn commit_summarization_records_head_message_ids() {
 
     assert!(commit_summarization(&mut conversation, false, &cfg));
     let completed = conversation.compaction_state.completed().last().unwrap();
-    assert_eq!(completed.user_msg_id, "u3");
+    // #1078: the summary is anchored inside the head it summarizes (the head's last user
+    // turn), not at the kept tail's user message — that one was never summarized and must
+    // stay visible. (This assertion used to pin `u3`, the bug.)
+    assert_eq!(completed.user_msg_id, "u2");
     assert_eq!(completed.assistant_msg_id, "a3");
     assert_eq!(completed.tail_start_id.as_deref(), Some("u3"));
     assert_eq!(completed.head_message_ids, ["u1", "a1", "u2", "a2"]);
+    let hidden = conversation.compaction_state.hidden_message_ids();
+    assert!(
+        !hidden.contains("u3"),
+        "the kept tail's user message stays visible"
+    );
+}
+
+/// #1078 attack: an older turn (`u1` + a large answer) is summarized while the current turn
+/// (`q2` and its tool call and result) fits the kept tail. The summary is shown where the
+/// head was and the current turn's instruction survives — before the fix `q2` was the anchor
+/// and therefore hidden. The hidden set is persisted with the conversation
+/// (`compaction_state_json`), so it must survive a serde round trip unchanged.
+#[test]
+fn commit_keeps_the_current_turn_visible_and_after_the_summary() {
+    use super::commit::commit_summarization_for_stream;
+
+    let mut big = agent_output("a1", "root", "r1", 2);
+    if let Some(api::message::Message::AgentOutput(output)) = big.message.as_mut() {
+        output.text = "x".repeat(4_000);
+    }
+    let mut conversation = conversation_with_messages(vec![
+        user_query("u1", "root", "r1", 1),
+        big,
+        user_query("q2", "root", "r2", 3),
+        tool_call_with_id("c1", "root", "call-1", 4),
+        tool_result("t1", "root", "call-1", 40, 5),
+        agent_output("s1", "root", "r3", 6),
+    ]);
+    let cfg = CompactionConfig {
+        tail_turns: 1,
+        preserve_recent_tokens: Some(200),
+        ..Default::default()
+    };
+    assert!(commit_summarization_for_stream(
+        &mut conversation,
+        true,
+        &cfg,
+        |id| id == "s1"
+    ));
+    let completed = conversation
+        .compaction_state
+        .completed()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(completed.head_message_ids, ["u1", "a1"]);
+    assert_eq!(completed.tail_start_id.as_deref(), Some("q2"));
+    assert_eq!(completed.user_msg_id, "u1", "anchored inside the head");
+    let hidden = conversation.compaction_state.hidden_message_ids();
+    for kept in ["q2", "c1", "t1"] {
+        assert!(
+            !hidden.contains(kept),
+            "{kept} is in the kept tail and stays visible"
+        );
+    }
+    for gone in ["u1", "a1", "s1"] {
+        assert!(
+            hidden.contains(gone),
+            "{gone} is summarized (or is the summary)"
+        );
+    }
+
+    // Restore: the persisted state hides exactly the same messages.
+    let json = serde_json::to_string(&conversation.compaction_state).unwrap();
+    let restored: super::state::CompactionState = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored.hidden_message_ids(), hidden);
 }
 
 // -- message_view ----------------------------------------------------------
@@ -747,6 +1039,106 @@ fn tool_call(id: &str, task_id: &str, request_id: &str, seconds: i64) -> api::Me
         request_id: request_id.to_string(),
         timestamp: Some(ts(seconds)),
     }
+}
+
+fn tool_call_with_id(id: &str, task_id: &str, tool_call_id: &str, seconds: i64) -> api::Message {
+    api::Message {
+        id: id.to_string(),
+        task_id: task_id.to_string(),
+        server_message_data: String::new(),
+        citations: vec![],
+        fetched_memories: vec![],
+        message: Some(api::message::Message::ToolCall(api::message::ToolCall {
+            tool_call_id: tool_call_id.to_string(),
+            tool: None,
+        })),
+        request_id: "r".to_string(),
+        timestamp: Some(ts(seconds)),
+    }
+}
+
+/// A persisted BYOP tool result whose `server_message_data` is `output_chars` long.
+fn tool_result(
+    id: &str,
+    task_id: &str,
+    tool_call_id: &str,
+    output_chars: usize,
+    seconds: i64,
+) -> api::Message {
+    api::Message {
+        id: id.to_string(),
+        task_id: task_id.to_string(),
+        server_message_data: "o".repeat(output_chars),
+        citations: vec![],
+        fetched_memories: vec![],
+        message: Some(api::message::Message::ToolCallResult(
+            api::message::ToolCallResult {
+                tool_call_id: tool_call_id.to_string(),
+                context: None,
+                result: None,
+            },
+        )),
+        request_id: "r".to_string(),
+        timestamp: Some(ts(seconds)),
+    }
+}
+
+/// A summarize stream that produced no text must not commit an earlier AgentOutput (old
+/// narration) as the summary: only the stream's own messages qualify.
+#[test]
+fn commit_ignores_agent_output_from_before_the_summarize_stream() {
+    use super::commit::commit_summarization_for_stream;
+
+    let mut conversation = conversation_with_messages(vec![
+        user_query("u1", "root", "r1", 1),
+        agent_output("a1", "root", "r1", 2), // narration from the task, not a summary
+        tool_call("t1", "root", "r1", 3),
+    ]);
+    let cfg = CompactionConfig::default();
+    assert!(
+        !commit_summarization_for_stream(&mut conversation, true, &cfg, |id| id == "s1"),
+        "the summarize stream added no AgentOutput"
+    );
+    assert!(conversation.compaction_state.completed().is_empty());
+}
+
+#[test]
+fn commit_takes_the_summarize_streams_own_output() {
+    use super::commit::commit_summarization_for_stream;
+
+    let mut conversation = conversation_with_messages(vec![
+        user_query("u1", "root", "r1", 1),
+        agent_output("a1", "root", "r1", 2),
+        agent_output("s1", "root", "r2", 3),
+    ]);
+    let cfg = CompactionConfig::default();
+    assert!(commit_summarization_for_stream(
+        &mut conversation,
+        true,
+        &cfg,
+        |id| id == "s1"
+    ));
+    let completed = conversation.compaction_state.completed().last().unwrap();
+    assert_eq!(completed.assistant_msg_id, "s1");
+    assert_eq!(completed.summary_text.as_deref(), Some("output-s1"));
+}
+
+/// Kimi-style reused call ids: a skill output keeps its prune protection even when a later
+/// call of another tool reuses the id.
+#[test]
+fn tool_name_lookup_keeps_protection_for_a_reused_id() {
+    use super::message_view::build_tool_name_lookup;
+
+    let mut skill = tool_call_with_id("c1", "root", "functions.x:0", 1);
+    if let Some(api::message::Message::ToolCall(tc)) = skill.message.as_mut() {
+        tc.tool = Some(api::message::tool_call::Tool::ReadSkill(Default::default()));
+    }
+    let other = tool_call_with_id("c2", "root", "functions.x:0", 2);
+    let lookup = build_tool_name_lookup([&skill, &other]);
+    assert_eq!(
+        lookup.get("functions.x:0").map(String::as_str),
+        Some("skill")
+    );
 }
 
 /// Auto compaction is deferred while the finished turn asked for tool calls (a summarize
@@ -834,10 +1226,13 @@ fn committed_auto_summary_resumes_the_task() {
     assert!(build_continue_message(false).starts_with("Continue if you have next steps"));
 }
 
-/// A summary that found nothing to commit has nothing to continue from.
+/// Every auto-compaction is followed by the continue message (owner rule, #1059 refute round
+/// 5): an automatic summary that found nothing to commit (blank, or narration before a dropped
+/// tool call) still resumes from the uncompacted history instead of leaving the task stopped
+/// with no error. (This test used to assert the opposite, which the owner rule overturned.)
 #[test]
-fn uncommitted_auto_summary_does_not_resume() {
-    use super::{FinishedStream, plan_after_stream_finished as plan};
+fn uncommitted_auto_summary_still_resumes() {
+    use super::{AutoCompactionDecision as D, FinishedStream, plan_after_stream_finished as plan};
     let p = plan(
         FinishedStream::Summary {
             auto: true,
@@ -845,7 +1240,12 @@ fn uncommitted_auto_summary_does_not_resume() {
         },
         true,
     );
-    assert!(!p.resume_with_continue_message);
+    assert!(p.resume_with_continue_message);
+    assert_eq!(
+        p.decision,
+        D::None,
+        "a summary never triggers another summary"
+    );
 }
 
 /// Manual `/compact` (sent with overflow=false) only summarizes: no continue, no new turn.
@@ -949,4 +1349,661 @@ fn under_threshold_turn_is_a_no_op() {
         assert!(!p.restore_turn_allowance);
         assert!(!p.resume_with_continue_message);
     }
+}
+
+// -- tool-loop compaction (#1059) ----------------------------------------
+//
+// An agent loop whose every step asks for another tool call never reaches a tool-free turn
+// end, so before #1059 it was never compacted and each follow-up grew until the provider
+// rejected it. `TurnCompactionState` is the bookkeeping the controller keeps per
+// conversation; these tests drive exactly the methods the controller calls, in the order it
+// calls them: `on_stream_finished` (handle_response_stream_finished), `on_tool_results_ready`
+// (send_follow_up_for_conversation), `on_tool_results_abandoned` (stop, reject, close,
+// stashed request) and `on_new_user_turn` (send_query).
+//
+// Scenario from the issue: context window 32_000, every step reports 20_000 prompt tokens
+// and asks for another tool call.
+
+fn summary_stream(auto: bool, committed: bool) -> super::FinishedStream {
+    super::FinishedStream::Summary { auto, committed }
+}
+
+/// The issue's scenario really is over the threshold: 20_000 of a 32_000 window with the
+/// default reserve. (Guards the numbers the sequence tests below stand for.)
+#[test]
+fn issue_scenario_step_is_over_the_threshold() {
+    let cfg = cfg_default();
+    let model = model_limit_from_parts(32_000, 0);
+    let counts = TokenCounts {
+        total: 20_000,
+        ..Default::default()
+    };
+    assert!(is_overflow(&cfg, counts, model));
+}
+
+/// A tool-call step over the threshold still never summarizes on the spot (#959), but it
+/// marks its results to be sent with the automatic summary.
+#[test]
+fn tool_call_turn_over_threshold_compacts_with_its_results() {
+    use super::{AutoCompactionDecision as D, plan_after_stream_finished as plan};
+    let p = plan(turn(true, Some(true)), false);
+    assert_eq!(p.decision, D::None, "the calls must not be cancelled");
+    assert!(p.compact_after_tool_results);
+    assert!(!p.resume_with_continue_message);
+}
+
+/// Only an over-threshold tool-call step with the allowance unspent defers a compaction.
+#[test]
+fn compaction_is_deferred_only_for_an_over_threshold_tool_step() {
+    use super::plan_after_stream_finished as plan;
+    // Allowance spent (the summary itself is still over): no second summary, no loop.
+    assert!(!plan(turn(true, Some(true)), true).compact_after_tool_results);
+    // Under the threshold, unknown usage, or a tool-free turn (which compacts directly).
+    for already in [false, true] {
+        assert!(!plan(turn(true, Some(false)), already).compact_after_tool_results);
+        assert!(!plan(turn(true, None), already).compact_after_tool_results);
+        assert!(!plan(turn(false, Some(true)), already).compact_after_tool_results);
+    }
+    for auto in [false, true] {
+        for committed in [false, true] {
+            assert!(!plan(summary_stream(auto, committed), false).compact_after_tool_results);
+        }
+    }
+}
+
+/// The whole tool-loop sequence: step over the threshold → deferred; results ready → one
+/// request carrying the results and the automatic summary; the summary commits → continue
+/// message; the continued step is under the threshold → allowance back; the loop grows past
+/// the threshold again → compacts again. A loop that never pauses keeps compacting for as
+/// long as each compaction helps.
+#[test]
+fn never_ending_tool_loop_compacts_each_time_it_fills_the_window() {
+    use super::{AutoCompactionDecision as D, ToolResultsRequest as R, TurnCompactionState};
+    let mut state = TurnCompactionState::default();
+
+    for round in 0..4 {
+        // A few steps under the threshold: plain follow-ups.
+        for _ in 0..2 {
+            let p = state.on_stream_finished(turn(true, Some(false)));
+            assert_eq!(p.decision, D::None);
+            assert!(!p.compact_after_tool_results);
+            assert_eq!(
+                state.on_tool_results_ready(true),
+                R::FollowUp,
+                "round {round}"
+            );
+        }
+        // The step that crosses the threshold, still asking for a tool call.
+        let p = state.on_stream_finished(turn(true, Some(true)));
+        assert_eq!(p.decision, D::None, "round {round}: the calls run");
+        assert!(p.compact_after_tool_results, "round {round}");
+        assert!(state.compaction_deferred_to_tool_results());
+        // Its results are ready: they go out with the summary; once the request is sent the
+        // allowance is spent.
+        assert_eq!(
+            state.on_tool_results_ready(true),
+            R::SummarizeWithResults,
+            "round {round}"
+        );
+        assert!(
+            !state.auto_compacted(),
+            "not spent before the request went out"
+        );
+        state.on_deferred_summary_sent();
+        assert!(state.auto_compacted());
+        assert!(!state.compaction_deferred_to_tool_results());
+        // The summary commits: the task resumes with the continue message.
+        let p = state.on_stream_finished(summary_stream(true, true));
+        assert!(p.resume_with_continue_message, "round {round}");
+        assert_eq!(p.decision, D::None);
+        // The continued step is back under the threshold: the compaction worked.
+        let p = state.on_stream_finished(turn(true, Some(false)));
+        assert!(p.restore_turn_allowance, "round {round}");
+        assert!(!state.auto_compacted());
+        assert_eq!(state.on_tool_results_ready(true), R::FollowUp);
+    }
+    assert!(state.is_idle());
+}
+
+/// Before #1059 the same loop was never compacted: the tool-call step's plan carried nothing
+/// to act on, and every step's results went out as a growing plain follow-up. (Asserts the
+/// controller-visible difference: the deferral, not just the absence of a decision.)
+#[test]
+fn tool_loop_over_threshold_is_not_left_uncompacted() {
+    use super::{ToolResultsRequest as R, TurnCompactionState};
+    let mut state = TurnCompactionState::default();
+    let mut summaries = 0;
+    for _ in 0..10 {
+        state.on_stream_finished(turn(true, Some(true)));
+        if state.on_tool_results_ready(true) == R::SummarizeWithResults {
+            summaries += 1;
+            state.on_deferred_summary_sent();
+            state.on_stream_finished(summary_stream(true, true));
+            // Each compaction brings the next step under the threshold.
+            state.on_stream_finished(turn(true, Some(false)));
+            state.on_tool_results_ready(true);
+        }
+    }
+    assert_eq!(summaries, 10, "every over-threshold step compacts");
+}
+
+/// A summary that is itself still over the threshold cannot loop: with the allowance spent,
+/// the next over-threshold tool step is not compacted again (its calls run and its results go
+/// out as a plain follow-up), and the loop's first tool-free turn end still over gives up.
+#[test]
+fn tool_loop_summary_still_over_does_not_loop_and_gives_up_at_the_turn_end() {
+    use super::{AutoCompactionDecision as D, ToolResultsRequest as R, TurnCompactionState};
+    let mut state = TurnCompactionState::default();
+    state.on_stream_finished(turn(true, Some(true)));
+    assert_eq!(state.on_tool_results_ready(true), R::SummarizeWithResults);
+    state.on_deferred_summary_sent();
+    assert!(
+        state
+            .on_stream_finished(summary_stream(true, true))
+            .resume_with_continue_message
+    );
+
+    for _ in 0..3 {
+        let p = state.on_stream_finished(turn(true, Some(true)));
+        assert_eq!(p.decision, D::None, "the calls are never cancelled");
+        assert!(!p.compact_after_tool_results, "no second summary this turn");
+        assert_eq!(state.on_tool_results_ready(true), R::FollowUp);
+    }
+    assert_eq!(
+        state.on_stream_finished(turn(false, Some(true))).decision,
+        D::GiveUp
+    );
+}
+
+/// A deferred summary that found nothing to commit (an empty response, or a model that
+/// answered with a dropped tool call) still resumes the task: it interrupted a loop
+/// mid-task, which must never stop silently. It leaves no deferral behind to fire again, and
+/// the allowance stays spent, so the uncompacted context still over the threshold cannot
+/// loop: the next tool step just runs, and a tool-free end gives up visibly.
+#[test]
+fn uncommitted_deferred_summary_still_resumes_and_cannot_loop() {
+    use super::{AutoCompactionDecision as D, ToolResultsRequest as R, TurnCompactionState};
+    let mut state = TurnCompactionState::default();
+    state.on_stream_finished(turn(true, Some(true)));
+    assert_eq!(state.on_tool_results_ready(true), R::SummarizeWithResults);
+    state.on_deferred_summary_sent();
+    assert!(
+        state
+            .on_stream_finished(summary_stream(true, false))
+            .resume_with_continue_message,
+        "the task must carry on after the deferred summary"
+    );
+    assert!(!state.compaction_deferred_to_tool_results());
+    let p = state.on_stream_finished(turn(true, Some(true)));
+    assert!(!p.compact_after_tool_results);
+    assert_eq!(state.on_tool_results_ready(true), R::FollowUp);
+    assert_eq!(
+        state.on_stream_finished(turn(false, Some(true))).decision,
+        D::GiveUp
+    );
+}
+
+/// Every automatic summary resumes when it finishes cleanly, committed or not — the
+/// tool-free one as well as the deferred one — and that cannot loop: the allowance is spent,
+/// so the next tool-free turn still over the threshold gives up visibly. A manual `/compact`
+/// never resumes. (Replaces two tests that pinned a deferred-only resume, overturned by the
+/// owner rule that every auto-compaction is followed by the continue message.)
+#[test]
+fn every_auto_summary_resumes_and_cannot_loop_while_a_manual_one_never_does() {
+    use super::{AutoCompactionDecision as D, TurnCompactionState};
+    let mut state = TurnCompactionState::default();
+    assert_eq!(
+        state.on_stream_finished(turn(false, Some(true))).decision,
+        D::Compact
+    );
+    assert!(
+        state
+            .on_stream_finished(summary_stream(true, false))
+            .resume_with_continue_message,
+        "the tool-free auto summary that committed nothing resumes too"
+    );
+    assert_eq!(
+        state.on_stream_finished(turn(false, Some(true))).decision,
+        D::GiveUp,
+        "still over after the summary: no second summary, a visible error"
+    );
+
+    let mut state = TurnCompactionState::default();
+    state.on_deferred_summary_sent();
+    for committed in [false, true] {
+        assert!(
+            !state
+                .on_stream_finished(summary_stream(false, committed))
+                .resume_with_continue_message,
+            "a manual /compact never resumes"
+        );
+    }
+}
+
+/// The allowance is spent only once the deferred summary request was sent: deciding to send
+/// it is not enough (a refused request compacted nothing).
+#[test]
+fn allowance_is_spent_only_when_the_deferred_summary_is_sent() {
+    use super::{ToolResultsRequest as R, TurnCompactionState};
+    let mut state = TurnCompactionState::default();
+    state.on_stream_finished(turn(true, Some(true)));
+    assert_eq!(state.on_tool_results_ready(true), R::SummarizeWithResults);
+    assert!(!state.auto_compacted());
+    assert!(state.is_idle(), "a refused send leaves nothing behind");
+    // The next over-threshold step may still compact.
+    assert!(
+        state
+            .on_stream_finished(turn(true, Some(true)))
+            .compact_after_tool_results
+    );
+}
+
+/// Stop / Ctrl-C (or a pane close, or a stashed user request taking the results) while the
+/// step's tools run: the deferral is dropped, so it can't summarize some unrelated later
+/// follow-up. The allowance is untouched (nothing was summarized).
+#[test]
+fn stop_before_the_results_drops_the_deferral() {
+    use super::{ToolResultsRequest as R, TurnCompactionState};
+    let mut state = TurnCompactionState::default();
+    state.on_stream_finished(turn(true, Some(true)));
+    state.on_conversation_stopped();
+    assert!(!state.compaction_deferred_to_tool_results());
+    assert!(!state.auto_compacted());
+    assert!(state.is_idle());
+    assert_eq!(state.on_tool_results_ready(true), R::FollowUp);
+}
+
+/// Stop during the deferred summary itself: the results were recorded before the summary
+/// request was built, so there is nothing to lose; the state holds no deferral, only the
+/// spent allowance, and the user's next query starts clean.
+#[test]
+fn stop_during_the_deferred_summary_leaves_a_clean_state() {
+    use super::{ToolResultsRequest as R, TurnCompactionState};
+    let mut state = TurnCompactionState::default();
+    state.on_stream_finished(turn(true, Some(true)));
+    assert_eq!(state.on_tool_results_ready(true), R::SummarizeWithResults);
+    state.on_deferred_summary_sent();
+    // The stopped summary stream never reaches `on_stream_finished` (not a clean finish);
+    // `cancel_conversation_progress` reports the stop.
+    state.on_conversation_stopped();
+    assert!(!state.compaction_deferred_to_tool_results());
+    assert!(state.auto_compacted());
+    state.on_new_user_turn();
+    assert!(state.is_idle());
+}
+
+/// The user rejects the step's only tool call: no follow-up carries its result, so the
+/// controller abandons the deferral.
+#[test]
+fn rejected_tool_call_drops_the_deferral() {
+    use super::TurnCompactionState;
+    let mut state = TurnCompactionState::default();
+    state.on_stream_finished(turn(true, Some(true)));
+    state.on_tool_results_abandoned();
+    assert!(state.is_idle());
+}
+
+/// Results of a subagent's task (a CLI/LRC subagent's own loop) never carry the summary:
+/// they go as a plain follow-up, the deferral is dropped, and the allowance is not spent.
+#[test]
+fn subagent_task_results_go_as_a_plain_follow_up() {
+    use super::{ToolResultsRequest as R, TurnCompactionState};
+    let mut state = TurnCompactionState::default();
+    state.on_stream_finished(turn(true, Some(true)));
+    assert_eq!(state.on_tool_results_ready(false), R::FollowUp);
+    assert!(!state.compaction_deferred_to_tool_results());
+    assert!(!state.auto_compacted());
+}
+
+/// Manual `/compact` while a loop is mid-step: the slash command cancels the conversation's
+/// progress first (abandoning the deferral), and its own summary neither resumes the task nor
+/// leaves a deferral, so the step's results are not summarized a second time.
+#[test]
+fn manual_compact_mid_loop_supersedes_the_deferral() {
+    use super::{ToolResultsRequest as R, TurnCompactionState};
+    let mut state = TurnCompactionState::default();
+    state.on_stream_finished(turn(true, Some(true)));
+    state.on_conversation_stopped(); // the slash command's cancel_conversation_progress
+    let p = state.on_stream_finished(summary_stream(false, true));
+    assert!(!p.resume_with_continue_message);
+    assert!(!state.compaction_deferred_to_tool_results());
+    assert_eq!(state.on_tool_results_ready(true), R::FollowUp);
+}
+
+/// A deferral lives only until the next finished stream: if anything else finished first,
+/// that stream's own plan replaces it.
+#[test]
+fn a_later_finished_stream_replaces_the_deferral() {
+    use super::TurnCompactionState;
+    let mut state = TurnCompactionState::default();
+    state.on_stream_finished(turn(true, Some(true)));
+    state.on_stream_finished(turn(true, Some(false)));
+    assert!(!state.compaction_deferred_to_tool_results());
+    assert!(state.is_idle());
+}
+
+/// A new user query starts a fresh turn: allowance back, no deferral.
+#[test]
+fn new_user_turn_resets_the_tool_loop_state() {
+    use super::{ToolResultsRequest as R, TurnCompactionState};
+    let mut state = TurnCompactionState::default();
+    state.on_stream_finished(turn(true, Some(true)));
+    assert_eq!(state.on_tool_results_ready(true), R::SummarizeWithResults);
+    state.on_deferred_summary_sent();
+    state.on_new_user_turn();
+    assert!(state.is_idle());
+    // The next over-threshold step may compact again.
+    assert!(
+        state
+            .on_stream_finished(turn(true, Some(true)))
+            .compact_after_tool_results
+    );
+}
+
+/// The tool-free path is unchanged by #1059: it compacts directly and spends the allowance.
+#[test]
+fn tool_free_turn_still_compacts_directly() {
+    use super::{AutoCompactionDecision as D, TurnCompactionState};
+    let mut state = TurnCompactionState::default();
+    let p = state.on_stream_finished(turn(false, Some(true)));
+    assert_eq!(p.decision, D::Compact);
+    assert!(!p.compact_after_tool_results);
+    assert!(state.auto_compacted());
+}
+
+// -- refute round 3: a summarize stream that answered with a tool call ------------------
+
+/// Narration streamed before a (dropped) tool call is this stream's own AgentOutput, but not a
+/// summary: nothing is committed, the recorded head is dropped, and the note is consumed.
+#[test]
+fn commit_refuses_narration_from_a_stream_that_dropped_a_tool_call() {
+    use super::commit::commit_summarization_for_stream;
+    use crate::ai::agent_providers::chat_stream::{
+        note_summary_stream_dropped_tool_calls, take_summary_stream_dropped_tool_calls,
+    };
+
+    let mut conversation = conversation_with_messages(vec![
+        user_query("u1", "root", "r1", 1),
+        tool_call("t1", "root", "r1", 2),
+        agent_output("s1", "root", "r2", 3),
+    ]);
+    note_summary_stream_dropped_tool_calls(conversation.id());
+    let cfg = CompactionConfig::default();
+    assert!(!commit_summarization_for_stream(
+        &mut conversation,
+        true,
+        &cfg,
+        |id| id == "s1"
+    ));
+    assert!(conversation.compaction_state.completed().is_empty());
+    assert!(
+        !take_summary_stream_dropped_tool_calls(conversation.id()),
+        "the note is consumed by the commit"
+    );
+    // The next summarize stream of the conversation, with a real summary, commits again.
+    assert!(commit_summarization_for_stream(
+        &mut conversation,
+        true,
+        &cfg,
+        |id| id == "s1"
+    ));
+}
+
+/// Text that trims to nothing is not a summary either.
+#[test]
+fn commit_refuses_a_blank_summary() {
+    use super::commit::commit_summarization_for_stream;
+
+    let mut blank = agent_output("s1", "root", "r2", 3);
+    if let Some(api::message::Message::AgentOutput(output)) = blank.message.as_mut() {
+        output.text = "  \n\t ".to_string();
+    }
+    let mut conversation =
+        conversation_with_messages(vec![user_query("u1", "root", "r1", 1), blank]);
+    let cfg = CompactionConfig::default();
+    assert!(!commit_summarization_for_stream(
+        &mut conversation,
+        true,
+        &cfg,
+        |id| id == "s1"
+    ));
+    assert!(conversation.compaction_state.completed().is_empty());
+}
+
+/// Only a summary that will actually run may spend the allowance: a request the readiness
+/// pass blocked (rendered as an error, reported as `Ok`, no stream) or refused does not.
+#[test]
+fn only_an_opened_or_stashed_summary_spends_the_allowance() {
+    use super::RequestSendOutcome as O;
+    assert!(O::Opened.summary_will_run());
+    assert!(O::Stashed.summary_will_run());
+    assert!(!O::Blocked.summary_will_run());
+    assert!(!O::Refused.summary_will_run());
+}
+
+// -- refute round 7: summary chains, legacy anchors, skill anchors -----------------------
+
+fn completed(
+    user_msg_id: &str,
+    assistant_msg_id: &str,
+    head: &[&str],
+    tail_start_id: Option<&str>,
+) -> super::state::CompletedCompaction {
+    super::state::CompletedCompaction {
+        user_msg_id: user_msg_id.to_string(),
+        assistant_msg_id: assistant_msg_id.to_string(),
+        head_message_ids: head.iter().map(|id| id.to_string()).collect(),
+        tail_start_id: tail_start_id.map(str::to_string),
+        summary_text: Some(format!("summary-{assistant_msg_id}")),
+        auto: true,
+        overflow: true,
+    }
+}
+
+/// Two auto compactions with the continue message between them: the second head covers the
+/// first summary and its anchor, and the second summary was built from the first, so only the
+/// latest is shown. Before, every summary of a long loop stacked up in front of the tail.
+#[test]
+fn only_the_latest_summary_of_a_chain_is_shown() {
+    let mut state = super::state::CompactionState::default();
+    state.push_completed(completed("u1", "s1", &["u1", "a1"], Some("q2")));
+    state.push_completed(completed(
+        "cont1",
+        "s2",
+        &["u1", "a1", "q2", "c1", "t1", "s1", "cont1"],
+        Some("q3"),
+    ));
+    assert_eq!(
+        state.summary_insertions(|_| true),
+        vec![("cont1".to_string(), "summary-s2".to_string())]
+    );
+}
+
+/// Summaries are cumulative (each summarize request carries the previous summary to update),
+/// so only the latest is shown — also when the later head happens to be shorter and does not
+/// cover the earlier summary, where a head-coverage rule still stacked both.
+#[test]
+fn only_the_latest_summary_is_shown_even_when_a_later_head_is_shorter() {
+    let mut state = super::state::CompactionState::default();
+    state.push_completed(completed("u1", "s1", &["u1", "a1"], Some("q2")));
+    state.push_completed(completed("q2", "s2", &["q2", "a2"], Some("q3")));
+    assert_eq!(
+        state.summary_insertions(|_| true),
+        vec![("q2".to_string(), "summary-s2".to_string())]
+    );
+}
+
+/// A later compaction without summary text supersedes nothing: the last summary that exists
+/// is shown.
+#[test]
+fn a_compaction_without_text_does_not_hide_the_previous_summary() {
+    let mut state = super::state::CompactionState::default();
+    state.push_completed(completed("u1", "s1", &["u1", "a1"], Some("q2")));
+    let mut textless = completed("q2", "s2", &["q2", "a2"], Some("q3"));
+    textless.summary_text = None;
+    state.push_completed(textless);
+    assert_eq!(
+        state.summary_insertions(|_| true),
+        vec![("u1".to_string(), "summary-s1".to_string())]
+    );
+}
+
+/// A compaction persisted by a released build (before #1078) anchored at the kept tail's user
+/// message. After restore it must not hide that message; its summary is shown before the
+/// tail start instead.
+#[test]
+fn a_legacy_tail_anchor_stays_visible_and_the_summary_goes_before_the_tail() {
+    let mut state = super::state::CompactionState::default();
+    state.push_completed(completed("q2", "s1", &["u1", "a1"], Some("q2")));
+    let hidden = state.hidden_message_ids();
+    assert!(
+        !hidden.contains("q2"),
+        "the legacy anchor is the kept instruction"
+    );
+    assert!(hidden.contains("u1") && hidden.contains("a1") && hidden.contains("s1"));
+    assert_eq!(
+        state.summary_insertions(|_| true),
+        vec![("q2".to_string(), "summary-s1".to_string())]
+    );
+
+    let json = serde_json::to_string(&state).unwrap();
+    let restored: super::state::CompactionState = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored.hidden_message_ids(), hidden);
+}
+
+/// The anchor may be a skill invocation: the head's last user turn is an `InvokeSkill`, which
+/// is replayed to the model as the user's turn (#777).
+#[test]
+fn the_anchor_can_be_a_skill_invocation_in_the_head() {
+    use super::commit::commit_summarization_for_stream;
+
+    let mut big = agent_output("a1", "root", "r1", 2);
+    if let Some(api::message::Message::AgentOutput(output)) = big.message.as_mut() {
+        output.text = "x".repeat(4_000);
+    }
+    let mut conversation = conversation_with_messages(vec![
+        user_query("u1", "root", "r1", 1),
+        big,
+        invoke_skill("k1", "root", "r2", 3),
+        agent_output("a2", "root", "r2", 4),
+        user_query("q3", "root", "r3", 5),
+        agent_output("s1", "root", "r4", 6),
+    ]);
+    let cfg = CompactionConfig {
+        tail_turns: 1,
+        preserve_recent_tokens: Some(200),
+        ..Default::default()
+    };
+    assert!(commit_summarization_for_stream(
+        &mut conversation,
+        true,
+        &cfg,
+        |id| id == "s1"
+    ));
+    let completed = conversation.compaction_state.completed().last().unwrap();
+    assert_eq!(completed.head_message_ids, ["u1", "a1", "k1", "a2"]);
+    assert_eq!(completed.user_msg_id, "k1");
+    assert!(
+        !conversation
+            .compaction_state
+            .hidden_message_ids()
+            .contains("q3")
+    );
+}
+
+// -- refute round 11: rewinds and blank summaries ------------------------------------------
+
+/// A rewind removes C2's summary (and everything after it): C2 is dropped with its markers,
+/// so the part of its head that survives the rewind (`q2`, `a2`) is visible again and C1's
+/// summary is the one shown.
+#[test]
+fn a_rewind_drops_the_compaction_whose_summary_it_removed() {
+    let mut state = super::state::CompactionState::default();
+    state.push_completed(completed("u1", "s1", &["u1", "a1"], Some("q2")));
+    state.push_completed(completed(
+        "q2",
+        "s2",
+        &["u1", "a1", "s1", "q2", "a2"],
+        Some("cont2"),
+    ));
+    let remaining = ["u1", "a1", "s1", "q2", "a2"];
+    assert_eq!(
+        state.retain_compactions_whose_messages_exist(|id| remaining.contains(&id)),
+        1
+    );
+    let hidden = state.hidden_message_ids();
+    assert!(
+        !hidden.contains("q2") && !hidden.contains("a2"),
+        "{hidden:?}"
+    );
+    assert!(hidden.contains("u1") && hidden.contains("a1") && hidden.contains("s1"));
+    assert_eq!(
+        state.summary_insertions(|id| remaining.contains(&id)),
+        vec![("u1".to_string(), "summary-s1".to_string())]
+    );
+    assert_eq!(state.previous_summary(), Some("summary-s1"));
+    assert!(
+        state
+            .marker("q2")
+            .is_none_or(|m| m.compaction_trigger.is_none()),
+        "the dropped anchor is a turn boundary again"
+    );
+    assert!(state.marker("s2").is_none_or(|m| !m.is_summary));
+}
+
+/// Belt and braces: a compaction whose insertion target is gone from the request is never
+/// picked, so it can't suppress the summary that can still be shown.
+#[test]
+fn a_compaction_whose_target_is_missing_is_not_shown() {
+    let mut state = super::state::CompactionState::default();
+    state.push_completed(completed("u1", "s1", &["u1", "a1"], Some("q2")));
+    state.push_completed(completed("q2", "s2", &["q2", "a2"], Some("q3")));
+    assert_eq!(
+        state.summary_insertions(|id| id != "q2"),
+        vec![("u1".to_string(), "summary-s1".to_string())]
+    );
+}
+
+/// An early build stored `Some("")` for a blank reply. The summary a request shows and the
+/// one the next summarizer is asked to update are the same non-blank one.
+#[test]
+fn a_restored_blank_summary_is_skipped_by_both_readers() {
+    let mut state = super::state::CompactionState::default();
+    state.push_completed(completed("u1", "s1", &["u1", "a1"], Some("q2")));
+    let mut blank = completed("q2", "s2", &["q2", "a2"], Some("q3"));
+    blank.summary_text = Some("  \n ".to_string());
+    state.push_completed(blank);
+    let json = serde_json::to_string(&state).unwrap();
+    let state: super::state::CompactionState = serde_json::from_str(&json).unwrap();
+    assert_eq!(state.previous_summary(), Some("summary-s1"));
+    assert_eq!(
+        state.summary_insertions(|_| true),
+        vec![("u1".to_string(), "summary-s1".to_string())]
+    );
+}
+
+/// A stream that also produced a (dropped) tool call still commits text that has the
+/// summary's shape; text without it is refused.
+#[test]
+fn a_summary_shaped_reply_commits_despite_a_dropped_call() {
+    use super::commit::commit_summarization_for_stream;
+    use crate::ai::agent_providers::chat_stream::note_summary_stream_dropped_tool_calls;
+
+    let mut summary = agent_output("s1", "root", "r2", 3);
+    if let Some(api::message::Message::AgentOutput(output)) = summary.message.as_mut() {
+        output.text = "## Goal\n- pass the tests\n\n## Next Steps\n- rerun".to_string();
+    }
+    let mut conversation = conversation_with_messages(vec![
+        user_query("u1", "root", "r1", 1),
+        agent_output("a1", "root", "r1", 2),
+        summary,
+    ]);
+    note_summary_stream_dropped_tool_calls(conversation.id());
+    let cfg = CompactionConfig::default();
+    assert!(commit_summarization_for_stream(
+        &mut conversation,
+        true,
+        &cfg,
+        |id| id == "s1"
+    ));
 }

@@ -56,7 +56,8 @@ use warp_multi_agent_api as api;
 use genai::adapter::AdapterKind;
 use genai::chat::{
     Binary, BinarySource, CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatRole,
-    ChatStreamEvent, ContentPart, MessageContent, Tool as GenaiTool, ToolCall, ToolResponse,
+    ChatStreamEvent, ContentPart, MessageContent, Tool as GenaiTool, ToolCall, ToolChoice,
+    ToolResponse,
 };
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget, WebConfig};
@@ -199,6 +200,39 @@ pub(crate) fn take_last_summarization_head(
     } else {
         None
     }
+}
+
+/// Conversations whose current summarize stream answered with a tool call, which
+/// [`tool_calls_to_dispatch`] dropped (#1059 refute round 3).
+///
+/// Any text that stream produced is narration that preceded the call ("Let me check the next
+/// file..."), not a summary, and committing it would hide the head — the latest tool results
+/// included — behind it. The commit asks [`take_summary_stream_dropped_tool_calls`] and does
+/// not commit. Cleared when the next summarize request for the conversation is built, so a
+/// stream that failed before its commit leaves nothing behind for the next one.
+static SUMMARY_STREAM_DROPPED_TOOL_CALLS: std::sync::Mutex<
+    Option<std::collections::HashSet<crate::ai::agent::conversation::AIConversationId>>,
+> = std::sync::Mutex::new(None);
+
+pub(crate) fn note_summary_stream_dropped_tool_calls(
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+) {
+    SUMMARY_STREAM_DROPPED_TOOL_CALLS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get_or_insert_with(Default::default)
+        .insert(conversation_id);
+}
+
+/// Whether `conversation_id`'s summarize stream dropped a tool call; consumes the answer.
+pub(crate) fn take_summary_stream_dropped_tool_calls(
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+) -> bool {
+    SUMMARY_STREAM_DROPPED_TOOL_CALLS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_mut()
+        .is_some_and(|set| set.remove(&conversation_id))
 }
 
 /// Returns the most recent input that **has a non-empty context**.
@@ -1586,14 +1620,14 @@ fn build_serializer_readiness_projection(
             }
         }
 
+        if summary_inserts.contains_key(&msg.id) {
+            builder.push_user_boundary(msg.task_id.clone(), format!("summary_user:{}", msg.id));
+            builder.push_assistant_boundary(
+                msg.task_id.clone(),
+                format!("summary_assistant:{}", msg.id),
+            );
+        }
         if hidden_msg_ids.contains(&msg.id) {
-            if summary_inserts.contains_key(&msg.id) {
-                builder.push_user_boundary(msg.task_id.clone(), format!("summary_user:{}", msg.id));
-                builder.push_assistant_boundary(
-                    msg.task_id.clone(),
-                    format!("summary_assistant:{}", msg.id),
-                );
-            }
             continue;
         }
 
@@ -2015,6 +2049,25 @@ fn accepted_history_repair_log_message(
     )
 }
 
+/// Test-only: builds the chat request for `params` the way an OpenAI-shaped BYOP stream does,
+/// so a controller test can check what a request would send (and, for a summarize request,
+/// record its summarization head) without opening a network stream.
+#[cfg(test)]
+pub(crate) fn build_chat_request_for_test(
+    params: &RequestParams,
+) -> Result<ChatRequest, ConvertToAPITypeError> {
+    build_chat_request(
+        params,
+        false,
+        AgentProviderApiType::OpenAi,
+        attachment_caps::AttachmentCaps {
+            images: false,
+            pdf: false,
+            audio: false,
+        },
+    )
+}
+
 /// Translates RequestParams into a genai `ChatRequest` (including system + messages +
 /// tools).
 ///
@@ -2157,16 +2210,15 @@ fn build_chat_request(
 
     let summary_inserts: std::collections::HashMap<String, String> =
         if let Some(state) = params.compaction_state.as_ref() {
-            // user_msg_id → summary_text; when this user_msg_id is encountered (it would
-            // otherwise be hidden), replace it with the synthetic summary pair
+            // message id → summary_text: the synthetic summary pair is emitted right before
+            // that message (the anchor, itself hidden; or a legacy compaction's tail start).
+            // Only the latest summary of a chain (#1059 refute round 7); see
+            // `CompactionState::summary_insertions`.
+            let present: std::collections::HashSet<&str> =
+                all_msgs.iter().map(|msg| msg.id.as_str()).collect();
             state
-                .completed()
-                .iter()
-                .filter_map(|c| {
-                    c.summary_text
-                        .as_ref()
-                        .map(|s| (c.user_msg_id.clone(), s.clone()))
-                })
+                .summary_insertions(|id| present.contains(id))
+                .into_iter()
                 .collect()
         } else {
             std::collections::HashMap::new()
@@ -2251,6 +2303,8 @@ fn build_chat_request(
                 all_msgs.len(),
                 head.tail_start_id,
             );
+            // A new summarize request: an earlier stream's dropped-call note is not about it.
+            let _ = take_summary_stream_dropped_tool_calls(conversation_id);
             *LAST_SUMMARIZATION_HEAD
                 .lock()
                 .unwrap_or_else(|p| p.into_inner()) = Some((conversation_id, head));
@@ -2309,14 +2363,14 @@ fn build_chat_request(
                 continue;
             }
         }
+        if let Some(summary_text) = summary_inserts.get(&msg.id) {
+            flush_assistant_buffer(&mut buf, &mut messages, &mut outbound_tool_groups);
+            messages.push(ChatMessage::user(
+                "Conversation history was compacted. Below is the structured summary of all prior turns.".to_string(),
+            ));
+            messages.push(ChatMessage::assistant(summary_text.clone()));
+        }
         if hidden_msg_ids.contains(&msg.id) {
-            if let Some(summary_text) = summary_inserts.get(&msg.id) {
-                flush_assistant_buffer(&mut buf, &mut messages, &mut outbound_tool_groups);
-                messages.push(ChatMessage::user(
-                    "Conversation history was compacted. Below is the structured summary of all prior turns.".to_string(),
-                ));
-                messages.push(ChatMessage::assistant(summary_text.clone()));
-            }
             continue;
         }
         let Some(inner) = &msg.message else {
@@ -2795,10 +2849,7 @@ fn build_chat_request(
     //
     // Skipped on a Summarize turn: the compaction prompt must be the last message, or the
     // summary-format instructions get diluted.
-    let is_summarize_turn = params
-        .input
-        .iter()
-        .any(|i| matches!(i, AIAgentInput::SummarizeConversation { .. }));
+    let is_summarize_turn = is_summarize_request(params);
     // Defensive sanitize: make sure messages doesn't end on an assistant message.
     // Anthropic / some gateways don't accept a request that ends on assistant (prefill is
     // only supported by certain models), and warp's `AIAgentInput::ResumeConversation`
@@ -4485,6 +4536,147 @@ fn serialize_outgoing_tool_call(
 /// payload.
 fn request_plan_mode(params: &RequestParams) -> bool {
     params.plan_mode || is_plan_mode_turn(&params.input)
+}
+
+/// Whether the content→tool-call extraction fallback runs on a finished stream: Ollama only,
+/// and only when the stream produced no native tool calls. Deliberately not gated on the
+/// summarize turn (see the call site).
+fn content_tool_extraction_applies(
+    api_type: AgentProviderApiType,
+    has_native_tool_calls: bool,
+) -> bool {
+    !has_native_tool_calls && api_type == AgentProviderApiType::Ollama
+}
+
+/// The content→tool-call extraction for one reply text.
+///
+/// On a summarize turn a reply that has the shape of a summary — at least two of the summary
+/// template's section headings ([`byop_compaction::prompt::looks_like_summary`]) — is never a
+/// tool call: real summaries of coding conversations routinely quote tool-call JSON, and
+/// treating that as a call would refuse the commit every time, so the loop would never
+/// compact. Any other summarize reply with an extracted call is a tool call (dropped and
+/// noted by `tool_calls_to_dispatch`): narration before a call is not a summary, however
+/// long it is. Other turns are unchanged.
+fn text_tool_calls_for_turn(
+    text: &str,
+    available_tool_names: &[String],
+    is_summarize_turn: bool,
+) -> Vec<ToolCall> {
+    if is_summarize_turn && byop_compaction::prompt::looks_like_summary(text) {
+        return Vec::new();
+    }
+    super::content_tool_calls::extract_tool_calls_from_assistant_text(text, available_tool_names)
+}
+
+/// Whether this request is a BYOP compaction summary (`/compact` or the automatic trigger).
+fn is_summarize_request(params: &RequestParams) -> bool {
+    params
+        .input
+        .iter()
+        .any(|i| matches!(i, AIAgentInput::SummarizeConversation { .. }))
+}
+
+/// A summarize turn must answer with the summary text, never with a tool call (#1059: the
+/// automatic summary of a tool loop is sent right after fresh tool results, the moment a
+/// model is most inclined to call the next tool). The tools stay declared, because the
+/// history the summarizer reads holds tool calls and results that some providers only accept
+/// alongside tool definitions; `tool_choice: none` forbids calling them.
+///
+/// Sent only when the request declares tools (`tool_choice` without `tools` is an error on
+/// several APIs) and only to an API known to accept `"none"`
+/// ([`accepts_tool_choice_none`]). Elsewhere the client-side half does the work: the call is
+/// dropped ([`tool_calls_to_dispatch`]) and the stream's text is not committed as a summary.
+fn chat_options_for_request(
+    opts: ChatOptions,
+    params: &RequestParams,
+    declares_tools: bool,
+    api_type: AgentProviderApiType,
+    effective_adapter: AdapterKind,
+    base_url: &str,
+) -> ChatOptions {
+    if is_summarize_request(params)
+        && declares_tools
+        && accepts_tool_choice_none(api_type, effective_adapter, base_url)
+    {
+        opts.with_tool_choice(ToolChoice::None)
+    } else {
+        opts
+    }
+}
+
+/// Whether the endpoint is known to accept `tool_choice: "none"`: the first-party APIs on
+/// their own hosts (Anthropic, Gemini on `*.googleapis.com`, Vertex, OpenAI Chat Completions
+/// and Responses on `api.openai.com` / Azure OpenAI). The api type alone is not trusted: a
+/// relay configured with the Anthropic or OpenAI api type is an arbitrary server, and some
+/// OpenAI-compatible servers accept only `"auto"` and reject anything else (Zhipu GLM, Baidu
+/// Qianfan), which would turn every automatic summary into a 400. Hosts are compared parsed,
+/// so a proxy path or a look-alike host (`api.openai.com.example`) does not match. Everything
+/// else gets the client-side drop instead.
+fn accepts_tool_choice_none(
+    api_type: AgentProviderApiType,
+    effective_adapter: AdapterKind,
+    base_url: &str,
+) -> bool {
+    let host_ends_with = |suffix: &str| {
+        url::Url::parse(base_url.trim())
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+            .is_some_and(|host| host.ends_with(suffix))
+    };
+    if effective_adapter == AdapterKind::Anthropic || api_type == AgentProviderApiType::Anthropic {
+        return is_anthropic_api_host(base_url);
+    }
+    match api_type {
+        AgentProviderApiType::Vertex => true,
+        AgentProviderApiType::Gemini => host_ends_with(".googleapis.com"),
+        AgentProviderApiType::OpenAi | AgentProviderApiType::OpenAiResp => {
+            is_openai_api_host(base_url) || host_ends_with(".openai.azure.com")
+        }
+        AgentProviderApiType::Anthropic
+        | AgentProviderApiType::Ollama
+        | AgentProviderApiType::DeepSeek => false,
+    }
+}
+
+/// The client-side half of [`chat_options_for_request`], for providers that ignore
+/// `tool_choice`: tool calls on a summarize stream are dropped — no card, no action, no
+/// history entry — so a summary can never queue work after its continue message, and the
+/// stream's text (if any) is all the commit sees.
+///
+/// The drop is noted for the conversation ([`take_summary_stream_dropped_tool_calls`]): the
+/// stream's text, if any, preceded a tool call and is not a summary. Nothing is committed and
+/// the task resumes uncompacted; retrying the summary is #1079.
+fn tool_calls_to_dispatch(params: &RequestParams, calls: Vec<ToolCall>) -> Vec<ToolCall> {
+    if !calls.is_empty() && is_summarize_request(params) {
+        log::warn!(
+            "[byop-compaction] dropped {} tool call(s) on a summarize stream: a summary never runs tools",
+            calls.len()
+        );
+        if let Some(conversation_id) = params.byop_conversation_id {
+            note_summary_stream_dropped_tool_calls(conversation_id);
+        }
+        return Vec::new();
+    }
+    calls
+}
+
+/// Test-only: runs [`tool_calls_to_dispatch`] on run_shell_command calls with `call_ids`, as
+/// `generate_byop_output` does at the end of a stream, and returns how many were dispatched.
+#[cfg(test)]
+pub(crate) fn tool_calls_to_dispatch_for_test(
+    params: &RequestParams,
+    call_ids: Vec<&str>,
+) -> usize {
+    let calls = call_ids
+        .into_iter()
+        .map(|id| ToolCall {
+            call_id: id.to_owned(),
+            fn_name: "run_shell_command".to_owned(),
+            fn_arguments: serde_json::json!({ "command": "ls" }),
+            thought_signatures: None,
+        })
+        .collect();
+    tool_calls_to_dispatch(params, calls).len()
 }
 
 /// Whether this request's *payload* carries the `UserQueryMode::Plan` marker from `/plan`.
@@ -6403,18 +6595,28 @@ pub async fn generate_byop_output(
         .as_ref()
         .map(|t| t.as_str().to_string())
         .unwrap_or_default();
-    let chat_opts = build_chat_options(
+    let chat_opts = chat_options_for_request(
+        build_chat_options(
+            api_type,
+            &base_url,
+            &model_id,
+            reasoning_effort,
+            extra_headers,
+            if conversation_id.is_empty() {
+                None
+            } else {
+                Some(conversation_id.as_str())
+            },
+            max_output_tokens,
+        ),
+        &params,
+        chat_req
+            .tools
+            .as_ref()
+            .is_some_and(|tools| !tools.is_empty()),
         api_type,
+        effective_adapter_kind_for(api_type, &model_id, &base_url),
         &base_url,
-        &model_id,
-        reasoning_effort,
-        extra_headers,
-        if conversation_id.is_empty() {
-            None
-        } else {
-            Some(conversation_id.as_str())
-        },
-        max_output_tokens,
     );
     // Vertex is the one api_type whose credential is not the thing sent on the wire: the bearer
     // is a short-lived OAuth2 token minted by `gcloud` and cached in-process under this exact
@@ -6432,6 +6634,8 @@ pub async fn generate_byop_output(
     // Needed at the dispatch site below, not just when building the tools array: see the
     // Plan Mode gate before `parse_incoming_tool_call`.
     let plan_mode = request_plan_mode(&params);
+    // A summarize stream shows and dispatches no tool calls: see `tool_calls_to_dispatch`.
+    let is_summarize_turn = is_summarize_request(&params);
 
     // WARNING: critical to BYOP persistence: under warp's own path, the following
     // ClientActions are all server-side emits that make the client write "non-model-
@@ -7220,6 +7424,8 @@ pub async fn generate_byop_output(
                             &tool_names_for_extract,
                             &call.fn_name,
                         )
+                        // A summarize stream's tool calls are dropped at dispatch: no card.
+                        && !is_summarize_turn
                     {
                         if let Some(msg_id) = tool_msg_ids.get(&call.call_id).cloned() {
                             // Placeholder already emitted → throttled incremental refresh.
@@ -7378,7 +7584,12 @@ pub async fn generate_byop_output(
         // the history filtering at :1412 — if a cloud provider's (OpenAI/Anthropic/...)
         // body text just happens to look like tool JSON (e.g. the model is explaining a
         // JSON example), it shouldn't be mistakenly executed as a real ToolCall.
-        if tool_bufs.is_empty() && api_type == AgentProviderApiType::Ollama {
+        //
+        // It runs on a summarize turn too: Ollama is never sent `tool_choice: none`, and a
+        // tool call written as JSON text must still be recognized as one, so that
+        // `tool_calls_to_dispatch` drops it and notes the drop (the commit then refuses the
+        // text instead of committing a JSON blob as the summary).
+        if content_tool_extraction_applies(api_type, !tool_bufs.is_empty()) {
             let extract_sources: [&str; 2] = [
                 streamed_assistant_text.as_str(),
                 captured_assistant_text.as_deref().unwrap_or(""),
@@ -7386,10 +7597,8 @@ pub async fn generate_byop_output(
             let mut parsed_any_text = false;
             for text in extract_sources.into_iter().filter(|t| !t.is_empty()) {
                 parsed_any_text = true;
-                let extracted = super::content_tool_calls::extract_tool_calls_from_assistant_text(
-                    text,
-                    &tool_names_for_extract,
-                );
+                let extracted =
+                    text_tool_calls_for_turn(text, &tool_names_for_extract, is_summarize_turn);
                 if extracted.is_empty() {
                     continue;
                 }
@@ -7517,6 +7726,7 @@ pub async fn generate_byop_output(
         }
         unordered_tool_calls.sort_by(|a, b| a.call_id.cmp(&b.call_id));
         ordered_tool_calls.extend(unordered_tool_calls);
+        let ordered_tool_calls = tool_calls_to_dispatch(&params, ordered_tool_calls);
         for call in ordered_tool_calls {
             // Diagnostics: dumps the raw tool_call payload the model actually sent
             // (call_id / fn_name / the fn_arguments JSON verbatim + a type annotation),
@@ -12309,14 +12519,15 @@ mod serializer_readiness_tests {
     fn build_chat_request_body_honors_compaction_filtering_boundaries() {
         let hidden_user = make_user_query_message("task-1", "req-1", "hidden".to_owned(), &[]);
         let hidden_call = make_tool_call_message("task-1", "req-1", "hidden-call", shell_tool());
-        let summary_user = make_user_query_message("task-1", "req-2", "/compact".to_owned(), &[]);
+        // The real shape since #1078: the summarize request adds no user message, and the
+        // summary is anchored at the head's last user turn.
         let summary_assistant =
             make_agent_output_message("task-1", "req-2", "redacted summary".to_owned());
         let visible_user = make_user_query_message("task-1", "req-3", "visible".to_owned(), &[]);
 
         let mut compaction_state = CompactionState::default();
         compaction_state.push_completed(CompletedCompaction {
-            user_msg_id: summary_user.id.clone(),
+            user_msg_id: hidden_user.id.clone(),
             assistant_msg_id: summary_assistant.id.clone(),
             head_message_ids: vec![hidden_user.id.clone(), hidden_call.id.clone()],
             tail_start_id: Some(visible_user.id.clone()),
@@ -12329,7 +12540,6 @@ mod serializer_readiness_tests {
             vec![
                 hidden_user.clone(),
                 hidden_call.clone(),
-                summary_user.clone(),
                 summary_assistant.clone(),
                 visible_user.clone(),
             ],
@@ -12351,7 +12561,6 @@ mod serializer_readiness_tests {
             vec![
                 hidden_user,
                 hidden_call,
-                summary_user,
                 summary_assistant,
                 visible_user,
                 visible_call,
@@ -16525,5 +16734,673 @@ mod read_skill_binding_tests {
         });
         let (_, args) = serialize_outgoing_tool_call(&legacy, None, "");
         assert_eq!(args, json!({ "name": "deploy" }));
+    }
+}
+
+/// #1059 (refute round 1): a summarize turn answers with the summary text, never with a tool
+/// call. The automatic summary of a tool loop is sent right after fresh tool results, the
+/// moment a model is most inclined to call the next tool; a tool call there produced no
+/// summary (or queued work after the continue message).
+#[cfg(test)]
+mod summarize_turn_tool_gate_tests {
+    use super::*;
+
+    fn params(input: Vec<AIAgentInput>) -> RequestParams {
+        RequestParams::new_for_test(input, vec![])
+    }
+
+    fn summarize(overflow: bool) -> AIAgentInput {
+        AIAgentInput::SummarizeConversation {
+            prompt: None,
+            overflow,
+        }
+    }
+
+    fn resume() -> AIAgentInput {
+        AIAgentInput::ResumeConversation {
+            context: std::sync::Arc::from(Vec::<crate::ai::agent::AIAgentContext>::new()),
+        }
+    }
+
+    fn call(id: &str) -> ToolCall {
+        ToolCall {
+            call_id: id.to_owned(),
+            fn_name: "run_shell_command".to_owned(),
+            fn_arguments: serde_json::json!({ "command": "ls" }),
+            thought_signatures: None,
+        }
+    }
+
+    /// `chat_options_for_request` for `api_type` at `base_url`, the way `generate_byop_output`
+    /// calls it.
+    fn tool_choice_for(
+        input: Vec<AIAgentInput>,
+        declares_tools: bool,
+        api_type: AgentProviderApiType,
+        base_url: &str,
+    ) -> Option<ToolChoice> {
+        chat_options_for_request(
+            ChatOptions::default(),
+            &params(input),
+            declares_tools,
+            api_type,
+            effective_adapter_kind_for(api_type, "some-model", base_url),
+            base_url,
+        )
+        .tool_choice
+    }
+
+    #[test]
+    fn summarize_requests_forbid_tool_calls() {
+        for overflow in [false, true] {
+            assert_eq!(
+                tool_choice_for(
+                    vec![summarize(overflow)],
+                    true,
+                    AgentProviderApiType::Anthropic,
+                    "https://api.anthropic.com"
+                ),
+                Some(ToolChoice::None),
+                "overflow={overflow}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_requests_keep_the_default_tool_choice() {
+        assert_eq!(
+            tool_choice_for(
+                vec![resume()],
+                true,
+                AgentProviderApiType::Anthropic,
+                "https://api.anthropic.com"
+            ),
+            None
+        );
+    }
+
+    /// Refute round 3: `tool_choice: "none"` goes only to APIs known to accept it, and only
+    /// with a tools array. OpenAI-compatible servers that accept only "auto" (Zhipu GLM,
+    /// Baidu Qianfan) would otherwise reject every automatic summary.
+    #[test]
+    fn tool_choice_none_is_sent_only_where_it_is_accepted() {
+        use AgentProviderApiType as T;
+        let summary = || vec![summarize(true)];
+        for (api_type, url) in [
+            (T::Anthropic, "https://api.anthropic.com"),
+            (T::OpenAiResp, "https://api.openai.com/v1"),
+            (T::OpenAi, "https://api.openai.com/v1"),
+            (T::OpenAi, "https://my-team.openai.azure.com/openai"),
+            (T::Gemini, "https://generativelanguage.googleapis.com"),
+            (T::Vertex, "https://us-central1-aiplatform.googleapis.com"),
+        ] {
+            assert_eq!(
+                tool_choice_for(summary(), true, api_type, url),
+                Some(ToolChoice::None),
+                "{api_type:?} {url}"
+            );
+        }
+        for (api_type, url) in [
+            (T::OpenAi, "https://open.bigmodel.cn/api/paas/v4"),
+            (T::OpenAi, "https://qianfan.baidubce.com/v2"),
+            (T::OpenAi, "http://127.0.0.1:8080/v1"),
+            (T::Ollama, "http://127.0.0.1:11434"),
+            (T::DeepSeek, "https://api.deepseek.com"),
+            // The api type alone is not trusted: relays and look-alike hosts.
+            (T::Anthropic, "https://relay.example.com/anthropic"),
+            (T::Gemini, "https://gemini-proxy.example.com/v1beta"),
+            (T::OpenAi, "https://api.openai.com.evil.example/v1"),
+            (T::OpenAi, "https://proxy.example.com/api.openai.com/v1"),
+            (T::OpenAiResp, "https://relay.example.com/v1"),
+        ] {
+            assert_eq!(
+                tool_choice_for(summary(), true, api_type, url),
+                None,
+                "{api_type:?} {url}"
+            );
+        }
+        // No tools array: never a tool_choice.
+        assert_eq!(
+            tool_choice_for(summary(), false, T::Anthropic, "https://api.anthropic.com"),
+            None
+        );
+    }
+
+    /// The drop is noted for the conversation, so the commit refuses the stream's text.
+    #[test]
+    fn a_dropped_summarize_tool_call_is_noted_for_the_commit() {
+        let params = params(vec![summarize(true)]);
+        let conversation_id = params
+            .byop_conversation_id
+            .expect("test params carry an id");
+        assert!(tool_calls_to_dispatch(&params, vec![call("a")]).is_empty());
+        assert!(take_summary_stream_dropped_tool_calls(conversation_id));
+        assert!(
+            !take_summary_stream_dropped_tool_calls(conversation_id),
+            "consumed"
+        );
+        // Nothing to drop, nothing noted.
+        assert!(tool_calls_to_dispatch(&params, vec![]).is_empty());
+        assert!(!take_summary_stream_dropped_tool_calls(conversation_id));
+    }
+
+    /// End to end through `generate_byop_output` (the gap that let narration through): a
+    /// local OpenAI-compatible server answers the summarize request with a sentence and then a
+    /// tool call — what a provider whose genai adapter ignores `tool_choice` does. No ToolCall
+    /// may be emitted, the drop is noted for the commit, and this endpoint (not known to
+    /// accept `"none"`) is sent no `tool_choice` at all.
+    #[tokio::test]
+    async fn a_summarize_stream_that_calls_a_tool_emits_no_call_and_is_noted() {
+        use std::io::{Read, Write};
+
+        let chunk_text = r#"{"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-test","choices":[{"index":0,"delta":{"role":"assistant","content":"Let me check the next file."},"finish_reason":null}]}"#;
+        let chunk_call = r#"{"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_sum","type":"function","function":{"name":"run_shell_command","arguments":"{\"command\":\"cat b.txt\"}"}}]},"finish_reason":null}]}"#;
+        let chunk_done = r#"{"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-test","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#;
+        let body = format!(
+            "data: {chunk_text}\n\ndata: {chunk_call}\n\ndata: {chunk_done}\n\ndata: [DONE]\n\n"
+        );
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+        let port = listener.local_addr().expect("local_addr").port();
+        let (request_tx, request_rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let Ok((mut sock, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 4096];
+            loop {
+                let n = sock.read(&mut tmp).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+                    let want = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if buf.len() >= end + 4 + want {
+                        let _ =
+                            request_tx.send(String::from_utf8_lossy(&buf[end + 4..]).into_owned());
+                        break;
+                    }
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                 connection: close\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = sock.write_all(response.as_bytes());
+            let _ = sock.flush();
+        });
+
+        let params = RequestParams::new_for_test(
+            vec![summarize(true)],
+            vec![api::Task {
+                id: "task-1".to_owned(),
+                messages: vec![make_user_query_message(
+                    "task-1",
+                    "req-1",
+                    "read a.txt and b.txt".to_owned(),
+                    &[],
+                )],
+                dependencies: None,
+                description: String::new(),
+                summary: String::new(),
+                server_data: String::new(),
+            }],
+        );
+        let conversation_id = params
+            .byop_conversation_id
+            .expect("test params carry an id");
+        let (_cancel_tx, cancellation_rx) = futures::channel::oneshot::channel::<()>();
+        let mut stream = generate_byop_output(ByopOutputInput {
+            params,
+            base_url: format!("http://127.0.0.1:{port}/v1"),
+            api_key: "test-key".to_owned(),
+            model_id: "gpt-test".to_owned(),
+            api_type: AgentProviderApiType::OpenAi,
+            reasoning_effort: Default::default(),
+            extra_headers: vec![],
+            task_id: "task-1".to_owned(),
+            target_task_id: "task-1".to_owned(),
+            needs_create_task: false,
+            lrc_command_id: None,
+            lrc_should_spawn_subagent: false,
+            context_window: None,
+            max_output_tokens: 0,
+            cancellation_rx,
+            attachment_caps: attachment_caps::AttachmentCaps::default(),
+            other_provider_hint: None,
+        })
+        .await
+        .unwrap_or_else(|_| panic!("generate_byop_output should build the summarize request"));
+
+        let mut messages: Vec<api::Message> = Vec::new();
+        let collect = async {
+            while let Some(event) = stream.next().await {
+                let Ok(event) = event else { continue };
+                let Some(api::response_event::Type::ClientActions(actions)) = event.r#type else {
+                    continue;
+                };
+                for action in actions.actions {
+                    match action.action {
+                        Some(api::client_action::Action::AddMessagesToTask(add)) => {
+                            messages.extend(add.messages)
+                        }
+                        Some(api::client_action::Action::UpdateTaskMessage(update)) => {
+                            messages.extend(update.message)
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(30), collect)
+            .await
+            .expect("the mock stream should finish");
+
+        assert!(
+            !messages.iter().any(|m| matches!(
+                &m.message,
+                Some(api::message::Message::ToolCall(_))
+                    | Some(api::message::Message::ToolCallResult(_))
+            )),
+            "a summarize stream emits no tool call (or result)"
+        );
+        assert!(
+            take_summary_stream_dropped_tool_calls(conversation_id),
+            "the dropped call is noted, so the commit refuses the narration"
+        );
+        let request_body = request_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the mock server saw the request");
+        assert!(
+            !request_body.contains("tool_choice"),
+            "a generic OpenAI-compatible endpoint is sent no tool_choice"
+        );
+    }
+
+    fn message(id: &str, message: api::message::Message) -> api::Message {
+        api::Message {
+            id: id.to_owned(),
+            task_id: "task-1".to_owned(),
+            request_id: "req".to_owned(),
+            message: Some(message),
+            ..Default::default()
+        }
+    }
+
+    fn user(id: &str, text: &str) -> api::Message {
+        message(
+            id,
+            api::message::Message::UserQuery(api::message::UserQuery {
+                query: text.to_owned(),
+                ..Default::default()
+            }),
+        )
+    }
+
+    fn agent(id: &str, text: &str) -> api::Message {
+        message(
+            id,
+            api::message::Message::AgentOutput(api::message::AgentOutput {
+                text: text.to_owned(),
+            }),
+        )
+    }
+
+    fn compaction(
+        user_msg_id: &str,
+        assistant_msg_id: &str,
+        head: &[&str],
+        tail_start_id: &str,
+    ) -> byop_compaction::state::CompletedCompaction {
+        byop_compaction::state::CompletedCompaction {
+            user_msg_id: user_msg_id.to_owned(),
+            assistant_msg_id: assistant_msg_id.to_owned(),
+            head_message_ids: head.iter().map(|id| id.to_string()).collect(),
+            tail_start_id: Some(tail_start_id.to_owned()),
+            summary_text: Some(format!("SUMMARY-OF-{assistant_msg_id}")),
+            auto: true,
+            overflow: true,
+        }
+    }
+
+    /// The texts of the request's messages, in order.
+    fn request_texts(
+        messages: Vec<api::Message>,
+        state: byop_compaction::state::CompactionState,
+    ) -> Vec<String> {
+        let mut params = RequestParams::new_for_test(
+            vec![resume()],
+            vec![api::Task {
+                id: "task-1".to_owned(),
+                messages,
+                dependencies: None,
+                description: String::new(),
+                summary: String::new(),
+                server_data: String::new(),
+            }],
+        );
+        params.compaction_state = Some(state);
+        build_chat_request_for_test(&params)
+            .expect("the request builds")
+            .messages
+            .iter()
+            .map(|m| m.content.first_text().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    /// #1059 refute round 7: two automatic compactions with the continue message between
+    /// them. The second summary was built from the first, and the second head covers the
+    /// first summary and its anchor, so the request shows the summary preamble exactly once
+    /// — the latest — instead of stacking one per compaction.
+    #[test]
+    fn repeated_compactions_show_only_the_latest_summary() {
+        let messages = vec![
+            user("u1", "first question"),
+            agent("a1", "first answer"),
+            agent("s1", "SUMMARY-OF-s1"),
+            user("cont1", "Continue if you have next steps"),
+            agent("a2", "second answer"),
+            agent("s2", "SUMMARY-OF-s2"),
+            user("cont2", "Continue again"),
+        ];
+        let mut state = byop_compaction::state::CompactionState::default();
+        state.push_completed(compaction("u1", "s1", &["u1", "a1"], "cont1"));
+        state.push_completed(compaction(
+            "cont1",
+            "s2",
+            &["u1", "a1", "s1", "cont1", "a2"],
+            "cont2",
+        ));
+        let texts = request_texts(messages, state);
+        let preambles = texts
+            .iter()
+            .filter(|text| text.contains("Conversation history was compacted"))
+            .count();
+        assert_eq!(preambles, 1, "one summary preamble: {texts:?}");
+        assert!(texts.iter().any(|text| text.contains("SUMMARY-OF-s2")));
+        assert!(!texts.iter().any(|text| text.contains("SUMMARY-OF-s1")));
+        let summary_at = texts
+            .iter()
+            .position(|t| t.contains("SUMMARY-OF-s2"))
+            .unwrap();
+        let tail_at = texts
+            .iter()
+            .position(|t| t.contains("Continue again"))
+            .unwrap();
+        assert!(
+            summary_at < tail_at,
+            "the summary comes before the kept tail"
+        );
+    }
+
+    /// #1059 refute round 11: C1, C2, then a rewind that removes C2's summary. After the
+    /// rewind prunes C2 (`truncate_from_exchange` →
+    /// `retain_compactions_whose_messages_exist`), the request shows C1's summary and the
+    /// surviving part of C2's head instead of no history at all.
+    #[test]
+    fn after_a_rewind_past_the_latest_summary_the_earlier_one_shows() {
+        let messages = vec![
+            user("u1", "first question"),
+            agent("a1", "first answer"),
+            agent("s1", "SUMMARY-OF-s1"),
+            user("q2", "second question"),
+            agent("a2", "second answer"),
+        ];
+        let mut state = byop_compaction::state::CompactionState::default();
+        state.push_completed(compaction("u1", "s1", &["u1", "a1"], "q2"));
+        state.push_completed(compaction(
+            "q2",
+            "s2",
+            &["u1", "a1", "s1", "q2", "a2"],
+            "cont2",
+        ));
+        // s2 and cont2 were rewound away.
+        let remaining = ["u1", "a1", "s1", "q2", "a2"];
+        state.retain_compactions_whose_messages_exist(|id| remaining.contains(&id));
+        let texts = request_texts(messages, state);
+        let summary_at = texts
+            .iter()
+            .position(|t| t.contains("SUMMARY-OF-s1"))
+            .expect("C1's summary is shown");
+        let question_at = texts
+            .iter()
+            .position(|t| t.contains("second question"))
+            .expect("the surviving part of C2's head is visible");
+        assert!(summary_at < question_at);
+        assert!(texts.iter().any(|t| t.contains("second answer")));
+        assert!(!texts.iter().any(|t| t.contains("first answer")));
+    }
+
+    /// #1059 refute round 7: a compaction persisted before #1078 anchored at the kept tail's
+    /// user message. After restore that instruction is still sent, after the summary.
+    #[test]
+    fn a_legacy_tail_anchor_keeps_the_instruction_after_the_summary() {
+        let messages = vec![
+            user("u1", "first question"),
+            agent("a1", "first answer"),
+            user("q2", "the current instruction"),
+            agent("s1", "SUMMARY-OF-s1"),
+        ];
+        let mut state = byop_compaction::state::CompactionState::default();
+        state.push_completed(compaction("q2", "s1", &["u1", "a1"], "q2"));
+        let texts = request_texts(messages, state);
+        let summary_at = texts
+            .iter()
+            .position(|t| t.contains("SUMMARY-OF-s1"))
+            .expect("the summary is shown");
+        let instruction_at = texts
+            .iter()
+            .position(|t| t.contains("the current instruction"))
+            .expect("the kept instruction is not hidden");
+        assert!(summary_at < instruction_at);
+        assert!(
+            !texts.iter().any(|t| t.contains("first answer")),
+            "the head is hidden"
+        );
+    }
+
+    /// #1059 refute round 7: Ollama is never sent `tool_choice: none`, so on a summarize turn
+    /// the content→tool extraction still runs, and a tool call written as JSON text is dropped
+    /// and noted like a native one (the commit then refuses the text).
+    #[test]
+    fn a_text_tool_call_on_an_ollama_summarize_turn_is_dropped_and_noted() {
+        assert!(content_tool_extraction_applies(
+            AgentProviderApiType::Ollama,
+            false
+        ));
+        assert!(!content_tool_extraction_applies(
+            AgentProviderApiType::Ollama,
+            true
+        ));
+        assert!(!content_tool_extraction_applies(
+            AgentProviderApiType::OpenAi,
+            false
+        ));
+
+        let text = "```json\n{\"name\":\"echo\",\"arguments\":{\"message\":\"hello\"}}\n```";
+        let extracted = super::super::content_tool_calls::extract_tool_calls_from_assistant_text(
+            text,
+            &["run_shell_command".to_owned()],
+        );
+        assert_eq!(extracted.len(), 1, "precondition: the text is a tool call");
+        let params = params(vec![summarize(true)]);
+        let conversation_id = params
+            .byop_conversation_id
+            .expect("test params carry an id");
+        assert!(tool_calls_to_dispatch(&params, extracted).is_empty());
+        assert!(take_summary_stream_dropped_tool_calls(conversation_id));
+    }
+
+    const QUOTED_CALL: &str =
+        r#"{"name":"run_shell_command","arguments":{"command":"cargo test"}}"#;
+
+    fn markdown_summary_quoting_a_call() -> String {
+        format!(
+            "## Goal\n- make the test suite pass\n\n## Progress\n### Done\n- fixed the parser\n\n\
+             ## Key details\n- the agent ran:\n```json\n{QUOTED_CALL}\n```\n\n\
+             ## Next Steps\n- rerun the suite"
+        )
+    }
+
+    /// #1059 refute round 9: on an Ollama summarize turn a real Markdown summary that quotes a
+    /// tool call as JSON is the summary, not a call — otherwise the commit is refused every
+    /// time and the loop never compacts.
+    #[test]
+    fn a_summary_quoting_tool_json_is_not_a_tool_call() {
+        let tools = vec!["run_shell_command".to_owned()];
+        let summary = markdown_summary_quoting_a_call();
+        assert!(
+            !text_tool_calls_for_turn(&summary, &tools, false).is_empty(),
+            "precondition: outside a summarize turn the quoted JSON is extracted"
+        );
+        assert!(text_tool_calls_for_turn(&summary, &tools, true).is_empty());
+
+        // Nothing dispatched, nothing noted: the commit takes the text.
+        let params = params(vec![summarize(true)]);
+        let conversation_id = params
+            .byop_conversation_id
+            .expect("test params carry an id");
+        assert!(
+            tool_calls_to_dispatch(&params, text_tool_calls_for_turn(&summary, &tools, true))
+                .is_empty()
+        );
+        assert!(!take_summary_stream_dropped_tool_calls(conversation_id));
+    }
+
+    /// A reply that is only the tool-call JSON (bare or fenced, with a few words around it)
+    /// is still a tool call on a summarize turn: dropped and noted.
+    #[test]
+    fn a_bare_tool_json_reply_is_still_a_tool_call_on_a_summarize_turn() {
+        let tools = vec!["run_shell_command".to_owned()];
+        for reply in [
+            QUOTED_CALL.to_owned(),
+            format!("```json\n{QUOTED_CALL}\n```"),
+            format!("Running it now:\n{QUOTED_CALL}"),
+        ] {
+            let calls = text_tool_calls_for_turn(&reply, &tools, true);
+            assert!(!calls.is_empty(), "{reply:?}");
+            let params = params(vec![summarize(true)]);
+            let conversation_id = params
+                .byop_conversation_id
+                .expect("test params carry an id");
+            assert!(tool_calls_to_dispatch(&params, calls).is_empty());
+            assert!(take_summary_stream_dropped_tool_calls(conversation_id));
+        }
+    }
+
+    /// Asserts `reply` on a summarize turn is a tool call: dropped and noted.
+    fn assert_dropped_and_noted(reply: &str) {
+        let tools = vec!["run_shell_command".to_owned(), "read_files".to_owned()];
+        let calls = text_tool_calls_for_turn(reply, &tools, true);
+        assert!(!calls.is_empty(), "a tool call: {reply:?}");
+        let params = params(vec![summarize(true)]);
+        let conversation_id = params
+            .byop_conversation_id
+            .expect("test params carry an id");
+        assert!(tool_calls_to_dispatch(&params, calls).is_empty());
+        assert!(take_summary_stream_dropped_tool_calls(conversation_id));
+    }
+
+    /// Asserts `reply` on a summarize turn is the summary: nothing extracted or noted.
+    fn assert_kept_as_summary(reply: &str) {
+        let tools = vec!["run_shell_command".to_owned(), "read_files".to_owned()];
+        assert!(
+            !text_tool_calls_for_turn(reply, &tools, false).is_empty(),
+            "precondition: outside a summarize turn the quoted JSON is extracted: {reply:?}"
+        );
+        let params = params(vec![summarize(true)]);
+        let conversation_id = params
+            .byop_conversation_id
+            .expect("test params carry an id");
+        let calls = text_tool_calls_for_turn(reply, &tools, true);
+        assert!(
+            calls.is_empty(),
+            "the summary is not a tool call: {reply:?}"
+        );
+        assert!(tool_calls_to_dispatch(&params, calls).is_empty());
+        assert!(!take_summary_stream_dropped_tool_calls(conversation_id));
+    }
+
+    /// Refute round 11 (a): small Ollama models wrap the whole summary in a ```markdown fence,
+    /// with the quoted call in a nested ```json block. Still the summary.
+    #[test]
+    fn a_fenced_markdown_summary_quoting_a_call_is_the_summary() {
+        let summary = markdown_summary_quoting_a_call();
+        assert_kept_as_summary(&format!("```markdown\n{summary}\n```"));
+        assert_kept_as_summary(&format!("```md\n{summary}\n```"));
+    }
+
+    /// Refute round 11 (b): narration of any length before a call is not a summary.
+    #[test]
+    fn long_narration_before_a_call_is_a_tool_call() {
+        assert_dropped_and_noted(&format!(
+            "Let me check the next file to understand the parser behaviour before I summarize \
+             anything:\n{QUOTED_CALL}"
+        ));
+    }
+
+    /// Refute round 11 (c): a bare JSON reply is a tool call.
+    #[test]
+    fn bare_tool_json_is_a_tool_call() {
+        assert_dropped_and_noted(QUOTED_CALL);
+    }
+
+    /// Refute round 11 (d): a terse real summary (two template headings) quoting a call is the
+    /// summary.
+    #[test]
+    fn a_terse_summary_with_two_headings_is_the_summary() {
+        assert_kept_as_summary(&format!(
+            "## Goal\n- pass the tests\n## Next Steps\n- run {QUOTED_CALL}"
+        ));
+    }
+
+    /// The headings come from the template itself, and one heading is not enough.
+    #[test]
+    fn summary_shape_is_read_from_the_template_headings() {
+        let headings: Vec<&str> = byop_compaction::prompt::summary_section_headings().collect();
+        for heading in [
+            "## Goal",
+            "## Progress",
+            "## Next Steps",
+            "## Relevant Files",
+        ] {
+            assert!(
+                headings.contains(&heading),
+                "{heading} missing from {headings:?}"
+            );
+        }
+        assert!(!headings.iter().any(|h| h.starts_with("###")));
+        assert!(!byop_compaction::prompt::looks_like_summary(
+            "## Goal\n- only one"
+        ));
+        assert!(!byop_compaction::prompt::looks_like_summary(
+            "Here is the plan: ## Goal and ## Progress inline, not headings"
+        ));
+        assert!(byop_compaction::prompt::looks_like_summary(
+            "  ## Goal\n- a\n## Critical Context\n- b"
+        ));
+    }
+
+    #[test]
+    fn tool_calls_on_a_summarize_stream_are_dropped() {
+        let dispatched =
+            tool_calls_to_dispatch(&params(vec![summarize(true)]), vec![call("a"), call("b")]);
+        assert!(dispatched.is_empty());
+    }
+
+    #[test]
+    fn tool_calls_on_other_streams_are_dispatched() {
+        let dispatched =
+            tool_calls_to_dispatch(&params(vec![resume()]), vec![call("a"), call("b")]);
+        let ids: Vec<&str> = dispatched.iter().map(|c| c.call_id.as_str()).collect();
+        assert_eq!(ids, ["a", "b"]);
     }
 }

@@ -18,16 +18,39 @@ use super::state::CompletedCompaction;
 /// Walks the conversation's root task backwards to find the last
 /// `Message::AgentOutput` — that's the summary text the model just emitted.
 ///
-/// `user_msg_id` picks the id of the nearest user turn (`UserQuery` or `InvokeSkill` —
-/// a conversation started with `/skill` has no `UserQuery` at all) before that last
-/// AgentOutput; if there is none, a standalone uuid is synthesized (used only as a
-/// marker key — build_chat_request's hidden projection won't match it against a
-/// real message).
+/// `user_msg_id` (where the summary is shown) is the last user turn (`UserQuery` or
+/// `InvokeSkill` — a conversation started with `/skill` has no `UserQuery` at all) *inside the
+/// summarized head*; see `summary_anchor` (#1078).
+///
+/// Takes the last AgentOutput anywhere in the conversation. Test-only: the controller uses
+/// [`commit_summarization_for_stream`], which only accepts the summary stream's own output.
+#[cfg(test)]
 pub fn commit_summarization(
     conversation: &mut AIConversation,
     overflow: bool,
     cfg: &CompactionConfig,
 ) -> bool {
+    commit_summarization_for_stream(conversation, overflow, cfg, |_| true)
+}
+
+/// `commit_summarization` restricted to the AgentOutput messages `is_summary_stream_message`
+/// accepts (the summarize stream's own new messages).
+///
+/// Without the restriction, a summarize stream that produced no text (an empty response, or
+/// a model that answered with a tool call, which is dropped on a summarize turn) committed the
+/// conversation's previous AgentOutput — some earlier narration — as "the summary", hiding
+/// the head behind text that does not summarize it.
+pub fn commit_summarization_for_stream(
+    conversation: &mut AIConversation,
+    overflow: bool,
+    cfg: &CompactionConfig,
+    is_summary_stream_message: impl Fn(&str) -> bool,
+) -> bool {
+    // Consumed unconditionally: the note is about this stream only.
+    let dropped_tool_calls =
+        crate::ai::agent_providers::chat_stream::take_summary_stream_dropped_tool_calls(
+            conversation.id(),
+        );
     // Uses the conversation's existing linearized messages accessor — already merged in timestamp order across all tasks
     let mut all_msgs: Vec<&api::Message> = conversation.all_linearized_messages();
     all_msgs.sort_by_key(|m| {
@@ -40,13 +63,36 @@ pub fn commit_summarization(
     let last_agent_output: Option<(String, String)> = all_msgs.iter().rev().find_map(|m| {
         let inner = m.message.as_ref()?;
         match inner {
-            api::message::Message::AgentOutput(a) => Some((m.id.clone(), a.text.clone())),
+            api::message::Message::AgentOutput(a) if is_summary_stream_message(&m.id) => {
+                Some((m.id.clone(), a.text.clone()))
+            }
             _ => None,
         }
     });
 
-    let Some((assistant_id, summary_text)) = last_agent_output else {
-        log::warn!("[byop-compaction] commit: no AgentOutput found — nothing to commit");
+    // Not a summary, so nothing to commit (and the recorded head, which belongs to this
+    // request, is dropped so a later summarization can't pick it up):
+    // - no AgentOutput from this stream at all;
+    // - text that trims to nothing;
+    // - text from a stream that answered with a tool call (dropped on a summarize turn): it is
+    //   the narration that preceded the call ("Let me check the next file..."). Providers
+    //   whose adapter ignores `tool_choice: none` produce exactly this, and committing it
+    //   would hide the head — the latest tool results included — behind one sentence.
+    // No length threshold beyond that: a genuine summary of a short history can be short,
+    // and on the automatic tool-loop path a refused commit costs only an uncompacted
+    // continue (the deferred summary resumes either way), while a wrong commit loses context.
+    // A reply with the summary's shape is the summary even when the stream also produced a
+    // (dropped) tool call: a summary that happens to call a tool still summarizes.
+    let summary = last_agent_output.filter(|(_, text)| {
+        !text.trim().is_empty() && (!dropped_tool_calls || super::prompt::looks_like_summary(text))
+    });
+    let Some((assistant_id, summary_text)) = summary else {
+        log::warn!(
+            "[byop-compaction] commit: the summarize stream produced no summary (dropped_tool_calls={dropped_tool_calls}) — nothing to commit"
+        );
+        let _ = crate::ai::agent_providers::chat_stream::take_last_summarization_head(
+            conversation.id(),
+        );
         return false;
     };
 
@@ -54,20 +100,6 @@ pub fn commit_summarization(
     let assistant_pos = all_msgs
         .iter()
         .position(|m| m.id.as_str() == assistant_id_str);
-    let user_msg_id: String = assistant_pos
-        .and_then(|pos| {
-            all_msgs[..pos]
-                .iter()
-                .rev()
-                .find_map(|m| match m.message.as_ref() {
-                    Some(
-                        api::message::Message::UserQuery(_) | api::message::Message::InvokeSkill(_),
-                    ) => Some(m.id.clone()),
-                    _ => None,
-                })
-        })
-        .unwrap_or_else(|| format!("compaction-trigger-{}", uuid::Uuid::new_v4()));
-
     // The head to hide is the head the summarizer was actually shown, recorded by
     // `build_chat_request` when it built this summarization request. Re-deriving it here does
     // not reproduce it, and the difference is not cosmetic: anything the re-derived head
@@ -112,6 +144,7 @@ pub fn commit_summarization(
             (ids, select_result.tail_start_id)
         }
     };
+    let user_msg_id = summary_anchor(&all_msgs, &head_message_ids);
     let auto = overflow;
     let summary_len = summary_text.len();
     let completed = CompletedCompaction {
@@ -135,6 +168,41 @@ pub fn commit_summarization(
     );
     conversation.compaction_state.push_completed(completed);
     true
+}
+
+/// The message the summary is shown in place of (`CompletedCompaction::user_msg_id`): the
+/// projection hides it and inserts the summary at its position, so it must be a message the
+/// summary actually covers — one of `head_message_ids` — and the summary then sits where the
+/// head was, before the kept tail (#1078).
+///
+/// It used to be the nearest user turn before the summary output, i.e. the *latest* user
+/// message. The summarize request adds no user message of its own (opencode's does), so when
+/// the kept tail started at or before that message it was hidden although it was never
+/// summarized: the continuation lost the user's instruction for the current turn, and the
+/// summary landed after the kept turns instead of before them.
+///
+/// The last user turn (`UserQuery` / `InvokeSkill`) in the head, else the head's last message
+/// (a head without a user turn: a split inside one long turn). Only an empty head (nothing
+/// summarized) falls back to a synthetic id, which hides nothing and is never inserted.
+fn summary_anchor(all_msgs: &[&api::Message], head_message_ids: &[String]) -> String {
+    let by_id: std::collections::HashMap<&str, &api::Message> =
+        all_msgs.iter().map(|m| (m.id.as_str(), *m)).collect();
+    head_message_ids
+        .iter()
+        .rev()
+        .find(|id| {
+            by_id.get(id.as_str()).is_some_and(|m| {
+                matches!(
+                    m.message,
+                    Some(
+                        api::message::Message::UserQuery(_) | api::message::Message::InvokeSkill(_)
+                    )
+                )
+            })
+        })
+        .or_else(|| head_message_ids.last())
+        .cloned()
+        .unwrap_or_else(|| format!("compaction-trigger-{}", uuid::Uuid::new_v4()))
 }
 
 /// Automatically runs prune before every LLM request — matches opencode

@@ -703,6 +703,12 @@ impl ResponseStream {
         &mut self.params
     }
 
+    /// Test-only: the request this stream was opened with (after the BYOP preflight).
+    #[cfg(test)]
+    pub(crate) fn params_for_test(&self) -> &api::RequestParams {
+        &self.params
+    }
+
     pub fn new(
         params: api::RequestParams,
         ai_identifiers: AIIdentifiers,

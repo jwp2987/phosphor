@@ -7,6 +7,33 @@
 /// Corresponds directly to `compaction.ts:40-75 SUMMARY_TEMPLATE`.
 pub const SUMMARY_TEMPLATE: &str = "Output exactly the Markdown structure shown inside <template> and keep the section order unchanged. Do not include the <template> tags in your response.\n<template>\n## Goal\n- [single-sentence task summary]\n\n## Constraints & Preferences\n- [user constraints, preferences, specs, or \"(none)\"]\n\n## Progress\n### Done\n- [completed work or \"(none)\"]\n\n### In Progress\n- [current work or \"(none)\"]\n\n### Blocked\n- [blockers or \"(none)\"]\n\n## Key Decisions\n- [decision and why, or \"(none)\"]\n\n## Next Steps\n- [ordered next actions or \"(none)\"]\n\n## Critical Context\n- [important technical facts, errors, open questions, or \"(none)\"]\n\n## Relevant Files\n- [file or directory path: why it matters, or \"(none)\"]\n</template>\n\nRules:\n- Keep every section, even when empty.\n- Use terse bullets, not prose paragraphs.\n- Preserve exact file paths, commands, error strings, and identifiers when known.\n- Do not mention the summary process or that context was compacted.";
 
+/// The `## ` section headings of [`SUMMARY_TEMPLATE`] ("## Goal", "## Progress", ...), read
+/// from the template itself so they cannot drift from what the summarizer is asked for.
+pub fn summary_section_headings() -> impl Iterator<Item = &'static str> {
+    SUMMARY_TEMPLATE
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("## "))
+}
+
+/// Whether `text` has the shape of a summary: at least two of the template's section headings
+/// on lines of their own (inside a wrapping code fence too). Used to tell a summary that
+/// quotes a tool call from a reply that is a tool call.
+pub fn looks_like_summary(text: &str) -> bool {
+    let headings: Vec<&str> = summary_section_headings().collect();
+    let found = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            headings.iter().any(|heading| {
+                line.strip_prefix(heading)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+            })
+        })
+        .count();
+    found >= 2
+}
+
 /// Builds the final user prompt — matches `compaction.ts:121-132 buildPrompt`.
 ///
 /// `previous_summary = Some(...)` → takes the "update" branch, anchoring the

@@ -75,16 +75,31 @@ pub struct FinishedStreamPlan {
     /// compaction came in under the threshold, so the compaction worked and a later overflow
     /// in the same long task is new growth, not a summary that is still too big.
     pub restore_turn_allowance: bool,
+    /// The turn ended over the threshold *asking for tool calls* (#1059): don't summarize
+    /// now (that cancels the calls, #959), but when this step's tool results are ready,
+    /// send them with an automatic summary instead of as a plain follow-up. See
+    /// [`TurnCompactionState::on_tool_results_ready`].
+    pub compact_after_tool_results: bool,
 }
 
 /// The auto-compaction policy for a cleanly finished BYOP stream (#959), as a pure function
 /// so the controller's behaviour matrix is testable without a provider:
 ///
-/// - an automatic summary that committed → resume the task with the continue message
-///   (opencode `compaction.ts`: `auto` and nothing to replay → synthetic "Continue ...");
+/// - an automatic summary → resume the task with the continue message (opencode
+///   `compaction.ts`: `auto` and nothing to replay → synthetic "Continue ..."), whether or not
+///   it committed: every auto-compaction is followed by the continue message (owner rule), so
+///   a summary that produced nothing usable (blank, or narration before a dropped tool call)
+///   never leaves the task stopped with no error. It cannot loop: the allowance is already
+///   spent, so a context still over the threshold ends at the next tool-free turn with
+///   [`AutoCompactionDecision::GiveUp`];
 /// - a manual `/compact` summary → nothing more (the user asked only for the summary);
 /// - a turn that requested tool calls → never compact now: its calls are queued only after
-///   the finish handler returns, and a summary sent first cancels them and halts the task;
+///   the finish handler returns, and a summary sent first cancels them and halts the task.
+///   Over the threshold with the allowance unspent, compact once its tool results are ready
+///   instead (`compact_after_tool_results`, #1059). With the allowance spent (the summary
+///   itself did not get the context under the threshold) do nothing: compacting again would
+///   loop, and giving up would cancel the calls; the loop carries on uncompacted, and its
+///   first tool-free turn end still over the threshold is [`AutoCompactionDecision::GiveUp`];
 /// - a tool-free turn over the threshold → compact (at most once per turn; a second overflow
 ///   with the allowance spent is [`AutoCompactionDecision::GiveUp`]);
 /// - any turn under the threshold after an auto-compaction → restore the allowance.
@@ -95,8 +110,10 @@ pub fn plan_after_stream_finished(
     match stream {
         FinishedStream::Summary { auto, committed } => FinishedStreamPlan {
             decision: AutoCompactionDecision::None,
-            resume_with_continue_message: auto && committed,
+            // `committed` only decides what the continue request is built from.
+            resume_with_continue_message: auto,
             restore_turn_allowance: false,
+            compact_after_tool_results: false,
         },
         FinishedStream::Turn {
             requested_tool_calls,
@@ -104,20 +121,163 @@ pub fn plan_after_stream_finished(
         } => {
             let restore_turn_allowance =
                 already_auto_compacted_this_turn && overflowing == Some(false);
-            let decision = if requested_tool_calls {
-                AutoCompactionDecision::None
-            } else {
-                auto_compaction_decision(
-                    overflowing == Some(true),
-                    already_auto_compacted_this_turn && !restore_turn_allowance,
+            let overflow_decision = auto_compaction_decision(
+                overflowing == Some(true),
+                already_auto_compacted_this_turn && !restore_turn_allowance,
+            );
+            let (decision, compact_after_tool_results) = if requested_tool_calls {
+                (
+                    AutoCompactionDecision::None,
+                    overflow_decision == AutoCompactionDecision::Compact,
                 )
+            } else {
+                (overflow_decision, false)
             };
             FinishedStreamPlan {
                 decision,
                 resume_with_continue_message: false,
                 restore_turn_allowance,
+                compact_after_tool_results,
             }
         }
+    }
+}
+
+/// What to send once a tool-call step's results are ready (the point where the agent loop
+/// sends its follow-up). See [`TurnCompactionState::on_tool_results_ready`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolResultsRequest {
+    /// The ordinary follow-up: the results go back to the model.
+    FollowUp,
+    /// One request carrying the results *and* an automatic `SummarizeConversation
+    /// { overflow: true }` (#1059). The BYOP preflight records the results in history
+    /// before the summary request is built (the same commit a plain follow-up gets), so the
+    /// summarizer sees every call with its real result and nothing is cancelled or
+    /// synthesized. The summary then resumes the task with the continue message
+    /// ([`FinishedStreamPlan::resume_with_continue_message`]), like every automatic summary,
+    /// even if it found nothing to commit. The controller reports the send with
+    /// [`TurnCompactionState::on_deferred_summary_sent`].
+    SummarizeWithResults,
+}
+
+/// What `send_request_input` did with a request, as far as a deferred summary cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestSendOutcome {
+    /// A response stream was opened for it.
+    Opened,
+    /// The BYOP readiness pass stashed it until pending tool results land; it is resent then.
+    Stashed,
+    /// The readiness pass blocked it: rendered as an error, no stream (reported as `Ok`).
+    Blocked,
+    /// Refused before anything was sent (closed pane, request already in flight, ...).
+    Refused,
+}
+
+impl RequestSendOutcome {
+    /// Whether a summary sent this way will actually run — the only case in which it may
+    /// spend the turn's allowance ([`TurnCompactionState::on_deferred_summary_sent`]).
+    pub fn summary_will_run(self) -> bool {
+        matches!(self, Self::Opened | Self::Stashed)
+    }
+}
+
+/// The auto-compaction bookkeeping the controller keeps per conversation between streams,
+/// driven only through these methods so the whole sequence is testable without a provider.
+///
+/// Invariants:
+/// - at most one automatic summary per turn unless a later turn came in under the threshold
+///   (`auto_compacted`, #959 / cc5b6a422);
+/// - `compact_after_tool_results` is set only by a cleanly finished tool-call step that was
+///   over the threshold with the allowance unspent, and lives only until that step's results
+///   are ready: any later finished stream recomputes it, and a new user turn, a stop, a
+///   close, or a step whose results trigger no follow-up drops it;
+/// - the deferral never cancels, drops or replaces a tool result: it only changes the request
+///   the results travel in;
+/// - the allowance is spent only once the deferred summary request was actually sent (or
+///   stashed to be sent), not when it was merely decided;
+/// - every automatic summary that finishes cleanly resumes the task, committed or not
+///   ([`plan_after_stream_finished`]); the deferred one too.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TurnCompactionState {
+    auto_compacted: bool,
+    compact_after_tool_results: bool,
+}
+
+impl TurnCompactionState {
+    /// Nothing to remember; the controller may drop the entry.
+    pub fn is_idle(&self) -> bool {
+        !self.auto_compacted && !self.compact_after_tool_results
+    }
+
+    /// Whether this turn's one auto-compaction allowance is spent.
+    #[cfg(test)]
+    pub fn auto_compacted(&self) -> bool {
+        self.auto_compacted
+    }
+
+    /// Whether the next ready tool results go out with an automatic summary.
+    #[cfg(test)]
+    pub fn compaction_deferred_to_tool_results(&self) -> bool {
+        self.compact_after_tool_results
+    }
+
+    /// A BYOP stream of this conversation finished cleanly: plan per
+    /// [`plan_after_stream_finished`] and record what the plan implies.
+    pub fn on_stream_finished(&mut self, stream: FinishedStream) -> FinishedStreamPlan {
+        let plan = plan_after_stream_finished(stream, self.auto_compacted);
+        if plan.restore_turn_allowance {
+            self.auto_compacted = false;
+        }
+        if plan.decision == AutoCompactionDecision::Compact {
+            self.auto_compacted = true;
+        }
+        // Whatever this stream is, it is the latest step: an earlier deferral belonged to a
+        // step whose results have been sent (or dropped) since.
+        self.compact_after_tool_results = plan.compact_after_tool_results;
+        plan
+    }
+
+    /// The finished step's tool results are ready to go back to the model. Consumes a
+    /// deferral. `results_all_in_root_task`: every result answers a call of the
+    /// conversation's root task; results of a subagent task (a CLI/LRC subagent's own loop)
+    /// are sent as a plain follow-up and the deferral is dropped, so a summary never lands in
+    /// the middle of a subagent's work (subagent loops are not compacted: #1074). The next
+    /// finished stream re-checks the usage.
+    ///
+    /// Does not spend the allowance: the controller calls [`Self::on_deferred_summary_sent`]
+    /// once the request really went out.
+    pub fn on_tool_results_ready(&mut self, results_all_in_root_task: bool) -> ToolResultsRequest {
+        if !std::mem::take(&mut self.compact_after_tool_results) || !results_all_in_root_task {
+            return ToolResultsRequest::FollowUp;
+        }
+        ToolResultsRequest::SummarizeWithResults
+    }
+
+    /// The [`ToolResultsRequest::SummarizeWithResults`] request was sent (or stashed by the
+    /// BYOP readiness pass, to be sent once pending results land): the turn's allowance is
+    /// spent.
+    pub fn on_deferred_summary_sent(&mut self) {
+        self.auto_compacted = true;
+    }
+
+    /// The step's results will not be sent as their own follow-up (the user rejected the
+    /// only call, or a stashed request took them): drop a deferral so it can't fire on an
+    /// unrelated later follow-up. The allowance is unchanged.
+    pub fn on_tool_results_abandoned(&mut self) {
+        self.compact_after_tool_results = false;
+    }
+
+    /// The user stopped the conversation (Stop / Ctrl-C / a superseding submission) or
+    /// closed its pane: drop the deferral. A stopped summary stream never finishes cleanly,
+    /// so nothing resumes on its behalf. The allowance is unchanged.
+    pub fn on_conversation_stopped(&mut self) {
+        self.compact_after_tool_results = false;
+    }
+
+    /// The user started a new turn (anything but the agent's own continue message): a fresh
+    /// allowance and no deferral.
+    pub fn on_new_user_turn(&mut self) {
+        *self = Self::default();
     }
 }
 
