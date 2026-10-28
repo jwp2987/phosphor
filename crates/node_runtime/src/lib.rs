@@ -4,7 +4,7 @@
 //! supporting multiple platforms (macOS, Linux, Windows) and architectures
 //! (x64, arm64).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 cfg_if::cfg_if! {
@@ -277,11 +277,16 @@ async fn is_valid_installation(node_binary: &Path) -> bool {
 
 /// Extracts a gzip-compressed tarball to the destination directory.
 ///
-/// This is a simple wrapper around tar::Archive that extracts all contents.
+/// This is a thin wrapper around `tar::Archive::unpack`, which refuses entries
+/// that would land outside `dest_dir` (absolute paths, `..`, writes through a
+/// symlink). Permission preservation is pinned off explicitly so setuid/setgid
+/// bits from the archive are masked to `0o777` (refs #1076).
 #[cfg(feature = "local_fs")]
 pub fn extract_tar_gz(data: &[u8], dest_dir: &Path) -> Result<()> {
     let decoder = GzDecoder::new(data);
     let mut archive = Archive::new(decoder);
+    archive.set_preserve_permissions(false);
+    archive.set_unpack_xattrs(false);
     archive
         .unpack(dest_dir)
         .context("Failed to extract tar.gz archive")?;
@@ -323,6 +328,12 @@ pub async fn extract_gz(data: &[u8], dest_path: &Path) -> Result<()> {
 /// # Returns
 /// Returns Ok(()) on success, or an error if extraction fails or if a filter is provided but no files match.
 ///
+/// Safety against hostile archives (RUSTSEC-2026-0367/0368/0369 class, refs #1076): this
+/// does not use `ZipArchive::extract`. Entry paths go through `enclosed_name`, so absolute
+/// paths and `..` escapes are skipped; symlink entries are skipped rather than created; and
+/// no permission bits from the archive are ever applied, so setuid/setgid bits cannot leak
+/// onto extracted files.
+///
 /// Note: This function performs synchronous zip reading (which is CPU-bound) followed by
 /// async file I/O. Similar to `extract_gz`, this approach is acceptable for reasonably-sized
 /// archives since the zip reading is relatively fast.
@@ -339,7 +350,10 @@ where
 
         for i in 0..archive.len() {
             let mut file = archive.by_index(i).context("Failed to read zip entry")?;
-            let file_name = file.name().to_string();
+            let file_name = file
+                .name()
+                .context("Failed to read zip entry name")?
+                .into_owned();
 
             if let Some(ref filter) = file_filter {
                 if !filter(&file_name) {
@@ -349,8 +363,16 @@ where
 
             let outpath = match file.enclosed_name() {
                 Some(path) => dest_dir.join(path),
-                None => continue,
+                None => {
+                    log::warn!("Skipping zip entry with unsafe path: {file_name:?}");
+                    continue;
+                }
             };
+
+            if file.is_symlink() {
+                log::warn!("Skipping symlink zip entry: {file_name:?}");
+                continue;
+            }
 
             if !file.is_dir() {
                 let mut data = Vec::new();
@@ -533,3 +555,7 @@ pub async fn fetch_npm_package_version(
         .map(|s| s.to_string())
         .with_context(|| format!("No version found for npm package {}", package_name))
 }
+
+#[cfg(all(test, feature = "local_fs"))]
+#[path = "lib_tests.rs"]
+mod tests;
