@@ -4488,7 +4488,6 @@ impl BlocklistAIController {
         });
 
         let history_model = BlocklistAIHistoryModel::handle(ctx);
-        let mut resume_after_auto_compaction = false;
         match finished_event.reason {
             Some(warp_multi_agent_api::response_event::stream_finished::Reason::Done(_)) | None => {
                 // Zap BYOP local session compaction - write the summary back
@@ -4504,71 +4503,93 @@ impl BlocklistAIController {
                             );
                         }
                     });
-                    // An automatic (overflow) summary interrupted the user's task. Don't let
-                    // the turn end on the summary text; resume below, after the stream is
-                    // marked complete.
-                    if overflow && summary_committed {
-                        resume_after_auto_compaction = true;
-                    }
                 }
 
                 // Zap BYOP local session compaction - auto overflow trigger
                 // (matches opencode `processor.ts:395-403`). Only checked when this
                 // stream isn't the summary itself, to prevent recursion.
                 //
-                // Also skipped while the turn that just ended asked for tool calls: they
+                // Never acted on while the turn that just ended asked for tool calls: they
                 // are queued only after this handler returns, and summarizing now cancels
-                // the loop (calls never run, task halts after the summary, nothing sends a
-                // "continue"). The next tool-free turn end re-checks the usage.
-                let turn_continues_with_tools = summarize_overflow.is_none() && {
-                    let history = BlocklistAIHistoryModel::as_ref(ctx);
-                    history.conversation(&conversation_id).is_some_and(|conversation| {
-                        let new_ids: std::collections::HashSet<MessageId> = conversation
-                            .new_exchange_ids_for_response(stream_id)
-                            .filter_map(|id| conversation.exchange_with_id(id))
-                            .flat_map(|exchange| exchange.added_message_ids.iter().cloned())
-                            .collect();
-                        crate::ai::byop_compaction::turn_has_tool_calls(
-                            conversation.all_tasks().flat_map(|task| task.messages()),
-                            |id| new_ids.contains(&MessageId::new(id.to_owned())),
-                        )
-                    })
-                };
-                if turn_continues_with_tools {
-                    log::debug!(
-                        "[byop-compaction] auto overflow check deferred: the finished turn requested tool calls"
-                    );
-                }
-                let mut auto_compaction_decision =
-                    crate::ai::byop_compaction::AutoCompactionDecision::None;
-                if summarize_overflow.is_none() && !turn_continues_with_tools {
-                    let aggregate_count = aggregate_token_count;
-                    if aggregate_count > 0 {
-                        let cfg = crate::ai::byop_compaction::CompactionConfig::from_settings(ctx);
-                        // Sourced from the configured model, NOT ModelLimit::FALLBACK — the
-                        // hardcoded constant pinned the trigger at 172_000 tokens for every
-                        // model, compacting a 1M-window model at ~16%. See
-                        // CompactionConfig::model_limit.
-                        let model_limit =
-                            crate::ai::byop_compaction::CompactionConfig::model_limit(ctx);
-                        let counts = crate::ai::byop_compaction::overflow::TokenCounts {
-                            total: aggregate_count,
-                            ..Default::default()
+                // the loop (calls never run, task halts after the summary). The next
+                // tool-free turn end re-checks the usage. The policy itself is
+                // `byop_compaction::plan_after_stream_finished` (#959).
+                let finished_stream = match summarize_overflow {
+                    Some(overflow) => crate::ai::byop_compaction::FinishedStream::Summary {
+                        auto: overflow,
+                        committed: summary_committed,
+                    },
+                    None => {
+                        let requested_tool_calls = {
+                            let history = BlocklistAIHistoryModel::as_ref(ctx);
+                            history.conversation(&conversation_id).is_some_and(|conversation| {
+                                let new_ids: std::collections::HashSet<MessageId> = conversation
+                                    .new_exchange_ids_for_response(stream_id)
+                                    .filter_map(|id| conversation.exchange_with_id(id))
+                                    .flat_map(|exchange| exchange.added_message_ids.iter().cloned())
+                                    .collect();
+                                crate::ai::byop_compaction::turn_has_tool_calls(
+                                    conversation.all_tasks().flat_map(|task| task.messages()),
+                                    |id| new_ids.contains(&MessageId::new(id.to_owned())),
+                                )
+                            })
                         };
-                        let overflowing =
-                            crate::ai::byop_compaction::is_overflow(&cfg, counts, model_limit);
-                        auto_compaction_decision = crate::ai::byop_compaction::auto_compaction_decision(
-                            overflowing,
-                            self.auto_compacted_this_turn.contains(&conversation_id),
-                        );
-                        if overflowing {
-                            log::info!(
-                                "[byop-compaction] auto overflow detected: tokens={aggregate_count} usable={} decision={auto_compaction_decision:?}",
-                                crate::ai::byop_compaction::usable(&cfg, model_limit)
+                        let overflowing = if aggregate_token_count > 0 {
+                            let cfg = crate::ai::byop_compaction::CompactionConfig::from_settings(ctx);
+                            // Sourced from the configured model, NOT ModelLimit::FALLBACK — the
+                            // hardcoded constant pinned the trigger at 172_000 tokens for every
+                            // model, compacting a 1M-window model at ~16%. See
+                            // CompactionConfig::model_limit.
+                            let model_limit =
+                                crate::ai::byop_compaction::CompactionConfig::model_limit(ctx);
+                            let counts = crate::ai::byop_compaction::overflow::TokenCounts {
+                                total: aggregate_token_count,
+                                ..Default::default()
+                            };
+                            let overflowing =
+                                crate::ai::byop_compaction::is_overflow(&cfg, counts, model_limit);
+                            if overflowing {
+                                log::info!(
+                                    "[byop-compaction] auto overflow detected: tokens={aggregate_token_count} usable={} requested_tool_calls={requested_tool_calls}",
+                                    crate::ai::byop_compaction::usable(&cfg, model_limit)
+                                );
+                            }
+                            Some(overflowing)
+                        } else {
+                            None
+                        };
+                        if requested_tool_calls && overflowing == Some(true) {
+                            log::debug!(
+                                "[byop-compaction] auto overflow check deferred: the finished turn requested tool calls"
                             );
                         }
+                        crate::ai::byop_compaction::FinishedStream::Turn {
+                            requested_tool_calls,
+                            overflowing,
+                        }
                     }
+                };
+                let plan = crate::ai::byop_compaction::plan_after_stream_finished(
+                    finished_stream,
+                    self.auto_compacted_this_turn.contains(&conversation_id),
+                );
+                if plan.restore_turn_allowance {
+                    // The compaction brought the context back under the threshold; a later
+                    // overflow in this long task is new growth, so it may compact again
+                    // instead of failing the turn with GiveUp.
+                    self.auto_compacted_this_turn.remove(&conversation_id);
                 }
+                if plan.decision != crate::ai::byop_compaction::AutoCompactionDecision::None {
+                    log::info!(
+                        "[byop-compaction] auto compaction decision={:?}",
+                        plan.decision
+                    );
+                }
+                // An automatic (overflow) summary interrupted the user's task. Don't let
+                // the turn end on the summary text; resume below, after the stream is
+                // marked complete.
+                let resume_after_auto_compaction = plan.resume_with_continue_message;
+                let auto_compaction_decision = plan.decision;
 
                 if auto_compaction_decision
                     == crate::ai::byop_compaction::AutoCompactionDecision::GiveUp

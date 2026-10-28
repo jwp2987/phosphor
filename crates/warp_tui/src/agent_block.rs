@@ -30,7 +30,7 @@ use warp::tui_export::{
     AIActionStatus, AIAgentAction, AIAgentActionId, AIAgentActionType, AIAgentExchangeId,
     AIAgentOutputMessageType, AIAgentText, AIAgentTextSection, AIAgentTodo, AIBlockModel,
     AIBlockModelHelper, AIBlockOutputStatus, AIConversationId, BlockId, BlocklistAIActionEvent,
-    BlocklistAIActionModel, BlocklistAIHistoryModel, CancellationReason,
+    BlocklistAIActionModel, BlocklistAIHistoryModel, CancellationReason, CompactionMarker,
     FAILED_OUTPUT_USAGE_NOTICE_TEXT, FailedOutputPresentation, MessageId, ModelEvent,
     ModelEventDispatcher, ReceivedMessageDisplay, SummarizationType, TerminalModel, TodoOperation,
     TodoStatus, failed_output_presentation, rejected_tool_call_text,
@@ -53,8 +53,9 @@ use super::tui_file_edits_view::{TuiFileEditsView, TuiFileEditsViewEvent};
 use super::tui_generic_tool_call_view::{TuiGenericToolCallView, TuiGenericToolCallViewEvent};
 use super::tui_shell_command_view::{TuiShellCommandView, TuiShellCommandViewEvent};
 use crate::agent_block_sections::{
-    render_completed_todos_section, render_fallback_tool_call_section, render_input_section,
-    render_summarization_section, render_thinking_section, render_todo_list_section,
+    render_compaction_summary_section, render_completed_todos_section,
+    render_fallback_tool_call_section, render_input_section, render_summarization_section,
+    render_thinking_section, render_todo_list_section,
 };
 use crate::agent_message::render_agent_message;
 use crate::transcript_view::BLOCK_TOP_PADDING_ROWS;
@@ -129,6 +130,13 @@ enum TuiAIBlockSection {
     },
     Summarization {
         message_id: MessageId,
+        body: Vec<TuiRichTextSection>,
+    },
+    /// A BYOP compaction summary (#1060): agent text that is the conversation summary,
+    /// not the agent's answer, rendered as a collapsed marker.
+    CompactionSummary {
+        message_id: MessageId,
+        marker: CompactionMarker,
         body: Vec<TuiRichTextSection>,
     },
     /// The agent's task list (todo list), rendered as a collapsible block.
@@ -1205,6 +1213,17 @@ impl TuiAIBlock {
                 self.render_rich_text_sections(body, false, app),
                 app,
             ),
+            TuiAIBlockSection::CompactionSummary {
+                message_id,
+                marker,
+                body,
+            } => render_compaction_summary_section(
+                &self.collapsible_states,
+                message_id,
+                marker.label(),
+                self.render_rich_text_sections(body, false, app),
+                app,
+            ),
             TuiAIBlockSection::TodoList { message_id, todos } => {
                 let history = BlocklistAIHistoryModel::as_ref(app);
                 let rows: Vec<(String, TodoStatus)> = todos
@@ -1287,6 +1306,21 @@ impl TuiAIBlock {
             for message in &output.messages {
                 match &message.message {
                     AIAgentOutputMessageType::Text(text) => {
+                        if let Some(marker) =
+                            self.block_model
+                                .compaction_marker(&message.id, &status, app)
+                        {
+                            // A compaction summary, not the agent's answer (#1060).
+                            let body = Self::rich_text_sections(&message.id, text);
+                            if !body.is_empty() {
+                                sections.push(TuiAIBlockSection::CompactionSummary {
+                                    message_id: message.id.clone(),
+                                    marker,
+                                    body,
+                                });
+                            }
+                            continue;
+                        }
                         sections.extend(
                             Self::rich_text_sections(&message.id, text)
                                 .into_iter()
@@ -1597,6 +1631,17 @@ impl TuiAIBlock {
                         app,
                     )
                 }
+                TuiAIBlockSection::CompactionSummary {
+                    message_id,
+                    marker,
+                    body,
+                } => render_compaction_summary_section(
+                    &self.collapsible_states,
+                    message_id,
+                    marker.label(),
+                    self.render_rich_text_sections(body, false, app),
+                    app,
+                ),
                 TuiAIBlockSection::TodoList { message_id, todos } => {
                     // Statuses resolve against the conversation's todo
                     // history at render time, so superseded lists restyle
@@ -1700,6 +1745,7 @@ fn section_logical_text(section: &TuiAIBlockSection) -> Option<String> {
         TuiAIBlockSection::ToolCall(_)
         | TuiAIBlockSection::Thinking { .. }
         | TuiAIBlockSection::Summarization { .. }
+        | TuiAIBlockSection::CompactionSummary { .. }
         | TuiAIBlockSection::TodoList { .. }
         | TuiAIBlockSection::CompletedTodos { .. }
         | TuiAIBlockSection::AgentMessage(_) => None,

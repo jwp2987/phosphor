@@ -291,6 +291,33 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                 }
 
                 for output_message in output.messages.iter() {
+                    // A BYOP compaction summary is not the agent's answer: render it as a
+                    // collapsed "Conversation compacted" marker whose body is the summary
+                    // (#1060). Without a registered collapsible state it falls through to
+                    // the ordinary text rendering below rather than disappearing.
+                    if let AIAgentOutputMessageType::Text(AIAgentText { sections }) =
+                        &output_message.message
+                        && !request_type.is_passive()
+                        && !are_all_text_sections_empty(sections)
+                        && let Some(marker) =
+                            props
+                                .model
+                                .compaction_marker(&output_message.id, &status, app)
+                        && let Some(element) = render_collapsible_block(
+                            output_message,
+                            marker.label(),
+                            sections,
+                            true,
+                            props,
+                            &mut has_rendered_first_text_section,
+                            &mut text_section_index,
+                            &mut code_section_index,
+                            app,
+                        )
+                    {
+                        output_items.add_child(element);
+                        continue;
+                    }
                     match &output_message.message {
                         // Skip rendering text and reasoning sections if this is a passive conversation.
                         AIAgentOutputMessageType::Text(_)

@@ -143,6 +143,15 @@ impl CompactionState {
         &self.completed
     }
 
+    /// The completed compaction whose summary is the assistant message `msg_id`, if that
+    /// message is a committed summary.
+    pub fn completed_for_summary(&self, msg_id: &str) -> Option<&CompletedCompaction> {
+        self.completed
+            .iter()
+            .rev()
+            .find(|c| c.assistant_msg_id == msg_id)
+    }
+
     /// All message ids that should be skipped when assembling a request (matches
     /// opencode `hidden`): each completed compaction interval's head_message_ids +
     /// user_msg_id + assistant_msg_id.
