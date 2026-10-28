@@ -14,7 +14,7 @@ use crate::terminal::model::lifecycle::StartCommandOutcome;
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::model::session::BootstrapSessionType;
 use crate::terminal::model::session::{
-    ExecutorCommandEvent, InBandCommandCancelledEvent, IsLegacySSHSession, Sessions,
+    ExecutorCommandEvent, InBandCommandCancelledEvent, Sessions,
 };
 use crate::terminal::model::tmux::commands::TmuxCommand;
 use crate::terminal::model::typeahead_handoff::{ActiveDecision, HeldAgentCommand};
@@ -953,22 +953,6 @@ impl<T: EventLoopSender> PtyController<T> {
         ctx: &mut ModelContext<Self>,
     ) {
         let shell_type = pending_session_info.shell.shell_type();
-
-        // #1111: the remote bootstrap goes to whatever owns the pty NOW. If ssh already ended
-        // (network drop, timeout, the remote shell died after emitting InitShell), that is the
-        // LOCAL shell, which would be fed the remote script. Only write while the ssh command's
-        // block is still running.
-        if matches!(
-            pending_session_info.is_legacy_ssh_session,
-            IsLegacySSHSession::Yes { .. }
-        ) && !ssh_block_still_running(&self.terminal_model.lock())
-        {
-            log::warn!(
-                "Not writing the remote bootstrap for session {:?}: the ssh command is no longer running",
-                pending_session_info.session_id
-            );
-            return;
-        }
 
         #[cfg(not(target_family = "wasm"))]
         {
@@ -1949,13 +1933,6 @@ pub enum EventLoopSendError {
 
 pub trait EventLoopSender: 'static {
     fn send(&self, message: Message) -> Result<(), EventLoopSendError>;
-}
-
-/// Whether the ssh command that announced a remote shell still owns the pty (#1111).
-fn ssh_block_still_running(model: &TerminalModel) -> bool {
-    // `is_executing`, not "long running": the latter needs 50 ms and a quick InitShell would
-    // wrongly look like a finished ssh.
-    !model.is_read_only() && model.block_list().active_block().is_executing()
 }
 
 #[cfg(test)]
