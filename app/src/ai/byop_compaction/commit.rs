@@ -81,8 +81,11 @@ pub fn commit_summarization_for_stream(
     // No length threshold beyond that: a genuine summary of a short history can be short,
     // and on the automatic tool-loop path a refused commit costs only an uncompacted
     // continue (the deferred summary resumes either way), while a wrong commit loses context.
-    let summary =
-        last_agent_output.filter(|(_, text)| !dropped_tool_calls && !text.trim().is_empty());
+    // A reply with the summary's shape is the summary even when the stream also produced a
+    // (dropped) tool call: a summary that happens to call a tool still summarizes.
+    let summary = last_agent_output.filter(|(_, text)| {
+        !text.trim().is_empty() && (!dropped_tool_calls || super::prompt::looks_like_summary(text))
+    });
     let Some((assistant_id, summary_text)) = summary else {
         log::warn!(
             "[byop-compaction] commit: the summarize stream produced no summary (dropped_tool_calls={dropped_tool_calls}) — nothing to commit"

@@ -4604,6 +4604,24 @@ impl AIConversation {
         // Make sure we don't have stale code review comment state
         self.code_review = None;
 
+        // A compaction whose summary or insertion point was rewound away can't be shown any
+        // more; left in place it would keep its head hidden with nothing standing in for it,
+        // and (as the latest summary) suppress the earlier one. Drop it, which un-hides its
+        // head (#1059 refute round 11).
+        let remaining_message_ids: HashSet<String> = self
+            .all_linearized_messages()
+            .into_iter()
+            .map(|message| message.id.clone())
+            .collect();
+        let dropped_compactions = self
+            .compaction_state
+            .retain_compactions_whose_messages_exist(|id| remaining_message_ids.contains(id));
+        if dropped_compactions > 0 {
+            log::info!(
+                "[byop-compaction] rewind dropped {dropped_compactions} compaction(s) whose summary was removed"
+            );
+        }
+
         self.added_exchanges_by_response
             .retain(|_, added_exchanges| {
                 if added_exchanges

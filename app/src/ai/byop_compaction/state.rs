@@ -74,6 +74,23 @@ impl CompletedCompaction {
     fn anchor_is_summarized(&self) -> bool {
         self.head_message_ids.is_empty() || self.head_message_ids.contains(&self.user_msg_id)
     }
+
+    /// The summary text, if it is not blank.
+    fn summary(&self) -> Option<&str> {
+        self.summary_text
+            .as_deref()
+            .filter(|text| !text.trim().is_empty())
+    }
+
+    /// The message the summary is shown before: the anchor, or for a legacy compaction (anchor
+    /// outside its head) the kept tail's first message.
+    fn insertion_target(&self) -> &str {
+        if self.anchor_is_summarized() {
+            &self.user_msg_id
+        } else {
+            self.tail_start_id.as_deref().unwrap_or(&self.user_msg_id)
+        }
+    }
 }
 
 /// A sidecar table persisted alongside `AIConversation`.
@@ -141,10 +158,16 @@ impl CompactionState {
     }
 
     /// Gets the last completed compaction (used as the incremental-summary anchor for [`super::prompt::build_prompt`]).
+    ///
+    /// The last compaction with non-blank summary text — the same one
+    /// [`Self::summary_insertions`] shows, so the summary a request is built on and the one
+    /// the summarizer is asked to update never disagree. (An early build stored `Some("")`
+    /// for a blank reply.)
     pub fn previous_summary(&self) -> Option<&str> {
         self.completed
-            .last()
-            .and_then(|c| c.summary_text.as_deref())
+            .iter()
+            .rev()
+            .find_map(CompletedCompaction::summary)
     }
 
     pub fn completed(&self) -> &[CompletedCompaction] {
@@ -200,23 +223,52 @@ impl CompactionState {
     ///
     /// A legacy compaction whose anchor is not in its own head (see
     /// [`Self::hidden_message_ids`]) is shown before its `tail_start_id` instead.
-    pub fn summary_insertions(&self) -> Vec<(String, String)> {
+    ///
+    /// `message_exists` filters out a compaction whose insertion target is no longer in the
+    /// request's messages (a rewind removed it): its summary could not be shown, and picking
+    /// it would suppress the previous one. `AIConversation::truncate_from_exchange` drops such
+    /// compactions outright; this is the belt to that brace.
+    pub fn summary_insertions(
+        &self,
+        message_exists: impl Fn(&str) -> bool,
+    ) -> Vec<(String, String)> {
         self.completed
             .iter()
             .rev()
-            .find_map(|c| {
-                let text = c.summary_text.clone()?;
-                let at = if c.anchor_is_summarized() {
-                    c.user_msg_id.clone()
-                } else {
-                    c.tail_start_id
-                        .clone()
-                        .unwrap_or_else(|| c.user_msg_id.clone())
-                };
-                Some((at, text))
-            })
+            .filter(|c| message_exists(c.insertion_target()))
+            .find_map(|c| Some((c.insertion_target().to_owned(), c.summary()?.to_owned())))
             .into_iter()
             .collect()
+    }
+
+    /// Drops every completed compaction whose summary message or insertion target no longer
+    /// exists (a rewind removed it), together with its markers. Its head then becomes
+    /// visible again: the summary that stood in for it is gone. Returns how many were dropped.
+    pub fn retain_compactions_whose_messages_exist(
+        &mut self,
+        message_exists: impl Fn(&str) -> bool,
+    ) -> usize {
+        let (kept, dropped): (Vec<_>, Vec<_>) = std::mem::take(&mut self.completed)
+            .into_iter()
+            .partition(|c| {
+                message_exists(&c.assistant_msg_id) && message_exists(c.insertion_target())
+            });
+        self.completed = kept;
+        for c in &dropped {
+            let still_anchored = self
+                .completed
+                .iter()
+                .any(|k| k.user_msg_id == c.user_msg_id);
+            if !still_anchored {
+                if let Some(marker) = self.markers.get_mut(&c.user_msg_id) {
+                    marker.compaction_trigger = None;
+                }
+            }
+            if let Some(marker) = self.markers.get_mut(&c.assistant_msg_id) {
+                marker.is_summary = false;
+            }
+        }
+        dropped.len()
     }
 
     /// Debug / test entry point: checks whether a marker exists.

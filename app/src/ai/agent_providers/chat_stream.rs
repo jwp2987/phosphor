@@ -2214,7 +2214,12 @@ fn build_chat_request(
             // that message (the anchor, itself hidden; or a legacy compaction's tail start).
             // Only the latest summary of a chain (#1059 refute round 7); see
             // `CompactionState::summary_insertions`.
-            state.summary_insertions().into_iter().collect()
+            let present: std::collections::HashSet<&str> =
+                all_msgs.iter().map(|msg| msg.id.as_str()).collect();
+            state
+                .summary_insertions(|id| present.contains(id))
+                .into_iter()
+                .collect()
         } else {
             std::collections::HashMap::new()
         };
@@ -4545,83 +4550,22 @@ fn content_tool_extraction_applies(
 
 /// The content→tool-call extraction for one reply text.
 ///
-/// On a summarize turn the text only counts as a tool call when the tool-shaped JSON is
-/// essentially the whole reply ([`reply_is_only_tool_call_json`]). A real summary of a coding
-/// conversation routinely quotes such JSON (`{"name":"run_shell_command",...}` under "Key
-/// details"); treating that as a call would refuse the commit every time, so the loop would
-/// never compact. Other turns are unchanged.
+/// On a summarize turn a reply that has the shape of a summary — at least two of the summary
+/// template's section headings ([`byop_compaction::prompt::looks_like_summary`]) — is never a
+/// tool call: real summaries of coding conversations routinely quote tool-call JSON, and
+/// treating that as a call would refuse the commit every time, so the loop would never
+/// compact. Any other summarize reply with an extracted call is a tool call (dropped and
+/// noted by `tool_calls_to_dispatch`): narration before a call is not a summary, however
+/// long it is. Other turns are unchanged.
 fn text_tool_calls_for_turn(
     text: &str,
     available_tool_names: &[String],
     is_summarize_turn: bool,
 ) -> Vec<ToolCall> {
-    let extracted = super::content_tool_calls::extract_tool_calls_from_assistant_text(
-        text,
-        available_tool_names,
-    );
-    if is_summarize_turn && !extracted.is_empty() && !reply_is_only_tool_call_json(text) {
-        log::info!(
-            "[byop-compaction] summarize reply quotes tool-shaped JSON inside other text: \
-             kept as summary text, not a tool call"
-        );
+    if is_summarize_turn && byop_compaction::prompt::looks_like_summary(text) {
         return Vec::new();
     }
-    extracted
-}
-
-/// Prose a model may wrap around a bare tool call ("Sure, running it:") stays under this many
-/// characters; a summary, even a terse one, does not.
-const SUMMARIZE_TOOL_CALL_PROSE_LIMIT: usize = 40;
-
-/// Whether `text` is essentially nothing but JSON: with every fenced code block and every
-/// balanced top-level `{...}` removed, fewer than [`SUMMARIZE_TOOL_CALL_PROSE_LIMIT`]
-/// characters remain.
-fn reply_is_only_tool_call_json(text: &str) -> bool {
-    // Fenced blocks first (their content may hold braces in any shape).
-    let mut without_fences = String::new();
-    let mut rest = text;
-    while let Some(open) = rest.find("```") {
-        without_fences.push_str(&rest[..open]);
-        let after_open = &rest[open + 3..];
-        match after_open.find("```") {
-            Some(close) => rest = &after_open[close + 3..],
-            // An unterminated fence runs to the end of the reply.
-            None => rest = "",
-        }
-    }
-    without_fences.push_str(rest);
-
-    // Then balanced top-level objects, skipping braces inside JSON strings.
-    let mut remainder = String::new();
-    let mut depth = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    for ch in without_fences.chars() {
-        if depth == 0 {
-            if ch == '{' {
-                depth = 1;
-            } else {
-                remainder.push(ch);
-            }
-            continue;
-        }
-        if in_string {
-            match ch {
-                _ if escaped => escaped = false,
-                '\\' => escaped = true,
-                '"' => in_string = false,
-                _ => {}
-            }
-            continue;
-        }
-        match ch {
-            '"' => in_string = true,
-            '{' => depth += 1,
-            '}' => depth -= 1,
-            _ => {}
-        }
-    }
-    remainder.trim().chars().count() < SUMMARIZE_TOOL_CALL_PROSE_LIMIT
+    super::content_tool_calls::extract_tool_calls_from_assistant_text(text, available_tool_names)
 }
 
 /// Whether this request is a BYOP compaction summary (`/compact` or the automatic trigger).
@@ -17134,6 +17078,44 @@ mod summarize_turn_tool_gate_tests {
         );
     }
 
+    /// #1059 refute round 11: C1, C2, then a rewind that removes C2's summary. After the
+    /// rewind prunes C2 (`truncate_from_exchange` →
+    /// `retain_compactions_whose_messages_exist`), the request shows C1's summary and the
+    /// surviving part of C2's head instead of no history at all.
+    #[test]
+    fn after_a_rewind_past_the_latest_summary_the_earlier_one_shows() {
+        let messages = vec![
+            user("u1", "first question"),
+            agent("a1", "first answer"),
+            agent("s1", "SUMMARY-OF-s1"),
+            user("q2", "second question"),
+            agent("a2", "second answer"),
+        ];
+        let mut state = byop_compaction::state::CompactionState::default();
+        state.push_completed(compaction("u1", "s1", &["u1", "a1"], "q2"));
+        state.push_completed(compaction(
+            "q2",
+            "s2",
+            &["u1", "a1", "s1", "q2", "a2"],
+            "cont2",
+        ));
+        // s2 and cont2 were rewound away.
+        let remaining = ["u1", "a1", "s1", "q2", "a2"];
+        state.retain_compactions_whose_messages_exist(|id| remaining.contains(&id));
+        let texts = request_texts(messages, state);
+        let summary_at = texts
+            .iter()
+            .position(|t| t.contains("SUMMARY-OF-s1"))
+            .expect("C1's summary is shown");
+        let question_at = texts
+            .iter()
+            .position(|t| t.contains("second question"))
+            .expect("the surviving part of C2's head is visible");
+        assert!(summary_at < question_at);
+        assert!(texts.iter().any(|t| t.contains("second answer")));
+        assert!(!texts.iter().any(|t| t.contains("first answer")));
+    }
+
     /// #1059 refute round 7: a compaction persisted before #1078 anchored at the kept tail's
     /// user message. After restore that instruction is still sent, after the summary.
     #[test]
@@ -17251,24 +17233,96 @@ mod summarize_turn_tool_gate_tests {
         }
     }
 
+    /// Asserts `reply` on a summarize turn is a tool call: dropped and noted.
+    fn assert_dropped_and_noted(reply: &str) {
+        let tools = vec!["run_shell_command".to_owned(), "read_files".to_owned()];
+        let calls = text_tool_calls_for_turn(reply, &tools, true);
+        assert!(!calls.is_empty(), "a tool call: {reply:?}");
+        let params = params(vec![summarize(true)]);
+        let conversation_id = params
+            .byop_conversation_id
+            .expect("test params carry an id");
+        assert!(tool_calls_to_dispatch(&params, calls).is_empty());
+        assert!(take_summary_stream_dropped_tool_calls(conversation_id));
+    }
+
+    /// Asserts `reply` on a summarize turn is the summary: nothing extracted or noted.
+    fn assert_kept_as_summary(reply: &str) {
+        let tools = vec!["run_shell_command".to_owned(), "read_files".to_owned()];
+        assert!(
+            !text_tool_calls_for_turn(reply, &tools, false).is_empty(),
+            "precondition: outside a summarize turn the quoted JSON is extracted: {reply:?}"
+        );
+        let params = params(vec![summarize(true)]);
+        let conversation_id = params
+            .byop_conversation_id
+            .expect("test params carry an id");
+        let calls = text_tool_calls_for_turn(reply, &tools, true);
+        assert!(
+            calls.is_empty(),
+            "the summary is not a tool call: {reply:?}"
+        );
+        assert!(tool_calls_to_dispatch(&params, calls).is_empty());
+        assert!(!take_summary_stream_dropped_tool_calls(conversation_id));
+    }
+
+    /// Refute round 11 (a): small Ollama models wrap the whole summary in a ```markdown fence,
+    /// with the quoted call in a nested ```json block. Still the summary.
     #[test]
-    fn reply_is_only_tool_call_json_measures_the_prose_around_the_json() {
-        assert!(reply_is_only_tool_call_json(QUOTED_CALL));
-        assert!(reply_is_only_tool_call_json(&format!(
-            "```\n{QUOTED_CALL}\n```"
-        )));
-        assert!(reply_is_only_tool_call_json(&format!(
-            "Sure: {QUOTED_CALL}"
-        )));
-        // Braces inside JSON strings do not end the object early.
-        assert!(reply_is_only_tool_call_json(
-            r#"{"name":"run_shell_command","arguments":{"command":"echo '}' and more text after"}}"#
+    fn a_fenced_markdown_summary_quoting_a_call_is_the_summary() {
+        let summary = markdown_summary_quoting_a_call();
+        assert_kept_as_summary(&format!("```markdown\n{summary}\n```"));
+        assert_kept_as_summary(&format!("```md\n{summary}\n```"));
+    }
+
+    /// Refute round 11 (b): narration of any length before a call is not a summary.
+    #[test]
+    fn long_narration_before_a_call_is_a_tool_call() {
+        assert_dropped_and_noted(&format!(
+            "Let me check the next file to understand the parser behaviour before I summarize \
+             anything:\n{QUOTED_CALL}"
         ));
-        assert!(!reply_is_only_tool_call_json(
-            &markdown_summary_quoting_a_call()
+    }
+
+    /// Refute round 11 (c): a bare JSON reply is a tool call.
+    #[test]
+    fn bare_tool_json_is_a_tool_call() {
+        assert_dropped_and_noted(QUOTED_CALL);
+    }
+
+    /// Refute round 11 (d): a terse real summary (two template headings) quoting a call is the
+    /// summary.
+    #[test]
+    fn a_terse_summary_with_two_headings_is_the_summary() {
+        assert_kept_as_summary(&format!(
+            "## Goal\n- pass the tests\n## Next Steps\n- run {QUOTED_CALL}"
         ));
-        assert!(!reply_is_only_tool_call_json(
-            "The build failed in the parser; next run the tests again."
+    }
+
+    /// The headings come from the template itself, and one heading is not enough.
+    #[test]
+    fn summary_shape_is_read_from_the_template_headings() {
+        let headings: Vec<&str> = byop_compaction::prompt::summary_section_headings().collect();
+        for heading in [
+            "## Goal",
+            "## Progress",
+            "## Next Steps",
+            "## Relevant Files",
+        ] {
+            assert!(
+                headings.contains(&heading),
+                "{heading} missing from {headings:?}"
+            );
+        }
+        assert!(!headings.iter().any(|h| h.starts_with("###")));
+        assert!(!byop_compaction::prompt::looks_like_summary(
+            "## Goal\n- only one"
+        ));
+        assert!(!byop_compaction::prompt::looks_like_summary(
+            "Here is the plan: ## Goal and ## Progress inline, not headings"
+        ));
+        assert!(byop_compaction::prompt::looks_like_summary(
+            "  ## Goal\n- a\n## Critical Context\n- b"
         ));
     }
 

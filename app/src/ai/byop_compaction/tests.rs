@@ -1814,7 +1814,7 @@ fn only_the_latest_summary_of_a_chain_is_shown() {
         Some("q3"),
     ));
     assert_eq!(
-        state.summary_insertions(),
+        state.summary_insertions(|_| true),
         vec![("cont1".to_string(), "summary-s2".to_string())]
     );
 }
@@ -1828,7 +1828,7 @@ fn only_the_latest_summary_is_shown_even_when_a_later_head_is_shorter() {
     state.push_completed(completed("u1", "s1", &["u1", "a1"], Some("q2")));
     state.push_completed(completed("q2", "s2", &["q2", "a2"], Some("q3")));
     assert_eq!(
-        state.summary_insertions(),
+        state.summary_insertions(|_| true),
         vec![("q2".to_string(), "summary-s2".to_string())]
     );
 }
@@ -1843,7 +1843,7 @@ fn a_compaction_without_text_does_not_hide_the_previous_summary() {
     textless.summary_text = None;
     state.push_completed(textless);
     assert_eq!(
-        state.summary_insertions(),
+        state.summary_insertions(|_| true),
         vec![("u1".to_string(), "summary-s1".to_string())]
     );
 }
@@ -1862,7 +1862,7 @@ fn a_legacy_tail_anchor_stays_visible_and_the_summary_goes_before_the_tail() {
     );
     assert!(hidden.contains("u1") && hidden.contains("a1") && hidden.contains("s1"));
     assert_eq!(
-        state.summary_insertions(),
+        state.summary_insertions(|_| true),
         vec![("q2".to_string(), "summary-s1".to_string())]
     );
 
@@ -1909,4 +1909,101 @@ fn the_anchor_can_be_a_skill_invocation_in_the_head() {
             .hidden_message_ids()
             .contains("q3")
     );
+}
+
+// -- refute round 11: rewinds and blank summaries ------------------------------------------
+
+/// A rewind removes C2's summary (and everything after it): C2 is dropped with its markers,
+/// so the part of its head that survives the rewind (`q2`, `a2`) is visible again and C1's
+/// summary is the one shown.
+#[test]
+fn a_rewind_drops_the_compaction_whose_summary_it_removed() {
+    let mut state = super::state::CompactionState::default();
+    state.push_completed(completed("u1", "s1", &["u1", "a1"], Some("q2")));
+    state.push_completed(completed(
+        "q2",
+        "s2",
+        &["u1", "a1", "s1", "q2", "a2"],
+        Some("cont2"),
+    ));
+    let remaining = ["u1", "a1", "s1", "q2", "a2"];
+    assert_eq!(
+        state.retain_compactions_whose_messages_exist(|id| remaining.contains(&id)),
+        1
+    );
+    let hidden = state.hidden_message_ids();
+    assert!(
+        !hidden.contains("q2") && !hidden.contains("a2"),
+        "{hidden:?}"
+    );
+    assert!(hidden.contains("u1") && hidden.contains("a1") && hidden.contains("s1"));
+    assert_eq!(
+        state.summary_insertions(|id| remaining.contains(&id)),
+        vec![("u1".to_string(), "summary-s1".to_string())]
+    );
+    assert_eq!(state.previous_summary(), Some("summary-s1"));
+    assert!(
+        state
+            .marker("q2")
+            .is_none_or(|m| m.compaction_trigger.is_none()),
+        "the dropped anchor is a turn boundary again"
+    );
+    assert!(state.marker("s2").is_none_or(|m| !m.is_summary));
+}
+
+/// Belt and braces: a compaction whose insertion target is gone from the request is never
+/// picked, so it can't suppress the summary that can still be shown.
+#[test]
+fn a_compaction_whose_target_is_missing_is_not_shown() {
+    let mut state = super::state::CompactionState::default();
+    state.push_completed(completed("u1", "s1", &["u1", "a1"], Some("q2")));
+    state.push_completed(completed("q2", "s2", &["q2", "a2"], Some("q3")));
+    assert_eq!(
+        state.summary_insertions(|id| id != "q2"),
+        vec![("u1".to_string(), "summary-s1".to_string())]
+    );
+}
+
+/// An early build stored `Some("")` for a blank reply. The summary a request shows and the
+/// one the next summarizer is asked to update are the same non-blank one.
+#[test]
+fn a_restored_blank_summary_is_skipped_by_both_readers() {
+    let mut state = super::state::CompactionState::default();
+    state.push_completed(completed("u1", "s1", &["u1", "a1"], Some("q2")));
+    let mut blank = completed("q2", "s2", &["q2", "a2"], Some("q3"));
+    blank.summary_text = Some("  \n ".to_string());
+    state.push_completed(blank);
+    let json = serde_json::to_string(&state).unwrap();
+    let state: super::state::CompactionState = serde_json::from_str(&json).unwrap();
+    assert_eq!(state.previous_summary(), Some("summary-s1"));
+    assert_eq!(
+        state.summary_insertions(|_| true),
+        vec![("u1".to_string(), "summary-s1".to_string())]
+    );
+}
+
+/// A stream that also produced a (dropped) tool call still commits text that has the
+/// summary's shape; text without it is refused.
+#[test]
+fn a_summary_shaped_reply_commits_despite_a_dropped_call() {
+    use super::commit::commit_summarization_for_stream;
+    use crate::ai::agent_providers::chat_stream::note_summary_stream_dropped_tool_calls;
+
+    let mut summary = agent_output("s1", "root", "r2", 3);
+    if let Some(api::message::Message::AgentOutput(output)) = summary.message.as_mut() {
+        output.text = "## Goal\n- pass the tests\n\n## Next Steps\n- rerun".to_string();
+    }
+    let mut conversation = conversation_with_messages(vec![
+        user_query("u1", "root", "r1", 1),
+        agent_output("a1", "root", "r1", 2),
+        summary,
+    ]);
+    note_summary_stream_dropped_tool_calls(conversation.id());
+    let cfg = CompactionConfig::default();
+    assert!(commit_summarization_for_stream(
+        &mut conversation,
+        true,
+        &cfg,
+        |id| id == "s1"
+    ));
 }
