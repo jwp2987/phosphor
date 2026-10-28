@@ -2529,3 +2529,25 @@ so a typed command line would arrive without its Enter, seconds later (after the
 legacy bootstrap), into an input the user never saw it go into. Reverse only together with a
 visible place for the buffered text.
 <!-- markers: keep:typing_on_the_ssh_extension_choice_card_shows_a_hint_instead_of_vanishing -->
+
+## A finished block ends at the cursor: output above a mid-command cursor-home is dropped (#1097) — declined 2026-10-28
+
+`printf 'A\nB\nC\n'; printf '\e[H'; echo D` leaves only `D` in the finished block, where xterm
+keeps `B` and `C` below the overwritten first line. The same happens for anything that homes the
+cursor mid-command: `ESC[r` and `ESC[5;10r` (DECSTBM homes the cursor, per the VT spec). While the
+command runs the block shows every row up to the furthest cursor position; at finish
+`GridHandler::finish` calls `truncate_to_cursor_rows` and the block keeps only the rows up to
+the cursor (`BlockGrid::finished_len`). The truncation is identical at the pin
+(`4111d08f9:crates/warp_terminal/src/model/grid/grid_handler.rs`, `finish`), and deliberate there:
+the pin's `has_received_content` doc describes exactly this ("the grid_cursor is positioned at
+(0,0), indicating that this content should be truncated away once the program is finished"), and
+`blocks/selection_tests.rs` and `test_finish_truncates_grid_*` pin it. Reason to keep it: in a
+plain terminal the next prompt overwrites whatever a program leaves below its cursor (a spinner or
+progress bar that moved back up, a redrawing tool that homes and repaints a shorter frame); a block
+has no following prompt in its grid, so "the output ends at the cursor" is what removes that
+debris. Keeping rows below the cursor would leave stale progress lines in every such block. The
+only loss is a program that homes the cursor and then writes fewer lines than it had printed,
+which is rare outside hostile tests. Reverse only together with a rule that still drops progress-bar
+remnants (for example, keep rows below the cursor only when no cursor-up / home happened after
+they were written).
+<!-- markers: keep:finished_block_ends_at_the_cursor_after_a_mid_command_cursor_home -->

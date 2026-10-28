@@ -34,6 +34,41 @@ pub fn test_finish_truncates_grid_basic() {
     assert_eq!(block_grid.grid_handler().columns(), size.columns);
 }
 
+/// #1097, DECLINED (see DECLINED.md): a finished block ends at the cursor, so output above a
+/// mid-command cursor-home that nothing overwrote is dropped at finish (`printf 'A\nB\nC\n';
+/// printf '\e[H'; echo D` keeps only `D`). Inherited from the pin, where it is what clears the
+/// leftovers of progress bars and redrawing programs that move the cursor back up.
+#[test]
+pub fn finished_block_ends_at_the_cursor_after_a_mid_command_cursor_home() {
+    let size = SizeInfo::new_without_font_metrics(10, 7);
+    let mut block_grid = BlockGrid::new(
+        size,
+        1000, /* max_scroll_limit */
+        ChannelEventListener::new_for_test(),
+        ObfuscateSecrets::No,
+        PerformResetGridChecks::default(),
+    );
+
+    for c in ['A', 'B', 'C'] {
+        block_grid.input(c);
+        block_grid.linefeed();
+        block_grid.carriage_return();
+    }
+    block_grid.goto(VisibleRow(0), 0);
+    block_grid.input('D');
+    block_grid.linefeed();
+    block_grid.carriage_return();
+    block_grid.finish();
+
+    assert_eq!(block_grid.len(), 1);
+    assert_eq!(
+        block_grid
+            .point_to_end_as_string(Point::new(0, 0))
+            .trim_end(),
+        "D"
+    );
+}
+
 #[test]
 pub fn test_finish_truncates_grid_cursor_at_bottom() {
     let size = SizeInfo::new_without_font_metrics(10, 7);
