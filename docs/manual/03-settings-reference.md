@@ -736,6 +736,7 @@ Selecting and pasting with the mouse.
 | TOML path | Type | Default | What it does |
 |---|---|---|---|
 | `warpify.ssh.reuse_existing_control_master` | boolean | `false` | Whether the wrapper attaches to an existing SSH `ControlMaster` for the destination host instead of always opening its own connection. |
+| `warpify.ssh.split_inherits_ssh` | boolean | `true` | Whether splitting a pane whose active session is an SSH session opens the new pane on the same host: it re-runs the `ssh` command you typed, then `cd`s to the same remote directory. Turn it off to always get a local shell. |
 
 `warpify.ssh.enable_legacy_ssh_wrapper` used to be listed here too. It was
 declared twice — once here and once in `WarpifySettings` — against the same TOML

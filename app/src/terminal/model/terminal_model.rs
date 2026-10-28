@@ -3684,7 +3684,14 @@ impl ansi::Handler for TerminalModel {
             let shell_type = ShellType::from_name(&data.shell)
                 .unwrap_or_else(|| panic!("invalid shell name: {}", data.shell));
 
-            let pending_session_info = SessionInfo::create_pending(
+            // #1069: a wrapper ssh session has no `subshell_info`, so record the command the user
+            // typed (the active block is still the local `ssh ...` block) for a split to replay.
+            let legacy_ssh_spawning_command = self
+                .pending_legacy_ssh_session
+                .is_some()
+                .then(|| self.block_list().active_block().command_to_string());
+
+            let mut pending_session_info = SessionInfo::create_pending(
                 shell_type,
                 data,
                 subshell_info,
@@ -3696,6 +3703,7 @@ impl ansi::Handler for TerminalModel {
                 ),
                 self.block_list().active_block().session_id(),
             );
+            pending_session_info.legacy_ssh_spawning_command = legacy_ssh_spawning_command;
             self.pending_session_info = Some(pending_session_info.clone());
             // A newer shell supersedes whatever was abandoned earlier.
             self.abandoned_subshell_session = None;

@@ -31,7 +31,7 @@ use crate::pane_group::pane::get_started_pane::GetStartedPane;
 use crate::pane_group::pane::welcome_pane::WelcomePane;
 use crate::pane_group::pane::ActionOrigin;
 use crate::quit_warning::UnsavedStateSummary;
-use crate::settings::{AISettings, DefaultSessionMode, PaneSettings};
+use crate::settings::{AISettings, DefaultSessionMode, PaneSettings, SshSettings};
 use crate::settings_view::SettingsSection;
 use crate::shell_indicator::ShellIndicatorType;
 use crate::terminal::available_shells::{AvailableShell, AvailableShells};
@@ -150,6 +150,7 @@ use crate::workspace::{
 
 pub mod focus_state;
 pub mod pane;
+pub mod ssh_split;
 pub mod tree;
 pub mod working_directories;
 #[cfg(feature = "local_fs")]
@@ -3801,7 +3802,125 @@ impl PaneGroup {
         new_pane_id
     }
 
-    /// Used when splitting panes.
+    /// The ssh command a pane split from `base_pane_id` should run to land on the same remote
+    /// host, if `warpify.ssh.split_inherits_ssh` is on and the pane's active session qualifies
+    /// (#1069; see [`ssh_split`]).
+    fn inherited_ssh_command(
+        &self,
+        base_pane_id: TerminalPaneId,
+        ctx: &AppContext,
+    ) -> Option<String> {
+        if !*SshSettings::as_ref(ctx).split_inherits_ssh.value() {
+            return None;
+        }
+        let view = self.terminal_view_from_pane_id(base_pane_id, ctx)?;
+        let view = view.as_ref(ctx);
+        let sessions = view.sessions_model().as_ref(ctx);
+        let session = sessions.get(view.active_block_session_id()?)?;
+        let spawning_session_type = session
+            .spawning_session_id()
+            .and_then(|id| sessions.get(id))
+            .map(|spawning| spawning.session_type());
+        let ssh_spawning_command = ssh_split::resolve_ssh_spawning_command(
+            session.subshell_info().as_ref(),
+            session.legacy_ssh_spawning_command(),
+        );
+        ssh_split::inherited_ssh_command(
+            &session.session_type(),
+            ssh_spawning_command,
+            spawning_session_type.as_ref(),
+        )
+    }
+
+    /// Adds a terminal pane for a user-initiated default split (#1069). If the base pane is a
+    /// terminal pane whose active session is an SSH session, the new pane replays that ssh
+    /// command and then restores the remote working directory; otherwise this is
+    /// `add_session`. Only the base pane's OWN session is considered: a split from a notebook or
+    /// other non-terminal pane stays local even when a remote terminal is the active session.
+    fn add_split_session(
+        &mut self,
+        direction: Direction,
+        base_pane_id: PaneId,
+        base_session_id_for_context: Option<TerminalPaneId>,
+        chosen_shell: Option<AvailableShell>,
+        ctx: &mut ViewContext<Self>,
+    ) -> TerminalPaneId {
+        let inherited = match base_pane_id.as_terminal_pane_id() {
+            Some(base_terminal_pane_id) => self
+                .inherited_ssh_command(base_terminal_pane_id, ctx)
+                .map(|command| (base_terminal_pane_id, command)),
+            None => None,
+        };
+        let Some((base_terminal_pane_id, ssh_command)) = inherited else {
+            return self.add_session(
+                direction,
+                Some(base_pane_id),
+                base_session_id_for_context,
+                chosen_shell,
+                None, /* conversation_restoration */
+                ctx,
+            );
+        };
+        let mut remote_cd = None;
+        if let Some(base_view) = self.terminal_view_from_pane_id(base_terminal_pane_id, ctx) {
+            let base_view = base_view.as_ref(ctx);
+            if let (Some(remote_host), Some(path)) =
+                (base_view.active_session_remote_host(ctx), base_view.pwd())
+            {
+                remote_cd = Some(ssh_split::PendingRemoteCd { remote_host, path });
+            }
+        }
+        // The new pane is about to become a remote shell, not a fresh local one: the default
+        // session mode is applied once the remote session has bootstrapped instead.
+        let new_pane_id = self.add_session_with_default_session_mode_behavior(
+            direction,
+            Some(base_pane_id),
+            Some(base_terminal_pane_id),
+            chosen_shell,
+            None, /* conversation_restoration */
+            DefaultSessionModeBehavior::Ignore,
+            ctx,
+        );
+        if let Some(terminal_view) = self.terminal_view_from_pane_id(new_pane_id, ctx) {
+            let enter_agent_view =
+                AISettings::as_ref(ctx).default_session_mode(ctx) == DefaultSessionMode::Agent;
+            terminal_view.update(ctx, |view, ctx| {
+                if let Some(pending) = remote_cd {
+                    view.set_cd_after_ssh_bootstrap(pending);
+                }
+                if enter_agent_view {
+                    view.set_enter_agent_view_after_ssh_bootstrap();
+                }
+                view.execute_command_or_set_pending(&ssh_command, ctx);
+            });
+        }
+        new_pane_id
+    }
+
+    /// A user-initiated split from `base_pane_id`: inherits an SSH session (see
+    /// [`Self::add_split_session`]) unless the user explicitly chose a shell for the new pane.
+    fn split_terminal_pane(
+        &mut self,
+        direction: Direction,
+        base_pane_id: PaneId,
+        chosen_shell: Option<AvailableShell>,
+        ctx: &mut ViewContext<Self>,
+    ) -> TerminalPaneId {
+        if chosen_shell.is_some() {
+            return self.insert_terminal_pane(direction, base_pane_id, chosen_shell, ctx);
+        }
+        let base_session_id = base_pane_id
+            .as_terminal_pane_id()
+            .or(self.active_session_id(ctx));
+        let new_pane_id =
+            self.add_split_session(direction, base_pane_id, base_session_id, None, ctx);
+        ctx.emit(Event::AppStateChanged);
+        new_pane_id
+    }
+
+    /// Used when splitting panes. Always a local shell: also used for internal helper panes
+    /// (the hidden sftp uploader), which must never inherit an ssh session. User-initiated
+    /// splits go through [`Self::split_terminal_pane`].
     fn insert_terminal_pane(
         &mut self,
         direction: Direction,
@@ -4874,16 +4993,16 @@ impl PaneGroup {
             // we may revisit this so that splitting from a terminal pane starts a new session, but
             // splitting from a notebook pane reopens the notebook side-by-side.
             PaneEvent::SplitLeft(chosen_shell) => {
-                self.insert_terminal_pane(Direction::Left, pane_id, chosen_shell.clone(), ctx);
+                self.split_terminal_pane(Direction::Left, pane_id, chosen_shell.clone(), ctx);
             }
             PaneEvent::SplitRight(chosen_shell) => {
-                self.insert_terminal_pane(Direction::Right, pane_id, chosen_shell.clone(), ctx);
+                self.split_terminal_pane(Direction::Right, pane_id, chosen_shell.clone(), ctx);
             }
             PaneEvent::SplitUp(chosen_shell) => {
-                self.insert_terminal_pane(Direction::Up, pane_id, chosen_shell.clone(), ctx);
+                self.split_terminal_pane(Direction::Up, pane_id, chosen_shell.clone(), ctx);
             }
             PaneEvent::SplitDown(chosen_shell) => {
-                self.insert_terminal_pane(Direction::Down, pane_id, chosen_shell.clone(), ctx);
+                self.split_terminal_pane(Direction::Down, pane_id, chosen_shell.clone(), ctx);
             }
             PaneEvent::ToggleMaximized => {
                 // The toggled pane might not be the active pane -- focus it first.
@@ -7127,7 +7246,15 @@ impl TypedActionView for PaneGroup {
                         None
                     }}
                 };
-                self.add_terminal_pane(*direction, chosen_shell, ctx);
+                // #1069: a default split of an SSH pane opens on the same host.
+                self.add_split_session(
+                    *direction,
+                    self.focused_pane_id(ctx),
+                    self.active_session_id(ctx),
+                    chosen_shell,
+                    ctx,
+                );
+                ctx.emit(Event::AppStateChanged);
             }
             Remove(view_id) => self.close_pane_with_confirmation(*view_id, ctx),
             RemoveActive => self.close_active_pane_with_confirmation(ctx),
