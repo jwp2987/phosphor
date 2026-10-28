@@ -438,6 +438,8 @@ pub(super) fn relaunch() -> Result<()> {
     // restart; /update=1 is used by the Inno script to detect upgrade mode.
     // /NOCLOSEAPPLICATIONS lets Inno wait for the current Zap process to exit
     // naturally (mutex poll), instead of forcing RestartManager to kill the process.
+    // Not being silent, it ends on the Finished page, whose "Launch" checkbox
+    // relaunches the app; skipifsilent on that entry (#1082) does not apply here.
     let mut cmd = Command::new(&installer_path);
     if matches!(channel, Channel::Oss) {
         cmd.args([
@@ -451,7 +453,10 @@ pub(super) fn relaunch() -> Result<()> {
     } else {
         // Official channel: keep the original "silent + progress bar" behavior, installing and restarting automatically.
         // The Inno Setup install wizard will run without user input. It will re-launch Zap after
-        // installing the update files.
+        // installing the update files: this process has exited by then, so the relaunch has to
+        // come from the installer, via the `IsSilentBackgroundUpdate` [Run] entry in
+        // script/windows/windows-installer.iss. The interactive "Launch" entry is skipifsilent
+        // (#1082), so dropping /update=1 here would leave the app closed after an update.
         // https://jrsoftware.org/ishelp/index.php?topic=setupcmdline
         cmd.args([
             // Skip asking the user to confirm.

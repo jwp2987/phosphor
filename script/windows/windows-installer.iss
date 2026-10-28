@@ -164,7 +164,16 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFile
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"; AppUserModelID: "{#AppUserModelId}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: postinstall runhidden nowait
+; Interactive installs: the Finished page's "Launch Phosphor" checkbox. skipifsilent
+; keeps /SILENT and /VERYSILENT installs (scripted, admin, managed) from starting
+; the app, which from a non-interactive session has no GPU and dies (#1082).
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: postinstall skipifsilent runhidden nowait
+; Silent background updates (/update=1 with /SILENT, the official-channel path in
+; app/src/autoupdate/windows.rs `relaunch`): the app has already exited to let the
+; files be replaced, so the installer is what brings it back. Not a postinstall
+; entry, so runasoriginaluser is explicit (postinstall entries get it by default).
+; The OSS channel's update runs non-silently and relaunches via the checkbox above.
+Filename: "{app}\{#MyAppExeName}"; Flags: runasoriginaluser runhidden nowait; Check: IsSilentBackgroundUpdate
 
 [Code]
 function IsNotStable(): Boolean;
@@ -183,6 +192,13 @@ end;
 function IsBackgroundUpdate(): Boolean;
 begin
   Result := ExpandConstant('{param:update|false}') <> 'false';
+end;
+
+{ A background update run with /SILENT or /VERYSILENT. The [Run] section relaunches
+  the app for these; every other silent install is left not running (#1082). }
+function IsSilentBackgroundUpdate(): Boolean;
+begin
+  Result := IsBackgroundUpdate() and WizardSilent();
 end;
 
 { For background updates, return an empty mutex name so that Inno Setup skips its
