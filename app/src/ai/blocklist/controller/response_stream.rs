@@ -476,12 +476,17 @@ fn byop_dispatch_info(
     // itself is BYOP.
     let llm_prefs = crate::ai::llms::LLMPreferences::as_ref(ctx);
     let title_gen = if needs_create_task {
-        let title_id = llm_prefs.get_active_title_model(ctx, None).id.clone();
+        // #1099: resolved against the terminal that owns this conversation (its profile,
+        // and with no title model of its own, the model this request is already on) --
+        // not the default profile's base model.
+        let terminal_view_id = history.terminal_view_id_for_conversation(conversation_id);
+        let title_id =
+            llm_prefs.get_title_model_for_request(ctx, terminal_view_id, &params.model);
         // The profile's per-prompt override for the title system prompt.
         let title_prompt_override = {
             use warpui::SingletonEntity;
             crate::ai::execution_profiles::profiles::AIExecutionProfilesModel::as_ref(ctx)
-                .active_profile(None, ctx)
+                .active_profile(terminal_view_id, ctx)
                 .data()
                 .prompt_overrides
                 .title

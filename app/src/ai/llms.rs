@@ -767,6 +767,51 @@ impl LLMPreferences {
             .unwrap_or_else(|| self.models_by_feature.agent_mode.default_llm_info())
     }
 
+    /// What a profile's title / active-AI / next-command / full-terminal-use slot shows on
+    /// the settings pages: the slot's own model when it is set (and still known), otherwise
+    /// the model the profile's *base* slot resolves to
+    /// ([`Self::get_effective_base_model_for_profile`]) -- "Defaults to the base model", as
+    /// each slot's help text says.
+    ///
+    /// #1099: the unset slots used to show [`Self::get_default_base_model`] instead, which
+    /// for BYOP is simply the first configured model -- unrelated to the profile's base.
+    pub fn get_slot_model_for_profile<'a>(
+        &'a self,
+        app: &AppContext,
+        slot_model_id: Option<&LLMId>,
+        base_model_id: Option<&LLMId>,
+    ) -> &'a LLMInfo {
+        slot_model_id
+            .and_then(|id| self.get_llm_info(id))
+            .unwrap_or_else(|| self.get_effective_base_model_for_profile(app, base_model_id))
+    }
+
+    /// The model that generates the title for an agent request already routed to
+    /// `request_model` in `terminal_view_id`: the terminal's profile's explicit
+    /// `title_model` when it is set and still available, otherwise `request_model` itself
+    /// -- the base model this very conversation is using.
+    ///
+    /// #1099: the title used to be resolved with no terminal view, which consulted the
+    /// *default* profile (not the terminal's) and skipped the terminal's own model choice,
+    /// so a conversation on one model could fire its title request at another (BYOP's
+    /// first-listed model) -- on a shared Ollama server that evicted the model the user
+    /// was actually using.
+    pub fn get_title_model_for_request(
+        &self,
+        app: &AppContext,
+        terminal_view_id: Option<EntityId>,
+        request_model: &LLMId,
+    ) -> LLMId {
+        let profile = AIExecutionProfilesModel::as_ref(app).active_profile(terminal_view_id, app);
+        profile
+            .data()
+            .title_model
+            .as_ref()
+            .and_then(|id| self.models_by_feature.agent_mode.info_for_id(id))
+            .map(|info| info.id.clone())
+            .unwrap_or_else(|| request_model.clone())
+    }
+
     /// Returns the active execution profile's effective base model, *without*
     /// applying the per-terminal-view override or the BYOP picker's globally
     /// last-used model.
