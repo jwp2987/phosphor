@@ -993,7 +993,7 @@ the part you actually want.
 - password stored in the OS keychain under `ProxyPassword`, never in settings.toml: app/src/settings/network_secrets.rs:1-14
 - long-lived clients need a restart: crates/http_client/src/proxy.rs:22-24; app/i18n/en/warp.ftl:872
 - Network page strings incl. Test connection semantics: app/i18n/en/warp.ftl:870-899
-- WARP_EXTRA_HTTP_HEADERS is read only on Channel::Integration, so it is not a user-facing switch: crates/http_client/src/lib.rs:50-53
+- WARP_EXTRA_HTTP_HEADERS is read only on Channel::Integration, so it is not a user-facing switch: crates/http_client/src/lib.rs:36-39
 
 ## SSH bootstrap egress
 - the remote-server install script has the REMOTE host fetch the CLI tarball from this project's GitHub Releases, verified against a digest pinned into the client at build time: crates/remote_server/src/setup.rs:550-553, :580 (expected_sha256, baked in via option_env! — crates/remote_server/build.rs:4), asserted URL crates/remote_server/src/setup_tests.rs:255-261 (`https://github.com/jwp2987/phosphor/releases/latest/download/phosphor-cli-linux-x86_64.tar.gz`); digests pinned at .github/workflows/phosphor_release.yml:277-315, :496-524
