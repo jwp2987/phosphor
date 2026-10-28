@@ -567,3 +567,63 @@ fn test_nu_subshell_detection_fail() {
         )
     });
 }
+
+/// #1098: a leading environment prefix does not change which program runs, so `VAR=x zsh` and
+/// `env VAR=x zsh` are the same subshell as `zsh` (the Phosphorize offer and its Ctrl-I binding
+/// used to be missing for them).
+#[test]
+fn test_env_prefixed_subshell_detection_success() {
+    [
+        "VAR=x zsh",
+        "VAR=x bash",
+        "A=1 B=2 fish",
+        "ZDOTDIR=/tmp/z /bin/zsh",
+        "VAR=\"a b\" zsh",
+        "VAR='a b' zsh",
+        "VAR=a\\ b zsh",
+        "env VAR=x zsh",
+        "env -i VAR=x zsh",
+        "env -i zsh",
+        "env - bash",
+        "env -u FOO zsh",
+        "FOO=1 env BAR=2 zsh",
+        "VAR=x sudo -i",
+        "VAR=x nu",
+        "VAR=x pwsh",
+    ]
+    .iter()
+    .for_each(|cmd| {
+        assert!(
+            WarpifySettings::is_built_in_subshell_match(cmd),
+            "{} failed to match",
+            *cmd
+        )
+    });
+}
+
+/// The prefix is only stripped, never a licence to match more: what follows it still has to be
+/// a bare interactive shell.
+#[test]
+fn test_env_prefixed_subshell_detection_fail() {
+    [
+        "VAR=x",
+        "env",
+        "env VAR=x",
+        "VAR=x make",
+        "VAR=x zsh -c 'ls'",
+        "env VAR=x python",
+        "VAR=\"x zsh\"",
+        "VAR='x zsh' make",
+        "1VAR=x zsh",
+        "--x=1 zsh",
+        "VAR=x nu script.nu",
+    ]
+    .iter()
+    .for_each(|cmd| {
+        assert!(
+            !WarpifySettings::is_built_in_subshell_match(cmd),
+            "{} accidentally matched",
+            *cmd
+        )
+    });
+}

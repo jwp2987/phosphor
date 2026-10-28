@@ -25,26 +25,68 @@ pub enum SubshellSource {
 /// spawning command that is not a leading `NAME=value` assignment or an `env` prefix
 /// (`AUTOP=1 zsh`, `ZDOTDIR=/x zsh`, `env -i FOO=1 zsh` all name `zsh`) (#1037).
 pub fn subshell_display_name(spawning_command: &str) -> Option<&str> {
-    let mut words = spawning_command.split_whitespace().peekable();
+    strip_env_prefix(spawning_command).split_whitespace().next()
+}
+
+/// `command` with any leading `NAME=value` assignments and `env [OPTIONS] [NAME=value ...]`
+/// prefix removed, so `VAR=x zsh`, `env VAR=x zsh` and `env -i A="b c" zsh -l` all yield the
+/// command that actually runs (`zsh`, `zsh`, `zsh -l`). Subshell detection matches the
+/// remainder against the shell-name patterns (#1098); the display name is its first word
+/// (#1037). Quoted values (`A="b c"`, `A='b c'`, `A=b\ c`) are one word. A bare `env` with
+/// nothing after it is itself the command and is kept.
+pub fn strip_env_prefix(command: &str) -> &str {
+    let mut rest = command.trim_start();
     let mut in_env = false;
-    while let Some(word) = words.peek().copied() {
+    loop {
+        let Some((word, after)) = split_first_shell_word(rest) else {
+            return rest;
+        };
         if is_env_assignment_word(word) {
-            words.next();
-        } else if !in_env && word == "env" && words.clone().nth(1).is_some() {
+            rest = after;
+        } else if !in_env && word == "env" && split_first_shell_word(after).is_some() {
             in_env = true;
-            words.next();
-        } else if in_env && (word.starts_with('-') && word != "-") {
-            // `env` options such as `-i`. Options taking a value (`-u NAME`, `-C dir`) also
-            // consume the next word.
-            words.next();
+            rest = after;
+        } else if in_env && word.starts_with('-') {
+            // `env` options such as `-i` / `-`. Options taking a value (`-u NAME`, `-C dir`)
+            // also consume the next word.
+            rest = after;
             if matches!(word, "-u" | "-C" | "-S") {
-                words.next();
+                rest = split_first_shell_word(rest).map_or("", |(_, after)| after);
             }
         } else {
-            break;
+            return rest;
         }
     }
-    words.next()
+}
+
+/// Splits off the first shell word of `s` (leading whitespace skipped), treating single- and
+/// double-quoted runs and backslash escapes as part of the word. Returns the word as written
+/// (quotes included) and the remainder with its leading whitespace trimmed, or `None` when `s`
+/// holds no word.
+fn split_first_shell_word(s: &str) -> Option<(&str, &str)> {
+    let s = s.trim_start();
+    if s.is_empty() {
+        return None;
+    }
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (i, c) in s.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match (quote, c) {
+            (Some('\''), '\'') => quote = None,
+            (Some('\''), _) => {}
+            (_, '\\') => escaped = true,
+            (Some('"'), '"') => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"') => quote = Some(c),
+            (None, c) if c.is_whitespace() => return Some((&s[..i], s[i..].trim_start())),
+            (None, _) => {}
+        }
+    }
+    Some((s, ""))
 }
 
 /// What the block-side subshell flag shows for `source`: a command is reduced to its

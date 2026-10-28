@@ -469,3 +469,26 @@ fn unix_powershell_success_block_keeps_xdg_profile_and_uname() {
     assert!(command.contains(".config/powershell/Microsoft.PowerShell_profile.ps1"));
     assert!(command.contains("$(uname)"));
 }
+
+#[test]
+fn strip_env_prefix_removes_assignments_and_env_prefix() {
+    use super::strip_env_prefix as s;
+    assert_eq!(s("zsh"), "zsh");
+    assert_eq!(s("VAR=x zsh"), "zsh");
+    assert_eq!(s("  A=1   B=2  zsh -l"), "zsh -l");
+    assert_eq!(s("VAR=\"a b\" zsh"), "zsh");
+    assert_eq!(s("VAR='a \"b' zsh"), "zsh");
+    assert_eq!(s("VAR=a\\ b zsh"), "zsh");
+    assert_eq!(s("env VAR=x zsh"), "zsh");
+    assert_eq!(s("env -i VAR=x zsh"), "zsh");
+    assert_eq!(s("env - zsh"), "zsh");
+    assert_eq!(s("env -u FOO -C /tmp zsh"), "zsh");
+    assert_eq!(s("FOO=1 env BAR=2 zsh"), "zsh");
+    // Not prefixes.
+    assert_eq!(s("env"), "env");
+    assert_eq!(s("1A=b zsh"), "1A=b zsh");
+    assert_eq!(s("echo A=1 zsh"), "echo A=1 zsh");
+    assert_eq!(s("A=1"), "");
+    // A quoted value is one word, so a shell name inside it is not the command.
+    assert_eq!(s("VAR=\"x zsh\""), "");
+}
