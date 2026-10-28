@@ -1724,13 +1724,28 @@ fn setup_database(database_path: &Path) -> Result<SqliteConnection> {
 /// Fails with SQLite's "attempt to write a readonly database" when the
 /// connection is read-only. Under a 1-3 s sharing violation on Windows the OS
 /// layer can fall back to a read-only open that "succeeds", after which every
-/// write of the session fails (#1118). `BEGIN IMMEDIATE` takes the write lock
-/// without changing any data, so it is a cheap, harmless probe.
+/// write of the session fails (#1118). The probe rewrites `user_version` with its current value: a real
+/// header write that changes no data. (An empty `BEGIN IMMEDIATE; COMMIT` did
+/// not reliably fail on a read-only connection.)
 fn probe_writable(conn: &mut SqliteConnection, db_path: &Path) -> Result<()> {
-    match conn.batch_execute("BEGIN IMMEDIATE; COMMIT;") {
+    #[derive(diesel::QueryableByName)]
+    struct UserVersion {
+        #[diesel(sql_type = diesel::sql_types::Integer)]
+        user_version: i32,
+    }
+    // Rewriting `user_version` with its current value is a real header write
+    // (OP_SetCookie inside a write transaction), so SQLite must raise
+    // SQLITE_READONLY on a read-only connection; it changes no data.
+    let probe = |conn: &mut SqliteConnection| -> std::result::Result<(), Error> {
+        let current = diesel::sql_query("PRAGMA user_version")
+            .get_result::<UserVersion>(conn)?
+            .user_version;
+        conn.batch_execute(&format!("PRAGMA user_version = {current};"))
+    };
+    match probe(conn) {
         Ok(()) => Ok(()),
         Err(err) => {
-            let message = diesel_database_error_message(&err);
+            let message = format!("{} {err}", diesel_database_error_message(&err)).to_lowercase();
             // Only SQLITE_READONLY on a file that should be writable fails the
             // probe. A lock or busy error means another connection holds the
             // write lock, so this one is evidently not read-only. A file that
