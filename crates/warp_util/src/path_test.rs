@@ -1575,3 +1575,64 @@ fn nu_dialect_shell_escape_finds_files_in_a_real_nushell() {
     }
     let _ = std::fs::remove_dir_all(&home);
 }
+
+fn out_dir_under(artifact_dir: &Path) -> PathBuf {
+    artifact_dir
+        .join("build")
+        .join("warp-0123456789abcdef")
+        .join("out")
+}
+
+#[test]
+fn test_artifact_dir_from_out_dir_default_target_dir() {
+    // `cargo build --profile rlto` with the default target dir.
+    let artifact_dir = Path::new("repo").join("target").join("rlto");
+    assert_eq!(
+        artifact_dir_from_out_dir(&out_dir_under(&artifact_dir)),
+        Some(artifact_dir)
+    );
+}
+
+#[test]
+fn test_artifact_dir_from_out_dir_custom_target_dir() {
+    // `CARGO_TARGET_DIR=t cargo build` (the dev profile's directory is `debug`).
+    let artifact_dir = Path::new("t").join("debug");
+    assert_eq!(
+        artifact_dir_from_out_dir(&out_dir_under(&artifact_dir)),
+        Some(artifact_dir)
+    );
+}
+
+#[test]
+fn test_artifact_dir_from_out_dir_with_target_triple() {
+    // `cargo build --target x86_64-pc-windows-msvc --profile rlto` nests one level deeper.
+    let artifact_dir = Path::new("repo")
+        .join("target")
+        .join("x86_64-pc-windows-msvc")
+        .join("rlto");
+    assert_eq!(
+        artifact_dir_from_out_dir(&out_dir_under(&artifact_dir)),
+        Some(artifact_dir)
+    );
+}
+
+#[test]
+fn test_artifact_dir_from_out_dir_rejects_unexpected_shapes() {
+    // Not ending in `out`.
+    let not_out = Path::new("target")
+        .join("debug")
+        .join("build")
+        .join("warp-0123")
+        .join("gen");
+    assert_eq!(artifact_dir_from_out_dir(&not_out), None);
+    // No `build` component where cargo puts it.
+    let no_build = Path::new("target")
+        .join("debug")
+        .join("deps")
+        .join("warp-0123")
+        .join("out");
+    assert_eq!(artifact_dir_from_out_dir(&no_build), None);
+    // Too short to have an artifact directory.
+    let too_short = Path::new("build").join("warp-0123").join("out");
+    assert_eq!(artifact_dir_from_out_dir(&too_short), None);
+}

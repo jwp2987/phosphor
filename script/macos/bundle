@@ -383,7 +383,6 @@ elif [[ $RELEASE_CHANNEL = "oss" ]]; then
 fi
 
 OUT_DIR="target/$TARGET_PROFILE_DIR/bundle/osx"
-DOCK_TILE_PLUGIN_DIR="target/$TARGET_PROFILE_DIR/ZapDockTilePlugin.docktileplugin"
 
 # Handle specific architecture targeting
 if [[ -n "$TARGET_ARCH" ]]; then
@@ -411,6 +410,11 @@ else
         BUNDLE_DIR="target/$ARM_TARGET/$TARGET_PROFILE_DIR/bundle/osx"
     fi
 fi
+
+# app/build.rs writes the dock tile plugin next to the binary, i.e. into the
+# `--target`-nested output dir (target/<triple>/<profile>/), not target/<profile>/ (#1057).
+# The universal build bundles $DEFAULT_TARGET; the plugin is itself universal.
+DOCK_TILE_PLUGIN_DIR="target/$DEFAULT_TARGET/$TARGET_PROFILE_DIR/ZapDockTilePlugin.docktileplugin"
 
 # Set artifact-specific configuration.
 if [[ "$ARTIFACT" == cli ]]; then
