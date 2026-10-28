@@ -25,7 +25,10 @@ const RUN_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 pub(super) fn maybe_register_app_as_login_item(ctx: &mut AppContext) {
     GeneralSettings::handle(ctx).update(ctx, |settings, ctx| {
         let add_app_as_login_item = *settings.add_app_as_login_item;
-        if add_app_as_login_item && *settings.app_added_as_login_item {
+        // Also nothing to do when the setting is off and the app was never
+        // registered, the default since #1073; off-but-registered (registered
+        // under the old default) still falls through and unregisters once.
+        if add_app_as_login_item == *settings.app_added_as_login_item {
             // App is already registered as a login item. Don't re-register — the
             // user may have manually removed us via Settings → Apps → Startup or
             // Task Manager, and re-adding on every launch would override that.
